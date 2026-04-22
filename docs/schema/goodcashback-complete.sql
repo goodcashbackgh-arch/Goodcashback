@@ -209,7 +209,7 @@ CREATE TABLE sage_config (
 
 CREATE TABLE status_transitions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  entity_type varchar NOT NULL CHECK (entity_type IN ('order','dispute','shipping_quote')),
+  entity_type varchar NOT NULL CHECK (entity_type IN ('order','dispute','dispute_line','shipping_quote')),
   from_status varchar NOT NULL,
   to_status varchar NOT NULL,
   required_conditions_json jsonb,
@@ -546,7 +546,9 @@ CREATE TABLE dispute_lines (
   qty_impact int NOT NULL,
   amount_impact_gbp decimal(12,2) NOT NULL,
   line_status varchar NOT NULL CHECK (line_status IN ('affected','resolved','written_off')),
-  resolution_method varchar CHECK (resolution_method IN ('refund','replacement','accept_as_is')),
+  conversation_status varchar DEFAULT 'child_exception_created' CHECK (conversation_status IN ('child_exception_created','remedy_selected','refund_pending_approval','retailer_draft_ready','retailer_contacted','retailer_response_received','ai_next_draft_ready','awaiting_retailer_resolution','resolved_refund','resolved_replacement','resolved_credit','closed_no_action')),
+  intended_remedy varchar CHECK (intended_remedy IN ('refund','replacement')),
+  resolution_method varchar CHECK (resolution_method IN ('refund','replacement','accept_as_is','credit','closed_no_action')),
   resolved_at timestamptz,
   resolved_via_child_order_id uuid REFERENCES orders(id),
   created_at timestamptz NOT NULL DEFAULT now(),
@@ -579,9 +581,19 @@ CREATE TABLE dispute_messages (
   body text NOT NULL,
   generated_by varchar NOT NULL CHECK (generated_by IN ('claude','manual','retailer_paste')),
   sop_version_applied varchar,
+  in_reply_to_message_id uuid REFERENCES dispute_messages(id),
+  ai_input_context_json jsonb,
+  ai_model_used varchar,
+  ai_prompt_hash varchar,
   sent_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+CREATE INDEX idx_dispute_lines_conversation_status
+  ON dispute_lines(conversation_status);
+
+CREATE INDEX idx_dispute_messages_in_reply_to
+  ON dispute_messages(in_reply_to_message_id);
 
 CREATE TABLE shipper_liabilities (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1308,6 +1320,23 @@ INSERT INTO status_transitions (entity_type, from_status, to_status, actor_roles
   ('dispute','refunded','closed',                  ARRAY['supervisor','admin','system']),
   ('dispute','replaced','closed',                  ARRAY['supervisor','admin','system']),
   ('dispute','rejected','closed',                  ARRAY['supervisor','admin','system']);
+
+-- Status transitions — dispute_lines
+INSERT INTO status_transitions (entity_type, from_status, to_status, required_conditions_json, actor_roles_allowed) VALUES
+  ('dispute_line','child_exception_created','remedy_selected', '{"requires_intended_remedy": true}'::jsonb, ARRAY['operator','supervisor','admin']),
+  ('dispute_line','remedy_selected','refund_pending_approval', '{"intended_remedy": "refund"}'::jsonb, ARRAY['operator','supervisor','admin']),
+  ('dispute_line','remedy_selected','retailer_draft_ready', '{"intended_remedy": "replacement", "requires_ai_draft": true}'::jsonb, ARRAY['operator','supervisor','admin']),
+  ('dispute_line','refund_pending_approval','retailer_draft_ready', '{"intended_remedy": "refund", "requires_dispute_refund_approval": true, "requires_ai_draft": true}'::jsonb, ARRAY['supervisor','admin']),
+  ('dispute_line','refund_pending_approval','remedy_selected', '{"approval_denied_or_changed": true}'::jsonb, ARRAY['supervisor','admin']),
+  ('dispute_line','retailer_draft_ready','retailer_contacted', '{"requires_outbound_message": true}'::jsonb, ARRAY['operator','supervisor','admin']),
+  ('dispute_line','retailer_contacted','retailer_response_received', '{"requires_retailer_reply_paste": true}'::jsonb, ARRAY['operator','supervisor','admin']),
+  ('dispute_line','retailer_response_received','ai_next_draft_ready', '{"requires_ai_generation": true, "requires_sop_and_status_context": true}'::jsonb, ARRAY['operator','supervisor','admin']),
+  ('dispute_line','ai_next_draft_ready','retailer_contacted', '{"requires_outbound_message": true}'::jsonb, ARRAY['operator','supervisor','admin']),
+  ('dispute_line','retailer_response_received','awaiting_retailer_resolution', '{"awaiting_final_retailer_outcome": true}'::jsonb, ARRAY['operator','supervisor','admin']),
+  ('dispute_line','awaiting_retailer_resolution','resolved_refund', '{"resolution_method": "refund"}'::jsonb, ARRAY['supervisor','admin']),
+  ('dispute_line','awaiting_retailer_resolution','resolved_replacement', '{"resolution_method": "replacement"}'::jsonb, ARRAY['supervisor','admin']),
+  ('dispute_line','awaiting_retailer_resolution','resolved_credit', '{"resolution_method": "credit"}'::jsonb, ARRAY['supervisor','admin']),
+  ('dispute_line','awaiting_retailer_resolution','closed_no_action', '{"resolution_method": "closed_no_action"}'::jsonb, ARRAY['supervisor','admin']);
 
 -- Status transitions — shipping_quotes
 INSERT INTO status_transitions (entity_type, from_status, to_status, actor_roles_allowed) VALUES
