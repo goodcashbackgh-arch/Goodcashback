@@ -14,73 +14,124 @@ type PanelResult = {
 const panels = [
   {
     title: "DVA review worklist",
-    description: "Bank/card lines that need staff review, matching, or allocation.",
+    description: "Primary staff worklist for bank/card lines that need review, matching, or allocation.",
     source: "day2_dva_review_worklist_vw",
+    role: "Primary UI source",
   },
   {
     title: "Order funding positions",
-    description: "Orders with their funding position, gaps, and overfunding state.",
+    description: "Orders with their funding position, gaps, funded totals, and closure readiness.",
     source: "order_funding_position_vw",
+    role: "Primary UI source",
   },
   {
     title: "Importer credit balances",
     description: "Available importer credit that can be applied to future orders.",
     source: "importer_balance_vw",
+    role: "Primary UI source",
   },
   {
     title: "Recent DVA lines",
-    description: "Raw DVA statement lines for funding traceability.",
+    description: "Raw DVA statement lines. This is diagnostic only; the staff page should normally use the DVA review worklist view.",
     source: "dva_statement_lines",
+    role: "Diagnostic only",
   },
   {
     title: "Recent funding events",
     description: "Immutable funding events created by reconciliation, credit, or adjustments.",
     source: "order_funding_events",
+    role: "Audit trail",
   },
 ] as const;
+
+const preferredBySource: Record<string, string[]> = {
+  day2_dva_review_worklist_vw: [
+    "importer_name",
+    "company_name",
+    "trading_name",
+    "order_ref",
+    "payment_auth_id",
+    "auth_id_ref",
+    "reference_raw",
+    "match_status",
+    "amount_gbp_equivalent",
+    "reconciled_gbp_amount",
+    "created_at",
+    "reconciled_at",
+  ],
+  order_funding_position_vw: [
+    "order_ref",
+    "payment_auth_id",
+    "status",
+    "order_total_gbp_declared",
+    "funded_total_gbp",
+    "funding_gap_gbp",
+    "overfunded_gbp",
+    "available_credit_gbp",
+    "requires_admin_review_yn",
+    "funded_at",
+    "created_at",
+  ],
+  importer_balance_vw: [
+    "importer_name",
+    "company_name",
+    "trading_name",
+    "importer_id",
+    "available_credit_gbp",
+    "balance_gbp",
+    "updated_at",
+  ],
+  dva_statement_lines: [
+    "statement_date",
+    "reference_raw",
+    "auth_id_ref",
+    "direction",
+    "amount_local_ccy",
+    "local_ccy",
+    "amount_gbp_equivalent",
+    "match_status",
+    "created_at",
+  ],
+  order_funding_events: [
+    "order_ref",
+    "event_type",
+    "amount_gbp",
+    "resulting_funded_total_gbp",
+    "resulting_credit_balance_gbp",
+    "source_table",
+    "source_entity_id",
+    "notes",
+    "created_at",
+  ],
+};
 
 function formatValue(value: unknown) {
   if (value === null || value === undefined) return "—";
   if (typeof value === "boolean") return value ? "Yes" : "No";
   if (typeof value === "number") return value.toLocaleString("en-GB");
   if (typeof value === "string") {
-    if (value.length > 70) return `${value.slice(0, 67)}...`;
+    if (value.length > 90) return `${value.slice(0, 87)}...`;
     return value;
   }
   return JSON.stringify(value);
 }
 
-function preferredColumns(rows: DataRow[]) {
-  const preferred = [
-    "order_ref",
-    "importer_name",
-    "company_name",
-    "trading_name",
-    "payment_auth_id",
-    "auth_id_ref",
-    "reference_raw",
-    "match_status",
-    "status",
-    "event_type",
-    "amount_gbp",
-    "amount_gbp_equivalent",
-    "funded_total_gbp",
-    "funding_gap_gbp",
-    "available_credit_gbp",
-    "created_at",
-    "reconciled_at",
-  ];
+function allColumns(rows: DataRow[]) {
+  return Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
+}
 
-  const present = new Set(rows.flatMap((row) => Object.keys(row)));
+function visibleColumns(source: string, rows: DataRow[]) {
+  const present = new Set(allColumns(rows));
+  const preferred = preferredBySource[source] ?? [];
   const selected = preferred.filter((key) => present.has(key));
 
-  if (selected.length > 0) return selected.slice(0, 7);
-  return Object.keys(rows[0] ?? {}).slice(0, 7);
+  if (selected.length > 0) return selected.slice(0, 10);
+  return Object.keys(rows[0] ?? {}).slice(0, 10);
 }
 
 async function readPanel(source: string): Promise<Omit<PanelResult, "title" | "description">> {
   const supabase = await createClient();
-  const { data, error } = await supabase.from(source).select("*").limit(8);
+  const { data, error } = await supabase.from(source).select("*").limit(10);
 
   return {
     source,
@@ -97,6 +148,16 @@ export default async function InternalFundingPage() {
     }))
   );
 
+  const fundingPosition = results.find((panel) => panel.source === "order_funding_position_vw");
+  const fundingPositionColumns = fundingPosition ? allColumns(fundingPosition.rows) : [];
+  const missingUsefulFundingColumns = [
+    "order_total_gbp_declared",
+    "funding_gap_gbp",
+    "overfunded_gbp",
+    "requires_admin_review_yn",
+    "funded_at",
+  ].filter((column) => !fundingPositionColumns.includes(column));
+
   return (
     <main className="min-h-screen bg-slate-50 px-6 py-8 text-slate-950">
       <div className="mx-auto flex max-w-7xl flex-col gap-6">
@@ -112,8 +173,8 @@ export default async function InternalFundingPage() {
           </h1>
           <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-600">
             Read-only operational view for DVA/card lines, funding positions,
-            importer balances, and immutable funding events. Action buttons are
-            deliberately held back until the data shape is confirmed on live.
+            importer balances, and immutable funding events. This page now also
+            exposes the live data shape so we do not guess before wiring actions.
           </p>
         </section>
 
@@ -127,8 +188,43 @@ export default async function InternalFundingPage() {
           ))}
         </section>
 
+        <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+          <h2 className="text-xl font-semibold">Funding diagnostics</h2>
+          <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
+            This section tells us whether the live funding position view exposes
+            enough columns for action wiring. If useful columns are missing, we
+            do not invent them in the UI; we verify the backend contract first.
+          </p>
+
+          {fundingPosition?.error ? (
+            <div className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+              Funding position diagnostics unavailable: {fundingPosition.error}
+            </div>
+          ) : (
+            <div className="mt-5 grid gap-4 lg:grid-cols-2">
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <h3 className="font-semibold">Available order funding columns</h3>
+                <p className="mt-2 text-sm leading-6 text-slate-600">
+                  {fundingPositionColumns.length > 0
+                    ? fundingPositionColumns.join(", ")
+                    : "No rows returned, so columns cannot be inferred from the UI response yet."}
+                </p>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <h3 className="font-semibold">Missing useful action columns</h3>
+                <p className="mt-2 text-sm leading-6 text-slate-600">
+                  {missingUsefulFundingColumns.length > 0
+                    ? missingUsefulFundingColumns.join(", ")
+                    : "None detected from this response."}
+                </p>
+              </div>
+            </div>
+          )}
+        </section>
+
         {results.map((panel) => {
-          const columns = preferredColumns(panel.rows);
+          const columns = visibleColumns(panel.source, panel.rows);
+          const available = allColumns(panel.rows);
 
           return (
             <section key={panel.source} className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
@@ -136,7 +232,11 @@ export default async function InternalFundingPage() {
                 <div>
                   <h2 className="text-xl font-semibold">{panel.title}</h2>
                   <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-600">{panel.description}</p>
-                  <p className="mt-2 text-xs text-slate-500">Source: {panel.source}</p>
+                  <div className="mt-2 flex flex-wrap gap-2 text-xs text-slate-500">
+                    <span>Source: {panel.source}</span>
+                    <span>•</span>
+                    <span>{panel.role}</span>
+                  </div>
                 </div>
                 <span className="rounded-full bg-sky-50 px-3 py-1 text-sm font-semibold text-sky-600">
                   {panel.error ? "Unavailable" : `${panel.rows.length} rows`}
@@ -152,30 +252,39 @@ export default async function InternalFundingPage() {
                   No rows returned. This can be correct if there is no current work in this queue.
                 </div>
               ) : (
-                <div className="mt-5 overflow-x-auto rounded-2xl border border-slate-200">
-                  <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
-                    <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
-                      <tr>
-                        {columns.map((column) => (
-                          <th key={column} className="px-4 py-3 font-semibold">
-                            {column.replaceAll("_", " ")}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 bg-white">
-                      {panel.rows.map((row, index) => (
-                        <tr key={`${panel.source}-${index}`}>
+                <>
+                  <div className="mt-5 overflow-x-auto rounded-2xl border border-slate-200">
+                    <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
+                      <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+                        <tr>
                           {columns.map((column) => (
-                            <td key={column} className="max-w-xs px-4 py-3 align-top text-slate-700">
-                              {formatValue(row[column])}
-                            </td>
+                            <th key={column} className="px-4 py-3 font-semibold">
+                              {column.replaceAll("_", " ")}
+                            </th>
                           ))}
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 bg-white">
+                        {panel.rows.map((row, index) => (
+                          <tr key={`${panel.source}-${index}`}>
+                            {columns.map((column) => (
+                              <td key={column} className="max-w-xs px-4 py-3 align-top text-slate-700">
+                                {formatValue(row[column])}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <details className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+                    <summary className="cursor-pointer font-semibold text-slate-900">
+                      Show available columns for {panel.source}
+                    </summary>
+                    <p className="mt-3 leading-6">{available.join(", ")}</p>
+                  </details>
+                </>
               )}
             </section>
           );
@@ -184,7 +293,9 @@ export default async function InternalFundingPage() {
         <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-900">
           <h2 className="font-semibold">Action wiring held back deliberately</h2>
           <p className="mt-2">
-            The next step is to confirm the live data shown here, then add staff-only actions for reconciliation, match acceptance, and importer credit application. No importer-facing user should be able to operate this page.
+            Next we verify exact function signatures from the committed final
+            functions file before adding staff-only buttons. Do not wire match,
+            reconciliation, or credit actions from the UI control document alone.
           </p>
         </section>
       </div>
