@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { createClient } from "@/utils/supabase/server";
+import { applyImporterCreditAction } from "./actions";
 
 type DataRow = Record<string, unknown>;
 
@@ -7,6 +8,7 @@ type PanelResult = {
   title: string;
   description: string;
   source: string;
+  role: string;
   rows: DataRow[];
   error: string | null;
 };
@@ -14,13 +16,15 @@ type PanelResult = {
 const panels = [
   {
     title: "DVA review worklist",
-    description: "Primary staff worklist for bank/card lines that need review, matching, or allocation.",
+    description:
+      "Primary staff worklist for bank/card lines that need review, matching, or allocation.",
     source: "day2_dva_review_worklist_vw",
     role: "Primary UI source",
   },
   {
     title: "Order funding positions",
-    description: "Orders with their funding position, gaps, funded totals, and closure readiness.",
+    description:
+      "Orders with their funding position, gaps, funded totals, and closure readiness.",
     source: "order_funding_position_vw",
     role: "Primary UI source",
   },
@@ -32,13 +36,15 @@ const panels = [
   },
   {
     title: "Recent DVA lines",
-    description: "Raw DVA statement lines. This is diagnostic only; the staff page should normally use the DVA review worklist view.",
+    description:
+      "Raw DVA statement lines. This is diagnostic only; the staff page should normally use the DVA review worklist view.",
     source: "dva_statement_lines",
     role: "Diagnostic only",
   },
   {
     title: "Recent funding events",
-    description: "Immutable funding events created by reconciliation, credit, or adjustments.",
+    description:
+      "Immutable funding events created by reconciliation, credit, or adjustments.",
     source: "order_funding_events",
     role: "Audit trail",
   },
@@ -65,21 +71,20 @@ const preferredBySource: Record<string, string[]> = {
     "status",
     "order_total_gbp_declared",
     "funded_total_gbp",
-    "funding_gap_gbp",
-    "overfunded_gbp",
+    "gap_remaining_gbp",
     "available_credit_gbp",
-    "requires_admin_review_yn",
+    "threshold_met_yn",
+    "already_funded_yn",
     "funded_at",
     "created_at",
   ],
   importer_balance_vw: [
-    "importer_name",
-    "company_name",
-    "trading_name",
     "importer_id",
     "available_credit_gbp",
-    "balance_gbp",
-    "updated_at",
+    "pending_refund_gbp",
+    "active_order_funding_gbp",
+    "payout_in_progress_gbp",
+    "last_refreshed_at",
   ],
   dva_statement_lines: [
     "statement_date",
@@ -97,7 +102,6 @@ const preferredBySource: Record<string, string[]> = {
     "event_type",
     "amount_gbp",
     "resulting_funded_total_gbp",
-    "resulting_credit_balance_gbp",
     "source_table",
     "source_entity_id",
     "notes",
@@ -116,6 +120,25 @@ function formatValue(value: unknown) {
   return JSON.stringify(value);
 }
 
+function asNumber(value: unknown) {
+  if (typeof value === "number") return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
+}
+
+function asString(value: unknown) {
+  return typeof value === "string" ? value : "";
+}
+
+function asBoolean(value: unknown) {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") return value.toLowerCase() === "true";
+  return false;
+}
+
 function allColumns(rows: DataRow[]) {
   return Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
 }
@@ -129,7 +152,9 @@ function visibleColumns(source: string, rows: DataRow[]) {
   return Object.keys(rows[0] ?? {}).slice(0, 10);
 }
 
-async function readPanel(source: string): Promise<Omit<PanelResult, "title" | "description">> {
+async function readPanel(
+  source: string
+): Promise<Omit<PanelResult, "title" | "description" | "role">> {
   const supabase = await createClient();
   const { data, error } = await supabase.from(source).select("*").limit(10);
 
@@ -140,7 +165,13 @@ async function readPanel(source: string): Promise<Omit<PanelResult, "title" | "d
   };
 }
 
-export default async function InternalFundingPage() {
+export default async function InternalFundingPage({
+  searchParams,
+}: {
+  searchParams?: Promise<{ credit_success?: string; credit_error?: string }>;
+}) {
+  const params = searchParams ? await searchParams : {};
+
   const results = await Promise.all(
     panels.map(async (panel) => ({
       ...panel,
@@ -148,15 +179,50 @@ export default async function InternalFundingPage() {
     }))
   );
 
-  const fundingPosition = results.find((panel) => panel.source === "order_funding_position_vw");
+  const fundingPosition = results.find(
+    (panel) => panel.source === "order_funding_position_vw"
+  );
   const fundingPositionColumns = fundingPosition ? allColumns(fundingPosition.rows) : [];
+
   const missingUsefulFundingColumns = [
     "order_total_gbp_declared",
-    "funding_gap_gbp",
-    "overfunded_gbp",
+    "gap_remaining_gbp",
     "requires_admin_review_yn",
     "funded_at",
   ].filter((column) => !fundingPositionColumns.includes(column));
+
+  const creditBalance = results.find(
+    (panel) => panel.source === "importer_balance_vw"
+  );
+
+  const creditByImporter = new Map(
+    (creditBalance?.rows ?? []).map((row) => [
+      asString(row.importer_id),
+      asNumber(row.available_credit_gbp),
+    ])
+  );
+
+  const creditCandidates = (fundingPosition?.rows ?? []).map((row) => {
+    const importerId = asString(row.importer_id);
+    const orderId = asString(row.order_id);
+    const gap = asNumber(row.gap_remaining_gbp);
+    const availableCredit = creditByImporter.get(importerId) ?? 0;
+    const maxApplyAmount = Math.min(gap, availableCredit);
+    const alreadyFunded = asBoolean(row.already_funded_yn) || gap <= 0;
+
+    return {
+      importerId,
+      orderId,
+      orderRef: asString(row.order_ref),
+      paymentAuthId: asString(row.payment_auth_id),
+      status: asString(row.status),
+      gap,
+      availableCredit,
+      maxApplyAmount,
+      alreadyFunded,
+      canApply: Boolean(importerId && orderId && maxApplyAmount > 0 && !alreadyFunded),
+    };
+  });
 
   return (
     <main className="min-h-screen bg-slate-50 px-6 py-8 text-slate-950">
@@ -173,19 +239,146 @@ export default async function InternalFundingPage() {
           </h1>
           <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-600">
             Read-only operational view for DVA/card lines, funding positions,
-            importer balances, and immutable funding events. This page now also
-            exposes the live data shape so we do not guess before wiring actions.
+            importer balances, and immutable funding events. Apply Credit is the
+            only write action exposed here because it has a confirmed backend RPC.
           </p>
         </section>
 
         <section className="grid gap-4 md:grid-cols-3">
           {results.slice(0, 3).map((panel) => (
-            <div key={panel.source} className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div
+              key={panel.source}
+              className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"
+            >
               <p className="text-sm text-slate-500">{panel.title}</p>
-              <p className="mt-2 text-3xl font-semibold">{panel.error ? "—" : panel.rows.length}</p>
-              <p className="mt-3 text-xs leading-5 text-slate-500">Source: {panel.source}</p>
+              <p className="mt-2 text-3xl font-semibold">
+                {panel.error ? "—" : panel.rows.length}
+              </p>
+              <p className="mt-3 text-xs leading-5 text-slate-500">
+                Source: {panel.source}
+              </p>
             </div>
           ))}
+        </section>
+
+        {(params.credit_success || params.credit_error) && (
+          <section
+            className={`rounded-3xl border p-5 text-sm leading-6 ${
+              params.credit_success
+                ? "border-emerald-200 bg-emerald-50 text-emerald-900"
+                : "border-red-200 bg-red-50 text-red-900"
+            }`}
+          >
+            {params.credit_success ?? params.credit_error}
+          </section>
+        )}
+
+        <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+            <div>
+              <h2 className="text-xl font-semibold">Apply importer credit</h2>
+              <p className="mt-1 max-w-4xl text-sm leading-6 text-slate-600">
+                Staff-only action using the confirmed backend RPC. This does not
+                reconcile DVA/card lines and does not create DVA funding matches.
+              </p>
+            </div>
+            <span className="rounded-full bg-amber-50 px-3 py-1 text-sm font-semibold text-amber-700">
+              Credit only
+            </span>
+          </div>
+
+          {creditCandidates.length === 0 ? (
+            <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+              No funding rows available for credit application.
+            </div>
+          ) : (
+            <div className="mt-5 overflow-x-auto rounded-2xl border border-slate-200">
+              <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
+                <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+                  <tr>
+                    <th className="px-4 py-3 font-semibold">Order</th>
+                    <th className="px-4 py-3 font-semibold">Auth</th>
+                    <th className="px-4 py-3 font-semibold">Status</th>
+                    <th className="px-4 py-3 font-semibold">Gap</th>
+                    <th className="px-4 py-3 font-semibold">Available credit</th>
+                    <th className="px-4 py-3 font-semibold">Apply</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 bg-white">
+                  {creditCandidates.map((candidate) => (
+                    <tr key={candidate.orderId || candidate.orderRef}>
+                      <td className="px-4 py-3 align-top font-medium text-slate-900">
+                        {candidate.orderRef || "—"}
+                      </td>
+                      <td className="px-4 py-3 align-top text-slate-700">
+                        {candidate.paymentAuthId || "—"}
+                      </td>
+                      <td className="px-4 py-3 align-top text-slate-700">
+                        {candidate.status || "—"}
+                      </td>
+                      <td className="px-4 py-3 align-top text-slate-700">
+                        £{candidate.gap.toFixed(2)}
+                      </td>
+                      <td className="px-4 py-3 align-top text-slate-700">
+                        £{candidate.availableCredit.toFixed(2)}
+                      </td>
+                      <td className="px-4 py-3 align-top">
+                        <form
+                          action={applyImporterCreditAction}
+                          className="flex min-w-64 gap-2"
+                        >
+                          <input
+                            type="hidden"
+                            name="importer_id"
+                            value={candidate.importerId}
+                          />
+                          <input
+                            type="hidden"
+                            name="order_id"
+                            value={candidate.orderId}
+                          />
+                          <input
+                            name="amount_gbp"
+                            type="number"
+                            step="0.01"
+                            min="0.01"
+                            max={
+                              candidate.maxApplyAmount > 0
+                                ? candidate.maxApplyAmount
+                                : undefined
+                            }
+                            defaultValue={
+                              candidate.maxApplyAmount > 0
+                                ? candidate.maxApplyAmount.toFixed(2)
+                                : ""
+                            }
+                            disabled={!candidate.canApply}
+                            className="w-28 rounded-xl border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-100"
+                          />
+                          <button
+                            type="submit"
+                            disabled={!candidate.canApply}
+                            className="rounded-xl bg-sky-600 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+                          >
+                            Apply
+                          </button>
+                        </form>
+                        {!candidate.canApply && (
+                          <p className="mt-2 text-xs text-slate-500">
+                            {candidate.alreadyFunded
+                              ? "No funding gap."
+                              : candidate.availableCredit <= 0
+                                ? "No available credit."
+                                : "Cannot apply credit."}
+                          </p>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
@@ -227,11 +420,16 @@ export default async function InternalFundingPage() {
           const available = allColumns(panel.rows);
 
           return (
-            <section key={panel.source} className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+            <section
+              key={panel.source}
+              className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm"
+            >
               <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
                 <div>
                   <h2 className="text-xl font-semibold">{panel.title}</h2>
-                  <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-600">{panel.description}</p>
+                  <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-600">
+                    {panel.description}
+                  </p>
                   <div className="mt-2 flex flex-wrap gap-2 text-xs text-slate-500">
                     <span>Source: {panel.source}</span>
                     <span>•</span>
@@ -268,7 +466,10 @@ export default async function InternalFundingPage() {
                         {panel.rows.map((row, index) => (
                           <tr key={`${panel.source}-${index}`}>
                             {columns.map((column) => (
-                              <td key={column} className="max-w-xs px-4 py-3 align-top text-slate-700">
+                              <td
+                                key={column}
+                                className="max-w-xs px-4 py-3 align-top text-slate-700"
+                              >
                                 {formatValue(row[column])}
                               </td>
                             ))}
@@ -291,11 +492,11 @@ export default async function InternalFundingPage() {
         })}
 
         <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-900">
-          <h2 className="font-semibold">Action wiring held back deliberately</h2>
+          <h2 className="font-semibold">DVA action wiring still held back</h2>
           <p className="mt-2">
-            Next we verify exact function signatures from the committed final
-            functions file before adding staff-only buttons. Do not wire match,
-            reconciliation, or credit actions from the UI control document alone.
+            Apply Credit is wired through a confirmed RPC. DVA match/reconcile
+            buttons remain blocked until we confirm whether the intended route is
+            direct `dva_reconciliation` insertion or a new/additive RPC wrapper.
           </p>
         </section>
       </div>
