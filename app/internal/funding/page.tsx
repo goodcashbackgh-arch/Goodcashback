@@ -1,6 +1,9 @@
 import Link from "next/link";
 import { createClient } from "@/utils/supabase/server";
-import { applyImporterCreditAction } from "./actions";
+import {
+  applyImporterCreditAction,
+  reconcileDvaLineToOrderAction,
+} from "./actions";
 
 type DataRow = Record<string, unknown>;
 
@@ -168,7 +171,12 @@ async function readPanel(
 export default async function InternalFundingPage({
   searchParams,
 }: {
-  searchParams?: Promise<{ credit_success?: string; credit_error?: string }>;
+  searchParams?: Promise<{
+    credit_success?: string;
+    credit_error?: string;
+    dva_success?: string;
+    dva_error?: string;
+  }>;
 }) {
   const params = searchParams ? await searchParams : {};
 
@@ -224,6 +232,47 @@ export default async function InternalFundingPage({
     };
   });
 
+  const gapByOrder = new Map(
+    (fundingPosition?.rows ?? []).map((row) => [
+      asString(row.order_id),
+      asNumber(row.gap_remaining_gbp),
+    ])
+  );
+
+  const dvaWorklist = results.find(
+    (panel) => panel.source === "day2_dva_review_worklist_vw"
+  );
+
+  const dvaReconcileCandidates = (dvaWorklist?.rows ?? [])
+    .map((row) => {
+      const dvaStatementLineId = asString(row.dva_statement_line_id);
+      const orderId = asString(row.suggested_order_id);
+      const matchSuggestionId = asString(row.match_suggestion_id);
+      const suggestedOrderRef = asString(row.suggested_order_ref);
+      const amountGbp = asNumber(row.amount_gbp_equivalent);
+      const gap = gapByOrder.get(orderId);
+      const alreadyReconciled =
+        Boolean(asString(row.reconciliation_id)) || asString(row.match_status) === "reconciled";
+
+      return {
+        dvaStatementLineId,
+        orderId,
+        orderRef: suggestedOrderRef,
+        matchSuggestionId,
+        amountGbp,
+        gap: typeof gap === "number" ? gap : null,
+        canReconcile: Boolean(
+          dvaStatementLineId &&
+            orderId &&
+            amountGbp > 0 &&
+            typeof gap === "number" &&
+            !alreadyReconciled
+        ),
+        alreadyReconciled,
+      };
+    })
+    .filter((candidate) => candidate.dvaStatementLineId);
+
   return (
     <main className="min-h-screen bg-slate-50 px-6 py-8 text-slate-950">
       <div className="mx-auto flex max-w-7xl flex-col gap-6">
@@ -261,15 +310,18 @@ export default async function InternalFundingPage({
           ))}
         </section>
 
-        {(params.credit_success || params.credit_error) && (
+        {(params.credit_success || params.credit_error || params.dva_success || params.dva_error) && (
           <section
             className={`rounded-3xl border p-5 text-sm leading-6 ${
-              params.credit_success
+              params.credit_success || params.dva_success
                 ? "border-emerald-200 bg-emerald-50 text-emerald-900"
                 : "border-red-200 bg-red-50 text-red-900"
             }`}
           >
-            {params.credit_success ?? params.credit_error}
+            {params.credit_success ??
+              params.dva_success ??
+              params.credit_error ??
+              params.dva_error}
           </section>
         )}
 
@@ -370,6 +422,124 @@ export default async function InternalFundingPage({
                               : candidate.availableCredit <= 0
                                 ? "No available credit."
                                 : "Cannot apply credit."}
+                          </p>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+
+        <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+            <div>
+              <h2 className="text-xl font-semibold">Reconcile DVA funding to order</h2>
+              <p className="mt-1 max-w-4xl text-sm leading-6 text-slate-600">
+                Staff-only action using the staff wrapper RPC
+                <code className="mx-1 rounded bg-slate-100 px-1 py-0.5">
+                  staff_reconcile_dva_line_to_order
+                </code>
+                from the DVA review worklist suggestions.
+              </p>
+            </div>
+            <span className="rounded-full bg-sky-50 px-3 py-1 text-sm font-semibold text-sky-700">
+              Staff only
+            </span>
+          </div>
+
+          {dvaReconcileCandidates.length === 0 ? (
+            <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+              No DVA worklist rows are currently available for reconciliation.
+            </div>
+          ) : (
+            <div className="mt-5 overflow-x-auto rounded-2xl border border-slate-200">
+              <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
+                <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+                  <tr>
+                    <th className="px-4 py-3 font-semibold">DVA line</th>
+                    <th className="px-4 py-3 font-semibold">Suggested order</th>
+                    <th className="px-4 py-3 font-semibold">Line amount</th>
+                    <th className="px-4 py-3 font-semibold">Gap remaining</th>
+                    <th className="px-4 py-3 font-semibold">Reconcile</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 bg-white">
+                  {dvaReconcileCandidates.map((candidate) => (
+                    <tr key={candidate.dvaStatementLineId}>
+                      <td className="px-4 py-3 align-top font-mono text-xs text-slate-700">
+                        {candidate.dvaStatementLineId}
+                      </td>
+                      <td className="px-4 py-3 align-top text-slate-700">
+                        {candidate.orderRef || candidate.orderId || "—"}
+                      </td>
+                      <td className="px-4 py-3 align-top text-slate-700">
+                        £{candidate.amountGbp.toFixed(2)}
+                      </td>
+                      <td className="px-4 py-3 align-top text-slate-700">
+                        {candidate.gap === null ? "—" : `£${candidate.gap.toFixed(2)}`}
+                      </td>
+                      <td className="px-4 py-3 align-top">
+                        <form
+                          action={reconcileDvaLineToOrderAction}
+                          className="flex min-w-[28rem] flex-wrap items-center gap-2"
+                        >
+                          <input
+                            type="hidden"
+                            name="dva_statement_line_id"
+                            value={candidate.dvaStatementLineId}
+                          />
+                          <input type="hidden" name="order_id" value={candidate.orderId} />
+                          <input
+                            type="hidden"
+                            name="match_suggestion_id"
+                            value={candidate.matchSuggestionId}
+                          />
+                          <input
+                            type="hidden"
+                            name="gap_remaining_gbp"
+                            value={candidate.gap ?? ""}
+                          />
+                          <input
+                            name="reconciled_gbp_amount"
+                            type="number"
+                            step="0.01"
+                            min="0.01"
+                            defaultValue={candidate.amountGbp.toFixed(2)}
+                            disabled={!candidate.canReconcile}
+                            className="w-32 rounded-xl border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-100"
+                          />
+                          <label className="inline-flex items-center gap-2 text-xs text-slate-700">
+                            <input
+                              type="checkbox"
+                              name="confirm_overfunding"
+                              value="yes"
+                              disabled={!candidate.canReconcile}
+                            />
+                            Allow overfunding if amount exceeds gap
+                          </label>
+                          <input
+                            name="notes"
+                            type="text"
+                            placeholder="Notes (optional)"
+                            disabled={!candidate.canReconcile}
+                            className="w-44 rounded-xl border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-100"
+                          />
+                          <button
+                            type="submit"
+                            disabled={!candidate.canReconcile}
+                            className="rounded-xl bg-sky-600 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+                          >
+                            Reconcile DVA
+                          </button>
+                        </form>
+                        {!candidate.canReconcile && (
+                          <p className="mt-2 text-xs text-slate-500">
+                            {candidate.alreadyReconciled
+                              ? "Already reconciled."
+                              : "Missing suggested order, positive amount, or funding gap."}
                           </p>
                         )}
                       </td>
@@ -494,9 +664,9 @@ export default async function InternalFundingPage({
         <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-900">
           <h2 className="font-semibold">DVA action wiring still held back</h2>
           <p className="mt-2">
-            Apply Credit is wired through a confirmed RPC. DVA match/reconcile
-            buttons remain blocked until we confirm whether the intended route is
-            direct `dva_reconciliation` insertion or a new/additive RPC wrapper.
+            Apply Credit is wired through a confirmed RPC, and DVA reconciliation
+            is wired through the confirmed staff wrapper. Importer-facing funding
+            controls remain out of scope.
           </p>
         </section>
       </div>

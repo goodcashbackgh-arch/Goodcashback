@@ -88,3 +88,96 @@ export async function applyImporterCreditAction(formData: FormData) {
     credit_success: `Applied £${appliedAmount} importer credit.`,
   });
 }
+
+export async function reconcileDvaLineToOrderAction(formData: FormData) {
+  const supabase = await createClient();
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    redirectWithFundingResult({
+      dva_error: "Please sign in again before reconciling DVA funding.",
+    });
+  }
+
+  const { data: staff, error: staffError } = await supabase
+    .from("staff")
+    .select("id, role_type")
+    .eq("auth_user_id", user.id)
+    .eq("active", true)
+    .maybeSingle();
+
+  if (staffError || !staff) {
+    redirectWithFundingResult({
+      dva_error: "Active staff user not found.",
+    });
+  }
+
+  if (!["admin", "supervisor"].includes(String(staff.role_type))) {
+    redirectWithFundingResult({
+      dva_error: "Only admin or supervisor staff can reconcile DVA funding.",
+    });
+  }
+
+  const dvaStatementLineId = readString(formData, "dva_statement_line_id");
+  const orderId = readString(formData, "order_id");
+  const parsedAmount = readString(formData, "reconciled_gbp_amount");
+  const parsedGap = Number(readString(formData, "gap_remaining_gbp"));
+  const matchSuggestionId = readString(formData, "match_suggestion_id") || null;
+  const notes = readString(formData, "notes") || null;
+  const overfundingConfirmed = readString(formData, "confirm_overfunding") === "yes";
+
+  if (!dvaStatementLineId || !orderId) {
+    redirectWithFundingResult({
+      dva_error: "Missing DVA statement line or order reference.",
+    });
+  }
+
+  const reconciledAmount = parsedAmount === "" ? Number.NaN : Number(parsedAmount);
+  if (!Number.isFinite(reconciledAmount) || reconciledAmount <= 0) {
+    redirectWithFundingResult({
+      dva_error: "Reconcile amount must be greater than zero.",
+    });
+  }
+
+  const exceedsGap =
+    Number.isFinite(parsedGap) && parsedGap >= 0 && reconciledAmount > parsedGap;
+  const allowOverfunding = exceedsGap ? overfundingConfirmed : false;
+
+  if (exceedsGap && !overfundingConfirmed) {
+    redirectWithFundingResult({
+      dva_error:
+        "Amount exceeds remaining gap. Confirm overfunding before reconciliation.",
+    });
+  }
+
+  const { data, error } = await supabase.rpc("staff_reconcile_dva_line_to_order", {
+    p_dva_statement_line_id: dvaStatementLineId,
+    p_order_id: orderId,
+    p_reconciled_gbp_amount: reconciledAmount,
+    p_allow_overfunding: allowOverfunding,
+    p_match_suggestion_id: matchSuggestionId,
+    p_notes: notes,
+  });
+
+  if (error) {
+    redirectWithFundingResult({
+      dva_error: error.message,
+    });
+  }
+
+  revalidatePath("/internal/funding");
+
+  const appliedAmount =
+    typeof data === "object" &&
+    data !== null &&
+    "reconciled_gbp_amount" in data
+      ? String((data as { reconciled_gbp_amount?: unknown }).reconciled_gbp_amount)
+      : reconciledAmount.toFixed(2);
+
+  redirectWithFundingResult({
+    dva_success: `Reconciled £${appliedAmount} DVA funding to order.`,
+  });
+}
