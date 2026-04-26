@@ -99,6 +99,26 @@ async function readRowsByOrderId(
   return { source, data: (data ?? []) as DataRow[], error: error?.message ?? null };
 }
 
+async function readInvoiceLinesByInvoiceIds(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  invoiceIds: string[]
+): Promise<SourceState<DataRow[]>> {
+  if (invoiceIds.length === 0) {
+    return { source: "supplier_invoice_lines", data: [], error: null };
+  }
+
+  const { data, error } = await supabase
+    .from("supplier_invoice_lines")
+    .select("*")
+    .in("supplier_invoice_id", invoiceIds);
+
+  return {
+    source: "supplier_invoice_lines",
+    data: (data ?? []) as DataRow[],
+    error: error?.message ?? null,
+  };
+}
+
 function statusSummary(recon: DataRow | null) {
   const qtyUnresolved = asNumber(pickFirst(recon, ["qty_unresolved"])) ?? 0;
   const amtUnresolved = asNumber(pickFirst(recon, ["amount_unresolved_gbp", "amount_unresolved"])) ?? 0;
@@ -125,13 +145,18 @@ export default async function InternalEvidenceDetailPage({
   const { order_id: orderId } = await params;
   const supabase = await createClient();
 
-  const [orderState, invoices, invoiceLines, tracking, reconciliationRows] = await Promise.all([
+  const [orderState, invoices, tracking, reconciliationRows] = await Promise.all([
     readOrderState(supabase, orderId),
     readRowsByOrderId(supabase, "supplier_invoices", orderId),
-    readRowsByOrderId(supabase, "supplier_invoice_lines", orderId),
     readRowsByOrderId(supabase, "order_tracking_submissions", orderId),
     readRowsByOrderId(supabase, "order_reconciliation_vw", orderId),
   ]);
+
+  const invoiceIds = invoices.data
+    .map((invoice) => asString(pickFirst(invoice, ["id", "supplier_invoice_id", "invoice_id"])).trim())
+    .filter((invoiceId) => invoiceId.length > 0);
+
+  const invoiceLines = await readInvoiceLinesByInvoiceIds(supabase, invoiceIds);
 
   const reconciliation = reconciliationRows.data[0] ?? null;
 
