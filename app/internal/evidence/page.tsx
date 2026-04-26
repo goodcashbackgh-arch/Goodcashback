@@ -163,6 +163,22 @@ function pickFirst(row: DataRow, candidates: string[]) {
   return null;
 }
 
+function parseDate(value: unknown): number | null {
+  if (value instanceof Date) {
+    const ms = value.getTime();
+    return Number.isFinite(ms) ? ms : null;
+  }
+  if (typeof value === "string" || typeof value === "number") {
+    const ms = new Date(value).getTime();
+    return Number.isFinite(ms) ? ms : null;
+  }
+  return null;
+}
+
+function resolveMatchingOrderKey(row: DataRow) {
+  return resolveOrderKey(row).trim();
+}
+
 function resolveOrderKey(row: DataRow) {
   const orderId = asString(pickFirst(row, ["order_id", "parent_order_id"])) || "";
   const orderRef = asString(
@@ -243,31 +259,106 @@ export default async function InternalEvidencePage() {
   const trackingSubmissions = bySource.get("order_tracking_submissions");
   const reconciliation = bySource.get("order_reconciliation_vw");
 
-  const invoiceCountByOrderId = new Map<string, number>();
-  const invoiceToOrderId = new Map<string, string>();
+  const invoiceSummaryByOrderKey = new Map<
+    string,
+    {
+      count: number;
+      latestInvoiceRef: string;
+      latestUploadedAt: unknown;
+      latestOcrServiceUsed: string;
+      latestOcrExtractedAt: unknown;
+      latestReconciliationConfirmedAt: unknown;
+      latestSortMs: number;
+    }
+  >();
+  const invoiceToOrderKey = new Map<string, string>();
   for (const row of supplierInvoices?.rows ?? []) {
-    const orderId = asString(pickFirst(row, ["order_id"])).trim();
-    if (!orderId) continue;
-    invoiceCountByOrderId.set(orderId, (invoiceCountByOrderId.get(orderId) ?? 0) + 1);
+    const orderKey = resolveMatchingOrderKey(row);
+    if (!orderKey) continue;
+    const current = invoiceSummaryByOrderKey.get(orderKey) ?? {
+      count: 0,
+      latestInvoiceRef: "",
+      latestUploadedAt: null,
+      latestOcrServiceUsed: "",
+      latestOcrExtractedAt: null,
+      latestReconciliationConfirmedAt: null,
+      latestSortMs: Number.NEGATIVE_INFINITY,
+    };
+    current.count += 1;
+
+    const sortValue =
+      parseDate(
+        pickFirst(row, ["uploaded_at", "submitted_at", "created_at", "updated_at"])
+      ) ?? Number.NEGATIVE_INFINITY;
+    if (sortValue >= current.latestSortMs) {
+      current.latestSortMs = sortValue;
+      current.latestInvoiceRef = asString(
+        pickFirst(row, ["invoice_ref", "invoice_number", "invoice_id"])
+      ).trim();
+      current.latestUploadedAt = pickFirst(row, ["uploaded_at", "submitted_at", "created_at"]);
+      current.latestOcrServiceUsed = asString(pickFirst(row, ["ocr_service_used"])).trim();
+      current.latestOcrExtractedAt = pickFirst(row, ["ocr_extracted_at"]);
+      current.latestReconciliationConfirmedAt = pickFirst(row, ["reconciliation_confirmed_at"]);
+    }
+    invoiceSummaryByOrderKey.set(orderKey, current);
 
     const invoiceId = resolveInvoiceId(row);
-    if (invoiceId) invoiceToOrderId.set(invoiceId, orderId);
+    if (invoiceId) invoiceToOrderKey.set(invoiceId, orderKey);
   }
 
-  const lineCountByOrderId = new Map<string, number>();
+  const lineSummaryByOrderKey = new Map<
+    string,
+    { lineCount: number; eligibleCount: number; ocrCount: number; manualCount: number }
+  >();
   for (const row of supplierInvoiceLines?.rows ?? []) {
     const supplierInvoiceId = asString(pickFirst(row, ["supplier_invoice_id", "invoice_id"])).trim();
-    if (!supplierInvoiceId) continue;
-    const orderId = invoiceToOrderId.get(supplierInvoiceId);
-    if (!orderId) continue;
-    lineCountByOrderId.set(orderId, (lineCountByOrderId.get(orderId) ?? 0) + 1);
+    const orderKeyFromLine = resolveMatchingOrderKey(row);
+    const orderKey =
+      orderKeyFromLine || (supplierInvoiceId ? invoiceToOrderKey.get(supplierInvoiceId) ?? "" : "");
+    if (!orderKey) continue;
+
+    const current = lineSummaryByOrderKey.get(orderKey) ?? {
+      lineCount: 0,
+      eligibleCount: 0,
+      ocrCount: 0,
+      manualCount: 0,
+    };
+    current.lineCount += 1;
+    const eligibleForInvoice = readBoolean(row, ["eligible_for_invoice_yn"]);
+    if (eligibleForInvoice === true) current.eligibleCount += 1;
+
+    const lineSource = asString(pickFirst(row, ["line_source", "source"])).trim().toLowerCase();
+    if (lineSource.includes("ocr")) current.ocrCount += 1;
+    if (lineSource.includes("manual")) current.manualCount += 1;
+
+    lineSummaryByOrderKey.set(orderKey, current);
   }
 
-  const trackingCountByOrderId = new Map<string, number>();
+  const trackingSummaryByOrderKey = new Map<
+    string,
+    { count: number; latestTrackingRef: string; latestTrackingDate: unknown; latestSortMs: number }
+  >();
   for (const row of trackingSubmissions?.rows ?? []) {
-    const orderId = asString(pickFirst(row, ["order_id"])).trim();
-    if (!orderId) continue;
-    trackingCountByOrderId.set(orderId, (trackingCountByOrderId.get(orderId) ?? 0) + 1);
+    const orderKey = resolveMatchingOrderKey(row);
+    if (!orderKey) continue;
+    const current = trackingSummaryByOrderKey.get(orderKey) ?? {
+      count: 0,
+      latestTrackingRef: "",
+      latestTrackingDate: null,
+      latestSortMs: Number.NEGATIVE_INFINITY,
+    };
+    current.count += 1;
+    const sortValue =
+      parseDate(pickFirst(row, ["tracking_date", "submitted_at", "created_at", "updated_at"])) ??
+      Number.NEGATIVE_INFINITY;
+    if (sortValue >= current.latestSortMs) {
+      current.latestSortMs = sortValue;
+      current.latestTrackingRef = asString(
+        pickFirst(row, ["tracking_ref", "tracking_number", "carrier_tracking_number"])
+      ).trim();
+      current.latestTrackingDate = pickFirst(row, ["tracking_date", "submitted_at", "created_at"]);
+    }
+    trackingSummaryByOrderKey.set(orderKey, current);
   }
 
   const reconciliationByOrderId = new Map<string, DataRow>();
@@ -280,8 +371,8 @@ export default async function InternalEvidencePage() {
   const queueRows = (orderState?.rows ?? []).map((row, index) => {
     const key = resolveOrderKey(row);
     const orderId = resolveOrderId(row);
+    const orderKey = resolveMatchingOrderKey(row);
     const recon = orderId ? reconciliationByOrderId.get(orderId) : undefined;
-    const mapped = Boolean(orderId);
     const hasReconciliation = Boolean(recon);
 
     const progressedQty = asNumber(recon?.qty_progressed_invoiceable) ?? 0;
@@ -307,11 +398,19 @@ export default async function InternalEvidencePage() {
       readBoolean(recon ?? {}, ["invoiceable_subset_released_yn"]) ??
       null;
 
+    const invoiceSummary = orderKey ? invoiceSummaryByOrderKey.get(orderKey) : undefined;
+    const lineSummary = orderKey ? lineSummaryByOrderKey.get(orderKey) : undefined;
+    const trackingSummary = orderKey ? trackingSummaryByOrderKey.get(orderKey) : undefined;
+
     return {
       key: key || `fallback-${index}`,
       orderRef: chooseStatus(row, ["order_ref", "parent_order_ref", "supplier_order_ref"]),
       paymentAuthId: chooseStatus(row, ["payment_auth_id", "auth_id_ref"]),
       orderStatus: chooseStatus(row, ["status", "order_status"]),
+      lifecycleStatus: chooseStatus(row, ["lifecycle_status"]),
+      fundingOverlay: chooseStatus(row, ["funding_overlay"]),
+      shipmentReadinessOverlay: chooseStatus(row, ["shipment_readiness_overlay"]),
+      operationalBucket: chooseStatus(row, ["operational_bucket"]),
       invoiceStatus: chooseStatus(
         { ...recon, ...row },
         ["invoice_status", "supplier_invoice_status", "invoice_evidence_status"]
@@ -332,9 +431,21 @@ export default async function InternalEvidencePage() {
       unresolvedQty,
       unresolvedAmount,
       invoiceableSubsetReleased,
-      invoiceRows: mapped ? invoiceCountByOrderId.get(orderId) ?? 0 : 0,
-      trackingRows: mapped ? trackingCountByOrderId.get(orderId) ?? 0 : 0,
-      lineRows: mapped ? lineCountByOrderId.get(orderId) ?? 0 : 0,
+      invoiceRows: invoiceSummary?.count ?? 0,
+      latestInvoiceRef: invoiceSummary?.latestInvoiceRef || "Unknown",
+      latestInvoiceUploadedAt: formatValue(invoiceSummary?.latestUploadedAt),
+      latestInvoiceOcrService: invoiceSummary?.latestOcrServiceUsed || "Unknown",
+      latestInvoiceOcrExtractedAt: formatValue(invoiceSummary?.latestOcrExtractedAt),
+      latestInvoiceReconciliationConfirmedAt: formatValue(
+        invoiceSummary?.latestReconciliationConfirmedAt
+      ),
+      trackingRows: trackingSummary?.count ?? 0,
+      latestTrackingRef: trackingSummary?.latestTrackingRef || "Unknown",
+      latestTrackingDate: formatValue(trackingSummary?.latestTrackingDate),
+      lineRows: lineSummary?.lineCount ?? 0,
+      eligibleLineRows: lineSummary?.eligibleCount ?? 0,
+      ocrLineRows: lineSummary?.ocrCount ?? 0,
+      manualLineRows: lineSummary?.manualCount ?? 0,
     };
   });
 
@@ -371,8 +482,9 @@ export default async function InternalEvidencePage() {
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold">Evidence/OCR queue</h2>
           <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
-            Queue rows are anchored from <code className="mx-1 rounded bg-slate-100 px-1 py-0.5">order_state_vw</code>
-            and augmented with status and count indicators when matching keys are available.
+            Queue rows are anchored from{" "}
+            <code className="mx-1 rounded bg-slate-100 px-1 py-0.5">order_state_vw</code> and
+            augmented with status and count indicators when matching keys are available.
           </p>
 
           {orderState?.error ? (
@@ -391,11 +503,14 @@ export default async function InternalEvidencePage() {
                     <th className="px-4 py-3 font-semibold">Order</th>
                     <th className="px-4 py-3 font-semibold">Auth</th>
                     <th className="px-4 py-3 font-semibold">Order status</th>
+                    <th className="px-4 py-3 font-semibold">Lifecycle overlays</th>
                     <th className="px-4 py-3 font-semibold">Invoice status</th>
                     <th className="px-4 py-3 font-semibold">Tracking status</th>
                     <th className="px-4 py-3 font-semibold">OCR/Reconciliation</th>
                     <th className="px-4 py-3 font-semibold">Progress indicators</th>
-                    <th className="px-4 py-3 font-semibold">Source rows</th>
+                    <th className="px-4 py-3 font-semibold">Invoice diagnostics</th>
+                    <th className="px-4 py-3 font-semibold">Tracking diagnostics</th>
+                    <th className="px-4 py-3 font-semibold">Line diagnostics</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 bg-white">
@@ -404,6 +519,12 @@ export default async function InternalEvidencePage() {
                       <td className="px-4 py-3 align-top font-medium text-slate-900">{row.orderRef}</td>
                       <td className="px-4 py-3 align-top text-slate-700">{row.paymentAuthId}</td>
                       <td className="px-4 py-3 align-top text-slate-700">{row.orderStatus}</td>
+                      <td className="px-4 py-3 align-top text-xs text-slate-700">
+                        <div>Lifecycle: {row.lifecycleStatus}</div>
+                        <div>Funding: {row.fundingOverlay}</div>
+                        <div>Shipment readiness: {row.shipmentReadinessOverlay}</div>
+                        <div>Operational bucket: {row.operationalBucket}</div>
+                      </td>
                       <td className="px-4 py-3 align-top text-slate-700">{row.invoiceStatus}</td>
                       <td className="px-4 py-3 align-top text-slate-700">{row.trackingStatus}</td>
                       <td className="px-4 py-3 align-top text-slate-700">{row.ocrStatus}</td>
@@ -425,8 +546,22 @@ export default async function InternalEvidencePage() {
                       </td>
                       <td className="px-4 py-3 align-top text-xs text-slate-700">
                         <div>Invoices: {row.invoiceRows}</div>
-                        <div>Tracking: {row.trackingRows}</div>
+                        <div>Latest invoice ref: {row.latestInvoiceRef}</div>
+                        <div>Latest uploaded: {row.latestInvoiceUploadedAt}</div>
+                        <div>OCR service: {row.latestInvoiceOcrService}</div>
+                        <div>OCR extracted: {row.latestInvoiceOcrExtractedAt}</div>
+                        <div>Reconciliation confirmed: {row.latestInvoiceReconciliationConfirmedAt}</div>
+                      </td>
+                      <td className="px-4 py-3 align-top text-xs text-slate-700">
+                        <div>Tracking submissions: {row.trackingRows}</div>
+                        <div>Latest tracking ref: {row.latestTrackingRef}</div>
+                        <div>Latest tracking date: {row.latestTrackingDate}</div>
+                      </td>
+                      <td className="px-4 py-3 align-top text-xs text-slate-700">
                         <div>Invoice lines: {row.lineRows}</div>
+                        <div>Eligible for invoice: {row.eligibleLineRows}</div>
+                        <div>OCR lines: {row.ocrLineRows}</div>
+                        <div>Manual lines: {row.manualLineRows}</div>
                       </td>
                     </tr>
                   ))}
