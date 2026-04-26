@@ -205,6 +205,10 @@ function resolveCanonicalOrderStateKey(row: DataRow) {
   return toOrderIdKey(pickFirst(row, ["id"]));
 }
 
+function resolveTrackingSubmissionOrderIdKey(row: DataRow) {
+  return toOrderIdKey(pickFirst(row, ["order_id"]));
+}
+
 function resolveSupplierInvoiceOrderKey(row: DataRow) {
   return toOrderIdKey(pickFirst(row, ["order_id"]));
 }
@@ -239,6 +243,48 @@ function formatProgressAmount(value: number) {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(value);
+}
+
+function upsertTrackingSummary(
+  map: Map<
+    string,
+    { count: number; latestTrackingRef: string; latestTrackingDate: unknown; latestSortMs: number }
+  >,
+  key: string,
+  row: DataRow
+) {
+  if (!key) return;
+
+  const current = map.get(key) ?? {
+    count: 0,
+    latestTrackingRef: "",
+    latestTrackingDate: null,
+    latestSortMs: Number.NEGATIVE_INFINITY,
+  };
+  current.count += 1;
+
+  const sortValue =
+    parseDate(pickFirst(row, ["tracking_date", "submitted_at", "created_at", "updated_at"])) ??
+    Number.NEGATIVE_INFINITY;
+  if (sortValue >= current.latestSortMs) {
+    current.latestSortMs = sortValue;
+    current.latestTrackingRef = asString(
+      pickFirst(row, [
+        "tracking_ref",
+        "tracking_number",
+        "carrier_tracking_number",
+        "tracking_code",
+      ])
+    ).trim();
+    current.latestTrackingDate = pickFirst(row, [
+      "tracking_date",
+      "submitted_at",
+      "created_at",
+      "updated_at",
+    ]);
+  }
+
+  map.set(key, current);
 }
 
 async function readPanel(
@@ -345,31 +391,23 @@ export default async function InternalEvidencePage() {
     lineSummaryByOrderKey.set(orderKey, current);
   }
 
-  const trackingSummaryByOrderKey = new Map<
+  const trackingSummaryByOrderIdKey = new Map<
+    string,
+    { count: number; latestTrackingRef: string; latestTrackingDate: unknown; latestSortMs: number }
+  >();
+  const trackingSummaryByFallbackKey = new Map<
     string,
     { count: number; latestTrackingRef: string; latestTrackingDate: unknown; latestSortMs: number }
   >();
   for (const row of trackingSubmissions?.rows ?? []) {
-    const orderKey = resolveMatchingOrderKey(row);
-    if (!orderKey) continue;
-    const current = trackingSummaryByOrderKey.get(orderKey) ?? {
-      count: 0,
-      latestTrackingRef: "",
-      latestTrackingDate: null,
-      latestSortMs: Number.NEGATIVE_INFINITY,
-    };
-    current.count += 1;
-    const sortValue =
-      parseDate(pickFirst(row, ["tracking_date", "submitted_at", "created_at", "updated_at"])) ??
-      Number.NEGATIVE_INFINITY;
-    if (sortValue >= current.latestSortMs) {
-      current.latestSortMs = sortValue;
-      current.latestTrackingRef = asString(
-        pickFirst(row, ["tracking_ref", "tracking_number", "carrier_tracking_number"])
-      ).trim();
-      current.latestTrackingDate = pickFirst(row, ["tracking_date", "submitted_at", "created_at"]);
+    const trackingOrderIdKey = resolveTrackingSubmissionOrderIdKey(row);
+    if (trackingOrderIdKey) {
+      upsertTrackingSummary(trackingSummaryByOrderIdKey, trackingOrderIdKey, row);
+      continue;
     }
-    trackingSummaryByOrderKey.set(orderKey, current);
+
+    const fallbackOrderKey = resolveMatchingOrderKey(row);
+    upsertTrackingSummary(trackingSummaryByFallbackKey, fallbackOrderKey, row);
   }
 
   const reconciliationByOrderId = new Map<string, DataRow>();
@@ -414,7 +452,9 @@ export default async function InternalEvidencePage() {
       ? invoiceSummaryByOrderKey.get(canonicalOrderKey)
       : undefined;
     const lineSummary = canonicalOrderKey ? lineSummaryByOrderKey.get(canonicalOrderKey) : undefined;
-    const trackingSummary = orderKey ? trackingSummaryByOrderKey.get(orderKey) : undefined;
+    const trackingSummary =
+      (canonicalOrderKey ? trackingSummaryByOrderIdKey.get(canonicalOrderKey) : undefined) ??
+      (orderKey ? trackingSummaryByFallbackKey.get(orderKey) : undefined);
 
     return {
       key: key || `fallback-${index}`,
