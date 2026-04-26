@@ -179,6 +179,11 @@ function resolveMatchingOrderKey(row: DataRow) {
   return resolveOrderKey(row).trim();
 }
 
+function toOrderIdKey(value: unknown) {
+  const orderId = asString(value).trim();
+  return orderId ? `id:${orderId}` : "";
+}
+
 function resolveOrderKey(row: DataRow) {
   const orderId = asString(pickFirst(row, ["order_id", "parent_order_id"])) || "";
   const orderRef = asString(
@@ -194,6 +199,14 @@ function resolveOrderKey(row: DataRow) {
 
 function resolveOrderId(row: DataRow) {
   return asString(pickFirst(row, ["id", "order_id", "parent_order_id"])).trim();
+}
+
+function resolveCanonicalOrderStateKey(row: DataRow) {
+  return toOrderIdKey(pickFirst(row, ["id"]));
+}
+
+function resolveSupplierInvoiceOrderKey(row: DataRow) {
+  return toOrderIdKey(pickFirst(row, ["order_id"]));
 }
 
 function resolveInvoiceId(row: DataRow) {
@@ -273,7 +286,7 @@ export default async function InternalEvidencePage() {
   >();
   const invoiceToOrderKey = new Map<string, string>();
   for (const row of supplierInvoices?.rows ?? []) {
-    const orderKey = resolveMatchingOrderKey(row);
+    const orderKey = resolveSupplierInvoiceOrderKey(row);
     if (!orderKey) continue;
     const current = invoiceSummaryByOrderKey.get(orderKey) ?? {
       count: 0,
@@ -312,9 +325,7 @@ export default async function InternalEvidencePage() {
   >();
   for (const row of supplierInvoiceLines?.rows ?? []) {
     const supplierInvoiceId = asString(pickFirst(row, ["supplier_invoice_id", "invoice_id"])).trim();
-    const orderKeyFromLine = resolveMatchingOrderKey(row);
-    const orderKey =
-      orderKeyFromLine || (supplierInvoiceId ? invoiceToOrderKey.get(supplierInvoiceId) ?? "" : "");
+    const orderKey = supplierInvoiceId ? invoiceToOrderKey.get(supplierInvoiceId) ?? "" : "";
     if (!orderKey) continue;
 
     const current = lineSummaryByOrderKey.get(orderKey) ?? {
@@ -372,6 +383,7 @@ export default async function InternalEvidencePage() {
     const key = resolveOrderKey(row);
     const orderId = resolveOrderId(row);
     const orderKey = resolveMatchingOrderKey(row);
+    const canonicalOrderKey = resolveCanonicalOrderStateKey(row);
     const recon = orderId ? reconciliationByOrderId.get(orderId) : undefined;
     const hasReconciliation = Boolean(recon);
 
@@ -398,8 +410,10 @@ export default async function InternalEvidencePage() {
       readBoolean(recon ?? {}, ["invoiceable_subset_released_yn"]) ??
       null;
 
-    const invoiceSummary = orderKey ? invoiceSummaryByOrderKey.get(orderKey) : undefined;
-    const lineSummary = orderKey ? lineSummaryByOrderKey.get(orderKey) : undefined;
+    const invoiceSummary = canonicalOrderKey
+      ? invoiceSummaryByOrderKey.get(canonicalOrderKey)
+      : undefined;
+    const lineSummary = canonicalOrderKey ? lineSummaryByOrderKey.get(canonicalOrderKey) : undefined;
     const trackingSummary = orderKey ? trackingSummaryByOrderKey.get(orderKey) : undefined;
 
     return {
