@@ -554,7 +554,7 @@ export default async function InternalEvidencePage() {
       ocrLineRows: lineSummary?.ocrCount ?? 0,
       manualLineRows: lineSummary?.manualCount ?? 0,
       openEvidenceQueries: evidenceQuerySummary?.openCount ?? 0,
-      latestEvidenceQueryType: evidenceQuerySummary?.latestQueryType || "Unknown",
+      latestEvidenceQueryType: evidenceQuerySummary?.latestQueryType || "—",
     };
   });
 
@@ -663,7 +663,7 @@ export default async function InternalEvidencePage() {
                       <td className="px-4 py-3 text-slate-700">{row.trackingRows.toLocaleString("en-GB")}</td>
                       <td className="px-4 py-3 text-slate-700">
                         <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-800">
-                          {row.openEvidenceQueries.toLocaleString("en-GB")} open
+                          {row.openEvidenceQueries > 0 ? `${row.openEvidenceQueries.toLocaleString("en-GB")} open` : "0"}
                         </span>
                         <div className="mt-1 text-xs text-slate-500">{row.latestEvidenceQueryType}</div>
                       </td>
