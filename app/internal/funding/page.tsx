@@ -281,15 +281,15 @@ export default async function InternalFundingPage({
             ← Back to internal dashboard
           </Link>
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">
-            Day 2 live read-only wiring
+            Day 2 funding workflow
           </p>
           <h1 className="mt-2 text-3xl font-semibold tracking-tight">
             Funding queue
           </h1>
           <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-600">
             Read-only operational view for DVA/card lines, funding positions,
-            importer balances, and immutable funding events. Apply Credit is the
-            only write action exposed here because it has a confirmed backend RPC.
+            importer balances, and immutable funding events. Apply Credit and
+            DVA Reconcile are the staff-only write actions currently exposed.
           </p>
         </section>
 
@@ -482,65 +482,71 @@ export default async function InternalFundingPage({
                         {candidate.gap === null ? "—" : `£${candidate.gap.toFixed(2)}`}
                       </td>
                       <td className="px-4 py-3 align-top">
-                        <form
-                          action={reconcileDvaLineToOrderAction}
-                          className="flex min-w-[28rem] flex-wrap items-center gap-2"
-                        >
-                          <input
-                            type="hidden"
-                            name="dva_statement_line_id"
-                            value={candidate.dvaStatementLineId}
-                          />
-                          <input type="hidden" name="order_id" value={candidate.orderId} />
-                          <input
-                            type="hidden"
-                            name="match_suggestion_id"
-                            value={candidate.matchSuggestionId}
-                          />
-                          <input
-                            type="hidden"
-                            name="gap_remaining_gbp"
-                            value={candidate.gap ?? ""}
-                          />
-                          <input
-                            name="reconciled_gbp_amount"
-                            type="number"
-                            step="0.01"
-                            min="0.01"
-                            defaultValue={candidate.amountGbp.toFixed(2)}
-                            disabled={!candidate.canReconcile}
-                            className="w-32 rounded-xl border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-100"
-                          />
-                          <label className="inline-flex items-center gap-2 text-xs text-slate-700">
-                            <input
-                              type="checkbox"
-                              name="confirm_overfunding"
-                              value="yes"
-                              disabled={!candidate.canReconcile}
-                            />
-                            Allow overfunding if amount exceeds gap
-                          </label>
-                          <input
-                            name="notes"
-                            type="text"
-                            placeholder="Notes (optional)"
-                            disabled={!candidate.canReconcile}
-                            className="w-44 rounded-xl border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-100"
-                          />
-                          <button
-                            type="submit"
-                            disabled={!candidate.canReconcile}
-                            className="rounded-xl bg-sky-600 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
-                          >
-                            Reconcile DVA
-                          </button>
-                        </form>
-                        {!candidate.canReconcile && (
-                          <p className="mt-2 text-xs text-slate-500">
-                            {candidate.alreadyReconciled
-                              ? "Already reconciled."
-                              : "Missing suggested order, positive amount, or funding gap."}
+                        {candidate.alreadyReconciled ? (
+                          <p className="text-xs text-slate-500">
+                            Already reconciled — no action available.
                           </p>
+                        ) : (
+                          <>
+                            <form
+                              action={reconcileDvaLineToOrderAction}
+                              className="flex min-w-[28rem] flex-wrap items-center gap-2"
+                            >
+                              <input
+                                type="hidden"
+                                name="dva_statement_line_id"
+                                value={candidate.dvaStatementLineId}
+                              />
+                              <input type="hidden" name="order_id" value={candidate.orderId} />
+                              <input
+                                type="hidden"
+                                name="match_suggestion_id"
+                                value={candidate.matchSuggestionId}
+                              />
+                              <input
+                                type="hidden"
+                                name="gap_remaining_gbp"
+                                value={candidate.gap ?? ""}
+                              />
+                              <input
+                                name="reconciled_gbp_amount"
+                                type="number"
+                                step="0.01"
+                                min="0.01"
+                                defaultValue={candidate.amountGbp.toFixed(2)}
+                                disabled={!candidate.canReconcile}
+                                className="w-32 rounded-xl border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-100"
+                              />
+                              <label className="inline-flex items-center gap-2 text-xs text-slate-700">
+                                <input
+                                  type="checkbox"
+                                  name="confirm_overfunding"
+                                  value="yes"
+                                  disabled={!candidate.canReconcile}
+                                />
+                                Allow overfunding if amount exceeds gap
+                              </label>
+                              <input
+                                name="notes"
+                                type="text"
+                                placeholder="Notes (optional)"
+                                disabled={!candidate.canReconcile}
+                                className="w-44 rounded-xl border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-100"
+                              />
+                              <button
+                                type="submit"
+                                disabled={!candidate.canReconcile}
+                                className="rounded-xl bg-sky-600 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+                              >
+                                Reconcile DVA
+                              </button>
+                            </form>
+                            {!candidate.canReconcile && (
+                              <p className="mt-2 text-xs text-slate-500">
+                                Missing suggested order, positive amount, or funding gap.
+                              </p>
+                            )}
+                          </>
                         )}
                       </td>
                     </tr>
@@ -662,7 +668,7 @@ export default async function InternalFundingPage({
         })}
 
         <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-900">
-          <h2 className="font-semibold">DVA action wiring still held back</h2>
+          <h2 className="font-semibold">Funding controls boundary</h2>
           <p className="mt-2">
             Apply Credit is wired through a confirmed RPC, and DVA reconciliation
             is wired through the confirmed staff wrapper. Importer-facing funding
