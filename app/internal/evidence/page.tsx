@@ -141,6 +141,19 @@ function asBoolean(value: unknown) {
   return false;
 }
 
+function asNumber(value: unknown): number | null {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().replace(/,/g, "");
+    if (!normalized) return null;
+    const parsed = Number(normalized);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
 function pickFirst(row: DataRow, candidates: string[]) {
   for (const key of candidates) {
     if (key in row && row[key] !== null && row[key] !== undefined && row[key] !== "") {
@@ -188,6 +201,15 @@ function readBoolean(row: DataRow, candidates: string[]): boolean | null {
 function chooseStatus(row: DataRow, candidates: string[]) {
   const value = pickFirst(row, candidates);
   return value === null ? "—" : formatValue(value);
+}
+
+function formatProgressAmount(value: number) {
+  return new Intl.NumberFormat("en-GB", {
+    style: "currency",
+    currency: "GBP",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value);
 }
 
 async function readPanel(
@@ -260,25 +282,25 @@ export default async function InternalEvidencePage() {
     const orderId = resolveOrderId(row);
     const recon = orderId ? reconciliationByOrderId.get(orderId) : undefined;
     const mapped = Boolean(orderId);
+    const hasReconciliation = Boolean(recon);
 
-    const unresolved =
-      readBoolean(row, ["unresolved_yn", "has_unresolved_yn"]) ??
-      readBoolean(recon ?? {}, ["unresolved_yn", "has_unresolved_yn", "unresolved_lines_yn"]) ??
-      null;
+    const progressedQty = asNumber(recon?.qty_progressed_invoiceable) ?? 0;
+    const progressedAmount = asNumber(recon?.amount_progressed_invoiceable_gbp) ?? 0;
+    const unresolvedQty = asNumber(recon?.qty_unresolved) ?? 0;
+    const unresolvedAmount = asNumber(recon?.amount_unresolved_gbp) ?? 0;
+
+    const unresolved = hasReconciliation
+      ? unresolvedQty > 0 || unresolvedAmount > 0
+      : null;
+
+    const progressedSubset = hasReconciliation
+      ? progressedQty > 0 || progressedAmount > 0
+      : null;
 
     const partialProgress =
-      readBoolean(row, ["partial_progress_yn", "partial_progressed_yn"]) ??
-      readBoolean(recon ?? {}, [
-        "partial_progress_yn",
-        "partial_progressed_yn",
-        "partially_progressed_yn",
-      ]) ??
-      null;
-
-    const progressedSubset =
-      readBoolean(row, ["progressed_subset_yn", "stable_progressed_subset_yn"]) ??
-      readBoolean(recon ?? {}, ["progressed_subset_yn", "stable_progressed_subset_yn"]) ??
-      null;
+      hasReconciliation && progressedSubset !== null && unresolved !== null
+        ? progressedSubset && unresolved
+        : null;
 
     const invoiceableSubsetReleased =
       readBoolean(row, ["invoiceable_subset_released_yn"]) ??
@@ -305,6 +327,10 @@ export default async function InternalEvidencePage() {
       progressedSubset,
       partialProgress,
       unresolved,
+      progressedQty,
+      progressedAmount,
+      unresolvedQty,
+      unresolvedAmount,
       invoiceableSubsetReleased,
       invoiceRows: mapped ? invoiceCountByOrderId.get(orderId) ?? 0 : 0,
       trackingRows: mapped ? trackingCountByOrderId.get(orderId) ?? 0 : 0,
@@ -383,8 +409,16 @@ export default async function InternalEvidencePage() {
                       <td className="px-4 py-3 align-top text-slate-700">{row.ocrStatus}</td>
                       <td className="px-4 py-3 align-top text-xs text-slate-700">
                         <div>Progressed subset: {toBooleanLabel(row.progressedSubset)}</div>
+                        <div>
+                          Progressed details: qty {row.progressedQty.toLocaleString("en-GB")} •{" "}
+                          {formatProgressAmount(row.progressedAmount)}
+                        </div>
                         <div>Partial progress: {toBooleanLabel(row.partialProgress)}</div>
                         <div>Unresolved: {toBooleanLabel(row.unresolved)}</div>
+                        <div>
+                          Unresolved details: qty {row.unresolvedQty.toLocaleString("en-GB")} •{" "}
+                          {formatProgressAmount(row.unresolvedAmount)}
+                        </div>
                         <div>
                           Invoiceable subset released: {toBooleanLabel(row.invoiceableSubsetReleased)}
                         </div>
