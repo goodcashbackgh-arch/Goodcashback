@@ -555,68 +555,46 @@ export default async function InternalEvidencePage() {
                 <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
                   <tr>
                     <th className="px-4 py-3 font-semibold">Order</th>
-                    <th className="px-4 py-3 font-semibold">Auth</th>
-                    <th className="px-4 py-3 font-semibold">Order status</th>
-                    <th className="px-4 py-3 font-semibold">Lifecycle overlays</th>
-                    <th className="px-4 py-3 font-semibold">Invoice status</th>
-                    <th className="px-4 py-3 font-semibold">Tracking status</th>
-                    <th className="px-4 py-3 font-semibold">OCR/Reconciliation</th>
-                    <th className="px-4 py-3 font-semibold">Progress indicators</th>
-                    <th className="px-4 py-3 font-semibold">Invoice diagnostics</th>
-                    <th className="px-4 py-3 font-semibold">Tracking diagnostics</th>
-                    <th className="px-4 py-3 font-semibold">Line diagnostics</th>
+                    <th className="px-4 py-3 font-semibold">Lifecycle status</th>
+                    <th className="px-4 py-3 font-semibold">Invoice count</th>
+                    <th className="px-4 py-3 font-semibold">Tracking count</th>
+                    <th className="px-4 py-3 font-semibold">Invoice lines count</th>
+                    <th className="px-4 py-3 font-semibold">Progressed amount</th>
+                    <th className="px-4 py-3 font-semibold">Unresolved amount</th>
+                    <th className="px-4 py-3 font-semibold">Invoiceable subset released</th>
+                    <th className="px-4 py-3 font-semibold">Operational bucket</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 bg-white">
                   {queueRows.map((row) => (
-                    <tr key={row.key}>
-                      <td className="px-4 py-3 align-top font-medium text-slate-900">{row.orderRef}</td>
-                      <td className="px-4 py-3 align-top text-slate-700">{row.paymentAuthId}</td>
-                      <td className="px-4 py-3 align-top text-slate-700">{row.orderStatus}</td>
-                      <td className="px-4 py-3 align-top text-xs text-slate-700">
-                        <div>Lifecycle: {row.lifecycleStatus}</div>
-                        <div>Funding: {row.fundingOverlay}</div>
-                        <div>Shipment readiness: {row.shipmentReadinessOverlay}</div>
-                        <div>Operational bucket: {row.operationalBucket}</div>
+                    <tr key={row.key} className="align-top">
+                      <td className="px-4 py-3 font-medium text-slate-900">
+                        <div>{row.orderRef}</div>
+                        <details className="mt-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
+                          <summary className="cursor-pointer font-semibold text-slate-900">
+                            Show details
+                          </summary>
+                          <div className="mt-2 grid gap-1">
+                            <div>Latest invoice ref: {row.latestInvoiceRef}</div>
+                            <div>OCR service: {row.latestInvoiceOcrService}</div>
+                            <div>Latest tracking ref: {row.latestTrackingRef}</div>
+                            <div>Latest tracking date: {row.latestTrackingDate}</div>
+                            <div>Eligible invoice lines: {row.eligibleLineRows}</div>
+                            <div>OCR lines: {row.ocrLineRows}</div>
+                            <div>Manual lines: {row.manualLineRows}</div>
+                          </div>
+                        </details>
                       </td>
-                      <td className="px-4 py-3 align-top text-slate-700">{row.invoiceStatus}</td>
-                      <td className="px-4 py-3 align-top text-slate-700">{row.trackingStatus}</td>
-                      <td className="px-4 py-3 align-top text-slate-700">{row.ocrStatus}</td>
-                      <td className="px-4 py-3 align-top text-xs text-slate-700">
-                        <div>Progressed subset: {toBooleanLabel(row.progressedSubset)}</div>
-                        <div>
-                          Progressed details: qty {row.progressedQty.toLocaleString("en-GB")} •{" "}
-                          {formatProgressAmount(row.progressedAmount)}
-                        </div>
-                        <div>Partial progress: {toBooleanLabel(row.partialProgress)}</div>
-                        <div>Unresolved: {toBooleanLabel(row.unresolved)}</div>
-                        <div>
-                          Unresolved details: qty {row.unresolvedQty.toLocaleString("en-GB")} •{" "}
-                          {formatProgressAmount(row.unresolvedAmount)}
-                        </div>
-                        <div>
-                          Invoiceable subset released: {toBooleanLabel(row.invoiceableSubsetReleased)}
-                        </div>
+                      <td className="px-4 py-3 text-slate-700">{row.lifecycleStatus}</td>
+                      <td className="px-4 py-3 text-slate-700">{row.invoiceRows.toLocaleString("en-GB")}</td>
+                      <td className="px-4 py-3 text-slate-700">{row.trackingRows.toLocaleString("en-GB")}</td>
+                      <td className="px-4 py-3 text-slate-700">{row.lineRows.toLocaleString("en-GB")}</td>
+                      <td className="px-4 py-3 text-slate-700">{formatProgressAmount(row.progressedAmount)}</td>
+                      <td className="px-4 py-3 text-slate-700">{formatProgressAmount(row.unresolvedAmount)}</td>
+                      <td className="px-4 py-3 text-slate-700">
+                        {toBooleanLabel(row.invoiceableSubsetReleased)}
                       </td>
-                      <td className="px-4 py-3 align-top text-xs text-slate-700">
-                        <div>Invoices: {row.invoiceRows}</div>
-                        <div>Latest invoice ref: {row.latestInvoiceRef}</div>
-                        <div>Latest uploaded: {row.latestInvoiceUploadedAt}</div>
-                        <div>OCR service: {row.latestInvoiceOcrService}</div>
-                        <div>OCR extracted: {row.latestInvoiceOcrExtractedAt}</div>
-                        <div>Reconciliation confirmed: {row.latestInvoiceReconciliationConfirmedAt}</div>
-                      </td>
-                      <td className="px-4 py-3 align-top text-xs text-slate-700">
-                        <div>Tracking submissions: {row.trackingRows}</div>
-                        <div>Latest tracking ref: {row.latestTrackingRef}</div>
-                        <div>Latest tracking date: {row.latestTrackingDate}</div>
-                      </td>
-                      <td className="px-4 py-3 align-top text-xs text-slate-700">
-                        <div>Invoice lines: {row.lineRows}</div>
-                        <div>Eligible for invoice: {row.eligibleLineRows}</div>
-                        <div>OCR lines: {row.ocrLineRows}</div>
-                        <div>Manual lines: {row.manualLineRows}</div>
-                      </td>
+                      <td className="px-4 py-3 text-slate-700">{row.operationalBucket}</td>
                     </tr>
                   ))}
                 </tbody>
