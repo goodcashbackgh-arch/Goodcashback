@@ -12,6 +12,14 @@ type SourcePanel = {
   error: string | null;
 };
 
+
+type EvidenceQueryRow = {
+  order_id: string | null;
+  status: string | null;
+  query_type: string | null;
+  created_at: string | null;
+};
+
 const panels = [
   {
     title: "Order state",
@@ -303,12 +311,21 @@ async function readPanel(
 export default async function InternalEvidencePage() {
   const supabase = await createClient();
 
-  const results = await Promise.all(
-    panels.map(async (panel) => ({
-      ...panel,
-      ...(await readPanel(supabase, panel.source)),
-    }))
-  );
+  const [{
+    data: { user },
+  }, results, evidenceQueriesResult] = await Promise.all([
+    supabase.auth.getUser(),
+    Promise.all(
+      panels.map(async (panel) => ({
+        ...panel,
+        ...(await readPanel(supabase, panel.source)),
+      }))
+    ),
+    supabase
+      .from("order_evidence_queries")
+      .select("order_id, status, query_type, created_at")
+      .order("created_at", { ascending: false }),
+  ]);
 
   const bySource = new Map(results.map((result) => [result.source, result]));
 
@@ -417,6 +434,38 @@ export default async function InternalEvidencePage() {
     if (!reconciliationByOrderId.has(orderId)) reconciliationByOrderId.set(orderId, row);
   }
 
+  const evidenceQuerySummaryByOrderId = new Map<
+    string,
+    { openCount: number; latestQueryType: string; latestSortMs: number }
+  >();
+  const evidenceQueriesError = evidenceQueriesResult.error?.message ?? null;
+  const evidenceQueries = (evidenceQueriesResult.data ?? []) as EvidenceQueryRow[];
+
+  for (const query of evidenceQueries) {
+    const orderId = asString(query.order_id).trim();
+    if (!orderId) continue;
+
+    const current = evidenceQuerySummaryByOrderId.get(orderId) ?? {
+      openCount: 0,
+      latestQueryType: "",
+      latestSortMs: Number.NEGATIVE_INFINITY,
+    };
+
+    if (asString(query.status).trim().toLowerCase() === "open") {
+      current.openCount += 1;
+    }
+
+    const sortValue = parseDate(query.created_at) ?? Number.NEGATIVE_INFINITY;
+    if (sortValue >= current.latestSortMs) {
+      current.latestSortMs = sortValue;
+      current.latestQueryType = asString(query.query_type).trim();
+    }
+
+    evidenceQuerySummaryByOrderId.set(orderId, current);
+  }
+
+  const hasLoggedInSession = Boolean(user);
+
   const queueRows = (orderState?.rows ?? []).map((row, index) => {
     const key = resolveOrderKey(row);
     const orderId = resolveOrderId(row);
@@ -455,9 +504,13 @@ export default async function InternalEvidencePage() {
     const trackingSummary =
       (canonicalOrderKey ? trackingSummaryByOrderIdKey.get(canonicalOrderKey) : undefined) ??
       (orderKey ? trackingSummaryByFallbackKey.get(orderKey) : undefined);
+    const evidenceQuerySummary = orderId
+      ? evidenceQuerySummaryByOrderId.get(orderId)
+      : undefined;
 
     return {
       key: key || `fallback-${index}`,
+      orderId,
       orderRef: chooseStatus(row, ["order_ref", "parent_order_ref", "supplier_order_ref"]),
       paymentAuthId: chooseStatus(row, ["payment_auth_id", "auth_id_ref"]),
       orderStatus: chooseStatus(row, ["status", "order_status"]),
@@ -500,6 +553,8 @@ export default async function InternalEvidencePage() {
       eligibleLineRows: lineSummary?.eligibleCount ?? 0,
       ocrLineRows: lineSummary?.ocrCount ?? 0,
       manualLineRows: lineSummary?.manualCount ?? 0,
+      openEvidenceQueries: evidenceQuerySummary?.openCount ?? 0,
+      latestEvidenceQueryType: evidenceQuerySummary?.latestQueryType || "Unknown",
     };
   });
 
@@ -540,6 +595,16 @@ export default async function InternalEvidencePage() {
             <code className="mx-1 rounded bg-slate-100 px-1 py-0.5">order_state_vw</code> and
             augmented with status and count indicators when matching keys are available.
           </p>
+          {!hasLoggedInSession ? (
+            <p className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+              Evidence query indicators are shown for authenticated staff sessions only.
+            </p>
+          ) : null}
+          {evidenceQueriesError ? (
+            <p className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+              Could not load <code>order_evidence_queries</code>: {evidenceQueriesError}
+            </p>
+          ) : null}
 
           {orderState?.error ? (
             <div className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-900">
@@ -558,6 +623,7 @@ export default async function InternalEvidencePage() {
                     <th className="px-4 py-3 font-semibold">Lifecycle status</th>
                     <th className="px-4 py-3 font-semibold">Invoice count</th>
                     <th className="px-4 py-3 font-semibold">Tracking count</th>
+                    <th className="px-4 py-3 font-semibold">Open queries</th>
                     <th className="px-4 py-3 font-semibold">Invoice lines count</th>
                     <th className="px-4 py-3 font-semibold">Progressed amount</th>
                     <th className="px-4 py-3 font-semibold">Unresolved amount</th>
@@ -569,7 +635,13 @@ export default async function InternalEvidencePage() {
                   {queueRows.map((row) => (
                     <tr key={row.key} className="align-top">
                       <td className="px-4 py-3 font-medium text-slate-900">
-                        <div>{row.orderRef}</div>
+                        {row.orderId ? (
+                          <Link href={`/internal/evidence/${row.orderId}`} className="text-sky-700 hover:text-sky-800 hover:underline">
+                            {row.orderRef}
+                          </Link>
+                        ) : (
+                          <div>{row.orderRef}</div>
+                        )}
                         <details className="mt-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
                           <summary className="cursor-pointer font-semibold text-slate-900">
                             Show details
@@ -579,6 +651,7 @@ export default async function InternalEvidencePage() {
                             <div>OCR service: {row.latestInvoiceOcrService}</div>
                             <div>Latest tracking ref: {row.latestTrackingRef}</div>
                             <div>Latest tracking date: {row.latestTrackingDate}</div>
+                            <div>Latest query type: {row.latestEvidenceQueryType}</div>
                             <div>Eligible invoice lines: {row.eligibleLineRows}</div>
                             <div>OCR lines: {row.ocrLineRows}</div>
                             <div>Manual lines: {row.manualLineRows}</div>
@@ -588,6 +661,12 @@ export default async function InternalEvidencePage() {
                       <td className="px-4 py-3 text-slate-700">{row.lifecycleStatus}</td>
                       <td className="px-4 py-3 text-slate-700">{row.invoiceRows.toLocaleString("en-GB")}</td>
                       <td className="px-4 py-3 text-slate-700">{row.trackingRows.toLocaleString("en-GB")}</td>
+                      <td className="px-4 py-3 text-slate-700">
+                        <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-800">
+                          {row.openEvidenceQueries.toLocaleString("en-GB")} open
+                        </span>
+                        <div className="mt-1 text-xs text-slate-500">{row.latestEvidenceQueryType}</div>
+                      </td>
                       <td className="px-4 py-3 text-slate-700">{row.lineRows.toLocaleString("en-GB")}</td>
                       <td className="px-4 py-3 text-slate-700">{formatProgressAmount(row.progressedAmount)}</td>
                       <td className="px-4 py-3 text-slate-700">{formatProgressAmount(row.unresolvedAmount)}</td>
