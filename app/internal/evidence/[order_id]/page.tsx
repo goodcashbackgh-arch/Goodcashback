@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { createClient } from "@/utils/supabase/server";
+import { createOrderEvidenceQueryAction } from "./actions";
 
 type DataRow = Record<string, unknown>;
 
@@ -139,10 +140,16 @@ function statusSummary(recon: DataRow | null) {
 
 export default async function InternalEvidenceDetailPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ order_id: string }>;
+  searchParams?: Promise<{
+    query_success?: string;
+    query_error?: string;
+  }>;
 }) {
   const { order_id: orderId } = await params;
+  const queryParams = searchParams ? await searchParams : {};
   const supabase = await createClient();
 
   const [orderState, invoices, tracking, reconciliationRows] = await Promise.all([
@@ -157,6 +164,25 @@ export default async function InternalEvidenceDetailPage({
     .filter((invoiceId) => invoiceId.length > 0);
 
   const invoiceLines = await readInvoiceLinesByInvoiceIds(supabase, invoiceIds);
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  const { data: staff } = user
+    ? await supabase
+        .from("staff")
+        .select("id, role_type")
+        .eq("auth_user_id", user.id)
+        .eq("active", true)
+        .maybeSingle()
+    : { data: null };
+  const canCreateEvidenceQuery = ["admin", "supervisor"].includes(String(staff?.role_type));
+  const { data: evidenceQueries, error: evidenceQueriesError } = await supabase
+    .from("order_evidence_queries")
+    .select(
+      "id, query_type, message, status, supplier_invoice_id, supplier_invoice_line_id, order_tracking_submission_id, answer_text, created_at"
+    )
+    .eq("order_id", orderId)
+    .order("created_at", { ascending: false });
 
   const reconciliation = reconciliationRows.data[0] ?? null;
 
@@ -394,6 +420,182 @@ export default async function InternalEvidenceDetailPage({
           <p className="mt-3 inline-flex rounded-xl bg-sky-50 px-3 py-2 text-sm font-semibold text-sky-900">
             {statusSummary(reconciliation)}
           </p>
+        </section>
+
+        <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+          <h2 className="text-xl font-semibold">Query Importer</h2>
+          {canCreateEvidenceQuery ? (
+            <form action={createOrderEvidenceQueryAction} className="mt-4 space-y-4">
+              <input type="hidden" name="order_id" value={orderId} />
+              <div>
+                <label htmlFor="query_type" className="text-xs uppercase tracking-wide text-slate-500">
+                  query_type
+                </label>
+                <select
+                  id="query_type"
+                  name="query_type"
+                  required
+                  className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                  defaultValue="missing_invoice"
+                >
+                  <option value="missing_invoice">missing_invoice</option>
+                  <option value="missing_tracking">missing_tracking</option>
+                  <option value="ocr_unclear">ocr_unclear</option>
+                  <option value="invoice_total_mismatch">invoice_total_mismatch</option>
+                  <option value="line_clarification">line_clarification</option>
+                  <option value="general_evidence_question">general_evidence_question</option>
+                </select>
+              </div>
+              <div>
+                <label htmlFor="message" className="text-xs uppercase tracking-wide text-slate-500">
+                  message
+                </label>
+                <textarea
+                  id="message"
+                  name="message"
+                  required
+                  rows={4}
+                  className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                />
+              </div>
+              <div className="grid gap-4 md:grid-cols-3">
+                <div>
+                  <label htmlFor="supplier_invoice_id" className="text-xs uppercase tracking-wide text-slate-500">
+                    supplier_invoice_id (optional)
+                  </label>
+                  <select
+                    id="supplier_invoice_id"
+                    name="supplier_invoice_id"
+                    className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                    defaultValue=""
+                  >
+                    <option value="">None</option>
+                    {invoices.data.map((invoice) => {
+                      const invoiceId = asString(pickFirst(invoice, ["id", "supplier_invoice_id", "invoice_id"]));
+                      if (!invoiceId) return null;
+                      const invoiceLabel = asString(pickFirst(invoice, ["invoice_ref", "invoice_number"])) || invoiceId;
+                      return (
+                        <option key={invoiceId} value={invoiceId}>
+                          {invoiceLabel}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="supplier_invoice_line_id" className="text-xs uppercase tracking-wide text-slate-500">
+                    supplier_invoice_line_id (optional)
+                  </label>
+                  <select
+                    id="supplier_invoice_line_id"
+                    name="supplier_invoice_line_id"
+                    className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                    defaultValue=""
+                  >
+                    <option value="">None</option>
+                    {invoiceLines.data.map((line) => {
+                      const lineId = asString(pickFirst(line, ["id", "supplier_invoice_line_id", "line_id"]));
+                      if (!lineId) return null;
+                      const lineLabel =
+                        asString(pickFirst(line, ["supplier_invoice_line_ref", "line_ref", "sku"])) || lineId;
+                      return (
+                        <option key={lineId} value={lineId}>
+                          {lineLabel}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </div>
+                <div>
+                  <label
+                    htmlFor="order_tracking_submission_id"
+                    className="text-xs uppercase tracking-wide text-slate-500"
+                  >
+                    order_tracking_submission_id (optional)
+                  </label>
+                  <select
+                    id="order_tracking_submission_id"
+                    name="order_tracking_submission_id"
+                    className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                    defaultValue=""
+                  >
+                    <option value="">None</option>
+                    {tracking.data.map((row) => {
+                      const trackingId = asString(pickFirst(row, ["id", "order_tracking_submission_id"]));
+                      if (!trackingId) return null;
+                      const trackingLabel = asString(pickFirst(row, ["tracking_ref", "tracking_number"])) || trackingId;
+                      return (
+                        <option key={trackingId} value={trackingId}>
+                          {trackingLabel}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </div>
+              </div>
+              <button
+                type="submit"
+                className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-500"
+              >
+                Create evidence query
+              </button>
+            </form>
+          ) : (
+            <p className="mt-4 text-sm text-slate-600">Staff admin/supervisor role is required to create queries.</p>
+          )}
+
+          {queryParams.query_success ? (
+            <p className="mt-4 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">
+              {queryParams.query_success}
+            </p>
+          ) : null}
+          {queryParams.query_error ? (
+            <p className="mt-4 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-900">
+              {queryParams.query_error}
+            </p>
+          ) : null}
+        </section>
+
+        <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+          <h2 className="text-xl font-semibold">Evidence queries</h2>
+          {evidenceQueriesError ? (
+            <p className="mt-4 text-sm text-rose-700">Failed to load evidence queries: {evidenceQueriesError.message}</p>
+          ) : evidenceQueries && evidenceQueries.length > 0 ? (
+            <div className="mt-4 overflow-x-auto rounded-2xl border border-slate-200">
+              <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
+                <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+                  <tr>
+                    <th className="px-4 py-3 font-semibold">created_at</th>
+                    <th className="px-4 py-3 font-semibold">query_type</th>
+                    <th className="px-4 py-3 font-semibold">status</th>
+                    <th className="px-4 py-3 font-semibold">message</th>
+                    <th className="px-4 py-3 font-semibold">context</th>
+                    <th className="px-4 py-3 font-semibold">answer</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 bg-white">
+                  {evidenceQueries.map((query) => (
+                    <tr key={asString(query.id)}>
+                      <td className="px-4 py-3">{formatValue(query.created_at)}</td>
+                      <td className="px-4 py-3">{formatValue(query.query_type)}</td>
+                      <td className="px-4 py-3">{formatValue(query.status)}</td>
+                      <td className="max-w-md px-4 py-3">{formatValue(query.message)}</td>
+                      <td className="px-4 py-3">
+                        <div className="space-y-1 text-xs text-slate-600">
+                          <p>invoice: {formatValue(query.supplier_invoice_id)}</p>
+                          <p>line: {formatValue(query.supplier_invoice_line_id)}</p>
+                          <p>tracking: {formatValue(query.order_tracking_submission_id)}</p>
+                        </div>
+                      </td>
+                      <td className="max-w-sm px-4 py-3">{formatValue(query.answer_text)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p className="mt-4 text-sm text-slate-600">No evidence queries for this order.</p>
+          )}
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
