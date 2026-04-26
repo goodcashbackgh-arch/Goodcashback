@@ -173,3 +173,26 @@ For now:
 - show diagnostics;
 - do not show DVA reconcile/match buttons yet;
 - do not show importer-facing funding controls.
+
+## Live Apply Credit proof (production validation)
+
+A live staff UI proof was completed for Apply Credit and confirms the current production-safe write path.
+
+- First live UI attempt failed due to RLS on `importer_credit_ledger`.
+- A staff-only `SECURITY DEFINER` wrapper `staff_apply_importer_credit_to_order` was added.
+- The server action now calls `staff_apply_importer_credit_to_order`.
+- A live UI test then succeeded on order `TEST-ORDER-UNFUNDED-002` for **£100**.
+
+Observed post-action state:
+
+- `gap_remaining_gbp` moved from **100** to **0**.
+- `funded_total_gbp` moved from **0** to **100**.
+- `threshold_met_yn` and `already_funded_yn` became **Yes**.
+- `funded_at` was stamped.
+- Importer available credit moved from **100** to **0**.
+- `order_funding_events` count increased from **6** to **7**.
+- A new `credit_applied` event appeared.
+
+Rule going forward:
+
+- Future staff UI writes should use a server action plus a staff-only `SECURITY DEFINER` wrapper unless proven otherwise.
