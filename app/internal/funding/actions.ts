@@ -62,7 +62,7 @@ export async function applyImporterCreditAction(formData: FormData) {
     });
   }
 
-  const { data, error } = await supabase.rpc("apply_importer_credit_to_order", {
+  const { data, error } = await supabase.rpc("staff_apply_importer_credit_to_order", {
     p_importer_id: importerId,
     p_order_id: orderId,
     p_amount_gbp: amountGbp,
