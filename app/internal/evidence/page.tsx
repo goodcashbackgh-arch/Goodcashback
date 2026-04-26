@@ -126,7 +126,9 @@ function formatValue(value: unknown) {
 }
 
 function asString(value: unknown) {
-  return typeof value === "string" ? value : "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return "";
 }
 
 function asBoolean(value: unknown) {
@@ -159,6 +161,28 @@ function resolveOrderKey(row: DataRow) {
   if (orderRef) return `ref:${orderRef}`;
   if (paymentAuthId) return `auth:${paymentAuthId}`;
   return "";
+}
+
+function resolveOrderId(row: DataRow) {
+  return asString(pickFirst(row, ["id", "order_id", "parent_order_id"])).trim();
+}
+
+function resolveInvoiceId(row: DataRow) {
+  return asString(pickFirst(row, ["id", "supplier_invoice_id", "invoice_id"])).trim();
+}
+
+function toBooleanLabel(value: boolean | null) {
+  if (value === null) return "Unknown";
+  return value ? "Yes" : "No";
+}
+
+function readBoolean(row: DataRow, candidates: string[]): boolean | null {
+  for (const key of candidates) {
+    if (key in row && row[key] !== null && row[key] !== undefined && row[key] !== "") {
+      return asBoolean(row[key]);
+    }
+  }
+  return null;
 }
 
 function chooseStatus(row: DataRow, candidates: string[]) {
@@ -197,55 +221,69 @@ export default async function InternalEvidencePage() {
   const trackingSubmissions = bySource.get("order_tracking_submissions");
   const reconciliation = bySource.get("order_reconciliation_vw");
 
-  const invoiceCountByOrder = new Map<string, number>();
+  const invoiceCountByOrderId = new Map<string, number>();
+  const invoiceToOrderId = new Map<string, string>();
   for (const row of supplierInvoices?.rows ?? []) {
-    const key = resolveOrderKey(row);
-    if (!key) continue;
-    invoiceCountByOrder.set(key, (invoiceCountByOrder.get(key) ?? 0) + 1);
+    const orderId = asString(pickFirst(row, ["order_id"])).trim();
+    if (!orderId) continue;
+    invoiceCountByOrderId.set(orderId, (invoiceCountByOrderId.get(orderId) ?? 0) + 1);
+
+    const invoiceId = resolveInvoiceId(row);
+    if (invoiceId) invoiceToOrderId.set(invoiceId, orderId);
   }
 
-  const lineCountByOrder = new Map<string, number>();
+  const lineCountByOrderId = new Map<string, number>();
   for (const row of supplierInvoiceLines?.rows ?? []) {
-    const key = resolveOrderKey(row);
-    if (!key) continue;
-    lineCountByOrder.set(key, (lineCountByOrder.get(key) ?? 0) + 1);
+    const supplierInvoiceId = asString(pickFirst(row, ["supplier_invoice_id", "invoice_id"])).trim();
+    if (!supplierInvoiceId) continue;
+    const orderId = invoiceToOrderId.get(supplierInvoiceId);
+    if (!orderId) continue;
+    lineCountByOrderId.set(orderId, (lineCountByOrderId.get(orderId) ?? 0) + 1);
   }
 
-  const trackingCountByOrder = new Map<string, number>();
+  const trackingCountByOrderId = new Map<string, number>();
   for (const row of trackingSubmissions?.rows ?? []) {
-    const key = resolveOrderKey(row);
-    if (!key) continue;
-    trackingCountByOrder.set(key, (trackingCountByOrder.get(key) ?? 0) + 1);
+    const orderId = asString(pickFirst(row, ["order_id"])).trim();
+    if (!orderId) continue;
+    trackingCountByOrderId.set(orderId, (trackingCountByOrderId.get(orderId) ?? 0) + 1);
   }
 
-  const reconciliationByOrder = new Map<string, DataRow>();
+  const reconciliationByOrderId = new Map<string, DataRow>();
   for (const row of reconciliation?.rows ?? []) {
-    const key = resolveOrderKey(row);
-    if (!key) continue;
-    if (!reconciliationByOrder.has(key)) reconciliationByOrder.set(key, row);
+    const orderId = asString(pickFirst(row, ["order_id"])).trim();
+    if (!orderId) continue;
+    if (!reconciliationByOrderId.has(orderId)) reconciliationByOrderId.set(orderId, row);
   }
 
   const queueRows = (orderState?.rows ?? []).map((row, index) => {
     const key = resolveOrderKey(row);
-    const recon = key ? reconciliationByOrder.get(key) : undefined;
+    const orderId = resolveOrderId(row);
+    const recon = orderId ? reconciliationByOrderId.get(orderId) : undefined;
+    const mapped = Boolean(orderId);
 
     const unresolved =
-      asBoolean(pickFirst(row, ["unresolved_yn", "has_unresolved_yn"])) ||
-      asBoolean(
-        pickFirst(recon ?? {}, ["unresolved_yn", "has_unresolved_yn", "unresolved_lines_yn"])
-      );
+      readBoolean(row, ["unresolved_yn", "has_unresolved_yn"]) ??
+      readBoolean(recon ?? {}, ["unresolved_yn", "has_unresolved_yn", "unresolved_lines_yn"]) ??
+      null;
 
     const partialProgress =
-      asBoolean(pickFirst(row, ["partial_progress_yn", "partial_progressed_yn"])) ||
-      asBoolean(
-        pickFirst(recon ?? {}, ["partial_progress_yn", "partial_progressed_yn", "partially_progressed_yn"])
-      );
+      readBoolean(row, ["partial_progress_yn", "partial_progressed_yn"]) ??
+      readBoolean(recon ?? {}, [
+        "partial_progress_yn",
+        "partial_progressed_yn",
+        "partially_progressed_yn",
+      ]) ??
+      null;
 
     const progressedSubset =
-      asBoolean(pickFirst(row, ["progressed_subset_yn", "stable_progressed_subset_yn"])) ||
-      asBoolean(
-        pickFirst(recon ?? {}, ["progressed_subset_yn", "stable_progressed_subset_yn"])
-      );
+      readBoolean(row, ["progressed_subset_yn", "stable_progressed_subset_yn"]) ??
+      readBoolean(recon ?? {}, ["progressed_subset_yn", "stable_progressed_subset_yn"]) ??
+      null;
+
+    const invoiceableSubsetReleased =
+      readBoolean(row, ["invoiceable_subset_released_yn"]) ??
+      readBoolean(recon ?? {}, ["invoiceable_subset_released_yn"]) ??
+      null;
 
     return {
       key: key || `fallback-${index}`,
@@ -267,9 +305,10 @@ export default async function InternalEvidencePage() {
       progressedSubset,
       partialProgress,
       unresolved,
-      invoiceRows: key ? invoiceCountByOrder.get(key) ?? 0 : 0,
-      trackingRows: key ? trackingCountByOrder.get(key) ?? 0 : 0,
-      lineRows: key ? lineCountByOrder.get(key) ?? 0 : 0,
+      invoiceableSubsetReleased,
+      invoiceRows: mapped ? invoiceCountByOrderId.get(orderId) ?? 0 : 0,
+      trackingRows: mapped ? trackingCountByOrderId.get(orderId) ?? 0 : 0,
+      lineRows: mapped ? lineCountByOrderId.get(orderId) ?? 0 : 0,
     };
   });
 
@@ -343,9 +382,12 @@ export default async function InternalEvidencePage() {
                       <td className="px-4 py-3 align-top text-slate-700">{row.trackingStatus}</td>
                       <td className="px-4 py-3 align-top text-slate-700">{row.ocrStatus}</td>
                       <td className="px-4 py-3 align-top text-xs text-slate-700">
-                        <div>Progressed subset: {row.progressedSubset ? "Yes" : "No"}</div>
-                        <div>Partial progress: {row.partialProgress ? "Yes" : "No"}</div>
-                        <div>Unresolved: {row.unresolved ? "Yes" : "No"}</div>
+                        <div>Progressed subset: {toBooleanLabel(row.progressedSubset)}</div>
+                        <div>Partial progress: {toBooleanLabel(row.partialProgress)}</div>
+                        <div>Unresolved: {toBooleanLabel(row.unresolved)}</div>
+                        <div>
+                          Invoiceable subset released: {toBooleanLabel(row.invoiceableSubsetReleased)}
+                        </div>
                       </td>
                       <td className="px-4 py-3 align-top text-xs text-slate-700">
                         <div>Invoices: {row.invoiceRows}</div>
