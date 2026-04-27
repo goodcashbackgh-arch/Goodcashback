@@ -121,8 +121,8 @@ export async function closeOrderEvidenceQueryAction(formData: FormData) {
   }
 
   const { error } = await supabase.rpc("staff_close_order_evidence_query", {
-    query_id: queryId,
-    notes,
+    p_order_evidence_query_id: queryId,
+    p_resolution_notes: notes,
   });
 
   if (error) {
@@ -155,8 +155,8 @@ export async function cancelOrderEvidenceQueryAction(formData: FormData) {
   }
 
   const { error } = await supabase.rpc("staff_cancel_order_evidence_query", {
-    query_id: queryId,
-    notes,
+    p_order_evidence_query_id: queryId,
+    p_resolution_notes: notes,
   });
 
   if (error) {
