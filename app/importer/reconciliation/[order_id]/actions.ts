@@ -24,6 +24,10 @@ function readOptionalString(formData: FormData, key: string) {
   return value.length > 0 ? value : null;
 }
 
+function readStringArray(formData: FormData, key: string) {
+  return formData.getAll(key).filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+}
+
 function redirectWithResult(orderId: string, params: Record<string, string>): never {
   const query = new URLSearchParams(params);
   redirect(`/importer/reconciliation/${orderId}?${query.toString()}`);
@@ -199,4 +203,34 @@ export async function markSupplierInvoiceLineProgressedAction(formData: FormData
 
   revalidatePath(`/importer/reconciliation/${orderId}`);
   redirectWithResult(orderId, { success: "Line marked progressed." });
+}
+
+export async function bulkMarkSupplierInvoiceLinesProgressedAction(formData: FormData) {
+  const orderId = readString(formData, "order_id");
+  const lineIds = readStringArray(formData, "line_ids");
+
+  if (!orderId) {
+    redirect("/importer");
+  }
+
+  if (lineIds.length === 0) {
+    redirectWithResult(orderId, { error: "Select at least one line to progress." });
+  }
+
+  const guard = await requireActiveOperator();
+  if (!guard.ok) {
+    redirectWithResult(orderId, { error: guard.error });
+  }
+
+  const { data, error } = await guard.supabase.rpc("operator_bulk_mark_supplier_invoice_lines_progressed", {
+    p_order_id: orderId,
+    p_line_ids: lineIds,
+  });
+
+  if (error) {
+    redirectWithResult(orderId, { error: error.message });
+  }
+
+  revalidatePath(`/importer/reconciliation/${orderId}`);
+  redirectWithResult(orderId, { success: `${Number(data ?? lineIds.length)} line(s) marked progressed.` });
 }
