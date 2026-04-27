@@ -174,3 +174,29 @@ export async function deleteManualSupplierInvoiceLineAction(formData: FormData) 
   revalidatePath(`/importer/reconciliation/${orderId}`);
   redirectWithResult(orderId, { success: "Manual line deleted." });
 }
+
+export async function markSupplierInvoiceLineProgressedAction(formData: FormData) {
+  const orderId = readString(formData, "order_id");
+  const lineId = readString(formData, "line_id");
+
+  if (!orderId || !lineId) {
+    redirect("/importer");
+  }
+
+  const guard = await requireActiveOperator();
+  if (!guard.ok) {
+    redirectWithResult(orderId, { error: guard.error });
+  }
+
+  const { error } = await guard.supabase.rpc("operator_mark_supplier_invoice_line_progressed", {
+    p_order_id: orderId,
+    p_line_id: lineId,
+  });
+
+  if (error) {
+    redirectWithResult(orderId, { error: error.message });
+  }
+
+  revalidatePath(`/importer/reconciliation/${orderId}`);
+  redirectWithResult(orderId, { success: "Line marked progressed." });
+}
