@@ -2,6 +2,26 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 
+type OrderRow = {
+  id: string;
+  order_ref: string | null;
+  status: string | null;
+  payment_auth_id: string | null;
+  total_qty_declared: number | null;
+  order_total_gbp_declared: number | null;
+  quote_total_ghs: number | null;
+  funded_at: string | null;
+  created_at: string | null;
+};
+
+type OrderReferenceRow = { order_id: string };
+
+type EvidenceQueryRow = {
+  order_id: string;
+  query_type: string | null;
+  message: string | null;
+};
+
 function gbp(value: number | string | null | undefined) {
   const n = Number(value ?? 0);
   return new Intl.NumberFormat("en-GB", {
@@ -19,7 +39,20 @@ function local(value: number | string | null | undefined) {
   }).format(n);
 }
 
-function nextAction(order: any, hasTracking: boolean, hasInvoice: boolean) {
+function previewMessage(value: string | null | undefined, max = 72) {
+  const message = (value ?? "").trim();
+  if (!message) return "—";
+  if (message.length <= max) return message;
+  return `${message.slice(0, max - 1)}…`;
+}
+
+function nextAction(
+  order: Pick<OrderRow, "funded_at">,
+  hasTracking: boolean,
+  hasInvoice: boolean,
+  hasOpenEvidenceQuery: boolean
+) {
+  if (hasOpenEvidenceQuery) return "Answer evidence query";
   if (!order.funded_at) return "Waiting for staff funding";
   if (!hasTracking && !hasInvoice) return "Submit tracking or invoice";
   if (!hasTracking) return "Submit tracking";
@@ -69,13 +102,46 @@ export default async function ImporterPage() {
     throw ordersError;
   }
 
+  const orderRows = (orders ?? []) as OrderRow[];
+  const orderIds = orderRows.map((order) => order.id);
+  const { data: openEvidenceQueries, error: openEvidenceQueriesError } = orderIds.length
+    ? await supabase
+        .from("order_evidence_queries")
+        .select("order_id, query_type, message, status, created_at")
+        .in("order_id", orderIds)
+        .eq("status", "open")
+        .order("created_at", { ascending: false })
+    : { data: [], error: null };
+
+  if (openEvidenceQueriesError) {
+    throw openEvidenceQueriesError;
+  }
+
+  const openEvidenceQueryByOrderId = new Map<
+    string,
+    { count: number; latestQueryType: string | null; latestMessage: string | null }
+  >();
+  for (const query of (openEvidenceQueries ?? []) as EvidenceQueryRow[]) {
+    const current = openEvidenceQueryByOrderId.get(query.order_id);
+    if (!current) {
+      openEvidenceQueryByOrderId.set(query.order_id, {
+        count: 1,
+        latestQueryType: query.query_type,
+        latestMessage: query.message,
+      });
+      continue;
+    }
+
+    current.count += 1;
+  }
+
   const screenshotCounts = new Map<string, number>();
-  for (const row of screenshots ?? []) {
+  for (const row of (screenshots ?? []) as OrderReferenceRow[]) {
     screenshotCounts.set(row.order_id, (screenshotCounts.get(row.order_id) ?? 0) + 1);
   }
 
-  const trackingSet = new Set((tracking ?? []).map((row: any) => row.order_id));
-  const invoiceSet = new Set((invoices ?? []).map((row: any) => row.order_id));
+  const trackingSet = new Set((tracking ?? []).map((row) => row.order_id));
+  const invoiceSet = new Set((invoices ?? []).map((row) => row.order_id));
 
   return (
     <main className="min-h-screen p-6 space-y-6">
@@ -98,7 +164,7 @@ export default async function ImporterPage() {
         <div className="rounded-2xl border p-4">
           <div className="text-sm text-slate-500">Funded</div>
           <div className="mt-2 text-2xl font-semibold">
-            {(orders ?? []).filter((o: any) => !!o.funded_at).length}
+            {orderRows.filter((order) => !!order.funded_at).length}
           </div>
         </div>
         <div className="rounded-2xl border p-4">
@@ -139,15 +205,18 @@ export default async function ImporterPage() {
                 <th className="p-3">Screenshots</th>
                 <th className="p-3">Tracking</th>
                 <th className="p-3">Invoice</th>
+                <th className="p-3">Open queries</th>
                 <th className="p-3">Status</th>
                 <th className="p-3">Next action</th>
               </tr>
             </thead>
             <tbody>
-              {(orders ?? []).map((order: any) => {
+              {orderRows.map((order) => {
                 const hasTracking = trackingSet.has(order.id);
                 const hasInvoice = invoiceSet.has(order.id);
                 const screenshotCount = screenshotCounts.get(order.id) ?? 0;
+                const openQuerySummary = openEvidenceQueryByOrderId.get(order.id);
+                const hasOpenEvidenceQuery = (openQuerySummary?.count ?? 0) > 0;
 
                 return (
                   <tr key={order.id} className="border-t">
@@ -163,12 +232,34 @@ export default async function ImporterPage() {
                     <td className="p-3">{hasTracking ? "Yes" : "No"}</td>
                     <td className="p-3">{hasInvoice ? "Yes" : "No"}</td>
                     <td className="p-3">
+                      {openQuerySummary ? (
+                        <div className="space-y-1">
+                          <div className="font-medium">{openQuerySummary.count}</div>
+                          <div className="text-xs text-slate-500">
+                            {openQuerySummary.latestQueryType ?? "—"}
+                          </div>
+                          <div className="text-xs text-slate-500">
+                            {previewMessage(openQuerySummary.latestMessage)}
+                          </div>
+                        </div>
+                      ) : (
+                        "0"
+                      )}
+                    </td>
+                    <td className="p-3">
                       <div>{order.status}</div>
                       <div className="text-xs text-slate-500">
                         {order.funded_at ? "Funded" : "Open"}
                       </div>
                     </td>
-                    <td className="p-3">{nextAction(order, hasTracking, hasInvoice)}</td>
+                    <td className="p-3">
+                      <div>{nextAction(order, hasTracking, hasInvoice, hasOpenEvidenceQuery)}</div>
+                      {hasOpenEvidenceQuery ? (
+                        <Link href="/importer/evidence-queries" className="text-xs font-medium text-sky-600">
+                          Answer
+                        </Link>
+                      ) : null}
+                    </td>
                   </tr>
                 );
               })}
