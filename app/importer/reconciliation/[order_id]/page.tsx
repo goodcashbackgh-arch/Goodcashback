@@ -12,8 +12,10 @@ type SupplierInvoiceLine = {
   supplier_invoice_id: string;
   line_order: number;
   line_source: string;
+  retailer_sku: string | null;
   description: string;
   qty: number;
+  size: string | null;
   amount_inc_vat_gbp: number;
   qty_confirmed: number | null;
   amount_confirmed: number | null;
@@ -103,7 +105,7 @@ export default async function ImporterReconciliationOrderPage({
     ? await supabase
         .from("supplier_invoice_lines")
         .select(
-          "id, supplier_invoice_id, line_order, line_source, description, qty, amount_inc_vat_gbp, qty_confirmed, amount_confirmed, eligible_for_invoice_yn"
+          "id, supplier_invoice_id, line_order, line_source, retailer_sku, description, qty, size, amount_inc_vat_gbp, qty_confirmed, amount_confirmed, eligible_for_invoice_yn"
         )
         .eq("supplier_invoice_id", invoice.id)
         .order("line_order", { ascending: true })
@@ -180,10 +182,10 @@ export default async function ImporterReconciliationOrderPage({
           <>
             <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
               <h2 className="text-xl font-semibold">Add manual line</h2>
-              <form action={addManualSupplierInvoiceLineAction} className="mt-4 grid gap-3 md:grid-cols-4">
+              <form action={addManualSupplierInvoiceLineAction} className="mt-4 grid gap-3 md:grid-cols-6">
                 <input type="hidden" name="order_id" value={orderId} />
                 <input type="hidden" name="supplier_invoice_id" value={invoice.id} />
-                <label className="space-y-1 text-sm">
+                <label className="space-y-1 text-sm md:col-span-2">
                   <span className="text-xs uppercase tracking-wide text-slate-500">description</span>
                   <input
                     name="description"
@@ -194,7 +196,19 @@ export default async function ImporterReconciliationOrderPage({
                 </label>
                 <label className="space-y-1 text-sm">
                   <span className="text-xs uppercase tracking-wide text-slate-500">qty</span>
-                  <input name="qty" required type="number" step="0.01" min="0" className="w-full rounded-xl border border-slate-300 px-3 py-2" />
+                  <input name="qty" required type="number" step="1" min="0" className="w-full rounded-xl border border-slate-300 px-3 py-2" />
+                </label>
+                <label className="space-y-1 text-sm">
+                  <span className="text-xs uppercase tracking-wide text-slate-500">size</span>
+                  <input name="size" className="w-full rounded-xl border border-slate-300 px-3 py-2" placeholder="Optional size" />
+                </label>
+                <label className="space-y-1 text-sm">
+                  <span className="text-xs uppercase tracking-wide text-slate-500">retailer_sku</span>
+                  <input
+                    name="retailer_sku"
+                    className="w-full rounded-xl border border-slate-300 px-3 py-2"
+                    placeholder="Optional SKU"
+                  />
                 </label>
                 <label className="space-y-1 text-sm">
                   <span className="text-xs uppercase tracking-wide text-slate-500">amount_inc_vat_gbp</span>
@@ -207,7 +221,7 @@ export default async function ImporterReconciliationOrderPage({
                     className="w-full rounded-xl border border-slate-300 px-3 py-2"
                   />
                 </label>
-                <div className="flex items-end">
+                <div className="flex items-end md:col-span-6">
                   <button type="submit" className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white">
                     Add manual line
                   </button>
@@ -271,8 +285,26 @@ export default async function ImporterReconciliationOrderPage({
                               defaultValue={line.qty}
                               required
                               type="number"
-                              step="0.01"
+                              step="1"
                               min="0"
+                              className="w-full rounded-xl border border-slate-300 px-3 py-2"
+                            />
+                          </label>
+
+                          <label className="space-y-1 text-sm md:col-span-2">
+                            <span className="text-xs uppercase tracking-wide text-slate-500">size</span>
+                            <input
+                              name="size"
+                              defaultValue={line.size ?? ""}
+                              className="w-full rounded-xl border border-slate-300 px-3 py-2"
+                            />
+                          </label>
+
+                          <label className="space-y-1 text-sm md:col-span-2">
+                            <span className="text-xs uppercase tracking-wide text-slate-500">retailer_sku</span>
+                            <input
+                              name="retailer_sku"
+                              defaultValue={line.retailer_sku ?? ""}
                               className="w-full rounded-xl border border-slate-300 px-3 py-2"
                             />
                           </label>
