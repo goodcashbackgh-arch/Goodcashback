@@ -53,10 +53,10 @@ function nextAction(
   hasOpenEvidenceQuery: boolean
 ) {
   if (hasOpenEvidenceQuery) return "Answer evidence query";
-  if (!order.funded_at) return "Waiting for staff funding";
   if (!hasTracking && !hasInvoice) return "Submit tracking or invoice";
   if (!hasTracking) return "Submit tracking";
   if (!hasInvoice) return "Submit invoice";
+  if (!order.funded_at) return "Waiting for staff funding";
   return "Open reconciliation / monitor progress";
 }
 
