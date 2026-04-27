@@ -19,7 +19,7 @@ type DashboardOrderRow = OrderRow & {
 };
 
 type OrderReferenceRow = { order_id: string };
-type OrderStateRow = { order_id: string; lifecycle_status: string | null };
+type OrderStateRow = { id: string; lifecycle_status: string | null };
 
 type EvidenceQueryRow = {
   order_id: string;
@@ -107,7 +107,7 @@ export default async function ImporterPage() {
   const orderRows = (orders ?? []) as OrderRow[];
   const orderIds = orderRows.map((order) => order.id);
   const { data: orderStates, error: orderStatesError } = orderIds.length
-    ? await supabase.from("order_state_vw").select("order_id, lifecycle_status").in("order_id", orderIds)
+    ? await supabase.from("order_state_vw").select("id, lifecycle_status").in("id", orderIds)
     : { data: [], error: null };
 
   if (orderStatesError) {
@@ -116,7 +116,7 @@ export default async function ImporterPage() {
 
   const lifecycleStatusByOrderId = new Map<string, string | null>();
   for (const row of (orderStates ?? []) as OrderStateRow[]) {
-    lifecycleStatusByOrderId.set(row.order_id, row.lifecycle_status);
+    lifecycleStatusByOrderId.set(row.id, row.lifecycle_status);
   }
 
   const dashboardRows: DashboardOrderRow[] = orderRows.map((order) => ({
