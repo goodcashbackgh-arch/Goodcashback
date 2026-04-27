@@ -61,8 +61,6 @@ DECLARE
   v_retailer_account_ids uuid[];
   v_retailer_account_id uuid;
   v_supplier_invoice_id uuid;
-  v_order_status_before text;
-  v_order_completed_at_before timestamptz;
 BEGIN
   IF v_auth_uid IS NULL THEN
     RAISE EXCEPTION 'Unauthenticated user: invoice submission requires auth.uid()';
@@ -139,9 +137,6 @@ BEGIN
 
   v_retailer_account_id := v_retailer_account_ids[1];
 
-  v_order_status_before := v_order.status;
-  v_order_completed_at_before := v_order.completed_at;
-
   INSERT INTO public.supplier_invoices (
     order_id,
     retailer_id,
@@ -162,17 +157,6 @@ BEGIN
   )
   RETURNING id INTO v_supplier_invoice_id;
 
-  -- Enforce no net order-status transition from this RPC, including any indirect
-  -- trigger side-effects from supplier_invoices inserts.
-  UPDATE public.orders o
-  SET status = v_order_status_before,
-      completed_at = v_order_completed_at_before
-  WHERE o.id = v_order.id
-    AND (
-      o.status IS DISTINCT FROM v_order_status_before
-      OR o.completed_at IS DISTINCT FROM v_order_completed_at_before
-    );
-
   RETURN jsonb_build_object(
     'success', true,
     'supplier_invoice_id', v_supplier_invoice_id,
@@ -183,7 +167,7 @@ END;
 $$;
 
 COMMENT ON FUNCTION public.operator_submit_supplier_invoice(uuid, text, text) IS
-'Operator-facing SECURITY DEFINER wrapper to submit a supplier invoice manually. Validates operator/importer access, resolves exactly one active retailer_account by (retailer_id, shipper_id), inserts supplier_invoices with ocr_service_used=manual, and preserves order status/completed_at.';
+'Operator-facing SECURITY DEFINER wrapper to submit a supplier invoice manually. Validates operator/importer access, resolves exactly one active retailer_account by (retailer_id, shipper_id), inserts supplier_invoices with ocr_service_used=manual, and returns submission metadata.';
 
 REVOKE ALL ON FUNCTION public.operator_submit_supplier_invoice(uuid, text, text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.operator_submit_supplier_invoice(uuid, text, text) TO authenticated;
