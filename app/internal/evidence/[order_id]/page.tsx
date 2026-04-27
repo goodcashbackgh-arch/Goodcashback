@@ -597,21 +597,21 @@ export default async function InternalEvidenceDetailPage({
                       </td>
                       <td className="max-w-sm px-4 py-3">{formatValue(query.answer_text)}</td>
                       <td className="px-4 py-3">
-                        {status === "answered" ? (
+                        {status === "answered" || status === "open" ? (
                           <form action={closeOrderEvidenceQueryAction} className="space-y-2">
                             <input type="hidden" name="order_id" value={orderId} />
                             <input type="hidden" name="query_id" value={queryId} />
                             <input
                               type="text"
                               name="notes"
-                              placeholder="Optional notes"
+                              placeholder="Optional closure reason"
                               className="w-full rounded-lg border border-slate-300 px-2 py-1 text-xs"
                             />
                             <button
                               type="submit"
                               className="rounded-lg bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-500"
                             >
-                              Close
+                              Close query
                             </button>
                           </form>
                         ) : null}
@@ -622,14 +622,14 @@ export default async function InternalEvidenceDetailPage({
                             <input
                               type="text"
                               name="notes"
-                              placeholder="Optional notes"
+                              placeholder="Optional cancellation note"
                               className="w-full rounded-lg border border-slate-300 px-2 py-1 text-xs"
                             />
                             <button
                               type="submit"
                               className="rounded-lg bg-rose-600 px-3 py-1 text-xs font-semibold text-white hover:bg-rose-500"
                             >
-                              Cancel
+                              Cancel query
                             </button>
                           </form>
                         ) : null}
