@@ -11,7 +11,6 @@ type OrderRow = {
   total_qty_declared: number | null;
   order_total_gbp_declared: number | null;
   quote_total_ghs: number | null;
-  gap_remaining_gbp: number | null;
   funded_at: string | null;
   created_at: string | null;
 };
@@ -49,13 +48,13 @@ function previewMessage(value: string | null | undefined, max = 72) {
 }
 
 function nextAction(
-  order: Pick<OrderRow, "lifecycle_status" | "gap_remaining_gbp">,
+  order: Pick<OrderRow, "lifecycle_status" | "funded_at">,
   hasOpenEvidenceQuery: boolean
 ) {
   if (hasOpenEvidenceQuery) return "Answer evidence query";
   if (order.lifecycle_status === "reconciling") return "Awaiting invoice reconciliation";
   if (order.lifecycle_status === "evidence_collecting") return "Upload invoice or tracking";
-  if (Number(order.gap_remaining_gbp ?? 0) > 0) return "Waiting for staff funding";
+  if (!order.funded_at) return "Waiting for staff funding";
   return "In progress";
 }
 
@@ -86,7 +85,7 @@ export default async function ImporterPage() {
       supabase
         .from("orders")
         .select(
-          "id, order_ref, status, lifecycle_status, payment_auth_id, total_qty_declared, order_total_gbp_declared, quote_total_ghs, gap_remaining_gbp, funded_at, created_at"
+          "id, order_ref, status, lifecycle_status, payment_auth_id, total_qty_declared, order_total_gbp_declared, quote_total_ghs, funded_at, created_at"
         )
         .order("created_at", { ascending: false }),
       supabase.from("order_screenshots").select("order_id"),
