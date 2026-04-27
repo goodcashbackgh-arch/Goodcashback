@@ -1,6 +1,10 @@
 import Link from "next/link";
 import { createClient } from "@/utils/supabase/server";
-import { createOrderEvidenceQueryAction } from "./actions";
+import {
+  cancelOrderEvidenceQueryAction,
+  closeOrderEvidenceQueryAction,
+  createOrderEvidenceQueryAction,
+} from "./actions";
 
 type DataRow = Record<string, unknown>;
 
@@ -571,11 +575,15 @@ export default async function InternalEvidenceDetailPage({
                     <th className="px-4 py-3 font-semibold">message</th>
                     <th className="px-4 py-3 font-semibold">context</th>
                     <th className="px-4 py-3 font-semibold">answer</th>
+                    <th className="px-4 py-3 font-semibold">action</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 bg-white">
-                  {evidenceQueries.map((query) => (
-                    <tr key={asString(query.id)}>
+                  {evidenceQueries.map((query) => {
+                    const status = asString(query.status).toLowerCase();
+                    const queryId = asString(query.id);
+                    return (
+                    <tr key={queryId}>
                       <td className="px-4 py-3">{formatValue(query.created_at)}</td>
                       <td className="px-4 py-3">{formatValue(query.query_type)}</td>
                       <td className="px-4 py-3">{formatValue(query.status)}</td>
@@ -588,8 +596,50 @@ export default async function InternalEvidenceDetailPage({
                         </div>
                       </td>
                       <td className="max-w-sm px-4 py-3">{formatValue(query.answer_text)}</td>
+                      <td className="px-4 py-3">
+                        {status === "answered" ? (
+                          <form action={closeOrderEvidenceQueryAction} className="space-y-2">
+                            <input type="hidden" name="order_id" value={orderId} />
+                            <input type="hidden" name="query_id" value={queryId} />
+                            <input
+                              type="text"
+                              name="notes"
+                              placeholder="Optional notes"
+                              className="w-full rounded-lg border border-slate-300 px-2 py-1 text-xs"
+                            />
+                            <button
+                              type="submit"
+                              className="rounded-lg bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-500"
+                            >
+                              Close
+                            </button>
+                          </form>
+                        ) : null}
+                        {status === "open" ? (
+                          <form action={cancelOrderEvidenceQueryAction} className="space-y-2">
+                            <input type="hidden" name="order_id" value={orderId} />
+                            <input type="hidden" name="query_id" value={queryId} />
+                            <input
+                              type="text"
+                              name="notes"
+                              placeholder="Optional notes"
+                              className="w-full rounded-lg border border-slate-300 px-2 py-1 text-xs"
+                            />
+                            <button
+                              type="submit"
+                              className="rounded-lg bg-rose-600 px-3 py-1 text-xs font-semibold text-white hover:bg-rose-500"
+                            >
+                              Cancel
+                            </button>
+                          </form>
+                        ) : null}
+                        {status !== "answered" && status !== "open" ? (
+                          <span className="text-xs text-slate-500">—</span>
+                        ) : null}
+                      </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
