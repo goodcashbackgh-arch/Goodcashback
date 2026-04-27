@@ -254,7 +254,7 @@ Expected:
 Given order funding not yet matched by staff, but invoice evidence exists:
 
 - operator opens reconciliation workspace
-- performs line edits, manual line operations, progression split
+- performs line edits, manual line operations, partial progression
 
 Expected:
 
