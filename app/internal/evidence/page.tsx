@@ -20,6 +20,12 @@ type EvidenceQueryRow = {
   created_at: string | null;
 };
 
+type EvidenceQuerySummary = {
+  openCount: number;
+  latestOpenQueryType: string;
+  latestAnsweredQueryType: string;
+};
+
 const panels = [
   {
     title: "Order state",
@@ -434,10 +440,7 @@ export default async function InternalEvidencePage() {
     if (!reconciliationByOrderId.has(orderId)) reconciliationByOrderId.set(orderId, row);
   }
 
-  const evidenceQuerySummaryByOrderId = new Map<
-    string,
-    { openCount: number; latestQueryType: string; latestSortMs: number }
-  >();
+  const evidenceQuerySummaryByOrderId = new Map<string, EvidenceQuerySummary>();
   const evidenceQueriesError = evidenceQueriesResult.error?.message ?? null;
   const evidenceQueries = (evidenceQueriesResult.data ?? []) as EvidenceQueryRow[];
 
@@ -447,18 +450,17 @@ export default async function InternalEvidencePage() {
 
     const current = evidenceQuerySummaryByOrderId.get(orderId) ?? {
       openCount: 0,
-      latestQueryType: "",
-      latestSortMs: Number.NEGATIVE_INFINITY,
+      latestOpenQueryType: "",
+      latestAnsweredQueryType: "",
     };
 
-    if (asString(query.status).trim().toLowerCase() === "open") {
+    const normalizedStatus = asString(query.status).trim().toLowerCase();
+    const normalizedQueryType = asString(query.query_type).trim();
+    if (normalizedStatus === "open") {
       current.openCount += 1;
-    }
-
-    const sortValue = parseDate(query.created_at) ?? Number.NEGATIVE_INFINITY;
-    if (sortValue >= current.latestSortMs) {
-      current.latestSortMs = sortValue;
-      current.latestQueryType = asString(query.query_type).trim();
+      if (!current.latestOpenQueryType) current.latestOpenQueryType = normalizedQueryType;
+    } else if (normalizedStatus === "answered" && !current.latestAnsweredQueryType) {
+      current.latestAnsweredQueryType = normalizedQueryType;
     }
 
     evidenceQuerySummaryByOrderId.set(orderId, current);
@@ -507,6 +509,12 @@ export default async function InternalEvidencePage() {
     const evidenceQuerySummary = orderId
       ? evidenceQuerySummaryByOrderId.get(orderId)
       : undefined;
+    const latestEvidenceQueryLabel =
+      (evidenceQuerySummary?.openCount ?? 0) > 0
+        ? evidenceQuerySummary?.latestOpenQueryType || "open"
+        : evidenceQuerySummary?.latestAnsweredQueryType
+          ? `answered: ${evidenceQuerySummary.latestAnsweredQueryType}`
+          : "—";
 
     return {
       key: key || `fallback-${index}`,
@@ -554,7 +562,7 @@ export default async function InternalEvidencePage() {
       ocrLineRows: lineSummary?.ocrCount ?? 0,
       manualLineRows: lineSummary?.manualCount ?? 0,
       openEvidenceQueries: evidenceQuerySummary?.openCount ?? 0,
-      latestEvidenceQueryType: evidenceQuerySummary?.latestQueryType || "—",
+      latestEvidenceQueryLabel,
     };
   });
 
@@ -651,7 +659,7 @@ export default async function InternalEvidencePage() {
                             <div>OCR service: {row.latestInvoiceOcrService}</div>
                             <div>Latest tracking ref: {row.latestTrackingRef}</div>
                             <div>Latest tracking date: {row.latestTrackingDate}</div>
-                            <div>Latest query type: {row.latestEvidenceQueryType}</div>
+                            <div>Latest query: {row.latestEvidenceQueryLabel}</div>
                             <div>Eligible invoice lines: {row.eligibleLineRows}</div>
                             <div>OCR lines: {row.ocrLineRows}</div>
                             <div>Manual lines: {row.manualLineRows}</div>
@@ -665,7 +673,7 @@ export default async function InternalEvidencePage() {
                         <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-800">
                           {row.openEvidenceQueries > 0 ? `${row.openEvidenceQueries.toLocaleString("en-GB")} open` : "0"}
                         </span>
-                        <div className="mt-1 text-xs text-slate-500">{row.latestEvidenceQueryType}</div>
+                        <div className="mt-1 text-xs text-slate-500">{row.latestEvidenceQueryLabel}</div>
                       </td>
                       <td className="px-4 py-3 text-slate-700">{row.lineRows.toLocaleString("en-GB")}</td>
                       <td className="px-4 py-3 text-slate-700">{formatProgressAmount(row.progressedAmount)}</td>
