@@ -68,6 +68,29 @@ export default async function ImporterReconciliationOrderPage({
     redirect("/auth/check");
   }
 
+  const { data: order, error: orderError } = await supabase
+    .from("orders")
+    .select("id, importer_id")
+    .eq("id", orderId)
+    .maybeSingle();
+
+  if (orderError || !order) {
+    redirect("/importer");
+  }
+
+  const { data: importerAccess, error: importerAccessError } = await supabase
+    .from("operator_importers")
+    .select("id")
+    .eq("operator_id", operator.id)
+    .eq("importer_id", order.importer_id)
+    .is("revoked_at", null)
+    .limit(1)
+    .maybeSingle();
+
+  if (importerAccessError || !importerAccess) {
+    redirect("/importer");
+  }
+
   const { data: invoice, error: invoiceError } = await supabase
     .from("supplier_invoices")
     .select("id, order_id, invoice_ref, invoice_pdf_url, uploaded_at, ocr_extracted_at")
@@ -87,10 +110,6 @@ export default async function ImporterReconciliationOrderPage({
     : { data: [] as SupplierInvoiceLine[], error: null };
 
   const totalAmount = (lines ?? []).reduce((sum, line) => sum + Number(line.amount_inc_vat_gbp ?? 0), 0);
-  const unresolvedAmount = (lines ?? [])
-    .filter((line) => !isProgressed(line))
-    .reduce((sum, line) => sum + Number(line.amount_inc_vat_gbp ?? 0), 0);
-
   return (
     <main className="min-h-screen bg-slate-50 px-6 py-8 text-slate-950">
       <div className="mx-auto flex max-w-7xl flex-col gap-6">
@@ -101,7 +120,7 @@ export default async function ImporterReconciliationOrderPage({
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Invoice reconciliation</p>
           <h1 className="mt-2 text-3xl font-semibold tracking-tight">Order {orderId}</h1>
           <p className="mt-3 text-sm leading-6 text-slate-600">
-            Edit OCR and manual invoice lines, add manual lines, delete manual lines, and track progressed lines visually.
+            Edit OCR and manual invoice lines, add manual lines, and delete manual lines. Progress state is read-only until a backend action exists.
           </p>
           <p className="mt-2 text-sm text-slate-600">Signed in as: {operator.full_name}</p>
 
@@ -199,9 +218,7 @@ export default async function ImporterReconciliationOrderPage({
             <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <h2 className="text-xl font-semibold">Supplier invoice lines</h2>
-                <p className="text-sm text-slate-600">
-                  Unresolved remainder visible: <span className="font-semibold">{gbp(unresolvedAmount)}</span>
-                </p>
+                <p className="text-sm text-slate-600">Progressed status is display-only and does not trigger reconciliation changes yet.</p>
               </div>
 
               {linesError ? (
@@ -229,9 +246,7 @@ export default async function ImporterReconciliationOrderPage({
                             >
                               {progressed ? "Progressed" : "Unresolved"}
                             </span>
-                            <label className="inline-flex items-center gap-2 text-xs text-slate-600">
-                              <input type="checkbox" defaultChecked={progressed} /> Mark line progressed (UI only)
-                            </label>
+                            <span className="text-xs text-slate-500">Mark line progressed is not active yet.</span>
                           </div>
                         </div>
 
