@@ -59,3 +59,55 @@ export async function answerOrderEvidenceQueryAction(formData: FormData) {
 
   redirectWithResult({ query_success: "Evidence query answered." });
 }
+
+export async function submitSupplierInvoiceAction(formData: FormData) {
+  const supabase = await createClient();
+  const orderId = readString(formData, "order_id");
+  const invoiceRef = readString(formData, "invoice_ref");
+  const invoicePdfUrl = readString(formData, "invoice_pdf_url");
+
+  if (!orderId) {
+    redirectWithResult({ query_error: "Missing order id for invoice submission." });
+  }
+
+  if (!invoiceRef) {
+    redirectWithResult({ query_error: "Invoice reference cannot be blank." });
+  }
+
+  if (!invoicePdfUrl) {
+    redirectWithResult({ query_error: "Invoice PDF URL cannot be blank." });
+  }
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    redirectWithResult({ query_error: "Please sign in again before submitting an invoice." });
+  }
+
+  const { data: operator } = await supabase
+    .from("operators")
+    .select("id")
+    .eq("auth_user_id", user.id)
+    .eq("active", true)
+    .maybeSingle();
+
+  if (!operator) {
+    redirectWithResult({ query_error: "Active operator account not found." });
+  }
+
+  const { error } = await supabase.rpc("operator_submit_supplier_invoice", {
+    p_order_id: orderId,
+    p_invoice_ref: invoiceRef,
+    p_invoice_pdf_url: invoicePdfUrl,
+  });
+
+  if (error) {
+    redirectWithResult({ query_error: error.message });
+  }
+
+  revalidatePath("/importer/evidence-queries");
+
+  redirectWithResult({ query_success: "Supplier invoice submitted." });
+}
