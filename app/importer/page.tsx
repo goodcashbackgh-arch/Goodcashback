@@ -6,7 +6,6 @@ type OrderRow = {
   id: string;
   order_ref: string | null;
   status: string | null;
-  lifecycle_status: string | null;
   payment_auth_id: string | null;
   total_qty_declared: number | null;
   order_total_gbp_declared: number | null;
@@ -15,7 +14,12 @@ type OrderRow = {
   created_at: string | null;
 };
 
+type DashboardOrderRow = OrderRow & {
+  lifecycle_status: string | null;
+};
+
 type OrderReferenceRow = { order_id: string };
+type OrderStateRow = { order_id: string; lifecycle_status: string | null };
 
 type EvidenceQueryRow = {
   order_id: string;
@@ -48,7 +52,7 @@ function previewMessage(value: string | null | undefined, max = 72) {
 }
 
 function nextAction(
-  order: Pick<OrderRow, "lifecycle_status" | "funded_at">,
+  order: Pick<DashboardOrderRow, "lifecycle_status" | "funded_at">,
   hasOpenEvidenceQuery: boolean
 ) {
   if (hasOpenEvidenceQuery) return "Answer evidence query";
@@ -85,7 +89,7 @@ export default async function ImporterPage() {
       supabase
         .from("orders")
         .select(
-          "id, order_ref, status, lifecycle_status, payment_auth_id, total_qty_declared, order_total_gbp_declared, quote_total_ghs, funded_at, created_at"
+          "id, order_ref, status, payment_auth_id, total_qty_declared, order_total_gbp_declared, quote_total_ghs, funded_at, created_at"
         )
         .order("created_at", { ascending: false }),
       supabase.from("order_screenshots").select("order_id"),
@@ -102,6 +106,24 @@ export default async function ImporterPage() {
 
   const orderRows = (orders ?? []) as OrderRow[];
   const orderIds = orderRows.map((order) => order.id);
+  const { data: orderStates, error: orderStatesError } = orderIds.length
+    ? await supabase.from("order_state_vw").select("order_id, lifecycle_status").in("order_id", orderIds)
+    : { data: [], error: null };
+
+  if (orderStatesError) {
+    throw orderStatesError;
+  }
+
+  const lifecycleStatusByOrderId = new Map<string, string | null>();
+  for (const row of (orderStates ?? []) as OrderStateRow[]) {
+    lifecycleStatusByOrderId.set(row.order_id, row.lifecycle_status);
+  }
+
+  const dashboardRows: DashboardOrderRow[] = orderRows.map((order) => ({
+    ...order,
+    lifecycle_status: lifecycleStatusByOrderId.get(order.id) ?? null,
+  }));
+
   const { data: openEvidenceQueries, error: openEvidenceQueriesError } = orderIds.length
     ? await supabase
         .from("order_evidence_queries")
@@ -162,7 +184,7 @@ export default async function ImporterPage() {
         <div className="rounded-2xl border p-4">
           <div className="text-sm text-slate-500">Funded</div>
           <div className="mt-2 text-2xl font-semibold">
-            {orderRows.filter((order) => !!order.funded_at).length}
+            {dashboardRows.filter((order) => !!order.funded_at).length}
           </div>
         </div>
         <div className="rounded-2xl border p-4">
@@ -209,7 +231,7 @@ export default async function ImporterPage() {
               </tr>
             </thead>
             <tbody>
-              {orderRows.map((order) => {
+              {dashboardRows.map((order) => {
                 const hasTracking = trackingSet.has(order.id);
                 const hasInvoice = invoiceSet.has(order.id);
                 const screenshotCount = screenshotCounts.get(order.id) ?? 0;
