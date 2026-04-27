@@ -33,8 +33,8 @@ Rationale in governing docs:
 
 **Contract decision:**
 
-- Reconciliation action ownership = importer/operator lane.
-- Staff lane = oversight, queue visibility, exception/funding/accounting controls outside this action.
+- Reconciliation action ownership = importer/operator lane (OCR invoice line reconciliation owner).
+- Staff lane = supervision/review/escalation, plus queue visibility and exception/funding/accounting controls outside this action.
 
 ---
 
@@ -62,8 +62,10 @@ Manual lines are created into `supplier_invoice_lines` as user-entered reconcili
 Use cases:
 
 - missing item absent from OCR output
-- correction/split representation for unresolved child-exception candidates
+- correction/split representation for unresolved child exception structures / dispute_lines where applicable
 - operator-captured commercial detail needed to reconcile to the parent baseline
+
+Manual lines are reconciliation constructs grounded in importer evidence, not unsupported new commercial truth.
 
 ---
 
@@ -120,7 +122,7 @@ A line is treated as progressed when reconciliation confirms it into invoiceable
 Canonical representation in current contract:
 
 - set confirmed commercial values (`qty_confirmed`, `amount_confirmed`)
-- set `eligible_for_invoice_yn = 'Y'` for progressed invoiceable lines
+- set `eligible_for_invoice_yn` to the schema-approved progressed value for progressed invoiceable lines
 
 The progressed subset rolls into `order_reconciliation_vw`:
 
@@ -130,18 +132,15 @@ The progressed subset rolls into `order_reconciliation_vw`:
 
 ---
 
-## 8) How unresolved lines become child exceptions
+## 8) How unresolved lines are handled in v1
 
-Unresolved remainder is not forced to block clean lines. Instead:
+Unresolved remainder is not forced to block clean lines in v1. Instead:
 
-1. Correct lines are progressed (`eligible_for_invoice_yn='Y'`).
-2. Unresolved/missing/problem lines remain non-invoiceable (`eligible_for_invoice_yn='N'`) and are represented in child exception/dispute structures.
-3. Dispute/child line records track quantity/value impact so the parent order can still reconcile as:
-   - progressed subset
-   - plus resolved non-invoiceable outcomes
-   - plus unresolved remainder
+1. Clean/correct lines are progressed into the invoiceable subset using the schema-approved progressed eligibility value.
+2. Unresolved/missing/problem lines remain non-progressed and visible as unresolved remainder.
+3. Parent remains partially progressed while unresolved remainder is still open.
 
-Parent remains partially progressed until unresolved children are resolved or otherwise reconciled to declared baseline.
+Child exception creation/splitting is later-stage behavior (or a separate controlled contract) unless already proven by locked backend functions. Where such later-stage handling exists, use child exception structures / dispute_lines where applicable.
 
 ---
 
@@ -155,7 +154,7 @@ Allowed before funding match:
 - OCR workspace usage
 - line edits/manual line management
 - progressed subset marking
-- child-exception creation and handling
+- unresolved remainder visibility and handling within reconciliation scope
 
 Still blocked until funding/control gates are satisfied:
 
@@ -192,7 +191,7 @@ The following names are **proposed only** and not approved/implemented by this c
 - `operator_delete_manual_supplier_invoice_line(...)`
 - `operator_mark_invoice_line_progressed(...)`
 - `operator_bulk_mark_invoice_lines_progressed(...)`
-- `operator_split_unresolved_lines_to_child_exceptions(...)`
+- `operator_split_unresolved_lines_to_child_exceptions(...)` **(later-stage / proposed only, not v1)**
 
 Implementation naming can change, but must preserve the rules in this contract and the locked backend controls.
 
@@ -206,7 +205,7 @@ Given an order with supplier invoice and OCR line:
 
 - OCR line exists as `line_source='ocr_extracted'`
 - operator corrects commercial fields if needed
-- operator confirms/progresses line (`eligible_for_invoice_yn='Y'`, confirmed qty/value set)
+- operator confirms/progresses line (schema-approved progressed eligibility value set, confirmed qty/value set)
 
 Expected:
 
@@ -238,17 +237,17 @@ Expected:
 - delete blocked by backend control
 - clear error returned indicating OCR-extracted lines are not deletable
 
-### D. Partial progress creates unresolved remainder
+### D. Partial progress leaves unresolved remainder visible
 
 Given a parent order where only part of lines are clean:
 
-- clean lines progressed (`eligible_for_invoice_yn='Y'`)
-- unresolved lines left non-invoiceable and represented as child exception lines
+- clean lines progressed using the schema-approved progressed eligibility value
+- unresolved lines left non-progressed and visible as unresolved remainder
 
 Expected:
 
 - order reflects partial progression (not false full clearance)
-- unresolved qty/value remains visible as remainder until child outcomes resolve
+- unresolved qty/value remains visible as remainder for later-stage handling (including child exception structures / dispute_lines where applicable)
 
 ### E. Funding pending does not block reconciliation
 
