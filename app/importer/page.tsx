@@ -6,10 +6,12 @@ type OrderRow = {
   id: string;
   order_ref: string | null;
   status: string | null;
+  lifecycle_status: string | null;
   payment_auth_id: string | null;
   total_qty_declared: number | null;
   order_total_gbp_declared: number | null;
   quote_total_ghs: number | null;
+  gap_remaining_gbp: number | null;
   funded_at: string | null;
   created_at: string | null;
 };
@@ -47,17 +49,14 @@ function previewMessage(value: string | null | undefined, max = 72) {
 }
 
 function nextAction(
-  order: Pick<OrderRow, "funded_at">,
-  hasTracking: boolean,
-  hasInvoice: boolean,
+  order: Pick<OrderRow, "lifecycle_status" | "gap_remaining_gbp">,
   hasOpenEvidenceQuery: boolean
 ) {
   if (hasOpenEvidenceQuery) return "Answer evidence query";
-  if (!hasTracking && !hasInvoice) return "Submit tracking or invoice";
-  if (!hasTracking) return "Submit tracking";
-  if (!hasInvoice) return "Submit invoice";
-  if (!order.funded_at) return "Waiting for staff funding";
-  return "Open reconciliation / monitor progress";
+  if (order.lifecycle_status === "reconciling") return "Awaiting invoice reconciliation";
+  if (order.lifecycle_status === "evidence_collecting") return "Upload invoice or tracking";
+  if (Number(order.gap_remaining_gbp ?? 0) > 0) return "Waiting for staff funding";
+  return "In progress";
 }
 
 export default async function ImporterPage() {
@@ -87,7 +86,7 @@ export default async function ImporterPage() {
       supabase
         .from("orders")
         .select(
-          "id, order_ref, status, payment_auth_id, total_qty_declared, order_total_gbp_declared, quote_total_ghs, funded_at, created_at"
+          "id, order_ref, status, lifecycle_status, payment_auth_id, total_qty_declared, order_total_gbp_declared, quote_total_ghs, gap_remaining_gbp, funded_at, created_at"
         )
         .order("created_at", { ascending: false }),
       supabase.from("order_screenshots").select("order_id"),
@@ -253,7 +252,7 @@ export default async function ImporterPage() {
                       </div>
                     </td>
                     <td className="p-3">
-                      <div>{nextAction(order, hasTracking, hasInvoice, hasOpenEvidenceQuery)}</div>
+                      <div>{nextAction(order, hasOpenEvidenceQuery)}</div>
                       {hasOpenEvidenceQuery ? (
                         <Link href="/importer/evidence-queries" className="text-xs font-medium text-sky-600">
                           Answer
