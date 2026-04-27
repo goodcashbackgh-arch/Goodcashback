@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
-import { answerOrderEvidenceQueryAction } from "./actions";
+import { answerOrderEvidenceQueryAction, submitSupplierInvoiceAction } from "./actions";
 
 type EvidenceQuery = {
   id: string;
@@ -118,22 +118,54 @@ export default async function ImporterEvidenceQueriesPage({
                         <td className="px-4 py-3">{formatValue(query.status)}</td>
                         <td className="max-w-md px-4 py-3">
                           {query.status === "open" ? (
-                            <form action={answerOrderEvidenceQueryAction} className="space-y-2">
-                              <input type="hidden" name="query_id" value={query.id} />
-                              <textarea
-                                name="answer_text"
-                                required
-                                rows={3}
-                                className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
-                                placeholder="Type your answer"
-                              />
-                              <button
-                                type="submit"
-                                className="rounded-xl bg-sky-600 px-3 py-2 text-sm font-semibold text-white hover:bg-sky-500"
-                              >
-                                Submit answer
-                              </button>
-                            </form>
+                            <div className="space-y-4">
+                              {query.query_type === "missing_invoice" ? (
+                                <form action={submitSupplierInvoiceAction} className="space-y-2 rounded-xl border border-slate-200 p-3">
+                                  <input type="hidden" name="order_id" value={query.order_id} />
+                                  <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">
+                                    invoice_ref
+                                    <input
+                                      name="invoice_ref"
+                                      required
+                                      className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                                      placeholder="Retailer invoice reference"
+                                    />
+                                  </label>
+                                  <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">
+                                    invoice_pdf_url
+                                    <input
+                                      name="invoice_pdf_url"
+                                      type="url"
+                                      required
+                                      className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                                      placeholder="https://..."
+                                    />
+                                  </label>
+                                  <button
+                                    type="submit"
+                                    className="rounded-xl bg-emerald-600 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-500"
+                                  >
+                                    Submit invoice
+                                  </button>
+                                </form>
+                              ) : null}
+                              <form action={answerOrderEvidenceQueryAction} className="space-y-2">
+                                <input type="hidden" name="query_id" value={query.id} />
+                                <textarea
+                                  name="answer_text"
+                                  required
+                                  rows={3}
+                                  className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                                  placeholder="Type your answer"
+                                />
+                                <button
+                                  type="submit"
+                                  className="rounded-xl bg-sky-600 px-3 py-2 text-sm font-semibold text-white hover:bg-sky-500"
+                                >
+                                  Submit answer
+                                </button>
+                              </form>
+                            </div>
                           ) : (
                             <div className="space-y-1">
                               <p>{formatValue(query.answer_text)}</p>
