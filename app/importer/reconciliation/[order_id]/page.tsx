@@ -22,6 +22,14 @@ type SupplierInvoiceLine = {
   eligible_for_invoice_yn: string;
 };
 
+type OrderScreenshot = {
+  id: string;
+  screenshot_url: string;
+  uploaded_at: string | null;
+  display_order: number | null;
+  note: string | null;
+};
+
 function formatValue(value: string | number | null | undefined) {
   if (value === null || value === undefined || value === "") return "—";
   return String(value);
@@ -34,6 +42,16 @@ function gbp(value: number | null | undefined) {
     currency: "GBP",
     minimumFractionDigits: 2,
   }).format(n);
+}
+
+function signedGbp(value: number) {
+  if (Math.abs(value) < 0.005) return gbp(0);
+  return `${value > 0 ? "+" : ""}${gbp(value)}`;
+}
+
+function signedNumber(value: number) {
+  if (value === 0) return "0";
+  return `${value > 0 ? "+" : ""}${value}`;
 }
 
 function isProgressed(line: Pick<SupplierInvoiceLine, "eligible_for_invoice_yn">) {
@@ -72,7 +90,7 @@ export default async function ImporterReconciliationOrderPage({
 
   const { data: order, error: orderError } = await supabase
     .from("orders")
-    .select("id, importer_id")
+    .select("id, importer_id, order_ref, total_qty_declared, order_total_gbp_declared, screenshot_url")
     .eq("id", orderId)
     .maybeSingle();
 
@@ -101,6 +119,13 @@ export default async function ImporterReconciliationOrderPage({
     .limit(1)
     .maybeSingle();
 
+  const { data: screenshots, error: screenshotsError } = await supabase
+    .from("order_screenshots")
+    .select("id, screenshot_url, uploaded_at, display_order, note")
+    .eq("order_id", orderId)
+    .order("display_order", { ascending: true })
+    .order("uploaded_at", { ascending: true });
+
   const { data: lines, error: linesError } = invoice
     ? await supabase
         .from("supplier_invoice_lines")
@@ -111,18 +136,31 @@ export default async function ImporterReconciliationOrderPage({
         .order("line_order", { ascending: true })
     : { data: [] as SupplierInvoiceLine[], error: null };
 
-  const totalAmount = (lines ?? []).reduce((sum, line) => sum + Number(line.amount_inc_vat_gbp ?? 0), 0);
+  const invoiceLines = (lines ?? []) as SupplierInvoiceLine[];
+  const orderScreenshots = (screenshots ?? []) as OrderScreenshot[];
+  const legacyScreenshotUrl = typeof order.screenshot_url === "string" && order.screenshot_url.trim().length > 0 ? order.screenshot_url.trim() : null;
+
+  const lineQtyTotal = invoiceLines.reduce((sum, line) => sum + Number(line.qty ?? 0), 0);
+  const lineAmountTotal = invoiceLines.reduce((sum, line) => sum + Number(line.amount_inc_vat_gbp ?? 0), 0);
+  const declaredQty = Number(order.total_qty_declared ?? 0);
+  const declaredAmount = Number(order.order_total_gbp_declared ?? 0);
+  const qtyVariance = lineQtyTotal - declaredQty;
+  const amountVariance = lineAmountTotal - declaredAmount;
+  const qtyMatched = qtyVariance === 0;
+  const amountMatched = Math.abs(amountVariance) < 0.01;
+  const lineSetBalanced = qtyMatched && amountMatched;
+
   return (
-    <main className="min-h-screen bg-slate-50 px-6 py-8 text-slate-950">
+    <main className="min-h-screen bg-slate-50 px-4 py-6 text-slate-950 sm:px-6 sm:py-8">
       <div className="mx-auto flex max-w-7xl flex-col gap-6">
-        <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+        <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
           <Link href="/importer" className="text-sm font-semibold text-sky-600">
             ← Back to importer dashboard
           </Link>
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Invoice reconciliation</p>
-          <h1 className="mt-2 text-3xl font-semibold tracking-tight">Order {orderId}</h1>
+          <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">Order {order.order_ref ?? orderId}</h1>
           <p className="mt-3 text-sm leading-6 text-slate-600">
-            Edit invoice line reconciliation fields, add manual lines, and delete manual lines. OCR descriptions and progress state are read-only until separate backend actions exist.
+            Compare the uploaded invoice against the original order screenshots and declared totals. This stage proves the parent baseline is accounted for; it does not complete the order while exceptions, funding, shipping, POD, or accounting/VAT gates remain open.
           </p>
           <p className="mt-2 text-sm text-slate-600">Signed in as: {operator.full_name}</p>
 
@@ -138,61 +176,166 @@ export default async function ImporterReconciliationOrderPage({
           ) : null}
         </section>
 
-        <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-          <h2 className="text-xl font-semibold">Supplier invoice header</h2>
-          {invoiceError ? (
-            <p className="mt-4 text-sm text-rose-700">Failed to load invoice header: {invoiceError.message}</p>
-          ) : invoice ? (
-            <dl className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              <div>
-                <dt className="text-xs uppercase tracking-wide text-slate-500">invoice_ref</dt>
-                <dd className="font-medium">{invoice.invoice_ref}</dd>
-              </div>
-              <div>
-                <dt className="text-xs uppercase tracking-wide text-slate-500">invoice_pdf_url</dt>
-                <dd className="break-all text-sm">
-                  <a href={invoice.invoice_pdf_url} target="_blank" rel="noreferrer" className="text-sky-700 underline">
-                    {invoice.invoice_pdf_url}
+        <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="text-sm font-medium uppercase tracking-[0.16em] text-slate-500">Baseline check</p>
+              <h2 className="mt-1 text-xl font-semibold">Original order vs invoice lines</h2>
+            </div>
+            <span
+              className={`w-fit rounded-full px-3 py-1 text-xs font-semibold ${
+                lineSetBalanced ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"
+              }`}
+            >
+              {lineSetBalanced ? "Qty/value accounted for" : "Variance needs review"}
+            </span>
+          </div>
+
+          <div className="mt-5 grid gap-3 md:grid-cols-3">
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <p className="text-xs uppercase tracking-wide text-slate-500">Original declared qty</p>
+              <p className="mt-1 text-2xl font-semibold">{declaredQty}</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <p className="text-xs uppercase tracking-wide text-slate-500">Current invoice-line qty</p>
+              <p className="mt-1 text-2xl font-semibold">{lineQtyTotal}</p>
+            </div>
+            <div className={`rounded-2xl border p-4 ${qtyMatched ? "border-emerald-200 bg-emerald-50" : "border-amber-200 bg-amber-50"}`}>
+              <p className="text-xs uppercase tracking-wide text-slate-500">Qty variance</p>
+              <p className="mt-1 text-2xl font-semibold">{signedNumber(qtyVariance)}</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <p className="text-xs uppercase tracking-wide text-slate-500">Original declared value</p>
+              <p className="mt-1 text-2xl font-semibold">{gbp(declaredAmount)}</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <p className="text-xs uppercase tracking-wide text-slate-500">Current invoice-line value</p>
+              <p className="mt-1 text-2xl font-semibold">{gbp(lineAmountTotal)}</p>
+            </div>
+            <div className={`rounded-2xl border p-4 ${amountMatched ? "border-emerald-200 bg-emerald-50" : "border-amber-200 bg-amber-50"}`}>
+              <p className="text-xs uppercase tracking-wide text-slate-500">Value variance</p>
+              <p className="mt-1 text-2xl font-semibold">{signedGbp(amountVariance)}</p>
+            </div>
+          </div>
+
+          <p className="mt-4 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm leading-6 text-slate-700">
+            A matched qty/value set means the original parent order baseline is accounted for. The parent order still cannot fully clear until progressed lines, child exceptions, funding, shipment evidence, POD, and final accounting/VAT release gates are complete.
+          </p>
+        </section>
+
+        <section className="grid gap-6 lg:grid-cols-2">
+          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+            <h2 className="text-xl font-semibold">Uploaded supplier invoice</h2>
+            {invoiceError ? (
+              <p className="mt-4 text-sm text-rose-700">Failed to load invoice header: {invoiceError.message}</p>
+            ) : invoice ? (
+              <div className="mt-4 space-y-4">
+                <dl className="grid gap-4 sm:grid-cols-2">
+                  <div>
+                    <dt className="text-xs uppercase tracking-wide text-slate-500">invoice_ref</dt>
+                    <dd className="font-medium">{invoice.invoice_ref}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs uppercase tracking-wide text-slate-500">uploaded_at</dt>
+                    <dd>{formatValue(invoice.uploaded_at)}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs uppercase tracking-wide text-slate-500">ocr_extracted_at</dt>
+                    <dd>{formatValue(invoice.ocr_extracted_at)}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs uppercase tracking-wide text-slate-500">line count</dt>
+                    <dd>{invoiceLines.length}</dd>
+                  </div>
+                </dl>
+                <div className="flex flex-wrap gap-3">
+                  <a
+                    href={invoice.invoice_pdf_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
+                  >
+                    Open invoice
                   </a>
-                </dd>
+                  <a
+                    href={invoice.invoice_pdf_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    download
+                    className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-800"
+                  >
+                    Download invoice
+                  </a>
+                </div>
               </div>
-              <div>
-                <dt className="text-xs uppercase tracking-wide text-slate-500">uploaded_at</dt>
-                <dd>{formatValue(invoice.uploaded_at)}</dd>
+            ) : (
+              <p className="mt-4 text-sm text-slate-600">No supplier invoice found for this order yet.</p>
+            )}
+          </div>
+
+          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+            <h2 className="text-xl font-semibold">Original order screenshots</h2>
+            <p className="mt-2 text-sm text-slate-600">Use these to compare the retailer basket/order evidence against the invoice lines.</p>
+            {screenshotsError ? (
+              <p className="mt-4 text-sm text-rose-700">Failed to load screenshots: {screenshotsError.message}</p>
+            ) : orderScreenshots.length > 0 || legacyScreenshotUrl ? (
+              <div className="mt-4 space-y-3">
+                {orderScreenshots.map((screenshot, index) => (
+                  <details key={screenshot.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                    <summary className="cursor-pointer text-sm font-semibold text-slate-800">
+                      Screenshot {screenshot.display_order ?? index + 1}
+                    </summary>
+                    <div className="mt-3 space-y-3">
+                      {screenshot.note ? <p className="text-sm text-slate-600">{screenshot.note}</p> : null}
+                      <img
+                        src={screenshot.screenshot_url}
+                        alt={`Order screenshot ${screenshot.display_order ?? index + 1}`}
+                        className="max-h-[70vh] w-full rounded-xl border border-slate-200 object-contain"
+                      />
+                      <div className="flex flex-wrap gap-3">
+                        <a href={screenshot.screenshot_url} target="_blank" rel="noreferrer" className="text-sm font-semibold text-sky-700 underline">
+                          Open full size
+                        </a>
+                        <a href={screenshot.screenshot_url} target="_blank" rel="noreferrer" download className="text-sm font-semibold text-slate-700 underline">
+                          Download
+                        </a>
+                      </div>
+                    </div>
+                  </details>
+                ))}
+                {legacyScreenshotUrl ? (
+                  <details className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                    <summary className="cursor-pointer text-sm font-semibold text-slate-800">Legacy screenshot</summary>
+                    <div className="mt-3 space-y-3">
+                      <img src={legacyScreenshotUrl} alt="Legacy order screenshot" className="max-h-[70vh] w-full rounded-xl border border-slate-200 object-contain" />
+                      <div className="flex flex-wrap gap-3">
+                        <a href={legacyScreenshotUrl} target="_blank" rel="noreferrer" className="text-sm font-semibold text-sky-700 underline">
+                          Open full size
+                        </a>
+                        <a href={legacyScreenshotUrl} target="_blank" rel="noreferrer" download className="text-sm font-semibold text-slate-700 underline">
+                          Download
+                        </a>
+                      </div>
+                    </div>
+                  </details>
+                ) : null}
               </div>
-              <div>
-                <dt className="text-xs uppercase tracking-wide text-slate-500">ocr_extracted_at</dt>
-                <dd>{formatValue(invoice.ocr_extracted_at)}</dd>
-              </div>
-              <div>
-                <dt className="text-xs uppercase tracking-wide text-slate-500">line count</dt>
-                <dd>{lines?.length ?? 0}</dd>
-              </div>
-              <div>
-                <dt className="text-xs uppercase tracking-wide text-slate-500">line total</dt>
-                <dd>{gbp(totalAmount)}</dd>
-              </div>
-            </dl>
-          ) : (
-            <p className="mt-4 text-sm text-slate-600">No supplier invoice found for this order yet.</p>
-          )}
+            ) : (
+              <p className="mt-4 text-sm text-slate-600">No original screenshots are attached to this order.</p>
+            )}
+          </div>
         </section>
 
         {invoice ? (
           <>
-            <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+            <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
               <h2 className="text-xl font-semibold">Add manual line</h2>
               <form action={addManualSupplierInvoiceLineAction} className="mt-4 grid gap-3 md:grid-cols-6">
                 <input type="hidden" name="order_id" value={orderId} />
                 <input type="hidden" name="supplier_invoice_id" value={invoice.id} />
                 <label className="space-y-1 text-sm md:col-span-2">
                   <span className="text-xs uppercase tracking-wide text-slate-500">description</span>
-                  <input
-                    name="description"
-                    required
-                    className="w-full rounded-xl border border-slate-300 px-3 py-2"
-                    placeholder="Manual line description"
-                  />
+                  <input name="description" required className="w-full rounded-xl border border-slate-300 px-3 py-2" placeholder="Manual line description" />
                 </label>
                 <label className="space-y-1 text-sm">
                   <span className="text-xs uppercase tracking-wide text-slate-500">qty</span>
@@ -204,22 +347,11 @@ export default async function ImporterReconciliationOrderPage({
                 </label>
                 <label className="space-y-1 text-sm">
                   <span className="text-xs uppercase tracking-wide text-slate-500">retailer_sku</span>
-                  <input
-                    name="retailer_sku"
-                    className="w-full rounded-xl border border-slate-300 px-3 py-2"
-                    placeholder="Optional SKU"
-                  />
+                  <input name="retailer_sku" className="w-full rounded-xl border border-slate-300 px-3 py-2" placeholder="Optional SKU" />
                 </label>
                 <label className="space-y-1 text-sm">
                   <span className="text-xs uppercase tracking-wide text-slate-500">amount_inc_vat_gbp</span>
-                  <input
-                    name="amount_inc_vat_gbp"
-                    required
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    className="w-full rounded-xl border border-slate-300 px-3 py-2"
-                  />
+                  <input name="amount_inc_vat_gbp" required type="number" step="0.01" min="0" className="w-full rounded-xl border border-slate-300 px-3 py-2" />
                 </label>
                 <div className="flex items-end md:col-span-6">
                   <button type="submit" className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white">
@@ -229,7 +361,7 @@ export default async function ImporterReconciliationOrderPage({
               </form>
             </section>
 
-            <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+            <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <h2 className="text-xl font-semibold">Supplier invoice lines</h2>
                 <p className="text-sm text-slate-600">Progressed status is display-only and does not trigger reconciliation changes yet.</p>
@@ -237,9 +369,9 @@ export default async function ImporterReconciliationOrderPage({
 
               {linesError ? (
                 <p className="mt-4 text-sm text-rose-700">Failed to load invoice lines: {linesError.message}</p>
-              ) : lines && lines.length > 0 ? (
+              ) : invoiceLines.length > 0 ? (
                 <div className="mt-4 space-y-4">
-                  {lines.map((line) => {
+                  {invoiceLines.map((line) => {
                     const progressed = isProgressed(line);
                     const canDelete = line.line_source === "manually_added";
                     const isOcrLine = line.line_source === "ocr_extracted";
@@ -254,11 +386,7 @@ export default async function ImporterReconciliationOrderPage({
                             Line {line.line_order} · {line.line_source}
                           </div>
                           <div className="flex items-center gap-3">
-                            <span
-                              className={`rounded-full px-2.5 py-1 text-xs font-medium ${
-                                progressed ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"
-                              }`}
-                            >
+                            <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${progressed ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>
                               {progressed ? "Progressed" : "Unresolved"}
                             </span>
                             <span className="text-xs text-slate-500">Mark line progressed is not active yet.</span>
@@ -284,60 +412,31 @@ export default async function ImporterReconciliationOrderPage({
 
                           <label className="space-y-1 text-sm md:col-span-2">
                             <span className="text-xs uppercase tracking-wide text-slate-500">qty</span>
-                            <input
-                              name="qty"
-                              defaultValue={line.qty}
-                              required
-                              type="number"
-                              step="1"
-                              min="0"
-                              className="w-full rounded-xl border border-slate-300 px-3 py-2"
-                            />
+                            <input name="qty" defaultValue={line.qty} required type="number" step="1" min="0" className="w-full rounded-xl border border-slate-300 px-3 py-2" />
                           </label>
 
                           <label className="space-y-1 text-sm md:col-span-2">
                             <span className="text-xs uppercase tracking-wide text-slate-500">size</span>
-                            <input
-                              name="size"
-                              defaultValue={line.size ?? ""}
-                              className="w-full rounded-xl border border-slate-300 px-3 py-2"
-                            />
+                            <input name="size" defaultValue={line.size ?? ""} className="w-full rounded-xl border border-slate-300 px-3 py-2" />
                           </label>
 
                           <label className="space-y-1 text-sm md:col-span-2">
                             <span className="text-xs uppercase tracking-wide text-slate-500">retailer_sku</span>
-                            <input
-                              name="retailer_sku"
-                              defaultValue={line.retailer_sku ?? ""}
-                              className="w-full rounded-xl border border-slate-300 px-3 py-2"
-                            />
+                            <input name="retailer_sku" defaultValue={line.retailer_sku ?? ""} className="w-full rounded-xl border border-slate-300 px-3 py-2" />
                           </label>
 
                           <label className="space-y-1 text-sm md:col-span-2">
                             <span className="text-xs uppercase tracking-wide text-slate-500">amount_inc_vat_gbp</span>
-                            <input
-                              name="amount_inc_vat_gbp"
-                              defaultValue={line.amount_inc_vat_gbp}
-                              required
-                              type="number"
-                              step="0.01"
-                              min="0"
-                              className="w-full rounded-xl border border-slate-300 px-3 py-2"
-                            />
+                            <input name="amount_inc_vat_gbp" defaultValue={line.amount_inc_vat_gbp} required type="number" step="0.01" min="0" className="w-full rounded-xl border border-slate-300 px-3 py-2" />
                           </label>
 
                           <div className="space-y-1 text-sm md:col-span-2">
                             <span className="text-xs uppercase tracking-wide text-slate-500">eligible_for_invoice_yn</span>
-                            <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
-                              {line.eligible_for_invoice_yn}
-                            </div>
+                            <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm">{line.eligible_for_invoice_yn}</div>
                           </div>
 
                           <div className="md:col-span-12 pt-1">
-                            <button
-                              type="submit"
-                              className="rounded-xl bg-sky-600 px-3 py-2 text-sm font-semibold text-white hover:bg-sky-500"
-                            >
+                            <button type="submit" className="rounded-xl bg-sky-600 px-3 py-2 text-sm font-semibold text-white hover:bg-sky-500">
                               Save line
                             </button>
                           </div>
@@ -347,10 +446,7 @@ export default async function ImporterReconciliationOrderPage({
                             <form action={deleteManualSupplierInvoiceLineAction}>
                               <input type="hidden" name="order_id" value={orderId} />
                               <input type="hidden" name="line_id" value={line.id} />
-                              <button
-                                type="submit"
-                                className="rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-800 hover:bg-rose-100"
-                              >
+                              <button type="submit" className="rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-800 hover:bg-rose-100">
                                 Delete manual line
                               </button>
                             </form>
