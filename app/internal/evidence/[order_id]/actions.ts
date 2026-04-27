@@ -83,3 +83,90 @@ export async function createOrderEvidenceQueryAction(formData: FormData) {
     query_success: `Created ${createdQueryType} evidence query.`,
   });
 }
+
+async function getActiveStaff(supabase: Awaited<ReturnType<typeof createClient>>) {
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) return { staff: null, error: "Please sign in again." };
+
+  const { data: staff, error: staffError } = await supabase
+    .from("staff")
+    .select("id")
+    .eq("auth_user_id", user.id)
+    .eq("active", true)
+    .maybeSingle();
+
+  if (staffError || !staff) return { staff: null, error: "Active staff user not found." };
+
+  return { staff, error: null };
+}
+
+export async function closeOrderEvidenceQueryAction(formData: FormData) {
+  const supabase = await createClient();
+  const orderId = readString(formData, "order_id");
+  const queryId = readString(formData, "query_id");
+  const notes = readString(formData, "notes");
+
+  if (!orderId || !queryId) {
+    redirect(`/internal/evidence?query_error=Missing+order+or+query+reference.`);
+  }
+
+  const { error: staffError } = await getActiveStaff(supabase);
+  if (staffError) {
+    redirectWithResult(orderId, {
+      query_error: staffError,
+    });
+  }
+
+  const { error } = await supabase.rpc("staff_close_order_evidence_query", {
+    query_id: queryId,
+    notes,
+  });
+
+  if (error) {
+    redirectWithResult(orderId, {
+      query_error: error.message,
+    });
+  }
+
+  revalidatePath(`/internal/evidence/${orderId}`);
+  redirectWithResult(orderId, {
+    query_success: "Evidence query closed.",
+  });
+}
+
+export async function cancelOrderEvidenceQueryAction(formData: FormData) {
+  const supabase = await createClient();
+  const orderId = readString(formData, "order_id");
+  const queryId = readString(formData, "query_id");
+  const notes = readString(formData, "notes");
+
+  if (!orderId || !queryId) {
+    redirect(`/internal/evidence?query_error=Missing+order+or+query+reference.`);
+  }
+
+  const { error: staffError } = await getActiveStaff(supabase);
+  if (staffError) {
+    redirectWithResult(orderId, {
+      query_error: staffError,
+    });
+  }
+
+  const { error } = await supabase.rpc("staff_cancel_order_evidence_query", {
+    query_id: queryId,
+    notes,
+  });
+
+  if (error) {
+    redirectWithResult(orderId, {
+      query_error: error.message,
+    });
+  }
+
+  revalidatePath(`/internal/evidence/${orderId}`);
+  redirectWithResult(orderId, {
+    query_success: "Evidence query cancelled.",
+  });
+}
