@@ -9,6 +9,11 @@ function readString(formData: FormData, key: string) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function stripLeadingFieldPrefix(value: string, fieldName: string) {
+  const prefixPattern = new RegExp(`^${fieldName}\\s*=\\s*`, "i");
+  return value.replace(prefixPattern, "").trim();
+}
+
 function redirectWithResult(params: Record<string, string>): never {
   const query = new URLSearchParams(params);
   redirect(`/importer/evidence-queries?${query.toString()}`);
@@ -63,8 +68,8 @@ export async function answerOrderEvidenceQueryAction(formData: FormData) {
 export async function submitMissingInvoiceEvidenceAction(formData: FormData) {
   const supabase = await createClient();
   const queryId = readString(formData, "query_id");
-  const invoiceRef = readString(formData, "invoice_ref");
-  const invoicePdfUrl = readString(formData, "invoice_pdf_url");
+  const invoiceRef = stripLeadingFieldPrefix(readString(formData, "invoice_ref"), "invoice_ref");
+  const invoicePdfUrl = stripLeadingFieldPrefix(readString(formData, "invoice_pdf_url"), "invoice_pdf_url");
 
   if (!queryId) {
     redirectWithResult({ query_error: "Missing evidence query id." });

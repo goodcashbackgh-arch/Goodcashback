@@ -127,7 +127,7 @@ export default async function ImporterEvidenceQueriesPage({
                                     name="invoice_ref"
                                     required
                                     className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-900"
-                                    placeholder="INV-12345"
+                                    placeholder="INV-DAY3-TRACK-001"
                                   />
                                 </label>
                                 <label className="block space-y-1 text-xs font-medium uppercase tracking-wide text-slate-600">
@@ -136,7 +136,7 @@ export default async function ImporterEvidenceQueriesPage({
                                     name="invoice_pdf_url"
                                     required
                                     className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-900"
-                                    placeholder="https://..."
+                                    placeholder="https://example.com/invoice-day3-track-001.pdf"
                                   />
                                 </label>
                                 <button
