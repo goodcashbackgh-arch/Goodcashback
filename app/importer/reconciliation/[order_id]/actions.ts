@@ -43,6 +43,45 @@ async function requireActiveOperator() {
   return { supabase, ok: true as const, operatorId: operator.id };
 }
 
+async function requireAuthorizedOrder(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  operatorId: string,
+  orderId: string,
+) {
+  const { data: order, error: orderError } = await supabase
+    .from("orders")
+    .select("id, importer_id")
+    .eq("id", orderId)
+    .maybeSingle();
+
+  if (orderError) {
+    return { ok: false as const, error: orderError.message };
+  }
+
+  if (!order) {
+    return { ok: false as const, error: "Order not found." };
+  }
+
+  const { data: importerAccess, error: importerAccessError } = await supabase
+    .from("operator_importers")
+    .select("id")
+    .eq("operator_id", operatorId)
+    .eq("importer_id", order.importer_id)
+    .is("revoked_at", null)
+    .limit(1)
+    .maybeSingle();
+
+  if (importerAccessError) {
+    return { ok: false as const, error: importerAccessError.message };
+  }
+
+  if (!importerAccess) {
+    return { ok: false as const, error: "You do not have access to this order." };
+  }
+
+  return { ok: true as const, orderId: order.id };
+}
+
 export async function updateSupplierInvoiceLineAction(formData: FormData) {
   const orderId = readString(formData, "order_id");
   const lineId = readString(formData, "line_id");
@@ -71,6 +110,39 @@ export async function updateSupplierInvoiceLineAction(formData: FormData) {
     redirectWithResult(orderId, { error: guard.error });
   }
 
+  const authorizedOrder = await requireAuthorizedOrder(guard.supabase, guard.operatorId, orderId);
+  if (!authorizedOrder.ok) {
+    redirectWithResult(orderId, { error: authorizedOrder.error });
+  }
+
+  const { data: line, error: lineError } = await guard.supabase
+    .from("supplier_invoice_lines")
+    .select("id, supplier_invoice_id")
+    .eq("id", lineId)
+    .maybeSingle();
+
+  if (lineError) {
+    redirectWithResult(orderId, { error: lineError.message });
+  }
+
+  if (!line) {
+    redirectWithResult(orderId, { error: "Line not found." });
+  }
+
+  const { data: invoice, error: invoiceError } = await guard.supabase
+    .from("supplier_invoices")
+    .select("id, order_id")
+    .eq("id", line.supplier_invoice_id)
+    .maybeSingle();
+
+  if (invoiceError) {
+    redirectWithResult(orderId, { error: invoiceError.message });
+  }
+
+  if (!invoice || invoice.order_id !== orderId) {
+    redirectWithResult(orderId, { error: "Line is not part of this order." });
+  }
+
   const { error } = await guard.supabase
     .from("supplier_invoice_lines")
     .update({
@@ -78,7 +150,8 @@ export async function updateSupplierInvoiceLineAction(formData: FormData) {
       description,
       amount_inc_vat_gbp: amount,
     })
-    .eq("id", lineId);
+    .eq("id", lineId)
+    .eq("supplier_invoice_id", invoice.id);
 
   if (error) {
     redirectWithResult(orderId, { error: error.message });
@@ -114,6 +187,29 @@ export async function addManualSupplierInvoiceLineAction(formData: FormData) {
   const guard = await requireActiveOperator();
   if (!guard.ok) {
     redirectWithResult(orderId, { error: guard.error });
+  }
+
+  const authorizedOrder = await requireAuthorizedOrder(guard.supabase, guard.operatorId, orderId);
+  if (!authorizedOrder.ok) {
+    redirectWithResult(orderId, { error: authorizedOrder.error });
+  }
+
+  const { data: supplierInvoice, error: supplierInvoiceError } = await guard.supabase
+    .from("supplier_invoices")
+    .select("id, order_id")
+    .eq("id", supplierInvoiceId)
+    .maybeSingle();
+
+  if (supplierInvoiceError) {
+    redirectWithResult(orderId, { error: supplierInvoiceError.message });
+  }
+
+  if (!supplierInvoice) {
+    redirectWithResult(orderId, { error: "Supplier invoice not found." });
+  }
+
+  if (supplierInvoice.order_id !== authorizedOrder.orderId) {
+    redirectWithResult(orderId, { error: "Supplier invoice does not belong to this order." });
   }
 
   const { data: lines, error: linesError } = await guard.supabase
@@ -159,9 +255,14 @@ export async function deleteManualSupplierInvoiceLineAction(formData: FormData) 
     redirectWithResult(orderId, { error: guard.error });
   }
 
+  const authorizedOrder = await requireAuthorizedOrder(guard.supabase, guard.operatorId, orderId);
+  if (!authorizedOrder.ok) {
+    redirectWithResult(orderId, { error: authorizedOrder.error });
+  }
+
   const { data: line, error: lineError } = await guard.supabase
     .from("supplier_invoice_lines")
-    .select("id, line_source")
+    .select("id, line_source, supplier_invoice_id")
     .eq("id", lineId)
     .maybeSingle();
 
@@ -173,11 +274,30 @@ export async function deleteManualSupplierInvoiceLineAction(formData: FormData) 
     redirectWithResult(orderId, { error: "Line not found." });
   }
 
+  const { data: invoice, error: invoiceError } = await guard.supabase
+    .from("supplier_invoices")
+    .select("id, order_id")
+    .eq("id", line.supplier_invoice_id)
+    .maybeSingle();
+
+  if (invoiceError) {
+    redirectWithResult(orderId, { error: invoiceError.message });
+  }
+
+  if (!invoice || invoice.order_id !== authorizedOrder.orderId) {
+    redirectWithResult(orderId, { error: "Line is not part of this order." });
+  }
+
   if (line.line_source !== "manually_added") {
     redirectWithResult(orderId, { error: "Only manually added lines can be deleted." });
   }
 
-  const { error } = await guard.supabase.from("supplier_invoice_lines").delete().eq("id", lineId);
+  const { error } = await guard.supabase
+    .from("supplier_invoice_lines")
+    .delete()
+    .eq("id", lineId)
+    .eq("supplier_invoice_id", invoice.id)
+    .eq("line_source", "manually_added");
 
   if (error) {
     redirectWithResult(orderId, { error: error.message });
