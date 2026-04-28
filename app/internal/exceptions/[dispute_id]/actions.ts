@@ -65,12 +65,12 @@ export async function addDisputeInternalNoteAction(formData: FormData) {
   const guard = await requireActiveStaff();
   if (!guard.ok) redirectWithResult(disputeId, { error: guard.error });
 
-  const { error } = await guard.supabase.from("dispute_messages").insert({
-    dispute_id: disputeId,
-    message_type: "supervisor_note",
-    counterparty: "internal",
-    body,
-    generated_by: "manual",
+  const { error } = await guard.supabase.rpc("staff_add_dispute_message", {
+    p_dispute_id: disputeId,
+    p_message_type: "supervisor_note",
+    p_counterparty: "internal",
+    p_body: body,
+    p_generated_by: "manual",
   });
 
   if (error) redirectWithResult(disputeId, { error: error.message });
@@ -89,12 +89,12 @@ export async function pasteRetailerResponseAction(formData: FormData) {
   const guard = await requireActiveStaff();
   if (!guard.ok) redirectWithResult(disputeId, { error: guard.error });
 
-  const { error } = await guard.supabase.from("dispute_messages").insert({
-    dispute_id: disputeId,
-    message_type: "retailer_reply",
-    counterparty: "retailer",
-    body,
-    generated_by: "retailer_paste",
+  const { error } = await guard.supabase.rpc("staff_add_dispute_message", {
+    p_dispute_id: disputeId,
+    p_message_type: "retailer_reply",
+    p_counterparty: "retailer",
+    p_body: body,
+    p_generated_by: "retailer_paste",
   });
 
   if (error) redirectWithResult(disputeId, { error: error.message });
