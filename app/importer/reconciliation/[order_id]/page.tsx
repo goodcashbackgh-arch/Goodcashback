@@ -8,6 +8,7 @@ import {
   createExceptionCaseAction,
   deleteManualSupplierInvoiceLineAction,
   markSupplierInvoiceLineProgressedAction,
+  rescindExceptionCaseAction,
   updateSupplierInvoiceLineAction,
 } from "./actions";
 
@@ -39,7 +40,9 @@ type ExistingExceptionCase = {
   desired_outcome: string;
   status: string;
   amount_impact_gbp: number;
+  customer_credit_note_sales_invoice_id: string | null;
   refund_approved_at: string | null;
+  resolved_at: string | null;
   replacement_child_order_id: string | null;
   replacement_child_order: { order_ref: string | null }[] | null;
 };
@@ -143,7 +146,7 @@ export default async function ImporterReconciliationOrderPage({
 
   const { data: exceptionCases, error: exceptionCasesError } = await supabase
     .from("disputes")
-    .select("id, desired_outcome, status, amount_impact_gbp, refund_approved_at, replacement_child_order_id, replacement_child_order:orders!disputes_replacement_child_order_id_fkey(order_ref)")
+    .select("id, desired_outcome, status, amount_impact_gbp, customer_credit_note_sales_invoice_id, refund_approved_at, resolved_at, replacement_child_order_id, replacement_child_order:orders!disputes_replacement_child_order_id_fkey(order_ref)")
     .eq("order_id", orderId)
     .order("raised_at", { ascending: false });
 
@@ -156,8 +159,28 @@ export default async function ImporterReconciliationOrderPage({
     : { data: [] as Array<{ dispute_id: string }>, error: null };
 
   const invoiceLines = (lines ?? []) as SupplierInvoiceLine[];
-  const selectableLines = invoiceLines.filter((line) => !isProgressed(line));
-  const exceptionSelectableLines = invoiceLines.filter((line) => !isProgressed(line));
+  const invoiceLineIds = invoiceLines.map((line) => line.id);
+  const { data: openDisputeLinks, error: openDisputeLinksError } = invoiceLineIds.length > 0
+    ? await supabase
+        .from("dispute_lines")
+        .select("supplier_invoice_line_id, dispute:disputes!dispute_lines_dispute_id_fkey(id, desired_outcome, resolved_at)")
+        .in("supplier_invoice_line_id", invoiceLineIds)
+        .is("resolved_at", null)
+    : { data: [] as Array<{ supplier_invoice_line_id: string; dispute: { id: string; desired_outcome: string; resolved_at: string | null } | { id: string; desired_outcome: string; resolved_at: string | null }[] | null }>, error: null };
+
+  const openDisputeByLineId = new Map<string, { disputeId: string; remedy: string }>();
+  for (const link of openDisputeLinks ?? []) {
+    const dispute = Array.isArray(link.dispute) ? link.dispute[0] : link.dispute;
+    if (dispute && dispute.resolved_at === null) {
+      openDisputeByLineId.set(link.supplier_invoice_line_id, {
+        disputeId: dispute.id,
+        remedy: dispute.desired_outcome,
+      });
+    }
+  }
+
+  const selectableLines = invoiceLines.filter((line) => !isProgressed(line) && !openDisputeByLineId.has(line.id));
+  const exceptionSelectableLines = invoiceLines.filter((line) => !isProgressed(line) && !openDisputeByLineId.has(line.id));
   const orderScreenshots = (screenshots ?? []) as OrderScreenshot[];
   const existingExceptionCases = (exceptionCases ?? []) as ExistingExceptionCase[];
   const lineCountByDispute = (exceptionCaseLineTotals ?? []).reduce<Record<string, number>>((acc, row) => {
@@ -287,7 +310,9 @@ export default async function ImporterReconciliationOrderPage({
             <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
               <h2 className="text-xl font-semibold">Create exception case</h2>
               <p className="mt-2 text-sm text-slate-600">Select unresolved lines and branch them into a grouped refund or replacement exception case.</p>
-              {exceptionSelectableLines.length > 0 ? (
+              {openDisputeLinksError ? (
+                <p className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">Failed to load exception-link state for invoice lines.</p>
+              ) : exceptionSelectableLines.length > 0 ? (
                 <form action={createExceptionCaseAction} className="mt-4 space-y-4">
                   <input type="hidden" name="order_id" value={orderId} />
                   <div className="grid gap-2">
@@ -327,6 +352,13 @@ export default async function ImporterReconciliationOrderPage({
                       {dispute.replacement_child_order_id ? (
                         <p><span className="font-semibold">Replacement child order:</span> {dispute.replacement_child_order?.[0]?.order_ref ?? dispute.replacement_child_order_id}</p>
                       ) : null}
+                      {dispute.resolved_at === null ? (
+                        <form action={rescindExceptionCaseAction} className="mt-3">
+                          <input type="hidden" name="order_id" value={orderId} />
+                          <input type="hidden" name="dispute_id" value={dispute.id} />
+                          <button type="submit" className="rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-800 hover:bg-rose-100">Rescind exception</button>
+                        </form>
+                      ) : null}
                     </article>
                   ))}
                 </div>
@@ -349,7 +381,7 @@ export default async function ImporterReconciliationOrderPage({
                   {selectableLines.length > 0 ? (
                     <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
                       <p className="text-sm font-semibold text-emerald-900">Select clean lines to progress in bulk.</p>
-                      <p className="mt-1 text-xs text-emerald-800">Only unresolved lines are selectable. Progressed lines remain visible but disabled.</p>
+                      <p className="mt-1 text-xs text-emerald-800">Only unresolved progressable lines are selectable. Progressed and exception-linked lines remain visible but disabled.</p>
                       <BulkLineSelectionControls selectableCount={selectableLines.length} />
                       <button type="submit" className="mt-3 rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-600">Mark selected as progressed</button>
                     </div>
@@ -360,44 +392,58 @@ export default async function ImporterReconciliationOrderPage({
                   <div className="space-y-4">
                     {invoiceLines.map((line) => {
                       const progressed = isProgressed(line);
+                      const openDispute = openDisputeByLineId.get(line.id);
+                      const exceptionLinked = Boolean(openDispute);
                       const canDelete = line.line_source === "manually_added";
                       const isOcrLine = line.line_source === "ocr_extracted";
+                      const lineLocked = exceptionLinked;
+                      const statusText = exceptionLinked
+                        ? openDispute?.remedy === "replacement"
+                          ? "In replacement exception case"
+                          : "In refund exception case"
+                        : progressed
+                          ? "Progressed"
+                          : "Unresolved";
 
                       return (
-                        <article key={line.id} className={`rounded-2xl border p-4 ${progressed ? "border-emerald-300 bg-emerald-50/60" : "border-slate-200 bg-white"}`}>
+                        <article key={line.id} className={`rounded-2xl border p-4 ${exceptionLinked ? "border-amber-300 bg-amber-50/70" : progressed ? "border-emerald-300 bg-emerald-50/60" : "border-slate-200 bg-white"}`}>
                           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                            <label className={`flex items-center gap-3 text-sm font-semibold ${progressed ? "text-slate-500" : "text-slate-900"}`}>
-                              <input type="checkbox" name="line_ids" value={line.id} disabled={progressed} data-bulk-line-checkbox="true" className="h-4 w-4 rounded border-slate-300" />
-                              <span>Line {line.line_order} · {line.line_source}</span>
-                            </label>
-                            <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${progressed ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>{progressed ? "Progressed" : "Unresolved"}</span>
+                            {exceptionLinked ? (
+                              <p className="text-sm font-semibold text-slate-900">Line {line.line_order} · {line.line_source}</p>
+                            ) : (
+                              <label className={`flex items-center gap-3 text-sm font-semibold ${progressed ? "text-slate-500" : "text-slate-900"}`}>
+                                <input type="checkbox" name="line_ids" value={line.id} disabled={progressed} data-bulk-line-checkbox="true" className="h-4 w-4 rounded border-slate-300" />
+                                <span>Line {line.line_order} · {line.line_source}</span>
+                              </label>
+                            )}
+                            <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${exceptionLinked ? "bg-amber-100 text-amber-900" : progressed ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>{statusText}</span>
                           </div>
 
                           <div className="grid gap-3 md:grid-cols-12">
-                            <label className="space-y-1 text-sm md:col-span-6"><span className="text-xs uppercase tracking-wide text-slate-500">description</span><input form={`update-line-${line.id}`} name="description" defaultValue={line.description} required readOnly={isOcrLine} title={isOcrLine ? "OCR description is source evidence and cannot be changed." : undefined} className={`w-full rounded-xl border border-slate-300 px-3 py-2 ${isOcrLine ? "bg-slate-100 text-slate-600" : ""}`} />{isOcrLine ? <span className="text-xs text-slate-500">OCR source description is preserved for audit.</span> : null}</label>
-                            <label className="space-y-1 text-sm md:col-span-2"><span className="text-xs uppercase tracking-wide text-slate-500">qty</span><input form={`update-line-${line.id}`} name="qty" defaultValue={line.qty} required type="number" step="1" min="0" className="w-full rounded-xl border border-slate-300 px-3 py-2" /></label>
-                            <label className="space-y-1 text-sm md:col-span-2"><span className="text-xs uppercase tracking-wide text-slate-500">size</span><input form={`update-line-${line.id}`} name="size" defaultValue={line.size ?? ""} className="w-full rounded-xl border border-slate-300 px-3 py-2" /></label>
-                            <label className="space-y-1 text-sm md:col-span-2"><span className="text-xs uppercase tracking-wide text-slate-500">retailer_sku</span><input form={`update-line-${line.id}`} name="retailer_sku" defaultValue={line.retailer_sku ?? ""} className="w-full rounded-xl border border-slate-300 px-3 py-2" /></label>
-                            <label className="space-y-1 text-sm md:col-span-2"><span className="text-xs uppercase tracking-wide text-slate-500">amount_inc_vat_gbp</span><input form={`update-line-${line.id}`} name="amount_inc_vat_gbp" defaultValue={line.amount_inc_vat_gbp} required type="number" step="0.01" min="0" className="w-full rounded-xl border border-slate-300 px-3 py-2" /></label>
+                            <label className="space-y-1 text-sm md:col-span-6"><span className="text-xs uppercase tracking-wide text-slate-500">description</span><input form={`update-line-${line.id}`} name="description" defaultValue={line.description} required readOnly={isOcrLine || lineLocked} title={isOcrLine ? "OCR description is source evidence and cannot be changed." : lineLocked ? "Exception-linked lines are locked." : undefined} className={`w-full rounded-xl border border-slate-300 px-3 py-2 ${isOcrLine || lineLocked ? "bg-slate-100 text-slate-600" : ""}`} />{isOcrLine ? <span className="text-xs text-slate-500">OCR source description is preserved for audit.</span> : null}</label>
+                            <label className="space-y-1 text-sm md:col-span-2"><span className="text-xs uppercase tracking-wide text-slate-500">qty</span><input form={`update-line-${line.id}`} name="qty" defaultValue={line.qty} required type="number" step="1" min="0" readOnly={lineLocked} className={`w-full rounded-xl border border-slate-300 px-3 py-2 ${lineLocked ? "bg-slate-100 text-slate-600" : ""}`} /></label>
+                            <label className="space-y-1 text-sm md:col-span-2"><span className="text-xs uppercase tracking-wide text-slate-500">size</span><input form={`update-line-${line.id}`} name="size" defaultValue={line.size ?? ""} readOnly={lineLocked} className={`w-full rounded-xl border border-slate-300 px-3 py-2 ${lineLocked ? "bg-slate-100 text-slate-600" : ""}`} /></label>
+                            <label className="space-y-1 text-sm md:col-span-2"><span className="text-xs uppercase tracking-wide text-slate-500">retailer_sku</span><input form={`update-line-${line.id}`} name="retailer_sku" defaultValue={line.retailer_sku ?? ""} readOnly={lineLocked} className={`w-full rounded-xl border border-slate-300 px-3 py-2 ${lineLocked ? "bg-slate-100 text-slate-600" : ""}`} /></label>
+                            <label className="space-y-1 text-sm md:col-span-2"><span className="text-xs uppercase tracking-wide text-slate-500">amount_inc_vat_gbp</span><input form={`update-line-${line.id}`} name="amount_inc_vat_gbp" defaultValue={line.amount_inc_vat_gbp} required type="number" step="0.01" min="0" readOnly={lineLocked} className={`w-full rounded-xl border border-slate-300 px-3 py-2 ${lineLocked ? "bg-slate-100 text-slate-600" : ""}`} /></label>
                             <div className="space-y-1 text-sm md:col-span-2"><span className="text-xs uppercase tracking-wide text-slate-500">eligible_for_invoice_yn</span><div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm">{line.eligible_for_invoice_yn}</div></div>
                           </div>
 
                           <div className="mt-3 flex flex-wrap items-center gap-3">
-                            <button form={`update-line-${line.id}`} type="submit" className="rounded-xl bg-sky-600 px-3 py-2 text-sm font-semibold text-white hover:bg-sky-500">Save line</button>
-                            {!progressed ? (
+                            {!exceptionLinked ? <button form={`update-line-${line.id}`} type="submit" className="rounded-xl bg-sky-600 px-3 py-2 text-sm font-semibold text-white hover:bg-sky-500">Save line</button> : null}
+                            {!progressed && !exceptionLinked ? (
                               <form action={markSupplierInvoiceLineProgressedAction}>
                                 <input type="hidden" name="order_id" value={orderId} />
                                 <input type="hidden" name="line_id" value={line.id} />
                                 <button type="submit" className="rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800 hover:bg-emerald-100">Mark progressed</button>
                               </form>
-                            ) : <span className="text-xs font-medium text-emerald-700">Included in progressed subset.</span>}
-                            {canDelete ? (
+                            ) : progressed ? <span className="text-xs font-medium text-emerald-700">Included in progressed subset.</span> : null}
+                            {canDelete && !exceptionLinked ? (
                               <form action={deleteManualSupplierInvoiceLineAction}>
                                 <input type="hidden" name="order_id" value={orderId} />
                                 <input type="hidden" name="line_id" value={line.id} />
                                 <button type="submit" className="rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-800 hover:bg-rose-100">Delete manual line</button>
                               </form>
-                            ) : <span className="text-xs text-slate-500">OCR lines cannot be deleted.</span>}
+                            ) : !exceptionLinked ? <span className="text-xs text-slate-500">OCR lines cannot be deleted.</span> : null}
                             <span className="text-xs text-slate-500">qty_confirmed: {formatValue(line.qty_confirmed)} · amount_confirmed: {formatValue(line.amount_confirmed)}</span>
                           </div>
                         </article>
