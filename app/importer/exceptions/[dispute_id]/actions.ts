@@ -82,37 +82,10 @@ async function requireDisputeAccess(supabase: Awaited<ReturnType<typeof createCl
   return { ok: true as const };
 }
 
-export async function pasteRetailerResponseAction(formData: FormData) {
-  const disputeId = readString(formData, "dispute_id");
-  const body = readString(formData, "body");
-
-  if (!disputeId) redirect("/importer");
-  if (!body) redirectWithResult(disputeId, { error: "Retailer response cannot be blank." });
-
-  const guard = await requireActiveOperator();
-  if (!guard.ok) redirectWithResult(disputeId, { error: guard.error });
-
-  const accessGuard = await requireDisputeAccess(guard.supabase, guard.operatorId, disputeId);
-  if (!accessGuard.ok) redirectWithResult(disputeId, { error: accessGuard.error });
-
-  const { error } = await guard.supabase.rpc("operator_add_dispute_message", {
-    p_dispute_id: disputeId,
-    p_body: body,
-    p_message_type: "retailer_reply",
-    p_counterparty: "retailer",
-    p_generated_by: "retailer_paste",
-  });
-
-  if (error) redirectWithResult(disputeId, { error: error.message });
-
-  revalidatePath(`/importer/exceptions/${disputeId}`);
-  revalidatePath(`/internal/exceptions/${disputeId}`);
-  redirectWithResult(disputeId, { success: "Retailer response logged." });
-}
-
-export async function updateRetailerOutcomeAction(formData: FormData) {
+export async function saveRetailerUpdateAction(formData: FormData) {
   const disputeId = readString(formData, "dispute_id");
   const outcome = readString(formData, "retailer_outcome");
+  const response = readString(formData, "retailer_response");
 
   if (!disputeId) redirect("/importer");
   if (!OUTCOME_TO_STATUS[outcome]) redirectWithResult(disputeId, { error: "Invalid retailer outcome selection." });
@@ -123,15 +96,16 @@ export async function updateRetailerOutcomeAction(formData: FormData) {
   const accessGuard = await requireDisputeAccess(guard.supabase, guard.operatorId, disputeId);
   if (!accessGuard.ok) redirectWithResult(disputeId, { error: accessGuard.error });
 
-  const { error } = await guard.supabase
-    .from("dispute_lines")
-    .update({ conversation_status: OUTCOME_TO_STATUS[outcome] })
-    .eq("dispute_id", disputeId)
-    .is("resolved_at", null);
+  const { data, error } = await guard.supabase.rpc("operator_update_dispute_retailer_update", {
+    p_dispute_id: disputeId,
+    p_retailer_response: response,
+    p_retailer_outcome: outcome,
+  });
 
   if (error) redirectWithResult(disputeId, { error: error.message });
+  if (!data?.ok) redirectWithResult(disputeId, { error: "Failed to save retailer update." });
 
   revalidatePath(`/importer/exceptions/${disputeId}`);
   revalidatePath(`/internal/exceptions/${disputeId}`);
-  redirectWithResult(disputeId, { success: "Retailer outcome updated." });
+  redirectWithResult(disputeId, { success: "Retailer update saved." });
 }

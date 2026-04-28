@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
-import { pasteRetailerResponseAction, updateRetailerOutcomeAction } from "./actions";
+import { saveRetailerUpdateAction } from "./actions";
 
 type SearchParams = {
   success?: string;
@@ -108,31 +108,27 @@ export default async function ImporterExceptionDetailPage({
           </div>
         </section>
 
-        <section className="grid gap-6 lg:grid-cols-2">
-          <article className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-            <h2 className="text-xl font-semibold">Paste retailer response</h2>
-            <p className="mt-2 text-sm text-slate-600">Log a retailer reply exactly as received.</p>
-            <form action={pasteRetailerResponseAction} className="mt-4 space-y-2">
-              <input type="hidden" name="dispute_id" value={dispute.id} />
-              <textarea name="body" required rows={5} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
-              <button type="submit" className="rounded-xl bg-amber-700 px-4 py-2 text-sm font-semibold text-white">Log retailer response</button>
-            </form>
-          </article>
-
-          <article className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-            <h2 className="text-xl font-semibold">Retailer outcome</h2>
-            <p className="mt-2 text-sm text-slate-600">Keep staff updated with the current retailer position.</p>
-            <form action={updateRetailerOutcomeAction} className="mt-4 space-y-3">
-              <input type="hidden" name="dispute_id" value={dispute.id} />
+        <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+          <h2 className="text-xl font-semibold">Retailer update</h2>
+          <p className="mt-2 text-sm text-slate-600">Save retailer response and outcome in one atomic update.</p>
+          <p className="mt-3 text-sm text-slate-700"><span className="font-semibold">Current retailer outcome:</span> {retailerOutcome.replaceAll("_", " ")}</p>
+          <form action={saveRetailerUpdateAction} className="mt-4 space-y-3">
+            <input type="hidden" name="dispute_id" value={dispute.id} />
+            <label className="block space-y-1">
+              <span className="text-sm font-medium text-slate-700">Retailer response</span>
+              <textarea name="retailer_response" rows={5} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
+            </label>
+            <label className="block space-y-1">
+              <span className="text-sm font-medium text-slate-700">Retailer outcome</span>
               <select name="retailer_outcome" defaultValue={retailerOutcome} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm">
                 <option value="still_waiting">still_waiting</option>
                 <option value="retailer_accepted">retailer_accepted</option>
                 <option value="retailer_disputed">retailer_disputed</option>
                 <option value="more_info_requested">more_info_requested</option>
               </select>
-              <button type="submit" className="rounded-xl bg-sky-700 px-4 py-2 text-sm font-semibold text-white">Update retailer outcome</button>
-            </form>
-          </article>
+            </label>
+            <button type="submit" className="rounded-xl bg-sky-700 px-4 py-2 text-sm font-semibold text-white">Save retailer update</button>
+          </form>
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">

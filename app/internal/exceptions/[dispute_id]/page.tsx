@@ -4,7 +4,6 @@ import { createClient } from "@/utils/supabase/server";
 import {
   acceptFinalRefundOutcomeAction,
   acceptReplacementOutcomeAction,
-  addDisputeInternalNoteAction,
   approveRefundPursuitAction,
 } from "./actions";
 
@@ -183,15 +182,6 @@ export default async function InternalExceptionDetailPage({
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold">Conversation log</h2>
-          <div className="mt-4 max-w-xl">
-            <form action={addDisputeInternalNoteAction} className="space-y-2 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              <input type="hidden" name="dispute_id" value={dispute.id} />
-              <h3 className="text-sm font-semibold">Add note (internal)</h3>
-              <textarea name="body" required rows={4} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
-              <button type="submit" className="rounded-xl bg-sky-700 px-4 py-2 text-sm font-semibold text-white">Save note</button>
-            </form>
-          </div>
-
           <div className="mt-5 space-y-3">
             {(messages ?? []).map((message) => (
               <article key={message.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
