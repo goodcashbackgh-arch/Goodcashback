@@ -56,9 +56,10 @@ function nextAction(
   hasOpenEvidenceQuery: boolean
 ) {
   if (hasOpenEvidenceQuery) return "Answer evidence query";
+  if (order.lifecycle_status === "partially_progressed") return "Continue invoice reconciliation";
   if (order.lifecycle_status === "reconciling") return "Awaiting invoice reconciliation";
   if (order.lifecycle_status === "evidence_collecting") return "Upload invoice or tracking";
-  if (!order.funded_at) return "Waiting for staff funding";
+  if (!order.funded_at) return "No importer action required";
   return "In progress";
 }
 
