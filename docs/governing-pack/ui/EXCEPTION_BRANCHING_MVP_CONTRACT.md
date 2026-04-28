@@ -1,6 +1,6 @@
 # Exception Branching MVP Contract
 
-Status: contract only (MVP v1).
+Status: contract only (MVP v2).
 
 This document defines the fastest safe MVP flow for unresolved invoice-line exceptions after importer OCR/manual reconciliation. It is intentionally conservative: use existing schema and current operational lanes; do not add schema unless a tested blocker proves it is required.
 
@@ -18,9 +18,10 @@ Key governing rules used:
 
 - Correct lines may progress while unresolved lines become child exceptions.
 - Parent order is fully cleared only when progressed lines plus resolved child outcomes reconcile back to the original submitted quantity/value.
-- Funding recognition delay must not block operational reconciliation, child-exception creation, ready-for-shipment handoff, or shipper/logistics progression where goods are genuinely moving.
-- Refund branch requires supervisor/admin approval before importer can proceed with refund retailer communication.
-- Replacement branch can proceed without the refund-specific approval gate, but remains inside the child-exception status machine.
+- Funding recognition delay must not block operational reconciliation, child-exception creation, ready-for-shipment handoff, retailer communication, or shipper/logistics progression where goods are genuinely moving.
+- Refund branch requires supervisor/admin approval before importer can pursue the refund route with the retailer.
+- Replacement branch can proceed into retailer communication without the refund-specific approval gate.
+- Final retailer outcome must be accepted/reviewed by supervisor/admin before downstream refund settlement or replacement child order creation.
 
 ---
 
@@ -31,8 +32,8 @@ The parent order remains the anchor.
 For one parent order, the platform may show parallel lanes:
 
 1. Progressed goods lane — clean invoiceable subset moving toward shipper/logistics, shipment evidence, delivery, invoicing/accounting release later.
-2. Refund exception lane — unresolved lines grouped into a refund case, staff approval required before refund retailer communication.
-3. Replacement exception lane — unresolved lines grouped into a replacement case, with a linked replacement child order created immediately for MVP operational reuse.
+2. Refund exception lane — unresolved lines grouped into a refund case, supervisor approval required to pursue refund, then manual retailer conversation, then supervisor acceptance of final retailer outcome.
+3. Replacement exception lane — unresolved lines grouped into a replacement case, manual retailer conversation, then supervisor acceptance of final retailer replacement outcome, then replacement child order creation.
 
 Do not collapse these lanes into one misleading status. One parent order can be partially progressed and still have open exception branches.
 
@@ -66,8 +67,8 @@ Use `disputes` as the grouped exception case header:
 - `disputes.desired_outcome` = `refund` or `replacement`
 - `disputes.amount_impact_gbp` = total impact of grouped exception lines
 - `disputes.status` = case-level status
-- `disputes.refund_approved_by_staff_id` / `refund_approved_at` for refund approval gate
-- `disputes.replacement_child_order_id` links to the replacement child order created for replacement cases
+- `disputes.refund_approved_by_staff_id` / `refund_approved_at` = approval to pursue refund route
+- `disputes.replacement_child_order_id` = set only after retailer replacement outcome is agreed and supervisor accepts the outcome
 
 ### Exception line detail
 
@@ -80,9 +81,21 @@ Use `dispute_lines` for affected line-level detail:
 - `dispute_lines.conversation_status`
 - `dispute_lines.intended_remedy` = `refund` or `replacement`
 
+### Conversation log
+
+Use `dispute_messages` for the manual retailer conversation log now, and AI-ready conversation later:
+
+- `message_type`
+- `counterparty`
+- `subject`
+- `body`
+- `generated_by = 'manual'` for importer/staff notes and manual drafts
+- `generated_by = 'retailer_paste'` for pasted retailer replies
+- later AI can use `generated_by = 'claude'`, `ai_input_context_json`, `ai_model_used`, and `ai_prompt_hash` without replacing the workflow
+
 ### Replacement child order
 
-Use existing order parent/child relationship:
+Use existing order parent/child relationship only after replacement outcome is accepted:
 
 - child `orders.parent_order_id` = original parent order id
 - child `orders.order_type = 'replacement_child'`
@@ -104,7 +117,7 @@ The child order then reuses existing operational lanes where applicable:
 For MVP, group unresolved lines by remedy intent under the same parent order:
 
 - all selected refund-intent lines for the same parent order -> one refund dispute case
-- all selected replacement-intent lines for the same parent order -> one replacement dispute case and one linked replacement child order
+- all selected replacement-intent lines for the same parent order -> one replacement dispute case
 
 Line-level audit remains under `dispute_lines`.
 
@@ -118,17 +131,19 @@ Avoid one workflow per line unless the importer/staff deliberately needs separat
 2. Importer selects remedy intent = refund for selected unresolved lines.
 3. System creates or reuses one grouped refund dispute case for the parent order.
 4. System creates `dispute_lines` for each selected affected line.
-5. Refund case enters approval-required state.
-6. Staff supervisor/admin approves or rejects refund path.
-7. Until approved, importer refund retailer communication is blocked/greyed out.
-8. Once approved, importer can continue retailer communication / AI-assisted draft loop.
-9. Retailer outcome resolves to refund / credit / closed-no-action as governed.
-10. Final settlement, payout, credit application, customer credit note, Sage/VAT release remain downstream and gated.
+5. Refund case enters approval-required state to pursue refund with retailer.
+6. Staff supervisor/admin approves or rejects permission to pursue refund route.
+7. Once approved, importer contacts retailer manually and logs/pastes conversation in the case.
+8. Retailer responds: agrees refund, rejects, asks for more info, or offers alternative.
+9. Importer logs retailer outcome/evidence.
+10. Supervisor/admin accepts the final retailer refund outcome before downstream settlement.
+11. Final settlement, payout, credit application, customer credit note, Sage/VAT release remain downstream and gated.
 
 MVP shortcut allowed:
 
-- Use simple staff approval UI/action against `disputes.refund_approved_by_staff_id` and `refund_approved_at`.
-- Evidence query pattern may be reused only to ask importer for missing proof, not to fake refund approval.
+- Use simple staff approval UI/action against `disputes.refund_approved_by_staff_id` and `refund_approved_at` for permission to pursue refund.
+- Use `dispute_messages` for manual retailer conversation and retailer replies.
+- Evidence query pattern may be reused only to ask importer for missing proof, not to fake refund approval or final outcome acceptance.
 
 ---
 
@@ -138,19 +153,23 @@ MVP shortcut allowed:
 2. Importer selects remedy intent = replacement for selected unresolved lines.
 3. System creates or reuses one grouped replacement dispute case for the parent order.
 4. System creates `dispute_lines` for each selected affected line.
-5. System immediately creates a linked `replacement_child` order for MVP operational tracking.
-6. System links the child order through `disputes.replacement_child_order_id`.
-7. Replacement child order uses existing order operational flow:
-   - tracking
-   - invoice/evidence upload
-   - reconciliation if needed
-   - shipping quote/handoff
-   - delivery/POD
-8. Child outcome reconciles back to the parent via the dispute case.
+5. Importer contacts retailer manually and logs/pastes conversation in the case.
+6. Retailer responds: agrees replacement, rejects, asks for more info, or offers alternative.
+7. Importer logs retailer outcome/evidence.
+8. Supervisor/admin accepts the final replacement outcome.
+9. Only after accepted replacement outcome does the platform create a linked `replacement_child` order.
+10. System links the child order through `disputes.replacement_child_order_id`.
+11. Replacement child order uses existing order operational flow:
+    - tracking
+    - invoice/evidence upload
+    - reconciliation if needed
+    - shipping quote/handoff
+    - delivery/POD
+12. Child outcome reconciles back to the parent via the dispute case.
 
 MVP shortcut allowed:
 
-- Do not build full AI communication in v1 if not needed for demo. A simple status + notes path is acceptable if it preserves `dispute_lines.conversation_status` and `intended_remedy`.
+- Do not build full AI communication in v1. Manual message logging is enough if it preserves `dispute_messages`, `dispute_lines.conversation_status`, and `intended_remedy` so AI drafting can replace manual drafting later.
 
 ---
 
@@ -175,16 +194,13 @@ Allow rescind only while no downstream activity has started.
 
 ### Refund rescind allowed only if
 
-- refund has not been approved (`refund_approved_at is null`)
+- refund pursuit has not been approved (`refund_approved_at is null`)
 - no retailer communication/message exists for the dispute
 - no credit note, payout, Sage/VAT/accounting settlement exists
 
 ### Replacement rescind allowed only if
 
-- replacement child order exists but has no activity
-- no tracking submitted for child
-- no supplier invoice uploaded for child
-- no shipping quote linked to child
+- replacement child order has not been created
 - no retailer communication/message exists for the dispute
 - no shipment/accounting/VAT activity exists
 
@@ -215,11 +231,12 @@ For MVP, it is acceptable for importer dashboard next action to show `Continue i
 
 Do not allow:
 
-- manual line add to push total invoice-line qty/value over parent declared baseline, unless a later explicit exception-only manual line mode is designed
+- manual line add or manual line edit/save to push total invoice-line qty/value over parent declared baseline
 - progressed invoiceable subset to exceed parent declared qty/value baseline
 - OCR source line deletion
 - exception-linked lines to remain editable/progressable/deletable through normal line actions
-- refund retailer communication before staff refund approval
+- refund retailer communication before staff refund-pursuit approval
+- replacement child order creation before retailer agreement is logged and supervisor/admin accepts final replacement outcome
 - rescind after downstream activity begins
 - final parent completion while exception branches remain unresolved
 - final financial settlement while funding recognition is not complete
@@ -239,17 +256,33 @@ Do not allow:
 - show exception-linked lines as in-case, not normal editable/progressable unresolved lines
 - show rescind only when allowed
 
-### Staff/internal exception view
+### Internal exception review page
 
-MVP view should show:
+Build `/internal/exceptions/[dispute_id]`.
 
-- parent order
-- progressed qty/value
-- unresolved qty/value
-- grouped refund case(s)
-- grouped replacement case(s)
-- refund approval required/approved
-- replacement child order link if created
+This page should reuse the same context as the importer reconciliation page:
+
+- parent order details
+- original screenshots
+- declared qty/value
+- supplier invoice
+- invoice lines
+- progressed lines
+- exception lines only
+- refund/replacement status
+- conversation log
+- request more evidence link/path where existing evidence-query infrastructure is useful
+- supervisor/admin approval buttons where allowed
+
+### Conversation log
+
+Use simple manual logging now:
+
+- add internal note/manual draft
+- paste retailer reply
+- update conversation status
+
+AI later should plug into this by generating draft messages into the same `dispute_messages` structure.
 
 ### Replacement child order
 
@@ -262,23 +295,26 @@ Reuse existing order pages/flows as far as possible instead of building a specia
 1. Clean OCR line can progress within parent baseline.
 2. Manual line can progress within parent baseline.
 3. Manual line add is blocked if it pushes invoice total over parent baseline.
-4. Progression is blocked if selected lines exceed parent baseline.
-5. Unresolved selected lines can create refund grouped dispute case.
-6. Unresolved selected lines can create replacement grouped dispute case.
-7. Replacement grouped dispute creates linked replacement_child order immediately.
-8. Refund case blocks importer communication until staff approval.
-9. Replacement case does not require refund approval.
-10. Same line cannot be added twice to active exception case.
-11. Exception-linked lines do not show Save / Mark progressed / Delete / progression checkbox.
-12. Rescind works before downstream activity.
-13. Rescind is blocked after refund approval or child tracking/invoice/shipping/message activity.
-14. Progressed subset remains visible and does not disappear when exceptions exist.
-15. Parent does not fully clear until progressed subset plus resolved child outcomes reconcile back to original parent baseline.
-16. No DVA, Sage, VAT, funding, or shipping side effects occur from exception case creation alone.
+4. Manual line edit/save is blocked if it pushes invoice total over parent baseline.
+5. Progression is blocked if selected lines exceed parent baseline.
+6. Unresolved selected lines can create refund grouped dispute case.
+7. Unresolved selected lines can create replacement grouped dispute case.
+8. Replacement grouped dispute does not create replacement child order immediately.
+9. Refund case blocks retailer communication until staff approves refund pursuit.
+10. Replacement case allows manual retailer conversation without refund approval.
+11. Same line cannot be added twice to active exception case.
+12. Exception-linked lines do not show Save / Mark progressed / Delete / progression checkbox.
+13. Rescind works before downstream activity.
+14. Rescind is blocked after refund approval, messages, replacement child creation, or settlement activity.
+15. Progressed subset remains visible and does not disappear when exceptions exist.
+16. Supervisor/internal exception page shows parent order, invoice, screenshots, exception lines, conversation, and allowed approvals.
+17. Supervisor accepts final replacement outcome and only then creates replacement child order.
+18. Parent does not fully clear until progressed subset plus resolved child outcomes reconcile back to original parent baseline.
+19. No DVA, Sage, VAT, funding, or shipping side effects occur from exception case creation alone.
 
 ---
 
-## 11) Non-scope for MVP v1
+## 11) Non-scope for MVP v2
 
 Do not build yet unless specifically approved:
 
@@ -289,4 +325,4 @@ Do not build yet unless specifically approved:
 - automatic credit note/Sage/VAT posting from exception creation
 - final refund payout automation
 
-MVP goal: controlled branch creation and linkage first; richer automation can come in v2.
+MVP goal: controlled branch creation, manual conversation logging, supervisor outcome acceptance, and replacement-child linkage at the right point. Richer automation can come in v2.
