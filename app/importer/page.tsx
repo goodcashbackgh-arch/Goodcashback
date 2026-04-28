@@ -27,6 +27,16 @@ type EvidenceQueryRow = {
   message: string | null;
 };
 
+type InvoiceLineProgressRow = {
+  id: string;
+  eligible_for_invoice_yn: string | null;
+  supplier_invoices: { order_id: string }[] | { order_id: string } | null;
+};
+
+type DisputeLineLinkRow = {
+  supplier_invoice_line_id: string | null;
+};
+
 function gbp(value: number | string | null | undefined) {
   const n = Number(value ?? 0);
   return new Intl.NumberFormat("en-GB", {
@@ -51,12 +61,22 @@ function previewMessage(value: string | null | undefined, max = 72) {
   return `${message.slice(0, max - 1)}…`;
 }
 
+function isProgressed(value: string | null | undefined) {
+  return ["y", "yes", "true", "1"].includes((value ?? "").trim().toLowerCase());
+}
+
 function nextAction(
   order: Pick<DashboardOrderRow, "lifecycle_status" | "funded_at">,
-  hasOpenEvidenceQuery: boolean
+  hasOpenEvidenceQuery: boolean,
+  reconciliationSummary?: { unresolvedCount: number; unresolvedNonExceptionCount: number }
 ) {
   if (hasOpenEvidenceQuery) return "Answer evidence query";
-  if (order.lifecycle_status === "partially_progressed") return "Continue invoice reconciliation";
+  if (order.lifecycle_status === "partially_progressed") {
+    if (!reconciliationSummary) return "Continue invoice reconciliation";
+    if (reconciliationSummary.unresolvedNonExceptionCount > 0) return "Continue invoice reconciliation";
+    if (reconciliationSummary.unresolvedCount > 0) return "Exception branches in progress";
+    return "No importer reconciliation action required";
+  }
   if (order.lifecycle_status === "reconciling") return "Awaiting invoice reconciliation";
   if (order.lifecycle_status === "evidence_collecting") return "Upload invoice or tracking";
   if (!order.funded_at) return "No importer action required";
@@ -163,6 +183,42 @@ export default async function ImporterPage() {
 
   const trackingSet = new Set((tracking ?? []).map((row) => row.order_id));
   const invoiceSet = new Set((invoices ?? []).map((row) => row.order_id));
+
+  const { data: invoiceLines } = orderIds.length
+    ? await supabase
+        .from("supplier_invoice_lines")
+        .select("id, eligible_for_invoice_yn, supplier_invoices!inner(order_id)")
+        .in("supplier_invoices.order_id", orderIds)
+    : { data: [] };
+
+  const invoiceLineRows = (invoiceLines ?? []) as InvoiceLineProgressRow[];
+  const unresolvedLineIds = invoiceLineRows.filter((line) => !isProgressed(line.eligible_for_invoice_yn)).map((line) => line.id);
+  const { data: disputeLineLinks } = unresolvedLineIds.length
+    ? await supabase
+        .from("dispute_lines")
+        .select("supplier_invoice_line_id")
+        .in("supplier_invoice_line_id", unresolvedLineIds)
+    : { data: [] };
+
+  const unresolvedLineLinkedToException = new Set(
+    ((disputeLineLinks ?? []) as DisputeLineLinkRow[])
+      .map((row) => row.supplier_invoice_line_id)
+      .filter((value): value is string => typeof value === "string" && value.length > 0)
+  );
+
+  const reconciliationByOrderId = new Map<string, { unresolvedCount: number; unresolvedNonExceptionCount: number }>();
+  for (const line of invoiceLineRows) {
+    const invoice = Array.isArray(line.supplier_invoices) ? line.supplier_invoices[0] : line.supplier_invoices;
+    const orderId = invoice?.order_id;
+    if (!orderId || isProgressed(line.eligible_for_invoice_yn)) continue;
+
+    const current = reconciliationByOrderId.get(orderId) ?? { unresolvedCount: 0, unresolvedNonExceptionCount: 0 };
+    current.unresolvedCount += 1;
+    if (!unresolvedLineLinkedToException.has(line.id)) {
+      current.unresolvedNonExceptionCount += 1;
+    }
+    reconciliationByOrderId.set(orderId, current);
+  }
 
   return (
     <main className="min-h-screen p-6 space-y-6">
@@ -277,7 +333,7 @@ export default async function ImporterPage() {
                       </div>
                     </td>
                     <td className="p-3">
-                      <div>{nextAction(order, hasOpenEvidenceQuery)}</div>
+                      <div>{nextAction(order, hasOpenEvidenceQuery, reconciliationByOrderId.get(order.id))}</div>
                       {hasOpenEvidenceQuery ? (
                         <Link href="/importer/evidence-queries" className="text-xs font-medium text-sky-600">
                           Answer
