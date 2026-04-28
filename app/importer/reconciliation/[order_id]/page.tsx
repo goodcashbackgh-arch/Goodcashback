@@ -5,6 +5,7 @@ import BulkLineSelectionControls from "./BulkLineSelectionControls";
 import {
   addManualSupplierInvoiceLineAction,
   bulkMarkSupplierInvoiceLinesProgressedAction,
+  createExceptionCaseAction,
   deleteManualSupplierInvoiceLineAction,
   markSupplierInvoiceLineProgressedAction,
   updateSupplierInvoiceLineAction,
@@ -31,6 +32,16 @@ type OrderScreenshot = {
   uploaded_at: string | null;
   display_order: number | null;
   note: string | null;
+};
+
+type ExistingExceptionCase = {
+  id: string;
+  desired_outcome: string;
+  status: string;
+  amount_impact_gbp: number;
+  refund_approved_at: string | null;
+  replacement_child_order_id: string | null;
+  replacement_child_order: { order_ref: string | null }[] | null;
 };
 
 function formatValue(value: string | number | null | undefined) {
@@ -130,9 +141,29 @@ export default async function ImporterReconciliationOrderPage({
         .order("line_order", { ascending: true })
     : { data: [] as SupplierInvoiceLine[], error: null };
 
+  const { data: exceptionCases, error: exceptionCasesError } = await supabase
+    .from("disputes")
+    .select("id, desired_outcome, status, amount_impact_gbp, refund_approved_at, replacement_child_order_id, replacement_child_order:orders!disputes_replacement_child_order_id_fkey(order_ref)")
+    .eq("order_id", orderId)
+    .order("raised_at", { ascending: false });
+
+  const exceptionIds = (exceptionCases ?? []).map((row) => row.id);
+  const { data: exceptionCaseLineTotals, error: exceptionCaseLineTotalsError } = exceptionIds.length > 0
+    ? await supabase
+        .from("dispute_lines")
+        .select("dispute_id")
+        .in("dispute_id", exceptionIds)
+    : { data: [] as Array<{ dispute_id: string }>, error: null };
+
   const invoiceLines = (lines ?? []) as SupplierInvoiceLine[];
   const selectableLines = invoiceLines.filter((line) => !isProgressed(line));
+  const exceptionSelectableLines = invoiceLines.filter((line) => !isProgressed(line));
   const orderScreenshots = (screenshots ?? []) as OrderScreenshot[];
+  const existingExceptionCases = (exceptionCases ?? []) as ExistingExceptionCase[];
+  const lineCountByDispute = (exceptionCaseLineTotals ?? []).reduce<Record<string, number>>((acc, row) => {
+    acc[row.dispute_id] = (acc[row.dispute_id] ?? 0) + 1;
+    return acc;
+  }, {});
   const legacyScreenshotUrl = typeof order.screenshot_url === "string" && order.screenshot_url.trim().length > 0 ? order.screenshot_url.trim() : null;
 
   const lineQtyTotal = invoiceLines.reduce((sum, line) => sum + Number(line.qty ?? 0), 0);
@@ -251,6 +282,57 @@ export default async function ImporterReconciliationOrderPage({
                 <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-slate-500">amount_inc_vat_gbp</span><input name="amount_inc_vat_gbp" required type="number" step="0.01" min="0" className="w-full rounded-xl border border-slate-300 px-3 py-2" /></label>
                 <div className="flex items-end md:col-span-6"><button type="submit" className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white">Add manual line</button></div>
               </form>
+            </section>
+
+            <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+              <h2 className="text-xl font-semibold">Create exception case</h2>
+              <p className="mt-2 text-sm text-slate-600">Select unresolved lines and branch them into a grouped refund or replacement exception case.</p>
+              {exceptionSelectableLines.length > 0 ? (
+                <form action={createExceptionCaseAction} className="mt-4 space-y-4">
+                  <input type="hidden" name="order_id" value={orderId} />
+                  <div className="grid gap-2">
+                    {exceptionSelectableLines.map((line) => (
+                      <label key={`exception-${line.id}`} className="flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
+                        <input type="checkbox" name="exception_line_ids" value={line.id} className="h-4 w-4 rounded border-slate-300" />
+                        <span>Line {line.line_order} · {line.line_source} · qty {line.qty} · {gbp(line.amount_inc_vat_gbp)}</span>
+                      </label>
+                    ))}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-4">
+                    <label className="inline-flex items-center gap-2 text-sm"><input type="radio" name="remedy" value="refund" className="h-4 w-4" />Refund</label>
+                    <label className="inline-flex items-center gap-2 text-sm"><input type="radio" name="remedy" value="replacement" className="h-4 w-4" />Replacement</label>
+                    <button type="submit" className="rounded-xl bg-amber-700 px-4 py-2 text-sm font-semibold text-white hover:bg-amber-600">Create exception case</button>
+                  </div>
+                </form>
+              ) : (
+                <p className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">No unresolved lines are available for exception case creation.</p>
+              )}
+            </section>
+
+            <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+              <h2 className="text-xl font-semibold">Existing exception cases</h2>
+              {exceptionCasesError || exceptionCaseLineTotalsError ? (
+                <p className="mt-4 text-sm text-rose-700">Failed to load exception cases for this order.</p>
+              ) : existingExceptionCases.length > 0 ? (
+                <div className="mt-4 space-y-3">
+                  {existingExceptionCases.map((dispute) => (
+                    <article key={dispute.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
+                      <p><span className="font-semibold">Desired outcome:</span> {dispute.desired_outcome}</p>
+                      <p><span className="font-semibold">Status:</span> {dispute.status}</p>
+                      <p><span className="font-semibold">Total amount:</span> {gbp(dispute.amount_impact_gbp)}</p>
+                      <p><span className="font-semibold">Line count:</span> {lineCountByDispute[dispute.id] ?? 0}</p>
+                      {dispute.desired_outcome === "refund" ? (
+                        <p><span className="font-semibold">Refund approval:</span> {dispute.refund_approved_at ? "Approved" : "Pending approval"}</p>
+                      ) : null}
+                      {dispute.replacement_child_order_id ? (
+                        <p><span className="font-semibold">Replacement child order:</span> {dispute.replacement_child_order?.[0]?.order_ref ?? dispute.replacement_child_order_id}</p>
+                      ) : null}
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <p className="mt-4 text-sm text-slate-600">No exception cases created yet for this order.</p>
+              )}
             </section>
 
             <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">

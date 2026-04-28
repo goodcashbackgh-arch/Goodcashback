@@ -155,7 +155,7 @@ async function requireActiveOperator() {
     return { supabase, ok: false as const, error: "Active operator account not found." };
   }
 
-  return { supabase, ok: true as const };
+  return { supabase, ok: true as const, operatorId: operator.id };
 }
 
 export async function updateSupplierInvoiceLineAction(formData: FormData) {
@@ -344,4 +344,161 @@ export async function bulkMarkSupplierInvoiceLinesProgressedAction(formData: For
 
   revalidatePath(`/importer/reconciliation/${orderId}`);
   redirectWithResult(orderId, { success: `${Number(data ?? lineIds.length)} line(s) marked progressed.` });
+}
+
+export async function createExceptionCaseAction(formData: FormData) {
+  const orderId = readString(formData, "order_id");
+  const remedy = readString(formData, "remedy");
+  const lineIds = [...new Set(readStringArray(formData, "exception_line_ids"))];
+
+  if (!orderId) {
+    redirect("/importer");
+  }
+
+  if (lineIds.length === 0) {
+    redirectWithResult(orderId, { error: "Select at least one unresolved line to create an exception case." });
+  }
+
+  if (remedy !== "refund" && remedy !== "replacement") {
+    redirectWithResult(orderId, { error: "Select a remedy intent (refund or replacement)." });
+  }
+
+  const guard = await requireActiveOperator();
+  if (!guard.ok) {
+    redirectWithResult(orderId, { error: guard.error });
+  }
+
+  const { data: order, error: orderError } = await guard.supabase
+    .from("orders")
+    .select("id, importer_id, sop_version")
+    .eq("id", orderId)
+    .maybeSingle();
+
+  if (orderError || !order) {
+    redirectWithResult(orderId, { error: "Order not found." });
+  }
+
+  const { data: importerAccess, error: importerAccessError } = await guard.supabase
+    .from("operator_importers")
+    .select("id")
+    .eq("operator_id", guard.operatorId)
+    .eq("importer_id", order.importer_id)
+    .is("revoked_at", null)
+    .limit(1)
+    .maybeSingle();
+
+  if (importerAccessError || !importerAccess) {
+    redirectWithResult(orderId, { error: "You are not authorised to create exception cases for this order." });
+  }
+
+  const { data: selectedLines, error: selectedLinesError } = await guard.supabase
+    .from("supplier_invoice_lines")
+    .select(
+      "id, qty, amount_inc_vat_gbp, eligible_for_invoice_yn, supplier_invoices!inner(order_id)"
+    )
+    .in("id", lineIds)
+    .eq("supplier_invoices.order_id", orderId);
+
+  if (selectedLinesError) {
+    redirectWithResult(orderId, { error: selectedLinesError.message });
+  }
+
+  if ((selectedLines ?? []).length !== lineIds.length) {
+    redirectWithResult(orderId, { error: "One or more selected lines do not belong to this order." });
+  }
+
+  const progressedLine = selectedLines?.find((line) => isProgressedFlag(line.eligible_for_invoice_yn));
+  if (progressedLine) {
+    redirectWithResult(orderId, { error: "Line is already progressed and cannot be added to an exception case." });
+  }
+
+  const { data: existingOpenLinks, error: openLinksError } = await guard.supabase
+    .from("dispute_lines")
+    .select("id, supplier_invoice_line_id")
+    .in("supplier_invoice_line_id", lineIds)
+    .is("resolved_at", null);
+
+  if (openLinksError) {
+    redirectWithResult(orderId, { error: openLinksError.message });
+  }
+
+  if ((existingOpenLinks ?? []).length > 0) {
+    redirectWithResult(orderId, { error: "One or more selected lines already has an exception case." });
+  }
+
+  const lineTotals = (selectedLines ?? []).reduce(
+    (totals, line) => ({
+      qty: totals.qty + Number(line.qty ?? 0),
+      amount: totals.amount + Number(line.amount_inc_vat_gbp ?? 0),
+    }),
+    { qty: 0, amount: 0 }
+  );
+
+  const conversationStatus = remedy === "refund" ? "refund_pending_approval" : "remedy_selected";
+
+  const { data: existingDispute, error: existingDisputeError } = await guard.supabase
+    .from("disputes")
+    .select("id, amount_impact_gbp")
+    .eq("order_id", orderId)
+    .eq("desired_outcome", remedy)
+    .eq("status", "raised")
+    .is("resolved_at", null)
+    .order("raised_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (existingDisputeError) {
+    redirectWithResult(orderId, { error: existingDisputeError.message });
+  }
+
+  let disputeId = existingDispute?.id ?? null;
+  if (!disputeId) {
+    const { data: createdDispute, error: createDisputeError } = await guard.supabase
+      .from("disputes")
+      .insert({
+        order_id: orderId,
+        raised_by_operator_id: guard.operatorId,
+        issue_type: "missing",
+        desired_outcome: remedy,
+        liable_party: "unknown",
+        stage_detected: "at_reconciliation",
+        amount_impact_gbp: lineTotals.amount,
+        status: "raised",
+        sop_version: order.sop_version,
+      })
+      .select("id")
+      .single();
+    if (createDisputeError) {
+      redirectWithResult(orderId, { error: createDisputeError.message });
+    }
+    disputeId = createdDispute.id;
+  } else {
+    const currentDisputeAmount = Number(existingDispute?.amount_impact_gbp ?? 0);
+    const updatedAmount = currentDisputeAmount + lineTotals.amount;
+    const { error: updateAmountError } = await guard.supabase
+      .from("disputes")
+      .update({ amount_impact_gbp: updatedAmount })
+      .eq("id", disputeId);
+    if (updateAmountError) {
+      redirectWithResult(orderId, { error: updateAmountError.message });
+    }
+  }
+
+  const disputeLineRows = (selectedLines ?? []).map((line) => ({
+    dispute_id: disputeId,
+    supplier_invoice_line_id: line.id,
+    qty_impact: Number(line.qty ?? 0),
+    amount_impact_gbp: Number(line.amount_inc_vat_gbp ?? 0),
+    line_status: "affected",
+    intended_remedy: remedy,
+    conversation_status: conversationStatus,
+  }));
+
+  const { error: createLinesError } = await guard.supabase.from("dispute_lines").insert(disputeLineRows);
+  if (createLinesError) {
+    redirectWithResult(orderId, { error: createLinesError.message });
+  }
+
+  revalidatePath(`/importer/reconciliation/${orderId}`);
+  redirectWithResult(orderId, { success: `Exception case created for ${lineIds.length} line(s).` });
 }
