@@ -48,7 +48,7 @@ async function requireActiveOperator() {
 async function requireDisputeAccess(supabase: Awaited<ReturnType<typeof createClient>>, operatorId: string, disputeId: string) {
   const { data: dispute, error: disputeError } = await supabase
     .from("disputes")
-    .select("id, order_id, orders!inner(id, importer_id)")
+    .select("id, order_id")
     .eq("id", disputeId)
     .maybeSingle();
 
@@ -56,8 +56,13 @@ async function requireDisputeAccess(supabase: Awaited<ReturnType<typeof createCl
     return { ok: false as const, error: "Dispute not found." };
   }
 
-  const orderImporterId = Array.isArray(dispute.orders) ? dispute.orders[0]?.importer_id : dispute.orders?.importer_id;
-  if (!orderImporterId) {
+  const { data: order, error: orderError } = await supabase
+    .from("orders")
+    .select("id, importer_id")
+    .eq("id", dispute.order_id)
+    .maybeSingle();
+
+  if (orderError || !order?.importer_id) {
     return { ok: false as const, error: "Dispute order importer could not be resolved." };
   }
 
@@ -65,7 +70,7 @@ async function requireDisputeAccess(supabase: Awaited<ReturnType<typeof createCl
     .from("operator_importers")
     .select("id")
     .eq("operator_id", operatorId)
-    .eq("importer_id", orderImporterId)
+    .eq("importer_id", order.importer_id)
     .is("revoked_at", null)
     .limit(1)
     .maybeSingle();
