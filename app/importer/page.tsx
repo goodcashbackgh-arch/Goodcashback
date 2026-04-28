@@ -174,6 +174,9 @@ export default async function ImporterPage() {
         <div className="rounded-xl border bg-slate-50 p-4 text-sm text-slate-700">
           This is the importer dashboard. Next steps to wire after this page:
           create order, dynamic tracking submission, invoice upload, and OCR reconciliation workspace.
+          <div className="mt-3">
+            <Link href="/importer/exceptions" className="font-semibold text-sky-700 underline">View active exception cases</Link>
+          </div>
         </div>
       </header>
 

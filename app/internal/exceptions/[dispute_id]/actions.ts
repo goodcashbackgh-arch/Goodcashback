@@ -76,6 +76,32 @@ async function requireRetailerMessageAndAcceptedOutcome(supabase: Awaited<Return
   return { ok: true as const };
 }
 
+
+async function transitionDisputeStatus(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  disputeId: string,
+  fromStatus: string,
+  toStatus: string,
+) {
+  const { data, error } = await supabase
+    .from("disputes")
+    .update({ status: toStatus })
+    .eq("id", disputeId)
+    .eq("status", fromStatus)
+    .select("id")
+    .maybeSingle();
+
+  if (error) {
+    return { ok: false as const, error: error.message };
+  }
+
+  if (!data) {
+    return { ok: false as const, error: `Unable to transition dispute from ${fromStatus} to ${toStatus}.` };
+  }
+
+  return { ok: true as const };
+}
+
 export async function addDisputeInternalNoteAction(formData: FormData) {
   const disputeId = readString(formData, "dispute_id");
   const body = readString(formData, "body");
@@ -141,7 +167,7 @@ export async function acceptFinalRefundOutcomeAction(formData: FormData) {
 
   const { data: dispute, error: disputeError } = await guard.supabase
     .from("disputes")
-    .select("id, desired_outcome")
+    .select("id, desired_outcome, status")
     .eq("id", disputeId)
     .maybeSingle();
 
@@ -151,12 +177,22 @@ export async function acceptFinalRefundOutcomeAction(formData: FormData) {
   const finalOutcomeGuard = await requireRetailerMessageAndAcceptedOutcome(guard.supabase, disputeId);
   if (!finalOutcomeGuard.ok) redirectWithResult(disputeId, { error: finalOutcomeGuard.error });
 
-  const { error } = await guard.supabase
-    .from("disputes")
-    .update({ status: "resolved", resolved_at: new Date().toISOString() })
-    .eq("id", disputeId);
+  let currentStatus = dispute.status;
+  if (currentStatus === "raised") {
+    const underReviewTransition = await transitionDisputeStatus(guard.supabase, disputeId, "raised", "under_review");
+    if (!underReviewTransition.ok) redirectWithResult(disputeId, { error: underReviewTransition.error });
+    currentStatus = "under_review";
+  }
 
-  if (error) redirectWithResult(disputeId, { error: error.message });
+  if (currentStatus !== "under_review") {
+    redirectWithResult(disputeId, { error: `Refund final acceptance requires dispute status raised or under_review. Current status: ${currentStatus}.` });
+  }
+
+  const approvedRefundTransition = await transitionDisputeStatus(guard.supabase, disputeId, "under_review", "approved_refund");
+  if (!approvedRefundTransition.ok) redirectWithResult(disputeId, { error: approvedRefundTransition.error });
+
+  const awaitingCreditTransition = await transitionDisputeStatus(guard.supabase, disputeId, "approved_refund", "awaiting_refund_credit");
+  if (!awaitingCreditTransition.ok) redirectWithResult(disputeId, { error: awaitingCreditTransition.error });
 
   revalidatePath(`/internal/exceptions/${disputeId}`);
   revalidatePath(`/importer/exceptions/${disputeId}`);
@@ -172,7 +208,7 @@ export async function acceptReplacementOutcomeAction(formData: FormData) {
 
   const { data: dispute, error: disputeError } = await guard.supabase
     .from("disputes")
-    .select("id, order_id, desired_outcome, replacement_child_order_id")
+    .select("id, order_id, desired_outcome, replacement_child_order_id, status")
     .eq("id", disputeId)
     .maybeSingle();
 
@@ -237,13 +273,31 @@ export async function acceptReplacementOutcomeAction(formData: FormData) {
 
   if (childInsertError || !childOrder) redirectWithResult(disputeId, { error: childInsertError?.message ?? "Failed to create replacement child order." });
 
-  const now = new Date().toISOString();
-  const { error: disputeUpdateError } = await guard.supabase
+  let currentStatus = dispute.status;
+  if (currentStatus === "raised") {
+    const underReviewTransition = await transitionDisputeStatus(guard.supabase, disputeId, "raised", "under_review");
+    if (!underReviewTransition.ok) redirectWithResult(disputeId, { error: underReviewTransition.error });
+    currentStatus = "under_review";
+  }
+
+  if (currentStatus !== "under_review") {
+    redirectWithResult(disputeId, { error: `Replacement final acceptance requires dispute status raised or under_review. Current status: ${currentStatus}.` });
+  }
+
+  const approvedReplacementTransition = await transitionDisputeStatus(guard.supabase, disputeId, "under_review", "approved_replacement");
+  if (!approvedReplacementTransition.ok) redirectWithResult(disputeId, { error: approvedReplacementTransition.error });
+
+  const { error: childLinkError } = await guard.supabase
     .from("disputes")
-    .update({ replacement_child_order_id: childOrder.id, status: "resolved", resolved_at: now })
+    .update({ replacement_child_order_id: childOrder.id })
     .eq("id", disputeId);
 
-  if (disputeUpdateError) redirectWithResult(disputeId, { error: disputeUpdateError.message });
+  if (childLinkError) redirectWithResult(disputeId, { error: childLinkError.message });
+
+  const replacedTransition = await transitionDisputeStatus(guard.supabase, disputeId, "approved_replacement", "replaced");
+  if (!replacedTransition.ok) redirectWithResult(disputeId, { error: replacedTransition.error });
+
+  const now = new Date().toISOString();
 
   const { error: resolveLinesError } = await guard.supabase
     .from("dispute_lines")
