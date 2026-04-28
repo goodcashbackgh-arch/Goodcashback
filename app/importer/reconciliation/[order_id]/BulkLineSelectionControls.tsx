@@ -21,7 +21,7 @@ export default function BulkLineSelectionControls({ selectableCount }: BulkLineS
     setSelectedCount(selectableCheckboxes().filter((checkbox) => checkbox.checked).length);
   }
 
-  function selectAllCleanLines() {
+  function selectAllUnresolvedProgressableLines() {
     selectableCheckboxes().forEach((checkbox) => {
       checkbox.checked = true;
     });
@@ -38,9 +38,12 @@ export default function BulkLineSelectionControls({ selectableCount }: BulkLineS
   useEffect(() => {
     const checkboxes = selectableCheckboxes();
     checkboxes.forEach((checkbox) => checkbox.addEventListener("change", refreshSelectedCount));
-    refreshSelectedCount();
+    const timer = window.setTimeout(() => {
+      refreshSelectedCount();
+    }, 0);
 
     return () => {
+      window.clearTimeout(timer);
       checkboxes.forEach((checkbox) => checkbox.removeEventListener("change", refreshSelectedCount));
     };
   }, [selectableCount]);
@@ -49,10 +52,10 @@ export default function BulkLineSelectionControls({ selectableCount }: BulkLineS
     <div className="mt-3 flex flex-wrap items-center gap-3">
       <button
         type="button"
-        onClick={selectAllCleanLines}
+        onClick={selectAllUnresolvedProgressableLines}
         className="rounded-xl border border-emerald-300 bg-white px-3 py-2 text-sm font-semibold text-emerald-900 hover:bg-emerald-100"
       >
-        Select all clean lines
+        Select all unresolved progressable lines
       </button>
       <button
         type="button"

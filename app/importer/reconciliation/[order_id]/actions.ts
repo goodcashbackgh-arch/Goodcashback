@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 
 const PROGRESSION_BASELINE_EXCEEDED_ERROR = "Cannot progress selected lines because they exceed the original order baseline. Move excess or mismatched items into the exception path.";
+const MANUAL_ADD_BASELINE_EXCEEDED_ERROR = "Cannot add manual line because it exceeds the original order baseline.";
 const CURRENCY_TOLERANCE_GBP = 0.01;
 
 function isProgressedFlag(value: string | null | undefined) {
@@ -99,6 +100,32 @@ async function enforceProgressionWithinBaseline(params: {
 
   if (exceedsQty || exceedsAmount) {
     return { ok: false as const, error: PROGRESSION_BASELINE_EXCEEDED_ERROR };
+  }
+
+  return { ok: true as const };
+}
+
+async function enforceLinesNotLinkedToOpenException(params: {
+  supabase: Awaited<ReturnType<typeof createClient>>;
+  lineIds: string[];
+}) {
+  const { supabase, lineIds } = params;
+  if (lineIds.length === 0) {
+    return { ok: true as const };
+  }
+
+  const { data: openLinks, error } = await supabase
+    .from("dispute_lines")
+    .select("supplier_invoice_line_id")
+    .in("supplier_invoice_line_id", lineIds)
+    .is("resolved_at", null);
+
+  if (error) {
+    return { ok: false as const, error: error.message };
+  }
+
+  if ((openLinks ?? []).length > 0) {
+    return { ok: false as const, error: "Exception-linked lines cannot be progressed." };
   }
 
   return { ok: true as const };
@@ -236,6 +263,36 @@ export async function addManualSupplierInvoiceLineAction(formData: FormData) {
     redirectWithResult(orderId, { error: guard.error });
   }
 
+  const { data: order, error: orderError } = await guard.supabase
+    .from("orders")
+    .select("id, total_qty_declared, order_total_gbp_declared")
+    .eq("id", orderId)
+    .maybeSingle();
+
+  if (orderError || !order) {
+    redirectWithResult(orderId, { error: "Order not found." });
+  }
+
+  const { data: allLines, error: linesError } = await guard.supabase
+    .from("supplier_invoice_lines")
+    .select("qty, amount_inc_vat_gbp, supplier_invoices!inner(order_id)")
+    .eq("supplier_invoices.order_id", orderId);
+
+  if (linesError) {
+    redirectWithResult(orderId, { error: linesError.message });
+  }
+
+  const currentQty = (allLines ?? []).reduce((sum, line) => sum + Number(line.qty ?? 0), 0);
+  const currentAmount = (allLines ?? []).reduce((sum, line) => sum + Number(line.amount_inc_vat_gbp ?? 0), 0);
+  const baselineQty = Number(order.total_qty_declared ?? 0);
+  const baselineAmount = Number(order.order_total_gbp_declared ?? 0);
+
+  const exceedsQty = currentQty + qty > baselineQty;
+  const exceedsAmount = currentAmount + amount > baselineAmount + CURRENCY_TOLERANCE_GBP;
+  if (exceedsQty || exceedsAmount) {
+    redirectWithResult(orderId, { error: MANUAL_ADD_BASELINE_EXCEEDED_ERROR });
+  }
+
   const { error } = await guard.supabase.rpc("operator_add_manual_supplier_invoice_line", {
     p_order_id: orderId,
     p_supplier_invoice_id: supplierInvoiceId,
@@ -298,6 +355,11 @@ export async function markSupplierInvoiceLineProgressedAction(formData: FormData
     redirectWithResult(orderId, { error: progressionGuard.error });
   }
 
+  const exceptionGuard = await enforceLinesNotLinkedToOpenException({ supabase: guard.supabase, lineIds: [lineId] });
+  if (!exceptionGuard.ok) {
+    redirectWithResult(orderId, { error: exceptionGuard.error });
+  }
+
   const { error } = await guard.supabase.rpc("operator_mark_supplier_invoice_line_progressed", {
     p_order_id: orderId,
     p_line_id: lineId,
@@ -331,6 +393,11 @@ export async function bulkMarkSupplierInvoiceLinesProgressedAction(formData: For
   const progressionGuard = await enforceProgressionWithinBaseline({ supabase: guard.supabase, orderId, lineIds });
   if (!progressionGuard.ok) {
     redirectWithResult(orderId, { error: progressionGuard.error });
+  }
+
+  const exceptionGuard = await enforceLinesNotLinkedToOpenException({ supabase: guard.supabase, lineIds });
+  if (!exceptionGuard.ok) {
+    redirectWithResult(orderId, { error: exceptionGuard.error });
   }
 
   const { data, error } = await guard.supabase.rpc("operator_bulk_mark_supplier_invoice_lines_progressed", {
@@ -370,7 +437,7 @@ export async function createExceptionCaseAction(formData: FormData) {
 
   const { data: order, error: orderError } = await guard.supabase
     .from("orders")
-    .select("id, importer_id, sop_version")
+    .select("id, importer_id, sop_version, order_ref, operator_id, shipper_id, retailer_id, destination_hub_id, status")
     .eq("id", orderId)
     .maybeSingle();
 
@@ -438,7 +505,7 @@ export async function createExceptionCaseAction(formData: FormData) {
 
   const { data: existingDispute, error: existingDisputeError } = await guard.supabase
     .from("disputes")
-    .select("id, amount_impact_gbp")
+    .select("id, amount_impact_gbp, replacement_child_order_id")
     .eq("order_id", orderId)
     .eq("desired_outcome", remedy)
     .eq("status", "raised")
@@ -484,6 +551,50 @@ export async function createExceptionCaseAction(formData: FormData) {
     }
   }
 
+  if (remedy === "replacement" && !existingDispute?.replacement_child_order_id) {
+    const { count: existingChildCount, error: existingChildCountError } = await guard.supabase
+      .from("orders")
+      .select("id", { count: "exact", head: true })
+      .eq("parent_order_id", orderId);
+
+    if (existingChildCountError) {
+      redirectWithResult(orderId, { error: existingChildCountError.message });
+    }
+
+    const replacementOrderRef = `${order.order_ref}-R${Number(existingChildCount ?? 0) + 1}`;
+    const { data: replacementChild, error: replacementChildError } = await guard.supabase
+      .from("orders")
+      .insert({
+        parent_order_id: orderId,
+        order_type: "replacement_child",
+        order_ref: replacementOrderRef,
+        importer_id: order.importer_id,
+        operator_id: order.operator_id,
+        shipper_id: order.shipper_id,
+        retailer_id: order.retailer_id,
+        destination_hub_id: order.destination_hub_id,
+        total_qty_declared: lineTotals.qty,
+        order_total_gbp_declared: lineTotals.amount,
+        sop_version: order.sop_version,
+        status: order.status,
+      })
+      .select("id")
+      .single();
+
+    if (replacementChildError) {
+      redirectWithResult(orderId, { error: replacementChildError.message });
+    }
+
+    const { error: linkReplacementChildError } = await guard.supabase
+      .from("disputes")
+      .update({ replacement_child_order_id: replacementChild.id })
+      .eq("id", disputeId);
+
+    if (linkReplacementChildError) {
+      redirectWithResult(orderId, { error: linkReplacementChildError.message });
+    }
+  }
+
   const disputeLineRows = (selectedLines ?? []).map((line) => ({
     dispute_id: disputeId,
     supplier_invoice_line_id: line.id,
@@ -501,4 +612,145 @@ export async function createExceptionCaseAction(formData: FormData) {
 
   revalidatePath(`/importer/reconciliation/${orderId}`);
   redirectWithResult(orderId, { success: `Exception case created for ${lineIds.length} line(s).` });
+}
+
+export async function rescindExceptionCaseAction(formData: FormData) {
+  const orderId = readString(formData, "order_id");
+  const disputeId = readString(formData, "dispute_id");
+
+  if (!orderId || !disputeId) {
+    redirect("/importer");
+  }
+
+  const guard = await requireActiveOperator();
+  if (!guard.ok) {
+    redirectWithResult(orderId, { error: guard.error });
+  }
+
+  const { data: order, error: orderError } = await guard.supabase
+    .from("orders")
+    .select("id, importer_id")
+    .eq("id", orderId)
+    .maybeSingle();
+
+  if (orderError || !order) {
+    redirectWithResult(orderId, { error: "Order not found." });
+  }
+
+  const { data: importerAccess, error: importerAccessError } = await guard.supabase
+    .from("operator_importers")
+    .select("id")
+    .eq("operator_id", guard.operatorId)
+    .eq("importer_id", order.importer_id)
+    .is("revoked_at", null)
+    .limit(1)
+    .maybeSingle();
+
+  if (importerAccessError || !importerAccess) {
+    redirectWithResult(orderId, { error: "You are not authorised to rescind exception cases for this order." });
+  }
+
+  const { data: dispute, error: disputeError } = await guard.supabase
+    .from("disputes")
+    .select("id, order_id, desired_outcome, refund_approved_at, replacement_child_order_id, customer_credit_note_sales_invoice_id")
+    .eq("id", disputeId)
+    .eq("order_id", orderId)
+    .is("resolved_at", null)
+    .maybeSingle();
+
+  if (disputeError || !dispute) {
+    redirectWithResult(orderId, { error: "Open exception case not found for this order." });
+  }
+
+  const { count: messageCount, error: messageCountError } = await guard.supabase
+    .from("dispute_messages")
+    .select("id", { count: "exact", head: true })
+    .eq("dispute_id", disputeId);
+
+  if (messageCountError) {
+    redirectWithResult(orderId, { error: messageCountError.message });
+  }
+
+  const hasMessages = Number(messageCount ?? 0) > 0;
+
+  if (dispute.desired_outcome === "refund") {
+    if (dispute.refund_approved_at || hasMessages || dispute.customer_credit_note_sales_invoice_id) {
+      redirectWithResult(orderId, { error: "Cannot rescind refund exception after approval or downstream activity." });
+    }
+  } else {
+    if (!dispute.replacement_child_order_id) {
+      redirectWithResult(orderId, { error: "Replacement exception cannot be rescinded because no child order is linked." });
+    }
+
+    const { data: childOrder, error: childOrderError } = await guard.supabase
+      .from("orders")
+      .select("id, tracking_locked_at")
+      .eq("id", dispute.replacement_child_order_id)
+      .maybeSingle();
+    if (childOrderError || !childOrder) {
+      redirectWithResult(orderId, { error: "Replacement child order not found." });
+    }
+
+    const { count: childInvoiceCount, error: childInvoiceCountError } = await guard.supabase
+      .from("supplier_invoices")
+      .select("id", { count: "exact", head: true })
+      .eq("order_id", childOrder.id);
+    if (childInvoiceCountError) {
+      redirectWithResult(orderId, { error: childInvoiceCountError.message });
+    }
+
+    const { count: shippingQuoteCount, error: shippingQuoteCountError } = await guard.supabase
+      .from("shipping_quote_orders")
+      .select("id", { count: "exact", head: true })
+      .eq("order_id", childOrder.id);
+    if (shippingQuoteCountError) {
+      redirectWithResult(orderId, { error: shippingQuoteCountError.message });
+    }
+
+    const hasChildActivity =
+      Boolean(childOrder.tracking_locked_at) ||
+      Number(childInvoiceCount ?? 0) > 0 ||
+      Number(shippingQuoteCount ?? 0) > 0 ||
+      hasMessages;
+
+    if (hasChildActivity) {
+      redirectWithResult(orderId, { error: "Cannot rescind replacement exception after downstream activity has started." });
+    }
+  }
+
+  const { error: deleteDisputeLinesError } = await guard.supabase
+    .from("dispute_lines")
+    .delete()
+    .eq("dispute_id", disputeId)
+    .is("resolved_at", null);
+  if (deleteDisputeLinesError) {
+    redirectWithResult(orderId, { error: deleteDisputeLinesError.message });
+  }
+
+  const { data: remainingLines, error: remainingLinesError } = await guard.supabase
+    .from("dispute_lines")
+    .select("id, amount_impact_gbp")
+    .eq("dispute_id", disputeId);
+  if (remainingLinesError) {
+    redirectWithResult(orderId, { error: remainingLinesError.message });
+  }
+
+  if ((remainingLines ?? []).length === 0) {
+    const { error: deleteDisputeError } = await guard.supabase.from("disputes").delete().eq("id", disputeId);
+    if (deleteDisputeError) {
+      redirectWithResult(orderId, { error: deleteDisputeError.message });
+    }
+  } else {
+    const updatedAmount = (remainingLines ?? []).reduce((sum, line) => sum + Number(line.amount_impact_gbp ?? 0), 0);
+    const { error: updateDisputeError } = await guard.supabase
+      .from("disputes")
+      .update({ amount_impact_gbp: updatedAmount })
+      .eq("id", disputeId);
+    if (updateDisputeError) {
+      redirectWithResult(orderId, { error: updateDisputeError.message });
+    }
+  }
+
+  revalidatePath(`/importer/reconciliation/${orderId}`);
+  redirectWithResult(orderId, { success: "Exception case rescinded." });
 }
