@@ -437,7 +437,7 @@ export async function createExceptionCaseAction(formData: FormData) {
 
   const { data: order, error: orderError } = await guard.supabase
     .from("orders")
-    .select("id, importer_id, sop_version, order_ref, operator_id, shipper_id, retailer_id, destination_hub_id, status")
+    .select("id, importer_id, sop_version")
     .eq("id", orderId)
     .maybeSingle();
 
@@ -551,50 +551,6 @@ export async function createExceptionCaseAction(formData: FormData) {
     }
   }
 
-  if (remedy === "replacement" && !existingDispute?.replacement_child_order_id) {
-    const { count: existingChildCount, error: existingChildCountError } = await guard.supabase
-      .from("orders")
-      .select("id", { count: "exact", head: true })
-      .eq("parent_order_id", orderId);
-
-    if (existingChildCountError) {
-      redirectWithResult(orderId, { error: existingChildCountError.message });
-    }
-
-    const replacementOrderRef = `${order.order_ref}-R${Number(existingChildCount ?? 0) + 1}`;
-    const { data: replacementChild, error: replacementChildError } = await guard.supabase
-      .from("orders")
-      .insert({
-        parent_order_id: orderId,
-        order_type: "replacement_child",
-        order_ref: replacementOrderRef,
-        importer_id: order.importer_id,
-        operator_id: order.operator_id,
-        shipper_id: order.shipper_id,
-        retailer_id: order.retailer_id,
-        destination_hub_id: order.destination_hub_id,
-        total_qty_declared: lineTotals.qty,
-        order_total_gbp_declared: lineTotals.amount,
-        sop_version: order.sop_version,
-        status: order.status,
-      })
-      .select("id")
-      .single();
-
-    if (replacementChildError) {
-      redirectWithResult(orderId, { error: replacementChildError.message });
-    }
-
-    const { error: linkReplacementChildError } = await guard.supabase
-      .from("disputes")
-      .update({ replacement_child_order_id: replacementChild.id })
-      .eq("id", disputeId);
-
-    if (linkReplacementChildError) {
-      redirectWithResult(orderId, { error: linkReplacementChildError.message });
-    }
-  }
-
   const disputeLineRows = (selectedLines ?? []).map((line) => ({
     dispute_id: disputeId,
     supplier_invoice_line_id: line.id,
@@ -678,42 +634,11 @@ export async function rescindExceptionCaseAction(formData: FormData) {
       redirectWithResult(orderId, { error: "Cannot rescind refund exception after approval or downstream activity." });
     }
   } else {
-    if (!dispute.replacement_child_order_id) {
-      redirectWithResult(orderId, { error: "Replacement exception cannot be rescinded because no child order is linked." });
+    if (dispute.replacement_child_order_id) {
+      redirectWithResult(orderId, { error: "Cannot rescind replacement exception because a replacement child order already exists." });
     }
 
-    const { data: childOrder, error: childOrderError } = await guard.supabase
-      .from("orders")
-      .select("id, tracking_locked_at")
-      .eq("id", dispute.replacement_child_order_id)
-      .maybeSingle();
-    if (childOrderError || !childOrder) {
-      redirectWithResult(orderId, { error: "Replacement child order not found." });
-    }
-
-    const { count: childInvoiceCount, error: childInvoiceCountError } = await guard.supabase
-      .from("supplier_invoices")
-      .select("id", { count: "exact", head: true })
-      .eq("order_id", childOrder.id);
-    if (childInvoiceCountError) {
-      redirectWithResult(orderId, { error: childInvoiceCountError.message });
-    }
-
-    const { count: shippingQuoteCount, error: shippingQuoteCountError } = await guard.supabase
-      .from("shipping_quote_orders")
-      .select("id", { count: "exact", head: true })
-      .eq("order_id", childOrder.id);
-    if (shippingQuoteCountError) {
-      redirectWithResult(orderId, { error: shippingQuoteCountError.message });
-    }
-
-    const hasChildActivity =
-      Boolean(childOrder.tracking_locked_at) ||
-      Number(childInvoiceCount ?? 0) > 0 ||
-      Number(shippingQuoteCount ?? 0) > 0 ||
-      hasMessages;
-
-    if (hasChildActivity) {
+    if (hasMessages || dispute.customer_credit_note_sales_invoice_id) {
       redirectWithResult(orderId, { error: "Cannot rescind replacement exception after downstream activity has started." });
     }
   }
