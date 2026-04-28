@@ -74,6 +74,20 @@ function isProgressed(line: Pick<SupplierInvoiceLine, "eligible_for_invoice_yn">
   return ["y", "yes", "true", "1"].includes(line.eligible_for_invoice_yn.trim().toLowerCase());
 }
 
+function lineFitsRemainingBaseline({
+  lineQty,
+  lineAmount,
+  remainingQty,
+  remainingAmount,
+}: {
+  lineQty: number;
+  lineAmount: number;
+  remainingQty: number;
+  remainingAmount: number;
+}) {
+  return lineQty <= remainingQty && lineAmount <= remainingAmount + 0.01;
+}
+
 export default async function ImporterReconciliationOrderPage({
   params,
   searchParams,
@@ -179,7 +193,32 @@ export default async function ImporterReconciliationOrderPage({
     }
   }
 
-  const selectableLines = invoiceLines.filter((line) => !isProgressed(line) && !openDisputeByLineId.has(line.id));
+  const declaredQty = Number(order.total_qty_declared ?? 0);
+  const declaredAmount = Number(order.order_total_gbp_declared ?? 0);
+  const allocatedQty = invoiceLines.reduce((sum, line) => {
+    const progressed = isProgressed(line);
+    const exceptionLinked = openDisputeByLineId.has(line.id);
+    if (!progressed && !exceptionLinked) return sum;
+    return sum + Number(line.qty ?? 0);
+  }, 0);
+  const allocatedAmount = invoiceLines.reduce((sum, line) => {
+    const progressed = isProgressed(line);
+    const exceptionLinked = openDisputeByLineId.has(line.id);
+    if (!progressed && !exceptionLinked) return sum;
+    return sum + Number(line.amount_inc_vat_gbp ?? 0);
+  }, 0);
+  const remainingQtyCapacity = Math.max(0, declaredQty - allocatedQty);
+  const remainingAmountCapacity = Math.max(0, declaredAmount - allocatedAmount);
+
+  const selectableLines = invoiceLines.filter((line) => {
+    if (isProgressed(line) || openDisputeByLineId.has(line.id)) return false;
+    return lineFitsRemainingBaseline({
+      lineQty: Number(line.qty ?? 0),
+      lineAmount: Number(line.amount_inc_vat_gbp ?? 0),
+      remainingQty: remainingQtyCapacity,
+      remainingAmount: remainingAmountCapacity,
+    });
+  });
   const exceptionSelectableLines = invoiceLines.filter((line) => !isProgressed(line) && !openDisputeByLineId.has(line.id));
   const orderScreenshots = (screenshots ?? []) as OrderScreenshot[];
   const existingExceptionCases = (exceptionCases ?? []) as ExistingExceptionCase[];
@@ -191,8 +230,6 @@ export default async function ImporterReconciliationOrderPage({
 
   const lineQtyTotal = invoiceLines.reduce((sum, line) => sum + Number(line.qty ?? 0), 0);
   const lineAmountTotal = invoiceLines.reduce((sum, line) => sum + Number(line.amount_inc_vat_gbp ?? 0), 0);
-  const declaredQty = Number(order.total_qty_declared ?? 0);
-  const declaredAmount = Number(order.order_total_gbp_declared ?? 0);
   const qtyVariance = lineQtyTotal - declaredQty;
   const amountVariance = lineAmountTotal - declaredAmount;
   const qtyMatched = qtyVariance === 0;
@@ -381,7 +418,7 @@ export default async function ImporterReconciliationOrderPage({
                   {selectableLines.length > 0 ? (
                     <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
                       <p className="text-sm font-semibold text-emerald-900">Select clean lines to progress in bulk.</p>
-                      <p className="mt-1 text-xs text-emerald-800">Only unresolved progressable lines are selectable. Progressed and exception-linked lines remain visible but disabled.</p>
+                      <p className="mt-1 text-xs text-emerald-800">Only unresolved lines still within remaining parent baseline capacity are selectable. Progressed and exception-linked lines remain visible but disabled.</p>
                       <BulkLineSelectionControls selectableCount={selectableLines.length} />
                       <button type="submit" className="mt-3 rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-600">Mark selected as progressed</button>
                     </div>
@@ -397,10 +434,22 @@ export default async function ImporterReconciliationOrderPage({
                       const canDelete = line.line_source === "manually_added";
                       const isOcrLine = line.line_source === "ocr_extracted";
                       const lineLocked = exceptionLinked;
+                      const unresolvedNonException = !progressed && !exceptionLinked;
+                      const progressableWithinRemainingBaseline = unresolvedNonException
+                        ? lineFitsRemainingBaseline({
+                            lineQty: Number(line.qty ?? 0),
+                            lineAmount: Number(line.amount_inc_vat_gbp ?? 0),
+                            remainingQty: remainingQtyCapacity,
+                            remainingAmount: remainingAmountCapacity,
+                          })
+                        : false;
+                      const blockedByExcessMismatch = unresolvedNonException && !progressableWithinRemainingBaseline;
                       const statusText = exceptionLinked
                         ? openDispute?.remedy === "replacement"
                           ? "In replacement exception case"
                           : "In refund exception case"
+                        : blockedByExcessMismatch
+                          ? "Excess/mismatch — resolve through exception path"
                         : progressed
                           ? "Progressed"
                           : "Unresolved";
@@ -412,11 +461,11 @@ export default async function ImporterReconciliationOrderPage({
                               <p className="text-sm font-semibold text-slate-900">Line {line.line_order} · {line.line_source}</p>
                             ) : (
                               <label className={`flex items-center gap-3 text-sm font-semibold ${progressed ? "text-slate-500" : "text-slate-900"}`}>
-                                <input type="checkbox" name="line_ids" value={line.id} disabled={progressed} data-bulk-line-checkbox="true" className="h-4 w-4 rounded border-slate-300" />
+                                <input type="checkbox" name="line_ids" value={line.id} disabled={progressed || blockedByExcessMismatch} data-bulk-line-checkbox="true" className="h-4 w-4 rounded border-slate-300" />
                                 <span>Line {line.line_order} · {line.line_source}</span>
                               </label>
                             )}
-                            <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${exceptionLinked ? "bg-amber-100 text-amber-900" : progressed ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>{statusText}</span>
+                            <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${exceptionLinked || blockedByExcessMismatch ? "bg-amber-100 text-amber-900" : progressed ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>{statusText}</span>
                           </div>
 
                           <div className="grid gap-3 md:grid-cols-12">
@@ -429,13 +478,15 @@ export default async function ImporterReconciliationOrderPage({
                           </div>
 
                           <div className="mt-3 flex flex-wrap items-center gap-3">
-                            {!exceptionLinked ? <button form={`update-line-${line.id}`} type="submit" className="rounded-xl bg-sky-600 px-3 py-2 text-sm font-semibold text-white hover:bg-sky-500">Save line</button> : null}
-                            {!progressed && !exceptionLinked ? (
+                            {!exceptionLinked && !blockedByExcessMismatch ? <button form={`update-line-${line.id}`} type="submit" className="rounded-xl bg-sky-600 px-3 py-2 text-sm font-semibold text-white hover:bg-sky-500">Save line</button> : null}
+                            {!progressed && !exceptionLinked && !blockedByExcessMismatch ? (
                               <form action={markSupplierInvoiceLineProgressedAction}>
                                 <input type="hidden" name="order_id" value={orderId} />
                                 <input type="hidden" name="line_id" value={line.id} />
                                 <button type="submit" className="rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800 hover:bg-emerald-100">Mark progressed</button>
                               </form>
+                            ) : blockedByExcessMismatch ? (
+                              <span className="text-xs font-medium text-amber-800">Excess/mismatch — resolve through exception path</span>
                             ) : progressed ? <span className="text-xs font-medium text-emerald-700">Included in progressed subset.</span> : null}
                             {canDelete && !exceptionLinked ? (
                               <form action={deleteManualSupplierInvoiceLineAction}>
