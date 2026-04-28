@@ -8,6 +8,14 @@ type SearchParams = {
   error?: string;
 };
 
+const FINAL_OUTCOME_STATUSES = new Set([
+  "approved_replacement",
+  "replaced",
+  "awaiting_refund_credit",
+  "refunded",
+  "closed",
+]);
+
 function gbp(value: number | null | undefined) {
   return new Intl.NumberFormat("en-GB", {
     style: "currency",
@@ -30,6 +38,26 @@ function retailerOutcomeFromStatus(status: string | null | undefined) {
   }
 }
 
+function finalOutcomeMessage(dispute: { desired_outcome: string | null; status: string | null; replacement_child_order_id?: string | null }) {
+  if (dispute.desired_outcome === "replacement" && dispute.status === "replaced") {
+    return "Final outcome accepted — replacement child created.";
+  }
+
+  if (dispute.desired_outcome === "refund" && dispute.status === "awaiting_refund_credit") {
+    return "Final outcome accepted — awaiting refund credit processing.";
+  }
+
+  if (dispute.status === "refunded") {
+    return "Refund processed — awaiting closure.";
+  }
+
+  if (dispute.status === "closed") {
+    return "Exception closed.";
+  }
+
+  return "Final outcome accepted — no further retailer update is available.";
+}
+
 export default async function ImporterExceptionDetailPage({
   params,
   searchParams,
@@ -43,7 +71,7 @@ export default async function ImporterExceptionDetailPage({
 
   const { data: dispute, error: disputeError } = await supabase
     .from("disputes")
-    .select("id, order_id, desired_outcome, status, amount_impact_gbp, refund_approved_at")
+    .select("id, order_id, desired_outcome, status, amount_impact_gbp, refund_approved_at, replacement_child_order_id")
     .eq("id", disputeId)
     .maybeSingle();
 
@@ -69,6 +97,7 @@ export default async function ImporterExceptionDetailPage({
 
   const activeStatus = (lines ?? []).find((line) => line.conversation_status)?.conversation_status ?? "retailer_contacted";
   const retailerOutcome = retailerOutcomeFromStatus(activeStatus);
+  const isFinalOutcome = FINAL_OUTCOME_STATUSES.has(dispute.status ?? "");
 
   return (
     <main className="min-h-screen bg-slate-50 px-6 py-8 text-slate-950">
@@ -90,6 +119,12 @@ export default async function ImporterExceptionDetailPage({
           </div>
           {query.success ? <p className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">{query.success}</p> : null}
           {query.error ? <p className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">{query.error}</p> : null}
+          {isFinalOutcome ? (
+            <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
+              <p className="font-semibold">{finalOutcomeMessage(dispute)}</p>
+              {dispute.replacement_child_order_id ? <p className="mt-1">Replacement child order: {dispute.replacement_child_order_id}</p> : null}
+            </div>
+          ) : null}
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
@@ -112,23 +147,29 @@ export default async function ImporterExceptionDetailPage({
           <h2 className="text-xl font-semibold">Retailer update</h2>
           <p className="mt-2 text-sm text-slate-600">Save retailer response and outcome in one atomic update.</p>
           <p className="mt-3 text-sm text-slate-700"><span className="font-semibold">Current retailer outcome:</span> {retailerOutcome.replaceAll("_", " ")}</p>
-          <form action={saveRetailerUpdateAction} className="mt-4 space-y-3">
-            <input type="hidden" name="dispute_id" value={dispute.id} />
-            <label className="block space-y-1">
-              <span className="text-sm font-medium text-slate-700">Retailer response</span>
-              <textarea name="retailer_response" rows={5} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
-            </label>
-            <label className="block space-y-1">
-              <span className="text-sm font-medium text-slate-700">Retailer outcome</span>
-              <select name="retailer_outcome" defaultValue={retailerOutcome} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm">
-                <option value="still_waiting">still_waiting</option>
-                <option value="retailer_accepted">retailer_accepted</option>
-                <option value="retailer_disputed">retailer_disputed</option>
-                <option value="more_info_requested">more_info_requested</option>
-              </select>
-            </label>
-            <button type="submit" className="rounded-xl bg-sky-700 px-4 py-2 text-sm font-semibold text-white">Save retailer update</button>
-          </form>
+          {isFinalOutcome ? (
+            <p className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+              Retailer updates are locked because the final outcome has already been accepted.
+            </p>
+          ) : (
+            <form action={saveRetailerUpdateAction} className="mt-4 space-y-3">
+              <input type="hidden" name="dispute_id" value={dispute.id} />
+              <label className="block space-y-1">
+                <span className="text-sm font-medium text-slate-700">Retailer response</span>
+                <textarea name="retailer_response" rows={5} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
+              </label>
+              <label className="block space-y-1">
+                <span className="text-sm font-medium text-slate-700">Retailer outcome</span>
+                <select name="retailer_outcome" defaultValue={retailerOutcome} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm">
+                  <option value="still_waiting">still_waiting</option>
+                  <option value="retailer_accepted">retailer_accepted</option>
+                  <option value="retailer_disputed">retailer_disputed</option>
+                  <option value="more_info_requested">more_info_requested</option>
+                </select>
+              </label>
+              <button type="submit" className="rounded-xl bg-sky-700 px-4 py-2 text-sm font-semibold text-white">Save retailer update</button>
+            </form>
+          )}
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
