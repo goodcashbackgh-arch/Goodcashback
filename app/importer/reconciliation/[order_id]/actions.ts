@@ -6,6 +6,7 @@ import { createClient } from "@/utils/supabase/server";
 
 const PROGRESSION_BASELINE_EXCEEDED_ERROR = "Cannot progress selected lines because they exceed the original order baseline. Move excess or mismatched items into the exception path.";
 const MANUAL_ADD_BASELINE_EXCEEDED_ERROR = "Cannot add manual line because it exceeds the original order baseline.";
+const MANUAL_EDIT_BASELINE_EXCEEDED_ERROR = "Cannot update line because it exceeds the original order baseline.";
 const CURRENCY_TOLERANCE_GBP = 0.01;
 
 function isProgressedFlag(value: string | null | undefined) {
@@ -100,6 +101,60 @@ async function enforceProgressionWithinBaseline(params: {
 
   if (exceedsQty || exceedsAmount) {
     return { ok: false as const, error: PROGRESSION_BASELINE_EXCEEDED_ERROR };
+  }
+
+  return { ok: true as const };
+}
+
+
+async function enforceManualEditWithinBaseline(params: {
+  supabase: Awaited<ReturnType<typeof createClient>>;
+  orderId: string;
+  lineId: string;
+  nextQty: number;
+  nextAmount: number;
+}) {
+  const { supabase, orderId, lineId, nextQty, nextAmount } = params;
+
+  const { data: order, error: orderError } = await supabase
+    .from("orders")
+    .select("id, total_qty_declared, order_total_gbp_declared")
+    .eq("id", orderId)
+    .maybeSingle();
+
+  if (orderError || !order) {
+    return { ok: false as const, error: orderError?.message ?? "Order not found." };
+  }
+
+  const { data: allLines, error: linesError } = await supabase
+    .from("supplier_invoice_lines")
+    .select("id, qty, amount_inc_vat_gbp, supplier_invoices!inner(order_id)")
+    .eq("supplier_invoices.order_id", orderId);
+
+  if (linesError) {
+    return { ok: false as const, error: linesError.message };
+  }
+
+  const currentTotalsExcludingLine = (allLines ?? [])
+    .filter((line) => line.id !== lineId)
+    .reduce(
+      (totals, line) => ({
+        qty: totals.qty + Number(line.qty ?? 0),
+        amount: totals.amount + Number(line.amount_inc_vat_gbp ?? 0),
+      }),
+      { qty: 0, amount: 0 }
+    );
+
+  const totalQtyAfterEdit = currentTotalsExcludingLine.qty + nextQty;
+  const totalAmountAfterEdit = currentTotalsExcludingLine.amount + nextAmount;
+  const baselineQty = Number(order.total_qty_declared ?? 0);
+  const baselineAmount = Number(order.order_total_gbp_declared ?? 0);
+
+  const exceedsQty = totalQtyAfterEdit > baselineQty;
+  const exceedsAmount = totalAmountAfterEdit > baselineAmount + CURRENCY_TOLERANCE_GBP;
+
+  if (exceedsQty || exceedsAmount) {
+    return { ok: false as const, error: MANUAL_EDIT_BASELINE_EXCEEDED_ERROR };
   }
 
   return { ok: true as const };
@@ -215,6 +270,22 @@ export async function updateSupplierInvoiceLineAction(formData: FormData) {
     redirectWithResult(orderId, { error: guard.error });
   }
 
+  const exceptionGuard = await enforceLinesNotLinkedToOpenException({ supabase: guard.supabase, lineIds: [lineId] });
+  if (!exceptionGuard.ok) {
+    redirectWithResult(orderId, { error: "Exception-linked lines cannot be edited." });
+  }
+
+  const baselineGuard = await enforceManualEditWithinBaseline({
+    supabase: guard.supabase,
+    orderId,
+    lineId,
+    nextQty: qty,
+    nextAmount: amount,
+  });
+  if (!baselineGuard.ok) {
+    redirectWithResult(orderId, { error: baselineGuard.error });
+  }
+
   const { error } = await guard.supabase.rpc("operator_update_supplier_invoice_line_fields", {
     p_order_id: orderId,
     p_line_id: lineId,
@@ -322,6 +393,11 @@ export async function deleteManualSupplierInvoiceLineAction(formData: FormData) 
   const guard = await requireActiveOperator();
   if (!guard.ok) {
     redirectWithResult(orderId, { error: guard.error });
+  }
+
+  const exceptionGuard = await enforceLinesNotLinkedToOpenException({ supabase: guard.supabase, lineIds: [lineId] });
+  if (!exceptionGuard.ok) {
+    redirectWithResult(orderId, { error: "Exception-linked lines cannot be deleted." });
   }
 
   const { error } = await guard.supabase.rpc("operator_delete_manual_supplier_invoice_line", {
