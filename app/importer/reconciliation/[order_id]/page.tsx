@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import FlashQueryParamCleaner from "@/app/_components/FlashQueryParamCleaner";
 import { createClient } from "@/utils/supabase/server";
 import BulkLineSelectionControls from "./BulkLineSelectionControls";
 import {
@@ -239,6 +240,7 @@ export default async function ImporterReconciliationOrderPage({
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-6 text-slate-950 sm:px-6 sm:py-8">
       <div className="mx-auto flex max-w-7xl flex-col gap-6">
+        <FlashQueryParamCleaner />
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
           <Link href="/importer" className="text-sm font-semibold text-sky-600">← Back to importer dashboard</Link>
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Invoice reconciliation</p>
@@ -414,14 +416,16 @@ export default async function ImporterReconciliationOrderPage({
               </div>
 
               {linesError ? <p className="mt-4 text-sm text-rose-700">Failed to load invoice lines: {linesError.message}</p> : invoiceLines.length > 0 ? (
-                <form action={bulkMarkSupplierInvoiceLinesProgressedAction} className="mt-4 space-y-4">
-                  <input type="hidden" name="order_id" value={orderId} />
+                <div className="mt-4 space-y-4">
                   {selectableLines.length > 0 ? (
                     <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
                       <p className="text-sm font-semibold text-emerald-900">Select clean lines to progress in bulk.</p>
                       <p className="mt-1 text-xs text-emerald-800">Only unresolved lines still within remaining parent baseline capacity are selectable. Progressed and exception-linked lines remain visible but disabled.</p>
                       <BulkLineSelectionControls selectableCount={selectableLines.length} />
-                      <button type="submit" className="mt-3 rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-600">Mark selected as progressed</button>
+                      <form id="bulk-progress-form" action={bulkMarkSupplierInvoiceLinesProgressedAction} className="mt-3">
+                        <input type="hidden" name="order_id" value={orderId} />
+                        <button type="submit" className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-600">Mark selected as progressed</button>
+                      </form>
                     </div>
                   ) : (
                     <p className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-medium text-emerald-800">All visible lines are already progressed.</p>
@@ -462,7 +466,7 @@ export default async function ImporterReconciliationOrderPage({
                               <p className="text-sm font-semibold text-slate-900">Line {line.line_order} · {line.line_source}</p>
                             ) : (
                               <label className={`flex items-center gap-3 text-sm font-semibold ${progressed ? "text-slate-500" : "text-slate-900"}`}>
-                                <input type="checkbox" name="line_ids" value={line.id} disabled={progressed || blockedByExcessMismatch} data-bulk-line-checkbox="true" className="h-4 w-4 rounded border-slate-300" />
+                                <input type="checkbox" name="line_ids" value={line.id} form="bulk-progress-form" disabled={progressed || blockedByExcessMismatch} data-bulk-line-checkbox="true" className="h-4 w-4 rounded border-slate-300" />
                                 <span>Line {line.line_order} · {line.line_source}</span>
                               </label>
                             )}
@@ -502,7 +506,7 @@ export default async function ImporterReconciliationOrderPage({
                       );
                     })}
                   </div>
-                </form>
+                </div>
               ) : <p className="mt-4 text-sm text-slate-600">No supplier invoice lines found for this invoice.</p>}
             </section>
 

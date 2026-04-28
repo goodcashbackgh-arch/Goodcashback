@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import FlashQueryParamCleaner from "@/app/_components/FlashQueryParamCleaner";
 import { createClient } from "@/utils/supabase/server";
 import { saveRetailerUpdateAction } from "./actions";
 
@@ -40,11 +41,11 @@ function retailerOutcomeFromStatus(status: string | null | undefined) {
 
 function finalOutcomeMessage(dispute: { desired_outcome: string | null; status: string | null; replacement_child_order_id?: string | null }) {
   if (dispute.desired_outcome === "replacement" && dispute.status === "replaced") {
-    return "Final outcome accepted — replacement child created.";
+    return "Replacement accepted — child order created";
   }
 
   if (dispute.desired_outcome === "refund" && dispute.status === "awaiting_refund_credit") {
-    return "Final outcome accepted — awaiting refund credit processing.";
+    return "Refund accepted — awaiting refund credit processing";
   }
 
   if (dispute.status === "refunded") {
@@ -98,10 +99,12 @@ export default async function ImporterExceptionDetailPage({
   const activeStatus = (lines ?? []).find((line) => line.conversation_status)?.conversation_status ?? "retailer_contacted";
   const retailerOutcome = retailerOutcomeFromStatus(activeStatus);
   const isFinalOutcome = FINAL_OUTCOME_STATUSES.has(dispute.status ?? "");
+  const isTerminalAcceptedState = dispute.status === "replaced" || dispute.status === "awaiting_refund_credit";
 
   return (
     <main className="min-h-screen bg-slate-50 px-6 py-8 text-slate-950">
       <div className="mx-auto max-w-6xl space-y-6">
+        <FlashQueryParamCleaner />
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <Link href={`/importer/reconciliation/${dispute.order_id}`} className="text-sm font-semibold text-sky-600">← Back to reconciliation</Link>
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Importer exception workflow</p>
@@ -146,7 +149,12 @@ export default async function ImporterExceptionDetailPage({
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold">Retailer update</h2>
           <p className="mt-2 text-sm text-slate-600">Save retailer response and outcome in one atomic update.</p>
-          <p className="mt-3 text-sm text-slate-700"><span className="font-semibold">Current retailer outcome:</span> {retailerOutcome.replaceAll("_", " ")}</p>
+          {!isTerminalAcceptedState ? <p className="mt-3 text-sm text-slate-700"><span className="font-semibold">Current retailer outcome:</span> {retailerOutcome.replaceAll("_", " ")}</p> : null}
+          {isTerminalAcceptedState ? (
+            <p className="mt-3 text-sm text-slate-700">
+              <span className="font-semibold">Active terminal state:</span> {finalOutcomeMessage(dispute)}
+            </p>
+          ) : null}
           {isFinalOutcome ? (
             <p className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
               Retailer updates are locked because the final outcome has already been accepted.

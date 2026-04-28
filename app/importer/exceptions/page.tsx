@@ -53,6 +53,12 @@ function previewText(value: string | null | undefined, max = 84) {
   return `${text.slice(0, max - 1)}…`;
 }
 
+function terminalStatusMessage(status: string | null | undefined) {
+  if (status === "replaced") return "Replacement accepted — child order created";
+  if (status === "awaiting_refund_credit") return "Refund accepted — awaiting refund credit processing";
+  return null;
+}
+
 export default async function ImporterExceptionsPage() {
   const supabase = await createClient();
 
@@ -126,13 +132,14 @@ export default async function ImporterExceptionsPage() {
                   const lineStatus = activeLineStatusByDispute.get(dispute.id) ?? null;
                   const retailerOutcome = retailerOutcomeFromStatus(lineStatus);
                   const retailerPosition = latestRetailerReplyByDispute.get(dispute.id) ?? "No retailer reply yet";
+                  const terminalMessage = terminalStatusMessage(dispute.status);
 
                   return (
                     <tr key={dispute.id} className="border-t border-slate-200">
                       <td className="p-3 font-medium">{dispute.orders?.[0]?.order_ref ?? dispute.order_id}</td>
                       <td className="p-3">{dispute.desired_outcome ?? "—"}</td>
                       <td className="p-3">{retailerPosition}</td>
-                      <td className="p-3">{dispute.status ?? "—"} · {retailerOutcome}</td>
+                      <td className="p-3">{terminalMessage ?? `${dispute.status ?? "—"} · ${retailerOutcome}`}</td>
                       <td className="p-3">{gbp(dispute.amount_impact_gbp)}</td>
                       <td className="p-3">
                         <Link href={`/importer/exceptions/${dispute.id}`} className="font-semibold text-sky-700 underline">Open</Link>

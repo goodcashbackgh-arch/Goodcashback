@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import FlashQueryParamCleaner from "@/app/_components/FlashQueryParamCleaner";
 import { createClient } from "@/utils/supabase/server";
 import {
   acceptFinalRefundOutcomeAction,
@@ -52,7 +53,7 @@ function finalOutcomeMessage(dispute: { desired_outcome: string | null; status: 
   }
 
   if (dispute.desired_outcome === "refund" && dispute.status === "awaiting_refund_credit") {
-    return "Final outcome accepted — awaiting refund credit processing.";
+    return "Refund accepted — awaiting refund credit processing";
   }
 
   if (dispute.status === "refunded") {
@@ -131,10 +132,12 @@ export default async function InternalExceptionDetailPage({
   const hasRetailerReply = (messages ?? []).some((message) => message.message_type === "retailer_reply" && message.counterparty === "retailer");
   const canAcceptOutcome = hasRetailerReply && retailerOutcomeLabel === "retailer_accepted";
   const isFinalOutcome = FINAL_OUTCOME_STATUSES.has(dispute.status ?? "");
+  const isTerminalAcceptedState = dispute.status === "replaced" || dispute.status === "awaiting_refund_credit";
 
   return (
     <main className="min-h-screen bg-slate-50 px-6 py-8 text-slate-950">
       <div className="mx-auto max-w-7xl space-y-6">
+        <FlashQueryParamCleaner />
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <Link href="/internal/exceptions" className="text-sm font-semibold text-sky-600">← Back to child exceptions</Link>
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Internal exception review</p>
@@ -168,7 +171,10 @@ export default async function InternalExceptionDetailPage({
 
           <article className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
             <h2 className="text-xl font-semibold">Supervisor actions</h2>
-            <p className="mt-3 text-sm text-slate-700"><span className="font-semibold">Retailer outcome:</span> {retailerOutcomeLabel.replaceAll("_", " ")}</p>
+            {!isTerminalAcceptedState ? <p className="mt-3 text-sm text-slate-700"><span className="font-semibold">Retailer outcome:</span> {retailerOutcomeLabel.replaceAll("_", " ")}</p> : null}
+            {isTerminalAcceptedState ? (
+              <p className="mt-3 text-sm text-slate-700"><span className="font-semibold">Active terminal state:</span> {finalOutcomeMessage(dispute)}</p>
+            ) : null}
             {isFinalOutcome ? (
               <p className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
                 Final outcome already accepted. No further supervisor action is required.
