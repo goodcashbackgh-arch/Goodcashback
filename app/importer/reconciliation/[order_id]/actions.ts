@@ -4,6 +4,107 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 
+const PROGRESSION_BASELINE_EXCEEDED_ERROR = "Cannot progress selected lines because they exceed the original order baseline. Move excess or mismatched items into the exception path.";
+const CURRENCY_TOLERANCE_GBP = 0.01;
+
+function isProgressedFlag(value: string | null | undefined) {
+  return ["y", "yes", "true", "1"].includes((value ?? "").trim().toLowerCase());
+}
+
+type ProgressionLine = {
+  id: string;
+  qty: number | null;
+  amount_inc_vat_gbp: number | null;
+  qty_confirmed: number | null;
+  amount_confirmed: number | null;
+  eligible_for_invoice_yn: string | null;
+};
+
+function lineProgressionValues(line: ProgressionLine) {
+  const qty = Number(line.qty_confirmed ?? line.qty ?? 0);
+  const amount = Number(line.amount_confirmed ?? line.amount_inc_vat_gbp ?? 0);
+  return {
+    qty: Number.isFinite(qty) ? qty : 0,
+    amount: Number.isFinite(amount) ? amount : 0,
+  };
+}
+
+async function enforceProgressionWithinBaseline(params: {
+  supabase: Awaited<ReturnType<typeof createClient>>;
+  orderId: string;
+  lineIds: string[];
+}) {
+  const { supabase, orderId, lineIds } = params;
+
+  const { data: order, error: orderError } = await supabase
+    .from("orders")
+    .select("id, total_qty_declared, order_total_gbp_declared")
+    .eq("id", orderId)
+    .maybeSingle();
+
+  if (orderError || !order) {
+    return { ok: false as const, error: orderError?.message ?? "Order not found." };
+  }
+
+  const { data: allLines, error: linesError } = await supabase
+    .from("supplier_invoice_lines")
+    .select("id, qty, amount_inc_vat_gbp, qty_confirmed, amount_confirmed, eligible_for_invoice_yn, supplier_invoices!inner(order_id)")
+    .eq("supplier_invoices.order_id", orderId);
+
+  if (linesError) {
+    return { ok: false as const, error: linesError.message };
+  }
+
+  const lines = (allLines ?? []) as ProgressionLine[];
+  const lineById = new Map(lines.map((line) => [line.id, line]));
+  const selectedLines = lineIds.map((lineId) => lineById.get(lineId)).filter((line): line is ProgressionLine => Boolean(line));
+
+  if (selectedLines.length !== lineIds.length) {
+    return { ok: false as const, error: "One or more selected lines could not be found for this order." };
+  }
+
+  const selectedLineIds = new Set(selectedLines.map((line) => line.id));
+
+  const currentProgressed = lines
+    .filter((line) => isProgressedFlag(line.eligible_for_invoice_yn) && !selectedLineIds.has(line.id))
+    .reduce(
+      (totals, line) => {
+        const values = lineProgressionValues(line);
+        return {
+          qty: totals.qty + values.qty,
+          amount: totals.amount + values.amount,
+        };
+      },
+      { qty: 0, amount: 0 }
+    );
+
+  const selectedUnresolvedTotals = selectedLines
+    .filter((line) => !isProgressedFlag(line.eligible_for_invoice_yn))
+    .reduce(
+      (totals, line) => {
+        const values = lineProgressionValues(line);
+        return {
+          qty: totals.qty + values.qty,
+          amount: totals.amount + values.amount,
+        };
+      },
+      { qty: 0, amount: 0 }
+    );
+
+  const baselineQty = Number(order.total_qty_declared ?? 0);
+  const baselineAmount = Number(order.order_total_gbp_declared ?? 0);
+
+  const exceedsQty = currentProgressed.qty + selectedUnresolvedTotals.qty > baselineQty;
+  const exceedsAmount = currentProgressed.amount + selectedUnresolvedTotals.amount > baselineAmount + CURRENCY_TOLERANCE_GBP;
+
+  if (exceedsQty || exceedsAmount) {
+    return { ok: false as const, error: PROGRESSION_BASELINE_EXCEEDED_ERROR };
+  }
+
+  return { ok: true as const };
+}
+
+
 function readString(formData: FormData, key: string) {
   const value = formData.get(key);
   return typeof value === "string" ? value.trim() : "";
@@ -192,6 +293,11 @@ export async function markSupplierInvoiceLineProgressedAction(formData: FormData
     redirectWithResult(orderId, { error: guard.error });
   }
 
+  const progressionGuard = await enforceProgressionWithinBaseline({ supabase: guard.supabase, orderId, lineIds: [lineId] });
+  if (!progressionGuard.ok) {
+    redirectWithResult(orderId, { error: progressionGuard.error });
+  }
+
   const { error } = await guard.supabase.rpc("operator_mark_supplier_invoice_line_progressed", {
     p_order_id: orderId,
     p_line_id: lineId,
@@ -220,6 +326,11 @@ export async function bulkMarkSupplierInvoiceLinesProgressedAction(formData: For
   const guard = await requireActiveOperator();
   if (!guard.ok) {
     redirectWithResult(orderId, { error: guard.error });
+  }
+
+  const progressionGuard = await enforceProgressionWithinBaseline({ supabase: guard.supabase, orderId, lineIds });
+  if (!progressionGuard.ok) {
+    redirectWithResult(orderId, { error: progressionGuard.error });
   }
 
   const { data, error } = await guard.supabase.rpc("operator_bulk_mark_supplier_invoice_lines_progressed", {
