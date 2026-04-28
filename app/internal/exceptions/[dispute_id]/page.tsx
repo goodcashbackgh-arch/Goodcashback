@@ -12,6 +12,14 @@ type SearchParams = {
   error?: string;
 };
 
+const FINAL_OUTCOME_STATUSES = new Set([
+  "approved_replacement",
+  "replaced",
+  "awaiting_refund_credit",
+  "refunded",
+  "closed",
+]);
+
 function gbp(value: number | null | undefined) {
   return new Intl.NumberFormat("en-GB", {
     style: "currency",
@@ -36,6 +44,26 @@ function retailerOutcomeFromStatus(status: string | null | undefined) {
     default:
       return "still_waiting";
   }
+}
+
+function finalOutcomeMessage(dispute: { desired_outcome: string | null; status: string | null; replacement_child_order_id?: string | null }) {
+  if (dispute.desired_outcome === "replacement" && dispute.status === "replaced") {
+    return "Replacement accepted — child order created.";
+  }
+
+  if (dispute.desired_outcome === "refund" && dispute.status === "awaiting_refund_credit") {
+    return "Final outcome accepted — awaiting refund credit processing.";
+  }
+
+  if (dispute.status === "refunded") {
+    return "Refund processed — awaiting closure.";
+  }
+
+  if (dispute.status === "closed") {
+    return "Exception closed.";
+  }
+
+  return "Final outcome accepted.";
 }
 
 export default async function InternalExceptionDetailPage({
@@ -102,6 +130,7 @@ export default async function InternalExceptionDetailPage({
   const retailerOutcomeLabel = retailerOutcomeFromStatus(activeConversationStatus);
   const hasRetailerReply = (messages ?? []).some((message) => message.message_type === "retailer_reply" && message.counterparty === "retailer");
   const canAcceptOutcome = hasRetailerReply && retailerOutcomeLabel === "retailer_accepted";
+  const isFinalOutcome = FINAL_OUTCOME_STATUSES.has(dispute.status ?? "");
 
   return (
     <main className="min-h-screen bg-slate-50 px-6 py-8 text-slate-950">
@@ -119,6 +148,12 @@ export default async function InternalExceptionDetailPage({
           </div>
           {query.success ? <p className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">{query.success}</p> : null}
           {query.error ? <p className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">{query.error}</p> : null}
+          {isFinalOutcome ? (
+            <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
+              <p className="font-semibold">{finalOutcomeMessage(dispute)}</p>
+              {dispute.replacement_child_order_id ? <p className="mt-1">Replacement child order: {dispute.replacement_child_order_id}</p> : null}
+            </div>
+          ) : null}
         </section>
 
         <section className="grid gap-6 lg:grid-cols-2">
@@ -129,20 +164,16 @@ export default async function InternalExceptionDetailPage({
               <p><span className="font-semibold">Supplier invoice:</span> {invoice?.invoice_ref ?? "—"}</p>
               {invoice?.invoice_pdf_url ? <a href={invoice.invoice_pdf_url} target="_blank" className="text-sky-700 underline">Open supplier invoice PDF</a> : null}
             </div>
-            <h3 className="mt-5 text-sm font-semibold uppercase tracking-wide text-slate-500">Original screenshots</h3>
-            <div className="mt-3 grid gap-3 sm:grid-cols-2">
-              {(screenshots ?? []).map((shot) => (
-                <a key={shot.id} href={shot.screenshot_url} target="_blank" className="block rounded-xl border border-slate-200 p-2 text-xs text-sky-700 underline">Screenshot #{shot.display_order ?? "—"}</a>
-              ))}
-              {(screenshots ?? []).length === 0 ? <p className="text-sm text-slate-500">No screenshots attached.</p> : null}
-            </div>
           </article>
 
           <article className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
             <h2 className="text-xl font-semibold">Supervisor actions</h2>
             <p className="mt-3 text-sm text-slate-700"><span className="font-semibold">Retailer outcome:</span> {retailerOutcomeLabel.replaceAll("_", " ")}</p>
-            <p className="mt-1 text-xs text-slate-500">Final outcome acceptance requires at least one retailer reply and retailer outcome = accepted.</p>
-            {dispute.desired_outcome === "refund" ? (
+            {isFinalOutcome ? (
+              <p className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+                Final outcome already accepted. No further supervisor action is required.
+              </p>
+            ) : dispute.desired_outcome === "refund" ? (
               <div className="mt-4 space-y-3">
                 <form action={approveRefundPursuitAction}>
                   <input type="hidden" name="dispute_id" value={dispute.id} />
@@ -150,7 +181,7 @@ export default async function InternalExceptionDetailPage({
                 </form>
                 <form action={acceptFinalRefundOutcomeAction}>
                   <input type="hidden" name="dispute_id" value={dispute.id} />
-                  <button type="submit" disabled={!canAcceptOutcome} className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-300">Accept final refund outcome</button>
+                  <button type="submit" disabled={!canAcceptOutcome} className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">Accept final refund outcome</button>
                 </form>
               </div>
             ) : (
@@ -161,23 +192,6 @@ export default async function InternalExceptionDetailPage({
             )}
             {dispute.replacement_child_order_id ? <p className="mt-3 text-sm text-slate-700">Replacement child order: {dispute.replacement_child_order_id}</p> : null}
           </article>
-        </section>
-
-        <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-          <h2 className="text-xl font-semibold">Invoice lines (dispute lines highlighted)</h2>
-          <div className="mt-4 space-y-2">
-            {(allInvoiceLines ?? []).map((line) => {
-              const inDispute = disputeLineIdSet.has(line.id);
-              return (
-                <article key={line.id} className={`rounded-2xl border p-3 text-sm ${inDispute ? "border-amber-300 bg-amber-50" : "border-slate-200 bg-slate-50"}`}>
-                  <p className="font-semibold">Line {line.line_order} · {line.line_source}</p>
-                  <p>{line.description}</p>
-                  <p>Qty {line.qty} · Amount {gbp(line.amount_inc_vat_gbp)} · {isProgressed(line.eligible_for_invoice_yn) ? "Progressed" : "Unresolved"}</p>
-                  {inDispute ? <p className="mt-1 text-xs font-semibold text-amber-900">In this dispute</p> : null}
-                </article>
-              );
-            })}
-          </div>
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
