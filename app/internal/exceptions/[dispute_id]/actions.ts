@@ -38,18 +38,39 @@ async function requireActiveStaff() {
   return { supabase, ok: true as const, staffId: staff.id };
 }
 
-async function requireMessagesForOutcome(supabase: Awaited<ReturnType<typeof createClient>>, disputeId: string) {
+async function requireRetailerMessageAndAcceptedOutcome(supabase: Awaited<ReturnType<typeof createClient>>, disputeId: string) {
   const { count, error } = await supabase
     .from("dispute_messages")
     .select("id", { count: "exact", head: true })
-    .eq("dispute_id", disputeId);
+    .eq("dispute_id", disputeId)
+    .eq("message_type", "retailer_reply")
+    .eq("counterparty", "retailer");
 
   if (error) {
     return { ok: false as const, error: error.message };
   }
 
   if (Number(count ?? 0) < 1) {
-    return { ok: false as const, error: "Add at least one conversation message before accepting final outcome." };
+    return { ok: false as const, error: "At least one retailer reply is required before accepting final outcome." };
+  }
+
+  const { data: lines, error: linesError } = await supabase
+    .from("dispute_lines")
+    .select("id, conversation_status")
+    .eq("dispute_id", disputeId)
+    .is("resolved_at", null);
+
+  if (linesError) {
+    return { ok: false as const, error: linesError.message };
+  }
+
+  if ((lines ?? []).length < 1) {
+    return { ok: false as const, error: "No active dispute lines found." };
+  }
+
+  const hasAcceptedOutcome = (lines ?? []).every((line) => line.conversation_status === "retailer_response_received");
+  if (!hasAcceptedOutcome) {
+    return { ok: false as const, error: "Retailer outcome must be marked as accepted before final outcome acceptance." };
   }
 
   return { ok: true as const };
@@ -65,42 +86,21 @@ export async function addDisputeInternalNoteAction(formData: FormData) {
   const guard = await requireActiveStaff();
   if (!guard.ok) redirectWithResult(disputeId, { error: guard.error });
 
-  const { error } = await guard.supabase.rpc("staff_add_dispute_message", {
-    p_dispute_id: disputeId,
-    p_message_type: "supervisor_note",
-    p_counterparty: "internal",
-    p_body: body,
-    p_generated_by: "manual",
-  });
+  const { error } = await guard.supabase
+    .from("dispute_messages")
+    .insert({
+      dispute_id: disputeId,
+      message_type: "supervisor_note",
+      counterparty: "internal",
+      body,
+      generated_by: "manual",
+    });
 
   if (error) redirectWithResult(disputeId, { error: error.message });
 
   revalidatePath(`/internal/exceptions/${disputeId}`);
+  revalidatePath(`/importer/exceptions/${disputeId}`);
   redirectWithResult(disputeId, { success: "Internal note added." });
-}
-
-export async function pasteRetailerResponseAction(formData: FormData) {
-  const disputeId = readString(formData, "dispute_id");
-  const body = readString(formData, "body");
-
-  if (!disputeId) redirect("/internal/exceptions");
-  if (!body) redirectWithResult(disputeId, { error: "Retailer response cannot be blank." });
-
-  const guard = await requireActiveStaff();
-  if (!guard.ok) redirectWithResult(disputeId, { error: guard.error });
-
-  const { error } = await guard.supabase.rpc("staff_add_dispute_message", {
-    p_dispute_id: disputeId,
-    p_message_type: "retailer_reply",
-    p_counterparty: "retailer",
-    p_body: body,
-    p_generated_by: "retailer_paste",
-  });
-
-  if (error) redirectWithResult(disputeId, { error: error.message });
-
-  revalidatePath(`/internal/exceptions/${disputeId}`);
-  redirectWithResult(disputeId, { success: "Retailer response logged." });
 }
 
 export async function approveRefundPursuitAction(formData: FormData) {
@@ -128,6 +128,7 @@ export async function approveRefundPursuitAction(formData: FormData) {
   if (error) redirectWithResult(disputeId, { error: error.message });
 
   revalidatePath(`/internal/exceptions/${disputeId}`);
+  revalidatePath(`/importer/exceptions/${disputeId}`);
   redirectWithResult(disputeId, { success: "Refund pursuit approved." });
 }
 
@@ -147,8 +148,8 @@ export async function acceptFinalRefundOutcomeAction(formData: FormData) {
   if (disputeError || !dispute) redirectWithResult(disputeId, { error: "Dispute not found." });
   if (dispute.desired_outcome !== "refund") redirectWithResult(disputeId, { error: "Final refund outcome is only available for refund disputes." });
 
-  const messagesGuard = await requireMessagesForOutcome(guard.supabase, disputeId);
-  if (!messagesGuard.ok) redirectWithResult(disputeId, { error: messagesGuard.error });
+  const finalOutcomeGuard = await requireRetailerMessageAndAcceptedOutcome(guard.supabase, disputeId);
+  if (!finalOutcomeGuard.ok) redirectWithResult(disputeId, { error: finalOutcomeGuard.error });
 
   const { error } = await guard.supabase
     .from("disputes")
@@ -158,6 +159,7 @@ export async function acceptFinalRefundOutcomeAction(formData: FormData) {
   if (error) redirectWithResult(disputeId, { error: error.message });
 
   revalidatePath(`/internal/exceptions/${disputeId}`);
+  revalidatePath(`/importer/exceptions/${disputeId}`);
   redirectWithResult(disputeId, { success: "Final refund outcome accepted." });
 }
 
@@ -178,8 +180,8 @@ export async function acceptReplacementOutcomeAction(formData: FormData) {
   if (dispute.desired_outcome !== "replacement") redirectWithResult(disputeId, { error: "Replacement outcome is only available for replacement disputes." });
   if (dispute.replacement_child_order_id) redirectWithResult(disputeId, { error: "Replacement child order already exists." });
 
-  const messagesGuard = await requireMessagesForOutcome(guard.supabase, disputeId);
-  if (!messagesGuard.ok) redirectWithResult(disputeId, { error: messagesGuard.error });
+  const finalOutcomeGuard = await requireRetailerMessageAndAcceptedOutcome(guard.supabase, disputeId);
+  if (!finalOutcomeGuard.ok) redirectWithResult(disputeId, { error: finalOutcomeGuard.error });
 
   const { data: parentOrder, error: parentOrderError } = await guard.supabase
     .from("orders")
@@ -257,6 +259,7 @@ export async function acceptReplacementOutcomeAction(formData: FormData) {
   if (resolveLinesError) redirectWithResult(disputeId, { error: resolveLinesError.message });
 
   revalidatePath(`/internal/exceptions/${disputeId}`);
+  revalidatePath(`/importer/exceptions/${disputeId}`);
   revalidatePath("/internal/exceptions");
   redirectWithResult(disputeId, { success: "Replacement outcome accepted and child order created." });
 }

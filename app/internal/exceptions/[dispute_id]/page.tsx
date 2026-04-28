@@ -6,7 +6,6 @@ import {
   acceptReplacementOutcomeAction,
   addDisputeInternalNoteAction,
   approveRefundPursuitAction,
-  pasteRetailerResponseAction,
 } from "./actions";
 
 type SearchParams = {
@@ -24,6 +23,20 @@ function gbp(value: number | null | undefined) {
 
 function isProgressed(value: string | null | undefined) {
   return ["y", "yes", "true", "1"].includes((value ?? "").trim().toLowerCase());
+}
+
+function retailerOutcomeFromStatus(status: string | null | undefined) {
+  switch (status) {
+    case "retailer_response_received":
+      return "retailer_accepted";
+    case "awaiting_retailer_resolution":
+      return "retailer_disputed";
+    case "retailer_draft_ready":
+      return "more_info_requested";
+    case "retailer_contacted":
+    default:
+      return "still_waiting";
+  }
 }
 
 export default async function InternalExceptionDetailPage({
@@ -86,6 +99,10 @@ export default async function InternalExceptionDetailPage({
   const disputeLineIdSet = new Set((disputeLines ?? []).map((line) => line.supplier_invoice_line_id));
   const progressedCount = (allInvoiceLines ?? []).filter((line) => isProgressed(line.eligible_for_invoice_yn)).length;
   const unresolvedCount = (allInvoiceLines ?? []).filter((line) => !isProgressed(line.eligible_for_invoice_yn)).length;
+  const activeConversationStatus = (disputeLines ?? []).find((line) => line.resolved_at === null)?.conversation_status ?? null;
+  const retailerOutcomeLabel = retailerOutcomeFromStatus(activeConversationStatus);
+  const hasRetailerReply = (messages ?? []).some((message) => message.message_type === "retailer_reply" && message.counterparty === "retailer");
+  const canAcceptOutcome = hasRetailerReply && retailerOutcomeLabel === "retailer_accepted";
 
   return (
     <main className="min-h-screen bg-slate-50 px-6 py-8 text-slate-950">
@@ -95,7 +112,7 @@ export default async function InternalExceptionDetailPage({
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Internal exception review</p>
           <h1 className="mt-2 text-3xl font-semibold tracking-tight">Dispute {dispute.id}</h1>
           <p className="mt-2 text-sm text-slate-600">Order {order?.order_ref ?? dispute.order_id} · Outcome {dispute.desired_outcome} · Status {dispute.status}</p>
-          <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-sm">
+          <div className="mt-4 grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3"><p className="text-xs uppercase text-slate-500">Declared qty</p><p className="mt-1 font-semibold">{order?.total_qty_declared ?? "—"}</p></div>
             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3"><p className="text-xs uppercase text-slate-500">Declared value</p><p className="mt-1 font-semibold">{gbp(order?.order_total_gbp_declared)}</p></div>
             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3"><p className="text-xs uppercase text-slate-500">Progressed lines</p><p className="mt-1 font-semibold">{progressedCount}</p></div>
@@ -124,6 +141,8 @@ export default async function InternalExceptionDetailPage({
 
           <article className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
             <h2 className="text-xl font-semibold">Supervisor actions</h2>
+            <p className="mt-3 text-sm text-slate-700"><span className="font-semibold">Retailer outcome:</span> {retailerOutcomeLabel.replaceAll("_", " ")}</p>
+            <p className="mt-1 text-xs text-slate-500">Final outcome acceptance requires at least one retailer reply and retailer outcome = accepted.</p>
             {dispute.desired_outcome === "refund" ? (
               <div className="mt-4 space-y-3">
                 <form action={approveRefundPursuitAction}>
@@ -132,13 +151,13 @@ export default async function InternalExceptionDetailPage({
                 </form>
                 <form action={acceptFinalRefundOutcomeAction}>
                   <input type="hidden" name="dispute_id" value={dispute.id} />
-                  <button type="submit" className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-600">Accept final refund outcome</button>
+                  <button type="submit" disabled={!canAcceptOutcome} className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-300">Accept final refund outcome</button>
                 </form>
               </div>
             ) : (
               <form action={acceptReplacementOutcomeAction} className="mt-4">
                 <input type="hidden" name="dispute_id" value={dispute.id} />
-                <button type="submit" disabled={Boolean(dispute.replacement_child_order_id)} className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">Accept replacement outcome</button>
+                <button type="submit" disabled={Boolean(dispute.replacement_child_order_id) || !canAcceptOutcome} className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">Accept replacement outcome</button>
               </form>
             )}
             {dispute.replacement_child_order_id ? <p className="mt-3 text-sm text-slate-700">Replacement child order: {dispute.replacement_child_order_id}</p> : null}
@@ -164,18 +183,12 @@ export default async function InternalExceptionDetailPage({
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold">Conversation log</h2>
-          <div className="mt-4 grid gap-4 lg:grid-cols-2">
+          <div className="mt-4 max-w-xl">
             <form action={addDisputeInternalNoteAction} className="space-y-2 rounded-2xl border border-slate-200 bg-slate-50 p-4">
               <input type="hidden" name="dispute_id" value={dispute.id} />
               <h3 className="text-sm font-semibold">Add note (internal)</h3>
               <textarea name="body" required rows={4} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
               <button type="submit" className="rounded-xl bg-sky-700 px-4 py-2 text-sm font-semibold text-white">Save note</button>
-            </form>
-            <form action={pasteRetailerResponseAction} className="space-y-2 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              <input type="hidden" name="dispute_id" value={dispute.id} />
-              <h3 className="text-sm font-semibold">Paste retailer response</h3>
-              <textarea name="body" required rows={4} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
-              <button type="submit" className="rounded-xl bg-amber-700 px-4 py-2 text-sm font-semibold text-white">Log response</button>
             </form>
           </div>
 

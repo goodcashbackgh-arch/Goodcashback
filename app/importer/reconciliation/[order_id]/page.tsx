@@ -389,6 +389,7 @@ export default async function ImporterReconciliationOrderPage({
                       {dispute.replacement_child_order_id ? (
                         <p><span className="font-semibold">Replacement child order:</span> {dispute.replacement_child_order?.[0]?.order_ref ?? dispute.replacement_child_order_id}</p>
                       ) : null}
+                      <Link href={`/importer/exceptions/${dispute.id}`} className="mt-3 inline-block rounded-xl border border-sky-300 bg-sky-50 px-3 py-2 text-sm font-semibold text-sky-800 hover:bg-sky-100">Open exception workflow</Link>
                       {dispute.resolved_at === null ? (
                         <form action={rescindExceptionCaseAction} className="mt-3">
                           <input type="hidden" name="order_id" value={orderId} />
