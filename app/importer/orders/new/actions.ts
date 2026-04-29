@@ -9,8 +9,18 @@ export async function createOrderAction(formData: FormData) {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
-  const { data: operator } = await supabase.from("operators").select("id, importer_id, shipper_id").eq("auth_user_id", user.id).eq("active", true).maybeSingle();
+  const { data: operator } = await supabase.from("operators").select("id").eq("auth_user_id", user.id).eq("active", true).maybeSingle();
   if (!operator) redirect("/auth/check");
+  const { data: operatorImporter } = await supabase
+    .from("operator_importers")
+    .select("importer_id")
+    .eq("operator_id", operator.id)
+    .is("revoked_at", null)
+    .limit(1)
+    .maybeSingle();
+  if (!operatorImporter?.importer_id) redirect("/importer/orders/new?error=No+active+importer+assignment.");
+  const { data: importer } = await supabase.from("importers").select("shipper_id").eq("id", operatorImporter.importer_id).maybeSingle();
+  if (!importer?.shipper_id) redirect("/importer/orders/new?error=Importer+record+missing+shipper.");
 
   const retailerId = readString(formData, "retailer_id");
   const destinationHubId = readString(formData, "destination_hub_id");
@@ -22,38 +32,24 @@ export async function createOrderAction(formData: FormData) {
 
   if (!retailerId || !destinationHubId || lines.length === 0) redirect("/importer/orders/new?error=Missing+required+order+inputs.");
 
-  const totalQty = lines.reduce((s,l)=>s+l.qty,0);
-  const totalAmount = lines.reduce((s,l)=>s+l.amount_inc_vat_gbp,0);
-
-  const { data: createdOrder, error: orderError } = await supabase.from("orders").insert({
-    order_ref: `ORD-${Date.now()}`,
-    payment_auth_id: `AUTH-${Date.now()}`,
-    importer_id: operator.importer_id,
-    operator_id: operator.id,
-    shipper_id: operator.shipper_id,
-    retailer_id: retailerId,
-    destination_hub_id: destinationHubId,
-    order_type: "original",
-    status: "pending_dva_funding",
-    sop_version: sopVersion,
-    total_qty_declared: totalQty,
-    order_total_gbp_declared: Number(totalAmount.toFixed(2)),
-  }).select("id").single();
-
-  if (orderError || !createdOrder) redirect(`/importer/orders/new?error=${encodeURIComponent(orderError?.message ?? "Failed to create order")}`);
-  const { error: linesError } = await supabase.from("order_category_lines").insert(lines.map((line)=>({
-    order_id: createdOrder.id,
-    markup_category_id: line.markup_category_id,
-    qty: line.qty,
-    amount_inc_vat_gbp: Number(line.amount_inc_vat_gbp.toFixed(2)),
-    markup_pct_applied: 0,
-    markup_gbp_calculated: 0,
-  })));
-  if (linesError) redirect(`/importer/orders/new?error=${encodeURIComponent(linesError.message)}`);
-
-  if (screenshotUrl) await supabase.from("order_screenshots").insert({order_id: createdOrder.id,screenshot_url: screenshotUrl,uploaded_by_operator_id: operator.id,display_order: 1,note: "Original order screenshot"});
+  const orderRef = `ORD-${Date.now()}`;
+  const paymentAuthId = `AUTH-${Date.now()}`;
+  const { data: createdOrderId, error: orderError } = await supabase.rpc("importer_create_order_with_lines", {
+    p_operator_id: operator.id,
+    p_importer_id: operatorImporter.importer_id,
+    p_shipper_id: importer.shipper_id,
+    p_retailer_id: retailerId,
+    p_destination_hub_id: destinationHubId,
+    p_sop_version: sopVersion,
+    p_order_type: "original",
+    p_order_ref: orderRef,
+    p_payment_auth_id: paymentAuthId,
+    p_screenshot_url: screenshotUrl || null,
+    p_lines: lines,
+  });
+  if (orderError || !createdOrderId) redirect(`/importer/orders/new?error=${encodeURIComponent(orderError?.message ?? "Failed to create order")}`);
 
   revalidatePath("/importer");
-  revalidatePath(`/importer/orders/${createdOrder.id}/operations`);
-  redirect(`/importer/orders/${createdOrder.id}/operations?success=Order+created`);
+  revalidatePath(`/importer/orders/${createdOrderId}/operations`);
+  redirect(`/importer/orders/${createdOrderId}/operations?success=Order+created`);
 }
