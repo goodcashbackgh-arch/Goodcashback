@@ -5,8 +5,9 @@ type CategoryLine = { id: string; qty: number; amount_inc_vat_gbp: number; marku
 type ScreenshotRow = { id: string; screenshot_url: string };
 type TrackingRow = { id: string; tracking_ref: string; is_final_delivery_yn: boolean | null; couriers: { name: string } | null };
 
-export default async function OrderOperationsPage({params}:{params: Promise<{order_id:string}>}) {
+export default async function OrderOperationsPage({params,searchParams}:{params: Promise<{order_id:string}>, searchParams: Promise<{success?:string;order_ref?:string;auth_ref?:string}>}) {
   const {order_id:orderId} = await params;
+  const qp = await searchParams;
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return <main className="p-6">Please sign in.</main>;
@@ -36,6 +37,13 @@ export default async function OrderOperationsPage({params}:{params: Promise<{ord
   return <main className="p-6 space-y-6">
     <Link href="/importer" className="text-sky-600">← Back</Link>
     <h1 className="text-2xl font-semibold">Order operations: {order.order_ref ?? orderId}</h1>
+
+    {qp.success ? <div className="rounded border border-emerald-300 bg-emerald-50 p-3 text-sm">
+      <p className="font-semibold">Pro Forma Quote</p>
+      <p>This estimate is based on the goods value you submitted. Shipping is not included at this stage.</p>
+      <p>Shipping will be quoted separately after the goods are received, checked, and assessed by the shipper.</p>
+      <p className="mt-2">Order ref: {qp.order_ref ?? order.order_ref} | Auth ref: {qp.auth_ref ?? order.payment_auth_id}</p>
+    </div> : null}
     {order.order_type === "replacement_child" ? <div className="rounded border p-3 bg-amber-50">Replacement child order {order.parent_order_id ? <Link className="underline" href={`/importer/orders/${order.parent_order_id}/operations`}>View parent</Link>:null} {disputes?.id ? <Link className="underline ml-2" href={`/importer/exceptions/${disputes.id}`}>View dispute</Link>:null}</div> : null}
     <section><h2 className="font-semibold">Summary</h2><p>Qty: {order.total_qty_declared} | Declared GBP: {order.order_total_gbp_declared}</p></section>
     <section><h2 className="font-semibold">Funding status</h2><pre className="text-xs bg-slate-100 p-2 rounded">{JSON.stringify(funding ?? {}, null, 2)}</pre></section>
