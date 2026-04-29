@@ -3,6 +3,8 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 
+const INVOICE_EVIDENCE_BUCKET = "invoice-evidence";
+
 const rs = (f: FormData, k: string) => {
   const v = f.get(k);
   return typeof v === "string" ? v.trim() : "";
@@ -37,7 +39,12 @@ async function requireOperatorAccess(supabase: Awaited<ReturnType<typeof createC
     .maybeSingle();
   if (!access) redirect(`/importer/orders/${orderId}/operations?error=No+access+to+this+order`);
 
-  return operator;
+  return { operator, importerId: order.importer_id as string };
+}
+
+function safeExt(fileName: string) {
+  const ext = fileName.includes(".") ? fileName.split(".").pop() : "bin";
+  return (ext ?? "bin").toLowerCase().replace(/[^a-z0-9]/g, "") || "bin";
 }
 
 export async function addTrackingSubmissionAction(formData: FormData) {
@@ -51,7 +58,7 @@ export async function addTrackingSubmissionAction(formData: FormData) {
   const isFinalDelivery = rs(formData, "is_final_delivery_yn") === "on";
 
   if (!orderId) redirect("/importer?error=Missing+order+id");
-  const operator = await requireOperatorAccess(supabase, orderId);
+  const { operator } = await requireOperatorAccess(supabase, orderId);
 
   const { error } = await supabase.rpc("importer_add_order_tracking_submission", {
     p_order_id: orderId,
@@ -72,13 +79,26 @@ export async function submitInvoiceEvidenceAction(formData: FormData) {
   const supabase = await createClient();
   const orderId = rs(formData, "order_id");
   const invoiceRef = rs(formData, "invoice_ref");
-  const invoicePdfUrl = rs(formData, "invoice_pdf_url");
+  const invoiceFile = formData.get("invoice_file");
 
   if (!orderId) redirect("/importer?error=Missing+order+id");
   if (!invoiceRef) redirect(`/importer/orders/${orderId}/operations?error=Invoice+reference+is+required`);
-  if (!invoicePdfUrl) redirect(`/importer/orders/${orderId}/operations?error=Invoice+PDF+URL+is+required`);
+  if (!(invoiceFile instanceof File) || invoiceFile.size <= 0) {
+    redirect(`/importer/orders/${orderId}/operations?error=Invoice+file+is+required`);
+  }
 
-  await requireOperatorAccess(supabase, orderId);
+  const { importerId } = await requireOperatorAccess(supabase, orderId);
+  const objectPath = `${importerId}/${orderId}/${Date.now()}.${safeExt(invoiceFile.name)}`;
+  const { error: uploadError } = await supabase.storage
+    .from(INVOICE_EVIDENCE_BUCKET)
+    .upload(objectPath, invoiceFile, { upsert: false });
+
+  if (uploadError) {
+    redirect(`/importer/orders/${orderId}/operations?error=${encodeURIComponent(`Invoice upload failed. Ensure bucket '${INVOICE_EVIDENCE_BUCKET}' exists and is writable. ${uploadError.message}`)}`);
+  }
+
+  const { data: publicUrlData } = supabase.storage.from(INVOICE_EVIDENCE_BUCKET).getPublicUrl(objectPath);
+  const invoicePdfUrl = publicUrlData.publicUrl || objectPath;
 
   const { error } = await supabase.rpc("operator_submit_supplier_invoice", {
     p_order_id: orderId,
@@ -88,5 +108,6 @@ export async function submitInvoiceEvidenceAction(formData: FormData) {
 
   if (error) redirect(`/importer/orders/${orderId}/operations?error=${encodeURIComponent(error.message)}`);
   revalidatePath(`/importer/orders/${orderId}/operations`);
+  revalidatePath("/importer");
   redirect(`/importer/orders/${orderId}/operations?success=Invoice+submitted`);
 }
