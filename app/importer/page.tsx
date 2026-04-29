@@ -232,6 +232,8 @@ export default async function ImporterPage() {
           create order, dynamic tracking submission, invoice upload, and OCR reconciliation workspace.
           <div className="mt-3">
             <Link href="/importer/exceptions" className="font-semibold text-sky-700 underline">View active exception cases</Link>
+            <span className="mx-2">·</span>
+            <Link href="/importer/orders/new" className="font-semibold text-sky-700 underline">Create new order</Link>
           </div>
         </div>
       </header>
