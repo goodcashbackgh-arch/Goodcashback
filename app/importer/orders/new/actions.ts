@@ -3,6 +3,9 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 
+const ORDER_SCREENSHOTS_BUCKET = "order-screenshots";
+const GENERAL_CATEGORY_NAME = "General goods";
+
 const readString = (f: FormData, k: string) => {
   const v = f.get(k);
   return typeof v === "string" ? v.trim() : "";
@@ -36,15 +39,31 @@ export async function createOrderAction(formData: FormData) {
   if (screenshots.length < 1) redirect("/importer/orders/new?error=At+least+one+screenshot+is+required.");
   if (!Number.isFinite(qty) || qty <= 0 || !Number.isFinite(amount) || amount <= 0) redirect("/importer/orders/new?error=Qty+and+amount+must+be+greater+than+0.");
 
-  const { data: defaultCategory } = await supabase
+  let generalCategoryId: string | null = null;
+  const withCode = await supabase
     .from("markup_categories")
     .select("id")
     .eq("active", true)
+    .eq("category_code", "general_goods")
     .or(`shipper_id.eq.${importer.shipper_id},shipper_id.is.null`)
-    .order("category_name")
     .limit(1)
     .maybeSingle();
-  if (!defaultCategory?.id) redirect("/importer/orders/new?error=No+default+category+configured.");
+
+  if (!withCode.error && withCode.data?.id) {
+    generalCategoryId = withCode.data.id;
+  } else {
+    const byName = await supabase
+      .from("markup_categories")
+      .select("id")
+      .eq("active", true)
+      .eq("category_name", GENERAL_CATEGORY_NAME)
+      .or(`shipper_id.eq.${importer.shipper_id},shipper_id.is.null`)
+      .limit(1)
+      .maybeSingle();
+    if (byName.data?.id) generalCategoryId = byName.data.id;
+  }
+
+  if (!generalCategoryId) redirect("/importer/orders/new?error=General+goods+category+is+not+configured.");
 
   const stamp = Date.now();
   const orderRef = `ORD-${stamp}`;
@@ -72,21 +91,37 @@ export async function createOrderAction(formData: FormData) {
 
   await supabase.from("order_category_lines").insert({
     order_id: order.id,
-    markup_category_id: defaultCategory.id,
+    markup_category_id: generalCategoryId,
     qty,
     amount_inc_vat_gbp: Math.round(amount * 100) / 100,
     markup_pct_applied: 0,
     markup_gbp_calculated: 0,
   });
 
-  const screenshotRows = screenshots.map((file, i) => ({
+  const uploadedUrls: string[] = [];
+  for (let i = 0; i < screenshots.length; i += 1) {
+    const file = screenshots[i];
+    const ext = file.name.includes(".") ? file.name.split(".").pop() : "bin";
+    const safeExt = (ext ?? "bin").toLowerCase().replace(/[^a-z0-9]/g, "") || "bin";
+    const objectPath = `${operatorImporter.importer_id}/${order.id}/${i + 1}-${Date.now()}.${safeExt}`;
+    const { error: uploadError } = await supabase.storage.from(ORDER_SCREENSHOTS_BUCKET).upload(objectPath, file, { upsert: false });
+    if (uploadError) {
+      await supabase.from("orders").delete().eq("id", order.id);
+      redirect(`/importer/orders/new?error=${encodeURIComponent(`Screenshot upload failed. Ensure bucket '${ORDER_SCREENSHOTS_BUCKET}' exists and is writable. ${uploadError.message}`)}`);
+    }
+    const { data: publicUrlData } = supabase.storage.from(ORDER_SCREENSHOTS_BUCKET).getPublicUrl(objectPath);
+    uploadedUrls.push(publicUrlData.publicUrl || objectPath);
+  }
+
+  const screenshotRows = uploadedUrls.map((screenshotUrl, i) => ({
     order_id: order.id,
-    screenshot_url: `upload://${order.id}/${i + 1}-${file.name}`,
+    screenshot_url: screenshotUrl,
     uploaded_by_operator_id: operator.id,
     display_order: i + 1,
     note: "Original order screenshot",
   }));
-  await supabase.from("order_screenshots").insert(screenshotRows);
+  const { error: screenshotInsertError } = await supabase.from("order_screenshots").insert(screenshotRows);
+  if (screenshotInsertError) redirect(`/importer/orders/new?error=${encodeURIComponent(screenshotInsertError.message)}`);
 
   revalidatePath("/importer");
   revalidatePath(`/importer/orders/${order.id}/operations`);
