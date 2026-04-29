@@ -155,3 +155,9 @@ Do not build yet:
 12. Created order appears on importer dashboard.
 13. Destination hub/city is stored for later shipper quote/handoff.
 14. No shipper/hub/category dropdown is exposed to importer.
+
+## Implementation note (Create Order v1)
+
+Create Order v1 uses existing `retailers`, `hubs`, `markup_categories`, `order_category_lines`, and `order_screenshots` only (no new tables).
+Screenshots are multi-file uploads and persist one row per file in `order_screenshots`.
+Shipping quote remains a downstream shipper workflow and is excluded from order creation/funding threshold.

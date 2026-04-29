@@ -4,7 +4,6 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 
 const ORDER_SCREENSHOTS_BUCKET = "order-screenshots";
-const GENERAL_CATEGORY_NAME = "General goods";
 
 const readString = (f: FormData, k: string) => {
   const v = f.get(k);
@@ -25,57 +24,57 @@ export async function createOrderAction(formData: FormData) {
   const { data: importer } = await supabase.from("importers").select("shipper_id").eq("id", operatorImporter.importer_id).maybeSingle();
   if (!importer?.shipper_id) redirect("/importer/orders/new?error=Importer+record+missing+shipper.");
 
-  const { data: shipper } = await supabase.from("shippers").select("primary_hub_id").eq("id", importer.shipper_id).maybeSingle();
-  if (!shipper?.primary_hub_id) redirect("/importer/orders/new?error=Shipper+missing+assigned+destination+hub.");
-
   const retailerId = readString(formData, "retailer_id");
-  const qty = Number(readString(formData, "line_qty"));
-  const amount = Number(readString(formData, "line_amount"));
+  const destinationHubId = readString(formData, "destination_hub_id");
   const confirmed = readString(formData, "product_confirmed") === "yes";
   const screenshots = formData.getAll("screenshots").filter((f): f is File => f instanceof File && f.size > 0);
 
   if (!retailerId) redirect("/importer/orders/new?error=Retailer+is+required.");
   if (!confirmed) redirect("/importer/orders/new?error=Product+confirmation+is+required.");
   if (screenshots.length < 1) redirect("/importer/orders/new?error=At+least+one+screenshot+is+required.");
-  if (!Number.isFinite(qty) || qty <= 0 || !Number.isFinite(amount) || amount <= 0) redirect("/importer/orders/new?error=Qty+and+amount+must+be+greater+than+0.");
+  if (!destinationHubId) redirect("/importer/orders/new?error=Destination+hub+is+required.");
 
-  let generalCategoryId: string | null = null;
-  const withCode = await supabase
+  const { data: validHubs } = await supabase.from("hubs").select("id").eq("shipper_id", importer.shipper_id).eq("active", true);
+  const validHubIds = new Set((validHubs ?? []).map((h) => h.id));
+  if (!validHubIds.has(destinationHubId)) redirect("/importer/orders/new?error=Destination+hub+is+not+valid+for+your+shipper.");
+
+  const lineCategoryIds = formData.getAll("line_category_id").map((v) => (typeof v === "string" ? v.trim() : "")).filter(Boolean);
+  const lineQtys = formData.getAll("line_qty").map((v) => Number(typeof v === "string" ? v : ""));
+  const lineAmounts = formData.getAll("line_amount").map((v) => Number(typeof v === "string" ? v : ""));
+  if (lineCategoryIds.length === 0 || lineQtys.length !== lineCategoryIds.length || lineAmounts.length !== lineCategoryIds.length) {
+    redirect("/importer/orders/new?error=At+least+one+valid+category+line+is+required.");
+  }
+
+  const { data: allowedCategories } = await supabase
     .from("markup_categories")
     .select("id")
     .eq("active", true)
-    .eq("category_code", "general_goods")
-    .or(`shipper_id.eq.${importer.shipper_id},shipper_id.is.null`)
-    .limit(1)
-    .maybeSingle();
+    .or(`shipper_id.eq.${importer.shipper_id},shipper_id.is.null`);
+  const allowedCategoryIds = new Set((allowedCategories ?? []).map((c) => c.id));
 
-  if (!withCode.error && withCode.data?.id) {
-    generalCategoryId = withCode.data.id;
-  } else {
-    const byName = await supabase
-      .from("markup_categories")
-      .select("id")
-      .eq("active", true)
-      .eq("category_name", GENERAL_CATEGORY_NAME)
-      .or(`shipper_id.eq.${importer.shipper_id},shipper_id.is.null`)
-      .limit(1)
-      .maybeSingle();
-    if (byName.data?.id) generalCategoryId = byName.data.id;
+  const lines = lineCategoryIds.map((categoryId, idx) => ({
+    markup_category_id: categoryId,
+    qty: lineQtys[idx],
+    amount_inc_vat_gbp: Math.round(lineAmounts[idx] * 100) / 100,
+  }));
+
+  if (lines.some((l) => !allowedCategoryIds.has(l.markup_category_id) || !Number.isInteger(l.qty) || l.qty <= 0 || !Number.isFinite(l.amount_inc_vat_gbp) || l.amount_inc_vat_gbp <= 0)) {
+    redirect("/importer/orders/new?error=Each+category+line+must+have+a+valid+category,+positive+integer+qty,+and+positive+GBP+amount.");
   }
 
-  if (!generalCategoryId) redirect("/importer/orders/new?error=General+goods+category+is+not+configured.");
+  const totalQty = lines.reduce((s, l) => s + l.qty, 0);
+  const totalAmount = Math.round(lines.reduce((s, l) => s + l.amount_inc_vat_gbp, 0) * 100) / 100;
+  if (totalQty <= 0 || totalAmount <= 0) redirect("/importer/orders/new?error=Order+totals+must+be+greater+than+0.");
 
   const stamp = Date.now();
   const orderRef = `ORD-${stamp}`;
   const paymentAuthId = `AUTH-${stamp}`;
-  const lines = [{ markup_category_id: generalCategoryId, qty, amount_inc_vat_gbp: Math.round(amount * 100) / 100 }];
-
   const { data: createdOrderId, error: orderError } = await supabase.rpc("importer_create_order_with_lines", {
     p_operator_id: operator.id,
     p_importer_id: operatorImporter.importer_id,
     p_shipper_id: importer.shipper_id,
     p_retailer_id: retailerId,
-    p_destination_hub_id: shipper.primary_hub_id,
+    p_destination_hub_id: destinationHubId,
     p_sop_version: "v1",
     p_order_type: "original",
     p_order_ref: orderRef,
