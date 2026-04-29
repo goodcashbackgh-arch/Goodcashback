@@ -68,45 +68,34 @@ export async function createOrderAction(formData: FormData) {
   const stamp = Date.now();
   const orderRef = `ORD-${stamp}`;
   const paymentAuthId = `AUTH-${stamp}`;
+  const lines = [{ markup_category_id: generalCategoryId, qty, amount_inc_vat_gbp: Math.round(amount * 100) / 100 }];
 
-  const { data: order, error: orderError } = await supabase
-    .from("orders")
-    .insert({
-      order_ref: orderRef,
-      payment_auth_id: paymentAuthId,
-      importer_id: operatorImporter.importer_id,
-      operator_id: operator.id,
-      shipper_id: importer.shipper_id,
-      retailer_id: retailerId,
-      destination_hub_id: shipper.primary_hub_id,
-      order_type: "original",
-      status: "pending_dva_funding",
-      sop_version: "v1",
-      total_qty_declared: qty,
-      order_total_gbp_declared: Math.round(amount * 100) / 100,
-    })
-    .select("id")
-    .single();
-  if (orderError || !order?.id) redirect(`/importer/orders/new?error=${encodeURIComponent(orderError?.message ?? "Failed to create order")}`);
-
-  await supabase.from("order_category_lines").insert({
-    order_id: order.id,
-    markup_category_id: generalCategoryId,
-    qty,
-    amount_inc_vat_gbp: Math.round(amount * 100) / 100,
-    markup_pct_applied: 0,
-    markup_gbp_calculated: 0,
+  const { data: createdOrderId, error: orderError } = await supabase.rpc("importer_create_order_with_lines", {
+    p_operator_id: operator.id,
+    p_importer_id: operatorImporter.importer_id,
+    p_shipper_id: importer.shipper_id,
+    p_retailer_id: retailerId,
+    p_destination_hub_id: shipper.primary_hub_id,
+    p_sop_version: "v1",
+    p_order_type: "original",
+    p_order_ref: orderRef,
+    p_payment_auth_id: paymentAuthId,
+    p_screenshot_url: null,
+    p_lines: lines,
   });
+
+  if (orderError || !createdOrderId) {
+    redirect(`/importer/orders/new?error=${encodeURIComponent(orderError?.message ?? "Failed to create order")}`);
+  }
 
   const uploadedUrls: string[] = [];
   for (let i = 0; i < screenshots.length; i += 1) {
     const file = screenshots[i];
     const ext = file.name.includes(".") ? file.name.split(".").pop() : "bin";
     const safeExt = (ext ?? "bin").toLowerCase().replace(/[^a-z0-9]/g, "") || "bin";
-    const objectPath = `${operatorImporter.importer_id}/${order.id}/${i + 1}-${Date.now()}.${safeExt}`;
+    const objectPath = `${operatorImporter.importer_id}/${createdOrderId}/${i + 1}-${Date.now()}.${safeExt}`;
     const { error: uploadError } = await supabase.storage.from(ORDER_SCREENSHOTS_BUCKET).upload(objectPath, file, { upsert: false });
     if (uploadError) {
-      await supabase.from("orders").delete().eq("id", order.id);
       redirect(`/importer/orders/new?error=${encodeURIComponent(`Screenshot upload failed. Ensure bucket '${ORDER_SCREENSHOTS_BUCKET}' exists and is writable. ${uploadError.message}`)}`);
     }
     const { data: publicUrlData } = supabase.storage.from(ORDER_SCREENSHOTS_BUCKET).getPublicUrl(objectPath);
@@ -114,7 +103,7 @@ export async function createOrderAction(formData: FormData) {
   }
 
   const screenshotRows = uploadedUrls.map((screenshotUrl, i) => ({
-    order_id: order.id,
+    order_id: createdOrderId,
     screenshot_url: screenshotUrl,
     uploaded_by_operator_id: operator.id,
     display_order: i + 1,
@@ -124,6 +113,6 @@ export async function createOrderAction(formData: FormData) {
   if (screenshotInsertError) redirect(`/importer/orders/new?error=${encodeURIComponent(screenshotInsertError.message)}`);
 
   revalidatePath("/importer");
-  revalidatePath(`/importer/orders/${order.id}/operations`);
-  redirect(`/importer/orders/${order.id}/operations?success=Pro+Forma+Quote+created&order_ref=${encodeURIComponent(orderRef)}&auth_ref=${encodeURIComponent(paymentAuthId)}`);
+  revalidatePath(`/importer/orders/${createdOrderId}/operations`);
+  redirect(`/importer/orders/${createdOrderId}/operations?success=Pro+Forma+Quote+created&order_ref=${encodeURIComponent(orderRef)}&auth_ref=${encodeURIComponent(paymentAuthId)}`);
 }
