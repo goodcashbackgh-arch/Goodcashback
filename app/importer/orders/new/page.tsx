@@ -5,15 +5,10 @@ import OrderForm from "./OrderForm";
 
 type RetailerOption = { id: string; name: string };
 type HubOption = { id: string; name: string; full_address?: string | null };
+type ShipperRetailerRow = { retailer_id: string };
 
-type ShipperRetailerRow = {
-  retailers: RetailerOption | RetailerOption[] | null;
-};
-
-function normalizeRetailers(rows: ShipperRetailerRow[] | null): RetailerOption[] {
-  return (rows ?? [])
-    .flatMap((row) => (Array.isArray(row.retailers) ? row.retailers : row.retailers ? [row.retailers] : []))
-    .filter((retailer): retailer is RetailerOption => Boolean(retailer?.id && retailer?.name));
+function shortId(id: string) {
+  return id.slice(0, 8);
 }
 
 export default async function NewOrderPage() {
@@ -33,7 +28,7 @@ export default async function NewOrderPage() {
     importer?.shipper_id
       ? supabase
           .from("shipper_retailers")
-          .select("retailers(id, name)")
+          .select("retailer_id")
           .eq("shipper_id", importer.shipper_id)
           .eq("enabled", true)
           .order("created_at")
@@ -51,7 +46,17 @@ export default async function NewOrderPage() {
       : Promise.resolve({ data: null as { name: string } | null }),
   ]);
 
-  const retailers = normalizeRetailers(shipperRetailerRows as ShipperRetailerRow[] | null);
+  const retailerLinkRows = (shipperRetailerRows ?? []) as ShipperRetailerRow[];
+  const retailerIds = retailerLinkRows.map((row) => row.retailer_id).filter(Boolean);
+  const { data: retailerNameRows } = retailerIds.length > 0
+    ? await supabase.from("retailers").select("id, name").in("id", retailerIds)
+    : { data: [] as RetailerOption[] };
+  const retailerNameById = new Map((retailerNameRows ?? []).map((retailer) => [retailer.id, retailer.name]));
+  const retailers = retailerIds.map((id) => ({
+    id,
+    name: retailerNameById.get(id) ?? `Retailer ${shortId(id)}`,
+  }));
+
   const hubRows = (hubs ?? []) as HubOption[];
   const assignedHub = hubRows[0] ?? null;
 
