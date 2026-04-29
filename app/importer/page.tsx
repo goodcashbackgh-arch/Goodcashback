@@ -228,8 +228,7 @@ export default async function ImporterPage() {
           Welcome: {operator.full_name}
         </p>
         <div className="rounded-xl border bg-slate-50 p-4 text-sm text-slate-700">
-          This is the importer dashboard. Next steps to wire after this page:
-          create order, dynamic tracking submission, invoice upload, and OCR reconciliation workspace.
+          Manage orders, upload invoices, add tracking, and continue reconciliation from one dashboard.
           <div className="mt-3">
             <Link href="/importer/exceptions" className="font-semibold text-sky-700 underline">View active exception cases</Link>
             <span className="mx-2">·</span>
@@ -283,13 +282,13 @@ export default async function ImporterPage() {
                 <th className="p-3">Auth ref</th>
                 <th className="p-3">Qty</th>
                 <th className="p-3">Declared GBP</th>
-                <th className="p-3">Quote local</th>
                 <th className="p-3">Screenshots</th>
                 <th className="p-3">Tracking</th>
                 <th className="p-3">Invoice</th>
                 <th className="p-3">Open queries</th>
                 <th className="p-3">Status</th>
                 <th className="p-3">Next action</th>
+                <th className="p-3">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -299,9 +298,10 @@ export default async function ImporterPage() {
                 const screenshotCount = screenshotCounts.get(order.id) ?? 0;
                 const openQuerySummary = openEvidenceQueryByOrderId.get(order.id);
                 const hasOpenEvidenceQuery = (openQuerySummary?.count ?? 0) > 0;
+                const operationsHref = `/importer/orders/${order.id}/operations`;
 
                 return (
-                  <tr key={order.id} className="border-t">
+                  <tr key={order.id} className="border-t align-top">
                     <td className="p-3">
                       <div className="font-medium">{order.order_ref}</div>
                       <div className="text-xs text-slate-500">{order.id}</div>
@@ -309,7 +309,6 @@ export default async function ImporterPage() {
                     <td className="p-3">{order.payment_auth_id ?? "—"}</td>
                     <td className="p-3">{order.total_qty_declared ?? 0}</td>
                     <td className="p-3">{gbp(order.order_total_gbp_declared)}</td>
-                    <td className="p-3">{local(order.quote_total_ghs)}</td>
                     <td className="p-3">{screenshotCount}</td>
                     <td className="p-3">{hasTracking ? "Yes" : "No"}</td>
                     <td className="p-3">{hasInvoice ? "Yes" : "No"}</td>
@@ -341,6 +340,14 @@ export default async function ImporterPage() {
                           Answer
                         </Link>
                       ) : null}
+                    </td>
+                    <td className="p-3">
+                      <div className="flex flex-col gap-1 whitespace-nowrap">
+                        <Link className="text-sky-700 underline" href={operationsHref}>Open</Link>
+                        <Link className="text-sky-700 underline" href={`${operationsHref}#invoice`}>Upload invoice</Link>
+                        <Link className="text-sky-700 underline" href={`${operationsHref}#tracking`}>Add tracking</Link>
+                        {hasInvoice ? <Link className="text-sky-700 underline" href={`/importer/reconciliation/${order.id}`}>Reconcile</Link> : null}
+                      </div>
                     </td>
                   </tr>
                 );
