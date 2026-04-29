@@ -74,17 +74,15 @@ Full policy detail belongs in onboarding terms, not on the order page.
 
 ## Category storage
 
-Even though the importer UI shows a simple Goods row, the backend must still use `order_category_lines`.
+Create Order v1 temporarily captures total quantity and total declared goods value instead of category lines. `order_category_lines` remains deferred until approved category taxonomy is configured.
 
 For MVP:
 
-- one default active category should represent general retail goods / goods total
-- do not label it VATable in importer UI
-- `order_category_lines.markup_category_id` stores the default/general category
-- `order_category_lines.qty` stores submitted qty
-- `order_category_lines.amount_inc_vat_gbp` stores submitted goods value
-- `orders.total_qty_declared` rolls up from category line qty
-- `orders.order_total_gbp_declared` rolls up from category line value
+- do not show category entry UI
+- do not seed or invent default categories
+- write `orders.total_qty_declared` from submitted total qty
+- write `orders.order_total_gbp_declared` from submitted declared GBP goods value
+- keep `order_category_lines` deferred for now
 
 Children’s clothing should not be accepted into the MVP order-entry flow.
 
@@ -116,7 +114,7 @@ On submit:
 6. require amount > 0
 7. require product confirmation checkbox
 8. create parent `orders` row
-9. create one `order_category_lines` row using the default/general category
+9. do not create `order_category_lines` rows in v1
 10. upload/store screenshots and create `order_screenshots` rows
 11. generate `order_ref`
 12. generate `payment_auth_id`
@@ -148,7 +146,7 @@ Do not build yet:
 5. Screenshot URL field is removed.
 6. Qty and amount are required and positive.
 7. Product confirmation checkbox is required.
-8. Order creates with one general/default category line.
+8. Order creates without category lines.
 9. Order totals match the row qty/value.
 10. Screenshots create `order_screenshots` rows.
 11. Order enters `pending_dva_funding`.
@@ -158,6 +156,6 @@ Do not build yet:
 
 ## Implementation note (Create Order v1)
 
-Create Order v1 uses existing `retailers`, `hubs`, `markup_categories`, `order_category_lines`, and `order_screenshots` only (no new tables).
+Create Order v1 uses existing `retailers`, `hubs`, `orders`, and `order_screenshots` only (no new tables).
 Screenshots are multi-file uploads and persist one row per file in `order_screenshots`.
 Shipping quote remains a downstream shipper workflow and is excluded from order creation/funding threshold.

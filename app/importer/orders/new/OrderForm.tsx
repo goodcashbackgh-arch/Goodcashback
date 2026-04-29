@@ -1,40 +1,21 @@
 "use client";
 
-import { useMemo, useState } from "react";
-
 type Option = { id: string; name: string };
 type Hub = { id: string; name: string; city?: string | null };
-type Category = { id: string; category_name: string };
 
 export default function OrderForm({
   retailers,
-  hubs,
-  categories,
-  defaultHubId,
-  defaultCategoryId,
+  shipperName,
+  assignedHub,
   emptyMessages,
   action,
 }: {
   retailers: Option[];
-  hubs: Hub[];
-  categories: Category[];
-  defaultHubId: string;
-  defaultCategoryId: string;
+  shipperName: string;
+  assignedHub: Hub | null;
   emptyMessages: string[];
   action: (formData: FormData) => void;
 }) {
-  const [rows, setRows] = useState([{ key: crypto.randomUUID(), categoryId: defaultCategoryId, qty: "", amount: "" }]);
-
-  const totals = useMemo(() => {
-    return rows.reduce(
-      (acc, row) => ({
-        qty: acc.qty + (Number(row.qty) > 0 ? Number(row.qty) : 0),
-        amount: acc.amount + (Number(row.amount) > 0 ? Number(row.amount) : 0),
-      }),
-      { qty: 0, amount: 0 },
-    );
-  }, [rows]);
-
   return (
     <form action={action} className="space-y-4 max-w-3xl" encType="multipart/form-data">
       {emptyMessages.length > 0 && <div className="rounded border border-amber-500 bg-amber-50 p-3 text-sm">{emptyMessages.join(" ")}</div>}
@@ -45,38 +26,24 @@ export default function OrderForm({
         ))}
       </select>
 
-      <select name="destination_hub_id" className="border p-2 w-full" required defaultValue={defaultHubId} disabled={hubs.length === 0 || hubs.length === 1}>
-        <option value="">Select destination hub</option>
-        {hubs.map((h) => (
-          <option key={h.id} value={h.id}>{h.name}{h.city ? ` (${h.city})` : ""}</option>
-        ))}
-      </select>
+      <div className="grid gap-2 md:grid-cols-2">
+        <div className="rounded border p-3 text-sm"><span className="font-semibold">Assigned shipper:</span> {shipperName}</div>
+        <div className="rounded border p-3 text-sm"><span className="font-semibold">Assigned destination hub/city:</span> {assignedHub ? `${assignedHub.name}${assignedHub.city ? ` (${assignedHub.city})` : ""}` : "Not assigned"}</div>
+      </div>
+      <input type="hidden" name="destination_hub_id" value={assignedHub?.id ?? ""} />
 
       <input name="screenshots" type="file" accept="image/*" multiple required className="border p-2 w-full" />
 
-      <div className="space-y-2">
-        {rows.map((row) => (
-          <div key={row.key} className="grid grid-cols-12 gap-2 items-center">
-            <select className="border p-2 col-span-5" value={row.categoryId} required disabled={categories.length === 0}
-              onChange={(e) => setRows((prev) => prev.map((r) => (r.key === row.key ? { ...r, categoryId: e.target.value } : r)))}>
-              <option value="">Select category</option>
-              {categories.map((c) => <option key={c.id} value={c.id}>{c.category_name}</option>)}
-            </select>
-            <input className="border p-2 col-span-2" type="number" min="1" step="1" placeholder="Qty" value={row.qty} required
-              onChange={(e) => setRows((prev) => prev.map((r) => (r.key === row.key ? { ...r, qty: e.target.value } : r)))} />
-            <input className="border p-2 col-span-3" type="number" min="0.01" step="0.01" placeholder="Amount GBP" value={row.amount} required
-              onChange={(e) => setRows((prev) => prev.map((r) => (r.key === row.key ? { ...r, amount: e.target.value } : r)))} />
-            <button type="button" className="col-span-2 border rounded p-2" disabled={rows.length === 1}
-              onClick={() => setRows((prev) => prev.filter((r) => r.key !== row.key))}>Remove</button>
-            <input type="hidden" name="line_category_id" value={row.categoryId} />
-            <input type="hidden" name="line_qty" value={row.qty} />
-            <input type="hidden" name="line_amount" value={row.amount} />
-          </div>
-        ))}
+      <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+        <div>
+          <label className="mb-1 block text-sm font-medium">Total quantity declared</label>
+          <input className="border p-2 w-full" name="total_qty_declared" type="number" min="1" step="1" required />
+        </div>
+        <div>
+          <label className="mb-1 block text-sm font-medium">Order total GBP declared</label>
+          <input className="border p-2 w-full" name="order_total_gbp_declared" type="number" min="0.01" step="0.01" required />
+        </div>
       </div>
-      <button type="button" className="border rounded p-2" onClick={() => setRows((prev) => [...prev, { key: crypto.randomUUID(), categoryId: defaultCategoryId, qty: "", amount: "" }])}>Add category row</button>
-
-      <p className="text-sm text-slate-700">Grand total: Qty {totals.qty} | GBP {totals.amount.toFixed(2)}</p>
 
       <div className="rounded border p-3 text-sm space-y-2">
         <p className="font-semibold">Product confirmation</p>
@@ -86,10 +53,9 @@ export default function OrderForm({
 
       <div className="rounded border p-3 text-sm space-y-1">
         <p className="font-semibold">Goods Pro Forma Estimate</p>
-        <p>This estimate is based on the goods value you submitted. Shipping is excluded at this stage.</p>
-        <p>Shipping will be quoted separately after the goods are received and checked by the shipper.</p>
+        <p>This estimate is based on the goods value you submitted. Shipping is excluded at this stage. Shipping will be quoted separately after goods are received and checked by the shipper.</p>
       </div>
-      <button className="rounded bg-sky-600 text-white px-4 py-2">Create order / Goods Pro Forma Estimate</button>
+      <button className="rounded bg-sky-600 text-white px-4 py-2" disabled={retailers.length === 0 || !assignedHub}>Create order / Goods Pro Forma Estimate</button>
     </form>
   );
 }

@@ -16,24 +16,22 @@ export default async function NewOrderPage() {
     ? await supabase.from("importers").select("shipper_id").eq("id", operatorImporter.importer_id).maybeSingle()
     : { data: null };
 
-  const [{ data: retailers }, { data: hubs }, { data: categories }] = await Promise.all([
+  const [{ data: retailers }, { data: hubs }, { data: shipper }] = await Promise.all([
     supabase.from("retailers").select("id, name").order("name"),
     importer?.shipper_id
       ? supabase.from("hubs").select("id, name, city").eq("shipper_id", importer.shipper_id).eq("active", true).order("name")
       : Promise.resolve({ data: [] as { id: string; name: string; city: string | null }[] }),
     importer?.shipper_id
-      ? supabase.from("markup_categories").select("id, category_name").eq("active", true).or(`shipper_id.eq.${importer.shipper_id},shipper_id.is.null`).order("category_name")
-      : Promise.resolve({ data: [] as { id: string; category_name: string }[] }),
+      ? supabase.from("shippers").select("name").eq("id", importer.shipper_id).maybeSingle()
+      : Promise.resolve({ data: null as { name: string } | null }),
   ]);
 
   const hubRows = hubs ?? [];
-  const defaultHubId = hubRows.length === 1 ? hubRows[0].id : "";
-  const defaultCategoryId = categories?.[0]?.id ?? "";
+  const assignedHub = hubRows[0] ?? null;
 
   const emptyMessages = [
     (retailers ?? []).length === 0 ? "No retailers are visible for your account." : "",
     (hubRows ?? []).length === 0 ? "No destination hubs are visible for your assigned shipper." : "",
-    (categories ?? []).length === 0 ? "No markup categories are visible for your assigned shipper." : "",
   ].filter(Boolean);
 
   return <main className="p-6 space-y-6">
@@ -41,10 +39,8 @@ export default async function NewOrderPage() {
     <h1 className="text-2xl font-semibold">Create order</h1>
     <OrderForm
       retailers={retailers ?? []}
-      hubs={hubRows}
-      categories={categories ?? []}
-      defaultHubId={defaultHubId}
-      defaultCategoryId={defaultCategoryId}
+      shipperName={shipper?.name ?? "—"}
+      assignedHub={assignedHub}
       emptyMessages={emptyMessages}
       action={createOrderAction}
     />

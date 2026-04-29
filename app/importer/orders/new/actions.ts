@@ -26,6 +26,8 @@ export async function createOrderAction(formData: FormData) {
 
   const retailerId = readString(formData, "retailer_id");
   const destinationHubId = readString(formData, "destination_hub_id");
+  const totalQty = Number(readString(formData, "total_qty_declared"));
+  const totalAmount = Math.round(Number(readString(formData, "order_total_gbp_declared")) * 100) / 100;
   const confirmed = readString(formData, "product_confirmed") === "yes";
   const screenshots = formData.getAll("screenshots").filter((f): f is File => f instanceof File && f.size > 0);
 
@@ -33,59 +35,39 @@ export async function createOrderAction(formData: FormData) {
   if (!confirmed) redirect("/importer/orders/new?error=Product+confirmation+is+required.");
   if (screenshots.length < 1) redirect("/importer/orders/new?error=At+least+one+screenshot+is+required.");
   if (!destinationHubId) redirect("/importer/orders/new?error=Destination+hub+is+required.");
+  if (!Number.isInteger(totalQty) || totalQty <= 0) redirect("/importer/orders/new?error=Total+qty+declared+must+be+a+positive+integer.");
+  if (!Number.isFinite(totalAmount) || totalAmount <= 0) redirect("/importer/orders/new?error=Order+total+GBP+declared+must+be+greater+than+0.");
 
   const { data: validHubs } = await supabase.from("hubs").select("id").eq("shipper_id", importer.shipper_id).eq("active", true);
   const validHubIds = new Set((validHubs ?? []).map((h) => h.id));
   if (!validHubIds.has(destinationHubId)) redirect("/importer/orders/new?error=Destination+hub+is+not+valid+for+your+shipper.");
 
-  const lineCategoryIds = formData.getAll("line_category_id").map((v) => (typeof v === "string" ? v.trim() : "")).filter(Boolean);
-  const lineQtys = formData.getAll("line_qty").map((v) => Number(typeof v === "string" ? v : ""));
-  const lineAmounts = formData.getAll("line_amount").map((v) => Number(typeof v === "string" ? v : ""));
-  if (lineCategoryIds.length === 0 || lineQtys.length !== lineCategoryIds.length || lineAmounts.length !== lineCategoryIds.length) {
-    redirect("/importer/orders/new?error=At+least+one+valid+category+line+is+required.");
-  }
-
-  const { data: allowedCategories } = await supabase
-    .from("markup_categories")
-    .select("id")
-    .eq("active", true)
-    .or(`shipper_id.eq.${importer.shipper_id},shipper_id.is.null`);
-  const allowedCategoryIds = new Set((allowedCategories ?? []).map((c) => c.id));
-
-  const lines = lineCategoryIds.map((categoryId, idx) => ({
-    markup_category_id: categoryId,
-    qty: lineQtys[idx],
-    amount_inc_vat_gbp: Math.round(lineAmounts[idx] * 100) / 100,
-  }));
-
-  if (lines.some((l) => !allowedCategoryIds.has(l.markup_category_id) || !Number.isInteger(l.qty) || l.qty <= 0 || !Number.isFinite(l.amount_inc_vat_gbp) || l.amount_inc_vat_gbp <= 0)) {
-    redirect("/importer/orders/new?error=Each+category+line+must+have+a+valid+category,+positive+integer+qty,+and+positive+GBP+amount.");
-  }
-
-  const totalQty = lines.reduce((s, l) => s + l.qty, 0);
-  const totalAmount = Math.round(lines.reduce((s, l) => s + l.amount_inc_vat_gbp, 0) * 100) / 100;
-  if (totalQty <= 0 || totalAmount <= 0) redirect("/importer/orders/new?error=Order+totals+must+be+greater+than+0.");
-
   const stamp = Date.now();
   const orderRef = `ORD-${stamp}`;
   const paymentAuthId = `AUTH-${stamp}`;
-  const { data: createdOrderId, error: orderError } = await supabase.rpc("importer_create_order_with_lines", {
-    p_operator_id: operator.id,
-    p_importer_id: operatorImporter.importer_id,
-    p_shipper_id: importer.shipper_id,
-    p_retailer_id: retailerId,
-    p_destination_hub_id: destinationHubId,
-    p_sop_version: "v1",
-    p_order_type: "original",
-    p_order_ref: orderRef,
-    p_payment_auth_id: paymentAuthId,
-    p_screenshot_url: null,
-    p_lines: lines,
-  });
+  const { data: createdOrder, error: orderError } = await supabase
+    .from("orders")
+    .insert({
+      order_ref: orderRef,
+      payment_auth_id: paymentAuthId,
+      importer_id: operatorImporter.importer_id,
+      operator_id: operator.id,
+      shipper_id: importer.shipper_id,
+      retailer_id: retailerId,
+      destination_hub_id: destinationHubId,
+      order_type: "original",
+      status: "pending_dva_funding",
+      sop_version: "v1",
+      total_qty_declared: totalQty,
+      order_total_gbp_declared: totalAmount,
+    })
+    .select("id")
+    .single();
 
-  if (orderError || !createdOrderId) {
+  if (orderError || !createdOrder?.id) {
     redirect(`/importer/orders/new?error=${encodeURIComponent(orderError?.message ?? "Failed to create order")}`);
   }
+  const createdOrderId = createdOrder.id;
 
   const uploadedUrls: string[] = [];
   for (let i = 0; i < screenshots.length; i += 1) {
