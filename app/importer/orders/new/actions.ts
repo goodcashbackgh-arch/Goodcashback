@@ -69,7 +69,7 @@ export async function createOrderAction(formData: FormData) {
       shipper_id: importer.shipper_id,
       retailer_id: retailerId,
       destination_hub_id: destinationHubId,
-      order_type: "main",
+      order_type: "original",
       status: "pending_dva_funding",
       sop_version: "v1",
       total_qty_declared: totalQty,
