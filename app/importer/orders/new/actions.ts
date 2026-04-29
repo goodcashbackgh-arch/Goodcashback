@@ -38,9 +38,23 @@ export async function createOrderAction(formData: FormData) {
   if (!Number.isInteger(totalQty) || totalQty <= 0) redirect("/importer/orders/new?error=Total+qty+declared+must+be+a+positive+integer.");
   if (!Number.isFinite(totalAmount) || totalAmount <= 0) redirect("/importer/orders/new?error=Order+total+GBP+declared+must+be+greater+than+0.");
 
-  const { data: validHubs } = await supabase.from("hubs").select("id").eq("shipper_id", importer.shipper_id).eq("active", true);
-  const validHubIds = new Set((validHubs ?? []).map((h) => h.id));
-  if (!validHubIds.has(destinationHubId)) redirect("/importer/orders/new?error=Destination+hub+is+not+valid+for+your+shipper.");
+  const { data: validRetailer } = await supabase
+    .from("shipper_retailers")
+    .select("retailer_id")
+    .eq("shipper_id", importer.shipper_id)
+    .eq("retailer_id", retailerId)
+    .eq("enabled", true)
+    .maybeSingle();
+  if (!validRetailer?.retailer_id) redirect("/importer/orders/new?error=Retailer+is+not+enabled+for+your+shipper.");
+
+  const { data: validHub } = await supabase
+    .from("hubs")
+    .select("id")
+    .eq("id", destinationHubId)
+    .eq("shipper_id", importer.shipper_id)
+    .eq("active", true)
+    .maybeSingle();
+  if (!validHub?.id) redirect("/importer/orders/new?error=Destination+hub+is+not+valid+for+your+shipper.");
 
   const stamp = Date.now();
   const orderRef = `ORD-${stamp}`;
@@ -55,7 +69,7 @@ export async function createOrderAction(formData: FormData) {
       shipper_id: importer.shipper_id,
       retailer_id: retailerId,
       destination_hub_id: destinationHubId,
-      order_type: "original",
+      order_type: "main",
       status: "pending_dva_funding",
       sop_version: "v1",
       total_qty_declared: totalQty,
