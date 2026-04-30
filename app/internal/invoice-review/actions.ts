@@ -1,6 +1,5 @@
 "use server";
 
-// Invoice rejection intentionally uses the verified staff session, not the missing reject RPC and not service-role fallback.
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
@@ -350,48 +349,20 @@ export async function rejectSupplierInvoiceRequireResubmissionAction(formData: F
   const guard = await requireSupervisorOrAdmin();
   if (!guard.ok) redirectWithResult({ error: guard.error });
 
-  const { data: invoice, error: invoiceError } = await guard.supabase
-    .from("supplier_invoices")
-    .select("id, order_id")
-    .eq("id", supplierInvoiceId)
-    .maybeSingle();
+  const { data, error } = await guard.supabase.rpc("staff_reject_supplier_invoice_resubmission", {
+    p_supplier_invoice_id: supplierInvoiceId,
+    p_review_notes: reviewNotes,
+  });
 
-  if (invoiceError || !invoice) {
-    redirectWithResult({ error: invoiceError?.message ?? "Supplier invoice not found." });
-  }
+  if (error) redirectWithResult({ error: error.message });
 
-  const now = new Date().toISOString();
-  const { error: updateError } = await guard.supabase
-    .from("supplier_invoices")
-    .update({
-      review_status: "rejected_resubmit_required",
-      blocked_from_sage_yn: true,
-      is_current_for_order: false,
-      reviewed_by_staff_id: guard.staff.id,
-      reviewed_at: now,
-      review_notes: reviewNotes,
-    })
-    .eq("id", supplierInvoiceId);
-
-  if (updateError) redirectWithResult({ error: updateError.message });
-
-  const { error: flagsError } = await guard.supabase
-    .from("supplier_invoice_review_flags")
-    .update({
-      status: "resolved",
-      resolved_by_staff_id: guard.staff.id,
-      resolved_at: now,
-      resolution_notes: reviewNotes,
-      updated_at: now,
-    })
-    .eq("supplier_invoice_id", supplierInvoiceId)
-    .in("status", ["open", "under_review"]);
-
-  if (flagsError) redirectWithResult({ error: flagsError.message });
+  const orderId = Array.isArray(data) && data[0]?.order_id ? String(data[0].order_id) : null;
 
   revalidatePath("/internal/invoice-review");
-  revalidatePath(`/internal/evidence/${invoice.order_id}`);
-  revalidatePath(`/importer/orders/${invoice.order_id}/operations`);
-  revalidatePath(`/importer/reconciliation/${invoice.order_id}`);
+  if (orderId) {
+    revalidatePath(`/internal/evidence/${orderId}`);
+    revalidatePath(`/importer/orders/${orderId}/operations`);
+    revalidatePath(`/importer/reconciliation/${orderId}`);
+  }
   redirectWithResult({ success: "Supplier invoice rejected. Resubmission required." });
 }
