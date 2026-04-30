@@ -10,6 +10,10 @@ const readString = (f: FormData, k: string) => {
   return typeof v === "string" ? v.trim() : "";
 };
 
+function money2(value: number) {
+  return Math.round(value * 100) / 100;
+}
+
 export async function createOrderAction(formData: FormData) {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -21,13 +25,14 @@ export async function createOrderAction(formData: FormData) {
   const { data: operatorImporter } = await supabase.from("operator_importers").select("importer_id").eq("operator_id", operator.id).is("revoked_at", null).limit(1).maybeSingle();
   if (!operatorImporter?.importer_id) redirect("/importer/orders/new?error=No+active+importer+assignment.");
 
-  const { data: importer } = await supabase.from("importers").select("shipper_id").eq("id", operatorImporter.importer_id).maybeSingle();
+  const { data: importer } = await supabase.from("importers").select("shipper_id, country_id").eq("id", operatorImporter.importer_id).maybeSingle();
   if (!importer?.shipper_id) redirect("/importer/orders/new?error=Importer+record+missing+shipper.");
+  if (!importer?.country_id) redirect("/importer/orders/new?error=Importer+record+missing+country.");
 
   const retailerId = readString(formData, "retailer_id");
   const destinationHubId = readString(formData, "destination_hub_id");
   const totalQty = Number(readString(formData, "total_qty_declared"));
-  const totalAmount = Math.round(Number(readString(formData, "order_total_gbp_declared")) * 100) / 100;
+  const totalAmount = money2(Number(readString(formData, "order_total_gbp_declared")));
   const confirmed = readString(formData, "product_confirmed") === "yes";
   const screenshots = formData.getAll("screenshots").filter((f): f is File => f instanceof File && f.size > 0);
 
@@ -37,6 +42,19 @@ export async function createOrderAction(formData: FormData) {
   if (!destinationHubId) redirect("/importer/orders/new?error=Destination+hub+is+required.");
   if (!Number.isInteger(totalQty) || totalQty <= 0) redirect("/importer/orders/new?error=Total+qty+declared+must+be+a+positive+integer.");
   if (!Number.isFinite(totalAmount) || totalAmount <= 0) redirect("/importer/orders/new?error=Order+total+GBP+declared+must+be+greater+than+0.");
+
+  const { data: fxRate } = await supabase
+    .from("fx_rates")
+    .select("quote_rate, quote_card_markup_pct")
+    .eq("country_id", importer.country_id)
+    .order("rate_date", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (!fxRate?.quote_rate) redirect("/importer/orders/new?error=No+FX+rate+configured+for+importer+country.");
+
+  const quoteRate = Number(fxRate.quote_rate);
+  const quoteCardMarkupPct = Number(fxRate.quote_card_markup_pct ?? 0);
+  const localQuoteAmount = money2(totalAmount * quoteRate * (1 + quoteCardMarkupPct / 100));
 
   const { data: validRetailer } = await supabase
     .from("shipper_retailers")
@@ -74,6 +92,9 @@ export async function createOrderAction(formData: FormData) {
       sop_version: "v1",
       total_qty_declared: totalQty,
       order_total_gbp_declared: totalAmount,
+      quote_fx_rate: quoteRate,
+      quote_card_markup_pct: quoteCardMarkupPct,
+      quote_total_ghs: localQuoteAmount,
     })
     .select("id")
     .single();
