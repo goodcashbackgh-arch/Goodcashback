@@ -1,7 +1,11 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
-import { approveSupplierInvoiceCurrentAction, rejectSupplierInvoiceRequireResubmissionAction } from "./actions";
+import {
+  approveSupplierInvoiceCurrentAction,
+  rejectSupplierInvoiceRequireResubmissionAction,
+  runMindeeOcrForSupplierInvoiceAction,
+} from "./actions";
 
 type SearchParams = { success?: string; error?: string };
 
@@ -161,6 +165,10 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
                   <div className="flex flex-wrap gap-2">
                     <Link href={`/internal/evidence/${invoice.order_id}`} className="rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">Open staff order detail</Link>
                     <a href={invoice.invoice_pdf_url} target="_blank" rel="noreferrer" className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white">Open invoice</a>
+                    <form action={runMindeeOcrForSupplierInvoiceAction}>
+                      <input type="hidden" name="supplier_invoice_id" value={invoice.id} />
+                      <button className="rounded-xl border border-violet-300 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-800 hover:bg-violet-100">Run Mindee OCR</button>
+                    </form>
                   </div>
                 </div>
 
