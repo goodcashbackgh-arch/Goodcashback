@@ -4,6 +4,7 @@ import { addTrackingSubmissionAction, submitInvoiceEvidenceAction } from "./acti
 
 type ScreenshotRow = { id: string; screenshot_url: string };
 type TrackingRow = { id: string; tracking_ref: string; is_final_delivery_yn: boolean | null; couriers: { name: string } | null };
+type AdjustmentRow = { id: string; adjustment_type: string; amount_gbp: number; approval_status: string; requires_supervisor_approval: boolean | null };
 
 function money(value: number | string | null | undefined, currency = "GBP") {
   const n = Number(value ?? 0);
@@ -22,6 +23,12 @@ function localAmount(value: number | string | null | undefined, currencyCode?: s
   }).format(n)}`;
 }
 
+function adjustmentLabel(type: string) {
+  if (type === "retailer_delivery") return "Retailer delivery";
+  if (type === "retailer_discount") return "Retailer discount";
+  return type;
+}
+
 export default async function OrderOperationsPage({params,searchParams}:{params: Promise<{order_id:string}>, searchParams: Promise<{success?:string;order_ref?:string;auth_ref?:string;error?:string}>}) {
   const {order_id:orderId} = await params;
   const qp = await searchParams;
@@ -31,13 +38,14 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
   const { data: operator } = await supabase.from("operators").select("id").eq("auth_user_id", user.id).eq("active", true).maybeSingle();
   if (!operator) return <main className="p-6">Operator account required.</main>;
 
-  const [{data:order},{data:screenshots},{data:tracking},{data:funding},{data:invoices},{data:couriers}] = await Promise.all([
+  const [{data:order},{data:screenshots},{data:tracking},{data:funding},{data:invoices},{data:couriers},{data:adjustments}] = await Promise.all([
     supabase.from("orders").select("*, importers(countries(currencies(code)))").eq("id",orderId).maybeSingle(),
     supabase.from("order_screenshots").select("*").eq("order_id",orderId).order("display_order"),
     supabase.from("order_tracking_submissions").select("*, couriers(name)").eq("order_id",orderId).order("submitted_at",{ascending:false}),
     supabase.from("order_funding_position_vw").select("*").eq("order_id",orderId).maybeSingle(),
     supabase.from("supplier_invoices").select("id, invoice_ref").eq("order_id",orderId),
     supabase.from("couriers").select("id, name").order("name"),
+    supabase.from("order_value_adjustments").select("id, adjustment_type, amount_gbp, approval_status, requires_supervisor_approval").eq("order_id",orderId).order("created_at", { ascending: false }),
   ]);
 
   if (!order) return <main className="p-6">Order not found.</main>;
@@ -111,6 +119,9 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
         <input type="hidden" name="order_id" value={orderId} />
         <input name="invoice_ref" placeholder="Invoice ref" className="border p-2" required />
         <input name="invoice_file" type="file" accept=".pdf,image/*,.png,.jpg,.jpeg,.webp" className="border p-2" required />
+        <input name="retailer_delivery_gbp" type="number" min="0" step="0.01" placeholder="Optional delivery charge GBP" className="border p-2" />
+        <input name="retailer_discount_gbp" type="number" min="0" step="0.01" placeholder="Optional discount GBP" className="border p-2" />
+        <p className="text-xs text-slate-500 md:col-span-3">Delivery charges may auto-approve within policy. Discounts always require supervisor approval. These are financial adjustments, not item lines.</p>
         <button className="bg-green-600 text-white px-4 py-2 rounded w-fit">Upload invoice</button>
       </form>
       <ul className="space-y-1 text-sm">
@@ -118,6 +129,14 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
           <li key={i.id} className="rounded bg-slate-50 p-2">{i.invoice_ref} <Link className="ml-2 text-sky-700 underline" href={`/importer/reconciliation/${orderId}`}>Reconcile</Link></li>
         ))}
       </ul>
+      {((adjustments??[]) as AdjustmentRow[]).length > 0 ? <div className="space-y-1 text-sm">
+        <h3 className="font-medium">Financial adjustments</h3>
+        {((adjustments??[]) as AdjustmentRow[]).map((a)=> (
+          <div key={a.id} className="rounded bg-slate-50 p-2">
+            {adjustmentLabel(a.adjustment_type)} — {money(a.amount_gbp)} — {a.approval_status}
+          </div>
+        ))}
+      </div> : null}
     </section>
   </main>
 }
