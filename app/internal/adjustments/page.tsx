@@ -58,7 +58,7 @@ export default async function InternalAdjustmentsPage({ searchParams }: { search
     .eq("approval_status", "pending_supervisor")
     .order("created_at", { ascending: true });
 
-  const adjustments = (data ?? []) as AdjustmentRow[];
+  const adjustments = (data ?? []) as unknown as AdjustmentRow[];
 
   return (
     <main className="min-h-screen bg-slate-50 px-6 py-8 text-slate-950">
