@@ -93,8 +93,8 @@ export default async function InternalAdjustmentsPage({ searchParams }: { search
                     {adjustment.notes ? <p className="mt-2 rounded-xl bg-slate-50 px-3 py-2 text-sm text-slate-700">{adjustment.notes}</p> : null}
                   </div>
                   <div className="flex flex-wrap gap-2">
-                    <Link href={`/importer/orders/${adjustment.order_id}/operations`} className="rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">Open order</Link>
-                    <Link href={`/importer/reconciliation/${adjustment.order_id}`} className="rounded-xl border border-sky-300 bg-sky-50 px-3 py-2 text-sm font-semibold text-sky-800 hover:bg-sky-100">Open reconciliation</Link>
+                    <Link href={`/internal/evidence/${adjustment.order_id}`} className="rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">Open staff order detail</Link>
+                    <Link href={`/internal/evidence/${adjustment.order_id}#reconciliation`} className="rounded-xl border border-sky-300 bg-sky-50 px-3 py-2 text-sm font-semibold text-sky-800 hover:bg-sky-100">Open staff reconciliation detail</Link>
                     {adjustment.supplier_invoices?.invoice_pdf_url ? <a href={adjustment.supplier_invoices.invoice_pdf_url} target="_blank" rel="noreferrer" className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white">Open invoice</a> : null}
                   </div>
                 </div>
