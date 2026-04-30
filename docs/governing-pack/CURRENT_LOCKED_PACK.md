@@ -56,6 +56,7 @@ Later addendums:
 1. VAT Timing & Export Evidence Addendum v1.
 2. Progressive Commercial Release & Replacement Invoicing Addendum v1.
 3. Day 6/8 Accounting Release and VAT Reporting Clarification Addendum v1.
+4. Portal and Order Operations Addendum v1 (`docs/governing-pack/architecture/PORTAL_AND_ORDER_OPERATIONS_ADDENDUM_V1.md`).
 
 ## Non-negotiable UI wiring rules
 
@@ -71,6 +72,7 @@ Later addendums:
 10. On-track export evidence within deadline can still report before final evidence completion; breach creates Box 1 adjustment in the breach period.
 11. Sage posting remains queue-driven and idempotent.
 12. Shipper only acts on supervisor-confirmed progressed shipment scope.
+13. Reconciliation proves what was bought; finalisation decides what gets billed; shipping/handoff sees only physical goods; Sage sees only approved final invoice drafts.
 
 ## Funding page read-only sources
 
