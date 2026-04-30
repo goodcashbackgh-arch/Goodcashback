@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
+import { assertInvoiceReadyForCurrentApproval } from "./readiness";
 
 function readString(formData: FormData, key: string) {
   const value = formData.get(key);
@@ -293,6 +294,9 @@ export async function approveSupplierInvoiceCurrentAction(formData: FormData) {
 
   const guard = await requireSupervisorOrAdmin();
   if (!guard.ok) redirectWithResult({ error: guard.error });
+
+  const readinessError = await assertInvoiceReadyForCurrentApproval(guard.supabase, supplierInvoiceId);
+  if (readinessError) redirectWithResult({ error: readinessError });
 
   const { data, error } = await guard.supabase.rpc("staff_approve_supplier_invoice_current", {
     p_supplier_invoice_id: supplierInvoiceId,
