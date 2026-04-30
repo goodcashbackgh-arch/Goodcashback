@@ -118,10 +118,11 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
       <form action={submitInvoiceEvidenceAction} className="grid gap-2 md:grid-cols-3">
         <input type="hidden" name="order_id" value={orderId} />
         <input name="invoice_ref" placeholder="Invoice ref" className="border p-2" required />
+        <input name="invoice_total_gbp" type="number" min="0.01" step="0.01" placeholder="Invoice total GBP" className="border p-2" required />
         <input name="invoice_file" type="file" accept=".pdf,image/*,.png,.jpg,.jpeg,.webp" className="border p-2" required />
         <input name="retailer_delivery_gbp" type="number" min="0" step="0.01" placeholder="Optional delivery charge GBP" className="border p-2" />
         <input name="retailer_discount_gbp" type="number" min="0" step="0.01" placeholder="Optional discount GBP" className="border p-2" />
-        <p className="text-xs text-slate-500 md:col-span-3">Delivery charges may auto-approve within policy. Discounts always require supervisor approval. These are financial adjustments, not item lines.</p>
+        <p className="text-xs text-slate-500 md:col-span-3">Invoice total is used to check: goods item lines + delivery - discount. Delivery charges may auto-approve within policy. Discounts always require supervisor approval.</p>
         <button className="bg-green-600 text-white px-4 py-2 rounded w-fit">Upload invoice</button>
       </form>
       <ul className="space-y-1 text-sm">
