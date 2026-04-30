@@ -4,7 +4,10 @@ import { addTrackingSubmissionAction, submitInvoiceEvidenceAction } from "./acti
 
 type ScreenshotRow = { id: string; screenshot_url: string };
 type TrackingRow = { id: string; tracking_ref: string; is_final_delivery_yn: boolean | null; couriers: { name: string } | null };
-type AdjustmentRow = { id: string; adjustment_type: string; amount_gbp: number; approval_status: string; requires_supervisor_approval: boolean | null };
+type InvoiceRow = { id: string; invoice_ref: string };
+type InvoiceLineTotalRow = { supplier_invoice_id: string; qty: number; amount_inc_vat_gbp: number };
+type InvoiceSummaryRow = { supplier_invoice_id: string; invoice_total_gbp: number };
+type AdjustmentRow = { id: string; supplier_invoice_id: string | null; adjustment_type: string; amount_gbp: number; approval_status: string; requires_supervisor_approval: boolean | null };
 
 function money(value: number | string | null | undefined, currency = "GBP") {
   const n = Number(value ?? 0);
@@ -29,6 +32,11 @@ function adjustmentLabel(type: string) {
   return type;
 }
 
+function signedMoney(value: number) {
+  if (Math.abs(value) < 0.005) return money(0);
+  return `${value > 0 ? "+" : ""}${money(value)}`;
+}
+
 export default async function OrderOperationsPage({params,searchParams}:{params: Promise<{order_id:string}>, searchParams: Promise<{success?:string;order_ref?:string;auth_ref?:string;error?:string}>}) {
   const {order_id:orderId} = await params;
   const qp = await searchParams;
@@ -38,19 +46,36 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
   const { data: operator } = await supabase.from("operators").select("id").eq("auth_user_id", user.id).eq("active", true).maybeSingle();
   if (!operator) return <main className="p-6">Operator account required.</main>;
 
-  const [{data:order},{data:screenshots},{data:tracking},{data:funding},{data:invoices},{data:couriers},{data:adjustments}] = await Promise.all([
+  const [{data:order},{data:screenshots},{data:tracking},{data:funding},{data:invoices},{data:couriers},{data:adjustments},{data:invoiceLines},{data:invoiceSummaries}] = await Promise.all([
     supabase.from("orders").select("*, importers(countries(currencies(code)))").eq("id",orderId).maybeSingle(),
     supabase.from("order_screenshots").select("*").eq("order_id",orderId).order("display_order"),
     supabase.from("order_tracking_submissions").select("*, couriers(name)").eq("order_id",orderId).order("submitted_at",{ascending:false}),
     supabase.from("order_funding_position_vw").select("*").eq("order_id",orderId).maybeSingle(),
     supabase.from("supplier_invoices").select("id, invoice_ref").eq("order_id",orderId),
     supabase.from("couriers").select("id, name").order("name"),
-    supabase.from("order_value_adjustments").select("id, adjustment_type, amount_gbp, approval_status, requires_supervisor_approval").eq("order_id",orderId).order("created_at", { ascending: false }),
+    supabase.from("order_value_adjustments").select("id, supplier_invoice_id, adjustment_type, amount_gbp, approval_status, requires_supervisor_approval").eq("order_id",orderId).order("created_at", { ascending: false }),
+    supabase.from("supplier_invoice_lines").select("supplier_invoice_id, qty, amount_inc_vat_gbp, supplier_invoices!inner(order_id)").eq("supplier_invoices.order_id", orderId),
+    supabase.from("supplier_invoice_financial_summary").select("supplier_invoice_id, invoice_total_gbp, supplier_invoices!inner(order_id)").eq("supplier_invoices.order_id", orderId),
   ]);
 
   if (!order) return <main className="p-6">Order not found.</main>;
   const finalTrackingExists = ((tracking ?? []) as TrackingRow[]).some((t) => t.is_final_delivery_yn);
   const currencyCode = order.importers?.countries?.currencies?.code ?? null;
+  const adjustmentRows = (adjustments ?? []) as AdjustmentRow[];
+  const invoiceRows = (invoices ?? []) as InvoiceRow[];
+
+  const lineTotalsByInvoice = new Map<string, { qty: number; amount: number }>();
+  for (const line of (invoiceLines ?? []) as InvoiceLineTotalRow[]) {
+    const current = lineTotalsByInvoice.get(line.supplier_invoice_id) ?? { qty: 0, amount: 0 };
+    current.qty += Number(line.qty ?? 0);
+    current.amount += Number(line.amount_inc_vat_gbp ?? 0);
+    lineTotalsByInvoice.set(line.supplier_invoice_id, current);
+  }
+
+  const summaryByInvoice = new Map<string, InvoiceSummaryRow>();
+  for (const summary of (invoiceSummaries ?? []) as InvoiceSummaryRow[]) {
+    summaryByInvoice.set(summary.supplier_invoice_id, summary);
+  }
 
   return <main className="p-6 space-y-6">
     <Link href="/importer" className="text-sky-600">← Back</Link>
@@ -125,14 +150,41 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
         <p className="text-xs text-slate-500 md:col-span-3">Invoice total is used to check: goods item lines + delivery - discount. Delivery charges may auto-approve within policy. Discounts always require supervisor approval.</p>
         <button className="bg-green-600 text-white px-4 py-2 rounded w-fit">Upload invoice</button>
       </form>
-      <ul className="space-y-1 text-sm">
-        {(invoices??[]).map(i=> (
-          <li key={i.id} className="rounded bg-slate-50 p-2">{i.invoice_ref} <Link className="ml-2 text-sky-700 underline" href={`/importer/reconciliation/${orderId}`}>Reconcile</Link></li>
-        ))}
-      </ul>
-      {((adjustments??[]) as AdjustmentRow[]).length > 0 ? <div className="space-y-1 text-sm">
+
+      <div className="space-y-2 text-sm">
+        {invoiceRows.map((invoice)=> {
+          const goods = lineTotalsByInvoice.get(invoice.id) ?? { qty: 0, amount: 0 };
+          const invoiceAdjustments = adjustmentRows.filter((a) => a.supplier_invoice_id === invoice.id);
+          const deliveryTotal = invoiceAdjustments.filter((a) => a.adjustment_type === "retailer_delivery").reduce((sum, a) => sum + Number(a.amount_gbp ?? 0), 0);
+          const discountTotal = invoiceAdjustments.filter((a) => a.adjustment_type === "retailer_discount").reduce((sum, a) => sum + Number(a.amount_gbp ?? 0), 0);
+          const expectedInvoiceTotal = goods.amount + deliveryTotal - discountTotal;
+          const summary = summaryByInvoice.get(invoice.id);
+          const invoiceTotal = Number(summary?.invoice_total_gbp ?? 0);
+          const variance = expectedInvoiceTotal - invoiceTotal;
+          const matched = summary && Math.abs(variance) < 0.01;
+
+          return (
+            <div key={invoice.id} className="rounded bg-slate-50 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>{invoice.invoice_ref} <Link className="ml-2 text-sky-700 underline" href={`/importer/reconciliation/${orderId}`}>Reconcile</Link></div>
+                {summary ? <span className={`rounded px-2 py-1 text-xs font-medium ${matched ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>{matched ? "Invoice total matched" : "Invoice total variance"}</span> : <span className="rounded bg-slate-200 px-2 py-1 text-xs">No invoice total captured</span>}
+              </div>
+              {summary ? <div className="mt-2 grid gap-2 md:grid-cols-6 text-xs">
+                <div><span className="text-slate-500">Goods qty</span><div className="font-medium">{goods.qty}</div></div>
+                <div><span className="text-slate-500">Goods lines</span><div className="font-medium">{money(goods.amount)}</div></div>
+                <div><span className="text-slate-500">Delivery</span><div className="font-medium">{money(deliveryTotal)}</div></div>
+                <div><span className="text-slate-500">Discount</span><div className="font-medium">-{money(discountTotal)}</div></div>
+                <div><span className="text-slate-500">Expected total</span><div className="font-medium">{money(expectedInvoiceTotal)}</div></div>
+                <div><span className="text-slate-500">Variance</span><div className="font-medium">{signedMoney(variance)}</div></div>
+              </div> : null}
+            </div>
+          );
+        })}
+      </div>
+
+      {adjustmentRows.length > 0 ? <div className="space-y-1 text-sm">
         <h3 className="font-medium">Financial adjustments</h3>
-        {((adjustments??[]) as AdjustmentRow[]).map((a)=> (
+        {adjustmentRows.map((a)=> (
           <div key={a.id} className="rounded bg-slate-50 p-2">
             {adjustmentLabel(a.adjustment_type)} — {money(a.amount_gbp)} — {a.approval_status}
           </div>
