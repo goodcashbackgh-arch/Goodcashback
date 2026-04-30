@@ -15,6 +15,10 @@ type OcrInvoiceLine = {
   eligible_for_invoice_yn: "N";
 };
 
+type NestedOrderRetailer = {
+  retailers?: { name?: string | null } | null;
+};
+
 function readString(formData: FormData, key: string) {
   const value = formData.get(key);
   return typeof value === "string" ? value.trim() : "";
@@ -241,7 +245,8 @@ export async function runMindeeOcrForSupplierInvoiceAction(formData: FormData) {
     ? null
     : Number(enteredSummary.invoice_total_gbp);
 
-  const orderRetailer = Array.isArray(invoice.orders) ? invoice.orders[0]?.retailers?.name : invoice.orders?.retailers?.name;
+  const orderRows = invoice.orders as unknown as NestedOrderRetailer[] | NestedOrderRetailer | null;
+  const orderRetailer = Array.isArray(orderRows) ? orderRows[0]?.retailers?.name : orderRows?.retailers?.name;
   const raisedByOperatorId = String(invoice.uploaded_by_operator_id);
 
   if (!ocrInvoiceRef || !ocrRetailerName || ocrTotal === null) {
