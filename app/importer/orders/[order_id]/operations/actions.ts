@@ -2,6 +2,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
+import { runMindeeOcrAfterUpload } from "./ocr";
 
 const INVOICE_EVIDENCE_BUCKET = "invoice-evidence";
 
@@ -246,8 +247,20 @@ export async function submitInvoiceEvidenceAction(formData: FormData) {
     }
   }
 
+  const ocrResult = await runMindeeOcrAfterUpload({
+    supplierInvoiceId,
+    orderId,
+    invoicePdfUrl,
+    enteredInvoiceTotal: invoiceTotal,
+    operatorId: operator.id,
+  });
+
   revalidatePath(`/importer/orders/${orderId}/operations`);
   revalidatePath(`/importer/reconciliation/${orderId}`);
   revalidatePath("/importer");
-  redirect(`/importer/orders/${orderId}/operations?success=Invoice+submitted`);
+  revalidatePath("/internal/invoice-review");
+  const successMessage = ocrResult.ran
+    ? `Invoice submitted. Mindee OCR saved ${ocrResult.insertedLineCount} line(s).`
+    : "Invoice submitted. OCR queued for supervisor review.";
+  redirect(`/importer/orders/${orderId}/operations?success=${encodeURIComponent(successMessage)}`);
 }
