@@ -12,6 +12,7 @@ type OrderRow = {
   quote_total_ghs: number | null;
   funded_at: string | null;
   created_at: string | null;
+  retailers: { name: string | null } | null;
 };
 
 type DashboardOrderRow = OrderRow & {
@@ -19,6 +20,7 @@ type DashboardOrderRow = OrderRow & {
 };
 
 type OrderReferenceRow = { order_id: string };
+type InvoiceReferenceRow = { order_id: string; review_status: string | null; uploaded_at: string | null };
 type OrderStateRow = { id: string; lifecycle_status: string | null };
 
 type EvidenceQueryRow = {
@@ -46,14 +48,6 @@ function gbp(value: number | string | null | undefined) {
   }).format(n);
 }
 
-function local(value: number | string | null | undefined) {
-  const n = Number(value ?? 0);
-  return new Intl.NumberFormat("en-GB", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(n);
-}
-
 function previewMessage(value: string | null | undefined, max = 72) {
   const message = (value ?? "").trim();
   if (!message) return "—";
@@ -65,11 +59,19 @@ function isProgressed(value: string | null | undefined) {
   return ["y", "yes", "true", "1"].includes((value ?? "").trim().toLowerCase());
 }
 
+function latestRejectedNeedsResubmission(invoices: InvoiceReferenceRow[]) {
+  const sorted = [...invoices].sort((a, b) => new Date(b.uploaded_at ?? 0).getTime() - new Date(a.uploaded_at ?? 0).getTime());
+  const latest = sorted[0];
+  return latest?.review_status === "rejected_resubmit_required";
+}
+
 function nextAction(
   order: Pick<DashboardOrderRow, "lifecycle_status" | "funded_at">,
   hasOpenEvidenceQuery: boolean,
+  needsInvoiceResubmission: boolean,
   reconciliationSummary?: { unresolvedCount: number; unresolvedNonExceptionCount: number }
 ) {
+  if (needsInvoiceResubmission) return "Upload corrected invoice";
   if (hasOpenEvidenceQuery) return "Answer evidence query";
   if (order.lifecycle_status === "partially_progressed") {
     if (!reconciliationSummary) return "Continue invoice reconciliation";
@@ -110,7 +112,7 @@ export default async function ImporterPage() {
       supabase
         .from("orders")
         .select(
-          "id, order_ref, status, payment_auth_id, total_qty_declared, order_total_gbp_declared, quote_total_ghs, funded_at, created_at"
+          "id, order_ref, status, payment_auth_id, total_qty_declared, order_total_gbp_declared, quote_total_ghs, funded_at, created_at, retailers(name)"
         )
         .order("created_at", { ascending: false }),
       supabase.from("order_screenshots").select("order_id"),
@@ -118,14 +120,14 @@ export default async function ImporterPage() {
         .from("order_tracking_submissions")
         .select("order_id, superseded_at")
         .is("superseded_at", null),
-      supabase.from("supplier_invoices").select("order_id, invoice_ref"),
+      supabase.from("supplier_invoices").select("order_id, invoice_ref, review_status, uploaded_at"),
     ]);
 
   if (ordersError) {
     throw ordersError;
   }
 
-  const orderRows = (orders ?? []) as OrderRow[];
+  const orderRows = (orders ?? []) as unknown as OrderRow[];
   const orderIds = orderRows.map((order) => order.id);
   const { data: orderStates, error: orderStatesError } = orderIds.length
     ? await supabase.from("order_state_vw").select("id, lifecycle_status").in("id", orderIds)
@@ -182,7 +184,14 @@ export default async function ImporterPage() {
   }
 
   const trackingSet = new Set((tracking ?? []).map((row) => row.order_id));
-  const invoiceSet = new Set((invoices ?? []).map((row) => row.order_id));
+  const invoiceRows = (invoices ?? []) as InvoiceReferenceRow[];
+  const invoiceSet = new Set(invoiceRows.map((row) => row.order_id));
+  const invoicesByOrderId = new Map<string, InvoiceReferenceRow[]>();
+  for (const invoice of invoiceRows) {
+    const current = invoicesByOrderId.get(invoice.order_id) ?? [];
+    current.push(invoice);
+    invoicesByOrderId.set(invoice.order_id, current);
+  }
 
   const { data: invoiceLines } = orderIds.length
     ? await supabase
@@ -279,6 +288,7 @@ export default async function ImporterPage() {
             <thead className="bg-slate-50 text-left">
               <tr>
                 <th className="p-3">Order</th>
+                <th className="p-3">Retailer</th>
                 <th className="p-3">Auth ref</th>
                 <th className="p-3">Qty</th>
                 <th className="p-3">Declared GBP</th>
@@ -294,7 +304,9 @@ export default async function ImporterPage() {
             <tbody>
               {dashboardRows.map((order) => {
                 const hasTracking = trackingSet.has(order.id);
-                const hasInvoice = invoiceSet.has(order.id);
+                const orderInvoices = invoicesByOrderId.get(order.id) ?? [];
+                const hasInvoice = orderInvoices.length > 0;
+                const needsInvoiceResubmission = latestRejectedNeedsResubmission(orderInvoices);
                 const screenshotCount = screenshotCounts.get(order.id) ?? 0;
                 const openQuerySummary = openEvidenceQueryByOrderId.get(order.id);
                 const hasOpenEvidenceQuery = (openQuerySummary?.count ?? 0) > 0;
@@ -306,12 +318,16 @@ export default async function ImporterPage() {
                       <div className="font-medium">{order.order_ref}</div>
                       <div className="text-xs text-slate-500">{order.id}</div>
                     </td>
+                    <td className="p-3">{order.retailers?.name ?? "—"}</td>
                     <td className="p-3">{order.payment_auth_id ?? "—"}</td>
                     <td className="p-3">{order.total_qty_declared ?? 0}</td>
                     <td className="p-3">{gbp(order.order_total_gbp_declared)}</td>
                     <td className="p-3">{screenshotCount}</td>
                     <td className="p-3">{hasTracking ? "Yes" : "No"}</td>
-                    <td className="p-3">{hasInvoice ? "Yes" : "No"}</td>
+                    <td className="p-3">
+                      <div>{hasInvoice ? "Yes" : "No"}</div>
+                      {needsInvoiceResubmission ? <div className="mt-1 rounded bg-rose-100 px-2 py-1 text-xs font-medium text-rose-800">Resubmit required</div> : null}
+                    </td>
                     <td className="p-3">
                       {openQuerySummary ? (
                         <div className="space-y-1">
@@ -334,7 +350,7 @@ export default async function ImporterPage() {
                       </div>
                     </td>
                     <td className="p-3">
-                      <div>{nextAction(order, hasOpenEvidenceQuery, reconciliationByOrderId.get(order.id))}</div>
+                      <div className={needsInvoiceResubmission ? "font-semibold text-rose-700" : ""}>{nextAction(order, hasOpenEvidenceQuery, needsInvoiceResubmission, reconciliationByOrderId.get(order.id))}</div>
                       {hasOpenEvidenceQuery ? (
                         <Link href="/importer/evidence-queries" className="text-xs font-medium text-sky-600">
                           Answer
@@ -344,7 +360,7 @@ export default async function ImporterPage() {
                     <td className="p-3">
                       <div className="flex flex-col gap-1 whitespace-nowrap">
                         <Link className="text-sky-700 underline" href={operationsHref}>Open</Link>
-                        <Link className="text-sky-700 underline" href={`${operationsHref}#invoice`}>Upload invoice</Link>
+                        <Link className={needsInvoiceResubmission ? "font-semibold text-rose-700 underline" : "text-sky-700 underline"} href={`${operationsHref}#invoice`}>{needsInvoiceResubmission ? "Upload corrected invoice" : "Upload invoice"}</Link>
                         <Link className="text-sky-700 underline" href={`${operationsHref}#tracking`}>Add tracking</Link>
                         {hasInvoice ? <Link className="text-sky-700 underline" href={`/importer/reconciliation/${order.id}`}>Reconcile</Link> : null}
                       </div>
