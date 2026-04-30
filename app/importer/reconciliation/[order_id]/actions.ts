@@ -106,7 +106,6 @@ async function enforceProgressionWithinBaseline(params: {
   return { ok: true as const };
 }
 
-
 async function enforceManualEditWithinBaseline(params: {
   supabase: Awaited<ReturnType<typeof createClient>>;
   orderId: string;
@@ -186,7 +185,6 @@ async function enforceLinesNotLinkedToOpenException(params: {
   return { ok: true as const };
 }
 
-
 function readString(formData: FormData, key: string) {
   const value = formData.get(key);
   return typeof value === "string" ? value.trim() : "";
@@ -244,7 +242,7 @@ export async function updateSupplierInvoiceLineAction(formData: FormData) {
   const orderId = readString(formData, "order_id");
   const lineId = readString(formData, "line_id");
   const qty = readInteger(formData, "qty");
-  const amount = readNumber(formData, "amount_inc_vat_gbp");
+  const submittedAmount = readNumber(formData, "amount_inc_vat_gbp");
   const description = readString(formData, "description");
   const size = readOptionalString(formData, "size");
   const retailerSku = readOptionalString(formData, "retailer_sku");
@@ -261,7 +259,7 @@ export async function updateSupplierInvoiceLineAction(formData: FormData) {
     redirectWithResult(orderId, { error: "Quantity must be a valid non-negative integer." });
   }
 
-  if (amount === null || amount < 0) {
+  if (submittedAmount === null || submittedAmount < 0) {
     redirectWithResult(orderId, { error: "Amount must be a valid non-negative number." });
   }
 
@@ -269,6 +267,21 @@ export async function updateSupplierInvoiceLineAction(formData: FormData) {
   if (!guard.ok) {
     redirectWithResult(orderId, { error: guard.error });
   }
+
+  const { data: existingLine, error: existingLineError } = await guard.supabase
+    .from("supplier_invoice_lines")
+    .select("id, line_source, description, amount_inc_vat_gbp, supplier_invoices!inner(order_id)")
+    .eq("id", lineId)
+    .eq("supplier_invoices.order_id", orderId)
+    .maybeSingle();
+
+  if (existingLineError || !existingLine) {
+    redirectWithResult(orderId, { error: existingLineError?.message ?? "Invoice line not found for this order." });
+  }
+
+  const isOcrLine = String(existingLine.line_source ?? "").trim().toLowerCase() === "ocr_extracted";
+  const effectiveAmount = isOcrLine ? Number(existingLine.amount_inc_vat_gbp ?? 0) : submittedAmount;
+  const effectiveDescription = isOcrLine ? String(existingLine.description ?? description) : description;
 
   const exceptionGuard = await enforceLinesNotLinkedToOpenException({ supabase: guard.supabase, lineIds: [lineId] });
   if (!exceptionGuard.ok) {
@@ -280,7 +293,7 @@ export async function updateSupplierInvoiceLineAction(formData: FormData) {
     orderId,
     lineId,
     nextQty: qty,
-    nextAmount: amount,
+    nextAmount: effectiveAmount,
   });
   if (!baselineGuard.ok) {
     redirectWithResult(orderId, { error: baselineGuard.error });
@@ -289,9 +302,9 @@ export async function updateSupplierInvoiceLineAction(formData: FormData) {
   const { error } = await guard.supabase.rpc("operator_update_supplier_invoice_line_fields", {
     p_order_id: orderId,
     p_line_id: lineId,
-    p_description: description,
+    p_description: effectiveDescription,
     p_qty: qty,
-    p_amount_inc_vat_gbp: amount,
+    p_amount_inc_vat_gbp: effectiveAmount,
     p_size: size,
     p_retailer_sku: retailerSku,
   });
@@ -301,7 +314,7 @@ export async function updateSupplierInvoiceLineAction(formData: FormData) {
   }
 
   revalidatePath(`/importer/reconciliation/${orderId}`);
-  redirectWithResult(orderId, { success: "Line updated." });
+  redirectWithResult(orderId, { success: isOcrLine ? "OCR line updated. OCR amount was preserved." : "Line updated." });
 }
 
 export async function addManualSupplierInvoiceLineAction(formData: FormData) {
