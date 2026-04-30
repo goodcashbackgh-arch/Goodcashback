@@ -8,9 +8,23 @@ const PROGRESSION_BASELINE_EXCEEDED_ERROR = "Cannot progress selected lines beca
 const MANUAL_ADD_BASELINE_EXCEEDED_ERROR = "Cannot add manual line because it exceeds the original order baseline.";
 const MANUAL_EDIT_BASELINE_EXCEEDED_ERROR = "Cannot update line because it exceeds the original order baseline.";
 const CURRENCY_TOLERANCE_GBP = 0.01;
+const RETIRED_INVOICE_REVIEW_STATUSES = new Set(["rejected_resubmit_required", "superseded", "duplicate_blocked"]);
 
 function isProgressedFlag(value: string | null | undefined) {
   return ["y", "yes", "true", "1"].includes((value ?? "").trim().toLowerCase());
+}
+
+function invoiceReviewStatusForLine(line: unknown) {
+  const nested = (line as { supplier_invoices?: unknown }).supplier_invoices;
+  const invoice = Array.isArray(nested) ? nested[0] : nested;
+  if (!invoice || typeof invoice !== "object") return null;
+  const status = (invoice as { review_status?: unknown }).review_status;
+  return status === null || status === undefined ? null : String(status);
+}
+
+function isLiveInvoiceLine(line: unknown) {
+  const status = invoiceReviewStatusForLine(line);
+  return !status || !RETIRED_INVOICE_REVIEW_STATUSES.has(status);
 }
 
 type ProgressionLine = {
@@ -50,19 +64,19 @@ async function enforceProgressionWithinBaseline(params: {
 
   const { data: allLines, error: linesError } = await supabase
     .from("supplier_invoice_lines")
-    .select("id, qty, amount_inc_vat_gbp, qty_confirmed, amount_confirmed, eligible_for_invoice_yn, supplier_invoices!inner(order_id)")
+    .select("id, qty, amount_inc_vat_gbp, qty_confirmed, amount_confirmed, eligible_for_invoice_yn, supplier_invoices!inner(order_id, review_status)")
     .eq("supplier_invoices.order_id", orderId);
 
   if (linesError) {
     return { ok: false as const, error: linesError.message };
   }
 
-  const lines = (allLines ?? []) as ProgressionLine[];
+  const lines = ((allLines ?? []) as ProgressionLine[]).filter(isLiveInvoiceLine);
   const lineById = new Map(lines.map((line) => [line.id, line]));
   const selectedLines = lineIds.map((lineId) => lineById.get(lineId)).filter((line): line is ProgressionLine => Boolean(line));
 
   if (selectedLines.length !== lineIds.length) {
-    return { ok: false as const, error: "One or more selected lines could not be found for this order." };
+    return { ok: false as const, error: "One or more selected lines could not be found for this active invoice." };
   }
 
   const selectedLineIds = new Set(selectedLines.map((line) => line.id));
@@ -127,7 +141,7 @@ async function enforceManualEditWithinBaseline(params: {
 
   const { data: allLines, error: linesError } = await supabase
     .from("supplier_invoice_lines")
-    .select("id, qty, amount_inc_vat_gbp, supplier_invoices!inner(order_id)")
+    .select("id, qty, amount_inc_vat_gbp, supplier_invoices!inner(order_id, review_status)")
     .eq("supplier_invoices.order_id", orderId);
 
   if (linesError) {
@@ -135,7 +149,7 @@ async function enforceManualEditWithinBaseline(params: {
   }
 
   const currentTotalsExcludingLine = (allLines ?? [])
-    .filter((line) => line.id !== lineId)
+    .filter((line) => line.id !== lineId && isLiveInvoiceLine(line))
     .reduce(
       (totals, line) => ({
         qty: totals.qty + Number(line.qty ?? 0),
@@ -270,13 +284,17 @@ export async function updateSupplierInvoiceLineAction(formData: FormData) {
 
   const { data: existingLine, error: existingLineError } = await guard.supabase
     .from("supplier_invoice_lines")
-    .select("id, line_source, description, amount_inc_vat_gbp, supplier_invoices!inner(order_id)")
+    .select("id, line_source, description, amount_inc_vat_gbp, supplier_invoices!inner(order_id, review_status)")
     .eq("id", lineId)
     .eq("supplier_invoices.order_id", orderId)
     .maybeSingle();
 
   if (existingLineError || !existingLine) {
     redirectWithResult(orderId, { error: existingLineError?.message ?? "Invoice line not found for this order." });
+  }
+
+  if (!isLiveInvoiceLine(existingLine)) {
+    redirectWithResult(orderId, { error: "Rejected or superseded invoice lines cannot be edited." });
   }
 
   const isOcrLine = String(existingLine.line_source ?? "").trim().toLowerCase() === "ocr_extracted";
@@ -347,6 +365,21 @@ export async function addManualSupplierInvoiceLineAction(formData: FormData) {
     redirectWithResult(orderId, { error: guard.error });
   }
 
+  const { data: targetInvoice, error: targetInvoiceError } = await guard.supabase
+    .from("supplier_invoices")
+    .select("id, review_status")
+    .eq("id", supplierInvoiceId)
+    .eq("order_id", orderId)
+    .maybeSingle();
+
+  if (targetInvoiceError || !targetInvoice) {
+    redirectWithResult(orderId, { error: targetInvoiceError?.message ?? "Supplier invoice not found for this order." });
+  }
+
+  if (RETIRED_INVOICE_REVIEW_STATUSES.has(String(targetInvoice.review_status ?? ""))) {
+    redirectWithResult(orderId, { error: "Cannot add lines to a rejected, superseded, or duplicate-blocked invoice. Use the active corrected invoice." });
+  }
+
   const { data: order, error: orderError } = await guard.supabase
     .from("orders")
     .select("id, total_qty_declared, order_total_gbp_declared")
@@ -359,15 +392,16 @@ export async function addManualSupplierInvoiceLineAction(formData: FormData) {
 
   const { data: allLines, error: linesError } = await guard.supabase
     .from("supplier_invoice_lines")
-    .select("qty, amount_inc_vat_gbp, supplier_invoices!inner(order_id)")
+    .select("qty, amount_inc_vat_gbp, supplier_invoices!inner(order_id, review_status)")
     .eq("supplier_invoices.order_id", orderId);
 
   if (linesError) {
     redirectWithResult(orderId, { error: linesError.message });
   }
 
-  const currentQty = (allLines ?? []).reduce((sum, line) => sum + Number(line.qty ?? 0), 0);
-  const currentAmount = (allLines ?? []).reduce((sum, line) => sum + Number(line.amount_inc_vat_gbp ?? 0), 0);
+  const liveLines = (allLines ?? []).filter(isLiveInvoiceLine);
+  const currentQty = liveLines.reduce((sum, line) => sum + Number(line.qty ?? 0), 0);
+  const currentAmount = liveLines.reduce((sum, line) => sum + Number(line.amount_inc_vat_gbp ?? 0), 0);
   const baselineQty = Number(order.total_qty_declared ?? 0);
   const baselineAmount = Number(order.order_total_gbp_declared ?? 0);
 
@@ -550,7 +584,7 @@ export async function createExceptionCaseAction(formData: FormData) {
   const { data: selectedLines, error: selectedLinesError } = await guard.supabase
     .from("supplier_invoice_lines")
     .select(
-      "id, qty, amount_inc_vat_gbp, eligible_for_invoice_yn, supplier_invoices!inner(order_id)"
+      "id, qty, amount_inc_vat_gbp, eligible_for_invoice_yn, supplier_invoices!inner(order_id, review_status)"
     )
     .in("id", lineIds)
     .eq("supplier_invoices.order_id", orderId);
@@ -561,6 +595,10 @@ export async function createExceptionCaseAction(formData: FormData) {
 
   if ((selectedLines ?? []).length !== lineIds.length) {
     redirectWithResult(orderId, { error: "One or more selected lines do not belong to this order." });
+  }
+
+  if ((selectedLines ?? []).some((line) => !isLiveInvoiceLine(line))) {
+    redirectWithResult(orderId, { error: "Rejected or superseded invoice lines cannot be added to an exception case." });
   }
 
   const progressedLine = selectedLines?.find((line) => isProgressedFlag(line.eligible_for_invoice_yn));
