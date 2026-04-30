@@ -68,7 +68,7 @@ export default async function InternalAdjustmentsPage({ searchParams }: { search
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Supervisor queue</p>
           <h1 className="mt-2 text-3xl font-semibold tracking-tight">Delivery / discount adjustments</h1>
           <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-600">
-            Review pending retailer discounts and over-limit delivery charges before final invoice drafting. These are financial adjustments only; they do not change progressed item-line reconciliation or shipper-visible goods.
+            Review pending retailer discounts and over-limit delivery charges before final invoice drafting. Supervisors can approve as entered, correct the adjustment amount, or correct the final supplier invoice total after checking the invoice evidence.
           </p>
           <p className="mt-2 text-sm text-slate-600">Signed in as: {staff.full_name} · {staff.role_type}</p>
           {qp.success ? <p className="mt-4 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">{qp.success}</p> : null}
@@ -98,15 +98,35 @@ export default async function InternalAdjustmentsPage({ searchParams }: { search
                     {adjustment.supplier_invoices?.invoice_pdf_url ? <a href={adjustment.supplier_invoices.invoice_pdf_url} target="_blank" rel="noreferrer" className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white">Open invoice</a> : null}
                   </div>
                 </div>
-                <div className="mt-4 grid gap-3 md:grid-cols-[auto_1fr_auto] md:items-end">
-                  <form action={approveOrderValueAdjustmentAction}>
+                <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] lg:items-start">
+                  <form action={approveOrderValueAdjustmentAction} className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
                     <input type="hidden" name="adjustment_id" value={adjustment.id} />
-                    <button className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-600">Approve</button>
+                    <h3 className="text-sm font-semibold text-emerald-950">Approve / correct</h3>
+                    <div className="mt-3 grid gap-3 md:grid-cols-3">
+                      <label className="space-y-1 text-xs text-slate-600">
+                        <span>Correct adjustment amount GBP</span>
+                        <input name="corrected_amount_gbp" type="number" min="0" step="0.01" defaultValue={Number(adjustment.amount_gbp).toFixed(2)} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
+                      </label>
+                      <label className="space-y-1 text-xs text-slate-600">
+                        <span>Correct final supplier invoice total GBP</span>
+                        <input name="corrected_invoice_total_gbp" type="number" min="0" step="0.01" className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Optional" />
+                      </label>
+                      <label className="space-y-1 text-xs text-slate-600">
+                        <span>Correction note</span>
+                        <input name="correction_note" className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Optional" />
+                      </label>
+                    </div>
+                    <p className="mt-2 text-xs leading-5 text-emerald-900">Leave the final invoice total blank unless the invoice evidence shows the operator-entered total needs correction.</p>
+                    <button className="mt-3 rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-600">Approve</button>
                   </form>
-                  <form action={rejectOrderValueAdjustmentAction} className="grid gap-2 md:grid-cols-[1fr_auto]">
+
+                  <form action={rejectOrderValueAdjustmentAction} className="rounded-2xl border border-rose-200 bg-rose-50 p-4">
                     <input type="hidden" name="adjustment_id" value={adjustment.id} />
-                    <input name="note" className="rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Optional rejection note" />
-                    <button className="rounded-xl border border-rose-300 bg-rose-50 px-4 py-2 text-sm font-semibold text-rose-800 hover:bg-rose-100">Reject</button>
+                    <h3 className="text-sm font-semibold text-rose-950">Reject</h3>
+                    <div className="mt-3 grid gap-2 md:grid-cols-[1fr_auto]">
+                      <input name="note" className="rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Optional rejection note" />
+                      <button className="rounded-xl border border-rose-300 bg-white px-4 py-2 text-sm font-semibold text-rose-800 hover:bg-rose-100">Reject</button>
+                    </div>
                   </form>
                 </div>
               </article>
