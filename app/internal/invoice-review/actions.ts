@@ -3,7 +3,6 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
-import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 import { assertInvoiceReadyForCurrentApproval } from "./readiness";
 
 type OcrInvoiceLine = {
@@ -35,13 +34,6 @@ function readOptionalMoney(formData: FormData, key: string) {
 function redirectWithResult(params: Record<string, string>): never {
   const query = new URLSearchParams(params);
   redirect(`/internal/invoice-review?${query.toString()}`);
-}
-
-function adminClient() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !serviceKey) return null;
-  return createSupabaseClient(url, serviceKey, { auth: { persistSession: false } });
 }
 
 function fieldValue(field: unknown) {
@@ -357,10 +349,7 @@ export async function rejectSupplierInvoiceRequireResubmissionAction(formData: F
   const guard = await requireSupervisorOrAdmin();
   if (!guard.ok) redirectWithResult({ error: guard.error });
 
-  const admin = adminClient();
-  if (!admin) redirectWithResult({ error: "Server admin client is not configured for invoice rejection." });
-
-  const { data: invoice, error: invoiceError } = await admin
+  const { data: invoice, error: invoiceError } = await guard.supabase
     .from("supplier_invoices")
     .select("id, order_id")
     .eq("id", supplierInvoiceId)
@@ -371,7 +360,7 @@ export async function rejectSupplierInvoiceRequireResubmissionAction(formData: F
   }
 
   const now = new Date().toISOString();
-  const { error: updateError } = await admin
+  const { error: updateError } = await guard.supabase
     .from("supplier_invoices")
     .update({
       review_status: "rejected_resubmit_required",
@@ -385,7 +374,7 @@ export async function rejectSupplierInvoiceRequireResubmissionAction(formData: F
 
   if (updateError) redirectWithResult({ error: updateError.message });
 
-  const { error: flagsError } = await admin
+  const { error: flagsError } = await guard.supabase
     .from("supplier_invoice_review_flags")
     .update({
       status: "resolved",
