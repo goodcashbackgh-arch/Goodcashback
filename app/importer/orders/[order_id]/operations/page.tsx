@@ -5,6 +5,23 @@ import { addTrackingSubmissionAction, submitInvoiceEvidenceAction } from "./acti
 type ScreenshotRow = { id: string; screenshot_url: string };
 type TrackingRow = { id: string; tracking_ref: string; is_final_delivery_yn: boolean | null; couriers: { name: string } | null };
 
+function money(value: number | string | null | undefined, currency = "GBP") {
+  const n = Number(value ?? 0);
+  return new Intl.NumberFormat("en-GB", {
+    style: "currency",
+    currency,
+    minimumFractionDigits: 2,
+  }).format(n);
+}
+
+function localAmount(value: number | string | null | undefined, currencyCode?: string | null) {
+  const n = Number(value ?? 0);
+  return `${currencyCode ?? "Local"} ${new Intl.NumberFormat("en-GB", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(n)}`;
+}
+
 export default async function OrderOperationsPage({params,searchParams}:{params: Promise<{order_id:string}>, searchParams: Promise<{success?:string;order_ref?:string;auth_ref?:string;error?:string}>}) {
   const {order_id:orderId} = await params;
   const qp = await searchParams;
@@ -15,7 +32,7 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
   if (!operator) return <main className="p-6">Operator account required.</main>;
 
   const [{data:order},{data:screenshots},{data:tracking},{data:funding},{data:invoices},{data:couriers}] = await Promise.all([
-    supabase.from("orders").select("*").eq("id",orderId).maybeSingle(),
+    supabase.from("orders").select("*, importers(countries(currencies(code)))").eq("id",orderId).maybeSingle(),
     supabase.from("order_screenshots").select("*").eq("order_id",orderId).order("display_order"),
     supabase.from("order_tracking_submissions").select("*, couriers(name)").eq("order_id",orderId).order("submitted_at",{ascending:false}),
     supabase.from("order_funding_position_vw").select("*").eq("order_id",orderId).maybeSingle(),
@@ -25,6 +42,7 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
 
   if (!order) return <main className="p-6">Order not found.</main>;
   const finalTrackingExists = ((tracking ?? []) as TrackingRow[]).some((t) => t.is_final_delivery_yn);
+  const currencyCode = order.importers?.countries?.currencies?.code ?? null;
 
   return <main className="p-6 space-y-6">
     <Link href="/importer" className="text-sky-600">← Back</Link>
@@ -34,9 +52,22 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
     {qp.success && <div className="rounded border border-emerald-300 bg-emerald-50 p-3 text-sm">
       <p className="font-semibold">{qp.success}</p>
       <p>This estimate is based on the goods value you submitted. Shipping is not included at this stage.</p>
+      <div className="mt-2 grid gap-1 md:grid-cols-3">
+        <p><span className="font-medium">Order ref:</span> {order.order_ref ?? qp.order_ref ?? "—"}</p>
+        <p><span className="font-medium">Order ID:</span> {order.id}</p>
+        <p><span className="font-medium">Auth ref:</span> {order.payment_auth_id ?? qp.auth_ref ?? "—"}</p>
+      </div>
     </div>}
 
-    <section><h2 className="font-semibold">Summary</h2><p>Qty: {order.total_qty_declared} | GBP: {order.order_total_gbp_declared}</p></section>
+    <section className="rounded border p-4">
+      <h2 className="font-semibold">Summary</h2>
+      <div className="mt-2 grid gap-2 md:grid-cols-4 text-sm">
+        <div><div className="text-slate-500">Quantity</div><div className="font-medium">{order.total_qty_declared}</div></div>
+        <div><div className="text-slate-500">Goods amount</div><div className="font-medium">{money(order.order_total_gbp_declared)}</div></div>
+        <div><div className="text-slate-500">Local quote amount</div><div className="font-medium">{localAmount(order.quote_total_ghs, currencyCode)}</div></div>
+        <div><div className="text-slate-500">Status</div><div className="font-medium">{order.status}</div></div>
+      </div>
+    </section>
 
     <section><h2 className="font-semibold">Funding</h2><pre className="text-xs bg-slate-100 p-2 rounded overflow-x-auto">{JSON.stringify(funding ?? {}, null, 2)}</pre></section>
 
@@ -45,7 +76,7 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
       <div className="flex gap-3 flex-wrap">
         {((screenshots??[]) as ScreenshotRow[]).map((s)=> (
           <a key={s.id} href={s.screenshot_url} target="_blank" className="block rounded border bg-white p-1">
-            <img src={s.screenshot_url} alt="Order screenshot" style={{ width: 160, height: 120, objectFit: "contain" }} />
+            <img src={s.screenshot_url} alt="Screenshot" style={{ width: 160, height: 120, objectFit: "contain" }} />
           </a>
         ))}
       </div>
