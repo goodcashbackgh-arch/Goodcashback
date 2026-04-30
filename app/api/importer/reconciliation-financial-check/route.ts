@@ -90,6 +90,8 @@ export async function GET(request: Request) {
       .maybeSingle(),
   ]);
 
+  const declaredQty = asNumber(order.total_qty_declared);
+  const declaredAmount = asNumber(order.order_total_gbp_declared);
   const goodsQty = (lines ?? []).reduce((sum, line) => sum + asNumber(line.qty), 0);
   const goodsAmount = (lines ?? []).reduce((sum, line) => sum + asNumber(line.amount_inc_vat_gbp), 0);
   const deliveryTotal = (adjustments ?? [])
@@ -100,11 +102,9 @@ export async function GET(request: Request) {
     .reduce((sum, row) => sum + asNumber(row.amount_gbp), 0);
   const pendingSupervisorCount = (adjustments ?? []).filter((row) => row.approval_status === "pending_supervisor").length;
   const invoiceTotal = summary ? asNumber(summary.invoice_total_gbp) : null;
-  const expectedInvoiceTotal = goodsAmount + deliveryTotal - discountTotal;
+  const expectedInvoiceTotal = declaredAmount + deliveryTotal - discountTotal;
   const invoiceVariance = invoiceTotal === null ? null : expectedInvoiceTotal - invoiceTotal;
   const financialMatched = invoiceVariance !== null && Math.abs(invoiceVariance) < 0.01;
-  const declaredQty = asNumber(order.total_qty_declared);
-  const declaredAmount = asNumber(order.order_total_gbp_declared);
 
   return NextResponse.json({
     order_id: orderId,
