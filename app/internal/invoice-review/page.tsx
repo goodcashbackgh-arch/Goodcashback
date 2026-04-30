@@ -6,6 +6,7 @@ import {
   rejectSupplierInvoiceRequireResubmissionAction,
   runMindeeOcrForSupplierInvoiceAction,
 } from "./actions";
+import { assertInvoiceReadyForCurrentApproval } from "./readiness";
 
 type SearchParams = { success?: string; error?: string };
 
@@ -108,6 +109,13 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
   const invoices = (data ?? []) as unknown as InvoiceRow[];
   const pending = invoices.filter((invoice) => invoice.review_status === "pending_review" || invoice.blocked_from_sage_yn);
   const reviewed = invoices.filter((invoice) => !pending.includes(invoice));
+  const readinessEntries = await Promise.all(
+    invoices.map(async (invoice) => [
+      invoice.id,
+      await assertInvoiceReadyForCurrentApproval(supabase, invoice.id),
+    ] as const),
+  );
+  const readinessByInvoiceId = new Map(readinessEntries);
 
   return (
     <main className="min-h-screen bg-slate-50 px-6 py-8 text-slate-950">
@@ -147,6 +155,9 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
             const retailerMismatch = Boolean(invoice.ocr_retailer_name && invoice.retailers?.name && !invoice.ocr_retailer_name.toLowerCase().includes(String(invoice.retailers.name).toLowerCase()));
             const refMismatch = Boolean(invoice.ocr_invoice_ref && invoice.ocr_invoice_ref !== invoice.invoice_ref);
             const totalMismatch = enteredTotal !== null && invoice.ocr_invoice_total_gbp !== null && Math.abs(Number(enteredTotal) - Number(invoice.ocr_invoice_total_gbp)) >= 0.01;
+            const readinessError = readinessByInvoiceId.get(invoice.id) ?? null;
+            const alreadyApproved = ["approved_current", "ref_corrected_approved"].includes(invoice.review_status);
+            const approveDisabled = alreadyApproved || Boolean(readinessError);
 
             return (
               <article key={invoice.id} className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -157,6 +168,7 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
                       <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${statusClass(invoice.review_status)}`}>{invoice.review_status}</span>
                       {invoice.blocked_from_sage_yn ? <span className="rounded-full bg-rose-100 px-2.5 py-1 text-xs font-semibold text-rose-800">Blocked from Sage</span> : <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-800">Sage eligible gate</span>}
                       {invoice.is_current_for_order ? <span className="rounded-full bg-sky-100 px-2.5 py-1 text-xs font-semibold text-sky-800">Current for order</span> : null}
+                      {!alreadyApproved && !readinessError ? <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-800">Ready to approve</span> : null}
                     </div>
                     <p className="mt-2 text-sm text-slate-600">Importer: {invoice.orders?.importers?.company_name ?? "—"}</p>
                     <p className="text-sm text-slate-600">Order retailer: {invoice.orders?.retailers?.name ?? invoice.retailers?.name ?? "—"}</p>
@@ -187,10 +199,13 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
                   {activeFlags.map((flag, index) => <p key={`${flag.flag_type}-${index}`} className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900"><span className="font-semibold">{flagLabel(flag.flag_type)}:</span> {flag.message}</p>)}
                 </div> : null}
 
+                {readinessError && !alreadyApproved ? <p className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900"><span className="font-semibold">Approval blocked:</span> {readinessError}</p> : null}
+                {!readinessError && !alreadyApproved ? <p className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">Ready: invoice lines are settled, totals match, and no pending adjustment approvals remain.</p> : null}
+
                 <div className="mt-4 grid gap-4 lg:grid-cols-2">
-                  <form action={approveSupplierInvoiceCurrentAction} className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
+                  <form action={approveSupplierInvoiceCurrentAction} className={`rounded-2xl border p-4 ${approveDisabled ? "border-slate-200 bg-slate-50" : "border-emerald-200 bg-emerald-50"}`}>
                     <input type="hidden" name="supplier_invoice_id" value={invoice.id} />
-                    <h3 className="text-sm font-semibold text-emerald-950">Approve / correct header and approve current</h3>
+                    <h3 className={`text-sm font-semibold ${approveDisabled ? "text-slate-700" : "text-emerald-950"}`}>Approve / correct header and approve current</h3>
                     <div className="mt-3 grid gap-3 md:grid-cols-2">
                       <input name="corrected_invoice_ref" className="rounded-xl border border-slate-300 px-3 py-2 text-sm" defaultValue={invoice.ocr_invoice_ref ?? invoice.invoice_ref} placeholder="Correct invoice ref" />
                       <input name="ocr_invoice_ref" className="rounded-xl border border-slate-300 px-3 py-2 text-sm" defaultValue={invoice.ocr_invoice_ref ?? ""} placeholder="OCR invoice ref" />
@@ -199,7 +214,7 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
                       <input name="ocr_invoice_total_gbp" type="number" min="0" step="0.01" className="rounded-xl border border-slate-300 px-3 py-2 text-sm" defaultValue={invoice.ocr_invoice_total_gbp ?? enteredTotal ?? ""} placeholder="OCR invoice total GBP" />
                       <input name="review_notes" className="rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Review note" />
                     </div>
-                    <button className="mt-3 rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-600">Approve current</button>
+                    <button disabled={approveDisabled} className={`mt-3 rounded-xl px-4 py-2 text-sm font-semibold ${approveDisabled ? "cursor-not-allowed bg-slate-300 text-slate-600" : "bg-emerald-700 text-white hover:bg-emerald-600"}`}>{alreadyApproved ? "Already approved" : "Approve current"}</button>
                   </form>
 
                   <form action={rejectSupplierInvoiceRequireResubmissionAction} className="rounded-2xl border border-rose-200 bg-rose-50 p-4">
