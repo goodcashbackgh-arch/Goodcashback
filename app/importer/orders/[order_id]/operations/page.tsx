@@ -90,6 +90,8 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
   const orderRetailerName = order.retailers?.name ?? "—";
   const adjustmentRows = (adjustments ?? []) as AdjustmentRow[];
   const invoiceRows = (invoices ?? []) as InvoiceRow[];
+  const liveInvoiceIds = new Set(invoiceRows.filter((invoice) => invoice.review_status !== "rejected_resubmit_required" && invoice.review_status !== "superseded").map((invoice) => invoice.id));
+  const activeAdjustmentRows = adjustmentRows.filter((a) => a.approval_status !== "rejected" && (!a.supplier_invoice_id || liveInvoiceIds.has(a.supplier_invoice_id)));
   const rejectedInvoices = invoiceRows.filter((invoice) => invoice.review_status === "rejected_resubmit_required");
   const orderHasResubmissionRequired = rejectedInvoices.length > 0 && !invoiceRows.some((invoice) => {
     if (invoice.review_status === "rejected_resubmit_required") return false;
@@ -210,8 +212,8 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
           const invoiceAdjustments = adjustmentRows.filter((a) => a.supplier_invoice_id === invoice.id);
           const invoiceFlags = reviewFlagsByInvoice.get(invoice.id) ?? [];
           const hasOpenFlag = invoiceFlags.some((flag) => ["open", "under_review"].includes(flag.status));
-          const deliveryTotal = invoiceAdjustments.filter((a) => a.adjustment_type === "retailer_delivery").reduce((sum, a) => sum + Number(a.amount_gbp ?? 0), 0);
-          const discountTotal = invoiceAdjustments.filter((a) => a.adjustment_type === "retailer_discount").reduce((sum, a) => sum + Number(a.amount_gbp ?? 0), 0);
+          const deliveryTotal = invoiceAdjustments.filter((a) => a.adjustment_type === "retailer_delivery" && a.approval_status !== "rejected").reduce((sum, a) => sum + Number(a.amount_gbp ?? 0), 0);
+          const discountTotal = invoiceAdjustments.filter((a) => a.adjustment_type === "retailer_discount" && a.approval_status !== "rejected").reduce((sum, a) => sum + Number(a.amount_gbp ?? 0), 0);
           const expectedInvoiceTotal = orderGoodsBaseline + deliveryTotal - discountTotal;
           const summary = summaryByInvoice.get(invoice.id);
           const invoiceTotal = Number(summary?.invoice_total_gbp ?? 0);
@@ -249,7 +251,7 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
                 ))}
               </div> : null}
 
-              <form action={flagSupplierInvoiceForReviewAction} className="mt-3 grid gap-2 md:grid-cols-[220px_1fr_auto]">
+              {!rejected ? <form action={flagSupplierInvoiceForReviewAction} className="mt-3 grid gap-2 md:grid-cols-[220px_1fr_auto]">
                 <input type="hidden" name="order_id" value={orderId} />
                 <input type="hidden" name="supplier_invoice_id" value={invoice.id} />
                 <select name="flag_type" className="rounded border border-slate-300 p-2 text-xs" defaultValue="invoice_total_mismatch">
@@ -262,15 +264,15 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
                 </select>
                 <input name="message" className="rounded border border-slate-300 p-2 text-xs" placeholder="Explain what supervisor should check" required />
                 <button className="rounded bg-amber-700 px-3 py-2 text-xs font-semibold text-white">Flag for review</button>
-              </form>
+              </form> : null}
             </div>
           );
         })}
       </div>
 
-      {adjustmentRows.length > 0 ? <div className="space-y-1 text-sm">
+      {activeAdjustmentRows.length > 0 ? <div className="space-y-1 text-sm">
         <h3 className="font-medium">Financial adjustments</h3>
-        {adjustmentRows.map((a)=> (
+        {activeAdjustmentRows.map((a)=> (
           <div key={a.id} className="rounded bg-slate-50 p-2">
             {adjustmentLabel(a.adjustment_type)} — {money(a.amount_gbp)} — {a.approval_status}
           </div>
