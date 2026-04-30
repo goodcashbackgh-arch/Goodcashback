@@ -72,7 +72,7 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
   if (!operator) return <main className="p-6">Operator account required.</main>;
 
   const [{data:order},{data:screenshots},{data:tracking},{data:funding},{data:invoices},{data:couriers},{data:adjustments},{data:invoiceLines},{data:invoiceSummaries},{data:reviewFlags}] = await Promise.all([
-    supabase.from("orders").select("*, importers(countries(currencies(code)))").eq("id",orderId).maybeSingle(),
+    supabase.from("orders").select("*, importers(countries(currencies(code))), retailers(name)").eq("id",orderId).maybeSingle(),
     supabase.from("order_screenshots").select("*").eq("order_id",orderId).order("display_order"),
     supabase.from("order_tracking_submissions").select("*, couriers(name)").eq("order_id",orderId).order("submitted_at",{ascending:false}),
     supabase.from("order_funding_position_vw").select("*").eq("order_id",orderId).maybeSingle(),
@@ -87,6 +87,7 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
   if (!order) return <main className="p-6">Order not found.</main>;
   const finalTrackingExists = ((tracking ?? []) as TrackingRow[]).some((t) => t.is_final_delivery_yn);
   const currencyCode = order.importers?.countries?.currencies?.code ?? null;
+  const orderRetailerName = order.retailers?.name ?? "—";
   const adjustmentRows = (adjustments ?? []) as AdjustmentRow[];
   const invoiceRows = (invoices ?? []) as InvoiceRow[];
   const rejectedInvoices = invoiceRows.filter((invoice) => invoice.review_status === "rejected_resubmit_required");
@@ -127,10 +128,11 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
     {qp.success && <div className="rounded border border-emerald-300 bg-emerald-50 p-3 text-sm">
       <p className="font-semibold">{qp.success}</p>
       <p>This estimate is based on the goods value you submitted. Shipping is not included at this stage.</p>
-      <div className="mt-2 grid gap-1 md:grid-cols-3">
+      <div className="mt-2 grid gap-1 md:grid-cols-4">
         <p><span className="font-medium">Order ref:</span> {order.order_ref ?? qp.order_ref ?? "—"}</p>
         <p><span className="font-medium">Order ID:</span> {order.id}</p>
         <p><span className="font-medium">Auth ref:</span> {order.payment_auth_id ?? qp.auth_ref ?? "—"}</p>
+        <p><span className="font-medium">Retailer:</span> {orderRetailerName}</p>
       </div>
     </div>}
 
@@ -142,7 +144,8 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
 
     <section className="rounded border p-4">
       <h2 className="font-semibold">Summary</h2>
-      <div className="mt-2 grid gap-2 md:grid-cols-4 text-sm">
+      <div className="mt-2 grid gap-2 md:grid-cols-5 text-sm">
+        <div><div className="text-slate-500">Retailer</div><div className="font-medium">{orderRetailerName}</div></div>
         <div><div className="text-slate-500">Quantity</div><div className="font-medium">{order.total_qty_declared}</div></div>
         <div><div className="text-slate-500">Goods amount</div><div className="font-medium">{money(order.order_total_gbp_declared)}</div></div>
         <div><div className="text-slate-500">Local quote amount</div><div className="font-medium">{localAmount(order.quote_total_ghs, currencyCode)}</div></div>
@@ -188,6 +191,7 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
 
     <section id="invoice" className="space-y-2 rounded border p-4">
       <h2 className="font-semibold">Invoice / evidence</h2>
+      <p className="text-xs text-slate-500">Order retailer expected for invoice matching: <span className="font-semibold text-slate-700">{orderRetailerName}</span></p>
       {orderHasResubmissionRequired ? <p className="rounded border border-rose-200 bg-rose-50 p-2 text-sm text-rose-900">Resubmission required: upload a corrected invoice here. The rejected invoice remains visible below for audit.</p> : null}
       <form action={submitInvoiceEvidenceAction} className="grid gap-2 md:grid-cols-3">
         <input type="hidden" name="order_id" value={orderId} />
