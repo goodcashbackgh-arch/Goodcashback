@@ -63,6 +63,7 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
   const currencyCode = order.importers?.countries?.currencies?.code ?? null;
   const adjustmentRows = (adjustments ?? []) as AdjustmentRow[];
   const invoiceRows = (invoices ?? []) as InvoiceRow[];
+  const orderGoodsBaseline = Number(order.order_total_gbp_declared ?? 0);
 
   const lineTotalsByInvoice = new Map<string, { qty: number; amount: number }>();
   for (const line of (invoiceLines ?? []) as InvoiceLineTotalRow[]) {
@@ -143,11 +144,11 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
       <form action={submitInvoiceEvidenceAction} className="grid gap-2 md:grid-cols-3">
         <input type="hidden" name="order_id" value={orderId} />
         <input name="invoice_ref" placeholder="Invoice ref" className="border p-2" required />
-        <input name="invoice_total_gbp" type="number" min="0.01" step="0.01" placeholder="Invoice total GBP" className="border p-2" required />
+        <input name="invoice_total_gbp" type="number" min="0.01" step="0.01" placeholder="Final invoice total GBP" className="border p-2" required />
         <input name="invoice_file" type="file" accept=".pdf,image/*,.png,.jpg,.jpeg,.webp" className="border p-2" required />
         <input name="retailer_delivery_gbp" type="number" min="0" step="0.01" placeholder="Optional delivery charge GBP" className="border p-2" />
         <input name="retailer_discount_gbp" type="number" min="0" step="0.01" placeholder="Optional discount GBP" className="border p-2" />
-        <p className="text-xs text-slate-500 md:col-span-3">Invoice total is used to check: goods item lines + delivery - discount. Delivery charges may auto-approve within policy. Discounts always require supervisor approval.</p>
+        <p className="text-xs text-slate-500 md:col-span-3">Final invoice total is checked against: original order goods amount + delivery - discount. Item lines remain a separate reconciliation check.</p>
         <button className="bg-green-600 text-white px-4 py-2 rounded w-fit">Upload invoice</button>
       </form>
 
@@ -157,7 +158,7 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
           const invoiceAdjustments = adjustmentRows.filter((a) => a.supplier_invoice_id === invoice.id);
           const deliveryTotal = invoiceAdjustments.filter((a) => a.adjustment_type === "retailer_delivery").reduce((sum, a) => sum + Number(a.amount_gbp ?? 0), 0);
           const discountTotal = invoiceAdjustments.filter((a) => a.adjustment_type === "retailer_discount").reduce((sum, a) => sum + Number(a.amount_gbp ?? 0), 0);
-          const expectedInvoiceTotal = goods.amount + deliveryTotal - discountTotal;
+          const expectedInvoiceTotal = orderGoodsBaseline + deliveryTotal - discountTotal;
           const summary = summaryByInvoice.get(invoice.id);
           const invoiceTotal = Number(summary?.invoice_total_gbp ?? 0);
           const variance = expectedInvoiceTotal - invoiceTotal;
@@ -169,12 +170,13 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
                 <div>{invoice.invoice_ref} <Link className="ml-2 text-sky-700 underline" href={`/importer/reconciliation/${orderId}`}>Reconcile</Link></div>
                 {summary ? <span className={`rounded px-2 py-1 text-xs font-medium ${matched ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>{matched ? "Invoice total matched" : "Invoice total variance"}</span> : <span className="rounded bg-slate-200 px-2 py-1 text-xs">No invoice total captured</span>}
               </div>
-              {summary ? <div className="mt-2 grid gap-2 md:grid-cols-6 text-xs">
+              {summary ? <div className="mt-2 grid gap-2 md:grid-cols-7 text-xs">
                 <div><span className="text-slate-500">Goods qty</span><div className="font-medium">{goods.qty}</div></div>
-                <div><span className="text-slate-500">Goods lines</span><div className="font-medium">{money(goods.amount)}</div></div>
+                <div><span className="text-slate-500">Item lines</span><div className="font-medium">{money(goods.amount)}</div></div>
+                <div><span className="text-slate-500">Order goods baseline</span><div className="font-medium">{money(orderGoodsBaseline)}</div></div>
                 <div><span className="text-slate-500">Delivery</span><div className="font-medium">{money(deliveryTotal)}</div></div>
                 <div><span className="text-slate-500">Discount</span><div className="font-medium">-{money(discountTotal)}</div></div>
-                <div><span className="text-slate-500">Expected total</span><div className="font-medium">{money(expectedInvoiceTotal)}</div></div>
+                <div><span className="text-slate-500">Expected final total</span><div className="font-medium">{money(expectedInvoiceTotal)}</div></div>
                 <div><span className="text-slate-500">Variance</span><div className="font-medium">{signedMoney(variance)}</div></div>
               </div> : null}
             </div>
