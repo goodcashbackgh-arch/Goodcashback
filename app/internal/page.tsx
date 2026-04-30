@@ -23,10 +23,16 @@ const cards: QueueCard[] = [
     proof: "Day 3 regression passed",
   },
   {
-    title: "Invoice review",
+    title: "Invoice exceptions",
     href: "/internal/invoice-review",
-    description: "Approve the correct supplier invoice as current for the order, correct header/ref issues, or reject for resubmission before Sage/finalisation.",
-    proof: "Supplier invoice review gate v1",
+    description: "Supervisor queue for wrong invoices, OCR/header issues, total mismatches, unresolved lines, and resubmission problems.",
+    proof: "Exceptions-only invoice gate",
+  },
+  {
+    title: "Supplier draft ready",
+    href: "/internal/supplier-draft-ready",
+    description: "Clean supplier invoices that passed readiness checks and can be bulk approved as current before Sage supplier draft preparation.",
+    proof: "Bulk approval lane v1",
   },
   {
     title: "Adjustment review",
@@ -92,8 +98,8 @@ export default async function InternalPage() {
               </h1>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
                 Thin working shell for the live-passed Day 2–9 backend. Use this
-                to move through funding, evidence, invoice review, adjustments,
-                exceptions, shipping handoff, accounting/VAT, and escalation queues.
+                to move through funding, evidence, invoice exceptions, supplier draft readiness,
+                adjustments, exceptions, shipping handoff, accounting/VAT, and escalation queues.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700">
