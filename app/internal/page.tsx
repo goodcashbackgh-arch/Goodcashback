@@ -23,6 +23,12 @@ const cards: QueueCard[] = [
     proof: "Day 3 regression passed",
   },
   {
+    title: "Adjustment review",
+    href: "/internal/adjustments",
+    description: "Supervisor approval for retailer discounts and over-limit delivery charges before final invoice drafting.",
+    proof: "Portal operations addendum v1",
+  },
+  {
     title: "Child exceptions",
     href: "/internal/exceptions",
     description: "Refund gate, replacement child orders, and unresolved child exception control.",
@@ -80,8 +86,8 @@ export default async function InternalPage() {
               </h1>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
                 Thin working shell for the live-passed Day 2–9 backend. Use this
-                to move through funding, evidence, exceptions, shipping handoff,
-                accounting/VAT, and escalation queues.
+                to move through funding, evidence, adjustments, exceptions,
+                shipping handoff, accounting/VAT, and escalation queues.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700">
