@@ -108,12 +108,14 @@ export async function submitInvoiceEvidenceAction(formData: FormData) {
   const supabase = await createClient();
   const orderId = rs(formData, "order_id");
   const invoiceRef = rs(formData, "invoice_ref");
+  const invoiceTotal = readMoney(formData, "invoice_total_gbp");
   const invoiceFile = formData.get("invoice_file");
   const deliveryCharge = readMoney(formData, "retailer_delivery_gbp");
   const discountAmount = readMoney(formData, "retailer_discount_gbp");
 
   if (!orderId) redirect("/importer?error=Missing+order+id");
   if (!invoiceRef) redirect(`/importer/orders/${orderId}/operations?error=Invoice+reference+is+required`);
+  if (invoiceTotal <= 0) redirect(`/importer/orders/${orderId}/operations?error=Invoice+total+GBP+is+required`);
   if (!(invoiceFile instanceof File) || invoiceFile.size <= 0) {
     redirect(`/importer/orders/${orderId}/operations?error=Invoice+file+is+required`);
   }
@@ -142,6 +144,23 @@ export async function submitInvoiceEvidenceAction(formData: FormData) {
   const supplierInvoiceId = typeof invoiceResult === "object" && invoiceResult && "supplier_invoice_id" in invoiceResult
     ? String(invoiceResult.supplier_invoice_id)
     : null;
+
+  if (!supplierInvoiceId) {
+    redirect(`/importer/orders/${orderId}/operations?error=Invoice+created+but+supplier+invoice+id+was+not+returned`);
+  }
+
+  const { error: summaryError } = await supabase.from("supplier_invoice_financial_summary").insert({
+    supplier_invoice_id: supplierInvoiceId,
+    invoice_total_gbp: invoiceTotal,
+    source: "operator_entered",
+    confidence: "medium",
+    entered_by_operator_id: operator.id,
+    notes: "Supplier invoice total entered by operator during invoice upload.",
+  });
+
+  if (summaryError) {
+    redirect(`/importer/orders/${orderId}/operations?error=${encodeURIComponent(summaryError.message)}`);
+  }
 
   const adjustmentRows = [];
   if (deliveryCharge > 0) {
