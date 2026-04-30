@@ -9,6 +9,13 @@ const COMPLETED_EXCEPTION_STATUSES = new Set([
   "closed",
 ]);
 
+const SERIOUS_OPEN_FLAG_TYPES = new Set([
+  "wrong_invoice",
+  "ocr_unclear",
+  "invoice_total_mismatch",
+  "manual_line_needed",
+]);
+
 function asNumber(value: unknown) {
   const n = Number(value ?? 0);
   return Number.isFinite(n) ? n : 0;
@@ -26,6 +33,19 @@ export async function assertInvoiceReadyForCurrentApproval(
 
   if (invoiceError || !invoice) {
     return invoiceError?.message ?? "Supplier invoice not found.";
+  }
+
+  const { data: seriousFlags, error: flagsError } = await supabase
+    .from("supplier_invoice_review_flags")
+    .select("flag_type")
+    .eq("supplier_invoice_id", supplierInvoiceId)
+    .in("status", ["open", "under_review"])
+    .in("flag_type", Array.from(SERIOUS_OPEN_FLAG_TYPES))
+    .limit(1);
+
+  if (flagsError) return flagsError.message;
+  if ((seriousFlags ?? []).length > 0) {
+    return "Cannot approve current invoice yet. Serious invoice review flags remain open or under review.";
   }
 
   const { data: pendingAdjustments, error: adjustmentError } = await supabase
