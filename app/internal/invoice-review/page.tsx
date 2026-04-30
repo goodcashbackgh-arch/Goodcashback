@@ -10,6 +10,8 @@ import { assertInvoiceReadyForCurrentApproval } from "./readiness";
 
 type SearchParams = { success?: string; error?: string };
 
+type FinancialSummary = { invoice_total_gbp: number | null };
+
 type InvoiceRow = {
   id: string;
   order_id: string;
@@ -33,9 +35,23 @@ type InvoiceRow = {
     importers: { company_name: string | null } | null;
   } | null;
   retailers: { name: string | null } | null;
-  supplier_invoice_financial_summary: { invoice_total_gbp: number | null }[] | null;
+  supplier_invoice_financial_summary: FinancialSummary[] | FinancialSummary | null;
   supplier_invoice_review_flags: { flag_type: string; message: string; status: string }[] | null;
 };
+
+function firstRelated<T>(value: T | T[] | null | undefined): T | null {
+  if (!value) return null;
+  return Array.isArray(value) ? value[0] ?? null : value;
+}
+
+function getEnteredTotal(invoice: InvoiceRow) {
+  const summary = firstRelated(invoice.supplier_invoice_financial_summary);
+  return summary?.invoice_total_gbp ?? null;
+}
+
+function hasOcrHeader(invoice: InvoiceRow) {
+  return Boolean(invoice.ocr_invoice_ref || invoice.ocr_retailer_name || invoice.ocr_invoice_date || invoice.ocr_invoice_total_gbp !== null);
+}
 
 function gbp(value: number | string | null | undefined) {
   return new Intl.NumberFormat("en-GB", {
@@ -127,7 +143,7 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
             <div>
               <h1 className="text-3xl font-semibold tracking-tight">Supplier invoice approval gate</h1>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-                Approve the correct invoice as current for the order, correct small reference/OCR header issues, or reject wrong invoices for operator resubmission. Only approved-current invoices should feed final invoice drafting and Sage.
+                Review the uploaded supplier invoice, OCR header, operator-entered total, reconciliation status, and flags before accepting it as the current invoice for downstream Sage supplier draft preparation.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700">
@@ -150,7 +166,8 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
         <section className="grid gap-4">
           {invoices.length === 0 ? <p className="rounded-3xl border border-emerald-200 bg-emerald-50 p-5 text-sm text-emerald-800">No invoices found for review.</p> : null}
           {invoices.map((invoice) => {
-            const enteredTotal = invoice.supplier_invoice_financial_summary?.[0]?.invoice_total_gbp ?? null;
+            const enteredTotal = getEnteredTotal(invoice);
+            const ocrHeaderPresent = hasOcrHeader(invoice);
             const activeFlags = (invoice.supplier_invoice_review_flags ?? []).filter((flag) => ["open", "under_review"].includes(flag.status));
             const retailerMismatch = Boolean(invoice.ocr_retailer_name && invoice.retailers?.name && !invoice.ocr_retailer_name.toLowerCase().includes(String(invoice.retailers.name).toLowerCase()));
             const refMismatch = Boolean(invoice.ocr_invoice_ref && invoice.ocr_invoice_ref !== invoice.invoice_ref);
@@ -185,15 +202,17 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
                 </div>
 
                 <div className="mt-4 grid gap-3 md:grid-cols-4">
-                  <div className="rounded-2xl bg-slate-50 p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Typed ref</p><p className="mt-1 font-semibold">{invoice.invoice_ref}</p></div>
+                  <div className="rounded-2xl bg-slate-50 p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Operator typed ref</p><p className="mt-1 font-semibold">{invoice.invoice_ref}</p></div>
                   <div className={`rounded-2xl p-3 ${refMismatch ? "bg-amber-50" : "bg-slate-50"}`}><p className="text-xs uppercase tracking-wide text-slate-500">OCR ref</p><p className="mt-1 font-semibold">{invoice.ocr_invoice_ref ?? "—"}</p></div>
                   <div className={`rounded-2xl p-3 ${retailerMismatch ? "bg-rose-50" : "bg-slate-50"}`}><p className="text-xs uppercase tracking-wide text-slate-500">OCR retailer</p><p className="mt-1 font-semibold">{invoice.ocr_retailer_name ?? "—"}</p></div>
                   <div className="rounded-2xl bg-slate-50 p-3"><p className="text-xs uppercase tracking-wide text-slate-500">OCR date</p><p className="mt-1 font-semibold">{invoice.ocr_invoice_date ?? "—"}</p></div>
-                  <div className="rounded-2xl bg-slate-50 p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Entered final total</p><p className="mt-1 font-semibold">{enteredTotal === null ? "—" : gbp(enteredTotal)}</p></div>
+                  <div className="rounded-2xl bg-slate-50 p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Operator entered final total</p><p className="mt-1 font-semibold">{enteredTotal === null ? "—" : gbp(enteredTotal)}</p></div>
                   <div className={`rounded-2xl p-3 ${totalMismatch ? "bg-amber-50" : "bg-slate-50"}`}><p className="text-xs uppercase tracking-wide text-slate-500">OCR total</p><p className="mt-1 font-semibold">{invoice.ocr_invoice_total_gbp === null ? "—" : gbp(invoice.ocr_invoice_total_gbp)}</p></div>
                   <div className="rounded-2xl bg-slate-50 p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Uploaded</p><p className="mt-1 font-semibold">{new Date(invoice.uploaded_at).toLocaleString("en-GB")}</p></div>
                   <div className="rounded-2xl bg-slate-50 p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Flags</p><p className="mt-1 font-semibold">{activeFlags.length}</p></div>
                 </div>
+
+                {!ocrHeaderPresent ? <p className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700"><span className="font-semibold">OCR pending / manual test mode:</span> header fields are blank because OCR has not populated them. Do not invent OCR values; use the invoice PDF if a manual correction is needed during testing.</p> : null}
 
                 {activeFlags.length > 0 ? <div className="mt-4 grid gap-2">
                   {activeFlags.map((flag, index) => <p key={`${flag.flag_type}-${index}`} className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900"><span className="font-semibold">{flagLabel(flag.flag_type)}:</span> {flag.message}</p>)}
@@ -205,14 +224,15 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
                 <div className="mt-4 grid gap-4 lg:grid-cols-2">
                   <form action={approveSupplierInvoiceCurrentAction} className={`rounded-2xl border p-4 ${approveDisabled ? "border-slate-200 bg-slate-50" : "border-emerald-200 bg-emerald-50"}`}>
                     <input type="hidden" name="supplier_invoice_id" value={invoice.id} />
-                    <h3 className={`text-sm font-semibold ${approveDisabled ? "text-slate-700" : "text-emerald-950"}`}>Approve / correct header and approve current</h3>
+                    <h3 className={`text-sm font-semibold ${approveDisabled ? "text-slate-700" : "text-emerald-950"}`}>Supervisor invoice header review</h3>
+                    <p className={`mt-2 text-xs leading-5 ${approveDisabled ? "text-slate-600" : "text-emerald-900"}`}>{ocrHeaderPresent ? "Correct OCR/PDF header values only if the extraction is wrong, then approve this invoice as the current supplier invoice." : "OCR has not populated the header yet. For manual testing, only fill accepted values after checking the invoice PDF."}</p>
                     <div className="mt-3 grid gap-3 md:grid-cols-2">
-                      <input name="corrected_invoice_ref" className="rounded-xl border border-slate-300 px-3 py-2 text-sm" defaultValue={invoice.ocr_invoice_ref ?? invoice.invoice_ref} placeholder="Correct invoice ref" />
+                      <input name="corrected_invoice_ref" className="rounded-xl border border-slate-300 px-3 py-2 text-sm" defaultValue={invoice.ocr_invoice_ref ?? invoice.invoice_ref} placeholder="Accepted invoice ref" />
                       <input name="ocr_invoice_ref" className="rounded-xl border border-slate-300 px-3 py-2 text-sm" defaultValue={invoice.ocr_invoice_ref ?? ""} placeholder="OCR invoice ref" />
                       <input name="ocr_retailer_name" className="rounded-xl border border-slate-300 px-3 py-2 text-sm" defaultValue={invoice.ocr_retailer_name ?? ""} placeholder="OCR retailer name" />
                       <input name="ocr_invoice_date" type="date" className="rounded-xl border border-slate-300 px-3 py-2 text-sm" defaultValue={invoice.ocr_invoice_date ?? ""} />
-                      <input name="ocr_invoice_total_gbp" type="number" min="0" step="0.01" className="rounded-xl border border-slate-300 px-3 py-2 text-sm" defaultValue={invoice.ocr_invoice_total_gbp ?? enteredTotal ?? ""} placeholder="OCR invoice total GBP" />
-                      <input name="review_notes" className="rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Review note" />
+                      <input name="ocr_invoice_total_gbp" type="number" min="0" step="0.01" className="rounded-xl border border-slate-300 px-3 py-2 text-sm" defaultValue={invoice.ocr_invoice_total_gbp ?? enteredTotal ?? ""} placeholder="Accepted/OCR invoice total GBP" />
+                      <input name="review_notes" className="rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Review note / correction reason" />
                     </div>
                     <button disabled={approveDisabled} className={`mt-3 rounded-xl px-4 py-2 text-sm font-semibold ${approveDisabled ? "cursor-not-allowed bg-slate-300 text-slate-600" : "bg-emerald-700 text-white hover:bg-emerald-600"}`}>{alreadyApproved ? "Already approved" : "Approve current"}</button>
                   </form>
