@@ -104,6 +104,50 @@ export async function addTrackingSubmissionAction(formData: FormData) {
   redirect(`/importer/orders/${orderId}/operations?success=Tracking+added`);
 }
 
+export async function flagSupplierInvoiceForReviewAction(formData: FormData) {
+  const supabase = await createClient();
+  const orderId = rs(formData, "order_id");
+  const supplierInvoiceId = rs(formData, "supplier_invoice_id");
+  const flagType = rs(formData, "flag_type") || "invoice_total_mismatch";
+  const message = rs(formData, "message");
+
+  if (!orderId) redirect("/importer?error=Missing+order+id");
+  if (!supplierInvoiceId) redirect(`/importer/orders/${orderId}/operations?error=Missing+invoice+reference`);
+  if (!message) redirect(`/importer/orders/${orderId}/operations?error=Review+message+is+required`);
+
+  const { operator } = await requireOperatorAccess(supabase, orderId);
+
+  const { data: invoice, error: invoiceError } = await supabase
+    .from("supplier_invoices")
+    .select("id")
+    .eq("id", supplierInvoiceId)
+    .eq("order_id", orderId)
+    .maybeSingle();
+
+  if (invoiceError || !invoice) {
+    redirect(`/importer/orders/${orderId}/operations?error=${encodeURIComponent(invoiceError?.message ?? "Invoice not found for this order")}`);
+  }
+
+  const { error } = await supabase.from("supplier_invoice_review_flags").insert({
+    order_id: orderId,
+    supplier_invoice_id: supplierInvoiceId,
+    flag_type: flagType,
+    message,
+    status: "open",
+    raised_by_operator_id: operator.id,
+  });
+
+  if (error) {
+    redirect(`/importer/orders/${orderId}/operations?error=${encodeURIComponent(error.message)}`);
+  }
+
+  revalidatePath(`/importer/orders/${orderId}/operations`);
+  revalidatePath(`/importer/reconciliation/${orderId}`);
+  revalidatePath("/internal/adjustments");
+  revalidatePath("/internal/evidence");
+  redirect(`/importer/orders/${orderId}/operations?success=Invoice+flagged+for+supervisor+review`);
+}
+
 export async function submitInvoiceEvidenceAction(formData: FormData) {
   const supabase = await createClient();
   const orderId = rs(formData, "order_id");
