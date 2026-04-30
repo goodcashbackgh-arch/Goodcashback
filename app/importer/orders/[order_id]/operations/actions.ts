@@ -18,6 +18,10 @@ function readMoney(f: FormData, k: string) {
   return Number.isFinite(value) && value > 0 ? value : 0;
 }
 
+function automaticOcrEnabled() {
+  return process.env.MINDEE_AUTO_RUN_ON_UPLOAD === "true";
+}
+
 async function requireOperatorAccess(supabase: Awaited<ReturnType<typeof createClient>>, orderId: string) {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
@@ -247,20 +251,23 @@ export async function submitInvoiceEvidenceAction(formData: FormData) {
     }
   }
 
-  const ocrResult = await runMindeeOcrAfterUpload({
-    supplierInvoiceId,
-    orderId,
-    invoicePdfUrl,
-    enteredInvoiceTotal: invoiceTotal,
-    operatorId: operator.id,
-  });
+  let successMessage = "Invoice submitted. OCR pending.";
+  if (automaticOcrEnabled()) {
+    const ocrResult = await runMindeeOcrAfterUpload({
+      supplierInvoiceId,
+      orderId,
+      invoicePdfUrl,
+      enteredInvoiceTotal: invoiceTotal,
+      operatorId: operator.id,
+    });
+    successMessage = ocrResult.ran
+      ? `Invoice submitted. Mindee OCR saved ${ocrResult.insertedLineCount} line(s).`
+      : "Invoice submitted. OCR queued for supervisor review.";
+  }
 
   revalidatePath(`/importer/orders/${orderId}/operations`);
   revalidatePath(`/importer/reconciliation/${orderId}`);
   revalidatePath("/importer");
   revalidatePath("/internal/invoice-review");
-  const successMessage = ocrResult.ran
-    ? `Invoice submitted. Mindee OCR saved ${ocrResult.insertedLineCount} line(s).`
-    : "Invoice submitted. OCR queued for supervisor review.";
   redirect(`/importer/orders/${orderId}/operations?success=${encodeURIComponent(successMessage)}`);
 }
