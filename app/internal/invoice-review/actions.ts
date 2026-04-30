@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
+import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 import { assertInvoiceReadyForCurrentApproval } from "./readiness";
 
 type OcrInvoiceLine = {
@@ -34,6 +35,13 @@ function readOptionalMoney(formData: FormData, key: string) {
 function redirectWithResult(params: Record<string, string>): never {
   const query = new URLSearchParams(params);
   redirect(`/internal/invoice-review?${query.toString()}`);
+}
+
+function adminClient() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !serviceKey) return null;
+  return createSupabaseClient(url, serviceKey, { auth: { persistSession: false } });
 }
 
 function fieldValue(field: unknown) {
@@ -108,7 +116,7 @@ async function requireSupervisorOrAdmin() {
     return { ok: false as const, supabase, error: "Only admin or supervisor staff can review invoices." };
   }
 
-  return { ok: true as const, supabase };
+  return { ok: true as const, supabase, staff };
 }
 
 async function createReviewFlagIfMissing(params: {
@@ -342,27 +350,58 @@ export async function approveSupplierInvoiceCurrentAction(formData: FormData) {
 
 export async function rejectSupplierInvoiceRequireResubmissionAction(formData: FormData) {
   const supplierInvoiceId = readString(formData, "supplier_invoice_id");
-  const reviewNotes = readString(formData, "review_notes") || null;
+  const reviewNotes = readString(formData, "review_notes") || "Rejected. Operator must resubmit the correct invoice evidence.";
 
   if (!supplierInvoiceId) redirectWithResult({ error: "Missing supplier invoice reference." });
 
   const guard = await requireSupervisorOrAdmin();
   if (!guard.ok) redirectWithResult({ error: guard.error });
 
-  const { data, error } = await guard.supabase.rpc("staff_reject_supplier_invoice_resubmission", {
-    p_supplier_invoice_id: supplierInvoiceId,
-    p_review_notes: reviewNotes,
-  });
+  const admin = adminClient();
+  if (!admin) redirectWithResult({ error: "Server admin client is not configured for invoice rejection." });
 
-  if (error) redirectWithResult({ error: error.message });
+  const { data: invoice, error: invoiceError } = await admin
+    .from("supplier_invoices")
+    .select("id, order_id")
+    .eq("id", supplierInvoiceId)
+    .maybeSingle();
 
-  const orderId = Array.isArray(data) && data[0]?.order_id ? String(data[0].order_id) : null;
+  if (invoiceError || !invoice) {
+    redirectWithResult({ error: invoiceError?.message ?? "Supplier invoice not found." });
+  }
+
+  const now = new Date().toISOString();
+  const { error: updateError } = await admin
+    .from("supplier_invoices")
+    .update({
+      review_status: "rejected_resubmit_required",
+      blocked_from_sage_yn: true,
+      is_current_for_order: false,
+      reviewed_by_staff_id: guard.staff.id,
+      reviewed_at: now,
+      review_notes: reviewNotes,
+    })
+    .eq("id", supplierInvoiceId);
+
+  if (updateError) redirectWithResult({ error: updateError.message });
+
+  const { error: flagsError } = await admin
+    .from("supplier_invoice_review_flags")
+    .update({
+      status: "resolved",
+      resolved_by_staff_id: guard.staff.id,
+      resolved_at: now,
+      resolution_notes: reviewNotes,
+      updated_at: now,
+    })
+    .eq("supplier_invoice_id", supplierInvoiceId)
+    .in("status", ["open", "under_review"]);
+
+  if (flagsError) redirectWithResult({ error: flagsError.message });
 
   revalidatePath("/internal/invoice-review");
-  if (orderId) {
-    revalidatePath(`/internal/evidence/${orderId}`);
-    revalidatePath(`/importer/orders/${orderId}/operations`);
-    revalidatePath(`/importer/reconciliation/${orderId}`);
-  }
+  revalidatePath(`/internal/evidence/${invoice.order_id}`);
+  revalidatePath(`/importer/orders/${invoice.order_id}/operations`);
+  revalidatePath(`/importer/reconciliation/${invoice.order_id}`);
   redirectWithResult({ success: "Supplier invoice rejected. Resubmission required." });
 }
