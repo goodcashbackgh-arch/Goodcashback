@@ -6,6 +6,16 @@ type OcrResult = {
   message: string;
 };
 
+type OcrInvoiceLine = {
+  line_order: number;
+  retailer_sku: string | null;
+  description: string;
+  qty: number;
+  amount_inc_vat_gbp: number;
+  line_source: "ocr_extracted";
+  eligible_for_invoice_yn: "N";
+};
+
 function fieldValue(field: unknown) {
   if (!field || typeof field !== "object") return null;
   const value = (field as { value?: unknown }).value;
@@ -31,7 +41,7 @@ function dateField(field: unknown) {
   return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null;
 }
 
-function normalizeInvoiceLine(line: unknown, lineOrder: number) {
+function normalizeInvoiceLine(line: unknown, lineOrder: number): OcrInvoiceLine | null {
   if (!line || typeof line !== "object") return null;
   const row = line as Record<string, unknown>;
   const description = stringField(row.description) ?? stringField(row.product_code) ?? `OCR line ${lineOrder}`;
@@ -157,9 +167,9 @@ export async function runMindeeOcrAfterUpload(params: {
     const ocrInvoiceDate = dateField(prediction.date);
     const ocrTotal = numberField(prediction.total_amount);
     const ocrLinesRaw = Array.isArray(prediction.line_items) ? prediction.line_items : [];
-    const ocrLines = ocrLinesRaw
+    const ocrLines: OcrInvoiceLine[] = ocrLinesRaw
       .map((line: unknown, index: number) => normalizeInvoiceLine(line, index + 1))
-      .filter((line: unknown): line is NonNullable<ReturnType<typeof normalizeInvoiceLine>> => Boolean(line));
+      .filter((line: OcrInvoiceLine | null): line is OcrInvoiceLine => Boolean(line));
 
     await admin
       .from("supplier_invoices")
@@ -184,9 +194,13 @@ export async function runMindeeOcrAfterUpload(params: {
 
     let insertedLineCount = 0;
     if ((existingLines ?? []).length === 0 && ocrLines.length > 0) {
+      const linesToInsert = ocrLines.map((line: OcrInvoiceLine) => ({
+        ...line,
+        supplier_invoice_id: params.supplierInvoiceId,
+      }));
       const { data: insertedLines } = await admin
         .from("supplier_invoice_lines")
-        .insert(ocrLines.map((line) => ({ ...line, supplier_invoice_id: params.supplierInvoiceId })))
+        .insert(linesToInsert)
         .select("id");
       insertedLineCount = insertedLines?.length ?? 0;
     }
