@@ -1,5 +1,6 @@
 "use server";
 
+// Invoice rejection intentionally uses the verified staff session, not the missing reject RPC and not service-role fallback.
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
