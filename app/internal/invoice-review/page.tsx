@@ -67,7 +67,7 @@ function gbp(value: number | string | null | undefined) {
 
 function statusClass(status: string) {
   if (["approved_current", "ref_corrected_approved"].includes(status)) return "bg-emerald-100 text-emerald-800";
-  if (["rejected_resubmit_required", "duplicate_blocked"].includes(status)) return "bg-rose-100 text-rose-800";
+  if (["duplicate_blocked"].includes(status)) return "bg-rose-100 text-rose-800";
   if (status === "superseded") return "bg-slate-200 text-slate-700";
   return "bg-amber-100 text-amber-800";
 }
@@ -122,7 +122,7 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
       supplier_invoice_financial_summary(invoice_total_gbp),
       supplier_invoice_review_flags(flag_type, message, status)
     `)
-    .in("review_status", ["pending_review", "duplicate_blocked", "rejected_resubmit_required", "approved_current", "ref_corrected_approved"])
+    .in("review_status", ["pending_review", "duplicate_blocked"])
     .order("uploaded_at", { ascending: false })
     .limit(100);
 
@@ -134,24 +134,23 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
     ] as const),
   );
   const readinessByInvoiceId = new Map(readinessEntries);
-  const visibleInvoices = invoices.filter((invoice) => {
-    const alreadyApproved = ["approved_current", "ref_corrected_approved"].includes(invoice.review_status);
-    if (alreadyApproved) return false;
-    return Boolean(readinessByInvoiceId.get(invoice.id)) || activeReviewFlags(invoice).length > 0;
-  });
+  const visibleInvoices = invoices.filter((invoice) => Boolean(readinessByInvoiceId.get(invoice.id)) || activeReviewFlags(invoice).length > 0);
   const hiddenCleanCount = invoices.length - visibleInvoices.length;
 
   return (
     <main className="min-h-screen bg-slate-50 px-6 py-8 text-slate-950">
       <div className="mx-auto flex max-w-7xl flex-col gap-6">
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-          <Link href="/internal" className="text-sm font-semibold text-sky-600">← Back to internal dashboard</Link>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <Link href="/internal" className="text-sm font-semibold text-sky-600">← Back to internal dashboard</Link>
+            <Link href="/internal/supplier-draft-ready" className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-600">Open supplier draft ready →</Link>
+          </div>
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Invoice review</p>
           <div className="mt-3 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
             <div>
               <h1 className="text-3xl font-semibold tracking-tight">Supplier invoice exceptions queue</h1>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-                This page shows supplier invoices that need supervisor attention because a match, OCR, total, adjustment, line-settlement, or resubmission issue exists. Clean matched invoices should not be reviewed one by one here; they flow forward to final draft / bulk Sage approval.
+                This page shows supplier invoices that need supervisor attention because a match, OCR, total, adjustment, line-settlement, or resubmission issue exists. Rejected invoices are audit-only and are excluded from this active queue. Clean matched invoices flow to Supplier draft ready for bulk approval.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700">
@@ -168,11 +167,11 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
         <section className="grid gap-4 md:grid-cols-3">
           <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-sm uppercase tracking-wide text-slate-500">Needs supervisor attention</p><p className="mt-2 text-3xl font-semibold">{visibleInvoices.length}</p></div>
           <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-sm uppercase tracking-wide text-slate-500">Clean / hidden from this queue</p><p className="mt-2 text-3xl font-semibold">{hiddenCleanCount}</p></div>
-          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-sm uppercase tracking-wide text-slate-500">Loaded invoices checked</p><p className="mt-2 text-3xl font-semibold">{invoices.length}</p></div>
+          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-sm uppercase tracking-wide text-slate-500">Loaded active invoices checked</p><p className="mt-2 text-3xl font-semibold">{invoices.length}</p></div>
         </section>
 
         <section className="grid gap-4">
-          {visibleInvoices.length === 0 ? <p className="rounded-3xl border border-emerald-200 bg-emerald-50 p-5 text-sm text-emerald-800">No supplier invoice exceptions found. Clean matched invoices should continue to final draft / bulk Sage approval rather than being checked individually here.</p> : null}
+          {visibleInvoices.length === 0 ? <p className="rounded-3xl border border-emerald-200 bg-emerald-50 p-5 text-sm text-emerald-800">No active supplier invoice exceptions found. Clean matched invoices should continue to Supplier draft ready rather than being checked individually here.</p> : null}
           {visibleInvoices.map((invoice) => {
             const enteredTotal = getEnteredTotal(invoice);
             const ocrHeaderPresent = hasOcrHeader(invoice);
@@ -193,7 +192,7 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
                       <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${statusClass(invoice.review_status)}`}>{invoice.review_status}</span>
                       {invoice.blocked_from_sage_yn ? <span className="rounded-full bg-rose-100 px-2.5 py-1 text-xs font-semibold text-rose-800">Blocked from Sage</span> : <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-800">Sage eligible gate</span>}
                       {invoice.is_current_for_order ? <span className="rounded-full bg-sky-100 px-2.5 py-1 text-xs font-semibold text-sky-800">Current for order</span> : null}
-                      {!alreadyApproved && !readinessError ? <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-800">Issue resolved / ready to leave queue</span> : null}
+                      {!alreadyApproved && !readinessError ? <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-800">Issue resolved / ready for draft queue</span> : null}
                     </div>
                     <p className="mt-2 text-sm text-slate-600">Importer: {invoice.orders?.importers?.company_name ?? "—"}</p>
                     <p className="text-sm text-slate-600">Order retailer: {invoice.orders?.retailers?.name ?? invoice.retailers?.name ?? "—"}</p>
@@ -227,13 +226,13 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
                 </div> : null}
 
                 {readinessError && !alreadyApproved ? <p className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900"><span className="font-semibold">Approval blocked:</span> {readinessError}</p> : null}
-                {!readinessError && !alreadyApproved ? <p className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">Issue resolved: invoice lines are settled, totals match, and no pending adjustment approvals remain. It can move to final draft / bulk Sage approval.</p> : null}
+                {!readinessError && !alreadyApproved ? <p className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">Issue resolved: invoice lines are settled, totals match, and no pending adjustment approvals remain. Use Supplier draft ready for bulk approval.</p> : null}
 
                 <div className="mt-4 grid gap-4 lg:grid-cols-2">
                   <form action={approveSupplierInvoiceCurrentAction} className={`rounded-2xl border p-4 ${approveDisabled ? "border-slate-200 bg-slate-50" : "border-emerald-200 bg-emerald-50"}`}>
                     <input type="hidden" name="supplier_invoice_id" value={invoice.id} />
                     <h3 className={`text-sm font-semibold ${approveDisabled ? "text-slate-700" : "text-emerald-950"}`}>Supervisor invoice header review</h3>
-                    <p className={`mt-2 text-xs leading-5 ${approveDisabled ? "text-slate-600" : "text-emerald-900"}`}>{ocrHeaderPresent ? "Correct OCR/PDF header values only if the extraction is wrong. Clean invoices should normally move to final draft / bulk Sage approval." : "OCR has not populated the header yet. For manual testing, only fill accepted values after checking the invoice PDF."}</p>
+                    <p className={`mt-2 text-xs leading-5 ${approveDisabled ? "text-slate-600" : "text-emerald-900"}`}>{ocrHeaderPresent ? "Correct OCR/PDF header values only if the extraction is wrong. Clean invoices should normally move to Supplier draft ready for bulk approval." : "OCR has not populated the header yet. For manual testing, only fill accepted values after checking the invoice PDF."}</p>
                     <div className="mt-3 grid gap-3 md:grid-cols-2">
                       <input name="corrected_invoice_ref" className="rounded-xl border border-slate-300 px-3 py-2 text-sm" defaultValue={invoice.ocr_invoice_ref ?? invoice.invoice_ref} placeholder="Accepted invoice ref" />
                       <input name="ocr_invoice_ref" className="rounded-xl border border-slate-300 px-3 py-2 text-sm" defaultValue={invoice.ocr_invoice_ref ?? ""} placeholder="OCR invoice ref" />
