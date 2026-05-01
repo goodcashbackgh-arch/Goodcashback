@@ -90,7 +90,7 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
   const orderRetailerName = order.retailers?.name ?? "—";
   const adjustmentRows = (adjustments ?? []) as AdjustmentRow[];
   const invoiceRows = (invoices ?? []) as InvoiceRow[];
-  const liveInvoiceIds = new Set(invoiceRows.filter((invoice) => invoice.review_status !== "rejected_resubmit_required" && invoice.review_status !== "superseded").map((invoice) => invoice.id));
+  const liveInvoiceIds = new Set(invoiceRows.filter((invoice) => invoice.review_status !== "rejected_resubmit_required" && invoice.review_status !== "superseded" && invoice.review_status !== "duplicate_blocked").map((invoice) => invoice.id));
   const activeAdjustmentRows = adjustmentRows.filter((a) => a.approval_status !== "rejected" && (!a.supplier_invoice_id || liveInvoiceIds.has(a.supplier_invoice_id)));
   const rejectedInvoices = invoiceRows.filter((invoice) => invoice.review_status === "rejected_resubmit_required");
   const orderHasResubmissionRequired = rejectedInvoices.length > 0 && !invoiceRows.some((invoice) => {
@@ -224,7 +224,10 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
           return (
             <div key={invoice.id} className={`rounded p-3 ${rejected ? "border border-rose-200 bg-rose-50" : "bg-slate-50"}`}>
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>{invoice.invoice_ref} <Link className="ml-2 text-sky-700 underline" href={`/importer/reconciliation/${orderId}`}>Reconcile</Link></div>
+                <div>
+                  {invoice.invoice_ref}
+                  {!rejected ? <Link className="ml-2 text-sky-700 underline" href={`/importer/reconciliation/${orderId}`}>Reconcile</Link> : <span className="ml-2 rounded bg-white px-2 py-1 text-xs font-medium text-rose-800">Audit only</span>}
+                </div>
                 <div className="flex flex-wrap gap-2">
                   <span className={`rounded px-2 py-1 text-xs font-medium ${invoiceStatusClass(invoice.review_status)}`}>{invoiceStatusLabel(invoice.review_status)}</span>
                   {summary ? <span className={`rounded px-2 py-1 text-xs font-medium ${matched ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>{matched ? "Invoice total matched" : "Invoice total variance"}</span> : <span className="rounded bg-slate-200 px-2 py-1 text-xs">No invoice total captured</span>}
@@ -271,7 +274,7 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
       </div>
 
       {activeAdjustmentRows.length > 0 ? <div className="space-y-1 text-sm">
-        <h3 className="font-medium">Financial adjustments</h3>
+        <h3 className="font-medium">Active financial adjustments for current invoice</h3>
         {activeAdjustmentRows.map((a)=> (
           <div key={a.id} className="rounded bg-slate-50 p-2">
             {adjustmentLabel(a.adjustment_type)} — {money(a.amount_gbp)} — {a.approval_status}
