@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
-import { rejectSupplierInvoiceRequireResubmissionAction, runMindeeOcrForSupplierInvoiceAction, saveSupplierInvoiceHeaderReviewAction } from "./actions";
+import { fetchAndSaveMindeeOcrResultAction, rejectSupplierInvoiceRequireResubmissionAction, runMindeeOcrForSupplierInvoiceAction, saveSupplierInvoiceHeaderReviewAction } from "./actions";
 import { assertInvoiceReadyForCurrentApproval } from "./readiness";
 
 type SearchParams = { success?: string; error?: string };
@@ -19,6 +19,14 @@ type InvoiceRow = {
   review_status: string;
   blocked_from_sage_yn: boolean;
   review_notes: string | null;
+  mindee_job_id: string | null;
+  mindee_inference_id: string | null;
+  mindee_model_id: string | null;
+  mindee_ocr_status: string | null;
+  mindee_enqueued_at: string | null;
+  mindee_result_saved_at: string | null;
+  mindee_pages_consumed: number | null;
+  mindee_error_message: string | null;
   orders: MaybeArray<{
     order_ref: string | null;
     order_total_gbp_declared: number | null;
@@ -42,6 +50,10 @@ function orderRetailer(invoice: InvoiceRow) { return first(orderOf(invoice)?.ret
 function importer(invoice: InvoiceRow) { return first(orderOf(invoice)?.importers)?.company_name ?? "—"; }
 function enteredTotal(invoice: InvoiceRow) { return first(invoice.supplier_invoice_financial_summary)?.invoice_total_gbp ?? null; }
 function openFlags(invoice: InvoiceRow) { return (invoice.supplier_invoice_review_flags ?? []).filter((f) => ["open", "under_review"].includes(f.status)); }
+function hasMindeeJob(invoice: InvoiceRow) { return Boolean(invoice.mindee_job_id || invoice.mindee_inference_id); }
+function mindeeCompleted(invoice: InvoiceRow) { return invoice.mindee_ocr_status === "completed" || Boolean(invoice.mindee_result_saved_at); }
+function canStartMindee(invoice: InvoiceRow) { return !hasMindeeJob(invoice) && !mindeeCompleted(invoice); }
+function canFetchMindee(invoice: InvoiceRow) { return hasMindeeJob(invoice) && !mindeeCompleted(invoice); }
 
 export default async function InternalInvoiceReviewPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
   const qp = await searchParams;
@@ -55,14 +67,14 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
 
   const { data, error } = await supabase
     .from("supplier_invoices")
-    .select(`id, order_id, invoice_ref, invoice_pdf_url, uploaded_at, ocr_invoice_ref, ocr_invoice_total_gbp, ocr_retailer_name, ocr_invoice_date, review_status, blocked_from_sage_yn, review_notes, orders(order_ref, order_total_gbp_declared, total_qty_declared, retailers(name), importers(company_name)), supplier_invoice_financial_summary(invoice_total_gbp), supplier_invoice_review_flags(flag_type, message, status)`)
+    .select(`id, order_id, invoice_ref, invoice_pdf_url, uploaded_at, ocr_invoice_ref, ocr_invoice_total_gbp, ocr_retailer_name, ocr_invoice_date, review_status, blocked_from_sage_yn, review_notes, mindee_job_id, mindee_inference_id, mindee_model_id, mindee_ocr_status, mindee_enqueued_at, mindee_result_saved_at, mindee_pages_consumed, mindee_error_message, orders(order_ref, order_total_gbp_declared, total_qty_declared, retailers(name), importers(company_name)), supplier_invoice_financial_summary(invoice_total_gbp), supplier_invoice_review_flags(flag_type, message, status)`)
     .in("review_status", ["pending_review", "duplicate_blocked"])
     .order("uploaded_at", { ascending: false })
     .limit(100);
 
   const invoices = (data ?? []) as unknown as InvoiceRow[];
   const readiness = new Map(await Promise.all(invoices.map(async (invoice) => [invoice.id, await assertInvoiceReadyForCurrentApproval(supabase, invoice.id)] as const)));
-  const visible = invoices.filter((invoice) => Boolean(readiness.get(invoice.id)) || openFlags(invoice).length > 0);
+  const visible = invoices.filter((invoice) => Boolean(readiness.get(invoice.id)) || openFlags(invoice).length > 0 || hasMindeeJob(invoice));
 
   return (
     <main className="min-h-screen bg-slate-50 p-6 text-slate-950">
@@ -110,12 +122,23 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
                 <div>Uploaded<br /><strong>{new Date(invoice.uploaded_at).toLocaleString("en-GB")}</strong></div>
                 <div>Open flags<br /><strong>{flags.length}</strong></div>
               </div>
+
+              <div className="mt-3 rounded border bg-slate-50 p-3 text-sm">
+                <p className="font-semibold">Mindee OCR status</p>
+                <p>Status: <strong>{invoice.mindee_ocr_status ?? "not_started"}</strong></p>
+                <p>Job ID: <strong>{invoice.mindee_job_id ?? "—"}</strong></p>
+                <p>Inference ID: <strong>{invoice.mindee_inference_id ?? "—"}</strong></p>
+                <p>Pages reported: <strong>{invoice.mindee_pages_consumed ?? "—"}</strong></p>
+                {invoice.mindee_error_message ? <p className="mt-1 rounded bg-rose-50 p-2">Mindee error: {invoice.mindee_error_message}</p> : null}
+              </div>
+
               {flags.map((flag, index) => <p key={index} className="mt-2 rounded bg-amber-50 p-2 text-sm"><strong>{flag.flag_type}</strong>: {flag.message}</p>)}
               {block ? <p className="mt-3 rounded bg-amber-50 p-2 text-sm"><strong>Still blocked from draft queue:</strong> {block}</p> : <p className="mt-3 rounded bg-emerald-50 p-2 text-sm">Issue resolved. Use Supplier draft ready for bulk approval.</p>}
               <div className="mt-4 flex flex-wrap gap-2">
                 <Link href={`/internal/evidence/${invoice.order_id}`} className="rounded border px-3 py-2 text-sm">Open staff order detail</Link>
                 <a href={invoice.invoice_pdf_url} target="_blank" rel="noreferrer" className="rounded bg-slate-900 px-3 py-2 text-sm text-white">Open invoice</a>
-                <form action={runMindeeOcrForSupplierInvoiceAction}><input type="hidden" name="supplier_invoice_id" value={invoice.id} /><button className="rounded border px-3 py-2 text-sm">Run Mindee OCR</button></form>
+                {canStartMindee(invoice) ? <form action={runMindeeOcrForSupplierInvoiceAction}><input type="hidden" name="supplier_invoice_id" value={invoice.id} /><button className="rounded border border-amber-400 bg-amber-50 px-3 py-2 text-sm">Send this invoice to Mindee OCR — uses page credit</button></form> : null}
+                {canFetchMindee(invoice) ? <form action={fetchAndSaveMindeeOcrResultAction}><input type="hidden" name="supplier_invoice_id" value={invoice.id} /><button className="rounded border border-emerald-600 bg-emerald-50 px-3 py-2 text-sm">Fetch/save Mindee result — no new page</button></form> : null}
               </div>
               <div className="mt-4 grid gap-4 lg:grid-cols-2">
                 <form action={saveSupplierInvoiceHeaderReviewAction} className="rounded border bg-sky-50 p-4">
