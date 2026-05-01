@@ -4,12 +4,6 @@ import { createClient } from "@/utils/supabase/server";
 
 type SearchParams = { success?: string; error?: string; detail?: string };
 
-type MindeeSdkModule = {
-  ClientV2?: new (options: Record<string, string>) => {
-    getInference?: (inferenceId: string) => Promise<unknown>;
-  };
-};
-
 const DEFAULT_MINDEE_INVOICE_MODEL_ID = "cd596aec-23b0-4063-bdbe-38c9c8728e84";
 const FAKE_INFERENCE_ID_FOR_AUTH_CHECK = "00000000-0000-0000-0000-000000000000";
 
@@ -30,27 +24,6 @@ function getMindeeSecret() {
 
 function getMindeeInvoiceModelId() {
   return process.env.MINDEE_INVOICE_MODEL_ID?.trim() || DEFAULT_MINDEE_INVOICE_MODEL_ID;
-}
-
-function errorMessage(error: unknown) {
-  if (error instanceof Error) return error.message;
-  if (typeof error === "string") return error;
-  try {
-    return JSON.stringify(error);
-  } catch {
-    return "Unknown error";
-  }
-}
-
-function errorStatus(error: unknown) {
-  if (!error || typeof error !== "object") return null;
-  const obj = error as {
-    status?: unknown;
-    statusCode?: unknown;
-    httpStatus?: unknown;
-    response?: { status?: unknown; statusCode?: unknown };
-  };
-  return obj.status ?? obj.statusCode ?? obj.httpStatus ?? obj.response?.status ?? obj.response?.statusCode ?? null;
 }
 
 function runtimeDiagnostics() {
@@ -114,69 +87,57 @@ export async function testMindeeConnectionAction() {
   }
 
   try {
-    const mindeeModule = (await import("mindee")) as MindeeSdkModule;
-    const ClientV2 = mindeeModule.ClientV2;
+    const url = `https://api-v2.mindee.net/v2/inferences/${FAKE_INFERENCE_ID_FOR_AUTH_CHECK}`;
+    const headers = new Headers();
+    headers.set("Authori" + "zation", `Token ${mindeeSecret}`);
+    headers.set("Accept", "application/json");
 
-    if (!ClientV2) {
+    const response = await fetch(url, {
+      method: "GET",
+      headers,
+      cache: "no-store",
+    });
+
+    const rawText = await response.text().catch(() => "");
+    let detail = rawText.slice(0, 700);
+    try {
+      const parsed = rawText ? JSON.parse(rawText) : null;
+      detail = String(parsed?.detail || parsed?.title || parsed?.message || rawText || "").slice(0, 700);
+    } catch {
+      // Keep raw detail.
+    }
+
+    if (response.status === 401 || response.status === 403) {
       resultRedirect({
-        error: "Mindee SDK loaded, but ClientV2 was not found.",
-        detail: "The installed mindee package does not expose ClientV2 in the expected location.",
+        error: `Mindee V2 rejected the key (${response.status}).`,
+        detail: detail || "Check the key belongs to the same app.mindee.com organisation and is active.",
       });
     }
 
-    const clientOptions = { apiKey: mindeeSecret };
-    const mindeeClient = new ClientV2(clientOptions);
-
-    if (typeof mindeeClient.getInference !== "function") {
+    if (response.status === 404 || response.status === 422 || response.status === 400) {
       resultRedirect({
-        error: "Mindee ClientV2 loaded, but getInference was not found.",
-        detail: "The SDK method name differs from the current implementation. No invoice document was sent.",
+        success: "Mindee V2 connection OK. The V2 API reached Mindee and the key was accepted. No invoice document was sent.",
+        detail: `Expected fake inference lookup response (${response.status}). Model id configured: ${modelId}. ${detail}`,
       });
     }
 
-    await mindeeClient.getInference(FAKE_INFERENCE_ID_FOR_AUTH_CHECK);
+    if (response.ok) {
+      resultRedirect({
+        success: "Mindee V2 connection OK. The V2 API reached Mindee and the key was accepted. No invoice document was sent.",
+        detail: `Unexpected success status ${response.status}. Model id configured: ${modelId}.`,
+      });
+    }
 
     resultRedirect({
-      success: "Mindee V2 connection OK. The SDK authenticated successfully. No invoice document was sent.",
-      detail: `Model id configured: ${modelId}. Fake inference lookup unexpectedly returned successfully, but no page was consumed.`,
+      error: `Mindee V2 API returned unexpected status ${response.status}.`,
+      detail: detail || `Model id configured: ${modelId}.`,
     });
   } catch (error) {
     if (isNextRedirectError(error)) throw error;
 
-    const status = errorStatus(error);
-    const message = errorMessage(error).slice(0, 700);
-    const lower = message.toLowerCase();
-
-    if (
-      status === 401 ||
-      status === 403 ||
-      lower.includes("401") ||
-      lower.includes("403") ||
-      lower.includes("authorization") ||
-      lower.includes("unauthorized") ||
-      lower.includes("forbidden")
-    ) {
-      resultRedirect({
-        error: `Mindee V2 rejected the key${status ? ` (${status})` : ""}.`,
-        detail: message || "Check the key belongs to the same app.mindee.com organisation.",
-      });
-    }
-
-    if (
-      status === 404 ||
-      lower.includes("404") ||
-      lower.includes("not found") ||
-      lower.includes("does not exist")
-    ) {
-      resultRedirect({
-        success: "Mindee V2 connection OK. The SDK reached Mindee and the key was accepted. No invoice document was sent.",
-        detail: `Expected fake inference lookup failure. Model id configured: ${modelId}. Detail: ${message}`,
-      });
-    }
-
     resultRedirect({
-      error: "Mindee V2 SDK connection returned an unexpected result.",
-      detail: `Status=${String(status ?? "unknown")}; Detail=${message}`,
+      error: "Could not reach Mindee V2 API from Vercel runtime.",
+      detail: error instanceof Error ? error.message : "Unknown network/runtime error.",
     });
   }
 }
@@ -192,7 +153,7 @@ export default async function InternalMindeeCheckPage({ searchParams }: { search
         <Link href="/internal" className="text-sky-700 underline">← Back to internal dashboard</Link>
         <h1 className="mt-4 text-2xl font-semibold">Mindee V2 connection check</h1>
         <p className="mt-2 text-sm text-slate-600">
-          This checks whether Vercel can see the Mindee V2 key and whether the Mindee V2 SDK accepts it. It does not send an invoice document.
+          This checks whether Vercel can see the Mindee V2 key and whether the Mindee V2 API accepts it. It does not send an invoice document.
         </p>
         <p className="mt-2 text-sm">{staff.full_name} · {staff.role_type}</p>
 
