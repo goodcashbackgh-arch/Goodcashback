@@ -7,6 +7,12 @@ type SearchParams = { success?: string; error?: string; detail?: string };
 const DEFAULT_MINDEE_INVOICE_MODEL_ID = "cd596aec-23b0-4063-bdbe-38c9c8728e84";
 const FAKE_INFERENCE_ID_FOR_AUTH_CHECK = "00000000-0000-0000-0000-000000000000";
 
+type AuthAttemptResult = {
+  label: string;
+  status: number;
+  detail: string;
+};
+
 function resultRedirect(params: Record<string, string>): never {
   const query = new URLSearchParams(params);
   redirect(`/internal/mindee-check?${query.toString()}`);
@@ -49,6 +55,40 @@ function runtimeDiagnostics() {
   };
 }
 
+function parseMindeeDetail(rawText: string) {
+  let detail = rawText.slice(0, 500);
+  try {
+    const parsed = rawText ? JSON.parse(rawText) : null;
+    detail = String(parsed?.detail || parsed?.title || parsed?.message || rawText || "").slice(0, 500);
+  } catch {
+    // Keep raw detail.
+  }
+  return detail;
+}
+
+async function tryMindeeAuth(url: string, label: string, authorizationValue: string): Promise<AuthAttemptResult> {
+  const headers = new Headers();
+  headers.set("Authori" + "zation", authorizationValue);
+  headers.set("Accept", "application/json");
+
+  const response = await fetch(url, {
+    method: "GET",
+    headers,
+    cache: "no-store",
+  });
+
+  const rawText = await response.text().catch(() => "");
+  return {
+    label,
+    status: response.status,
+    detail: parseMindeeDetail(rawText),
+  };
+}
+
+function isAcceptedFakeLookupStatus(status: number) {
+  return status === 404 || status === 422 || status === 400;
+}
+
 async function requireSupervisorOrAdmin() {
   const supabase = await createClient();
   const {
@@ -88,49 +128,25 @@ export async function testMindeeConnectionAction() {
 
   try {
     const url = `https://api-v2.mindee.net/v2/inferences/${FAKE_INFERENCE_ID_FOR_AUTH_CHECK}`;
-    const headers = new Headers();
-    headers.set("Authori" + "zation", `Token ${mindeeSecret}`);
-    headers.set("Accept", "application/json");
+    const attempts = [
+      await tryMindeeAuth(url, "Authorization: raw key", mindeeSecret),
+      await tryMindeeAuth(url, "Authorization: Token key", `Token ${mindeeSecret}`),
+      await tryMindeeAuth(url, "Authorization: Bearer key", `Bearer ${mindeeSecret}`),
+    ];
 
-    const response = await fetch(url, {
-      method: "GET",
-      headers,
-      cache: "no-store",
-    });
+    const accepted = attempts.find((attempt) => isAcceptedFakeLookupStatus(attempt.status) || (attempt.status >= 200 && attempt.status < 300));
+    const summary = attempts.map((attempt) => `${attempt.label} => ${attempt.status}${attempt.detail ? ` (${attempt.detail})` : ""}`).join("; ");
 
-    const rawText = await response.text().catch(() => "");
-    let detail = rawText.slice(0, 700);
-    try {
-      const parsed = rawText ? JSON.parse(rawText) : null;
-      detail = String(parsed?.detail || parsed?.title || parsed?.message || rawText || "").slice(0, 700);
-    } catch {
-      // Keep raw detail.
-    }
-
-    if (response.status === 401 || response.status === 403) {
-      resultRedirect({
-        error: `Mindee V2 rejected the key (${response.status}).`,
-        detail: detail || "Check the key belongs to the same app.mindee.com organisation and is active.",
-      });
-    }
-
-    if (response.status === 404 || response.status === 422 || response.status === 400) {
+    if (accepted) {
       resultRedirect({
         success: "Mindee V2 connection OK. The V2 API reached Mindee and the key was accepted. No invoice document was sent.",
-        detail: `Expected fake inference lookup response (${response.status}). Model id configured: ${modelId}. ${detail}`,
-      });
-    }
-
-    if (response.ok) {
-      resultRedirect({
-        success: "Mindee V2 connection OK. The V2 API reached Mindee and the key was accepted. No invoice document was sent.",
-        detail: `Unexpected success status ${response.status}. Model id configured: ${modelId}.`,
+        detail: `Accepted format: ${accepted.label}. Fake inference response: ${accepted.status}. Model id configured: ${modelId}. Attempts: ${summary}`,
       });
     }
 
     resultRedirect({
-      error: `Mindee V2 API returned unexpected status ${response.status}.`,
-      detail: detail || `Model id configured: ${modelId}.`,
+      error: "Mindee V2 rejected all tested auth formats.",
+      detail: `Model id configured: ${modelId}. Attempts: ${summary}`,
     });
   } catch (error) {
     if (isNextRedirectError(error)) throw error;
