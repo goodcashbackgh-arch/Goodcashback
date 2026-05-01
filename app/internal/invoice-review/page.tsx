@@ -5,6 +5,7 @@ import { fetchAndSaveMindeeOcrResultAction, rejectSupplierInvoiceRequireResubmis
 import { assertInvoiceReadyForCurrentApproval } from "./readiness";
 
 const MINDEE_RESULT_FETCH_RELEASE_MARKER = "mindee-result-fetch-v2";
+const BRAND_COLOUR = "#20c1fc";
 
 type SearchParams = { success?: string; error?: string };
 type MaybeArray<T> = T | T[] | null | undefined;
@@ -83,6 +84,22 @@ function shouldShowInInvoiceReview(invoice: InvoiceRow, decision: MatchDecisionR
   if (canFetchMindee(invoice)) return true;
   return false;
 }
+function reviewStatusTone(status: string) {
+  if (status === "duplicate_blocked") return "border-rose-200 bg-rose-50 text-rose-700";
+  if (status === "pending_review") return "border-amber-200 bg-amber-50 text-amber-800";
+  return "border-slate-200 bg-slate-50 text-slate-700";
+}
+function matchTone(value: boolean | null | undefined) {
+  if (value === true) return "border-emerald-200 bg-emerald-50 text-emerald-700";
+  if (value === false) return "border-rose-200 bg-rose-50 text-rose-700";
+  return "border-slate-200 bg-slate-50 text-slate-500";
+}
+function mindeeTone(status: string | null) {
+  if (status === "completed") return "border-emerald-200 bg-emerald-50 text-emerald-700";
+  if (status === "failed") return "border-rose-200 bg-rose-50 text-rose-700";
+  if (status) return "border-sky-200 bg-sky-50 text-sky-700";
+  return "border-slate-200 bg-slate-50 text-slate-600";
+}
 
 export default async function InternalInvoiceReviewPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
   const qp = await searchParams;
@@ -119,104 +136,260 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
   const visible = invoices.filter((invoice) => shouldShowInInvoiceReview(invoice, matchByInvoiceId.get(invoice.id)));
 
   return (
-    <main className="min-h-screen bg-slate-50 p-6 text-slate-950" data-release-marker={MINDEE_RESULT_FETCH_RELEASE_MARKER}>
-      <section className="rounded-2xl border bg-white p-5">
-        <div className="flex flex-wrap justify-between gap-3">
-          <Link href="/internal" className="text-sky-700 underline">← Back to internal dashboard</Link>
-          <Link href="/internal/supplier-draft-ready" className="rounded bg-emerald-700 px-3 py-2 text-white">Open supplier draft ready →</Link>
-        </div>
-        <h1 className="mt-4 text-2xl font-semibold">Supplier invoice exceptions queue</h1>
-        <p className="mt-2 text-sm text-slate-600">Only invoices needing OCR/header review or OCR pending action should appear here. Full matches should route to operator reconciliation.</p>
-        <p className="mt-2 text-sm">{staff.full_name} · {staff.role_type}</p>
-        {qp.success ? <p className="mt-3 rounded border border-emerald-300 bg-emerald-50 p-2 text-sm">{qp.success}</p> : null}
-        {qp.error ? <p className="mt-3 rounded border border-rose-300 bg-rose-50 p-2 text-sm">{qp.error}</p> : null}
-        {matchError ? <p className="mt-3 rounded border border-amber-300 bg-amber-50 p-2 text-sm">Match decision view not available yet: run docs/governing-pack/backend/supplier_invoice_match_decision_v1.sql. Fallback filtering is active.</p> : null}
-      </section>
-
-      {error ? <p className="mt-4 rounded border border-rose-300 bg-rose-50 p-3">{error.message}</p> : null}
-
-      <section className="mt-4 grid gap-3 md:grid-cols-3">
-        <div className="rounded border bg-white p-4">Needs review / OCR pending: <strong>{visible.length}</strong></div>
-        <div className="rounded border bg-white p-4">Matched / routed away: <strong>{invoices.length - visible.length}</strong></div>
-        <div className="rounded border bg-white p-4">Loaded active invoices: <strong>{invoices.length}</strong></div>
-      </section>
-
-      <section className="mt-4 space-y-4">
-        {visible.map((invoice) => {
-          const order = orderOf(invoice);
-          const retailerName = orderRetailer(invoice);
-          const flags = openFlags(invoice);
-          const block = readiness.get(invoice.id);
-          const total = enteredTotal(invoice);
-          const match = matchByInvoiceId.get(invoice.id);
-          return (
-            <article key={invoice.id} className="rounded-2xl border bg-white p-5">
-              <h2 className="text-xl font-semibold">{order?.order_ref ?? invoice.order_id}</h2>
-              <p className="text-sm">{invoice.review_status}{invoice.blocked_from_sage_yn ? " · Blocked from Sage" : ""}</p>
-              <p className="mt-2 text-sm">Importer: {importer(invoice)}</p>
-              <p className="text-sm font-semibold">Order retailer: {retailerName}</p>
-              <p className="text-sm">Order baseline: {money(order?.order_total_gbp_declared)} · Qty {order?.total_qty_declared ?? "—"}</p>
-              <div className="mt-3 grid gap-2 md:grid-cols-4 text-sm">
-                <div>Operator ref<br /><strong>{invoice.invoice_ref}</strong></div>
-                <div>OCR ref<br /><strong>{invoice.ocr_invoice_ref ?? "—"}</strong></div>
-                <div>OCR retailer / supplier<br /><strong>{invoice.ocr_retailer_name ?? "—"}</strong></div>
-                <div>OCR date<br /><strong>{invoice.ocr_invoice_date ?? "—"}</strong></div>
-                <div>Operator total<br /><strong>{total === null ? "—" : money(total)}</strong></div>
-                <div>OCR total<br /><strong>{invoice.ocr_invoice_total_gbp === null ? "—" : money(invoice.ocr_invoice_total_gbp)}</strong></div>
-                <div>Uploaded<br /><strong>{new Date(invoice.uploaded_at).toLocaleString("en-GB")}</strong></div>
-                <div>Open flags<br /><strong>{flags.length}</strong></div>
+    <main
+      className="min-h-screen bg-white px-4 py-6 text-slate-950 sm:px-6 lg:px-8"
+      data-release-marker={MINDEE_RESULT_FETCH_RELEASE_MARKER}
+      style={{ backgroundImage: "radial-gradient(circle at top left, rgba(32, 193, 252, 0.14), transparent 34rem)" }}
+    >
+      <div className="mx-auto max-w-7xl">
+        <section className="overflow-hidden rounded-[2rem] border border-slate-200 bg-white shadow-sm">
+          <div className="border-b border-slate-100 bg-slate-950 px-5 py-4 text-white sm:px-7">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <Link href="/internal" className="text-sm font-medium text-white/80 transition hover:text-white">← Back to internal dashboard</Link>
+              <div className="flex flex-wrap gap-2">
+                <span className="rounded-full border border-white/15 bg-white/10 px-3 py-1 text-xs font-semibold text-white/80">{staff.full_name} · {staff.role_type}</span>
+                <Link href="/internal/supplier-draft-ready" className="rounded-full px-4 py-2 text-sm font-semibold text-slate-950 shadow-sm transition hover:opacity-90" style={{ backgroundColor: BRAND_COLOUR }}>
+                  Open supplier draft ready →
+                </Link>
               </div>
+            </div>
+          </div>
 
-              <div className="mt-3 rounded border bg-sky-50 p-3 text-sm">
-                <p className="font-semibold">Matching / routing decision</p>
-                <p>Decision: <strong>{decisionLabel(match?.routing_decision)}</strong></p>
-                <p>Reason: <strong>{match?.routing_reason ?? "Decision view unavailable."}</strong></p>
-                <p>Retailer match: <strong>{yesNo(match?.retailer_match_yn)}</strong> · Ref match: <strong>{yesNo(match?.invoice_ref_match_yn)}</strong> · Total match: <strong>{yesNo(match?.total_match_yn)}</strong> · OCR lines: <strong>{match?.ocr_line_count ?? "—"}</strong></p>
-                {match?.pending_adjustment_yn ? <p className="mt-1 rounded bg-amber-50 p-2">Delivery/discount approval is pending. This blocks supplier approval/Sage readiness, not operator line reconciliation.</p> : null}
+          <div className="grid gap-6 p-5 sm:p-7 lg:grid-cols-[1.35fr_0.65fr] lg:items-end">
+            <div>
+              <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-sky-100 bg-sky-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-sky-700">
+                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: BRAND_COLOUR }} />
+                OCR control room
               </div>
+              <h1 className="max-w-3xl text-3xl font-semibold tracking-tight text-slate-950 sm:text-4xl">Supplier invoice exceptions queue</h1>
+              <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-600">
+                Review OCR/header exceptions only. Full matches should route out to operator reconciliation, so this page stays focused on genuine intervention work.
+              </p>
+            </div>
 
-              <div className="mt-3 rounded border bg-slate-50 p-3 text-sm">
-                <p className="font-semibold">Mindee OCR status</p>
-                <p>Status: <strong>{invoice.mindee_ocr_status ?? "not_started"}</strong></p>
-                <p>Job ID: <strong>{invoice.mindee_job_id ?? "—"}</strong></p>
-                <p>Inference ID: <strong>{invoice.mindee_inference_id ?? "—"}</strong></p>
-                <p>Pages reported: <strong>{invoice.mindee_pages_consumed ?? "—"}</strong></p>
-                {invoice.mindee_error_message ? <p className="mt-1 rounded bg-rose-50 p-2">Mindee error: {invoice.mindee_error_message}</p> : null}
-              </div>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Queue discipline</p>
+              <p className="mt-2 text-sm leading-6 text-slate-700">
+                Do not use this screen as a general invoice list. It exists to clear OCR pending items, header mismatches, duplicate blocks, and review flags.
+              </p>
+            </div>
+          </div>
 
-              {flags.map((flag, index) => <p key={index} className="mt-2 rounded bg-amber-50 p-2 text-sm"><strong>{flag.flag_type}</strong>: {flag.message}</p>)}
-              {block ? <p className="mt-3 rounded bg-amber-50 p-2 text-sm"><strong>Supplier approval/Sage still blocked:</strong> {block}</p> : <p className="mt-3 rounded bg-emerald-50 p-2 text-sm">Supplier approval gate looks clear. Use Supplier draft ready for bulk approval after reconciliation is complete.</p>}
-              <div className="mt-4 flex flex-wrap gap-2">
-                <Link href={`/internal/evidence/${invoice.order_id}`} className="rounded border px-3 py-2 text-sm">Open staff order detail</Link>
-                <Link href={`/importer/reconciliation/${invoice.order_id}`} className="rounded border border-sky-300 bg-sky-50 px-3 py-2 text-sm">Open operator reconciliation</Link>
-                <a href={invoice.invoice_pdf_url} target="_blank" rel="noreferrer" className="rounded bg-slate-900 px-3 py-2 text-sm text-white">Open invoice</a>
-                {canStartMindee(invoice) ? <form action={runMindeeOcrForSupplierInvoiceAction}><input type="hidden" name="supplier_invoice_id" value={invoice.id} /><button className="rounded border border-amber-400 bg-amber-50 px-3 py-2 text-sm">Send this invoice to Mindee OCR — uses page credit</button></form> : null}
-                {canFetchMindee(invoice) ? <form action={fetchAndSaveMindeeOcrResultAction}><input type="hidden" name="supplier_invoice_id" value={invoice.id} /><button className="rounded border border-emerald-600 bg-emerald-50 px-3 py-2 text-sm">Fetch/save Mindee result — no new page</button></form> : null}
-              </div>
-              <div className="mt-4 grid gap-4 lg:grid-cols-2">
-                <form action={saveSupplierInvoiceHeaderReviewAction} className="rounded border bg-sky-50 p-4">
-                  <input type="hidden" name="supplier_invoice_id" value={invoice.id} />
-                  <h3 className="font-semibold">Save header correction / resolve issue</h3>
-                  <input name="corrected_invoice_ref" className="mt-2 w-full border p-2" defaultValue={invoice.ocr_invoice_ref ?? invoice.invoice_ref} placeholder="Accepted invoice ref" />
-                  <input name="ocr_invoice_ref" className="mt-2 w-full border p-2" defaultValue={invoice.ocr_invoice_ref ?? ""} placeholder="OCR invoice ref" />
-                  <input name="ocr_retailer_name" className="mt-2 w-full border p-2" defaultValue={invoice.ocr_retailer_name ?? ""} placeholder="OCR retailer / supplier name" />
-                  <input name="ocr_invoice_date" type="date" className="mt-2 w-full border p-2" defaultValue={invoice.ocr_invoice_date ?? ""} />
-                  <input name="ocr_invoice_total_gbp" type="number" min="0" step="0.01" className="mt-2 w-full border p-2" defaultValue={invoice.ocr_invoice_total_gbp ?? total ?? ""} placeholder="Accepted/OCR invoice total GBP" />
-                  <input name="review_notes" className="mt-2 w-full border p-2" placeholder="Review note / correction reason" />
-                  <button className="mt-2 rounded bg-sky-700 px-3 py-2 text-white">Save correction</button>
-                </form>
-                <form action={rejectSupplierInvoiceRequireResubmissionAction} className="rounded border bg-rose-50 p-4">
-                  <input type="hidden" name="supplier_invoice_id" value={invoice.id} />
-                  <h3 className="font-semibold">Reject / require resubmission</h3>
-                  <input name="review_notes" className="mt-2 w-full border p-2" placeholder="Reason for resubmission" />
-                  <button className="mt-2 rounded border bg-white px-3 py-2">Reject</button>
-                </form>
-              </div>
-              {invoice.review_notes ? <p className="mt-3 rounded bg-slate-50 p-2 text-sm">Previous notes: {invoice.review_notes}</p> : null}
-            </article>
-          );
-        })}
-      </section>
+          {(qp.success || qp.error || matchError) ? (
+            <div className="space-y-3 border-t border-slate-100 px-5 py-4 sm:px-7">
+              {qp.success ? <p className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-medium text-emerald-800">{qp.success}</p> : null}
+              {qp.error ? <p className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-medium text-rose-800">{qp.error}</p> : null}
+              {matchError ? <p className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-medium text-amber-800">Match decision view not available yet: run docs/governing-pack/backend/supplier_invoice_match_decision_v1.sql. Fallback filtering is active.</p> : null}
+            </div>
+          ) : null}
+        </section>
+
+        {error ? <p className="mt-5 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm font-medium text-rose-800">{error.message}</p> : null}
+
+        <section className="mt-5 grid gap-4 md:grid-cols-3">
+          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Needs action</p>
+            <p className="mt-3 text-3xl font-semibold text-slate-950">{visible.length}</p>
+            <p className="mt-1 text-sm text-slate-500">Review / OCR pending</p>
+          </div>
+          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Routed away</p>
+            <p className="mt-3 text-3xl font-semibold text-slate-950">{invoices.length - visible.length}</p>
+            <p className="mt-1 text-sm text-slate-500">Matched or no longer relevant</p>
+          </div>
+          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Loaded</p>
+            <p className="mt-3 text-3xl font-semibold text-slate-950">{invoices.length}</p>
+            <p className="mt-1 text-sm text-slate-500">Active invoice records</p>
+          </div>
+        </section>
+
+        <section className="mt-5 space-y-5">
+          {visible.length === 0 ? (
+            <div className="rounded-[2rem] border border-dashed border-slate-300 bg-white p-10 text-center shadow-sm">
+              <p className="text-lg font-semibold text-slate-950">No invoice exceptions need review.</p>
+              <p className="mt-2 text-sm text-slate-500">That is the target state. New OCR/header mismatches will appear here when they need supervisor attention.</p>
+            </div>
+          ) : null}
+
+          {visible.map((invoice) => {
+            const order = orderOf(invoice);
+            const retailerName = orderRetailer(invoice);
+            const flags = openFlags(invoice);
+            const block = readiness.get(invoice.id);
+            const total = enteredTotal(invoice);
+            const match = matchByInvoiceId.get(invoice.id);
+            return (
+              <article key={invoice.id} className="overflow-hidden rounded-[2rem] border border-slate-200 bg-white shadow-sm">
+                <div className="border-b border-slate-100 px-5 py-5 sm:px-7">
+                  <div className="flex flex-wrap items-start justify-between gap-4">
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${reviewStatusTone(invoice.review_status)}`}>{invoice.review_status}</span>
+                        {invoice.blocked_from_sage_yn ? <span className="rounded-full border border-rose-200 bg-rose-50 px-3 py-1 text-xs font-semibold text-rose-700">Blocked from Sage</span> : null}
+                        <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${mindeeTone(invoice.mindee_ocr_status)}`}>Mindee: {invoice.mindee_ocr_status ?? "not started"}</span>
+                      </div>
+                      <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">{order?.order_ref ?? invoice.order_id}</h2>
+                      <p className="mt-1 text-sm text-slate-500">Uploaded {new Date(invoice.uploaded_at).toLocaleString("en-GB")}</p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Link href={`/internal/evidence/${invoice.order_id}`} className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50">Staff detail</Link>
+                      <Link href={`/importer/reconciliation/${invoice.order_id}`} className="rounded-full border border-sky-200 bg-sky-50 px-4 py-2 text-sm font-semibold text-sky-700 transition hover:bg-sky-100">Operator reconciliation</Link>
+                      <a href={invoice.invoice_pdf_url} target="_blank" rel="noreferrer" className="rounded-full bg-slate-950 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800">Open invoice</a>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid gap-0 lg:grid-cols-[1.45fr_0.55fr]">
+                  <div className="space-y-5 p-5 sm:p-7">
+                    <div className="grid gap-4 md:grid-cols-3">
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Importer</p>
+                        <p className="mt-2 text-sm font-semibold text-slate-950">{importer(invoice)}</p>
+                      </div>
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Expected retailer</p>
+                        <p className="mt-2 text-sm font-semibold text-slate-950">{retailerName}</p>
+                      </div>
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Order baseline</p>
+                        <p className="mt-2 text-sm font-semibold text-slate-950">{money(order?.order_total_gbp_declared)} · Qty {order?.total_qty_declared ?? "—"}</p>
+                      </div>
+                    </div>
+
+                    <div className="rounded-3xl border border-slate-200 bg-white p-5">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Header comparison</p>
+                          <h3 className="mt-1 text-lg font-semibold text-slate-950">Operator submission vs OCR extraction</h3>
+                        </div>
+                        <span className="rounded-full px-3 py-1 text-xs font-semibold text-slate-950" style={{ backgroundColor: "rgba(32, 193, 252, 0.16)" }}>{flags.length} open flags</span>
+                      </div>
+
+                      <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                        <div className="rounded-2xl border border-slate-200 p-4">
+                          <p className="text-xs font-medium text-slate-500">Operator ref</p>
+                          <p className="mt-1 break-words text-sm font-semibold text-slate-950">{invoice.invoice_ref}</p>
+                        </div>
+                        <div className="rounded-2xl border border-slate-200 p-4">
+                          <p className="text-xs font-medium text-slate-500">OCR ref</p>
+                          <p className="mt-1 break-words text-sm font-semibold text-slate-950">{invoice.ocr_invoice_ref ?? "—"}</p>
+                        </div>
+                        <div className="rounded-2xl border border-slate-200 p-4">
+                          <p className="text-xs font-medium text-slate-500">OCR retailer / supplier</p>
+                          <p className="mt-1 break-words text-sm font-semibold text-slate-950">{invoice.ocr_retailer_name ?? "—"}</p>
+                        </div>
+                        <div className="rounded-2xl border border-slate-200 p-4">
+                          <p className="text-xs font-medium text-slate-500">OCR date</p>
+                          <p className="mt-1 text-sm font-semibold text-slate-950">{invoice.ocr_invoice_date ?? "—"}</p>
+                        </div>
+                        <div className="rounded-2xl border border-slate-200 p-4">
+                          <p className="text-xs font-medium text-slate-500">Operator total</p>
+                          <p className="mt-1 text-sm font-semibold text-slate-950">{total === null ? "—" : money(total)}</p>
+                        </div>
+                        <div className="rounded-2xl border border-slate-200 p-4">
+                          <p className="text-xs font-medium text-slate-500">OCR total</p>
+                          <p className="mt-1 text-sm font-semibold text-slate-950">{invoice.ocr_invoice_total_gbp === null ? "—" : money(invoice.ocr_invoice_total_gbp)}</p>
+                        </div>
+                        <div className="rounded-2xl border border-slate-200 p-4">
+                          <p className="text-xs font-medium text-slate-500">Pages reported</p>
+                          <p className="mt-1 text-sm font-semibold text-slate-950">{invoice.mindee_pages_consumed ?? "—"}</p>
+                        </div>
+                        <div className="rounded-2xl border border-slate-200 p-4">
+                          <p className="text-xs font-medium text-slate-500">OCR line count</p>
+                          <p className="mt-1 text-sm font-semibold text-slate-950">{match?.ocr_line_count ?? "—"}</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="rounded-3xl border border-slate-200 bg-slate-950 p-5 text-white">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-white/50">Matching / routing decision</p>
+                          <p className="mt-2 text-xl font-semibold capitalize">{decisionLabel(match?.routing_decision)}</p>
+                          <p className="mt-1 text-sm leading-6 text-white/70">{match?.routing_reason ?? "Decision view unavailable."}</p>
+                        </div>
+                        <div className="h-10 w-10 rounded-2xl" style={{ backgroundColor: BRAND_COLOUR }} />
+                      </div>
+
+                      <div className="mt-5 grid gap-3 md:grid-cols-3">
+                        <div className={`rounded-2xl border px-4 py-3 text-sm font-semibold ${matchTone(match?.retailer_match_yn)}`}>Retailer match: {yesNo(match?.retailer_match_yn)}</div>
+                        <div className={`rounded-2xl border px-4 py-3 text-sm font-semibold ${matchTone(match?.invoice_ref_match_yn)}`}>Ref match: {yesNo(match?.invoice_ref_match_yn)}</div>
+                        <div className={`rounded-2xl border px-4 py-3 text-sm font-semibold ${matchTone(match?.total_match_yn)}`}>Total match: {yesNo(match?.total_match_yn)}</div>
+                      </div>
+
+                      {match?.pending_adjustment_yn ? <p className="mt-4 rounded-2xl border border-amber-300/40 bg-amber-300/10 p-3 text-sm text-amber-100">Delivery/discount approval is pending. This blocks supplier approval/Sage readiness, not operator line reconciliation.</p> : null}
+                    </div>
+
+                    <div className="grid gap-4 lg:grid-cols-2">
+                      <form action={saveSupplierInvoiceHeaderReviewAction} className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
+                        <input type="hidden" name="supplier_invoice_id" value={invoice.id} />
+                        <h3 className="text-lg font-semibold text-slate-950">Save header correction</h3>
+                        <p className="mt-1 text-sm text-slate-500">Use this only to resolve OCR/header issues. It does not replace operator line reconciliation.</p>
+                        <input name="corrected_invoice_ref" className="mt-4 w-full rounded-2xl border border-slate-200 bg-white p-3 text-sm outline-none transition focus:border-sky-300" defaultValue={invoice.ocr_invoice_ref ?? invoice.invoice_ref} placeholder="Accepted invoice ref" />
+                        <input name="ocr_invoice_ref" className="mt-3 w-full rounded-2xl border border-slate-200 bg-white p-3 text-sm outline-none transition focus:border-sky-300" defaultValue={invoice.ocr_invoice_ref ?? ""} placeholder="OCR invoice ref" />
+                        <input name="ocr_retailer_name" className="mt-3 w-full rounded-2xl border border-slate-200 bg-white p-3 text-sm outline-none transition focus:border-sky-300" defaultValue={invoice.ocr_retailer_name ?? ""} placeholder="OCR retailer / supplier name" />
+                        <input name="ocr_invoice_date" type="date" className="mt-3 w-full rounded-2xl border border-slate-200 bg-white p-3 text-sm outline-none transition focus:border-sky-300" defaultValue={invoice.ocr_invoice_date ?? ""} />
+                        <input name="ocr_invoice_total_gbp" type="number" min="0" step="0.01" className="mt-3 w-full rounded-2xl border border-slate-200 bg-white p-3 text-sm outline-none transition focus:border-sky-300" defaultValue={invoice.ocr_invoice_total_gbp ?? total ?? ""} placeholder="Accepted/OCR invoice total GBP" />
+                        <input name="review_notes" className="mt-3 w-full rounded-2xl border border-slate-200 bg-white p-3 text-sm outline-none transition focus:border-sky-300" placeholder="Review note / correction reason" />
+                        <button className="mt-4 rounded-full px-5 py-3 text-sm font-semibold text-slate-950 shadow-sm transition hover:opacity-90" style={{ backgroundColor: BRAND_COLOUR }}>Save correction</button>
+                      </form>
+
+                      <form action={rejectSupplierInvoiceRequireResubmissionAction} className="rounded-3xl border border-rose-200 bg-rose-50 p-5">
+                        <input type="hidden" name="supplier_invoice_id" value={invoice.id} />
+                        <h3 className="text-lg font-semibold text-rose-950">Reject / require resubmission</h3>
+                        <p className="mt-1 text-sm text-rose-700">Use this when the uploaded document cannot safely support the invoice record.</p>
+                        <input name="review_notes" className="mt-4 w-full rounded-2xl border border-rose-200 bg-white p-3 text-sm outline-none transition focus:border-rose-300" placeholder="Reason for resubmission" />
+                        <button className="mt-4 rounded-full border border-rose-200 bg-white px-5 py-3 text-sm font-semibold text-rose-700 transition hover:bg-rose-100">Reject</button>
+                      </form>
+                    </div>
+                  </div>
+
+                  <aside className="border-t border-slate-100 bg-slate-50 p-5 sm:p-7 lg:border-l lg:border-t-0">
+                    <div className="sticky top-6 space-y-4">
+                      <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Mindee OCR status</p>
+                        <p className="mt-3 text-lg font-semibold text-slate-950">{invoice.mindee_ocr_status ?? "not_started"}</p>
+                        <dl className="mt-4 space-y-3 text-sm">
+                          <div>
+                            <dt className="text-slate-500">Job ID</dt>
+                            <dd className="mt-1 break-words font-medium text-slate-950">{invoice.mindee_job_id ?? "—"}</dd>
+                          </div>
+                          <div>
+                            <dt className="text-slate-500">Inference ID</dt>
+                            <dd className="mt-1 break-words font-medium text-slate-950">{invoice.mindee_inference_id ?? "—"}</dd>
+                          </div>
+                        </dl>
+                        {invoice.mindee_error_message ? <p className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">Mindee error: {invoice.mindee_error_message}</p> : null}
+                        <div className="mt-4 space-y-2">
+                          {canStartMindee(invoice) ? <form action={runMindeeOcrForSupplierInvoiceAction}><input type="hidden" name="supplier_invoice_id" value={invoice.id} /><button className="w-full rounded-full border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800 transition hover:bg-amber-100">Send to Mindee OCR — uses page credit</button></form> : null}
+                          {canFetchMindee(invoice) ? <form action={fetchAndSaveMindeeOcrResultAction}><input type="hidden" name="supplier_invoice_id" value={invoice.id} /><button className="w-full rounded-full border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800 transition hover:bg-emerald-100">Fetch/save Mindee result — no new page</button></form> : null}
+                        </div>
+                      </div>
+
+                      <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Approval gate</p>
+                        {block ? <p className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800"><strong>Supplier approval/Sage still blocked:</strong> {block}</p> : <p className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">Supplier approval gate looks clear. Use Supplier draft ready for bulk approval after reconciliation is complete.</p>}
+                      </div>
+
+                      {flags.length > 0 ? (
+                        <div className="rounded-3xl border border-amber-200 bg-amber-50 p-5 shadow-sm">
+                          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-amber-700">Open review flags</p>
+                          <div className="mt-3 space-y-2">
+                            {flags.map((flag, index) => <p key={index} className="rounded-2xl bg-white p-3 text-sm text-amber-900"><strong>{flag.flag_type}</strong>: {flag.message}</p>)}
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {invoice.review_notes ? <p className="rounded-3xl border border-slate-200 bg-white p-5 text-sm text-slate-600 shadow-sm"><strong className="text-slate-950">Previous notes:</strong> {invoice.review_notes}</p> : null}
+                    </div>
+                  </aside>
+                </div>
+              </article>
+            );
+          })}
+        </section>
+      </div>
     </main>
   );
 }
