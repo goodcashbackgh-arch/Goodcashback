@@ -4,7 +4,7 @@ import { createClient } from "@/utils/supabase/server";
 import { fetchAndSaveMindeeOcrResultAction, rejectSupplierInvoiceRequireResubmissionAction, runMindeeOcrForSupplierInvoiceAction, saveSupplierInvoiceHeaderReviewAction } from "./actions";
 import { assertInvoiceReadyForCurrentApproval } from "./readiness";
 
-const MINDEE_RESULT_FETCH_RELEASE_MARKER = "mindee-result-fetch-v1";
+const MINDEE_RESULT_FETCH_RELEASE_MARKER = "mindee-result-fetch-v2";
 
 type SearchParams = { success?: string; error?: string };
 type MaybeArray<T> = T | T[] | null | undefined;
