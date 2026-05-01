@@ -101,6 +101,17 @@ function dateValue(value: unknown) {
   return /^\d{4}-\d{2}-\d{2}$/.test(resolved) ? resolved : null;
 }
 
+function normalizeName(value: string | null | undefined) {
+  return String(value ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function namesReasonablyMatch(left: string | null | undefined, right: string | null | undefined) {
+  const a = normalizeName(left);
+  const b = normalizeName(right);
+  if (!a || !b) return false;
+  return a === b || a.includes(b) || b.includes(a);
+}
+
 function normalizeInvoiceLine(line: unknown, lineOrder: number): OcrInvoiceLine | null {
   if (!line || typeof line !== "object") return null;
   const row = line as Record<string, unknown>;
@@ -125,7 +136,8 @@ function normalizeInvoiceLine(line: unknown, lineOrder: number): OcrInvoiceLine 
 
 function normalizeV2InvoiceLine(line: unknown, lineOrder: number): ParsedOcrLine | null {
   if (!line || typeof line !== "object") return null;
-  const row = line as Record<string, unknown>;
+  const outer = line as Record<string, unknown>;
+  const row = outer.fields && typeof outer.fields === "object" ? outer.fields as Record<string, unknown> : outer;
   const description =
     stringValue(row.description) ??
     stringValue(row.name) ??
@@ -177,7 +189,7 @@ function extractMindeeJobId(raw: unknown) {
   if (!raw || typeof raw !== "object") return null;
   const obj = raw as Record<string, unknown>;
   const job = obj.job && typeof obj.job === "object" ? obj.job as Record<string, unknown> : null;
-  return recordValue(job?.id ?? obj.job_id ?? obj.id);
+  return recordValue(job?.id ?? obj.job_id);
 }
 
 function extractMindeeInferenceId(raw: unknown) {
@@ -185,7 +197,7 @@ function extractMindeeInferenceId(raw: unknown) {
   const obj = raw as Record<string, unknown>;
   const inference = obj.inference && typeof obj.inference === "object" ? obj.inference as Record<string, unknown> : null;
   const job = obj.job && typeof obj.job === "object" ? obj.job as Record<string, unknown> : null;
-  return recordValue(inference?.id ?? job?.inference_id ?? obj.inference_id);
+  return recordValue(inference?.id ?? job?.inference_id ?? obj.inference_id ?? obj.id);
 }
 
 function extractJobStatus(raw: unknown) {
@@ -280,6 +292,9 @@ function parseMindeeV2InvoiceResult(raw: unknown, enteredTotal: number | null, e
   const ocrInvoiceDate = firstDateFrom(fields, ["invoice_date", "date", "issued_date", "document_date"]);
   const ocrInvoiceTotal = firstNumberFrom(fields, ["total_amount", "total", "total_incl", "total_inc_vat", "amount_due", "grand_total"]);
   const lineItems = firstArrayCandidate(raw, [
+    ["inference", "result", "fields", "line_items", "items"],
+    ["inference", "result", "fields", "items", "items"],
+    ["inference", "result", "fields", "invoice_lines", "items"],
     ["inference", "result", "fields", "line_items"],
     ["inference", "result", "fields", "items"],
     ["inference", "result", "fields", "invoice_lines"],
@@ -306,7 +321,7 @@ function parseMindeeV2InvoiceResult(raw: unknown, enteredTotal: number | null, e
   if (enteredTotal !== null && ocrInvoiceTotal !== null && Math.abs(enteredTotal - ocrInvoiceTotal) > 0.01) {
     flags.push({ flag_type: "invoice_total_mismatch", message: `Operator entered ${enteredTotal.toFixed(2)} but Mindee OCR extracted ${ocrInvoiceTotal.toFixed(2)}.` });
   }
-  if (expectedRetailer && ocrRetailerName && !ocrRetailerName.toLowerCase().includes(expectedRetailer.toLowerCase())) {
+  if (expectedRetailer && ocrRetailerName && !namesReasonablyMatch(expectedRetailer, ocrRetailerName)) {
     flags.push({ flag_type: "wrong_invoice", message: `Order retailer is ${expectedRetailer}, but Mindee OCR detected ${ocrRetailerName}.` });
   }
 
@@ -538,11 +553,11 @@ export async function fetchAndSaveMindeeOcrResultAction(formData: FormData) {
       });
     }
 
-    if (!jobResponse.ok) {
+    if (!jobResponse.ok && !inferenceId) {
       redirectWithResult({ error: `Mindee job fetch failed (${jobResponse.status}). ${parseMindeeDetail(jobRaw) || "No detail returned."}` });
     }
 
-    if (!isCompleteStatus(status) && !inferenceId) {
+    if (jobResponse.ok && !isCompleteStatus(status) && !inferenceId) {
       redirectWithResult({ success: `Mindee job ${jobId} is still ${status ?? "processing"}. Wait briefly, then click Fetch/save result again. No new page was sent.` });
     }
   }
