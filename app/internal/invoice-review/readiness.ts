@@ -2,12 +2,7 @@ type SupabaseLike = {
   from: (table: string) => any;
 };
 
-const COMPLETED_EXCEPTION_STATUSES = new Set([
-  "awaiting_refund_credit",
-  "refunded",
-  "replaced",
-  "closed",
-]);
+const SAFE_EXCEPTION_REMEDIES = new Set(["refund", "replacement"]);
 
 const SERIOUS_OPEN_FLAG_TYPES = new Set([
   "wrong_invoice",
@@ -19,6 +14,15 @@ const SERIOUS_OPEN_FLAG_TYPES = new Set([
 function asNumber(value: unknown) {
   const n = Number(value ?? 0);
   return Number.isFinite(n) ? n : 0;
+}
+
+function isProgressedLine(line: any) {
+  return line.eligible_for_invoice_yn === "Y" && line.qty_confirmed !== null && line.amount_confirmed !== null;
+}
+
+function exceptionRemedyForRow(row: any) {
+  const dispute = Array.isArray(row.disputes) ? row.disputes[0] : row.disputes;
+  return String(row.intended_remedy ?? dispute?.desired_outcome ?? "").trim().toLowerCase();
 }
 
 export async function assertInvoiceReadyForCurrentApproval(
@@ -96,30 +100,30 @@ export async function assertInvoiceReadyForCurrentApproval(
   }
 
   const unsettledLineIds = (lines ?? [])
-    .filter((line: any) => !(line.eligible_for_invoice_yn === "Y" && line.qty_confirmed !== null && line.amount_confirmed !== null))
+    .filter((line: any) => !isProgressedLine(line))
     .map((line: any) => String(line.id));
 
   if (unsettledLineIds.length === 0) return null;
 
   const { data: disputeLines, error: disputeError } = await supabase
     .from("dispute_lines")
-    .select("supplier_invoice_line_id, disputes(status)")
+    .select("supplier_invoice_line_id, intended_remedy, resolved_at, disputes(status, desired_outcome, resolved_at)")
     .in("supplier_invoice_line_id", unsettledLineIds);
 
   if (disputeError) return disputeError.message;
 
-  const completedExceptionLineIds = new Set(
+  const safelyBranchedLineIds = new Set(
     (disputeLines ?? [])
       .filter((row: any) => {
-        const dispute = Array.isArray(row.disputes) ? row.disputes[0] : row.disputes;
-        return dispute?.status && COMPLETED_EXCEPTION_STATUSES.has(String(dispute.status));
+        const remedy = exceptionRemedyForRow(row);
+        return SAFE_EXCEPTION_REMEDIES.has(remedy);
       })
       .map((row: any) => String(row.supplier_invoice_line_id)),
   );
 
-  const stillOpenCount = unsettledLineIds.filter((lineId: string) => !completedExceptionLineIds.has(lineId)).length;
-  if (stillOpenCount > 0) {
-    return `Cannot approve current invoice yet. ${stillOpenCount} invoice line(s) are not progressed and not completed through refund/replacement exception handling.`;
+  const unbranchedCount = unsettledLineIds.filter((lineId: string) => !safelyBranchedLineIds.has(lineId)).length;
+  if (unbranchedCount > 0) {
+    return `Cannot approve current invoice yet. ${unbranchedCount} invoice line(s) are not progressed and not branched into refund/replacement exception handling.`;
   }
 
   return null;
