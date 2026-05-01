@@ -4,6 +4,8 @@ import { createClient } from "@/utils/supabase/server";
 import { fetchAndSaveMindeeOcrResultAction, rejectSupplierInvoiceRequireResubmissionAction, runMindeeOcrForSupplierInvoiceAction, saveSupplierInvoiceHeaderReviewAction } from "./actions";
 import { assertInvoiceReadyForCurrentApproval } from "./readiness";
 
+const MINDEE_RESULT_FETCH_RELEASE_MARKER = "mindee-result-fetch-v1";
+
 type SearchParams = { success?: string; error?: string };
 type MaybeArray<T> = T | T[] | null | undefined;
 type InvoiceRow = {
@@ -77,7 +79,7 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
   const visible = invoices.filter((invoice) => Boolean(readiness.get(invoice.id)) || openFlags(invoice).length > 0 || hasMindeeJob(invoice));
 
   return (
-    <main className="min-h-screen bg-slate-50 p-6 text-slate-950">
+    <main className="min-h-screen bg-slate-50 p-6 text-slate-950" data-release-marker={MINDEE_RESULT_FETCH_RELEASE_MARKER}>
       <section className="rounded-2xl border bg-white p-5">
         <div className="flex flex-wrap justify-between gap-3">
           <Link href="/internal" className="text-sky-700 underline">← Back to internal dashboard</Link>
