@@ -3,7 +3,6 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
-import { assertInvoiceReadyForCurrentApproval } from "./readiness";
 
 type OcrInvoiceLine = {
   line_order: number;
@@ -300,7 +299,7 @@ export async function runMindeeOcrForSupplierInvoiceAction(formData: FormData) {
   redirectWithResult({ success: `Mindee OCR saved. Inserted ${insertedLineCount} OCR line(s).` });
 }
 
-export async function approveSupplierInvoiceCurrentAction(formData: FormData) {
+export async function saveSupplierInvoiceHeaderReviewAction(formData: FormData) {
   const supplierInvoiceId = readString(formData, "supplier_invoice_id");
   const correctedInvoiceRef = readString(formData, "corrected_invoice_ref") || null;
   const ocrInvoiceRef = readString(formData, "ocr_invoice_ref") || null;
@@ -314,10 +313,7 @@ export async function approveSupplierInvoiceCurrentAction(formData: FormData) {
   const guard = await requireSupervisorOrAdmin();
   if (!guard.ok) redirectWithResult({ error: guard.error });
 
-  const readinessError = await assertInvoiceReadyForCurrentApproval(guard.supabase, supplierInvoiceId);
-  if (readinessError) redirectWithResult({ error: readinessError });
-
-  const { data, error } = await guard.supabase.rpc("staff_approve_supplier_invoice_current", {
+  const { data, error } = await guard.supabase.rpc("staff_save_supplier_invoice_header_review", {
     p_supplier_invoice_id: supplierInvoiceId,
     p_corrected_invoice_ref: correctedInvoiceRef,
     p_ocr_invoice_ref: ocrInvoiceRef,
@@ -332,12 +328,13 @@ export async function approveSupplierInvoiceCurrentAction(formData: FormData) {
   const orderId = Array.isArray(data) && data[0]?.order_id ? String(data[0].order_id) : null;
 
   revalidatePath("/internal/invoice-review");
+  revalidatePath("/internal/supplier-draft-ready");
   if (orderId) {
     revalidatePath(`/internal/evidence/${orderId}`);
     revalidatePath(`/importer/orders/${orderId}/operations`);
     revalidatePath(`/importer/reconciliation/${orderId}`);
   }
-  redirectWithResult({ success: "Supplier invoice approved as current." });
+  redirectWithResult({ success: "Supplier invoice header review saved. Clean invoices move to Supplier draft ready for approval." });
 }
 
 export async function rejectSupplierInvoiceRequireResubmissionAction(formData: FormData) {
