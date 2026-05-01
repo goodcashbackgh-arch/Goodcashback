@@ -145,7 +145,7 @@ export async function runMindeeOcrForSupplierInvoiceAction(formData: FormData) {
   const supplierInvoiceId = readString(formData, "supplier_invoice_id");
   if (!supplierInvoiceId) redirectWithResult({ error: "Missing supplier invoice reference." });
 
-  const apiKey = process.env.MINDEE_API_KEY;
+  const apiKey = process.env.MINDEE_API_KEY?.trim();
   if (!apiKey) redirectWithResult({ error: "MINDEE_API_KEY is not configured." });
 
   const endpoint = process.env.MINDEE_INVOICE_API_URL || "https://api.mindee.net/v1/products/mindee/invoices/v4/predict";
