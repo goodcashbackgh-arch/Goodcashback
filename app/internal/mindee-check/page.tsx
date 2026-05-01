@@ -1,9 +1,14 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import * as mindee from "mindee";
 import { createClient } from "@/utils/supabase/server";
 
 type SearchParams = { success?: string; error?: string; detail?: string };
+
+type MindeeSdkModule = {
+  ClientV2?: new (options: Record<string, string>) => {
+    getInference?: (inferenceId: string) => Promise<unknown>;
+  };
+};
 
 const DEFAULT_MINDEE_INVOICE_MODEL_ID = "cd596aec-23b0-4063-bdbe-38c9c8728e84";
 const FAKE_INFERENCE_ID_FOR_AUTH_CHECK = "00000000-0000-0000-0000-000000000000";
@@ -109,8 +114,26 @@ export async function testMindeeConnectionAction() {
   }
 
   try {
-    const clientOptions = { ["api" + "Key"]: mindeeSecret } as unknown as ConstructorParameters<typeof mindee.ClientV2>[0];
-    const mindeeClient = new mindee.ClientV2(clientOptions);
+    const mindeeModule = (await import("mindee")) as MindeeSdkModule;
+    const ClientV2 = mindeeModule.ClientV2;
+
+    if (!ClientV2) {
+      resultRedirect({
+        error: "Mindee SDK loaded, but ClientV2 was not found.",
+        detail: "The installed mindee package does not expose ClientV2 in the expected location.",
+      });
+    }
+
+    const clientOptions = { apiKey: mindeeSecret };
+    const mindeeClient = new ClientV2(clientOptions);
+
+    if (typeof mindeeClient.getInference !== "function") {
+      resultRedirect({
+        error: "Mindee ClientV2 loaded, but getInference was not found.",
+        detail: "The SDK method name differs from the current implementation. No invoice document was sent.",
+      });
+    }
+
     await mindeeClient.getInference(FAKE_INFERENCE_ID_FOR_AUTH_CHECK);
 
     resultRedirect({
