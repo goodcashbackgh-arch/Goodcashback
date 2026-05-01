@@ -12,10 +12,11 @@
 --   a deterministic retailer_account_id for the selected retailer/shipper/hub
 --   context. Do not create fake retailer account credentials from this patch.
 --
--- Safety note:
---   This version dedupes both the wanted list and existing retailer matches by
---   normalized retailer name before inserting shipper_retailers links. This avoids
---   Postgres error 21000 where ON CONFLICT tries to update the same row twice.
+-- Safety notes:
+--   1) Dedupe wanted retailers and link candidates before ON CONFLICT.
+--   2) Insert retailers first, then link in a second statement. Postgres
+--      data-modifying CTE siblings share one snapshot, so a same-statement link
+--      step may not see newly inserted retailer rows.
 -- =============================================================================
 
 BEGIN;
@@ -38,7 +39,18 @@ BEGIN
   END IF;
 END $$;
 
-WITH raw_wanted(name, website_url) AS (
+CREATE TEMP TABLE tmp_major_uk_retailers_seed (
+  name varchar NOT NULL,
+  website_url varchar NOT NULL,
+  normalized_name varchar NOT NULL
+) ON COMMIT DROP;
+
+INSERT INTO tmp_major_uk_retailers_seed (name, website_url, normalized_name)
+SELECT DISTINCT ON (lower(regexp_replace(name, '[^a-z0-9]+', '', 'g')))
+  name,
+  website_url,
+  lower(regexp_replace(name, '[^a-z0-9]+', '', 'g')) AS normalized_name
+FROM (
   VALUES
     ('Amazon UK', 'https://www.amazon.co.uk'),
     ('Argos', 'https://www.argos.co.uk'),
@@ -55,35 +67,35 @@ WITH raw_wanted(name, website_url) AS (
     ('ASOS', 'https://www.asos.com'),
     ('Sports Direct', 'https://www.sportsdirect.com'),
     ('Very', 'https://www.very.co.uk')
-), wanted AS (
-  SELECT DISTINCT ON (lower(regexp_replace(name, '[^a-z0-9]+', '', 'g')))
-    name,
-    website_url,
-    lower(regexp_replace(name, '[^a-z0-9]+', '', 'g')) AS normalized_name
-  FROM raw_wanted
-  ORDER BY lower(regexp_replace(name, '[^a-z0-9]+', '', 'g')), name
-), inserted AS (
+) AS raw_wanted(name, website_url)
+ORDER BY lower(regexp_replace(name, '[^a-z0-9]+', '', 'g')), name;
+
+WITH inserted AS (
   INSERT INTO public.retailers (name, website_url, global_enabled)
   SELECT
-    w.name,
-    w.website_url,
+    seed.name,
+    seed.website_url,
     true
-  FROM wanted w
+  FROM tmp_major_uk_retailers_seed seed
   WHERE NOT EXISTS (
     SELECT 1
     FROM public.retailers r
-    WHERE lower(regexp_replace(r.name, '[^a-z0-9]+', '', 'g')) = w.normalized_name
+    WHERE lower(regexp_replace(r.name, '[^a-z0-9]+', '', 'g')) = seed.normalized_name
   )
-  RETURNING id, name
-), wanted_retailers AS (
-  SELECT DISTINCT ON (w.normalized_name)
+  RETURNING id
+)
+SELECT count(*) AS newly_inserted_retailers
+FROM inserted;
+
+WITH wanted_retailers AS (
+  SELECT DISTINCT ON (seed.normalized_name)
     r.id,
     r.name,
-    w.normalized_name
-  FROM wanted w
+    seed.normalized_name
+  FROM tmp_major_uk_retailers_seed seed
   JOIN public.retailers r
-    ON lower(regexp_replace(r.name, '[^a-z0-9]+', '', 'g')) = w.normalized_name
-  ORDER BY w.normalized_name, r.created_at ASC NULLS LAST, r.id
+    ON lower(regexp_replace(r.name, '[^a-z0-9]+', '', 'g')) = seed.normalized_name
+  ORDER BY seed.normalized_name, r.created_at ASC NULLS LAST, r.id
 ), active_shippers AS (
   SELECT DISTINCT s.id
   FROM public.shippers s
@@ -106,9 +118,9 @@ WITH raw_wanted(name, website_url) AS (
   RETURNING shipper_id, retailer_id
 )
 SELECT
-  (SELECT count(*) FROM wanted) AS requested_retailers,
-  (SELECT count(*) FROM inserted) AS newly_inserted_retailers,
+  (SELECT count(*) FROM tmp_major_uk_retailers_seed) AS requested_retailers,
   (SELECT count(*) FROM wanted_retailers) AS resolved_retailers,
+  (SELECT count(*) FROM active_shippers) AS active_shippers,
   (SELECT count(*) FROM linked) AS shipper_retailer_links_inserted_or_enabled;
 
 COMMIT;
