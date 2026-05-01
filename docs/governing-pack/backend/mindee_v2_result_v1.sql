@@ -8,6 +8,12 @@
 --   supplier_invoices OCR header fields, supplier_invoice_lines OCR rows, and
 --   supplier_invoice_review_flags. Fetching/polling results does not send a new
 --   document to Mindee and should not consume extra page credits.
+--
+-- Schema discipline:
+--   supplier_invoices.ocr_service_used currently allows 'mindee',
+--   'google_docai', or 'manual'. Mindee V2 detail is tracked in the Mindee job,
+--   inference, model id, and raw JSON fields. Do not use 'mindee_v2' here unless
+--   the live check constraint is explicitly widened later.
 -- =============================================================================
 
 BEGIN;
@@ -226,7 +232,7 @@ BEGIN
 
   UPDATE public.supplier_invoices si
   SET
-    ocr_service_used = 'mindee_v2',
+    ocr_service_used = 'mindee',
     ocr_raw_json = p_raw_json,
     ocr_extracted_at = now(),
     ocr_invoice_ref = NULLIF(btrim(COALESCE(p_ocr_invoice_ref, '')), ''),
