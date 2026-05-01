@@ -108,142 +108,17 @@ export async function runMindeeOcrAfterUpload(params: {
   enteredInvoiceTotal: number;
   operatorId: string;
 }): Promise<OcrResult> {
-  const apiKey = process.env.MINDEE_API_KEY;
-  const admin = adminClient();
+  await createReviewFlagIfMissing({
+    orderId: params.orderId,
+    supplierInvoiceId: params.supplierInvoiceId,
+    flagType: "ocr_unclear",
+    message: "Automatic Mindee OCR is intentionally disabled until the V2 enqueue/result flow is fully proven manually. Supervisor manual OCR is required.",
+    raisedByOperatorId: params.operatorId,
+  });
 
-  if (!apiKey || !admin) {
-    await createReviewFlagIfMissing({
-      orderId: params.orderId,
-      supplierInvoiceId: params.supplierInvoiceId,
-      flagType: "ocr_unclear",
-      message: !apiKey
-        ? "Mindee OCR did not run because MINDEE_API_KEY is not configured."
-        : "Mindee OCR did not run because service role configuration is missing.",
-      raisedByOperatorId: params.operatorId,
-    });
-    return { ran: false, insertedLineCount: 0, message: "OCR not configured" };
-  }
-
-  const endpoint = process.env.MINDEE_INVOICE_API_URL || "https://api.mindee.net/v1/products/mindee/invoices/v4/predict";
-
-  try {
-    const invoiceFileResponse = await fetch(params.invoicePdfUrl);
-    if (!invoiceFileResponse.ok) {
-      await createReviewFlagIfMissing({
-        orderId: params.orderId,
-        supplierInvoiceId: params.supplierInvoiceId,
-        flagType: "ocr_unclear",
-        message: `Mindee OCR could not fetch invoice file (${invoiceFileResponse.status}).`,
-        raisedByOperatorId: params.operatorId,
-      });
-      return { ran: false, insertedLineCount: 0, message: "Could not fetch invoice file" };
-    }
-
-    const fileBlob = await invoiceFileResponse.blob();
-    const mindeeForm = new FormData();
-    mindeeForm.append("document", fileBlob, `supplier-invoice-${params.supplierInvoiceId}.pdf`);
-
-    const mindeeResponse = await fetch(endpoint, {
-      method: "POST",
-      headers: { Authorization: `Token ${apiKey}` },
-      body: mindeeForm,
-    });
-
-    const raw = await mindeeResponse.json().catch(() => null);
-    if (!mindeeResponse.ok || !raw) {
-      await createReviewFlagIfMissing({
-        orderId: params.orderId,
-        supplierInvoiceId: params.supplierInvoiceId,
-        flagType: "ocr_unclear",
-        message: `Mindee OCR failed (${mindeeResponse.status}).`,
-        raisedByOperatorId: params.operatorId,
-      });
-      return { ran: false, insertedLineCount: 0, message: "Mindee failed" };
-    }
-
-    const prediction = raw?.document?.inference?.prediction ?? {};
-    const ocrInvoiceRef = stringField(prediction.invoice_number);
-    const ocrRetailerName = stringField(prediction.supplier_name);
-    const ocrInvoiceDate = dateField(prediction.date);
-    const ocrTotal = numberField(prediction.total_amount);
-    const ocrLinesRaw = Array.isArray(prediction.line_items) ? prediction.line_items : [];
-    const ocrLines: OcrInvoiceLine[] = ocrLinesRaw
-      .map((line: unknown, index: number) => normalizeInvoiceLine(line, index + 1))
-      .filter((line: OcrInvoiceLine | null): line is OcrInvoiceLine => Boolean(line));
-
-    await admin
-      .from("supplier_invoices")
-      .update({
-        ocr_service_used: "mindee",
-        ocr_raw_json: raw,
-        ocr_extracted_at: new Date().toISOString(),
-        ocr_invoice_ref: ocrInvoiceRef,
-        ocr_retailer_name: ocrRetailerName,
-        ocr_invoice_date: ocrInvoiceDate,
-        ocr_invoice_total_gbp: ocrTotal,
-        review_status: "pending_review",
-        blocked_from_sage_yn: true,
-      })
-      .eq("id", params.supplierInvoiceId);
-
-    const { data: existingLines } = await admin
-      .from("supplier_invoice_lines")
-      .select("id")
-      .eq("supplier_invoice_id", params.supplierInvoiceId)
-      .limit(1);
-
-    let insertedLineCount = 0;
-    if ((existingLines ?? []).length === 0 && ocrLines.length > 0) {
-      const linesToInsert = ocrLines.map((line: OcrInvoiceLine) => ({
-        ...line,
-        supplier_invoice_id: params.supplierInvoiceId,
-      }));
-      const { data: insertedLines } = await admin
-        .from("supplier_invoice_lines")
-        .insert(linesToInsert)
-        .select("id");
-      insertedLineCount = insertedLines?.length ?? 0;
-    }
-
-    if (!ocrInvoiceRef || !ocrRetailerName || ocrTotal === null) {
-      await createReviewFlagIfMissing({
-        orderId: params.orderId,
-        supplierInvoiceId: params.supplierInvoiceId,
-        flagType: "ocr_unclear",
-        message: "Mindee OCR did not extract a complete invoice reference, supplier name, and total. Supervisor review required.",
-        raisedByOperatorId: params.operatorId,
-      });
-    }
-
-    if (ocrTotal !== null && Math.abs(params.enteredInvoiceTotal - ocrTotal) >= 0.01) {
-      await createReviewFlagIfMissing({
-        orderId: params.orderId,
-        supplierInvoiceId: params.supplierInvoiceId,
-        flagType: "invoice_total_mismatch",
-        message: `Operator entered ${params.enteredInvoiceTotal.toFixed(2)} but Mindee OCR extracted ${ocrTotal.toFixed(2)}.`,
-        raisedByOperatorId: params.operatorId,
-      });
-    }
-
-    if (ocrLines.length === 0) {
-      await createReviewFlagIfMissing({
-        orderId: params.orderId,
-        supplierInvoiceId: params.supplierInvoiceId,
-        flagType: "manual_line_needed",
-        message: "Mindee OCR did not extract usable invoice lines. Manual/supervisor line review is required.",
-        raisedByOperatorId: params.operatorId,
-      });
-    }
-
-    return { ran: true, insertedLineCount, message: "OCR saved" };
-  } catch (error) {
-    await createReviewFlagIfMissing({
-      orderId: params.orderId,
-      supplierInvoiceId: params.supplierInvoiceId,
-      flagType: "ocr_unclear",
-      message: `Mindee OCR failed: ${error instanceof Error ? error.message : "Unknown error"}.`,
-      raisedByOperatorId: params.operatorId,
-    });
-    return { ran: false, insertedLineCount: 0, message: "OCR failed" };
-  }
+  return {
+    ran: false,
+    insertedLineCount: 0,
+    message: "Automatic OCR disabled until V2 manual flow is proven",
+  };
 }
