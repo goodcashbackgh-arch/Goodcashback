@@ -9,6 +9,12 @@ function resultRedirect(params: Record<string, string>): never {
   redirect(`/internal/mindee-check?${query.toString()}`);
 }
 
+function isNextRedirectError(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const digest = (error as { digest?: unknown }).digest;
+  return typeof digest === "string" && digest.startsWith("NEXT_REDIRECT");
+}
+
 async function requireSupervisorOrAdmin() {
   const supabase = await createClient();
   const {
@@ -96,6 +102,10 @@ export async function testMindeeConnectionAction() {
       detail: detail || endpoint,
     });
   } catch (error) {
+    if (isNextRedirectError(error)) {
+      throw error;
+    }
+
     resultRedirect({
       error: "Could not reach Mindee from Vercel runtime.",
       detail: error instanceof Error ? error.message : "Unknown network/runtime error.",
