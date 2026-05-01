@@ -31,6 +31,7 @@ You can check out [the Next.js GitHub repository](https://github.com/vercel/next
 
 Deployment trigger check.
 Deployment trigger check 4.
+Deployment trigger check for Mindee auth diagnostic.
 ## Deploy on Vercel
 
 The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Vercel.
