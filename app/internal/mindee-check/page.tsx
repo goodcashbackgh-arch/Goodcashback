@@ -15,6 +15,23 @@ function isNextRedirectError(error: unknown) {
   return typeof digest === "string" && digest.startsWith("NEXT_REDIRECT");
 }
 
+function runtimeDiagnostics() {
+  const mindeeKeys = Object.keys(process.env)
+    .filter((key) => key.toUpperCase().includes("MINDEE"))
+    .sort();
+  const apiKey = process.env.MINDEE_API_KEY;
+  const autoRun = process.env.MINDEE_AUTO_RUN_ON_UPLOAD;
+
+  return {
+    vercelEnv: process.env.VERCEL_ENV ?? "not set",
+    mindeeKeys,
+    hasMindeeApiKey: Boolean(apiKey && apiKey.trim()),
+    mindeeApiKeyLength: apiKey ? apiKey.length : 0,
+    hasAutoRunSetting: autoRun !== undefined,
+    autoRunValue: autoRun ?? "not set",
+  };
+}
+
 async function requireSupervisorOrAdmin() {
   const supabase = await createClient();
   const {
@@ -43,7 +60,11 @@ export async function testMindeeConnectionAction() {
 
   const apiKey = process.env.MINDEE_API_KEY;
   if (!apiKey) {
-    resultRedirect({ error: "MINDEE_API_KEY is missing in this Vercel runtime." });
+    const diagnostics = runtimeDiagnostics();
+    resultRedirect({
+      error: "MINDEE_API_KEY is missing in this Vercel runtime.",
+      detail: `VERCEL_ENV=${diagnostics.vercelEnv}; MINDEE keys visible=${diagnostics.mindeeKeys.join(", ") || "none"}; MINDEE_AUTO_RUN_ON_UPLOAD visible=${diagnostics.hasAutoRunSetting ? diagnostics.autoRunValue : "no"}`,
+    });
   }
 
   const endpoint = process.env.MINDEE_INVOICE_API_URL || "https://api.mindee.net/v1/products/mindee/invoices/v4/predict";
@@ -116,6 +137,7 @@ export async function testMindeeConnectionAction() {
 export default async function InternalMindeeCheckPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
   const qp = await searchParams;
   const { staff } = await requireSupervisorOrAdmin();
+  const diagnostics = runtimeDiagnostics();
 
   return (
     <main className="min-h-screen bg-slate-50 p-6 text-slate-950">
@@ -126,6 +148,15 @@ export default async function InternalMindeeCheckPage({ searchParams }: { search
           This checks whether Vercel can see MINDEE_API_KEY and whether Mindee accepts the key. It does not send an invoice document.
         </p>
         <p className="mt-2 text-sm">{staff.full_name} · {staff.role_type}</p>
+
+        <div className="mt-4 rounded border bg-slate-50 p-3 text-sm text-slate-700">
+          <p className="font-semibold">Safe runtime diagnostics</p>
+          <p>VERCEL_ENV: {diagnostics.vercelEnv}</p>
+          <p>MINDEE_API_KEY visible: {diagnostics.hasMindeeApiKey ? "yes" : "no"}</p>
+          <p>MINDEE_API_KEY length: {diagnostics.mindeeApiKeyLength}</p>
+          <p>MINDEE_AUTO_RUN_ON_UPLOAD: {diagnostics.hasAutoRunSetting ? diagnostics.autoRunValue : "not visible"}</p>
+          <p>Visible MINDEE variable names: {diagnostics.mindeeKeys.length > 0 ? diagnostics.mindeeKeys.join(", ") : "none"}</p>
+        </div>
 
         {qp.success ? <p className="mt-4 rounded border border-emerald-300 bg-emerald-50 p-3 text-sm">{qp.success}</p> : null}
         {qp.error ? <p className="mt-4 rounded border border-rose-300 bg-rose-50 p-3 text-sm">{qp.error}</p> : null}
