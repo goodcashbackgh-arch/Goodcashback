@@ -2,15 +2,17 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 import {
-  approveSupplierInvoiceCurrentAction,
   rejectSupplierInvoiceRequireResubmissionAction,
   runMindeeOcrForSupplierInvoiceAction,
+  saveSupplierInvoiceHeaderReviewAction,
 } from "./actions";
 import { assertInvoiceReadyForCurrentApproval } from "./readiness";
 
 type SearchParams = { success?: string; error?: string };
 
 type FinancialSummary = { invoice_total_gbp: number | null };
+
+type MaybeArray<T> = T | T[] | null | undefined;
 
 type InvoiceRow = {
   id: string;
@@ -27,21 +29,35 @@ type InvoiceRow = {
   blocked_from_sage_yn: boolean;
   is_current_for_order: boolean;
   review_notes: string | null;
-  orders: {
+  orders: MaybeArray<{
     order_ref: string | null;
     order_total_gbp_declared: number | null;
     total_qty_declared: number | null;
-    retailers: { name: string | null } | null;
-    importers: { company_name: string | null } | null;
-  } | null;
-  retailers: { name: string | null } | null;
-  supplier_invoice_financial_summary: FinancialSummary[] | FinancialSummary | null;
+    retailers: MaybeArray<{ name: string | null }>;
+    importers: MaybeArray<{ company_name: string | null }>;
+  }>;
+  retailers: MaybeArray<{ name: string | null }>;
+  supplier_invoice_financial_summary: MaybeArray<FinancialSummary>;
   supplier_invoice_review_flags: { flag_type: string; message: string; status: string }[] | null;
 };
 
-function firstRelated<T>(value: T | T[] | null | undefined): T | null {
+function firstRelated<T>(value: MaybeArray<T>): T | null {
   if (!value) return null;
   return Array.isArray(value) ? value[0] ?? null : value;
+}
+
+function getOrder(invoice: InvoiceRow) {
+  return firstRelated(invoice.orders);
+}
+
+function getOrderRetailerName(invoice: InvoiceRow) {
+  const order = getOrder(invoice);
+  return firstRelated(order?.retailers)?.name ?? firstRelated(invoice.retailers)?.name ?? invoice.ocr_retailer_name ?? "—";
+}
+
+function getImporterName(invoice: InvoiceRow) {
+  const order = getOrder(invoice);
+  return firstRelated(order?.importers)?.company_name ?? "—";
 }
 
 function getEnteredTotal(invoice: InvoiceRow) {
@@ -173,30 +189,30 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
         <section className="grid gap-4">
           {visibleInvoices.length === 0 ? <p className="rounded-3xl border border-emerald-200 bg-emerald-50 p-5 text-sm text-emerald-800">No active supplier invoice exceptions found. Clean matched invoices should continue to Supplier draft ready rather than being checked individually here.</p> : null}
           {visibleInvoices.map((invoice) => {
+            const order = getOrder(invoice);
             const enteredTotal = getEnteredTotal(invoice);
             const ocrHeaderPresent = hasOcrHeader(invoice);
             const activeFlags = activeReviewFlags(invoice);
-            const retailerMismatch = Boolean(invoice.ocr_retailer_name && invoice.retailers?.name && !invoice.ocr_retailer_name.toLowerCase().includes(String(invoice.retailers.name).toLowerCase()));
+            const orderRetailerName = getOrderRetailerName(invoice);
+            const retailerMismatch = Boolean(invoice.ocr_retailer_name && orderRetailerName !== "—" && !invoice.ocr_retailer_name.toLowerCase().includes(orderRetailerName.toLowerCase()));
             const refMismatch = Boolean(invoice.ocr_invoice_ref && invoice.ocr_invoice_ref !== invoice.invoice_ref);
             const totalMismatch = enteredTotal !== null && invoice.ocr_invoice_total_gbp !== null && Math.abs(Number(enteredTotal) - Number(invoice.ocr_invoice_total_gbp)) >= 0.01;
             const readinessError = readinessByInvoiceId.get(invoice.id) ?? null;
-            const alreadyApproved = ["approved_current", "ref_corrected_approved"].includes(invoice.review_status);
-            const approveDisabled = alreadyApproved || Boolean(readinessError);
 
             return (
               <article key={invoice.id} className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
                 <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                   <div>
                     <div className="flex flex-wrap items-center gap-2">
-                      <h2 className="text-xl font-semibold">{invoice.orders?.order_ref ?? invoice.order_id}</h2>
+                      <h2 className="text-xl font-semibold">{order?.order_ref ?? invoice.order_id}</h2>
                       <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${statusClass(invoice.review_status)}`}>{invoice.review_status}</span>
                       {invoice.blocked_from_sage_yn ? <span className="rounded-full bg-rose-100 px-2.5 py-1 text-xs font-semibold text-rose-800">Blocked from Sage</span> : <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-800">Sage eligible gate</span>}
                       {invoice.is_current_for_order ? <span className="rounded-full bg-sky-100 px-2.5 py-1 text-xs font-semibold text-sky-800">Current for order</span> : null}
-                      {!alreadyApproved && !readinessError ? <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-800">Issue resolved / ready for draft queue</span> : null}
+                      {!readinessError ? <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-800">Issue resolved / ready for draft queue</span> : null}
                     </div>
-                    <p className="mt-2 text-sm text-slate-600">Importer: {invoice.orders?.importers?.company_name ?? "—"}</p>
-                    <p className="text-sm text-slate-600">Order retailer: {invoice.orders?.retailers?.name ?? invoice.retailers?.name ?? "—"}</p>
-                    <p className="text-sm text-slate-600">Order goods baseline: {gbp(invoice.orders?.order_total_gbp_declared)} · Qty {invoice.orders?.total_qty_declared ?? "—"}</p>
+                    <p className="mt-2 text-sm text-slate-600">Importer: {getImporterName(invoice)}</p>
+                    <p className="text-sm text-slate-600">Order retailer: {orderRetailerName}</p>
+                    <p className="text-sm text-slate-600">Order goods baseline: {gbp(order?.order_total_gbp_declared)} · Qty {order?.total_qty_declared ?? "—"}</p>
                   </div>
                   <div className="flex flex-wrap gap-2">
                     <Link href={`/internal/evidence/${invoice.order_id}`} className="rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">Open staff order detail</Link>
@@ -225,14 +241,14 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
                   {activeFlags.map((flag, index) => <p key={`${flag.flag_type}-${index}`} className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900"><span className="font-semibold">{flagLabel(flag.flag_type)}:</span> {flag.message}</p>)}
                 </div> : null}
 
-                {readinessError && !alreadyApproved ? <p className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900"><span className="font-semibold">Approval blocked:</span> {readinessError}</p> : null}
-                {!readinessError && !alreadyApproved ? <p className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">Issue resolved: invoice lines are settled, totals match, and no pending adjustment approvals remain. Use Supplier draft ready for bulk approval.</p> : null}
+                {readinessError ? <p className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900"><span className="font-semibold">Still blocked from draft queue:</span> {readinessError}</p> : null}
+                {!readinessError ? <p className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">Issue resolved: invoice lines are settled, totals match, and no pending adjustment approvals remain. Use Supplier draft ready for bulk approval.</p> : null}
 
                 <div className="mt-4 grid gap-4 lg:grid-cols-2">
-                  <form action={approveSupplierInvoiceCurrentAction} className={`rounded-2xl border p-4 ${approveDisabled ? "border-slate-200 bg-slate-50" : "border-emerald-200 bg-emerald-50"}`}>
+                  <form action={saveSupplierInvoiceHeaderReviewAction} className="rounded-2xl border border-sky-200 bg-sky-50 p-4">
                     <input type="hidden" name="supplier_invoice_id" value={invoice.id} />
-                    <h3 className={`text-sm font-semibold ${approveDisabled ? "text-slate-700" : "text-emerald-950"}`}>Supervisor invoice header review</h3>
-                    <p className={`mt-2 text-xs leading-5 ${approveDisabled ? "text-slate-600" : "text-emerald-900"}`}>{ocrHeaderPresent ? "Correct OCR/PDF header values only if the extraction is wrong. Clean invoices should normally move to Supplier draft ready for bulk approval." : "OCR has not populated the header yet. For manual testing, only fill accepted values after checking the invoice PDF."}</p>
+                    <h3 className="text-sm font-semibold text-sky-950">Save header correction / resolve issue</h3>
+                    <p className="mt-2 text-xs leading-5 text-sky-900">Correct OCR/PDF header values only after checking the invoice. This does not approve the invoice as current; clean invoices move to Supplier draft ready for bulk approval.</p>
                     <div className="mt-3 grid gap-3 md:grid-cols-2">
                       <input name="corrected_invoice_ref" className="rounded-xl border border-slate-300 px-3 py-2 text-sm" defaultValue={invoice.ocr_invoice_ref ?? invoice.invoice_ref} placeholder="Accepted invoice ref" />
                       <input name="ocr_invoice_ref" className="rounded-xl border border-slate-300 px-3 py-2 text-sm" defaultValue={invoice.ocr_invoice_ref ?? ""} placeholder="OCR invoice ref" />
@@ -241,7 +257,7 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
                       <input name="ocr_invoice_total_gbp" type="number" min="0" step="0.01" className="rounded-xl border border-slate-300 px-3 py-2 text-sm" defaultValue={invoice.ocr_invoice_total_gbp ?? enteredTotal ?? ""} placeholder="Accepted/OCR invoice total GBP" />
                       <input name="review_notes" className="rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Review note / correction reason" />
                     </div>
-                    <button disabled={approveDisabled} className={`mt-3 rounded-xl px-4 py-2 text-sm font-semibold ${approveDisabled ? "cursor-not-allowed bg-slate-300 text-slate-600" : "bg-emerald-700 text-white hover:bg-emerald-600"}`}>{alreadyApproved ? "Already approved" : "Approve current"}</button>
+                    <button className="mt-3 rounded-xl bg-sky-700 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-600">Save correction</button>
                   </form>
 
                   <form action={rejectSupplierInvoiceRequireResubmissionAction} className="rounded-2xl border border-rose-200 bg-rose-50 p-4">
