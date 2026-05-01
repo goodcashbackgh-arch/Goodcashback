@@ -18,8 +18,21 @@ type NestedOrderRetailer = {
   retailers?: { name?: string | null } | null;
 };
 
+type ParsedOcrLine = {
+  retailer_sku: string | null;
+  description: string;
+  qty: number;
+  amount_inc_vat_gbp: number;
+};
+
+type ReviewFlagDraft = {
+  flag_type: "invoice_total_mismatch" | "ocr_unclear" | "wrong_invoice" | "delivery_discount_query" | "manual_line_needed" | "other";
+  message: string;
+};
+
 const DEFAULT_MINDEE_INVOICE_MODEL_ID = "cd596aec-23b0-4063-bdbe-38c9c8728e84";
 const MINDEE_V2_ENQUEUE_URL = "https://api-v2.mindee.net/v2/inferences/enqueue";
+const MINDEE_V2_API_BASE = "https://api-v2.mindee.net/v2";
 
 function readString(formData: FormData, key: string) {
   const value = formData.get(key);
@@ -45,9 +58,21 @@ function fieldValue(field: unknown) {
   return value;
 }
 
+function plainOrFieldValue(value: unknown) {
+  const nested = fieldValue(value);
+  if (nested !== null) return nested;
+  if (value === undefined || value === null || value === "") return null;
+  return value;
+}
+
 function stringField(field: unknown) {
   const value = fieldValue(field);
   return value === null ? null : String(value).trim() || null;
+}
+
+function stringValue(value: unknown) {
+  const resolved = plainOrFieldValue(value);
+  return resolved === null ? null : String(resolved).trim() || null;
 }
 
 function numberField(field: unknown) {
@@ -57,10 +82,23 @@ function numberField(field: unknown) {
   return Number.isFinite(n) ? Math.round(n * 100) / 100 : null;
 }
 
+function numberValue(value: unknown) {
+  const resolved = plainOrFieldValue(value);
+  if (resolved === null) return null;
+  const n = Number(resolved);
+  return Number.isFinite(n) ? Math.round(n * 100) / 100 : null;
+}
+
 function dateField(field: unknown) {
   const value = stringField(field);
   if (!value) return null;
   return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null;
+}
+
+function dateValue(value: unknown) {
+  const resolved = stringValue(value);
+  if (!resolved) return null;
+  return /^\d{4}-\d{2}-\d{2}$/.test(resolved) ? resolved : null;
 }
 
 function normalizeInvoiceLine(line: unknown, lineOrder: number): OcrInvoiceLine | null {
@@ -82,6 +120,35 @@ function normalizeInvoiceLine(line: unknown, lineOrder: number): OcrInvoiceLine 
     amount_inc_vat_gbp: amount,
     line_source: "ocr_extracted",
     eligible_for_invoice_yn: "N",
+  };
+}
+
+function normalizeV2InvoiceLine(line: unknown, lineOrder: number): ParsedOcrLine | null {
+  if (!line || typeof line !== "object") return null;
+  const row = line as Record<string, unknown>;
+  const description =
+    stringValue(row.description) ??
+    stringValue(row.name) ??
+    stringValue(row.label) ??
+    stringValue(row.product_name) ??
+    stringValue(row.product_code) ??
+    `OCR line ${lineOrder}`;
+  const qty = Math.max(0, Math.round(numberValue(row.quantity) ?? numberValue(row.qty) ?? 1));
+  const amount =
+    numberValue(row.total_amount) ??
+    numberValue(row.total_price) ??
+    numberValue(row.amount) ??
+    numberValue(row.line_total) ??
+    null;
+  const sku = stringValue(row.product_code) ?? stringValue(row.sku) ?? stringValue(row.reference);
+
+  if (!description || amount === null || amount < 0) return null;
+
+  return {
+    retailer_sku: sku,
+    description,
+    qty,
+    amount_inc_vat_gbp: amount,
   };
 }
 
@@ -119,6 +186,131 @@ function extractMindeeInferenceId(raw: unknown) {
   const inference = obj.inference && typeof obj.inference === "object" ? obj.inference as Record<string, unknown> : null;
   const job = obj.job && typeof obj.job === "object" ? obj.job as Record<string, unknown> : null;
   return recordValue(inference?.id ?? job?.inference_id ?? obj.inference_id);
+}
+
+function extractJobStatus(raw: unknown) {
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+  const job = obj.job && typeof obj.job === "object" ? obj.job as Record<string, unknown> : null;
+  return recordValue(job?.status ?? obj.status);
+}
+
+function isCompleteStatus(status: string | null) {
+  const normal = (status ?? "").toLowerCase();
+  return ["completed", "complete", "processed", "done", "success", "succeeded"].includes(normal);
+}
+
+function getByPath(root: unknown, path: string[]) {
+  let current = root;
+  for (const key of path) {
+    if (!current || typeof current !== "object") return null;
+    current = (current as Record<string, unknown>)[key];
+  }
+  return current ?? null;
+}
+
+function firstRecordCandidate(root: unknown, paths: string[][]) {
+  for (const path of paths) {
+    const candidate = getByPath(root, path);
+    if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) return candidate as Record<string, unknown>;
+  }
+  return {} as Record<string, unknown>;
+}
+
+function firstArrayCandidate(root: unknown, paths: string[][]) {
+  for (const path of paths) {
+    const candidate = getByPath(root, path);
+    if (Array.isArray(candidate)) return candidate;
+  }
+  return [] as unknown[];
+}
+
+function firstStringFrom(record: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = stringValue(record[key]);
+    if (value) return value;
+  }
+  return null;
+}
+
+function firstNumberFrom(record: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = numberValue(record[key]);
+    if (value !== null) return value;
+  }
+  return null;
+}
+
+function firstDateFrom(record: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = dateValue(record[key]);
+    if (value) return value;
+  }
+  return null;
+}
+
+function extractPagesConsumed(raw: unknown) {
+  const candidates = [
+    getByPath(raw, ["inference", "file", "page_count"]),
+    getByPath(raw, ["inference", "file", "pages"]),
+    getByPath(raw, ["file", "page_count"]),
+    getByPath(raw, ["file", "pages"]),
+    getByPath(raw, ["document", "n_pages"]),
+  ];
+
+  for (const candidate of candidates) {
+    const n = numberValue(candidate);
+    if (n !== null) return Math.max(0, Math.round(n));
+  }
+  return null;
+}
+
+function parseMindeeV2InvoiceResult(raw: unknown, enteredTotal: number | null, expectedRetailer: string | null) {
+  const fields = firstRecordCandidate(raw, [
+    ["inference", "result", "fields"],
+    ["inference", "result", "prediction"],
+    ["inference", "result"],
+    ["result", "fields"],
+    ["result"],
+    ["document", "inference", "prediction"],
+  ]);
+
+  const ocrInvoiceRef = firstStringFrom(fields, ["invoice_number", "invoice_ref", "invoice_id", "reference", "document_number"]);
+  const ocrRetailerName = firstStringFrom(fields, ["supplier_name", "supplier", "vendor_name", "seller_name", "company_name"]);
+  const ocrInvoiceDate = firstDateFrom(fields, ["invoice_date", "date", "issued_date", "document_date"]);
+  const ocrInvoiceTotal = firstNumberFrom(fields, ["total_amount", "total", "total_incl", "total_inc_vat", "amount_due", "grand_total"]);
+  const lineItems = firstArrayCandidate(raw, [
+    ["inference", "result", "fields", "line_items"],
+    ["inference", "result", "fields", "items"],
+    ["inference", "result", "fields", "invoice_lines"],
+    ["inference", "result", "prediction", "line_items"],
+    ["result", "fields", "line_items"],
+    ["document", "inference", "prediction", "line_items"],
+  ]);
+
+  const lines = lineItems
+    .map((line, index) => normalizeV2InvoiceLine(line, index + 1))
+    .filter((line: ParsedOcrLine | null): line is ParsedOcrLine => Boolean(line));
+  const flags: ReviewFlagDraft[] = [];
+  const today = new Date().toISOString().slice(0, 10);
+  const lineTotal = Math.round(lines.reduce((sum, line) => sum + Number(line.amount_inc_vat_gbp ?? 0), 0) * 100) / 100;
+
+  if (!ocrInvoiceRef) flags.push({ flag_type: "ocr_unclear", message: "Mindee OCR did not extract an invoice reference." });
+  if (!ocrInvoiceDate) flags.push({ flag_type: "ocr_unclear", message: "Mindee OCR did not extract an invoice date." });
+  if (ocrInvoiceDate && ocrInvoiceDate > today) flags.push({ flag_type: "ocr_unclear", message: `Mindee OCR extracted a future invoice date: ${ocrInvoiceDate}.` });
+  if (ocrInvoiceTotal === null) flags.push({ flag_type: "ocr_unclear", message: "Mindee OCR did not extract an invoice total." });
+  if (lines.length === 0) flags.push({ flag_type: "manual_line_needed", message: "Mindee OCR did not extract usable invoice lines. Manual line review is required." });
+  if (ocrInvoiceTotal !== null && lines.length > 0 && Math.abs(lineTotal - ocrInvoiceTotal) > 0.01) {
+    flags.push({ flag_type: "invoice_total_mismatch", message: `Mindee OCR line total ${lineTotal.toFixed(2)} does not match OCR header total ${ocrInvoiceTotal.toFixed(2)}.` });
+  }
+  if (enteredTotal !== null && ocrInvoiceTotal !== null && Math.abs(enteredTotal - ocrInvoiceTotal) > 0.01) {
+    flags.push({ flag_type: "invoice_total_mismatch", message: `Operator entered ${enteredTotal.toFixed(2)} but Mindee OCR extracted ${ocrInvoiceTotal.toFixed(2)}.` });
+  }
+  if (expectedRetailer && ocrRetailerName && !ocrRetailerName.toLowerCase().includes(expectedRetailer.toLowerCase())) {
+    flags.push({ flag_type: "wrong_invoice", message: `Order retailer is ${expectedRetailer}, but Mindee OCR detected ${ocrRetailerName}.` });
+  }
+
+  return { ocrInvoiceRef, ocrRetailerName, ocrInvoiceDate, ocrInvoiceTotal, lines, flags };
 }
 
 async function requireSupervisorOrAdmin() {
@@ -281,6 +473,146 @@ export async function runMindeeOcrForSupplierInvoiceAction(formData: FormData) {
 
   redirectWithResult({
     success: `Mindee OCR enqueued safely. Job ${jobId ?? "—"}. Inference ${inferenceId ?? "pending"}. Do not click again; fetch/save result next.`,
+  });
+}
+
+export async function fetchAndSaveMindeeOcrResultAction(formData: FormData) {
+  const supplierInvoiceId = readString(formData, "supplier_invoice_id");
+  if (!supplierInvoiceId) redirectWithResult({ error: "Missing supplier invoice reference." });
+
+  const apiKey = getMindeeV2Key();
+  if (!apiKey) redirectWithResult({ error: "MINDEE_V2_API_KEY is not configured." });
+
+  const guard = await requireSupervisorOrAdmin();
+  if (!guard.ok) redirectWithResult({ error: guard.error });
+
+  const { data: invoice, error: invoiceError } = await guard.supabase
+    .from("supplier_invoices")
+    .select("id, order_id, invoice_ref, mindee_job_id, mindee_inference_id, mindee_model_id, mindee_ocr_status, orders(order_ref, retailers(name)), supplier_invoice_financial_summary(invoice_total_gbp)")
+    .eq("id", supplierInvoiceId)
+    .maybeSingle();
+
+  if (invoiceError || !invoice) redirectWithResult({ error: invoiceError?.message ?? "Supplier invoice not found." });
+
+  const modelId = String(invoice.mindee_model_id || getMindeeInvoiceModelId());
+  let jobId = typeof invoice.mindee_job_id === "string" ? invoice.mindee_job_id : "";
+  let inferenceId = typeof invoice.mindee_inference_id === "string" ? invoice.mindee_inference_id : "";
+
+  if (!jobId && !inferenceId) {
+    redirectWithResult({ error: "This invoice has no Mindee job/inference id to fetch. Do not send it again unless you intend to consume another page." });
+  }
+
+  const headers = new Headers();
+  headers.set("Authori" + "zation", apiKey);
+  headers.set("Accept", "application/json");
+
+  let jobRaw: unknown = null;
+  if (jobId) {
+    const jobResponse = await fetch(`${MINDEE_V2_API_BASE}/jobs/${encodeURIComponent(jobId)}`, {
+      method: "GET",
+      headers,
+      cache: "no-store",
+    });
+    jobRaw = await jobResponse.json().catch(() => null);
+    const status = extractJobStatus(jobRaw);
+    const newInferenceId = extractMindeeInferenceId(jobRaw);
+    if (newInferenceId) inferenceId = newInferenceId;
+
+    const { error: pollError } = await guard.supabase.rpc("staff_record_mindee_job_poll", {
+      p_supplier_invoice_id: supplierInvoiceId,
+      p_model_id: modelId,
+      p_http_status: jobResponse.status,
+      p_success_yn: jobResponse.ok,
+      p_mindee_job_id: jobId,
+      p_mindee_inference_id: inferenceId || null,
+      p_job_status: status,
+      p_response_json: jobRaw ?? { empty_response: true },
+      p_error_message: jobResponse.ok ? null : (parseMindeeDetail(jobRaw) || `Mindee job fetch failed (${jobResponse.status}).`),
+    });
+
+    if (pollError) {
+      redirectWithResult({
+        error: pollError.message.includes("function") || pollError.message.includes("schema cache")
+          ? "Mindee result SQL is not installed yet. Run docs/governing-pack/backend/mindee_v2_result_v1.sql first."
+          : pollError.message,
+      });
+    }
+
+    if (!jobResponse.ok) {
+      redirectWithResult({ error: `Mindee job fetch failed (${jobResponse.status}). ${parseMindeeDetail(jobRaw) || "No detail returned."}` });
+    }
+
+    if (!isCompleteStatus(status) && !inferenceId) {
+      redirectWithResult({ success: `Mindee job ${jobId} is still ${status ?? "processing"}. Wait briefly, then click Fetch/save result again. No new page was sent.` });
+    }
+  }
+
+  if (!inferenceId) {
+    redirectWithResult({ success: `Mindee job ${jobId} has no inference id yet. Wait briefly, then click Fetch/save result again. No new page was sent.` });
+  }
+
+  const inferenceResponse = await fetch(`${MINDEE_V2_API_BASE}/inferences/${encodeURIComponent(inferenceId)}`, {
+    method: "GET",
+    headers,
+    cache: "no-store",
+  });
+  const inferenceRaw = await inferenceResponse.json().catch(() => null);
+
+  if (!inferenceResponse.ok) {
+    redirectWithResult({ error: `Mindee inference fetch failed (${inferenceResponse.status}). ${parseMindeeDetail(inferenceRaw) || "No detail returned."}` });
+  }
+
+  const orders = Array.isArray(invoice.orders) ? invoice.orders[0] : invoice.orders;
+  const retailers = orders && typeof orders === "object" && "retailers" in orders ? (orders as { retailers?: unknown }).retailers : null;
+  const retailerRow = Array.isArray(retailers) ? retailers[0] : retailers;
+  const expectedRetailer = retailerRow && typeof retailerRow === "object" && "name" in retailerRow ? String((retailerRow as { name?: unknown }).name ?? "") : "";
+  const financialSummary = Array.isArray(invoice.supplier_invoice_financial_summary) ? invoice.supplier_invoice_financial_summary[0] : invoice.supplier_invoice_financial_summary;
+  const enteredTotal = financialSummary && typeof financialSummary === "object" && "invoice_total_gbp" in financialSummary
+    ? numberValue((financialSummary as { invoice_total_gbp?: unknown }).invoice_total_gbp)
+    : null;
+
+  const parsed = parseMindeeV2InvoiceResult(inferenceRaw, enteredTotal, expectedRetailer || null);
+  const pagesConsumed = extractPagesConsumed(inferenceRaw);
+
+  const { data: saveData, error: saveError } = await guard.supabase.rpc("staff_save_mindee_invoice_ocr_result", {
+    p_supplier_invoice_id: supplierInvoiceId,
+    p_model_id: modelId,
+    p_http_status: inferenceResponse.status,
+    p_mindee_job_id: jobId || null,
+    p_mindee_inference_id: inferenceId,
+    p_raw_json: inferenceRaw ?? { empty_response: true },
+    p_ocr_invoice_ref: parsed.ocrInvoiceRef,
+    p_ocr_retailer_name: parsed.ocrRetailerName,
+    p_ocr_invoice_date: parsed.ocrInvoiceDate,
+    p_ocr_invoice_total_gbp: parsed.ocrInvoiceTotal,
+    p_pages_consumed: pagesConsumed,
+    p_lines: parsed.lines,
+    p_flags: parsed.flags,
+  });
+
+  if (saveError) {
+    redirectWithResult({
+      error: saveError.message.includes("function") || saveError.message.includes("schema cache")
+        ? "Mindee result SQL is not installed yet. Run docs/governing-pack/backend/mindee_v2_result_v1.sql first."
+        : saveError.message,
+    });
+  }
+
+  const resultRow = Array.isArray(saveData) ? saveData[0] : null;
+  const orderId = resultRow?.order_id ? String(resultRow.order_id) : String(invoice.order_id);
+  const insertedLines = resultRow?.inserted_line_count ?? parsed.lines.length;
+  const insertedFlags = resultRow?.inserted_flag_count ?? parsed.flags.length;
+
+  revalidatePath("/internal/invoice-review");
+  revalidatePath("/internal/supplier-draft-ready");
+  if (orderId) {
+    revalidatePath(`/internal/evidence/${orderId}`);
+    revalidatePath(`/importer/orders/${orderId}/operations`);
+    revalidatePath(`/importer/reconciliation/${orderId}`);
+  }
+
+  redirectWithResult({
+    success: `Mindee OCR result saved. Inserted ${insertedLines} OCR line(s), raised ${insertedFlags} flag(s). Pages reported: ${pagesConsumed ?? "unknown"}.`,
   });
 }
 
