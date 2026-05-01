@@ -40,6 +40,19 @@ type InvoiceRow = {
   supplier_invoice_review_flags: { flag_type: string; message: string; status: string }[] | null;
 };
 
+type MatchDecisionRow = {
+  supplier_invoice_id: string;
+  routing_decision: string;
+  routing_reason: string | null;
+  retailer_match_yn: boolean | null;
+  invoice_ref_match_yn: boolean | null;
+  total_match_yn: boolean | null;
+  ocr_line_count: number | null;
+  pending_adjustment_yn: boolean | null;
+  supplier_approval_blocked_yn: boolean | null;
+  supplier_approval_block_reason: string | null;
+};
+
 function first<T>(value: MaybeArray<T>): T | null {
   if (!value) return null;
   return Array.isArray(value) ? value[0] ?? null : value;
@@ -56,6 +69,20 @@ function hasMindeeJob(invoice: InvoiceRow) { return Boolean(invoice.mindee_job_i
 function mindeeCompleted(invoice: InvoiceRow) { return invoice.mindee_ocr_status === "completed" || Boolean(invoice.mindee_result_saved_at); }
 function canStartMindee(invoice: InvoiceRow) { return !hasMindeeJob(invoice) && !mindeeCompleted(invoice); }
 function canFetchMindee(invoice: InvoiceRow) { return hasMindeeJob(invoice) && !mindeeCompleted(invoice); }
+function yesNo(value: boolean | null | undefined) { return value ? "Yes" : "No"; }
+function decisionLabel(decision: string | undefined) {
+  if (!decision) return "decision unavailable";
+  return decision.replaceAll("_", " ");
+}
+function shouldShowInInvoiceReview(invoice: InvoiceRow, decision: MatchDecisionRow | undefined) {
+  if (!decision) {
+    // Safe fallback while the DB view is not installed yet.
+    return hasMindeeJob(invoice) || openFlags(invoice).length > 0;
+  }
+  if (["needs_invoice_review", "ocr_pending"].includes(decision.routing_decision)) return true;
+  if (canFetchMindee(invoice)) return true;
+  return false;
+}
 
 export default async function InternalInvoiceReviewPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
   const qp = await searchParams;
@@ -75,8 +102,21 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
     .limit(100);
 
   const invoices = (data ?? []) as unknown as InvoiceRow[];
+  const invoiceIds = invoices.map((invoice) => invoice.id);
+  const { data: matchData, error: matchError } = invoiceIds.length > 0
+    ? await supabase
+        .from("supplier_invoice_match_decision_vw")
+        .select("supplier_invoice_id, routing_decision, routing_reason, retailer_match_yn, invoice_ref_match_yn, total_match_yn, ocr_line_count, pending_adjustment_yn, supplier_approval_blocked_yn, supplier_approval_block_reason")
+        .in("supplier_invoice_id", invoiceIds)
+    : { data: [] as MatchDecisionRow[], error: null };
+
+  const matchByInvoiceId = new Map<string, MatchDecisionRow>();
+  for (const row of (matchData ?? []) as MatchDecisionRow[]) {
+    matchByInvoiceId.set(row.supplier_invoice_id, row);
+  }
+
   const readiness = new Map(await Promise.all(invoices.map(async (invoice) => [invoice.id, await assertInvoiceReadyForCurrentApproval(supabase, invoice.id)] as const)));
-  const visible = invoices.filter((invoice) => Boolean(readiness.get(invoice.id)) || openFlags(invoice).length > 0 || hasMindeeJob(invoice));
+  const visible = invoices.filter((invoice) => shouldShowInInvoiceReview(invoice, matchByInvoiceId.get(invoice.id)));
 
   return (
     <main className="min-h-screen bg-slate-50 p-6 text-slate-950" data-release-marker={MINDEE_RESULT_FETCH_RELEASE_MARKER}>
@@ -86,17 +126,18 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
           <Link href="/internal/supplier-draft-ready" className="rounded bg-emerald-700 px-3 py-2 text-white">Open supplier draft ready →</Link>
         </div>
         <h1 className="mt-4 text-2xl font-semibold">Supplier invoice exceptions queue</h1>
-        <p className="mt-2 text-sm text-slate-600">Order retailer is read only from the order-created retailer: orders.retailer_id → retailers.name. OCR retailer is shown separately and never used as the order retailer.</p>
+        <p className="mt-2 text-sm text-slate-600">Only invoices needing OCR/header review or OCR pending action should appear here. Full matches should route to operator reconciliation.</p>
         <p className="mt-2 text-sm">{staff.full_name} · {staff.role_type}</p>
         {qp.success ? <p className="mt-3 rounded border border-emerald-300 bg-emerald-50 p-2 text-sm">{qp.success}</p> : null}
         {qp.error ? <p className="mt-3 rounded border border-rose-300 bg-rose-50 p-2 text-sm">{qp.error}</p> : null}
+        {matchError ? <p className="mt-3 rounded border border-amber-300 bg-amber-50 p-2 text-sm">Match decision view not available yet: run docs/governing-pack/backend/supplier_invoice_match_decision_v1.sql. Fallback filtering is active.</p> : null}
       </section>
 
       {error ? <p className="mt-4 rounded border border-rose-300 bg-rose-50 p-3">{error.message}</p> : null}
 
       <section className="mt-4 grid gap-3 md:grid-cols-3">
-        <div className="rounded border bg-white p-4">Needs supervisor attention: <strong>{visible.length}</strong></div>
-        <div className="rounded border bg-white p-4">Clean / hidden: <strong>{invoices.length - visible.length}</strong></div>
+        <div className="rounded border bg-white p-4">Needs review / OCR pending: <strong>{visible.length}</strong></div>
+        <div className="rounded border bg-white p-4">Matched / routed away: <strong>{invoices.length - visible.length}</strong></div>
         <div className="rounded border bg-white p-4">Loaded active invoices: <strong>{invoices.length}</strong></div>
       </section>
 
@@ -107,6 +148,7 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
           const flags = openFlags(invoice);
           const block = readiness.get(invoice.id);
           const total = enteredTotal(invoice);
+          const match = matchByInvoiceId.get(invoice.id);
           return (
             <article key={invoice.id} className="rounded-2xl border bg-white p-5">
               <h2 className="text-xl font-semibold">{order?.order_ref ?? invoice.order_id}</h2>
@@ -125,6 +167,14 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
                 <div>Open flags<br /><strong>{flags.length}</strong></div>
               </div>
 
+              <div className="mt-3 rounded border bg-sky-50 p-3 text-sm">
+                <p className="font-semibold">Matching / routing decision</p>
+                <p>Decision: <strong>{decisionLabel(match?.routing_decision)}</strong></p>
+                <p>Reason: <strong>{match?.routing_reason ?? "Decision view unavailable."}</strong></p>
+                <p>Retailer match: <strong>{yesNo(match?.retailer_match_yn)}</strong> · Ref match: <strong>{yesNo(match?.invoice_ref_match_yn)}</strong> · Total match: <strong>{yesNo(match?.total_match_yn)}</strong> · OCR lines: <strong>{match?.ocr_line_count ?? "—"}</strong></p>
+                {match?.pending_adjustment_yn ? <p className="mt-1 rounded bg-amber-50 p-2">Delivery/discount approval is pending. This blocks supplier approval/Sage readiness, not operator line reconciliation.</p> : null}
+              </div>
+
               <div className="mt-3 rounded border bg-slate-50 p-3 text-sm">
                 <p className="font-semibold">Mindee OCR status</p>
                 <p>Status: <strong>{invoice.mindee_ocr_status ?? "not_started"}</strong></p>
@@ -135,9 +185,10 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
               </div>
 
               {flags.map((flag, index) => <p key={index} className="mt-2 rounded bg-amber-50 p-2 text-sm"><strong>{flag.flag_type}</strong>: {flag.message}</p>)}
-              {block ? <p className="mt-3 rounded bg-amber-50 p-2 text-sm"><strong>Still blocked from draft queue:</strong> {block}</p> : <p className="mt-3 rounded bg-emerald-50 p-2 text-sm">Issue resolved. Use Supplier draft ready for bulk approval.</p>}
+              {block ? <p className="mt-3 rounded bg-amber-50 p-2 text-sm"><strong>Supplier approval/Sage still blocked:</strong> {block}</p> : <p className="mt-3 rounded bg-emerald-50 p-2 text-sm">Supplier approval gate looks clear. Use Supplier draft ready for bulk approval after reconciliation is complete.</p>}
               <div className="mt-4 flex flex-wrap gap-2">
                 <Link href={`/internal/evidence/${invoice.order_id}`} className="rounded border px-3 py-2 text-sm">Open staff order detail</Link>
+                <Link href={`/importer/reconciliation/${invoice.order_id}`} className="rounded border border-sky-300 bg-sky-50 px-3 py-2 text-sm">Open operator reconciliation</Link>
                 <a href={invoice.invoice_pdf_url} target="_blank" rel="noreferrer" className="rounded bg-slate-900 px-3 py-2 text-sm text-white">Open invoice</a>
                 {canStartMindee(invoice) ? <form action={runMindeeOcrForSupplierInvoiceAction}><input type="hidden" name="supplier_invoice_id" value={invoice.id} /><button className="rounded border border-amber-400 bg-amber-50 px-3 py-2 text-sm">Send this invoice to Mindee OCR — uses page credit</button></form> : null}
                 {canFetchMindee(invoice) ? <form action={fetchAndSaveMindeeOcrResultAction}><input type="hidden" name="supplier_invoice_id" value={invoice.id} /><button className="rounded border border-emerald-600 bg-emerald-50 px-3 py-2 text-sm">Fetch/save Mindee result — no new page</button></form> : null}
