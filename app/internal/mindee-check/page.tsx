@@ -58,7 +58,7 @@ export async function testMindeeConnectionAction() {
 
   await requireSupervisorOrAdmin();
 
-  const apiKey = process.env.MINDEE_API_KEY;
+  const apiKey = process.env.MINDEE_API_KEY?.trim();
   if (!apiKey) {
     const diagnostics = runtimeDiagnostics();
     resultRedirect({
