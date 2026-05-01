@@ -8,6 +8,14 @@ type SearchParams = { success?: string; error?: string };
 
 type FinancialSummary = { invoice_total_gbp: number | null };
 
+type OrderRelation = {
+  order_ref: string | null;
+  order_total_gbp_declared: number | null;
+  total_qty_declared: number | null;
+  retailers: { name: string | null } | { name: string | null }[] | null;
+  importers: { company_name: string | null } | { company_name: string | null }[] | null;
+};
+
 type InvoiceRow = {
   id: string;
   order_id: string;
@@ -18,13 +26,7 @@ type InvoiceRow = {
   ocr_invoice_total_gbp: number | null;
   review_status: string;
   is_current_for_order: boolean;
-  orders: {
-    order_ref: string | null;
-    order_total_gbp_declared: number | null;
-    total_qty_declared: number | null;
-    retailers: { name: string | null } | null;
-    importers: { company_name: string | null } | null;
-  } | null;
+  orders: OrderRelation | OrderRelation[] | null;
   supplier_invoice_financial_summary: FinancialSummary[] | FinancialSummary | null;
   supplier_invoice_review_flags: { flag_type: string; status: string }[] | null;
   supplier_invoice_lines: { amount_inc_vat_gbp: number | null; eligible_for_invoice_yn: string | null }[] | null;
@@ -34,6 +36,20 @@ type InvoiceRow = {
 function firstRelated<T>(value: T | T[] | null | undefined): T | null {
   if (!value) return null;
   return Array.isArray(value) ? value[0] ?? null : value;
+}
+
+function getOrder(invoice: InvoiceRow) {
+  return firstRelated(invoice.orders);
+}
+
+function getOrderRetailerName(invoice: InvoiceRow) {
+  const order = getOrder(invoice);
+  return firstRelated(order?.retailers)?.name ?? null;
+}
+
+function getOrderImporterName(invoice: InvoiceRow) {
+  const order = getOrder(invoice);
+  return firstRelated(order?.importers)?.company_name ?? null;
 }
 
 function gbp(value: number | string | null | undefined) {
@@ -105,7 +121,7 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
       supplier_invoice_lines(amount_inc_vat_gbp, eligible_for_invoice_yn),
       order_value_adjustments(adjustment_type, amount_gbp, approval_status)
     `)
-    .in("review_status", ["pending_review", "duplicate_blocked", "rejected_resubmit_required"])
+    .in("review_status", ["pending_review", "duplicate_blocked"])
     .order("uploaded_at", { ascending: false })
     .limit(100);
 
@@ -130,7 +146,7 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
             <div>
               <h1 className="text-3xl font-semibold tracking-tight">Clean supplier invoices ready for bulk approval</h1>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-                This lane shows invoices that have passed the readiness gate: lines exist, line total matches invoice total, all lines are progressed or exception-completed, no pending delivery/discount approval remains, and no serious invoice flags remain open. Approving here marks the supplier invoice as current for later Sage supplier draft preparation; it does not post to Sage yet.
+                This lane shows active invoices that have passed the readiness gate: lines exist, line total matches invoice total, all lines are progressed or exception-completed, no pending delivery/discount approval remains, and no serious invoice flags remain open. Approving here marks the supplier invoice as current for later Sage supplier draft preparation; it does not post to Sage yet.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700">
@@ -147,7 +163,7 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
         <section className="grid gap-4 md:grid-cols-3">
           <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-sm uppercase tracking-wide text-slate-500">Ready for approval</p><p className="mt-2 text-3xl font-semibold">{readyInvoices.length}</p></div>
           <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-sm uppercase tracking-wide text-slate-500">Blocked elsewhere</p><p className="mt-2 text-3xl font-semibold">{blockedCount}</p></div>
-          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-sm uppercase tracking-wide text-slate-500">Loaded invoices checked</p><p className="mt-2 text-3xl font-semibold">{invoices.length}</p></div>
+          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-sm uppercase tracking-wide text-slate-500">Loaded active invoices checked</p><p className="mt-2 text-3xl font-semibold">{invoices.length}</p></div>
         </section>
 
         <form action={bulkApproveSupplierInvoicesCurrentAction} className="grid gap-4">
@@ -159,6 +175,7 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
           {readyInvoices.length === 0 ? <p className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900">No clean supplier invoices are currently ready. Check the invoice exceptions queue for blocked invoices.</p> : null}
 
           {readyInvoices.map((invoice) => {
+            const order = getOrder(invoice);
             const enteredTotal = getEnteredTotal(invoice);
             const acceptedTotal = invoice.ocr_invoice_total_gbp ?? enteredTotal;
             const delivery = adjustmentTotal(invoice, "retailer_delivery");
@@ -173,11 +190,11 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
                     <input type="checkbox" name="supplier_invoice_id" value={invoice.id} className="mt-1 h-5 w-5 rounded border-slate-300" defaultChecked />
                     <div>
                       <div className="flex flex-wrap items-center gap-2">
-                        <h2 className="text-xl font-semibold">{invoice.orders?.order_ref ?? invoice.order_id}</h2>
+                        <h2 className="text-xl font-semibold">{order?.order_ref ?? invoice.order_id}</h2>
                         <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-800">Ready</span>
                       </div>
-                      <p className="mt-2 text-sm text-slate-600">Importer: {invoice.orders?.importers?.company_name ?? "—"}</p>
-                      <p className="text-sm text-slate-600">Retailer: {invoice.orders?.retailers?.name ?? "—"}</p>
+                      <p className="mt-2 text-sm text-slate-600">Importer: {getOrderImporterName(invoice) ?? "—"}</p>
+                      <p className="text-sm text-slate-600">Retailer: {getOrderRetailerName(invoice) ?? "—"}</p>
                       <p className="text-sm text-slate-600">Invoice ref: {invoice.ocr_invoice_ref ?? invoice.invoice_ref}</p>
                     </div>
                   </div>
