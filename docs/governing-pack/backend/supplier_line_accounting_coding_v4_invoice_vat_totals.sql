@@ -6,8 +6,8 @@
 --
 -- Purpose:
 --   Compare coded net/VAT/gross against invoice OCR net/VAT/gross.
---   Keeps existing view column order stable, then appends invoice net/VAT and
---   net/VAT variance fields. This avoids Postgres column rename/reorder errors.
+--   Drops/recreates the view to avoid Postgres CREATE OR REPLACE restrictions
+--   on existing view column type modifiers/order.
 -- =============================================================================
 
 BEGIN;
@@ -15,7 +15,9 @@ BEGIN;
 SET LOCAL lock_timeout = '15s';
 SET LOCAL statement_timeout = '0';
 
-CREATE OR REPLACE VIEW public.supplier_invoice_accounting_coding_totals_vw AS
+DROP VIEW IF EXISTS public.supplier_invoice_accounting_coding_totals_vw;
+
+CREATE VIEW public.supplier_invoice_accounting_coding_totals_vw AS
 WITH line_codes AS (
   SELECT
     sil.supplier_invoice_id,
