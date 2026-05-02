@@ -14,6 +14,45 @@ function asNullableNumber(value: FormDataEntryValue | null) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function asNumber(value: FormDataEntryValue | null, fallback = 0) {
+  const parsed = asNullableNumber(value);
+  return parsed === null ? fallback : parsed;
+}
+
+export async function saveAllSupplierLineAccountingCodesAction(formData: FormData) {
+  const supabase = await createClient();
+  const orderId = asString(formData.get("order_id"));
+  const invoiceId = asString(formData.get("supplier_invoice_id"));
+  const lineIds = formData.getAll("line_ids").map((value) => asString(value)).filter(Boolean);
+
+  if (!orderId || !invoiceId) redirect(`/internal/reconciliation/${orderId || ""}?error=Missing+invoice+or+order+id`);
+  if (lineIds.length === 0) redirect(`/internal/reconciliation/${orderId}?error=No+progressed+lines+to+save`);
+
+  const lines = lineIds.map((lineId) => ({
+    supplier_invoice_line_id: lineId,
+    description_override: asString(formData.get(`description_override_${lineId}`)),
+    sku_override: asString(formData.get(`sku_override_${lineId}`)),
+    size_override: asString(formData.get(`size_override_${lineId}`)),
+    sage_ledger_account_id: asString(formData.get(`sage_ledger_account_id_${lineId}`)),
+    nominal_code: asString(formData.get(`nominal_code_${lineId}`)),
+    tax_rate_id: asString(formData.get(`tax_rate_id_${lineId}`)),
+    tax_rate_label: asString(formData.get(`tax_rate_label_${lineId}`)),
+    vat_rate_percent: asNumber(formData.get(`vat_rate_percent_${lineId}`), 20),
+    net_amount_gbp: asNumber(formData.get(`net_amount_gbp_${lineId}`), 0),
+    vat_amount_gbp: asNumber(formData.get(`vat_amount_gbp_${lineId}`), 0),
+    admin_review_required_yn: formData.get(`admin_review_required_yn_${lineId}`) === "on",
+    review_reason: asString(formData.get(`review_reason_${lineId}`)),
+  }));
+
+  const { error } = await supabase.rpc("staff_bulk_save_supplier_invoice_line_accounting_codes", {
+    p_supplier_invoice_id: invoiceId,
+    p_lines: lines,
+  });
+
+  if (error) redirect(`/internal/reconciliation/${orderId}?error=${encodeURIComponent(error.message)}`);
+  redirect(`/internal/reconciliation/${orderId}?success=All+coding+lines+saved+and+balanced`);
+}
+
 export async function saveSupplierLineAccountingCodeAction(formData: FormData) {
   const supabase = await createClient();
   const orderId = asString(formData.get("order_id"));
