@@ -6,8 +6,8 @@
 --
 -- Purpose:
 --   Compare coded net/VAT/gross against invoice OCR net/VAT/gross.
---   Gross remains the primary control, but VAT is separately reconciled because
---   it drives supplier AP draft, Sage VAT code treatment, and input VAT evidence.
+--   Keeps existing view column order stable, then appends invoice net/VAT and
+--   net/VAT variance fields. This avoids Postgres column rename/reorder errors.
 -- =============================================================================
 
 BEGIN;
@@ -59,8 +59,6 @@ WITH line_codes AS (
 SELECT
   si.id AS supplier_invoice_id,
   si.order_id,
-  io.invoice_net_gbp AS accepted_invoice_net_gbp,
-  io.invoice_vat_gbp AS accepted_invoice_vat_gbp,
   io.invoice_gross_gbp AS accepted_invoice_gross_gbp,
   (COALESCE(lc.coded_net_gbp, 0) + COALESCE(ac.adjustment_net_gbp, 0))::numeric(12,2) AS total_coded_net_gbp,
   (COALESCE(lc.coded_vat_gbp, 0) + COALESCE(ac.adjustment_vat_gbp, 0))::numeric(12,2) AS total_coded_vat_gbp,
@@ -70,12 +68,14 @@ SELECT
   COALESCE(lc.coded_line_count, 0) AS coded_line_count,
   COALESCE(ac.adjustment_line_count, 0) AS adjustment_line_count,
   (COALESCE(lc.progressed_line_count, 0) = COALESCE(lc.coded_line_count, 0)) AS all_progressed_lines_coded_yn,
+  (abs((COALESCE(lc.coded_gross_gbp, 0) + COALESCE(ac.adjustment_gross_gbp, 0)) - COALESCE(io.invoice_gross_gbp, 0)) <= 0.01) AS gross_reconciled_to_invoice_yn,
+  ((COALESCE(lc.coded_gross_gbp, 0) + COALESCE(ac.adjustment_gross_gbp, 0)) - COALESCE(io.invoice_gross_gbp, 0))::numeric(12,2) AS gross_variance_gbp,
+  io.invoice_net_gbp AS accepted_invoice_net_gbp,
+  io.invoice_vat_gbp AS accepted_invoice_vat_gbp,
   (abs((COALESCE(lc.coded_net_gbp, 0) + COALESCE(ac.adjustment_net_gbp, 0)) - COALESCE(io.invoice_net_gbp, 0)) <= 0.01) AS net_reconciled_to_invoice_yn,
   (abs((COALESCE(lc.coded_vat_gbp, 0) + COALESCE(ac.adjustment_vat_gbp, 0)) - COALESCE(io.invoice_vat_gbp, 0)) <= 0.01) AS vat_reconciled_to_invoice_yn,
-  (abs((COALESCE(lc.coded_gross_gbp, 0) + COALESCE(ac.adjustment_gross_gbp, 0)) - COALESCE(io.invoice_gross_gbp, 0)) <= 0.01) AS gross_reconciled_to_invoice_yn,
   ((COALESCE(lc.coded_net_gbp, 0) + COALESCE(ac.adjustment_net_gbp, 0)) - COALESCE(io.invoice_net_gbp, 0))::numeric(12,2) AS net_variance_gbp,
-  ((COALESCE(lc.coded_vat_gbp, 0) + COALESCE(ac.adjustment_vat_gbp, 0)) - COALESCE(io.invoice_vat_gbp, 0))::numeric(12,2) AS vat_variance_gbp,
-  ((COALESCE(lc.coded_gross_gbp, 0) + COALESCE(ac.adjustment_gross_gbp, 0)) - COALESCE(io.invoice_gross_gbp, 0))::numeric(12,2) AS gross_variance_gbp
+  ((COALESCE(lc.coded_vat_gbp, 0) + COALESCE(ac.adjustment_vat_gbp, 0)) - COALESCE(io.invoice_vat_gbp, 0))::numeric(12,2) AS vat_variance_gbp
 FROM public.supplier_invoices si
 LEFT JOIN invoice_ocr io ON io.supplier_invoice_id = si.id
 LEFT JOIN line_codes lc ON lc.supplier_invoice_id = si.id
