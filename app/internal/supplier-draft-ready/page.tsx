@@ -2,7 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 import { assertInvoiceReadyForCurrentApproval } from "../invoice-review/readiness";
-import { bulkApproveSupplierInvoicesCurrentAction } from "./actions";
+import { approveSupplierInvoiceCurrentAction, bulkApproveSupplierInvoicesCurrentAction } from "./actions";
 
 type SearchParams = { success?: string; error?: string };
 
@@ -144,9 +144,9 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-emerald-500">Supplier draft ready</p>
           <div className="mt-3 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
             <div>
-              <h1 className="text-3xl font-semibold tracking-tight">Clean supplier invoices ready for bulk approval</h1>
+              <h1 className="text-3xl font-semibold tracking-tight">Clean supplier invoices ready for approval</h1>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-                This lane shows active invoices that have passed the readiness gate: lines exist, line total matches invoice total, all lines are progressed or exception-completed, no pending delivery/discount approval remains, and no serious invoice flags remain open. Approving here marks the supplier invoice as current for later Sage supplier draft preparation; it does not post to Sage yet.
+                This lane shows active invoices that have passed the readiness gate. Approving here marks the supplier invoice as current for later Sage supplier draft preparation; it does not post to Sage yet.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700">
@@ -202,6 +202,14 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
                     <Link href={`/internal/evidence/${invoice.order_id}`} className="rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">Open order</Link>
                     <Link href={`/internal/reconciliation/${invoice.order_id}`} className="rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">Open reconciliation</Link>
                     <a href={invoice.invoice_pdf_url} target="_blank" rel="noreferrer" className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white">Open invoice</a>
+                    <button
+                      formAction={approveSupplierInvoiceCurrentAction}
+                      name="single_supplier_invoice_id"
+                      value={invoice.id}
+                      className="rounded-xl bg-emerald-700 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-600"
+                    >
+                      Approve current
+                    </button>
                   </div>
                 </div>
 
