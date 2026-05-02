@@ -2,11 +2,8 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 import AccountingGridCalculator from "./AccountingGridCalculator";
-import {
-  addSupplierAccountingAdjustmentLineAction,
-  deleteSupplierAccountingAdjustmentLineAction,
-  saveAllSupplierLineAccountingCodesAction,
-} from "./actions";
+import ManualAdjustmentRows from "./ManualAdjustmentRows";
+import { saveAllSupplierLineAccountingCodesAction } from "./actions";
 
 type SearchParams = { success?: string; error?: string };
 
@@ -75,12 +72,7 @@ type Totals = {
   vat_variance_gbp: number | null;
 };
 
-type Screenshot = {
-  id: string;
-  screenshot_url: string;
-  display_order: number | null;
-  note: string | null;
-};
+type Screenshot = { id: string; screenshot_url: string; display_order: number | null; note: string | null };
 
 function gbp(value: unknown) {
   return new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" }).format(Number(value ?? 0));
@@ -109,7 +101,7 @@ function splitGross(grossValue: unknown, rateValue: unknown) {
   const rate = num(rateValue || 20);
   const net = Math.round((gross / (1 + rate / 100)) * 100) / 100;
   const vat = Math.round((gross - net) * 100) / 100;
-  return { net, vat, gross, rate };
+  return { net, vat };
 }
 
 function taxLabel(rate: unknown) {
@@ -354,41 +346,7 @@ export default async function InternalReconciliationPage({
                   );
                 })}
 
-                {adjustments.map((line) => (
-                  <tr key={line.id} className="border-b bg-amber-50 align-top">
-                    <td className="p-2">Adj</td>
-                    <td className="p-2">{line.description}</td>
-                    <td className="p-2">{line.sku ?? "—"}</td>
-                    <td className="p-2">{line.size ?? "—"}</td>
-                    <td className="p-2">—</td>
-                    <td className="p-2">{line.nominal_code ?? "—"}</td>
-                    <td className="p-2">{line.sage_ledger_account_id ?? "—"}</td>
-                    <td className="p-2">{line.tax_rate_label ?? `${line.vat_rate_percent ?? 0}%`}</td>
-                    <td className="p-2">{gbp(line.net_amount_gbp)}</td>
-                    <td className="p-2">{gbp(line.vat_amount_gbp)}</td>
-                    <td className="p-2 font-semibold">{gbp(line.gross_amount_gbp)}</td>
-                    <td className="p-2">manual adjustment</td>
-                    <td className="p-2"><form action={deleteSupplierAccountingAdjustmentLineAction}><input type="hidden" name="order_id" value={orderId} /><input type="hidden" name="adjustment_line_id" value={line.id} /><button className="rounded-lg border border-rose-300 bg-rose-50 px-3 py-1 font-semibold text-rose-800">Delete</button></form></td>
-                  </tr>
-                ))}
-
-                {invoice ? (
-                  <tr className="border-t-2 bg-slate-50 align-top">
-                    <td className="p-2 font-semibold">Add</td>
-                    <td className="p-2"><input form="add-adjustment" name="description" className="w-72 rounded-lg border px-2 py-1" placeholder="Rounding / adjustment" /></td>
-                    <td className="p-2"><input form="add-adjustment" name="sku" className="w-28 rounded-lg border px-2 py-1" /></td>
-                    <td className="p-2"><input form="add-adjustment" name="size" className="w-20 rounded-lg border px-2 py-1" /></td>
-                    <td className="p-2">—</td>
-                    <td className="p-2"><input form="add-adjustment" name="nominal_code" className="w-24 rounded-lg border px-2 py-1" /></td>
-                    <td className="p-2"><input form="add-adjustment" name="sage_ledger_account_id" className="w-36 rounded-lg border px-2 py-1" /></td>
-                    <td className="p-2"><select form="add-adjustment" name="vat_rate_percent" defaultValue="20" className="w-32 rounded-lg border px-2 py-1"><option value="20">20% std</option><option value="5">5% reduced</option><option value="0">0%</option></select><input form="add-adjustment" type="hidden" name="tax_rate_label" value="manual" /><input form="add-adjustment" type="hidden" name="tax_rate_id" value="manual" /></td>
-                    <td className="p-2"><input form="add-adjustment" name="net_amount_gbp" type="number" step="0.01" className="w-24 rounded-lg border px-2 py-1" /></td>
-                    <td className="p-2"><input form="add-adjustment" name="vat_amount_gbp" type="number" step="0.01" className="w-24 rounded-lg border px-2 py-1" /></td>
-                    <td className="p-2 text-slate-500">net+VAT</td>
-                    <td className="p-2">—</td>
-                    <td className="p-2"><form id="add-adjustment" action={addSupplierAccountingAdjustmentLineAction}><input type="hidden" name="order_id" value={orderId} /><input type="hidden" name="supplier_invoice_id" value={invoice.id} /><button className="rounded-lg bg-slate-900 px-3 py-1 font-semibold text-white">Add</button></form></td>
-                  </tr>
-                ) : null}
+                {invoice ? <ManualAdjustmentRows orderId={orderId} invoiceId={invoice.id} adjustments={adjustments} /> : null}
               </tbody>
               <tfoot className="bg-slate-900 text-white">
                 <tr>
