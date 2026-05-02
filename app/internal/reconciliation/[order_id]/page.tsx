@@ -67,6 +67,12 @@ type Totals = {
   all_progressed_lines_coded_yn: boolean | null;
   gross_reconciled_to_invoice_yn: boolean | null;
   gross_variance_gbp: number | null;
+  accepted_invoice_net_gbp: number | null;
+  accepted_invoice_vat_gbp: number | null;
+  net_reconciled_to_invoice_yn: boolean | null;
+  vat_reconciled_to_invoice_yn: boolean | null;
+  net_variance_gbp: number | null;
+  vat_variance_gbp: number | null;
 };
 
 type Screenshot = {
@@ -195,7 +201,7 @@ export default async function InternalReconciliationPage({
   const { data: totalsRow } = invoice?.id
     ? await supabase
         .from("supplier_invoice_accounting_coding_totals_vw")
-        .select("accepted_invoice_gross_gbp, total_coded_net_gbp, total_coded_vat_gbp, total_coded_gross_gbp, adjustment_gross_gbp, progressed_line_count, coded_line_count, adjustment_line_count, all_progressed_lines_coded_yn, gross_reconciled_to_invoice_yn, gross_variance_gbp")
+        .select("accepted_invoice_gross_gbp, total_coded_net_gbp, total_coded_vat_gbp, total_coded_gross_gbp, adjustment_gross_gbp, progressed_line_count, coded_line_count, adjustment_line_count, all_progressed_lines_coded_yn, gross_reconciled_to_invoice_yn, gross_variance_gbp, accepted_invoice_net_gbp, accepted_invoice_vat_gbp, net_reconciled_to_invoice_yn, vat_reconciled_to_invoice_yn, net_variance_gbp, vat_variance_gbp")
         .eq("supplier_invoice_id", invoice.id)
         .maybeSingle()
     : { data: null as Totals | null };
@@ -207,11 +213,16 @@ export default async function InternalReconciliationPage({
   const screenshotsList = (screenshots ?? []) as Screenshot[];
   const retailer = first(order.retailers as { name: string | null } | { name: string | null }[] | null)?.name ?? "—";
   const importer = first(order.importers as { company_name: string | null } | { company_name: string | null }[] | null)?.company_name ?? "—";
+  const invoiceNet = num(totalsRow?.accepted_invoice_net_gbp);
+  const invoiceVat = num(totalsRow?.accepted_invoice_vat_gbp);
   const acceptedGross = num(totalsRow?.accepted_invoice_gross_gbp ?? invoice?.ocr_invoice_total_gbp ?? order.order_total_gbp_declared);
   const codedNet = num(totalsRow?.total_coded_net_gbp);
   const codedVat = num(totalsRow?.total_coded_vat_gbp);
   const codedGross = num(totalsRow?.total_coded_gross_gbp);
-  const variance = num(totalsRow?.gross_variance_gbp ?? codedGross - acceptedGross);
+  const netVariance = num(totalsRow?.net_variance_gbp ?? codedNet - invoiceNet);
+  const vatVariance = num(totalsRow?.vat_variance_gbp ?? codedVat - invoiceVat);
+  const grossVariance = num(totalsRow?.gross_variance_gbp ?? codedGross - acceptedGross);
+  const vatStatusOk = Math.abs(netVariance) <= 0.01 && Math.abs(vatVariance) <= 0.01 && Math.abs(grossVariance) <= 0.01;
 
   return (
     <main className="min-h-screen bg-slate-50 px-6 py-8 text-slate-950">
@@ -227,12 +238,13 @@ export default async function InternalReconciliationPage({
           {qp.error ? <p className="mt-4 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-900">{qp.error}</p> : null}
         </section>
 
-        <section className="grid gap-4 md:grid-cols-5">
+        <section className="grid gap-4 md:grid-cols-6">
+          <div className="rounded-2xl border bg-white p-4"><p className="text-xs uppercase text-slate-500">Invoice net</p><p className="text-2xl font-semibold">{gbp(invoiceNet)}</p></div>
+          <div className="rounded-2xl border bg-white p-4"><p className="text-xs uppercase text-slate-500">Invoice VAT</p><p className="text-2xl font-semibold">{gbp(invoiceVat)}</p></div>
           <div className="rounded-2xl border bg-white p-4"><p className="text-xs uppercase text-slate-500">Invoice gross</p><p className="text-2xl font-semibold">{gbp(acceptedGross)}</p></div>
           <div className="rounded-2xl border bg-white p-4"><p className="text-xs uppercase text-slate-500">Coded net</p><p className="text-2xl font-semibold">{gbp(codedNet)}</p></div>
           <div className="rounded-2xl border bg-white p-4"><p className="text-xs uppercase text-slate-500">Coded VAT</p><p className="text-2xl font-semibold">{gbp(codedVat)}</p></div>
-          <div className="rounded-2xl border bg-white p-4"><p className="text-xs uppercase text-slate-500">Coded gross</p><p className="text-2xl font-semibold">{gbp(codedGross)}</p></div>
-          <div className={`rounded-2xl border p-4 ${Math.abs(variance) <= 0.01 ? "bg-emerald-50" : "bg-amber-50"}`}><p className="text-xs uppercase text-slate-500">Variance</p><p className="text-2xl font-semibold">{gbp(variance)}</p></div>
+          <div className={`rounded-2xl border p-4 ${vatStatusOk ? "bg-emerald-50" : "bg-amber-50"}`}><p className="text-xs uppercase text-slate-500">Net/VAT/Gross status</p><p className="text-2xl font-semibold">{vatStatusOk ? "OK" : "Check"}</p></div>
         </section>
 
         <section className="grid gap-6 lg:grid-cols-2">
@@ -242,6 +254,7 @@ export default async function InternalReconciliationPage({
               <div className="mt-4 space-y-2 text-sm">
                 <p>Operator/OCR ref: <strong>{invoice.invoice_ref} / {invoice.ocr_invoice_ref ?? "—"}</strong></p>
                 <p>OCR retailer: <strong>{invoice.ocr_retailer_name ?? "—"}</strong></p>
+                <p>Invoice OCR net/VAT/gross: <strong>{gbp(invoiceNet)} / {gbp(invoiceVat)} / {gbp(acceptedGross)}</strong></p>
                 <p>Status: <strong>{invoice.review_status}</strong> · current: <strong>{invoice.is_current_for_order ? "yes" : "no"}</strong> · Sage blocked: <strong>{invoice.blocked_from_sage_yn ? "yes" : "no"}</strong></p>
                 <a href={invoice.invoice_pdf_url} target="_blank" rel="noreferrer" className="inline-flex rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white">Open invoice</a>
               </div>
@@ -267,7 +280,7 @@ export default async function InternalReconciliationPage({
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h2 className="text-xl font-semibold">Supplier invoice accounting grid</h2>
-              <p className="mt-2 text-sm text-slate-600">Save all is atomic: if one line fails, or totals do not reconcile to invoice gross, nothing saves.</p>
+              <p className="mt-2 text-sm text-slate-600">Save all is atomic: invoice net, VAT and gross must reconcile individually.</p>
             </div>
             {invoice ? (
               <form id="save-all-coding" action={saveAllSupplierLineAccountingCodesAction}>
@@ -276,6 +289,15 @@ export default async function InternalReconciliationPage({
                 <button disabled={progressedLines.length === 0} className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white disabled:bg-slate-400">Save all coding lines</button>
               </form>
             ) : null}
+          </div>
+
+          <div className="mt-4 rounded-2xl border bg-slate-50 p-3">
+            <div className="grid gap-3 md:grid-cols-4">
+              <label className="text-xs font-semibold uppercase text-slate-500">Default nominal/GL<input data-bulk-nominal className="mt-1 w-full rounded-lg border px-2 py-2 text-sm normal-case text-slate-900" placeholder="e.g. 5000" /></label>
+              <label className="text-xs font-semibold uppercase text-slate-500">Default Sage ledger id<input data-bulk-sage-ledger className="mt-1 w-full rounded-lg border px-2 py-2 text-sm normal-case text-slate-900" placeholder="from Sage sync later" /></label>
+              <label className="text-xs font-semibold uppercase text-slate-500">Default VAT class<select data-bulk-vat-rate defaultValue="20" className="mt-1 w-full rounded-lg border px-2 py-2 text-sm normal-case text-slate-900"><option value="20">20% standard</option><option value="5">5% reduced</option><option value="0">0%</option></select></label>
+              <div className="flex items-end"><button type="button" data-apply-bulk-defaults className="w-full rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white">Apply to all lines</button></div>
+            </div>
           </div>
 
           <div className="mt-4 overflow-x-auto">
@@ -312,16 +334,16 @@ export default async function InternalReconciliationPage({
                       <td className="p-2"><input form={saveForm} name={`sku_override_${line.id}`} defaultValue={coding?.posting_sku ?? line.retailer_sku ?? ""} disabled={!progressed} className="w-28 rounded-lg border px-2 py-1 disabled:bg-slate-100" /></td>
                       <td className="p-2"><input form={saveForm} name={`size_override_${line.id}`} defaultValue={coding?.posting_size ?? line.size ?? ""} disabled={!progressed} className="w-20 rounded-lg border px-2 py-1 disabled:bg-slate-100" /></td>
                       <td className="p-2">{line.qty ?? 0}</td>
-                      <td className="p-2"><input form={saveForm} name={`nominal_code_${line.id}`} defaultValue={coding?.nominal_code ?? ""} disabled={!progressed} className="w-24 rounded-lg border px-2 py-1 disabled:bg-slate-100" placeholder="5000" /></td>
-                      <td className="p-2"><input form={saveForm} name={`sage_ledger_account_id_${line.id}`} defaultValue={coding?.sage_ledger_account_id ?? ""} disabled={!progressed} className="w-36 rounded-lg border px-2 py-1 disabled:bg-slate-100" /></td>
+                      <td className="p-2"><input data-nominal form={saveForm} name={`nominal_code_${line.id}`} defaultValue={coding?.nominal_code ?? ""} disabled={!progressed} className="w-24 rounded-lg border px-2 py-1 disabled:bg-slate-100" placeholder="5000" /></td>
+                      <td className="p-2"><input data-sage-ledger form={saveForm} name={`sage_ledger_account_id_${line.id}`} defaultValue={coding?.sage_ledger_account_id ?? ""} disabled={!progressed} className="w-36 rounded-lg border px-2 py-1 disabled:bg-slate-100" /></td>
                       <td className="p-2">
                         <select form={saveForm} name={`vat_rate_percent_${line.id}`} data-vat-rate defaultValue={String(rate)} disabled={!progressed} className="w-32 rounded-lg border px-2 py-1 disabled:bg-slate-100">
                           <option value="20">20% std</option>
                           <option value="5">5% reduced</option>
                           <option value="0">0%</option>
                         </select>
-                        <input form={saveForm} type="hidden" name={`tax_rate_label_${line.id}`} value={taxLabel(rate)} />
-                        <input form={saveForm} type="hidden" name={`tax_rate_id_${line.id}`} value={taxId(rate)} />
+                        <input data-tax-label form={saveForm} type="hidden" name={`tax_rate_label_${line.id}`} value={taxLabel(rate)} />
+                        <input data-tax-id form={saveForm} type="hidden" name={`tax_rate_id_${line.id}`} value={taxId(rate)} />
                       </td>
                       <td className="p-2"><input form={saveForm} data-net name={`net_amount_gbp_${line.id}`} type="number" step="0.01" defaultValue={moneyInput(coding?.net_amount_gbp ?? preview.net)} disabled={!progressed} className="w-24 rounded-lg border px-2 py-1 disabled:bg-slate-100" /></td>
                       <td className="p-2"><input form={saveForm} data-vat name={`vat_amount_gbp_${line.id}`} type="number" step="0.01" defaultValue={moneyInput(coding?.vat_amount_gbp ?? preview.vat)} disabled={!progressed} className="w-24 rounded-lg border px-2 py-1 disabled:bg-slate-100" /></td>
@@ -370,11 +392,25 @@ export default async function InternalReconciliationPage({
               </tbody>
               <tfoot className="bg-slate-900 text-white">
                 <tr>
-                  <td className="p-2 font-semibold" colSpan={8}>Totals</td>
+                  <td className="p-2 font-semibold" colSpan={8}>Invoice OCR</td>
+                  <td className="p-2 font-semibold">{gbp(invoiceNet)}</td>
+                  <td className="p-2 font-semibold">{gbp(invoiceVat)}</td>
+                  <td className="p-2 font-semibold">{gbp(acceptedGross)}</td>
+                  <td className="p-2" colSpan={2}>Source: Mindee OCR header totals</td>
+                </tr>
+                <tr className="bg-slate-800">
+                  <td className="p-2 font-semibold" colSpan={8}>Coded lines</td>
                   <td className="p-2 font-semibold">{gbp(codedNet)}</td>
                   <td className="p-2 font-semibold">{gbp(codedVat)}</td>
                   <td className="p-2 font-semibold">{gbp(codedGross)}</td>
-                  <td className="p-2" colSpan={2}>Invoice {gbp(acceptedGross)} · Variance {gbp(variance)}</td>
+                  <td className="p-2" colSpan={2}>Includes manual adjustment lines</td>
+                </tr>
+                <tr className={vatStatusOk ? "bg-emerald-900" : "bg-amber-900"}>
+                  <td className="p-2 font-semibold" colSpan={8}>Variance</td>
+                  <td className="p-2 font-semibold">{gbp(netVariance)}</td>
+                  <td className="p-2 font-semibold">{gbp(vatVariance)}</td>
+                  <td className="p-2 font-semibold">{gbp(grossVariance)}</td>
+                  <td className="p-2" colSpan={2}>{vatStatusOk ? "Ready" : "Must reconcile before Sage draft"}</td>
                 </tr>
               </tfoot>
             </table>
