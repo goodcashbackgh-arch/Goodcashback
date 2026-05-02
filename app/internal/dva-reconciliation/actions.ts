@@ -70,6 +70,70 @@ export async function generateSupplierInvoiceSuggestionsAction(formData: FormDat
   });
 }
 
+export async function allocateStatementLineToFxCardOrFeeAction(formData: FormData) {
+  const supabase = await createClient();
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    redirectWithAllocationResult({
+      allocation_error: "Please sign in again before allocating FX/card/fee difference.",
+    });
+  }
+
+  const statementLineId = readString(formData, "dva_statement_line_id");
+  const allocationType = readString(formData, "allocation_type") || "fx_card_difference";
+  const amountRaw = readString(formData, "allocated_gbp_amount");
+  const notes = readString(formData, "notes") || null;
+  const allocatedAmount = Number(amountRaw);
+
+  if (!statementLineId) {
+    redirectWithAllocationResult({
+      allocation_error: "Missing statement line reference.",
+    });
+  }
+
+  if (!["fx_card_difference", "bank_fee"].includes(allocationType)) {
+    redirectWithAllocationResult({
+      allocation_error: "Unsupported allocation type for FX/card/fee allocation.",
+    });
+  }
+
+  if (!Number.isFinite(allocatedAmount) || allocatedAmount <= 0) {
+    redirectWithAllocationResult({
+      allocation_error: "Allocation amount must be greater than zero.",
+    });
+  }
+
+  const { data, error } = await supabase.rpc("staff_allocate_statement_line_to_fx_card_or_fee", {
+    p_dva_statement_line_id: statementLineId,
+    p_allocation_type: allocationType,
+    p_allocated_gbp_amount: allocatedAmount,
+    p_notes: notes,
+  });
+
+  if (error) {
+    redirectWithAllocationResult({
+      allocation_error: error.message,
+    });
+  }
+
+  revalidatePath("/internal/dva-reconciliation");
+
+  const appliedAmount =
+    typeof data === "object" &&
+    data !== null &&
+    "allocated_gbp_amount" in data
+      ? String((data as { allocated_gbp_amount?: unknown }).allocated_gbp_amount)
+      : allocatedAmount.toFixed(2);
+
+  redirectWithAllocationResult({
+    allocation_success: `Allocated £${appliedAmount} to ${allocationType.replaceAll("_", " ")}.`,
+  });
+}
+
 export async function allocateStatementLineToSupplierInvoiceAction(formData: FormData) {
   const supabase = await createClient();
 
