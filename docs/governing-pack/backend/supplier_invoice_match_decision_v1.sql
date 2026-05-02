@@ -18,6 +18,10 @@
 --     first-stage routing variables.
 --   - Pending delivery/discount approval blocks supplier approval/Sage readiness,
 --     not operator line reconciliation when OCR item lines are usable.
+--
+-- Important fix:
+--   Normalize by lowercasing first, then stripping non [a-z0-9]. If regexp_replace
+--   strips before lower(), uppercase retailer letters such as NINJA become blank.
 -- =============================================================================
 
 BEGIN;
@@ -105,10 +109,10 @@ WITH active_summary AS (
     COALESCE(si.blocked_from_sage_yn, true) AS blocked_from_sage_yn,
     si.ocr_raw_json IS NOT NULL AS has_ocr_raw_json,
     si.ocr_extracted_at,
-    lower(regexp_replace(COALESCE(r.name, ''), '[^a-z0-9]+', '', 'g')) AS norm_order_retailer,
-    lower(regexp_replace(COALESCE(si.ocr_retailer_name, ''), '[^a-z0-9]+', '', 'g')) AS norm_ocr_retailer,
-    lower(regexp_replace(COALESCE(si.invoice_ref, ''), '[^a-z0-9]+', '', 'g')) AS norm_operator_ref,
-    lower(regexp_replace(COALESCE(si.ocr_invoice_ref, ''), '[^a-z0-9]+', '', 'g')) AS norm_ocr_ref
+    regexp_replace(lower(COALESCE(r.name, '')), '[^a-z0-9]+', '', 'g') AS norm_order_retailer,
+    regexp_replace(lower(COALESCE(si.ocr_retailer_name, '')), '[^a-z0-9]+', '', 'g') AS norm_ocr_retailer,
+    regexp_replace(lower(COALESCE(si.invoice_ref, '')), '[^a-z0-9]+', '', 'g') AS norm_operator_ref,
+    regexp_replace(lower(COALESCE(si.ocr_invoice_ref, '')), '[^a-z0-9]+', '', 'g') AS norm_ocr_ref
   FROM public.supplier_invoices si
   JOIN public.orders o ON o.id = si.order_id
   JOIN public.retailers r ON r.id = o.retailer_id
