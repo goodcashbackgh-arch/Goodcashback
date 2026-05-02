@@ -1,8 +1,10 @@
 import Link from "next/link";
 import { createClient } from "@/utils/supabase/server";
+import { allocateStatementLineToSupplierInvoiceAction } from "./actions";
 
 type Row = Record<string, unknown>;
 type ReadError = { source: string; message: string };
+type SearchParamsValue = Record<string, string | string[] | undefined>;
 
 const gbpFormatter = new Intl.NumberFormat("en-GB", {
   style: "currency",
@@ -17,6 +19,11 @@ function text(value: unknown) {
 function maybeText(value: unknown) {
   const output = text(value).trim();
   return output || null;
+}
+
+function firstParam(value: unknown) {
+  if (Array.isArray(value)) return text(value[0]);
+  return text(value);
 }
 
 function num(value: unknown) {
@@ -84,7 +91,14 @@ function statusLabel(row: Row) {
   return "needs allocation";
 }
 
-export default async function DvaReconciliationWorkbenchPage() {
+export default async function DvaReconciliationWorkbenchPage({
+  searchParams,
+}: {
+  searchParams?: SearchParamsValue | Promise<SearchParamsValue>;
+}) {
+  const params = searchParams ? await Promise.resolve(searchParams) : {};
+  const allocationSuccess = firstParam(params.allocation_success);
+  const allocationError = firstParam(params.allocation_error);
   const supabase = await createClient();
 
   const [
@@ -231,14 +245,21 @@ export default async function DvaReconciliationWorkbenchPage() {
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">DVA/card statement reconciliation</p>
           <h1 className="mt-2 text-3xl font-semibold tracking-tight">Supplier charge, refund and exception control workbench</h1>
           <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-600">
-            Read-only allocation view for DVA/card statement lines. Inbound lines route back to funding; outbound lines route toward supplier invoice, refund, exception, FX/card difference, or hold allocation. No write actions are exposed here.
+            Allocation view for DVA/card statement lines. Inbound lines route back to funding; outbound lines route toward supplier invoice, refund, exception, FX/card difference, or hold allocation. Supplier invoice allocation uses a staff-only RPC.
           </p>
           <div className="mt-4 flex flex-wrap gap-2">
-            <span className="rounded-full bg-emerald-50 px-3 py-1 text-sm font-semibold text-emerald-700 ring-1 ring-emerald-200">Read-only</span>
-            <span className="rounded-full bg-slate-100 px-3 py-1 text-sm font-semibold text-slate-700 ring-1 ring-slate-200">No buttons</span>
+            <span className="rounded-full bg-emerald-50 px-3 py-1 text-sm font-semibold text-emerald-700 ring-1 ring-emerald-200">Controlled RPC writes</span>
+            <span className="rounded-full bg-slate-100 px-3 py-1 text-sm font-semibold text-slate-700 ring-1 ring-slate-200">No direct table writes</span>
             <span className="rounded-full bg-sky-50 px-3 py-1 text-sm font-semibold text-sky-700 ring-1 ring-sky-200">Allocation summary view</span>
           </div>
         </section>
+
+        {allocationSuccess ? (
+          <section className="rounded-3xl border border-emerald-200 bg-emerald-50 p-5 text-sm font-semibold text-emerald-800">{allocationSuccess}</section>
+        ) : null}
+        {allocationError ? (
+          <section className="rounded-3xl border border-rose-200 bg-rose-50 p-5 text-sm font-semibold text-rose-900">{allocationError}</section>
+        ) : null}
 
         <section className="grid gap-4 md:grid-cols-5">
           <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Statement lines</p><p className="mt-2 text-3xl font-semibold">{allocationRows.length}</p></div>
@@ -256,7 +277,7 @@ export default async function DvaReconciliationWorkbenchPage() {
 
         <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-950">
           <h2 className="font-semibold">Control boundary</h2>
-          <p className="mt-2">Inbound lines remain Day 2 order-funding items and should be handled through the funding queue. Outbound/refund lines use the allocation layer for supplier invoices, refunds, exception holds, FX/card differences, bank fees, or unmatched holds. Write actions remain disabled until dedicated staff/supervisor RPCs are built and tested.</p>
+          <p className="mt-2">Inbound lines remain Day 2 order-funding items and should be handled through the funding queue. Outbound/refund lines use the allocation layer for supplier invoices, refunds, exception holds, FX/card differences, bank fees, or unmatched holds. This page currently exposes only the first supplier-invoice allocation action.</p>
         </section>
 
         {readErrors.length > 0 ? (
@@ -282,21 +303,29 @@ export default async function DvaReconciliationWorkbenchPage() {
                     <th className="px-4 py-3 font-semibold">Order / retailer</th>
                     <th className="px-4 py-3 font-semibold">Operational truth</th>
                     <th className="px-4 py-3 font-semibold">Allocations</th>
-                    <th className="px-4 py-3 font-semibold">Balance</th>
+                    <th className="px-4 py-3 font-semibold">Balance / action</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 bg-white">
-                  {rows.map((row) => (
-                    <tr key={text(row.line.dva_statement_line_id)}>
-                      <td className="min-w-64 px-4 py-4 align-top"><div className="font-medium text-slate-950">{text(row.line.statement_date) || "—"} · {text(row.line.direction) || "—"}</div><div className="mt-1 text-slate-700">{gbp(row.line.statement_gbp_amount)} · {num(row.line.amount_local_ccy).toLocaleString("en-GB")} {text(row.line.local_ccy)}</div><div className="mt-2 max-w-xs text-xs leading-5 text-slate-500">Ref: {text(row.line.reference_raw) || "—"}<br />Auth: {text(row.line.auth_id_ref) || "—"}<br />Card ref: {text(row.line.retailer_name_ref) || "—"}<br />FX: {text(row.line.fx_rate_applied) || "—"} · markup: {text(row.line.card_markup_pct_applied) || "0"}%</div></td>
-                      <td className="min-w-44 px-4 py-4 align-top"><span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ${statusClass(row.line)}`}>{statusLabel(row.line)}</span><div className="mt-2 text-xs leading-5 text-slate-500">{text(row.line.direction) === "in" ? "Use funding queue" : "Use allocation workflow"}<br />Match: {text(row.line.match_status) || "—"}</div>{text(row.line.direction) === "in" ? <Link href="/internal/funding" className="mt-2 inline-flex text-xs font-semibold text-sky-600">Open funding →</Link> : null}</td>
-                      <td className="min-w-52 px-4 py-4 align-top"><div className="font-medium text-slate-950">{text(row.importer?.trading_name) || text(row.importer?.company_name) || "—"}</div><div className="mt-1 text-xs leading-5 text-slate-500">DVA: {text(row.importer?.gcb_dva_ref) || "—"}<br />Card: {text(row.importer?.dva_card_last_4) || "—"}<br />Bank: {text(row.statement?.source_bank) || "—"}</div></td>
-                      <td className="min-w-56 px-4 py-4 align-top"><div className="font-medium text-slate-950">{text(row.order?.order_ref) || "—"}</div><div className="mt-1 text-slate-700">{text(row.retailer?.name) || text(row.line.retailer_name_ref) || "—"}</div><div className="mt-1 text-xs leading-5 text-slate-500">Order value: {gbp(row.order?.order_total_gbp_declared)}<br />Status: {text(row.order?.status) || "—"}<br />Type: {text(row.order?.order_type) || "—"}</div>{text(row.order?.id) ? <Link href={`/internal/evidence/${text(row.order?.id)}`} className="mt-2 inline-flex text-xs font-semibold text-sky-600">Open order →</Link> : null}</td>
-                      <td className="min-w-56 px-4 py-4 align-top"><div className="font-medium text-slate-950">{text(row.invoice?.ocr_invoice_ref) || text(row.invoice?.invoice_ref) || "No invoice link"}</div><div className="mt-1 text-xs leading-5 text-slate-500">Invoice/OCR: {gbp(row.invoiceTotal)}<br />Progressed: {gbp(row.progressedTotal)}<br />Open exception: {gbp(row.openExceptionTotal)}</div></td>
-                      <td className="min-w-56 px-4 py-4 align-top"><div className="font-semibold text-slate-950">{gbp(row.line.confirmed_allocated_gbp)} confirmed</div><div className="mt-1 text-xs leading-5 text-slate-500">Supplier invoices: {gbp(row.line.supplier_invoice_allocated_gbp)}<br />Retailer refunds: {gbp(row.line.retailer_refund_allocated_gbp)}<br />FX/card/fees: {gbp(row.line.fx_card_or_fee_allocated_gbp)}<br />Exception/hold: {gbp(row.line.exception_or_hold_allocated_gbp)}<br />Draft/held: {gbp(row.line.open_allocated_gbp)}</div></td>
-                      <td className="min-w-44 px-4 py-4 align-top"><div className="font-semibold text-slate-950">{gbp(row.line.confirmed_unallocated_gbp)}</div><div className="mt-1 text-xs leading-5 text-slate-500">Active allocations: {num(row.line.active_allocation_count)}<br />Balanced: {bool(row.line.confirmed_balanced_yn) ? "Yes" : "No"}<br />Read-only cue only.</div></td>
-                    </tr>
-                  ))}
+                  {rows.map((row) => {
+                    const canAllocateToInvoice =
+                      text(row.line.direction) === "out" &&
+                      !!text(row.invoice?.id) &&
+                      !bool(row.line.confirmed_balanced_yn);
+                    const defaultAllocationAmount = Math.max(0, num(row.line.confirmed_unallocated_gbp)).toFixed(2);
+
+                    return (
+                      <tr key={text(row.line.dva_statement_line_id)}>
+                        <td className="min-w-64 px-4 py-4 align-top"><div className="font-medium text-slate-950">{text(row.line.statement_date) || "—"} · {text(row.line.direction) || "—"}</div><div className="mt-1 text-slate-700">{gbp(row.line.statement_gbp_amount)} · {num(row.line.amount_local_ccy).toLocaleString("en-GB")} {text(row.line.local_ccy)}</div><div className="mt-2 max-w-xs text-xs leading-5 text-slate-500">Ref: {text(row.line.reference_raw) || "—"}<br />Auth: {text(row.line.auth_id_ref) || "—"}<br />Card ref: {text(row.line.retailer_name_ref) || "—"}<br />FX: {text(row.line.fx_rate_applied) || "—"} · markup: {text(row.line.card_markup_pct_applied) || "0"}%</div></td>
+                        <td className="min-w-44 px-4 py-4 align-top"><span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ${statusClass(row.line)}`}>{statusLabel(row.line)}</span><div className="mt-2 text-xs leading-5 text-slate-500">{text(row.line.direction) === "in" ? "Use funding queue" : "Use allocation workflow"}<br />Match: {text(row.line.match_status) || "—"}</div>{text(row.line.direction) === "in" ? <Link href="/internal/funding" className="mt-2 inline-flex text-xs font-semibold text-sky-600">Open funding →</Link> : null}</td>
+                        <td className="min-w-52 px-4 py-4 align-top"><div className="font-medium text-slate-950">{text(row.importer?.trading_name) || text(row.importer?.company_name) || "—"}</div><div className="mt-1 text-xs leading-5 text-slate-500">DVA: {text(row.importer?.gcb_dva_ref) || "—"}<br />Card: {text(row.importer?.dva_card_last_4) || "—"}<br />Bank: {text(row.statement?.source_bank) || "—"}</div></td>
+                        <td className="min-w-56 px-4 py-4 align-top"><div className="font-medium text-slate-950">{text(row.order?.order_ref) || "—"}</div><div className="mt-1 text-slate-700">{text(row.retailer?.name) || text(row.line.retailer_name_ref) || "—"}</div><div className="mt-1 text-xs leading-5 text-slate-500">Order value: {gbp(row.order?.order_total_gbp_declared)}<br />Status: {text(row.order?.status) || "—"}<br />Type: {text(row.order?.order_type) || "—"}</div>{text(row.order?.id) ? <Link href={`/internal/evidence/${text(row.order?.id)}`} className="mt-2 inline-flex text-xs font-semibold text-sky-600">Open order →</Link> : null}</td>
+                        <td className="min-w-56 px-4 py-4 align-top"><div className="font-medium text-slate-950">{text(row.invoice?.ocr_invoice_ref) || text(row.invoice?.invoice_ref) || "No invoice link"}</div><div className="mt-1 text-xs leading-5 text-slate-500">Invoice/OCR: {gbp(row.invoiceTotal)}<br />Progressed: {gbp(row.progressedTotal)}<br />Open exception: {gbp(row.openExceptionTotal)}</div></td>
+                        <td className="min-w-56 px-4 py-4 align-top"><div className="font-semibold text-slate-950">{gbp(row.line.confirmed_allocated_gbp)} confirmed</div><div className="mt-1 text-xs leading-5 text-slate-500">Supplier invoices: {gbp(row.line.supplier_invoice_allocated_gbp)}<br />Retailer refunds: {gbp(row.line.retailer_refund_allocated_gbp)}<br />FX/card/fees: {gbp(row.line.fx_card_or_fee_allocated_gbp)}<br />Exception/hold: {gbp(row.line.exception_or_hold_allocated_gbp)}<br />Draft/held: {gbp(row.line.open_allocated_gbp)}</div></td>
+                        <td className="min-w-56 px-4 py-4 align-top"><div className="font-semibold text-slate-950">{gbp(row.line.confirmed_unallocated_gbp)}</div><div className="mt-1 text-xs leading-5 text-slate-500">Active allocations: {num(row.line.active_allocation_count)}<br />Balanced: {bool(row.line.confirmed_balanced_yn) ? "Yes" : "No"}</div>{canAllocateToInvoice ? <form action={allocateStatementLineToSupplierInvoiceAction} className="mt-3 rounded-2xl border border-sky-200 bg-sky-50 p-3"><input type="hidden" name="dva_statement_line_id" value={text(row.line.dva_statement_line_id)} /><input type="hidden" name="supplier_invoice_id" value={text(row.invoice?.id)} /><label className="block text-xs font-semibold text-sky-900">Allocate to shown invoice</label><input className="mt-2 w-full rounded-xl border border-sky-200 bg-white px-3 py-2 text-sm" name="allocated_gbp_amount" type="number" min="0.01" step="0.01" defaultValue={defaultAllocationAmount} /><input className="mt-2 w-full rounded-xl border border-sky-200 bg-white px-3 py-2 text-xs" name="notes" placeholder="Optional note" /><button className="mt-2 rounded-xl bg-sky-600 px-3 py-2 text-xs font-semibold text-white" type="submit">Allocate</button></form> : <div className="mt-2 text-xs leading-5 text-slate-500">{text(row.line.direction) === "out" ? "No invoice candidate linked yet." : "No action here."}</div>}</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
