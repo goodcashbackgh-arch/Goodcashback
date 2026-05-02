@@ -5,7 +5,7 @@ import AccountingGridCalculator from "./AccountingGridCalculator";
 import {
   addSupplierAccountingAdjustmentLineAction,
   deleteSupplierAccountingAdjustmentLineAction,
-  saveSupplierLineAccountingCodeAction,
+  saveAllSupplierLineAccountingCodesAction,
 } from "./actions";
 
 type SearchParams = { success?: string; error?: string };
@@ -174,6 +174,7 @@ export default async function InternalReconciliationPage({
     : { data: [] as Line[] };
 
   const invoiceLines = (lines ?? []) as Line[];
+  const progressedLines = invoiceLines.filter((line) => isProgressed(line.eligible_for_invoice_yn));
   const lineIds = invoiceLines.map((line) => line.id);
 
   const { data: codingRows } = lineIds.length
@@ -263,8 +264,19 @@ export default async function InternalReconciliationPage({
         </section>
 
         <section className="rounded-3xl border bg-white p-5 shadow-sm">
-          <h2 className="text-xl font-semibold">Supplier invoice accounting grid</h2>
-          <p className="mt-2 text-sm text-slate-600">VAT class, net and VAT now work together. Gross for OCR lines remains locked.</p>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-xl font-semibold">Supplier invoice accounting grid</h2>
+              <p className="mt-2 text-sm text-slate-600">Save all is atomic: if one line fails, or totals do not reconcile to invoice gross, nothing saves.</p>
+            </div>
+            {invoice ? (
+              <form id="save-all-coding" action={saveAllSupplierLineAccountingCodesAction}>
+                <input type="hidden" name="order_id" value={orderId} />
+                <input type="hidden" name="supplier_invoice_id" value={invoice.id} />
+                <button disabled={progressedLines.length === 0} className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white disabled:bg-slate-400">Save all coding lines</button>
+              </form>
+            ) : null}
+          </div>
 
           <div className="mt-4 overflow-x-auto">
             <table className="w-full min-w-[1500px] text-left text-xs">
@@ -282,7 +294,7 @@ export default async function InternalReconciliationPage({
                   <th className="p-2">VAT</th>
                   <th className="p-2">Gross</th>
                   <th className="p-2">Review</th>
-                  <th className="p-2">Action</th>
+                  <th className="p-2">Status</th>
                 </tr>
               </thead>
               <tbody>
@@ -292,36 +304,30 @@ export default async function InternalReconciliationPage({
                   const rate = coding?.vat_rate_percent ?? 20;
                   const preview = splitGross(gross, rate);
                   const progressed = isProgressed(line.eligible_for_invoice_yn);
-                  const formId = `coding-${line.id}`;
+                  const saveForm = progressed ? "save-all-coding" : undefined;
                   return (
                     <tr key={line.id} data-accounting-row data-gross={moneyInput(gross)} className="border-b align-top">
-                      <td className="p-2">{line.line_order}<br /><span className="text-slate-400">{progressed ? "progressed" : "blocked"}</span></td>
-                      <td className="p-2"><input form={formId} name="description_override" defaultValue={coding?.posting_description ?? line.description} className="w-72 rounded-lg border px-2 py-1" /></td>
-                      <td className="p-2"><input form={formId} name="sku_override" defaultValue={coding?.posting_sku ?? line.retailer_sku ?? ""} className="w-28 rounded-lg border px-2 py-1" /></td>
-                      <td className="p-2"><input form={formId} name="size_override" defaultValue={coding?.posting_size ?? line.size ?? ""} className="w-20 rounded-lg border px-2 py-1" /></td>
+                      <td className="p-2">{line.line_order}<br /><span className="text-slate-400">{progressed ? "progressed" : "blocked"}</span>{progressed ? <input form="save-all-coding" type="hidden" name="line_ids" value={line.id} /> : null}</td>
+                      <td className="p-2"><input form={saveForm} name={`description_override_${line.id}`} defaultValue={coding?.posting_description ?? line.description} disabled={!progressed} className="w-72 rounded-lg border px-2 py-1 disabled:bg-slate-100" /></td>
+                      <td className="p-2"><input form={saveForm} name={`sku_override_${line.id}`} defaultValue={coding?.posting_sku ?? line.retailer_sku ?? ""} disabled={!progressed} className="w-28 rounded-lg border px-2 py-1 disabled:bg-slate-100" /></td>
+                      <td className="p-2"><input form={saveForm} name={`size_override_${line.id}`} defaultValue={coding?.posting_size ?? line.size ?? ""} disabled={!progressed} className="w-20 rounded-lg border px-2 py-1 disabled:bg-slate-100" /></td>
                       <td className="p-2">{line.qty ?? 0}</td>
-                      <td className="p-2"><input form={formId} name="nominal_code" defaultValue={coding?.nominal_code ?? ""} className="w-24 rounded-lg border px-2 py-1" placeholder="5000" /></td>
-                      <td className="p-2"><input form={formId} name="sage_ledger_account_id" defaultValue={coding?.sage_ledger_account_id ?? ""} className="w-36 rounded-lg border px-2 py-1" /></td>
+                      <td className="p-2"><input form={saveForm} name={`nominal_code_${line.id}`} defaultValue={coding?.nominal_code ?? ""} disabled={!progressed} className="w-24 rounded-lg border px-2 py-1 disabled:bg-slate-100" placeholder="5000" /></td>
+                      <td className="p-2"><input form={saveForm} name={`sage_ledger_account_id_${line.id}`} defaultValue={coding?.sage_ledger_account_id ?? ""} disabled={!progressed} className="w-36 rounded-lg border px-2 py-1 disabled:bg-slate-100" /></td>
                       <td className="p-2">
-                        <select form={formId} name="vat_rate_percent" data-vat-rate defaultValue={String(rate)} className="w-32 rounded-lg border px-2 py-1">
+                        <select form={saveForm} name={`vat_rate_percent_${line.id}`} data-vat-rate defaultValue={String(rate)} disabled={!progressed} className="w-32 rounded-lg border px-2 py-1 disabled:bg-slate-100">
                           <option value="20">20% std</option>
                           <option value="5">5% reduced</option>
                           <option value="0">0%</option>
                         </select>
-                        <input form={formId} type="hidden" name="tax_rate_label" value={taxLabel(rate)} />
-                        <input form={formId} type="hidden" name="tax_rate_id" value={taxId(rate)} />
+                        <input form={saveForm} type="hidden" name={`tax_rate_label_${line.id}`} value={taxLabel(rate)} />
+                        <input form={saveForm} type="hidden" name={`tax_rate_id_${line.id}`} value={taxId(rate)} />
                       </td>
-                      <td className="p-2"><input form={formId} data-net name="net_amount_gbp" type="number" step="0.01" defaultValue={moneyInput(coding?.net_amount_gbp ?? preview.net)} className="w-24 rounded-lg border px-2 py-1" /></td>
-                      <td className="p-2"><input form={formId} data-vat name="vat_amount_gbp" type="number" step="0.01" defaultValue={moneyInput(coding?.vat_amount_gbp ?? preview.vat)} className="w-24 rounded-lg border px-2 py-1" /></td>
+                      <td className="p-2"><input form={saveForm} data-net name={`net_amount_gbp_${line.id}`} type="number" step="0.01" defaultValue={moneyInput(coding?.net_amount_gbp ?? preview.net)} disabled={!progressed} className="w-24 rounded-lg border px-2 py-1 disabled:bg-slate-100" /></td>
+                      <td className="p-2"><input form={saveForm} data-vat name={`vat_amount_gbp_${line.id}`} type="number" step="0.01" defaultValue={moneyInput(coding?.vat_amount_gbp ?? preview.vat)} disabled={!progressed} className="w-24 rounded-lg border px-2 py-1 disabled:bg-slate-100" /></td>
                       <td className="p-2 font-semibold">{gbp(gross)}</td>
-                      <td className="p-2"><input form={formId} type="checkbox" name="admin_review_required_yn" defaultChecked={Boolean(coding?.admin_review_required_yn)} /> <input form={formId} name="review_reason" defaultValue={coding?.review_reason ?? ""} className="mt-1 w-32 rounded-lg border px-2 py-1" placeholder="reason" /></td>
-                      <td className="p-2">
-                        <form id={formId} action={saveSupplierLineAccountingCodeAction}>
-                          <input type="hidden" name="order_id" value={orderId} />
-                          <input type="hidden" name="supplier_invoice_line_id" value={line.id} />
-                          <button disabled={!progressed} className="rounded-lg bg-emerald-700 px-3 py-1 font-semibold text-white disabled:bg-slate-400">Save</button>
-                        </form>
-                      </td>
+                      <td className="p-2"><input form={saveForm} type="checkbox" name={`admin_review_required_yn_${line.id}`} defaultChecked={Boolean(coding?.admin_review_required_yn)} disabled={!progressed} /> <input form={saveForm} name={`review_reason_${line.id}`} defaultValue={coding?.review_reason ?? ""} disabled={!progressed} className="mt-1 w-32 rounded-lg border px-2 py-1 disabled:bg-slate-100" placeholder="reason" /></td>
+                      <td className="p-2">{coding?.coded_yn ? "coded" : progressed ? "not coded" : "blocked"}</td>
                     </tr>
                   );
                 })}
