@@ -220,7 +220,7 @@ export async function POST(request: Request) {
 
   const { data: invoice, error: invoiceError } = await supabase
     .from("supplier_invoices")
-    .select("id, order_id, mindee_job_id, mindee_inference_id, mindee_model_id")
+    .select("id, order_id, mindee_job_id, mindee_model_id")
     .eq("id", supplierInvoiceId)
     .maybeSingle();
 
@@ -228,29 +228,26 @@ export async function POST(request: Request) {
 
   const modelId = String(invoice.mindee_model_id || DEFAULT_MINDEE_INVOICE_MODEL_ID);
   const jobId = typeof invoice.mindee_job_id === "string" ? invoice.mindee_job_id : "";
-  const existingInferenceId = typeof invoice.mindee_inference_id === "string" ? invoice.mindee_inference_id : "";
+  if (!jobId) return redirectTo(request, { error: "Mindee job id is missing. Do not re-send OCR; inspect the invoice record first." });
+
   let raw: unknown = null;
   let httpStatus = 200;
-  let resolvedJobId = jobId || null;
   let resolvedInferenceId: string | null = null;
 
-  const { data: cached } = jobId
-    ? await supabase
-        .from("mindee_api_calls")
-        .select("response_json, http_status, mindee_job_id, mindee_inference_id")
-        .eq("supplier_invoice_id", supplierInvoiceId)
-        .eq("action_type", "get_job")
-        .eq("success_yn", true)
-        .order("request_started_at", { ascending: false })
-        .limit(3)
-    : { data: [] };
+  const { data: cached } = await supabase
+    .from("mindee_api_calls")
+    .select("response_json, http_status, mindee_job_id, mindee_inference_id")
+    .eq("supplier_invoice_id", supplierInvoiceId)
+    .eq("action_type", "get_job")
+    .eq("success_yn", true)
+    .order("request_started_at", { ascending: false })
+    .limit(3);
 
   for (const row of cached ?? []) {
     if (hasInferencePayload(row.response_json)) {
       raw = row.response_json;
       httpStatus = Number(row.http_status ?? 200);
-      resolvedJobId = String(row.mindee_job_id || jobId || extractMindeeJobId(raw) || "") || null;
-      resolvedInferenceId = extractMindeeInferenceId(raw) || (row.mindee_inference_id && row.mindee_inference_id !== row.mindee_job_id ? String(row.mindee_inference_id) : null);
+      resolvedInferenceId = extractMindeeInferenceId(raw);
       break;
     }
   }
@@ -263,50 +260,41 @@ export async function POST(request: Request) {
     headers.set("Authori" + "zation", apiKey);
     headers.set("Accept", "application/json");
 
-    if (jobId) {
-      const jobResponse = await fetch(`${MINDEE_V2_API_BASE}/jobs/${encodeURIComponent(jobId)}`, { method: "GET", headers, cache: "no-store" });
-      raw = await jobResponse.json().catch(() => null);
-      httpStatus = jobResponse.status;
-      resolvedJobId = jobId;
-      resolvedInferenceId = extractMindeeInferenceId(raw);
+    const jobResponse = await fetch(`${MINDEE_V2_API_BASE}/jobs/${encodeURIComponent(jobId)}`, { method: "GET", headers, cache: "no-store" });
+    raw = await jobResponse.json().catch(() => null);
+    httpStatus = jobResponse.status;
+    resolvedInferenceId = extractMindeeInferenceId(raw);
 
-      await supabase.from("mindee_api_calls").insert({
-        supplier_invoice_id: supplierInvoiceId,
-        order_id: invoice.order_id,
-        actor_staff_id: staff.id,
-        action_type: "get_job",
-        mindee_model_id: modelId,
-        http_status: jobResponse.status,
-        success_yn: jobResponse.ok,
-        mindee_job_id: jobId,
-        mindee_inference_id: resolvedInferenceId,
-        response_json: raw ?? { empty_response: true },
-        error_message: jobResponse.ok ? null : parseMindeeDetail(raw),
-        request_completed_at: new Date().toISOString(),
-      });
+    await supabase.from("mindee_api_calls").insert({
+      supplier_invoice_id: supplierInvoiceId,
+      order_id: invoice.order_id,
+      actor_staff_id: staff.id,
+      action_type: "get_job",
+      mindee_model_id: modelId,
+      http_status: jobResponse.status,
+      success_yn: jobResponse.ok,
+      mindee_job_id: jobId,
+      mindee_inference_id: resolvedInferenceId,
+      response_json: raw ?? { empty_response: true },
+      error_message: jobResponse.ok ? null : parseMindeeDetail(raw),
+      request_completed_at: new Date().toISOString(),
+    });
 
-      if (!jobResponse.ok) return redirectTo(request, { error: `Mindee job fetch failed (${jobResponse.status}). ${parseMindeeDetail(raw) || "No detail returned."}` });
-    }
-
-    if (!raw || !hasInferencePayload(raw)) {
-      const inferenceId = existingInferenceId && existingInferenceId !== jobId ? existingInferenceId : resolvedInferenceId;
-      if (!inferenceId) return redirectTo(request, { success: `Mindee job ${jobId} has no completed inference payload yet. Wait briefly, then safe fetch again.` });
-      const inferenceResponse = await fetch(`${MINDEE_V2_API_BASE}/inferences/${encodeURIComponent(inferenceId)}`, { method: "GET", headers, cache: "no-store" });
-      raw = await inferenceResponse.json().catch(() => null);
-      httpStatus = inferenceResponse.status;
-      resolvedInferenceId = inferenceId;
-      if (!inferenceResponse.ok) return redirectTo(request, { error: `Mindee inference fetch failed (${inferenceResponse.status}). ${parseMindeeDetail(raw) || "No detail returned."}` });
+    if (!jobResponse.ok) {
+      return redirectTo(request, { error: `Mindee job fetch failed (${jobResponse.status}). ${parseMindeeDetail(raw) || "No detail returned."}` });
     }
   }
 
-  if (!raw || !hasInferencePayload(raw)) return redirectTo(request, { error: "Mindee response did not include a completed inference payload." });
+  if (!raw || !hasInferencePayload(raw)) {
+    return redirectTo(request, { success: `Mindee job ${jobId} has no completed inference payload yet. Wait briefly, then fetch again. No new OCR page was used.` });
+  }
 
   const parsed = parseMindeeV2InvoiceResult(raw);
   const { data: saveData, error: saveError } = await supabase.rpc("staff_save_mindee_invoice_ocr_result", {
     p_supplier_invoice_id: supplierInvoiceId,
     p_model_id: modelId,
     p_http_status: httpStatus,
-    p_mindee_job_id: resolvedJobId || extractMindeeJobId(raw),
+    p_mindee_job_id: jobId || extractMindeeJobId(raw),
     p_mindee_inference_id: resolvedInferenceId || extractMindeeInferenceId(raw),
     p_raw_json: raw,
     p_ocr_invoice_ref: parsed.ocrInvoiceRef,
@@ -321,6 +309,6 @@ export async function POST(request: Request) {
   if (saveError) return redirectTo(request, { error: saveError.message });
   const resultRow = Array.isArray(saveData) ? saveData[0] : null;
   return redirectTo(request, {
-    success: `Safe Mindee OCR result saved. Inserted ${resultRow?.inserted_line_count ?? parsed.lines.length} OCR line(s), raised ${resultRow?.inserted_flag_count ?? parsed.flags.length} flag(s).`,
+    success: `Mindee OCR result saved from job response. Inserted ${resultRow?.inserted_line_count ?? parsed.lines.length} OCR line(s), raised ${resultRow?.inserted_flag_count ?? parsed.flags.length} flag(s).`,
   });
 }
