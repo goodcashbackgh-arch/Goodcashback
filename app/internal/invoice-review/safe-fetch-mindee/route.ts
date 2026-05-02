@@ -4,6 +4,18 @@ import { createClient } from "@/utils/supabase/server";
 const DEFAULT_MINDEE_INVOICE_MODEL_ID = "cd596aec-23b0-4063-bdbe-38c9c8728e84";
 const MINDEE_V2_API_BASE = "https://api-v2.mindee.net/v2";
 
+type ParsedLine = {
+  retailer_sku: string | null;
+  description: string;
+  qty: number;
+  amount_inc_vat_gbp: number;
+};
+
+type ReviewFlag = {
+  flag_type: "invoice_total_mismatch" | "ocr_unclear" | "wrong_invoice" | "delivery_discount_query" | "manual_line_needed" | "other";
+  message: string;
+};
+
 function redirectTo(request: Request, params: Record<string, string>) {
   const url = new URL("/internal/invoice-review", new URL(request.url).origin);
   for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
@@ -135,7 +147,7 @@ function extractPagesConsumed(raw: unknown) {
   return null;
 }
 
-function normalizeV2InvoiceLine(line: unknown, lineOrder: number) {
+function normalizeV2InvoiceLine(line: unknown, lineOrder: number): ParsedLine | null {
   if (!line || typeof line !== "object") return null;
   const outer = line as Record<string, unknown>;
   const row = outer.fields && typeof outer.fields === "object" ? outer.fields as Record<string, unknown> : outer;
@@ -147,13 +159,15 @@ function normalizeV2InvoiceLine(line: unknown, lineOrder: number) {
     stringValue(row.product_code) ??
     `OCR line ${lineOrder}`;
   const qty = Math.max(0, Math.round(numberValue(row.quantity) ?? numberValue(row.qty) ?? 1));
-  const amount =
+  const explicitLineAmount =
     numberValue(row.total_amount) ??
     numberValue(row.total_price) ??
     numberValue(row.amount) ??
-    numberValue(row.line_total) ??
-    null;
+    numberValue(row.line_total);
+  const unitPrice = numberValue(row.unit_price) ?? numberValue(row.price) ?? numberValue(row.unit_amount);
+  const amount = explicitLineAmount ?? (unitPrice !== null ? Math.round(unitPrice * Math.max(qty, 1) * 100) / 100 : null);
   const sku = stringValue(row.product_code) ?? stringValue(row.sku) ?? stringValue(row.reference);
+
   if (!description || amount === null || amount < 0) return null;
   return { retailer_sku: sku, description, qty, amount_inc_vat_gbp: amount };
 }
@@ -186,11 +200,17 @@ function parseMindeeV2InvoiceResult(raw: unknown) {
 
   const lines = lineItems
     .map((line, index) => normalizeV2InvoiceLine(line, index + 1))
-    .filter(Boolean);
-  const flags = [];
+    .filter((line): line is ParsedLine => Boolean(line));
+  const flags: ReviewFlag[] = [];
+  const lineTotal = Math.round(lines.reduce((sum, line) => sum + Number(line.amount_inc_vat_gbp ?? 0), 0) * 100) / 100;
+
   if (!ocrInvoiceRef) flags.push({ flag_type: "ocr_unclear", message: "Mindee OCR did not extract an invoice reference." });
   if (ocrInvoiceTotal === null) flags.push({ flag_type: "ocr_unclear", message: "Mindee OCR did not extract an invoice total." });
   if (lines.length === 0) flags.push({ flag_type: "manual_line_needed", message: "Mindee OCR did not extract usable invoice lines." });
+  if (ocrInvoiceTotal !== null && lines.length > 0 && Math.abs(lineTotal - ocrInvoiceTotal) > 0.01) {
+    flags.push({ flag_type: "invoice_total_mismatch", message: `Mindee OCR line total ${lineTotal.toFixed(2)} does not match OCR header total ${ocrInvoiceTotal.toFixed(2)}.` });
+  }
+
   return { ocrInvoiceRef, ocrRetailerName, ocrInvoiceDate, ocrInvoiceTotal, lines, flags };
 }
 
