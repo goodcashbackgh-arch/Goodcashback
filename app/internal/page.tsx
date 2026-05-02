@@ -17,6 +17,12 @@ const cards: QueueCard[] = [
     proof: "Day 2 regression passed",
   },
   {
+    title: "DVA/card control workbench",
+    href: "/internal/dva-reconciliation",
+    description: "Read-only statement-line view for supplier charges, refunds, invoice totals, open exceptions, and credit context.",
+    proof: "Read-only v2 visibility",
+  },
+  {
     title: "Evidence / OCR queue",
     href: "/internal/evidence",
     description: "Invoice-first, tracking-first, OCR review, progressed subset, and source-line protection.",
@@ -98,7 +104,7 @@ export default async function InternalPage() {
               </h1>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
                 Thin working shell for the live-passed Day 2–9 backend. Use this
-                to move through funding, evidence, invoice exceptions, supplier draft readiness,
+                to move through funding, DVA/card controls, evidence, invoice exceptions, supplier draft readiness,
                 adjustments, exceptions, shipping handoff, accounting/VAT, and escalation queues.
               </p>
             </div>
