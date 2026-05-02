@@ -1,0 +1,223 @@
+-- DVA/Card Statement Line Allocations v1
+-- Status: BACKEND PROPOSAL ONLY.
+-- Do not execute this file until explicitly approved after live DB review.
+-- Purpose: support one real DVA/card/bank statement line being allocated across
+-- one or more supplier invoices, disputes/refunds, FX/card differences, or holds.
+--
+-- This proposal supplements:
+-- - docs/governing-pack/ui/DVA_CARD_STATEMENT_CONTROL_WORKBENCH_V2_CONTRACT.md
+-- - docs/governing-pack/ui/FUNDING_ACTION_CONTRACT.md
+-- - docs/governing-pack/backend/staff_dva_reconciliation_wrapper_v1.sql
+--
+-- Key boundary:
+-- staff_reconcile_dva_line_to_order(...) remains ORDER-FUNDING ONLY.
+-- It must not be reused for supplier purchases, retailer refunds, FX/card differences,
+-- exception holds, or replacement charge matching.
+
+-- -----------------------------------------------------------------------------
+-- 1. Accounting model
+-- -----------------------------------------------------------------------------
+-- dva_statement_lines
+--   One real bank/card/DVA statement line.
+--
+-- dva_statement_line_allocations
+--   One or more allocations under the real statement line.
+--   Example:
+--     statement line: Zara charge £110
+--       allocation 1: £60 supplier_invoice A
+--       allocation 2: £40 supplier_invoice B
+--       allocation 3: £10 fx/card difference
+--       unallocated balance: £0
+--
+-- dva_reconciliation
+--   Existing high-level statement-line reconciliation table.
+--   It currently has UNIQUE(dva_statement_line_id), so it cannot itself carry
+--   multiple invoice allocations. Keep it as the high-level status/header where
+--   appropriate; do not remove or weaken the existing unique constraint without
+--   separate approval.
+--
+-- sage_postings
+--   Existing Sage queue. FX/card difference can later post as posting_type='fx_gl'.
+
+-- -----------------------------------------------------------------------------
+-- 2. FX conversion after upload
+-- -----------------------------------------------------------------------------
+-- Statement upload flow:
+--   staff uploads statement
+--   -> dva_statements row created
+--   -> parser/OCR creates dva_statement_lines rows in local currency
+--   -> system looks up fx_rates by country_id + statement_date
+--   -> system applies settlement_rate and settlement_card_markup_pct for control
+--   -> calculated GBP equivalent is stored/updated on dva_statement_lines
+--   -> allocations are created later by staff/supervisor action
+--
+-- Existing fx_rates supports daily FX:
+--   country_id
+--   rate_date
+--   quote_rate
+--   quote_card_markup_pct
+--   settlement_rate
+--   settlement_card_markup_pct
+--
+-- If adding markup to an official converted amount:
+--   estimated_card_gbp = official_converted_gbp * (1 + markup_pct)
+--
+-- If removing markup from an actual card amount:
+--   estimated_invoice_clearing_gbp = actual_card_gbp / (1 + markup_pct)
+--
+-- Do not use 0.9 x gross amount to remove a 10% markup.
+
+-- -----------------------------------------------------------------------------
+-- 3. Proposed additive table
+-- -----------------------------------------------------------------------------
+-- create table if not exists public.dva_statement_line_allocations (
+--   id uuid primary key default gen_random_uuid(),
+--   dva_statement_line_id uuid not null references public.dva_statement_lines(id),
+--
+--   allocation_type varchar not null check (allocation_type in (
+--     'supplier_invoice',
+--     'retailer_refund',
+--     'exception_hold',
+--     'not_charged_closure',
+--     'fx_card_difference',
+--     'bank_fee',
+--     'unmatched_hold'
+--   )),
+--
+--   supplier_invoice_id uuid null references public.supplier_invoices(id),
+--   dispute_id uuid null references public.disputes(id),
+--   order_id uuid null references public.orders(id),
+--
+--   allocated_gbp_amount numeric not null check (allocated_gbp_amount >= 0),
+--   allocation_status varchar not null default 'draft' check (allocation_status in (
+--     'draft',
+--     'confirmed',
+--     'reversed',
+--     'held'
+--   )),
+--
+--   fx_rate_id uuid null references public.fx_rates(id),
+--   fx_rate_applied numeric null,
+--   card_markup_pct_applied numeric null,
+--   fx_or_card_diff_gbp numeric null,
+--
+--   notes text null,
+--   created_by_staff_id uuid not null references public.staff(id),
+--   created_at timestamptz not null default now(),
+--   confirmed_by_staff_id uuid null references public.staff(id),
+--   confirmed_at timestamptz null,
+--
+--   check (
+--     (allocation_type = 'supplier_invoice' and supplier_invoice_id is not null and dispute_id is null)
+--     or (allocation_type in ('retailer_refund', 'exception_hold', 'not_charged_closure') and dispute_id is not null)
+--     or (allocation_type in ('fx_card_difference', 'bank_fee', 'unmatched_hold'))
+--   )
+-- );
+--
+-- create index if not exists dva_statement_line_allocations_line_idx
+--   on public.dva_statement_line_allocations(dva_statement_line_id);
+--
+-- create index if not exists dva_statement_line_allocations_supplier_invoice_idx
+--   on public.dva_statement_line_allocations(supplier_invoice_id)
+--   where supplier_invoice_id is not null;
+--
+-- create index if not exists dva_statement_line_allocations_dispute_idx
+--   on public.dva_statement_line_allocations(dispute_id)
+--   where dispute_id is not null;
+
+-- -----------------------------------------------------------------------------
+-- 4. Balance rule
+-- -----------------------------------------------------------------------------
+-- For a statement line:
+--   statement amount_gbp_equivalent
+--   - confirmed supplier invoice allocations
+--   - confirmed refund/exception allocations where applicable
+--   - confirmed fx/card/bank fee allocations
+--   = remaining unallocated balance
+--
+-- A remaining balance must not automatically be applied to another invoice.
+-- It must first be classified as:
+--   FX/card/provider difference,
+--   true supplier overpayment/prepayment,
+--   unmatched/held amount,
+--   refund/credit relationship,
+--   or extraction/data error.
+
+-- -----------------------------------------------------------------------------
+-- 5. Future SECURITY DEFINER RPCs - illustrative only
+-- -----------------------------------------------------------------------------
+-- Do not create/write these until signatures are explicitly approved.
+--
+-- staff_allocate_statement_line_to_supplier_invoice(
+--   p_dva_statement_line_id uuid,
+--   p_supplier_invoice_id uuid,
+--   p_allocated_gbp_amount numeric,
+--   p_notes text default null
+-- )
+--
+-- staff_classify_statement_line_fx_card_difference(
+--   p_dva_statement_line_id uuid,
+--   p_allocated_gbp_amount numeric,
+--   p_fx_rate_id uuid default null,
+--   p_notes text default null
+-- )
+--
+-- staff_match_statement_refund_to_dispute(
+--   p_dva_statement_line_id uuid,
+--   p_dispute_id uuid,
+--   p_allocated_gbp_amount numeric,
+--   p_notes text default null
+-- )
+--
+-- staff_mark_exception_not_charged(
+--   p_dva_statement_line_id uuid,
+--   p_dispute_id uuid,
+--   p_notes text default null
+-- )
+--
+-- Each RPC must:
+--   derive staff identity from auth.uid();
+--   require active admin/supervisor role unless matrix says otherwise;
+--   validate importer/order/retailer consistency;
+--   validate statement direction;
+--   prevent over-allocation unless explicitly held/approved;
+--   preserve original statement line;
+--   write auditable allocation rows;
+--   return JSON for UI confirmation.
+
+-- -----------------------------------------------------------------------------
+-- 6. Future read view - illustrative only
+-- -----------------------------------------------------------------------------
+-- A future view should power /internal/dva-reconciliation without duplicating
+-- operator reconciliation work.
+--
+-- It should expose:
+--   statement line fields;
+--   importer;
+--   retailer/card reference;
+--   suggested order/invoice/dispute;
+--   supplier invoice OCR/header total;
+--   progressed invoiceable total from existing operational truth;
+--   open exception amount;
+--   allocated total;
+--   fx/card difference total;
+--   unallocated balance;
+--   readiness flag for Sage payload.
+
+-- -----------------------------------------------------------------------------
+-- 7. Sage handoff
+-- -----------------------------------------------------------------------------
+-- When allocations are balanced and approved, a later process may prepare
+-- sage_postings rows:
+--   ap_payment for supplier invoice payment/clearing;
+--   fx_gl for FX/card/provider difference;
+--   other posting types only if already allowed by sage_postings constraints.
+--
+-- Sage payload creation must be idempotent and use sage_config.fx_gain_loss_nominal_code
+-- for FX/card difference where applicable.
+
+-- -----------------------------------------------------------------------------
+-- 8. Non-execution warning
+-- -----------------------------------------------------------------------------
+-- This file is a proposed backend design. Execution requires separate approval,
+-- live DB check, final SQL review, and exact statement-line/invoice test case.
