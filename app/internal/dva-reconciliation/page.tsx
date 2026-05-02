@@ -28,6 +28,10 @@ function num(value: unknown) {
   return 0;
 }
 
+function bool(value: unknown) {
+  return value === true || text(value).toLowerCase() === "true";
+}
+
 function gbp(value: unknown) {
   return gbpFormatter.format(num(value));
 }
@@ -66,13 +70,26 @@ function progressed(line: Row) {
   return ["y", "yes", "true", "1"].includes(text(line.eligible_for_invoice_yn).toLowerCase());
 }
 
+function statusClass(row: Row) {
+  if (bool(row.confirmed_balanced_yn)) return "bg-emerald-50 text-emerald-700 ring-emerald-200";
+  if (num(row.open_allocated_gbp) > 0) return "bg-sky-50 text-sky-700 ring-sky-200";
+  if (text(row.direction) === "in") return "bg-indigo-50 text-indigo-700 ring-indigo-200";
+  return "bg-amber-50 text-amber-700 ring-amber-200";
+}
+
+function statusLabel(row: Row) {
+  if (bool(row.confirmed_balanced_yn)) return "balanced";
+  if (num(row.open_allocated_gbp) > 0) return "allocation draft/held";
+  if (text(row.direction) === "in") return "funding route";
+  return "needs allocation";
+}
+
 export default async function DvaReconciliationWorkbenchPage() {
   const supabase = await createClient();
 
   const [
-    statementLinesResult,
+    allocationSummaryResult,
     statementsResult,
-    reconciliationsResult,
     suggestionsResult,
     importersResult,
     ordersResult,
@@ -83,18 +100,16 @@ export default async function DvaReconciliationWorkbenchPage() {
     creditLedgerResult,
   ] = await Promise.all([
     supabase
-      .from("dva_statement_lines")
-      .select("id, dva_statement_id, statement_date, reference_raw, direction, amount_local_ccy, local_ccy, amount_gbp_equivalent, auth_id_ref, retailer_name_ref, match_status")
+      .from("dva_statement_line_allocation_summary_vw")
+      .select(
+        "dva_statement_line_id, dva_statement_id, importer_id, statement_date, reference_raw, direction, amount_local_ccy, local_ccy, fx_rate_applied, card_markup_pct_applied, statement_gbp_amount, auth_id_ref, retailer_name_ref, match_status, confirmed_allocated_gbp, open_allocated_gbp, supplier_invoice_allocated_gbp, retailer_refund_allocated_gbp, fx_card_or_fee_allocated_gbp, exception_or_hold_allocated_gbp, active_allocation_count, confirmed_unallocated_gbp, confirmed_balanced_yn"
+      )
       .order("statement_date", { ascending: false })
       .limit(100),
     supabase
       .from("dva_statements")
       .select("id, importer_id, source_bank, parse_status")
       .limit(100),
-    supabase
-      .from("dva_reconciliation")
-      .select("id, dva_statement_line_id, reconciliation_type, order_id, supplier_invoice_id, dispute_id, reconciled_gbp_amount")
-      .limit(200),
     supabase
       .from("match_suggestions")
       .select("id, dva_statement_line_id, suggested_match_type, suggested_match_id, confidence, variance_gbp, variance_days")
@@ -130,9 +145,8 @@ export default async function DvaReconciliationWorkbenchPage() {
   ]);
 
   const readErrors: ReadError[] = [];
-  addReadError(readErrors, "dva_statement_lines", statementLinesResult.error);
+  addReadError(readErrors, "dva_statement_line_allocation_summary_vw", allocationSummaryResult.error);
   addReadError(readErrors, "dva_statements", statementsResult.error);
-  addReadError(readErrors, "dva_reconciliation", reconciliationsResult.error);
   addReadError(readErrors, "match_suggestions", suggestionsResult.error);
   addReadError(readErrors, "importers", importersResult.error);
   addReadError(readErrors, "orders", ordersResult.error);
@@ -142,9 +156,8 @@ export default async function DvaReconciliationWorkbenchPage() {
   addReadError(readErrors, "disputes", disputesResult.error);
   addReadError(readErrors, "importer_credit_ledger", creditLedgerResult.error);
 
-  const statementLines = (statementLinesResult.data ?? []) as unknown as Row[];
+  const allocationRows = (allocationSummaryResult.data ?? []) as unknown as Row[];
   const statements = (statementsResult.data ?? []) as unknown as Row[];
-  const reconciliations = (reconciliationsResult.data ?? []) as unknown as Row[];
   const suggestions = (suggestionsResult.data ?? []) as unknown as Row[];
   const importers = (importersResult.data ?? []) as unknown as Row[];
   const orders = (ordersResult.data ?? []) as unknown as Row[];
@@ -161,13 +174,12 @@ export default async function DvaReconciliationWorkbenchPage() {
   const invoicesByOrderId = groupBy(invoices, "order_id");
   const invoiceLinesByInvoiceId = groupBy(invoiceLines, "supplier_invoice_id");
   const suggestionsByLineId = groupBy(suggestions, "dva_statement_line_id");
-  const reconciledLineIds = new Set(reconciliations.map((row) => text(row.dva_statement_line_id)).filter(Boolean));
   const openDisputes = disputes.filter((row) => !maybeText(row.resolved_at));
 
-  const rows = statementLines.map((line) => {
+  const rows = allocationRows.map((line) => {
     const statement = statementsById.get(text(line.dva_statement_id));
-    const importer = statement ? importersById.get(text(statement.importer_id)) : undefined;
-    const suggestion = suggestionsByLineId.get(text(line.id))?.[0];
+    const importer = importersById.get(text(line.importer_id));
+    const suggestion = suggestionsByLineId.get(text(line.dva_statement_line_id))?.[0];
     const order = text(suggestion?.suggested_match_type) === "order"
       ? ordersById.get(text(suggestion?.suggested_match_id))
       : undefined;
@@ -184,7 +196,6 @@ export default async function DvaReconciliationWorkbenchPage() {
           .reduce((sum, dispute) => sum + num(dispute.amount_impact_gbp), 0)
       : 0;
     const invoiceTotal = num(invoice?.ocr_invoice_total_gbp) || num(invoice?.reconciliation_gbp_total);
-    const comparisonBase = invoiceTotal || progressedTotal || openExceptionTotal;
 
     return {
       line,
@@ -197,11 +208,16 @@ export default async function DvaReconciliationWorkbenchPage() {
       progressedTotal,
       openExceptionTotal,
       invoiceTotal,
-      variance: comparisonBase ? num(line.amount_gbp_equivalent) - comparisonBase : 0,
-      reconciled: reconciledLineIds.has(text(line.id)),
     };
   });
 
+  const fundingRouteCount = allocationRows.filter((row) => text(row.direction) === "in").length;
+  const outgoingNeedsAllocationCount = allocationRows.filter(
+    (row) => text(row.direction) === "out" && !bool(row.confirmed_balanced_yn)
+  ).length;
+  const balancedCount = allocationRows.filter((row) => bool(row.confirmed_balanced_yn)).length;
+  const confirmedAllocatedTotal = allocationRows.reduce((sum, row) => sum + num(row.confirmed_allocated_gbp), 0);
+  const confirmedUnallocatedTotal = allocationRows.reduce((sum, row) => sum + Math.abs(num(row.confirmed_unallocated_gbp)), 0);
   const openExceptionTotalAll = openDisputes.reduce((sum, row) => sum + num(row.amount_impact_gbp), 0);
   const lockedCreditTotal = creditLedger
     .filter((row) => maybeText(row.lock_reason))
@@ -215,25 +231,32 @@ export default async function DvaReconciliationWorkbenchPage() {
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">DVA/card statement reconciliation</p>
           <h1 className="mt-2 text-3xl font-semibold tracking-tight">Supplier charge, refund and exception control workbench</h1>
           <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-600">
-            Read-only v2 visibility for DVA/card statement lines, importer context, order references, supplier invoice totals, progressed lines, open exceptions and credit context. No write actions are exposed here.
+            Read-only allocation view for DVA/card statement lines. Inbound lines route back to funding; outbound lines route toward supplier invoice, refund, exception, FX/card difference, or hold allocation. No write actions are exposed here.
           </p>
           <div className="mt-4 flex flex-wrap gap-2">
             <span className="rounded-full bg-emerald-50 px-3 py-1 text-sm font-semibold text-emerald-700 ring-1 ring-emerald-200">Read-only</span>
             <span className="rounded-full bg-slate-100 px-3 py-1 text-sm font-semibold text-slate-700 ring-1 ring-slate-200">No buttons</span>
+            <span className="rounded-full bg-sky-50 px-3 py-1 text-sm font-semibold text-sky-700 ring-1 ring-sky-200">Allocation summary view</span>
           </div>
         </section>
 
         <section className="grid gap-4 md:grid-cols-5">
-          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Statement lines</p><p className="mt-2 text-3xl font-semibold">{statementLines.length}</p></div>
-          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Unmatched</p><p className="mt-2 text-3xl font-semibold">{statementLines.filter((line) => !reconciledLineIds.has(text(line.id))).length}</p></div>
-          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Suggested</p><p className="mt-2 text-3xl font-semibold">{statementLines.filter((line) => text(line.match_status) === "suggested").length}</p></div>
-          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Open exception value</p><p className="mt-2 text-3xl font-semibold">{gbp(openExceptionTotalAll)}</p></div>
-          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Locked credit</p><p className="mt-2 text-3xl font-semibold">{gbp(lockedCreditTotal)}</p></div>
+          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Statement lines</p><p className="mt-2 text-3xl font-semibold">{allocationRows.length}</p></div>
+          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Funding route</p><p className="mt-2 text-3xl font-semibold">{fundingRouteCount}</p></div>
+          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Outgoing needs allocation</p><p className="mt-2 text-3xl font-semibold">{outgoingNeedsAllocationCount}</p></div>
+          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Balanced</p><p className="mt-2 text-3xl font-semibold">{balancedCount}</p></div>
+          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Abs unallocated</p><p className="mt-2 text-3xl font-semibold">{gbp(confirmedUnallocatedTotal)}</p></div>
+        </section>
+
+        <section className="grid gap-4 md:grid-cols-3">
+          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Confirmed allocated</p><p className="mt-2 text-2xl font-semibold">{gbp(confirmedAllocatedTotal)}</p></div>
+          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Open exception value</p><p className="mt-2 text-2xl font-semibold">{gbp(openExceptionTotalAll)}</p></div>
+          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Locked credit</p><p className="mt-2 text-2xl font-semibold">{gbp(lockedCreditTotal)}</p></div>
         </section>
 
         <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-950">
-          <h2 className="font-semibold">Control boundary confirmed from live schema</h2>
-          <p className="mt-2">DVA statement lines are limited to one reconciliation row by the live unique constraint. Live reconciliation types are order funding, retailer purchase, refund credit and exception hold. Non-funding write actions remain disabled until dedicated staff/supervisor RPCs are designed and tested.</p>
+          <h2 className="font-semibold">Control boundary</h2>
+          <p className="mt-2">Inbound lines remain Day 2 order-funding items and should be handled through the funding queue. Outbound/refund lines use the allocation layer for supplier invoices, refunds, exception holds, FX/card differences, bank fees, or unmatched holds. Write actions remain disabled until dedicated staff/supervisor RPCs are built and tested.</p>
         </section>
 
         {readErrors.length > 0 ? (
@@ -244,23 +267,34 @@ export default async function DvaReconciliationWorkbenchPage() {
         ) : null}
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-          <h2 className="text-xl font-semibold">Statement-line control view</h2>
-          <p className="mt-1 max-w-4xl text-sm leading-6 text-slate-600">Visibility first. Use this to test whether statement lines, charges, refunds, invoices and open exceptions are telling the same story before adding supervisor actions.</p>
+          <h2 className="text-xl font-semibold">Statement-line allocation control view</h2>
+          <p className="mt-1 max-w-4xl text-sm leading-6 text-slate-600">This page consumes existing order, invoice, OCR, progressed-line and exception work. It does not ask staff to reconcile invoices again.</p>
           {rows.length === 0 ? (
-            <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-5 text-sm text-slate-600">No DVA/card statement lines are visible to this staff session.</div>
+            <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-5 text-sm text-slate-600">No DVA/card statement allocation summary rows are visible to this staff session.</div>
           ) : (
             <div className="mt-5 overflow-x-auto rounded-2xl border border-slate-200">
               <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
-                <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500"><tr><th className="px-4 py-3 font-semibold">Statement line</th><th className="px-4 py-3 font-semibold">Importer</th><th className="px-4 py-3 font-semibold">Order / retailer</th><th className="px-4 py-3 font-semibold">Invoice / progressed / exception</th><th className="px-4 py-3 font-semibold">Match state</th><th className="px-4 py-3 font-semibold">Variance cue</th></tr></thead>
+                <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+                  <tr>
+                    <th className="px-4 py-3 font-semibold">Statement line</th>
+                    <th className="px-4 py-3 font-semibold">Route</th>
+                    <th className="px-4 py-3 font-semibold">Importer</th>
+                    <th className="px-4 py-3 font-semibold">Order / retailer</th>
+                    <th className="px-4 py-3 font-semibold">Operational truth</th>
+                    <th className="px-4 py-3 font-semibold">Allocations</th>
+                    <th className="px-4 py-3 font-semibold">Balance</th>
+                  </tr>
+                </thead>
                 <tbody className="divide-y divide-slate-100 bg-white">
                   {rows.map((row) => (
-                    <tr key={text(row.line.id)}>
-                      <td className="min-w-64 px-4 py-4 align-top"><div className="font-medium text-slate-950">{text(row.line.statement_date) || "—"} · {text(row.line.direction) || "—"}</div><div className="mt-1 text-slate-700">{gbp(row.line.amount_gbp_equivalent)} · {num(row.line.amount_local_ccy).toLocaleString("en-GB")} {text(row.line.local_ccy)}</div><div className="mt-2 max-w-xs text-xs leading-5 text-slate-500">Ref: {text(row.line.reference_raw) || "—"}<br />Auth: {text(row.line.auth_id_ref) || "—"}<br />Card ref: {text(row.line.retailer_name_ref) || "—"}</div></td>
+                    <tr key={text(row.line.dva_statement_line_id)}>
+                      <td className="min-w-64 px-4 py-4 align-top"><div className="font-medium text-slate-950">{text(row.line.statement_date) || "—"} · {text(row.line.direction) || "—"}</div><div className="mt-1 text-slate-700">{gbp(row.line.statement_gbp_amount)} · {num(row.line.amount_local_ccy).toLocaleString("en-GB")} {text(row.line.local_ccy)}</div><div className="mt-2 max-w-xs text-xs leading-5 text-slate-500">Ref: {text(row.line.reference_raw) || "—"}<br />Auth: {text(row.line.auth_id_ref) || "—"}<br />Card ref: {text(row.line.retailer_name_ref) || "—"}<br />FX: {text(row.line.fx_rate_applied) || "—"} · markup: {text(row.line.card_markup_pct_applied) || "0"}%</div></td>
+                      <td className="min-w-44 px-4 py-4 align-top"><span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ${statusClass(row.line)}`}>{statusLabel(row.line)}</span><div className="mt-2 text-xs leading-5 text-slate-500">{text(row.line.direction) === "in" ? "Use funding queue" : "Use allocation workflow"}<br />Match: {text(row.line.match_status) || "—"}</div>{text(row.line.direction) === "in" ? <Link href="/internal/funding" className="mt-2 inline-flex text-xs font-semibold text-sky-600">Open funding →</Link> : null}</td>
                       <td className="min-w-52 px-4 py-4 align-top"><div className="font-medium text-slate-950">{text(row.importer?.trading_name) || text(row.importer?.company_name) || "—"}</div><div className="mt-1 text-xs leading-5 text-slate-500">DVA: {text(row.importer?.gcb_dva_ref) || "—"}<br />Card: {text(row.importer?.dva_card_last_4) || "—"}<br />Bank: {text(row.statement?.source_bank) || "—"}</div></td>
-                      <td className="min-w-56 px-4 py-4 align-top"><div className="font-medium text-slate-950">{text(row.order?.order_ref) || "—"}</div><div className="mt-1 text-slate-700">{text(row.retailer?.name) || "—"}</div><div className="mt-1 text-xs leading-5 text-slate-500">Order value: {gbp(row.order?.order_total_gbp_declared)}<br />Status: {text(row.order?.status) || "—"}<br />Type: {text(row.order?.order_type) || "—"}</div></td>
-                      <td className="min-w-56 px-4 py-4 align-top"><div className="font-medium text-slate-950">{text(row.invoice?.ocr_invoice_ref) || text(row.invoice?.invoice_ref) || "—"}</div><div className="mt-1 text-xs leading-5 text-slate-500">Invoice/OCR: {gbp(row.invoiceTotal)}<br />Progressed: {gbp(row.progressedTotal)}<br />Open exception: {gbp(row.openExceptionTotal)}</div></td>
-                      <td className="min-w-44 px-4 py-4 align-top"><span className="inline-flex rounded-full bg-sky-50 px-2.5 py-1 text-xs font-semibold text-sky-700 ring-1 ring-sky-200">{row.reconciled ? "reconciled" : text(row.line.match_status) || "unmatched"}</span><div className="mt-2 text-xs leading-5 text-slate-500">Suggested: {text(row.suggestion?.suggested_match_type) || "—"}<br />Confidence: {text(row.suggestion?.confidence) || "—"}</div></td>
-                      <td className="min-w-44 px-4 py-4 align-top"><div className="font-semibold text-slate-950">{row.variance > 0 ? "+" : row.variance < 0 ? "-" : ""}{gbp(Math.abs(row.variance))}</div><div className="mt-1 text-xs leading-5 text-slate-500">Visibility cue only, not accounting decision.</div></td>
+                      <td className="min-w-56 px-4 py-4 align-top"><div className="font-medium text-slate-950">{text(row.order?.order_ref) || "—"}</div><div className="mt-1 text-slate-700">{text(row.retailer?.name) || text(row.line.retailer_name_ref) || "—"}</div><div className="mt-1 text-xs leading-5 text-slate-500">Order value: {gbp(row.order?.order_total_gbp_declared)}<br />Status: {text(row.order?.status) || "—"}<br />Type: {text(row.order?.order_type) || "—"}</div>{text(row.order?.id) ? <Link href={`/internal/evidence/${text(row.order?.id)}`} className="mt-2 inline-flex text-xs font-semibold text-sky-600">Open order →</Link> : null}</td>
+                      <td className="min-w-56 px-4 py-4 align-top"><div className="font-medium text-slate-950">{text(row.invoice?.ocr_invoice_ref) || text(row.invoice?.invoice_ref) || "No invoice link"}</div><div className="mt-1 text-xs leading-5 text-slate-500">Invoice/OCR: {gbp(row.invoiceTotal)}<br />Progressed: {gbp(row.progressedTotal)}<br />Open exception: {gbp(row.openExceptionTotal)}</div></td>
+                      <td className="min-w-56 px-4 py-4 align-top"><div className="font-semibold text-slate-950">{gbp(row.line.confirmed_allocated_gbp)} confirmed</div><div className="mt-1 text-xs leading-5 text-slate-500">Supplier invoices: {gbp(row.line.supplier_invoice_allocated_gbp)}<br />Retailer refunds: {gbp(row.line.retailer_refund_allocated_gbp)}<br />FX/card/fees: {gbp(row.line.fx_card_or_fee_allocated_gbp)}<br />Exception/hold: {gbp(row.line.exception_or_hold_allocated_gbp)}<br />Draft/held: {gbp(row.line.open_allocated_gbp)}</div></td>
+                      <td className="min-w-44 px-4 py-4 align-top"><div className="font-semibold text-slate-950">{gbp(row.line.confirmed_unallocated_gbp)}</div><div className="mt-1 text-xs leading-5 text-slate-500">Active allocations: {num(row.line.active_allocation_count)}<br />Balanced: {bool(row.line.confirmed_balanced_yn) ? "Yes" : "No"}<br />Read-only cue only.</div></td>
                     </tr>
                   ))}
                 </tbody>
