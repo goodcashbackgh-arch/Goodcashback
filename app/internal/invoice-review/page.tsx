@@ -1,10 +1,10 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
-import { fetchAndSaveMindeeOcrResultAction, rejectSupplierInvoiceRequireResubmissionAction, runMindeeOcrForSupplierInvoiceAction, saveSupplierInvoiceHeaderReviewAction } from "./actions";
+import { rejectSupplierInvoiceRequireResubmissionAction, runMindeeOcrForSupplierInvoiceAction, saveSupplierInvoiceHeaderReviewAction } from "./actions";
 import { assertInvoiceReadyForCurrentApproval } from "./readiness";
 
-const MINDEE_RESULT_FETCH_RELEASE_MARKER = "mindee-result-fetch-v2";
+const MINDEE_RESULT_FETCH_RELEASE_MARKER = "mindee-result-fetch-v3-safe-job-only";
 const BRAND_COLOUR = "#20c1fc";
 
 type SearchParams = { success?: string; error?: string };
@@ -66,7 +66,7 @@ function orderRetailer(invoice: InvoiceRow) { return first(orderOf(invoice)?.ret
 function importer(invoice: InvoiceRow) { return first(orderOf(invoice)?.importers)?.company_name ?? "—"; }
 function enteredTotal(invoice: InvoiceRow) { return first(invoice.supplier_invoice_financial_summary)?.invoice_total_gbp ?? null; }
 function openFlags(invoice: InvoiceRow) { return (invoice.supplier_invoice_review_flags ?? []).filter((f) => ["open", "under_review"].includes(f.status)); }
-function hasMindeeJob(invoice: InvoiceRow) { return Boolean(invoice.mindee_job_id || invoice.mindee_inference_id); }
+function hasMindeeJob(invoice: InvoiceRow) { return Boolean(invoice.mindee_job_id); }
 function mindeeCompleted(invoice: InvoiceRow) { return invoice.mindee_ocr_status === "completed" || Boolean(invoice.mindee_result_saved_at); }
 function canStartMindee(invoice: InvoiceRow) { return !hasMindeeJob(invoice) && !mindeeCompleted(invoice); }
 function canFetchMindee(invoice: InvoiceRow) { return hasMindeeJob(invoice) && !mindeeCompleted(invoice); }
@@ -77,7 +77,6 @@ function decisionLabel(decision: string | undefined) {
 }
 function shouldShowInInvoiceReview(invoice: InvoiceRow, decision: MatchDecisionRow | undefined) {
   if (!decision) {
-    // Safe fallback while the DB view is not installed yet.
     return hasMindeeJob(invoice) || openFlags(invoice).length > 0;
   }
   if (["needs_invoice_review", "ocr_pending"].includes(decision.routing_decision)) return true;
@@ -363,7 +362,7 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
                         {invoice.mindee_error_message ? <p className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">Mindee error: {invoice.mindee_error_message}</p> : null}
                         <div className="mt-4 space-y-2">
                           {canStartMindee(invoice) ? <form action={runMindeeOcrForSupplierInvoiceAction}><input type="hidden" name="supplier_invoice_id" value={invoice.id} /><button className="w-full rounded-full border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800 transition hover:bg-amber-100">Send to Mindee OCR — uses page credit</button></form> : null}
-                          {canFetchMindee(invoice) ? <form action={fetchAndSaveMindeeOcrResultAction}><input type="hidden" name="supplier_invoice_id" value={invoice.id} /><button className="w-full rounded-full border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800 transition hover:bg-emerald-100">Fetch/save Mindee result — no new page</button></form> : null}
+                          {canFetchMindee(invoice) ? <form method="post" action="/internal/invoice-review/safe-fetch-mindee"><input type="hidden" name="supplier_invoice_id" value={invoice.id} /><button className="w-full rounded-full border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800 transition hover:bg-emerald-100">Fetch/save Mindee result — no new page</button></form> : null}
                         </div>
                       </div>
 
