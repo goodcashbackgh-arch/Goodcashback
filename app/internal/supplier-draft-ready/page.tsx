@@ -166,10 +166,12 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
           <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-sm uppercase tracking-wide text-slate-500">Loaded active invoices checked</p><p className="mt-2 text-3xl font-semibold">{invoices.length}</p></div>
         </section>
 
-        <form action={bulkApproveSupplierInvoicesCurrentAction} className="grid gap-4">
+        <form id="bulk-approve-supplier-invoices" action={bulkApproveSupplierInvoicesCurrentAction} />
+
+        <div className="grid gap-4">
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
             <p className="text-sm text-slate-600">Select clean invoices below, then bulk approve current. Sage posting remains a later controlled step.</p>
-            <button className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-600">Bulk approve selected</button>
+            <button form="bulk-approve-supplier-invoices" className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-600">Bulk approve selected</button>
           </div>
 
           {readyInvoices.length === 0 ? <p className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900">No clean supplier invoices are currently ready. Check the invoice exceptions queue for blocked invoices.</p> : null}
@@ -182,12 +184,16 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
             const discount = adjustmentTotal(invoice, "retailer_discount");
             const totalLines = lineTotal(invoice);
             const flagCount = activeFlagCount(invoice);
+            const singleApproveFormId = `approve-current-${invoice.id}`;
 
             return (
               <article key={invoice.id} className="rounded-3xl border border-emerald-200 bg-white p-5 shadow-sm">
+                <form id={singleApproveFormId} action={approveSupplierInvoiceCurrentAction}>
+                  <input type="hidden" name="single_supplier_invoice_id" value={invoice.id} />
+                </form>
                 <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                   <div className="flex gap-3">
-                    <input type="checkbox" name="supplier_invoice_id" value={invoice.id} className="mt-1 h-5 w-5 rounded border-slate-300" defaultChecked />
+                    <input form="bulk-approve-supplier-invoices" type="checkbox" name="supplier_invoice_id" value={invoice.id} className="mt-1 h-5 w-5 rounded border-slate-300" defaultChecked />
                     <div>
                       <div className="flex flex-wrap items-center gap-2">
                         <h2 className="text-xl font-semibold">{order?.order_ref ?? invoice.order_id}</h2>
@@ -203,9 +209,7 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
                     <Link href={`/internal/reconciliation/${invoice.order_id}`} className="rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">Open reconciliation</Link>
                     <a href={invoice.invoice_pdf_url} target="_blank" rel="noreferrer" className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white">Open invoice</a>
                     <button
-                      formAction={approveSupplierInvoiceCurrentAction}
-                      name="single_supplier_invoice_id"
-                      value={invoice.id}
+                      form={singleApproveFormId}
                       className="rounded-xl bg-emerald-700 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-600"
                     >
                       Approve current
@@ -222,7 +226,7 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
               </article>
             );
           })}
-        </form>
+        </div>
       </div>
     </main>
   );
