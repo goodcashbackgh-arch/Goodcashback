@@ -21,6 +21,18 @@ function splitByRate(gross: number, rate: number) {
   return { net, vat: round2(gross - net) };
 }
 
+function taxLabel(rate: number) {
+  if (rate === 20) return "20% standard";
+  if (rate === 5) return "5% reduced";
+  return "0% zero/exempt";
+}
+
+function taxId(rate: number) {
+  if (rate === 20) return "STANDARD_20";
+  if (rate === 5) return "REDUCED_5";
+  return "ZERO_0";
+}
+
 export default function AccountingGridCalculator() {
   useEffect(() => {
     const rows = Array.from(document.querySelectorAll<HTMLElement>("[data-accounting-row]"));
@@ -30,11 +42,16 @@ export default function AccountingGridCalculator() {
       const rateInput = row.querySelector<HTMLSelectElement | HTMLInputElement>("[data-vat-rate]");
       const netInput = row.querySelector<HTMLInputElement>("[data-net]");
       const vatInput = row.querySelector<HTMLInputElement>("[data-vat]");
+      const taxLabelInput = row.querySelector<HTMLInputElement>("[data-tax-label]");
+      const taxIdInput = row.querySelector<HTMLInputElement>("[data-tax-id]");
       if (!rateInput || !netInput || !vatInput) return;
 
-      const { net, vat } = splitByRate(gross, Number(rateInput.value || 0));
+      const rate = Number(rateInput.value || 0);
+      const { net, vat } = splitByRate(gross, rate);
       netInput.value = toMoney(net);
       vatInput.value = toMoney(vat);
+      if (taxLabelInput) taxLabelInput.value = taxLabel(rate);
+      if (taxIdInput) taxIdInput.value = taxId(rate);
     }
 
     function recalcFromNet(row: HTMLElement) {
@@ -57,6 +74,24 @@ export default function AccountingGridCalculator() {
       const vat = Math.min(Math.max(parseMoney(vatInput.value), 0), gross);
       vatInput.value = toMoney(vat);
       netInput.value = toMoney(gross - vat);
+    }
+
+    function applyDefaults() {
+      const nominal = (document.querySelector<HTMLInputElement>("[data-bulk-nominal]")?.value ?? "").trim();
+      const sageLedger = (document.querySelector<HTMLInputElement>("[data-bulk-sage-ledger]")?.value ?? "").trim();
+      const rate = document.querySelector<HTMLSelectElement>("[data-bulk-vat-rate]")?.value ?? "20";
+
+      rows.forEach((row) => {
+        const nominalInput = row.querySelector<HTMLInputElement>("[data-nominal]");
+        const sageInput = row.querySelector<HTMLInputElement>("[data-sage-ledger]");
+        const rateInput = row.querySelector<HTMLSelectElement>("[data-vat-rate]");
+        if (nominalInput && nominal) nominalInput.value = nominal;
+        if (sageInput && sageLedger) sageInput.value = sageLedger;
+        if (rateInput) {
+          rateInput.value = rate;
+          recalcFromRate(row);
+        }
+      });
     }
 
     const cleanups: Array<() => void> = [];
@@ -92,6 +127,12 @@ export default function AccountingGridCalculator() {
         });
       }
     });
+
+    const applyButton = document.querySelector<HTMLButtonElement>("[data-apply-bulk-defaults]");
+    if (applyButton) {
+      applyButton.addEventListener("click", applyDefaults);
+      cleanups.push(() => applyButton.removeEventListener("click", applyDefaults));
+    }
 
     return () => cleanups.forEach((cleanup) => cleanup());
   }, []);
