@@ -14,6 +14,62 @@ function readString(formData: FormData, key: string) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+export async function generateSupplierInvoiceSuggestionsAction(formData: FormData) {
+  const supabase = await createClient();
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    redirectWithAllocationResult({
+      allocation_error: "Please sign in again before generating suggestions.",
+    });
+  }
+
+  const toleranceRaw = readString(formData, "tolerance_gbp") || "5";
+  const maxDaysRaw = readString(formData, "max_days") || "14";
+  const tolerance = Number(toleranceRaw);
+  const maxDays = Number(maxDaysRaw);
+
+  if (!Number.isFinite(tolerance) || tolerance < 0) {
+    redirectWithAllocationResult({
+      allocation_error: "Suggestion tolerance must be zero or greater.",
+    });
+  }
+
+  if (!Number.isInteger(maxDays) || maxDays < 0) {
+    redirectWithAllocationResult({
+      allocation_error: "Suggestion day window must be a whole number greater than or equal to zero.",
+    });
+  }
+
+  const { data, error } = await supabase.rpc("staff_generate_supplier_invoice_match_suggestions", {
+    p_dva_statement_line_id: null,
+    p_tolerance_gbp: tolerance,
+    p_max_days: maxDays,
+  });
+
+  if (error) {
+    redirectWithAllocationResult({
+      allocation_error: error.message,
+    });
+  }
+
+  revalidatePath("/internal/dva-reconciliation");
+
+  const insertedCount =
+    typeof data === "object" &&
+    data !== null &&
+    "inserted_count" in data
+      ? String((data as { inserted_count?: unknown }).inserted_count)
+      : "0";
+
+  redirectWithAllocationResult({
+    allocation_success: `Generated ${insertedCount} supplier invoice suggestion(s).`,
+  });
+}
+
 export async function allocateStatementLineToSupplierInvoiceAction(formData: FormData) {
   const supabase = await createClient();
 
