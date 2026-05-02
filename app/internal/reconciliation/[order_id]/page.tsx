@@ -1,7 +1,11 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
-import { saveSupplierLineAccountingCodeAction } from "./actions";
+import {
+  addSupplierAccountingAdjustmentLineAction,
+  deleteSupplierAccountingAdjustmentLineAction,
+  saveSupplierLineAccountingCodeAction,
+} from "./actions";
 
 type SearchParams = { success?: string; error?: string };
 
@@ -35,6 +39,35 @@ type AccountingCode = {
   coded_yn: boolean | null;
 };
 
+type AdjustmentLine = {
+  id: string;
+  description: string;
+  sku: string | null;
+  size: string | null;
+  sage_ledger_account_id: string | null;
+  nominal_code: string | null;
+  tax_rate_id: string | null;
+  tax_rate_label: string | null;
+  vat_rate_percent: number | null;
+  net_amount_gbp: number | null;
+  vat_amount_gbp: number | null;
+  gross_amount_gbp: number | null;
+};
+
+type Totals = {
+  accepted_invoice_gross_gbp: number | null;
+  total_coded_net_gbp: number | null;
+  total_coded_vat_gbp: number | null;
+  total_coded_gross_gbp: number | null;
+  adjustment_gross_gbp: number | null;
+  progressed_line_count: number | null;
+  coded_line_count: number | null;
+  adjustment_line_count: number | null;
+  all_progressed_lines_coded_yn: boolean | null;
+  gross_reconciled_to_invoice_yn: boolean | null;
+  gross_variance_gbp: number | null;
+};
+
 type Screenshot = {
   id: string;
   screenshot_url: string;
@@ -44,6 +77,15 @@ type Screenshot = {
 
 function gbp(value: unknown) {
   return new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" }).format(Number(value ?? 0));
+}
+
+function num(value: unknown) {
+  const parsed = Number(value ?? 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function moneyInput(value: unknown) {
+  return num(value).toFixed(2);
 }
 
 function first<T>(value: T | T[] | null | undefined): T | null {
@@ -56,11 +98,25 @@ function isProgressed(value: string | null | undefined) {
 }
 
 function splitGross(grossValue: unknown, rateValue: unknown) {
-  const gross = Number(grossValue ?? 0);
-  const rate = Number(rateValue ?? 20);
+  const gross = num(grossValue);
+  const rate = num(rateValue || 20);
   const net = Math.round((gross / (1 + rate / 100)) * 100) / 100;
   const vat = Math.round((gross - net) * 100) / 100;
   return { net, vat, gross, rate };
+}
+
+function taxLabel(rate: unknown) {
+  const n = num(rate);
+  if (n === 20) return "20% standard";
+  if (n === 5) return "5% reduced";
+  return "0% zero/exempt";
+}
+
+function taxId(rate: unknown) {
+  const n = num(rate);
+  if (n === 20) return "STANDARD_20";
+  if (n === 5) return "REDUCED_5";
+  return "ZERO_0";
 }
 
 export default async function InternalReconciliationPage({
@@ -118,6 +174,7 @@ export default async function InternalReconciliationPage({
 
   const invoiceLines = (lines ?? []) as Line[];
   const lineIds = invoiceLines.map((line) => line.id);
+
   const { data: codingRows } = lineIds.length
     ? await supabase
         .from("supplier_invoice_line_accounting_coding_vw")
@@ -125,19 +182,38 @@ export default async function InternalReconciliationPage({
         .in("supplier_invoice_line_id", lineIds)
     : { data: [] as AccountingCode[] };
 
+  const { data: adjustmentRows } = invoice?.id
+    ? await supabase
+        .from("supplier_invoice_accounting_adjustment_lines")
+        .select("id, description, sku, size, sage_ledger_account_id, nominal_code, tax_rate_id, tax_rate_label, vat_rate_percent, net_amount_gbp, vat_amount_gbp, gross_amount_gbp")
+        .eq("supplier_invoice_id", invoice.id)
+        .order("created_at", { ascending: true })
+    : { data: [] as AdjustmentLine[] };
+
+  const { data: totalsRow } = invoice?.id
+    ? await supabase
+        .from("supplier_invoice_accounting_coding_totals_vw")
+        .select("accepted_invoice_gross_gbp, total_coded_net_gbp, total_coded_vat_gbp, total_coded_gross_gbp, adjustment_gross_gbp, progressed_line_count, coded_line_count, adjustment_line_count, all_progressed_lines_coded_yn, gross_reconciled_to_invoice_yn, gross_variance_gbp")
+        .eq("supplier_invoice_id", invoice.id)
+        .maybeSingle()
+    : { data: null as Totals | null };
+
   const codingByLineId = new Map<string, AccountingCode>();
   for (const row of (codingRows ?? []) as AccountingCode[]) codingByLineId.set(row.supplier_invoice_line_id, row);
 
-  const totalQty = invoiceLines.reduce((sum, line) => sum + Number(line.qty ?? 0), 0);
-  const totalValue = invoiceLines.reduce((sum, line) => sum + Number(line.amount_inc_vat_gbp ?? 0), 0);
-  const codedGrossTotal = invoiceLines.reduce((sum, line) => sum + Number(codingByLineId.get(line.id)?.gross_amount_gbp ?? 0), 0);
+  const adjustments = (adjustmentRows ?? []) as AdjustmentLine[];
   const screenshotsList = (screenshots ?? []) as Screenshot[];
   const retailer = first(order.retailers as { name: string | null } | { name: string | null }[] | null)?.name ?? "—";
   const importer = first(order.importers as { company_name: string | null } | { company_name: string | null }[] | null)?.company_name ?? "—";
+  const acceptedGross = num(totalsRow?.accepted_invoice_gross_gbp ?? invoice?.ocr_invoice_total_gbp ?? order.order_total_gbp_declared);
+  const codedNet = num(totalsRow?.total_coded_net_gbp);
+  const codedVat = num(totalsRow?.total_coded_vat_gbp);
+  const codedGross = num(totalsRow?.total_coded_gross_gbp);
+  const variance = num(totalsRow?.gross_variance_gbp ?? codedGross - acceptedGross);
 
   return (
     <main className="min-h-screen bg-slate-50 px-6 py-8 text-slate-950">
-      <div className="mx-auto flex max-w-7xl flex-col gap-6">
+      <div className="mx-auto flex max-w-[1500px] flex-col gap-6">
         <section className="rounded-3xl border bg-white p-6 shadow-sm">
           <Link href="/internal/supplier-draft-ready" className="text-sm font-semibold text-sky-700">← Back to supplier draft ready</Link>
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Supervisor reconciliation check</p>
@@ -149,22 +225,20 @@ export default async function InternalReconciliationPage({
         </section>
 
         <section className="grid gap-4 md:grid-cols-5">
-          <div className="rounded-2xl border bg-white p-4"><p className="text-xs uppercase text-slate-500">Declared qty</p><p className="text-2xl font-semibold">{order.total_qty_declared ?? 0}</p></div>
-          <div className="rounded-2xl border bg-white p-4"><p className="text-xs uppercase text-slate-500">Line qty</p><p className="text-2xl font-semibold">{totalQty}</p></div>
-          <div className="rounded-2xl border bg-white p-4"><p className="text-xs uppercase text-slate-500">OCR gross</p><p className="text-2xl font-semibold">{gbp(invoice?.ocr_invoice_total_gbp ?? order.order_total_gbp_declared)}</p></div>
-          <div className="rounded-2xl border bg-white p-4"><p className="text-xs uppercase text-slate-500">Line gross</p><p className="text-2xl font-semibold">{gbp(totalValue)}</p></div>
-          <div className="rounded-2xl border bg-white p-4"><p className="text-xs uppercase text-slate-500">Coded gross</p><p className="text-2xl font-semibold">{gbp(codedGrossTotal)}</p></div>
+          <div className="rounded-2xl border bg-white p-4"><p className="text-xs uppercase text-slate-500">Invoice gross</p><p className="text-2xl font-semibold">{gbp(acceptedGross)}</p></div>
+          <div className="rounded-2xl border bg-white p-4"><p className="text-xs uppercase text-slate-500">Coded net</p><p className="text-2xl font-semibold">{gbp(codedNet)}</p></div>
+          <div className="rounded-2xl border bg-white p-4"><p className="text-xs uppercase text-slate-500">Coded VAT</p><p className="text-2xl font-semibold">{gbp(codedVat)}</p></div>
+          <div className="rounded-2xl border bg-white p-4"><p className="text-xs uppercase text-slate-500">Coded gross</p><p className="text-2xl font-semibold">{gbp(codedGross)}</p></div>
+          <div className={`rounded-2xl border p-4 ${Math.abs(variance) <= 0.01 ? "bg-emerald-50" : "bg-amber-50"}`}><p className="text-xs uppercase text-slate-500">Variance</p><p className="text-2xl font-semibold">{gbp(variance)}</p></div>
         </section>
 
         <section className="grid gap-6 lg:grid-cols-2">
           <article className="rounded-3xl border bg-white p-5 shadow-sm">
             <h2 className="text-xl font-semibold">Uploaded supplier invoice</h2>
             {invoice ? (
-              <div className="mt-4 space-y-3 text-sm">
-                <p>Operator ref: <strong>{invoice.invoice_ref}</strong></p>
-                <p>OCR ref: <strong>{invoice.ocr_invoice_ref ?? "—"}</strong></p>
+              <div className="mt-4 space-y-2 text-sm">
+                <p>Operator/OCR ref: <strong>{invoice.invoice_ref} / {invoice.ocr_invoice_ref ?? "—"}</strong></p>
                 <p>OCR retailer: <strong>{invoice.ocr_retailer_name ?? "—"}</strong></p>
-                <p>OCR total: <strong>{invoice.ocr_invoice_total_gbp === null ? "—" : gbp(invoice.ocr_invoice_total_gbp)}</strong></p>
                 <p>Status: <strong>{invoice.review_status}</strong> · current: <strong>{invoice.is_current_for_order ? "yes" : "no"}</strong> · Sage blocked: <strong>{invoice.blocked_from_sage_yn ? "yes" : "no"}</strong></p>
                 <a href={invoice.invoice_pdf_url} target="_blank" rel="noreferrer" className="inline-flex rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white">Open invoice</a>
               </div>
@@ -180,7 +254,6 @@ export default async function InternalReconciliationPage({
                   <summary className="cursor-pointer text-sm font-semibold">Screenshot {screenshot.display_order ?? index + 1}</summary>
                   {screenshot.note ? <p className="mt-2 text-sm text-slate-600">{screenshot.note}</p> : null}
                   <img src={screenshot.screenshot_url} alt="Order screenshot" className="mt-3 max-h-[70vh] w-full rounded-xl border object-contain" />
-                  <a href={screenshot.screenshot_url} target="_blank" rel="noreferrer" className="mt-2 inline-block text-sm font-semibold text-sky-700 underline">Open full size</a>
                 </details>
               ))}
             </div>
@@ -188,48 +261,115 @@ export default async function InternalReconciliationPage({
         </section>
 
         <section className="rounded-3xl border bg-white p-5 shadow-sm">
-          <h2 className="text-xl font-semibold">Supplier invoice line accounting coding</h2>
-          <p className="mt-2 text-sm text-slate-600">Gross is locked to the approved OCR/reconciled line amount. VAT changes recalculate net and VAT; total still matches approved gross.</p>
-          <div className="mt-4 space-y-4">
-            {invoiceLines.map((line) => {
-              const coding = codingByLineId.get(line.id);
-              const gross = Number(line.amount_inc_vat_gbp ?? 0);
-              const rate = coding?.vat_rate_percent ?? 20;
-              const preview = splitGross(gross, rate);
-              const progressed = isProgressed(line.eligible_for_invoice_yn);
-              const formId = `coding-${line.id}`;
-              return (
-                <article key={line.id} className="rounded-2xl border bg-slate-50 p-4">
-                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                    <h3 className="font-semibold">Line {line.line_order} · {line.line_source}</h3>
-                    <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${progressed ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-900"}`}>{progressed ? "Progressed" : "Not progressed"}</span>
-                  </div>
+          <h2 className="text-xl font-semibold">Supplier invoice accounting grid</h2>
+          <p className="mt-2 text-sm text-slate-600">Compact coding table. Edit net/VAT directly; gross for OCR lines remains locked to the approved reconciled amount.</p>
 
-                  <div className="grid gap-3 lg:grid-cols-12">
-                    <label className="space-y-1 text-sm lg:col-span-4"><span className="text-xs uppercase text-slate-500">Description override</span><input form={formId} name="description_override" defaultValue={coding?.posting_description ?? line.description} className="w-full rounded-xl border px-3 py-2" /></label>
-                    <label className="space-y-1 text-sm lg:col-span-2"><span className="text-xs uppercase text-slate-500">SKU</span><input form={formId} name="sku_override" defaultValue={coding?.posting_sku ?? line.retailer_sku ?? ""} className="w-full rounded-xl border px-3 py-2" /></label>
-                    <label className="space-y-1 text-sm lg:col-span-1"><span className="text-xs uppercase text-slate-500">Size</span><input form={formId} name="size_override" defaultValue={coding?.posting_size ?? line.size ?? ""} className="w-full rounded-xl border px-3 py-2" /></label>
-                    <label className="space-y-1 text-sm lg:col-span-2"><span className="text-xs uppercase text-slate-500">Nominal / GL</span><input form={formId} name="nominal_code" defaultValue={coding?.nominal_code ?? ""} placeholder="e.g. 5000" className="w-full rounded-xl border px-3 py-2" /></label>
-                    <label className="space-y-1 text-sm lg:col-span-3"><span className="text-xs uppercase text-slate-500">Sage ledger account id</span><input form={formId} name="sage_ledger_account_id" defaultValue={coding?.sage_ledger_account_id ?? ""} placeholder="Later from Sage sync" className="w-full rounded-xl border px-3 py-2" /></label>
+          <div className="mt-4 overflow-x-auto">
+            <table className="w-full min-w-[1500px] text-left text-xs">
+              <thead className="bg-slate-100 uppercase text-slate-500">
+                <tr>
+                  <th className="p-2">Line</th>
+                  <th className="p-2">Description</th>
+                  <th className="p-2">SKU</th>
+                  <th className="p-2">Size</th>
+                  <th className="p-2">Qty</th>
+                  <th className="p-2">Nominal/GL</th>
+                  <th className="p-2">Sage ledger id</th>
+                  <th className="p-2">VAT class</th>
+                  <th className="p-2">Net</th>
+                  <th className="p-2">VAT</th>
+                  <th className="p-2">Gross</th>
+                  <th className="p-2">Review</th>
+                  <th className="p-2">Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {invoiceLines.map((line) => {
+                  const coding = codingByLineId.get(line.id);
+                  const gross = num(line.amount_inc_vat_gbp);
+                  const rate = coding?.vat_rate_percent ?? 20;
+                  const preview = splitGross(gross, rate);
+                  const progressed = isProgressed(line.eligible_for_invoice_yn);
+                  const formId = `coding-${line.id}`;
+                  return (
+                    <tr key={line.id} className="border-b align-top">
+                      <td className="p-2">{line.line_order}<br /><span className="text-slate-400">{progressed ? "progressed" : "blocked"}</span></td>
+                      <td className="p-2"><input form={formId} name="description_override" defaultValue={coding?.posting_description ?? line.description} className="w-72 rounded-lg border px-2 py-1" /></td>
+                      <td className="p-2"><input form={formId} name="sku_override" defaultValue={coding?.posting_sku ?? line.retailer_sku ?? ""} className="w-28 rounded-lg border px-2 py-1" /></td>
+                      <td className="p-2"><input form={formId} name="size_override" defaultValue={coding?.posting_size ?? line.size ?? ""} className="w-20 rounded-lg border px-2 py-1" /></td>
+                      <td className="p-2">{line.qty ?? 0}</td>
+                      <td className="p-2"><input form={formId} name="nominal_code" defaultValue={coding?.nominal_code ?? ""} className="w-24 rounded-lg border px-2 py-1" placeholder="5000" /></td>
+                      <td className="p-2"><input form={formId} name="sage_ledger_account_id" defaultValue={coding?.sage_ledger_account_id ?? ""} className="w-36 rounded-lg border px-2 py-1" /></td>
+                      <td className="p-2">
+                        <select form={formId} name="vat_rate_percent" defaultValue={String(rate)} className="w-32 rounded-lg border px-2 py-1">
+                          <option value="20">20% std</option>
+                          <option value="5">5% reduced</option>
+                          <option value="0">0%</option>
+                        </select>
+                        <input form={formId} type="hidden" name="tax_rate_label" value={taxLabel(rate)} />
+                        <input form={formId} type="hidden" name="tax_rate_id" value={taxId(rate)} />
+                      </td>
+                      <td className="p-2"><input form={formId} name="net_amount_gbp" type="number" step="0.01" defaultValue={moneyInput(coding?.net_amount_gbp ?? preview.net)} className="w-24 rounded-lg border px-2 py-1" /></td>
+                      <td className="p-2"><input form={formId} name="vat_amount_gbp" type="number" step="0.01" defaultValue={moneyInput(coding?.vat_amount_gbp ?? preview.vat)} className="w-24 rounded-lg border px-2 py-1" /></td>
+                      <td className="p-2 font-semibold">{gbp(gross)}</td>
+                      <td className="p-2"><input form={formId} type="checkbox" name="admin_review_required_yn" defaultChecked={Boolean(coding?.admin_review_required_yn)} /> <input form={formId} name="review_reason" defaultValue={coding?.review_reason ?? ""} className="mt-1 w-32 rounded-lg border px-2 py-1" placeholder="reason" /></td>
+                      <td className="p-2">
+                        <form id={formId} action={saveSupplierLineAccountingCodeAction}>
+                          <input type="hidden" name="order_id" value={orderId} />
+                          <input type="hidden" name="supplier_invoice_line_id" value={line.id} />
+                          <button disabled={!progressed} className="rounded-lg bg-emerald-700 px-3 py-1 font-semibold text-white disabled:bg-slate-400">Save</button>
+                        </form>
+                      </td>
+                    </tr>
+                  );
+                })}
 
-                    <label className="space-y-1 text-sm lg:col-span-2"><span className="text-xs uppercase text-slate-500">VAT classification</span><select form={formId} name="vat_rate_percent" defaultValue={String(rate)} className="w-full rounded-xl border px-3 py-2"><option value="20">20% standard</option><option value="5">5% reduced</option><option value="0">0% zero/exempt</option></select></label>
-                    <input form={formId} type="hidden" name="tax_rate_label" value={rate === 20 ? "20% standard" : rate === 5 ? "5% reduced" : "0% zero/exempt"} />
-                    <input form={formId} type="hidden" name="tax_rate_id" value={rate === 20 ? "STANDARD_20" : rate === 5 ? "REDUCED_5" : "ZERO_0"} />
-                    <div className="rounded-xl border bg-white p-3 text-sm lg:col-span-2"><p className="text-xs uppercase text-slate-500">Net</p><p className="font-semibold">{gbp(coding?.net_amount_gbp ?? preview.net)}</p></div>
-                    <div className="rounded-xl border bg-white p-3 text-sm lg:col-span-2"><p className="text-xs uppercase text-slate-500">VAT</p><p className="font-semibold">{gbp(coding?.vat_amount_gbp ?? preview.vat)}</p></div>
-                    <div className="rounded-xl border bg-white p-3 text-sm lg:col-span-2"><p className="text-xs uppercase text-slate-500">Gross locked</p><p className="font-semibold">{gbp(gross)}</p></div>
-                    <label className="space-y-1 text-sm lg:col-span-2"><span className="text-xs uppercase text-slate-500">Review flag</span><div className="rounded-xl border bg-white px-3 py-2"><input form={formId} type="checkbox" name="admin_review_required_yn" defaultChecked={Boolean(coding?.admin_review_required_yn)} /> <span>Admin review</span></div></label>
-                    <label className="space-y-1 text-sm lg:col-span-10"><span className="text-xs uppercase text-slate-500">Review reason</span><input form={formId} name="review_reason" defaultValue={coding?.review_reason ?? ""} placeholder="Reason if coding changes need admin attention" className="w-full rounded-xl border px-3 py-2" /></label>
-                    <form id={formId} action={saveSupplierLineAccountingCodeAction} className="lg:col-span-12">
-                      <input type="hidden" name="order_id" value={orderId} />
-                      <input type="hidden" name="supplier_invoice_line_id" value={line.id} />
-                      <button disabled={!progressed} className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-400">Save coding</button>
-                      <span className="ml-3 text-sm text-slate-600">{coding?.coded_yn ? "Coded" : "Not coded yet"}</span>
-                    </form>
-                  </div>
-                </article>
-              );
-            })}
+                {adjustments.map((line) => (
+                  <tr key={line.id} className="border-b bg-amber-50 align-top">
+                    <td className="p-2">Adj</td>
+                    <td className="p-2">{line.description}</td>
+                    <td className="p-2">{line.sku ?? "—"}</td>
+                    <td className="p-2">{line.size ?? "—"}</td>
+                    <td className="p-2">—</td>
+                    <td className="p-2">{line.nominal_code ?? "—"}</td>
+                    <td className="p-2">{line.sage_ledger_account_id ?? "—"}</td>
+                    <td className="p-2">{line.tax_rate_label ?? `${line.vat_rate_percent ?? 0}%`}</td>
+                    <td className="p-2">{gbp(line.net_amount_gbp)}</td>
+                    <td className="p-2">{gbp(line.vat_amount_gbp)}</td>
+                    <td className="p-2 font-semibold">{gbp(line.gross_amount_gbp)}</td>
+                    <td className="p-2">manual adjustment</td>
+                    <td className="p-2"><form action={deleteSupplierAccountingAdjustmentLineAction}><input type="hidden" name="order_id" value={orderId} /><input type="hidden" name="adjustment_line_id" value={line.id} /><button className="rounded-lg border border-rose-300 bg-rose-50 px-3 py-1 font-semibold text-rose-800">Delete</button></form></td>
+                  </tr>
+                ))}
+
+                {invoice ? (
+                  <tr className="border-t-2 bg-slate-50 align-top">
+                    <td className="p-2 font-semibold">Add</td>
+                    <td className="p-2"><input form="add-adjustment" name="description" className="w-72 rounded-lg border px-2 py-1" placeholder="Rounding / adjustment" /></td>
+                    <td className="p-2"><input form="add-adjustment" name="sku" className="w-28 rounded-lg border px-2 py-1" /></td>
+                    <td className="p-2"><input form="add-adjustment" name="size" className="w-20 rounded-lg border px-2 py-1" /></td>
+                    <td className="p-2">—</td>
+                    <td className="p-2"><input form="add-adjustment" name="nominal_code" className="w-24 rounded-lg border px-2 py-1" /></td>
+                    <td className="p-2"><input form="add-adjustment" name="sage_ledger_account_id" className="w-36 rounded-lg border px-2 py-1" /></td>
+                    <td className="p-2"><select form="add-adjustment" name="vat_rate_percent" defaultValue="20" className="w-32 rounded-lg border px-2 py-1"><option value="20">20% std</option><option value="5">5% reduced</option><option value="0">0%</option></select><input form="add-adjustment" type="hidden" name="tax_rate_label" value="manual" /><input form="add-adjustment" type="hidden" name="tax_rate_id" value="manual" /></td>
+                    <td className="p-2"><input form="add-adjustment" name="net_amount_gbp" type="number" step="0.01" className="w-24 rounded-lg border px-2 py-1" /></td>
+                    <td className="p-2"><input form="add-adjustment" name="vat_amount_gbp" type="number" step="0.01" className="w-24 rounded-lg border px-2 py-1" /></td>
+                    <td className="p-2 text-slate-500">net+VAT</td>
+                    <td className="p-2">—</td>
+                    <td className="p-2"><form id="add-adjustment" action={addSupplierAccountingAdjustmentLineAction}><input type="hidden" name="order_id" value={orderId} /><input type="hidden" name="supplier_invoice_id" value={invoice.id} /><button className="rounded-lg bg-slate-900 px-3 py-1 font-semibold text-white">Add</button></form></td>
+                  </tr>
+                ) : null}
+              </tbody>
+              <tfoot className="bg-slate-900 text-white">
+                <tr>
+                  <td className="p-2 font-semibold" colSpan={8}>Totals</td>
+                  <td className="p-2 font-semibold">{gbp(codedNet)}</td>
+                  <td className="p-2 font-semibold">{gbp(codedVat)}</td>
+                  <td className="p-2 font-semibold">{gbp(codedGross)}</td>
+                  <td className="p-2" colSpan={2}>Invoice {gbp(acceptedGross)} · Variance {gbp(variance)}</td>
+                </tr>
+              </tfoot>
+            </table>
           </div>
         </section>
       </div>
