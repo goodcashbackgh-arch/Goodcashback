@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
+import AccountingGridCalculator from "./AccountingGridCalculator";
 import {
   addSupplierAccountingAdjustmentLineAction,
   deleteSupplierAccountingAdjustmentLineAction,
@@ -213,6 +214,7 @@ export default async function InternalReconciliationPage({
 
   return (
     <main className="min-h-screen bg-slate-50 px-6 py-8 text-slate-950">
+      <AccountingGridCalculator />
       <div className="mx-auto flex max-w-[1500px] flex-col gap-6">
         <section className="rounded-3xl border bg-white p-6 shadow-sm">
           <Link href="/internal/supplier-draft-ready" className="text-sm font-semibold text-sky-700">← Back to supplier draft ready</Link>
@@ -262,7 +264,7 @@ export default async function InternalReconciliationPage({
 
         <section className="rounded-3xl border bg-white p-5 shadow-sm">
           <h2 className="text-xl font-semibold">Supplier invoice accounting grid</h2>
-          <p className="mt-2 text-sm text-slate-600">Compact coding table. Edit net/VAT directly; gross for OCR lines remains locked to the approved reconciled amount.</p>
+          <p className="mt-2 text-sm text-slate-600">VAT class, net and VAT now work together. Gross for OCR lines remains locked.</p>
 
           <div className="mt-4 overflow-x-auto">
             <table className="w-full min-w-[1500px] text-left text-xs">
@@ -292,7 +294,7 @@ export default async function InternalReconciliationPage({
                   const progressed = isProgressed(line.eligible_for_invoice_yn);
                   const formId = `coding-${line.id}`;
                   return (
-                    <tr key={line.id} className="border-b align-top">
+                    <tr key={line.id} data-accounting-row data-gross={moneyInput(gross)} className="border-b align-top">
                       <td className="p-2">{line.line_order}<br /><span className="text-slate-400">{progressed ? "progressed" : "blocked"}</span></td>
                       <td className="p-2"><input form={formId} name="description_override" defaultValue={coding?.posting_description ?? line.description} className="w-72 rounded-lg border px-2 py-1" /></td>
                       <td className="p-2"><input form={formId} name="sku_override" defaultValue={coding?.posting_sku ?? line.retailer_sku ?? ""} className="w-28 rounded-lg border px-2 py-1" /></td>
@@ -301,7 +303,7 @@ export default async function InternalReconciliationPage({
                       <td className="p-2"><input form={formId} name="nominal_code" defaultValue={coding?.nominal_code ?? ""} className="w-24 rounded-lg border px-2 py-1" placeholder="5000" /></td>
                       <td className="p-2"><input form={formId} name="sage_ledger_account_id" defaultValue={coding?.sage_ledger_account_id ?? ""} className="w-36 rounded-lg border px-2 py-1" /></td>
                       <td className="p-2">
-                        <select form={formId} name="vat_rate_percent" defaultValue={String(rate)} className="w-32 rounded-lg border px-2 py-1">
+                        <select form={formId} name="vat_rate_percent" data-vat-rate defaultValue={String(rate)} className="w-32 rounded-lg border px-2 py-1">
                           <option value="20">20% std</option>
                           <option value="5">5% reduced</option>
                           <option value="0">0%</option>
@@ -309,8 +311,8 @@ export default async function InternalReconciliationPage({
                         <input form={formId} type="hidden" name="tax_rate_label" value={taxLabel(rate)} />
                         <input form={formId} type="hidden" name="tax_rate_id" value={taxId(rate)} />
                       </td>
-                      <td className="p-2"><input form={formId} name="net_amount_gbp" type="number" step="0.01" defaultValue={moneyInput(coding?.net_amount_gbp ?? preview.net)} className="w-24 rounded-lg border px-2 py-1" /></td>
-                      <td className="p-2"><input form={formId} name="vat_amount_gbp" type="number" step="0.01" defaultValue={moneyInput(coding?.vat_amount_gbp ?? preview.vat)} className="w-24 rounded-lg border px-2 py-1" /></td>
+                      <td className="p-2"><input form={formId} data-net name="net_amount_gbp" type="number" step="0.01" defaultValue={moneyInput(coding?.net_amount_gbp ?? preview.net)} className="w-24 rounded-lg border px-2 py-1" /></td>
+                      <td className="p-2"><input form={formId} data-vat name="vat_amount_gbp" type="number" step="0.01" defaultValue={moneyInput(coding?.vat_amount_gbp ?? preview.vat)} className="w-24 rounded-lg border px-2 py-1" /></td>
                       <td className="p-2 font-semibold">{gbp(gross)}</td>
                       <td className="p-2"><input form={formId} type="checkbox" name="admin_review_required_yn" defaultChecked={Boolean(coding?.admin_review_required_yn)} /> <input form={formId} name="review_reason" defaultValue={coding?.review_reason ?? ""} className="mt-1 w-32 rounded-lg border px-2 py-1" placeholder="reason" /></td>
                       <td className="p-2">
