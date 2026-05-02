@@ -44,7 +44,12 @@ function addReadError(errors: ReadError[], source: string, error: unknown) {
 }
 
 function byId(rows: Row[]) {
-  return new Map(rows.map((row) => [text(row.id), row]).filter(([id]) => id));
+  const mapped = new Map<string, Row>();
+  for (const row of rows) {
+    const id = text(row.id);
+    if (id) mapped.set(id, row);
+  }
+  return mapped;
 }
 
 function groupBy(rows: Row[], key: string) {
