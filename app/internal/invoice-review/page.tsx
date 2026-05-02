@@ -68,14 +68,15 @@ function enteredTotal(invoice: InvoiceRow) { return first(invoice.supplier_invoi
 function openFlags(invoice: InvoiceRow) { return (invoice.supplier_invoice_review_flags ?? []).filter((f) => ["open", "under_review"].includes(f.status)); }
 function hasMindeeJob(invoice: InvoiceRow) { return Boolean(invoice.mindee_job_id); }
 function mindeeCompleted(invoice: InvoiceRow) { return invoice.mindee_ocr_status === "completed" || Boolean(invoice.mindee_result_saved_at); }
-function canStartMindee(invoice: InvoiceRow) { return !hasMindeeJob(invoice) && !mindeeCompleted(invoice); }
-function canFetchMindee(invoice: InvoiceRow) { return hasMindeeJob(invoice) && !mindeeCompleted(invoice); }
+function canStartMindee(invoice: InvoiceRow) { return invoice.review_status !== "duplicate_blocked" && !hasMindeeJob(invoice) && !mindeeCompleted(invoice); }
+function canFetchMindee(invoice: InvoiceRow) { return invoice.review_status !== "duplicate_blocked" && hasMindeeJob(invoice) && !mindeeCompleted(invoice); }
 function yesNo(value: boolean | null | undefined) { return value ? "Yes" : "No"; }
 function decisionLabel(decision: string | undefined) {
   if (!decision) return "decision unavailable";
   return decision.replaceAll("_", " ");
 }
 function shouldShowInInvoiceReview(invoice: InvoiceRow, decision: MatchDecisionRow | undefined) {
+  if (invoice.review_status === "duplicate_blocked") return true;
   if (!decision) {
     return hasMindeeJob(invoice) || openFlags(invoice).length > 0;
   }
@@ -189,7 +190,7 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
           <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Needs action</p>
             <p className="mt-3 text-3xl font-semibold text-slate-950">{visible.length}</p>
-            <p className="mt-1 text-sm text-slate-500">Review / OCR pending</p>
+            <p className="mt-1 text-sm text-slate-500">Review / OCR pending / duplicates</p>
           </div>
           <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Routed away</p>
@@ -305,16 +306,16 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
                       <div className="flex flex-wrap items-start justify-between gap-3">
                         <div>
                           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-white/50">Matching / routing decision</p>
-                          <p className="mt-2 text-xl font-semibold capitalize">{decisionLabel(match?.routing_decision)}</p>
-                          <p className="mt-1 text-sm leading-6 text-white/70">{match?.routing_reason ?? "Decision view unavailable."}</p>
+                          <p className="mt-2 text-xl font-semibold capitalize">{invoice.review_status === "duplicate_blocked" ? "Duplicate blocked" : decisionLabel(match?.routing_decision)}</p>
+                          <p className="mt-1 text-sm leading-6 text-white/70">{invoice.review_status === "duplicate_blocked" ? (invoice.review_notes ?? "Possible duplicate invoice blocked after OCR.") : (match?.routing_reason ?? "Decision view unavailable.")}</p>
                         </div>
-                        <div className="h-10 w-10 rounded-2xl" style={{ backgroundColor: BRAND_COLOUR }} />
+                        <div className="h-10 w-10 rounded-2xl" style={{ backgroundColor: invoice.review_status === "duplicate_blocked" ? "#fb7185" : BRAND_COLOUR }} />
                       </div>
 
                       <div className="mt-5 grid gap-3 md:grid-cols-3">
-                        <div className={`rounded-2xl border px-4 py-3 text-sm font-semibold ${matchTone(match?.retailer_match_yn)}`}>Retailer match: {yesNo(match?.retailer_match_yn)}</div>
-                        <div className={`rounded-2xl border px-4 py-3 text-sm font-semibold ${matchTone(match?.invoice_ref_match_yn)}`}>Ref match: {yesNo(match?.invoice_ref_match_yn)}</div>
-                        <div className={`rounded-2xl border px-4 py-3 text-sm font-semibold ${matchTone(match?.total_match_yn)}`}>Total match: {yesNo(match?.total_match_yn)}</div>
+                        <div className={`rounded-2xl border px-4 py-3 text-sm font-semibold ${matchTone(match?.retailer_match_yn)}`}>Retailer match: {invoice.review_status === "duplicate_blocked" ? "Blocked" : yesNo(match?.retailer_match_yn)}</div>
+                        <div className={`rounded-2xl border px-4 py-3 text-sm font-semibold ${matchTone(match?.invoice_ref_match_yn)}`}>Ref match: {invoice.review_status === "duplicate_blocked" ? "Duplicate" : yesNo(match?.invoice_ref_match_yn)}</div>
+                        <div className={`rounded-2xl border px-4 py-3 text-sm font-semibold ${matchTone(match?.total_match_yn)}`}>Total match: {invoice.review_status === "duplicate_blocked" ? "Duplicate" : yesNo(match?.total_match_yn)}</div>
                       </div>
 
                       {match?.pending_adjustment_yn ? <p className="mt-4 rounded-2xl border border-amber-300/40 bg-amber-300/10 p-3 text-sm text-amber-100">Delivery/discount approval is pending. This blocks supplier approval/Sage readiness, not operator line reconciliation.</p> : null}
