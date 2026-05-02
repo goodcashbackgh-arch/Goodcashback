@@ -33,39 +33,8 @@ function taxId(rate: number) {
   return "ZERO_0";
 }
 
-function injectApproveButton() {
-  if (document.querySelector("[data-approve-current-injected]")) return;
-
-  const saveForm = document.querySelector<HTMLFormElement>("#save-all-coding");
-  if (!saveForm?.parentElement) return;
-
-  const invoiceInput = saveForm.querySelector<HTMLInputElement>('input[name="supplier_invoice_id"]');
-  const invoiceId = invoiceInput?.value;
-  if (!invoiceId) return;
-
-  const form = document.createElement("form");
-  form.method = "post";
-  form.action = `${window.location.pathname}/approve-current`;
-  form.dataset.approveCurrentInjected = "true";
-
-  const hidden = document.createElement("input");
-  hidden.type = "hidden";
-  hidden.name = "supplier_invoice_id";
-  hidden.value = invoiceId;
-  form.appendChild(hidden);
-
-  const button = document.createElement("button");
-  button.type = "submit";
-  button.textContent = "Approve current invoice";
-  button.className = "rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800";
-  form.appendChild(button);
-
-  saveForm.parentElement.appendChild(form);
-}
-
 export default function AccountingGridCalculator() {
   useEffect(() => {
-    injectApproveButton();
     const rows = Array.from(document.querySelectorAll<HTMLElement>("[data-accounting-row]"));
 
     function recalcFromRate(row: HTMLElement) {
