@@ -1,6 +1,9 @@
 import Link from "next/link";
 import { createClient } from "@/utils/supabase/server";
-import { allocateStatementLineToSupplierInvoiceAction } from "./actions";
+import {
+  allocateStatementLineToSupplierInvoiceAction,
+  generateSupplierInvoiceSuggestionsAction,
+} from "./actions";
 
 type Row = Record<string, unknown>;
 type ReadError = { source: string; message: string };
@@ -281,6 +284,18 @@ export default async function DvaReconciliationWorkbenchPage({
             <span className="rounded-full bg-slate-100 px-3 py-1 text-sm font-semibold text-slate-700 ring-1 ring-slate-200">No direct table writes</span>
             <span className="rounded-full bg-sky-50 px-3 py-1 text-sm font-semibold text-sky-700 ring-1 ring-sky-200">Supplier invoice suggestions</span>
           </div>
+          <form action={generateSupplierInvoiceSuggestionsAction} className="mt-5 flex flex-wrap items-end gap-3 rounded-2xl border border-sky-100 bg-sky-50 p-4">
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wide text-sky-900">Tolerance GBP</label>
+              <input className="mt-1 w-28 rounded-xl border border-sky-200 bg-white px-3 py-2 text-sm" name="tolerance_gbp" type="number" min="0" step="0.01" defaultValue="5" />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wide text-sky-900">Date window</label>
+              <input className="mt-1 w-28 rounded-xl border border-sky-200 bg-white px-3 py-2 text-sm" name="max_days" type="number" min="0" step="1" defaultValue="14" />
+            </div>
+            <button className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white" type="submit">Generate supplier invoice suggestions</button>
+            <p className="max-w-xl text-xs leading-5 text-sky-900">Matches OUT statement lines to approved, unblocked supplier invoices using importer, retailer text, amount variance and date window.</p>
+          </form>
         </section>
 
         {allocationSuccess ? (
