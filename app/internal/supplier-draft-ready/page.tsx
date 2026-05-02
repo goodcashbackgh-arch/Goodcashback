@@ -200,7 +200,7 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
                   </div>
                   <div className="flex flex-wrap gap-2">
                     <Link href={`/internal/evidence/${invoice.order_id}`} className="rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">Open order</Link>
-                    <Link href={`/importer/reconciliation/${invoice.order_id}`} className="rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">Open reconciliation</Link>
+                    <Link href={`/internal/reconciliation/${invoice.order_id}`} className="rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">Open reconciliation</Link>
                     <a href={invoice.invoice_pdf_url} target="_blank" rel="noreferrer" className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white">Open invoice</a>
                   </div>
                 </div>
