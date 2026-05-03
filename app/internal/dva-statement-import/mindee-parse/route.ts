@@ -105,6 +105,10 @@ function asArray(value: unknown): unknown[] {
   return [];
 }
 
+function normaliseFieldKey(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+}
+
 function valueFromField(field: unknown) {
   const obj = getObject(field);
   if (!obj) return field;
@@ -114,16 +118,27 @@ function valueFromField(field: unknown) {
   return null;
 }
 
+function valueFromObjectByName(obj: Record<string, unknown>, name: string) {
+  const wanted = normaliseFieldKey(name);
+  if (obj[name] !== undefined) return valueFromField(obj[name]);
+  for (const [key, value] of Object.entries(obj)) {
+    if (normaliseFieldKey(key) === wanted) return valueFromField(value);
+  }
+  return null;
+}
+
 function fieldFromItem(item: unknown, name: string) {
   const obj = getObject(item);
   if (!obj) return null;
 
-  const direct = obj[name];
-  if (direct !== undefined) return valueFromField(direct);
+  const direct = valueFromObjectByName(obj, name);
+  if (direct !== null) return direct;
 
   for (const parentKey of ["simpleFields", "simple_fields", "fields", "field_values"]) {
     const parent = getObject(obj[parentKey]);
-    if (parent?.[name] !== undefined) return valueFromField(parent[name]);
+    if (!parent) continue;
+    const value = valueFromObjectByName(parent, name);
+    if (value !== null) return value;
   }
 
   const arrays = [obj.simpleFields, obj.simple_fields, obj.fields].filter(Array.isArray) as unknown[][];
@@ -131,10 +146,18 @@ function fieldFromItem(item: unknown, name: string) {
     for (const entry of arr) {
       const entryObj = getObject(entry);
       const entryName = cleanText(entryObj?.name ?? entryObj?.field_name ?? entryObj?.key);
-      if (entryName === name) return valueFromField(entryObj?.value ?? entryObj);
+      if (normaliseFieldKey(entryName) === normaliseFieldKey(name)) return valueFromField(entryObj?.value ?? entryObj);
     }
   }
 
+  return null;
+}
+
+function fieldFromItemAny(item: unknown, names: string[]) {
+  for (const name of names) {
+    const value = fieldFromItem(item, name);
+    if (value !== null && value !== undefined && value !== "") return value;
+  }
   return null;
 }
 
@@ -179,29 +202,47 @@ function merchantFromDescription(description: string) {
 }
 
 function extractReference(description: string) {
-  const refs = Array.from(description.matchAll(/\b[A-Z0-9]{8,}\b/gi)).map((m) => m[0]);
+  const refs = Array.from(description.matchAll(/\b(?=[A-Z0-9]*\d)[A-Z0-9]{8,}\b/gi)).map((m) => m[0]);
   return refs.length ? refs[refs.length - 1] : null;
 }
 
-function classify(description: string, signedAmount: number | null): { direction: "in" | "out" | null; type: string } {
+function normaliseMindeeDirection(value: unknown): "in" | "out" | null {
+  const raw = cleanText(value).toLowerCase();
+  if (!raw || raw === "unknown") return null;
+  if (["credit", "cr", "in", "inflow", "deposit", "paid_in"].includes(raw)) return "in";
+  if (["debit", "dr", "out", "outflow", "withdrawal", "paid_out"].includes(raw)) return "out";
+  if (raw.includes("credit")) return "in";
+  if (raw.includes("debit")) return "out";
+  return null;
+}
+
+function classify(description: string, explicitDirection: "in" | "out" | null): { direction: "in" | "out" | null; type: string } {
   const lower = description.toLowerCase();
-  if (signedAmount !== null && signedAmount < 0) {
-    if (lower.includes("fee") || lower.includes("momo") || lower.includes("gip")) return { direction: "out", type: "bank_fee_candidate" };
-    return { direction: "out", type: "supplier_purchase_candidate" };
+  const hasSupplierMerchant = lower.includes("zara") || lower.includes("asos") || lower.includes("ninja") || lower.includes("sharkninja") || lower.includes("h&m") || lower.includes("river") || lower.includes("pos") || lower.includes("visa");
+  const isFee = lower.includes("momo") || lower.includes("gip") || lower.includes("fee") || lower.includes("charge");
+  const isRefund = lower.includes("refund") || lower.includes("reversal") || lower.includes("settlement refund");
+  const isBankToWallet = lower.includes("bank to wallet");
+  const isWalletToBank = lower.includes("wallet to bank");
+  const isInboundFundingText = lower.includes("transfer from") || lower.includes("pmt") || lower.includes("payment") || lower.includes("shopping") || lower.includes("deposit") || lower.includes("ib oc");
+  const isOutboundTransferText = lower.includes("transfer to") || isBankToWallet;
+
+  if (explicitDirection === "in") {
+    if (isRefund) return { direction: "in", type: "retailer_refund_candidate" };
+    return { direction: "in", type: "inbound_funding_candidate" };
   }
-  if (signedAmount !== null && signedAmount > 0) {
-    if (lower.includes("refund") || lower.includes("reversal") || lower.includes("settlement refund") || lower.includes("credit")) {
-      return { direction: "in", type: "retailer_refund_candidate" };
-    }
-    if (lower.includes("transfer") || lower.includes("deposit") || lower.includes("ib oc")) return { direction: "in", type: "inbound_funding_candidate" };
+
+  if (explicitDirection === "out") {
+    if (isFee) return { direction: "out", type: "bank_fee_candidate" };
+    if (isOutboundTransferText) return { direction: "out", type: "transfer_candidate" };
+    if (hasSupplierMerchant) return { direction: "out", type: "supplier_purchase_candidate" };
+    return { direction: "out", type: "transfer_candidate" };
   }
-  if (lower.includes("refund") || lower.includes("reversal")) return { direction: "in", type: "retailer_refund_candidate" };
-  if (lower.includes("momo") || lower.includes("gip") || lower.includes("fee")) return { direction: "out", type: "bank_fee_candidate" };
-  if (lower.includes("transfer to")) return { direction: "out", type: "transfer_candidate" };
-  if (lower.includes("transfer") || lower.includes("ib oc") || lower.includes("deposit")) return { direction: "in", type: "inbound_funding_candidate" };
-  if (lower.includes("zara") || lower.includes("asos") || lower.includes("ninja") || lower.includes("h&m") || lower.includes("river") || lower.includes("pos") || lower.includes("visa")) {
-    return { direction: "out", type: "supplier_purchase_candidate" };
-  }
+
+  if (isWalletToBank || isInboundFundingText) return { direction: "in", type: "inbound_funding_candidate" };
+  if (isFee) return { direction: "out", type: "bank_fee_candidate" };
+  if (isOutboundTransferText) return { direction: "out", type: "transfer_candidate" };
+  if (isRefund) return { direction: "in", type: "retailer_refund_candidate" };
+  if (hasSupplierMerchant) return { direction: "out", type: "supplier_purchase_candidate" };
   return { direction: null, type: "unmatched_candidate" };
 }
 
@@ -226,33 +267,52 @@ function fingerprint(batch: Batch, row: DraftRow) {
 
 function draftFromMindeeItem(item: unknown, batch: Batch): DraftRow {
   const description = cleanText(
-    fieldFromItem(item, "description")
-    ?? fieldFromItem(item, "details")
-    ?? fieldFromItem(item, "label")
-    ?? fieldFromItem(item, "transaction_description")
+    fieldFromItemAny(item, ["description", "details", "label", "transaction_description"])
   );
-  const signedAmount = numberValue(fieldFromItem(item, "amount") ?? fieldFromItem(item, "transaction_amount") ?? fieldFromItem(item, "value"));
-  const amountLocal = signedAmount === null ? null : Math.abs(signedAmount);
-  const inferred = classify(description, signedAmount);
-  const date = parseDate(fieldFromItem(item, "date") ?? fieldFromItem(item, "transaction_date") ?? fieldFromItem(item, "value_date"));
+  const postingDate = parseDate(fieldFromItemAny(item, ["date", "posting_date", "book_date"]));
+  const valueDate = parseDate(fieldFromItemAny(item, ["value_date", "transaction_date", "processed_date"]));
+  const debitAmount = numberValue(fieldFromItemAny(item, ["debit_amount", "debit", "withdrawal", "paid_out"]));
+  const creditAmount = numberValue(fieldFromItemAny(item, ["credit_amount", "credit", "deposit", "paid_in"]));
+  const genericAmount = numberValue(fieldFromItemAny(item, ["amount", "transaction_amount", "value"]));
+  const explicitDirection = normaliseMindeeDirection(fieldFromItemAny(item, ["direction", "transaction_direction", "debit_credit", "type"]));
+  const amountLocal = debitAmount !== null && debitAmount > 0
+    ? debitAmount
+    : creditAmount !== null && creditAmount > 0
+      ? creditAmount
+      : genericAmount !== null
+        ? Math.abs(genericAmount)
+        : null;
+  const direction = explicitDirection
+    ?? (debitAmount !== null && debitAmount > 0 ? "out" : null)
+    ?? (creditAmount !== null && creditAmount > 0 ? "in" : null)
+    ?? (genericAmount !== null && genericAmount < 0 ? "out" : null);
+  const inferred = classify(description, direction);
+  const reference = cleanText(fieldFromItemAny(item, ["reference", "ref", "ref_chq_no", "ref_chq", "cheque_no", "check_number", "transaction_reference", "bank_reference"])) || extractReference(description);
+  const familyRef = cleanText(fieldFromItemAny(item, ["transaction_id", "family_ref", "auth_ref", "settlement_ref", "authorization_code"])) || null;
   const merchant = merchantFromDescription(description);
+  const merchantRaw = inferred.transactionType === "supplier_purchase_candidate" || inferred.transactionType === "retailer_refund_candidate"
+    ? merchant
+    : (description ? description.slice(0, 100) : null);
+  const merchantNormalised = inferred.transactionType === "supplier_purchase_candidate" || inferred.transactionType === "retailer_refund_candidate"
+    ? normaliseMerchant(merchant)
+    : null;
 
   return {
     rawText: description || JSON.stringify(item).slice(0, 1000),
     rawJson: getObject(item) ?? { item },
-    statementDate: date ?? batch.statement_period_from,
-    transactionDate: date,
+    statementDate: postingDate ?? valueDate ?? batch.statement_period_from,
+    transactionDate: valueDate ?? postingDate,
     direction: inferred.direction,
     transactionType: inferred.type,
     amountLocal,
-    balanceAfter: numberValue(fieldFromItem(item, "balance") ?? fieldFromItem(item, "balance_amount") ?? fieldFromItem(item, "running_balance")),
+    balanceAfter: numberValue(fieldFromItemAny(item, ["balance_after", "balance", "balance_amount", "running_balance"])),
     cardLast4: description.match(/\*+(\d{4})/)?.[1] ?? null,
-    merchantRaw: merchant,
-    merchantNormalised: normaliseMerchant(merchant),
-    bankReference: cleanText(fieldFromItem(item, "reference") ?? fieldFromItem(item, "bank_reference")) || null,
-    authOrSettlementRef: cleanText(fieldFromItem(item, "auth_ref") ?? fieldFromItem(item, "settlement_ref")) || extractReference(description),
-    transactionFamilyRef: cleanText(fieldFromItem(item, "transaction_id") ?? fieldFromItem(item, "family_ref")) || null,
-    confidence: date && amountLocal !== null && description ? "high" : "low",
+    merchantRaw,
+    merchantNormalised,
+    bankReference: reference,
+    authOrSettlementRef: familyRef ?? reference,
+    transactionFamilyRef: familyRef,
+    confidence: (postingDate || valueDate) && amountLocal !== null && description ? "high" : "low",
   };
 }
 
@@ -266,6 +326,7 @@ function withFx(row: DraftRow, batch: Batch, manualFxRate: number | null): Draft
 }
 
 function validation(row: ReturnType<typeof withFx>) {
+  if (row.errorCode) return { code: row.errorCode, message: row.errorMessage ?? row.errorCode };
   if (!row.statementDate) return { code: "missing_date", message: "Statement date could not be parsed." };
   if (!row.direction) return { code: "unknown_direction", message: "Statement direction could not be classified as IN or OUT." };
   if (row.amountLocal === null || row.amountLocal <= 0) return { code: "invalid_amount", message: "Transaction amount could not be parsed from Mindee result." };
