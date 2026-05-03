@@ -133,7 +133,7 @@ export default async function DvaStatementMindeeControlPage({
                   ) : null}
 
                   {canParse ? (
-                    <form action="/internal/dva-statement-import/mindee-parse-v2" method="post" className="flex flex-wrap items-end gap-3 rounded-2xl border border-emerald-100 bg-emerald-50 p-3">
+                    <form action="/internal/dva-statement-import/mindee-parse-v3" method="post" className="flex flex-wrap items-end gap-3 rounded-2xl border border-emerald-100 bg-emerald-50 p-3">
                       <input type="hidden" name="import_batch_id" value={text(batch.id)} />
                       <div>
                         <label className="block text-xs font-semibold uppercase tracking-wide text-emerald-900">FX rate</label>
@@ -148,7 +148,7 @@ export default async function DvaStatementMindeeControlPage({
                           required={requiresFxRate}
                         />
                         <p className="mt-1 text-xs font-medium text-emerald-900">
-                          {requiresFxRate ? `Required for ${localCcy} statements.` : "GBP statements default to 1."}
+                          {requiresFxRate ? `Required for ${localCcy}. Balance-aware parser validates direction from running balances.` : "GBP statements default to 1."}
                         </p>
                       </div>
                       <button className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white" type="submit">Parse/stage Mindee rows</button>
