@@ -7,6 +7,7 @@ type Batch = {
   id: string;
   mindee_statement_job_id: string | null;
   mindee_statement_model_id: string | null;
+  mindee_statement_raw_json: unknown;
 };
 
 function redirectToImport(request: Request, params: Record<string, string>) {
@@ -100,7 +101,7 @@ export async function POST(request: Request) {
 
   const { data: batch, error: batchError } = await supabase
     .from("dva_statement_import_batches")
-    .select("id, mindee_statement_job_id, mindee_statement_model_id")
+    .select("id, mindee_statement_job_id, mindee_statement_model_id, mindee_statement_raw_json")
     .eq("id", importBatchId)
     .maybeSingle();
 
@@ -108,6 +109,25 @@ export async function POST(request: Request) {
   const typedBatch = batch as Batch;
   const jobId = cleanText(typedBatch.mindee_statement_job_id);
   if (!jobId) return redirectToImport(request, { import_error: "Mindee statement job id is missing. Start OCR first." });
+
+  if (hasInferencePayload(typedBatch.mindee_statement_raw_json)) {
+    const { error: saveExistingPayloadError } = await supabase.rpc("staff_save_dva_statement_import_mindee_result", {
+      p_import_batch_id: importBatchId,
+      p_mindee_inference_id: extractMindeeInferenceId(typedBatch.mindee_statement_raw_json),
+      p_ocr_status: "completed",
+      p_raw_json: typedBatch.mindee_statement_raw_json,
+      p_pages_consumed: extractPagesConsumed(typedBatch.mindee_statement_raw_json),
+      p_http_status: 200,
+      p_error_message: null,
+    });
+
+    if (saveExistingPayloadError) return redirectToImport(request, { import_error: saveExistingPayloadError.message });
+
+    return redirectToImport(request, {
+      import_success: "Mindee statement OCR result is already saved. Next: parse raw OCR into staged rows.",
+      batch_id: importBatchId,
+    });
+  }
 
   const headers = new Headers();
   headers.set("Authori" + "zation", apiKey);
