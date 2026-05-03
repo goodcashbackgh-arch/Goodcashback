@@ -8,6 +8,7 @@ type Batch = {
   detected_file_type: string;
   source_file_url: string;
   original_filename: string | null;
+  status: string;
 };
 
 function redirectToImport(request: Request, params: Record<string, string>) {
@@ -22,6 +23,10 @@ function cleanText(value: unknown) {
 
 function enabled(value: string | undefined) {
   return ["1", "true", "yes", "on"].includes(String(value ?? "").trim().toLowerCase());
+}
+
+function isHttpUrl(value: string) {
+  return /^https?:\/\//i.test(value);
 }
 
 function recordValue(value: unknown) {
@@ -83,7 +88,7 @@ export async function POST(request: Request) {
 
   const { data: batch, error: batchError } = await supabase
     .from("dva_statement_import_batches")
-    .select("id, detected_file_type, source_file_url, original_filename")
+    .select("id, detected_file_type, source_file_url, original_filename, status")
     .eq("id", importBatchId)
     .maybeSingle();
 
@@ -92,6 +97,14 @@ export async function POST(request: Request) {
 
   if (typedBatch.detected_file_type !== "pdf") {
     return redirectToImport(request, { import_error: "Mindee statement OCR can only be started for PDF batches." });
+  }
+
+  if (["committed", "voided", "failed"].includes(String(typedBatch.status))) {
+    return redirectToImport(request, { import_error: `Cannot start Mindee OCR for batch in status ${typedBatch.status}. Upload a fresh real PDF batch first.` });
+  }
+
+  if (!isHttpUrl(typedBatch.source_file_url)) {
+    return redirectToImport(request, { import_error: "This PDF batch has no real uploaded file URL. It is likely a smoke/test batch. Upload a fresh real PDF statement first." });
   }
 
   const fileResponse = await fetch(typedBatch.source_file_url, { cache: "no-store" });
