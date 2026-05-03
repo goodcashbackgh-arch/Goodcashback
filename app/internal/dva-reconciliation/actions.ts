@@ -14,6 +14,19 @@ function readString(formData: FormData, key: string) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function numeric(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
+}
+
+function booleanish(value: unknown) {
+  return value === true || (typeof value === "string" && value.toLowerCase() === "true");
+}
+
 export async function generateSupplierInvoiceSuggestionsAction(formData: FormData) {
   const supabase = await createClient();
 
@@ -104,6 +117,42 @@ export async function allocateStatementLineToFxCardOrFeeAction(formData: FormDat
   if (!Number.isFinite(allocatedAmount) || allocatedAmount <= 0) {
     redirectWithAllocationResult({
       allocation_error: "Allocation amount must be greater than zero.",
+    });
+  }
+
+  const { data: summaryRow, error: summaryError } = await supabase
+    .from("dva_statement_line_allocation_summary_vw")
+    .select("direction, confirmed_allocated_gbp, confirmed_unallocated_gbp, confirmed_balanced_yn")
+    .eq("dva_statement_line_id", statementLineId)
+    .single();
+
+  if (summaryError) {
+    redirectWithAllocationResult({
+      allocation_error: summaryError.message,
+    });
+  }
+
+  if (!summaryRow || summaryRow.direction !== "out") {
+    redirectWithAllocationResult({
+      allocation_error: "FX/card/fee residual allocation is only allowed for OUT statement lines.",
+    });
+  }
+
+  if (booleanish(summaryRow.confirmed_balanced_yn)) {
+    redirectWithAllocationResult({
+      allocation_error: "This statement line is already balanced.",
+    });
+  }
+
+  if (numeric(summaryRow.confirmed_allocated_gbp) <= 0) {
+    redirectWithAllocationResult({
+      allocation_error: "Residual allocation is only allowed after a supplier invoice, refund, exception, or hold allocation already exists.",
+    });
+  }
+
+  if (numeric(summaryRow.confirmed_unallocated_gbp) <= 0) {
+    redirectWithAllocationResult({
+      allocation_error: "There is no remaining balance to allocate as FX/card/fee.",
     });
   }
 
