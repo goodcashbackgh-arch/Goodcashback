@@ -16,6 +16,30 @@ function statusClass(status: string) {
   return "bg-slate-100 text-slate-700 ring-slate-200";
 }
 
+function isHttpUrl(value: string) {
+  return /^https?:\/\//i.test(value);
+}
+
+function canStartMindee(batch: Row, jobId: string, ocrStatus: string) {
+  const status = text(batch.status);
+  const sourceUrl = text(batch.source_file_url);
+  if (jobId) return false;
+  if (["queued", "processing", "completed"].includes(ocrStatus)) return false;
+  if (["committed", "voided", "failed"].includes(status)) return false;
+  if (!isHttpUrl(sourceUrl)) return false;
+  return true;
+}
+
+function blockedReason(batch: Row, jobId: string, ocrStatus: string) {
+  const status = text(batch.status);
+  const sourceUrl = text(batch.source_file_url);
+  if (jobId) return "OCR already has a Mindee job.";
+  if (["queued", "processing", "completed"].includes(ocrStatus)) return `OCR status is ${ocrStatus}.`;
+  if (["committed", "voided", "failed"].includes(status)) return `Batch status is ${status}; upload a fresh real PDF batch for OCR.`;
+  if (!isHttpUrl(sourceUrl)) return "No real uploaded file URL; likely a smoke/test batch.";
+  return "Not ready for OCR.";
+}
+
 export default async function DvaStatementMindeeControlPage({
   searchParams,
 }: {
@@ -29,7 +53,7 @@ export default async function DvaStatementMindeeControlPage({
 
   const { data, error } = await supabase
     .from("dva_statement_import_batches")
-    .select("id, original_filename, source_bank, statement_period_from, statement_period_to, local_ccy, detected_file_type, parser_route, status, row_count, clean_count, error_count, duplicate_count, mindee_statement_job_id, mindee_statement_model_id, mindee_statement_ocr_status, mindee_statement_enqueued_at, mindee_statement_completed_at, mindee_statement_pages_consumed, mindee_statement_error_message, uploaded_at")
+    .select("id, original_filename, source_file_url, source_bank, statement_period_from, statement_period_to, local_ccy, detected_file_type, parser_route, status, row_count, clean_count, error_count, duplicate_count, mindee_statement_job_id, mindee_statement_model_id, mindee_statement_ocr_status, mindee_statement_enqueued_at, mindee_statement_completed_at, mindee_statement_pages_consumed, mindee_statement_error_message, uploaded_at")
     .eq("detected_file_type", "pdf")
     .order("uploaded_at", { ascending: false })
     .limit(20);
@@ -44,7 +68,7 @@ export default async function DvaStatementMindeeControlPage({
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">DVA/card statement OCR</p>
           <h1 className="mt-2 text-3xl font-semibold tracking-tight">PDF Mindee control</h1>
           <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-600">
-            Starts and fetches Mindee V2 OCR for PDF statement batches using MINDEE_STATEMENT_MODEL_ID only. This does not use the invoice OCR model or parser.
+            Starts and fetches Mindee V2 OCR for real PDF statement batches using MINDEE_STATEMENT_MODEL_ID only. Smoke/test or already-committed batches are blocked.
           </p>
           {batchId ? <p className="mt-3 break-all text-xs text-slate-500">Latest batch: {batchId}</p> : null}
         </section>
@@ -65,6 +89,7 @@ export default async function DvaStatementMindeeControlPage({
           ) : batches.map((batch) => {
             const ocrStatus = text(batch.mindee_statement_ocr_status) || "not_started";
             const jobId = text(batch.mindee_statement_job_id);
+            const canStart = canStartMindee(batch, jobId, ocrStatus);
             return (
               <article key={text(batch.id)} className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
                 <div className="flex flex-wrap items-start justify-between gap-3">
@@ -87,12 +112,14 @@ export default async function DvaStatementMindeeControlPage({
                 {text(batch.mindee_statement_error_message) ? <p className="mt-3 text-sm text-rose-700">{text(batch.mindee_statement_error_message)}</p> : null}
 
                 <div className="mt-5 flex flex-wrap gap-3">
-                  {!jobId && !["queued", "processing", "completed"].includes(ocrStatus) ? (
+                  {canStart ? (
                     <form action="/internal/dva-statement-import/mindee-start" method="post">
                       <input type="hidden" name="import_batch_id" value={text(batch.id)} />
                       <button className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white" type="submit">Start Mindee OCR</button>
                     </form>
-                  ) : null}
+                  ) : (
+                    <span className="rounded-xl bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-500 ring-1 ring-slate-200">OCR blocked: {blockedReason(batch, jobId, ocrStatus)}</span>
+                  )}
 
                   {jobId ? (
                     <form action="/internal/dva-statement-import/mindee-fetch" method="post">
