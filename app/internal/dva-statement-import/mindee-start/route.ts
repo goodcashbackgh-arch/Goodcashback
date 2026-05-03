@@ -29,6 +29,17 @@ function isHttpUrl(value: string) {
   return /^https?:\/\//i.test(value);
 }
 
+function maxPdfPages() {
+  const parsed = Number(process.env.MINDEE_STATEMENT_MAX_PAGES || "2");
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 2;
+}
+
+function estimatePdfPageCount(buffer: ArrayBuffer) {
+  const text = new TextDecoder("latin1").decode(buffer);
+  const matches = text.match(/\/Type\s*\/Page\b/g);
+  return matches?.length ?? null;
+}
+
 function recordValue(value: unknown) {
   if (value === undefined || value === null || value === "") return null;
   return String(value).trim() || null;
@@ -112,7 +123,17 @@ export async function POST(request: Request) {
     return redirectToImport(request, { import_error: `Could not fetch uploaded PDF for OCR (${fileResponse.status}).` });
   }
 
-  const pdfBlob = await fileResponse.blob();
+  const pdfBuffer = await fileResponse.arrayBuffer();
+  const estimatedPages = estimatePdfPageCount(pdfBuffer);
+  const maxPages = maxPdfPages();
+
+  if (estimatedPages !== null && estimatedPages > maxPages) {
+    return redirectToImport(request, {
+      import_error: `Mindee OCR blocked before upload: PDF appears to contain ${estimatedPages} page(s), current safety limit is ${maxPages}. Upload a smaller PDF or raise MINDEE_STATEMENT_MAX_PAGES intentionally.`,
+      batch_id: importBatchId,
+    });
+  }
+
   const mindeeFormData = new FormData();
   mindeeFormData.set("model_id", modelId);
 
@@ -126,7 +147,7 @@ export async function POST(request: Request) {
     mindeeFormData.append("webhook_ids", webhookId);
   }
 
-  mindeeFormData.set("file", pdfBlob, typedBatch.original_filename || `statement-${importBatchId}.pdf`);
+  mindeeFormData.set("file", new Blob([pdfBuffer], { type: "application/pdf" }), typedBatch.original_filename || `statement-${importBatchId}.pdf`);
 
   const headers = new Headers();
   headers.set("Authori" + "zation", apiKey);
@@ -166,7 +187,7 @@ export async function POST(request: Request) {
   if (markError) return redirectToImport(request, { import_error: markError.message });
 
   return redirectToImport(request, {
-    import_success: `Mindee statement OCR enqueued${rawTextEnabled ? " with raw text requested" : ""}. Job: ${jobId}. Wait briefly, then fetch OCR result.`,
+    import_success: `Mindee statement OCR enqueued${rawTextEnabled ? " with raw text requested" : ""}. Estimated pages: ${estimatedPages ?? "unknown"}. Job: ${jobId}. Wait briefly, then fetch OCR result.`,
     batch_id: importBatchId,
   });
 }
