@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { createClient } from "@/utils/supabase/server";
-import { createStageCommitSmokeImportAction } from "./actions";
+import { createRealStatementImportBatchAction, createStageCommitSmokeImportAction } from "./actions";
 
 type Row = Record<string, unknown>;
 type SearchParamsValue = Record<string, string | string[] | undefined>;
@@ -37,7 +37,7 @@ function statusClass(status: string) {
   return "bg-slate-100 text-slate-700 ring-slate-200";
 }
 
-export default async function DvaStatementImportSmokePage({
+export default async function DvaStatementImportPage({
   searchParams,
 }: {
   searchParams?: SearchParamsValue | Promise<SearchParamsValue>;
@@ -48,7 +48,7 @@ export default async function DvaStatementImportSmokePage({
   const batchId = text(params.batch_id);
   const supabase = await createClient();
 
-  const [batchesResult, rowsResult, latestInvoiceResult] = await Promise.all([
+  const [batchesResult, rowsResult, latestInvoiceResult, importersResult] = await Promise.all([
     supabase
       .from("dva_statement_import_batches")
       .select("id, importer_id, source_bank, statement_period_from, statement_period_to, local_ccy, source_file_url, original_filename, detected_file_type, parser_route, status, row_count, clean_count, error_count, duplicate_count, committed_count, uploaded_at, parsed_at, committed_at, voided_at, void_reason, notes")
@@ -64,11 +64,18 @@ export default async function DvaStatementImportSmokePage({
       .select("id, invoice_ref, order_id")
       .eq("id", "09ed41d2-4a3f-44fa-b292-ed1bdcd92735")
       .maybeSingle(),
+    supabase
+      .from("importers")
+      .select("id, company_name, trading_name")
+      .order("company_name", { ascending: true })
+      .limit(200),
   ]);
 
   const batches = (batchesResult.data ?? []) as unknown as Row[];
   const rows = (rowsResult.data ?? []) as unknown as Row[];
   const latestInvoice = latestInvoiceResult.data as Row | null;
+  const importers = (importersResult.data ?? []) as unknown as Row[];
+  const today = new Date().toISOString().slice(0, 10);
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-6 text-slate-950 sm:px-6 sm:py-8">
@@ -76,13 +83,13 @@ export default async function DvaStatementImportSmokePage({
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <Link href="/internal" className="text-sm font-semibold text-sky-600">← Back to internal dashboard</Link>
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">DVA/card statement import</p>
-          <h1 className="mt-2 text-3xl font-semibold tracking-tight">PDF-first import smoke test</h1>
+          <h1 className="mt-2 text-3xl font-semibold tracking-tight">Statement upload and extraction workbench</h1>
           <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-600">
-            This page proves the new import backend using your authenticated staff session: create import batch, stage one parsed PDF-style row, commit it into active DVA statement lines, then review the import history.
+            Staff upload DVA/card/bank statements here. The current step stores the source file, detects the file type, and creates the import batch. Extraction/staging is the next action attached to the batch.
           </p>
           <div className="mt-4 flex flex-wrap gap-2">
             <span className="rounded-full bg-sky-50 px-3 py-1 text-sm font-semibold text-sky-700 ring-1 ring-sky-200">PDF-first</span>
-            <span className="rounded-full bg-slate-100 px-3 py-1 text-sm font-semibold text-slate-700 ring-1 ring-slate-200">Format-detecting</span>
+            <span className="rounded-full bg-slate-100 px-3 py-1 text-sm font-semibold text-slate-700 ring-1 ring-slate-200">CSV/XLSX fallback</span>
             <span className="rounded-full bg-emerald-50 px-3 py-1 text-sm font-semibold text-emerald-700 ring-1 ring-emerald-200">Staging before commit</span>
           </div>
         </section>
@@ -97,30 +104,86 @@ export default async function DvaStatementImportSmokePage({
         ) : null}
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-          <h2 className="text-xl font-semibold">Run one smoke import</h2>
+          <h2 className="text-xl font-semibold">Upload statement file</h2>
           <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-            This creates a unique TEST PDF-style card purchase row for the importer attached to the known clean invoice/order. It does not allocate money and does not post to Sage.
+            This creates the controlled import batch only. It does not yet consume OCR pages or commit statement rows.
           </p>
-          <form action={createStageCommitSmokeImportAction} className="mt-5 grid gap-4 md:grid-cols-4">
-            <input type="hidden" name="base_supplier_invoice_id" value="09ed41d2-4a3f-44fa-b292-ed1bdcd92735" />
+          <form action={createRealStatementImportBatchAction} className="mt-5 grid gap-4 md:grid-cols-4">
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Base invoice</label>
-              <input className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm" readOnly value={text(latestInvoice?.invoice_ref) || "4004164248"} />
+              <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Importer</label>
+              <select className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" name="importer_id" required>
+                <option value="">Select importer</option>
+                {importers.map((importer) => (
+                  <option key={text(importer.id)} value={text(importer.id)}>{text(importer.trading_name) || text(importer.company_name) || text(importer.id)}</option>
+                ))}
+              </select>
             </div>
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Amount GBP</label>
-              <input className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" name="amount_gbp" type="number" min="0.01" step="0.01" defaultValue="44.44" />
+              <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Source bank/provider</label>
+              <select className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" name="source_bank" defaultValue="other">
+                <option value="other">Other</option>
+                <option value="gcb">GCB</option>
+                <option value="firstbank">FirstBank</option>
+                <option value="zenith">Zenith</option>
+              </select>
             </div>
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Merchant</label>
-              <input className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" name="merchant" defaultValue="SharkNinja Leeds GB" />
+              <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Period from</label>
+              <input className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" name="statement_period_from" type="date" defaultValue={today} required />
             </div>
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Normalised</label>
-              <input className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" name="merchant_normalised" defaultValue="sharkninja" />
+              <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Period to</label>
+              <input className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" name="statement_period_to" type="date" defaultValue={today} required />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Local currency</label>
+              <input className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm uppercase" name="local_ccy" defaultValue="GHS" maxLength={3} required />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Default card markup %</label>
+              <input className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" name="default_card_markup_pct" type="number" min="0" step="0.001" defaultValue="0" />
+            </div>
+            <div className="md:col-span-2">
+              <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Statement file</label>
+              <input className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" name="statement_file" type="file" accept=".pdf,.csv,.xlsx,.xls,.txt,text/plain,application/pdf,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required />
+            </div>
+            <div className="md:col-span-2">
+              <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">FX source context</label>
+              <input className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" name="fx_source_context" placeholder="e.g. Bank of Ghana daily settlement rate" />
+            </div>
+            <div className="md:col-span-2">
+              <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Notes</label>
+              <input className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" name="notes" placeholder="Optional internal upload note" />
             </div>
             <div className="md:col-span-4">
-              <button className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white" type="submit">Create → stage → commit smoke import</button>
+              <button className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white" type="submit">Upload statement and create import batch</button>
+            </div>
+          </form>
+        </section>
+
+        <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-950">
+          <h2 className="font-semibold">Temporary smoke-test control</h2>
+          <p className="mt-2">This remains available only to prove the create → stage → commit RPC chain. Use the upload form above for real statement files.</p>
+          <form action={createStageCommitSmokeImportAction} className="mt-4 grid gap-4 md:grid-cols-4">
+            <input type="hidden" name="base_supplier_invoice_id" value="09ed41d2-4a3f-44fa-b292-ed1bdcd92735" />
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wide text-amber-900">Base invoice</label>
+              <input className="mt-1 w-full rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm" readOnly value={text(latestInvoice?.invoice_ref) || "4004164248"} />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wide text-amber-900">Amount GBP</label>
+              <input className="mt-1 w-full rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm" name="amount_gbp" type="number" min="0.01" step="0.01" defaultValue="44.44" />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wide text-amber-900">Merchant</label>
+              <input className="mt-1 w-full rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm" name="merchant" defaultValue="SharkNinja Leeds GB" />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wide text-amber-900">Normalised</label>
+              <input className="mt-1 w-full rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm" name="merchant_normalised" defaultValue="sharkninja" />
+            </div>
+            <div className="md:col-span-4">
+              <button className="rounded-xl bg-amber-600 px-4 py-2 text-sm font-semibold text-white" type="submit">Create → stage → commit smoke import</button>
               <Link href="/internal/dva-reconciliation" className="ml-4 inline-flex text-sm font-semibold text-sky-600">Open DVA reconciliation →</Link>
             </div>
           </form>
@@ -136,6 +199,11 @@ export default async function DvaStatementImportSmokePage({
             Could not read import rows: {rowsResult.error.message}
           </section>
         ) : null}
+        {importersResult.error ? (
+          <section className="rounded-3xl border border-rose-200 bg-rose-50 p-5 text-sm text-rose-900">
+            Could not read importers: {importersResult.error.message}
+          </section>
+        ) : null}
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold">Upload/import history</h2>
@@ -147,7 +215,7 @@ export default async function DvaStatementImportSmokePage({
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
                     <p className="font-semibold text-slate-950">{text(batch.original_filename) || text(batch.source_file_url)}</p>
-                    <p className="mt-1 text-xs text-slate-500">{text(batch.statement_period_from)} → {text(batch.statement_period_to)} · {text(batch.source_bank)} · {text(batch.local_ccy)}</p>
+                    <p className="mt-1 text-xs text-slate-500">{text(batch.statement_period_from)} → {text(batch.statement_period_to)} · {text(batch.source_bank)} · {text(batch.local_ccy)} · {text(batch.detected_file_type)} → {text(batch.parser_route)}</p>
                   </div>
                   <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ${statusClass(text(batch.status))}`}>{text(batch.status)}</span>
                 </div>
