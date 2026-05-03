@@ -58,6 +58,10 @@ function getStatementModelId() {
   return process.env.MINDEE_STATEMENT_MODEL_ID?.trim() || process.env.MINDEE_DVA_STATEMENT_MODEL_ID?.trim() || "";
 }
 
+function getStatementWebhookId() {
+  return process.env.MINDEE_STATEMENT_WEBHOOK_ID?.trim() || "";
+}
+
 export async function POST(request: Request) {
   const formData = await request.formData();
   const importBatchId = cleanText(formData.get("import_batch_id"));
@@ -94,6 +98,13 @@ export async function POST(request: Request) {
   const pdfBlob = await fileResponse.blob();
   const mindeeFormData = new FormData();
   mindeeFormData.set("model_id", modelId);
+  mindeeFormData.set("raw_text", "true");
+
+  const webhookId = getStatementWebhookId();
+  if (webhookId) {
+    mindeeFormData.append("webhook_ids", webhookId);
+  }
+
   mindeeFormData.set("file", pdfBlob, typedBatch.original_filename || `statement-${importBatchId}.pdf`);
 
   const headers = new Headers();
@@ -134,7 +145,7 @@ export async function POST(request: Request) {
   if (markError) return redirectToImport(request, { import_error: markError.message });
 
   return redirectToImport(request, {
-    import_success: `Mindee statement OCR enqueued. Job: ${jobId}. Wait briefly, then fetch OCR result.`,
+    import_success: `Mindee statement OCR enqueued with raw text requested. Job: ${jobId}. Wait briefly, then fetch OCR result.`,
     batch_id: importBatchId,
   });
 }
