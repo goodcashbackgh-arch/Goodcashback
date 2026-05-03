@@ -290,10 +290,10 @@ function draftFromMindeeItem(item: unknown, batch: Batch): DraftRow {
   const reference = cleanText(fieldFromItemAny(item, ["reference", "ref", "ref_chq_no", "ref_chq", "cheque_no", "check_number", "transaction_reference", "bank_reference"])) || extractReference(description);
   const familyRef = cleanText(fieldFromItemAny(item, ["transaction_id", "family_ref", "auth_ref", "settlement_ref", "authorization_code"])) || null;
   const merchant = merchantFromDescription(description);
-  const merchantRaw = inferred.transactionType === "supplier_purchase_candidate" || inferred.transactionType === "retailer_refund_candidate"
+  const merchantRaw = inferred.type === "supplier_purchase_candidate" || inferred.type === "retailer_refund_candidate"
     ? merchant
     : (description ? description.slice(0, 100) : null);
-  const merchantNormalised = inferred.transactionType === "supplier_purchase_candidate" || inferred.transactionType === "retailer_refund_candidate"
+  const merchantNormalised = inferred.type === "supplier_purchase_candidate" || inferred.type === "retailer_refund_candidate"
     ? normaliseMerchant(merchant)
     : null;
 
