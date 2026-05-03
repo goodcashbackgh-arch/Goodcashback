@@ -131,7 +131,7 @@ export default async function DvaStatementMindeeControlPage({
                   ) : null}
 
                   {canParse ? (
-                    <form action="/internal/dva-statement-import/mindee-parse" method="post" className="flex flex-wrap items-end gap-3 rounded-2xl border border-emerald-100 bg-emerald-50 p-3">
+                    <form action="/internal/dva-statement-import/mindee-parse-v2" method="post" className="flex flex-wrap items-end gap-3 rounded-2xl border border-emerald-100 bg-emerald-50 p-3">
                       <input type="hidden" name="import_batch_id" value={text(batch.id)} />
                       <div>
                         <label className="block text-xs font-semibold uppercase tracking-wide text-emerald-900">FX rate</label>
