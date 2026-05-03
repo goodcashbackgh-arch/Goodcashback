@@ -37,6 +37,11 @@ function statusClass(status: string) {
   return "bg-slate-100 text-slate-700 ring-slate-200";
 }
 
+function canExtract(batch: Row) {
+  const status = text(batch.status);
+  return !["committed", "voided", "failed"].includes(status);
+}
+
 export default async function DvaStatementImportPage({
   searchParams,
 }: {
@@ -85,11 +90,12 @@ export default async function DvaStatementImportPage({
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">DVA/card statement import</p>
           <h1 className="mt-2 text-3xl font-semibold tracking-tight">Statement upload and extraction workbench</h1>
           <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-600">
-            Staff upload DVA/card/bank statements here. The current step stores the source file, detects the file type, and creates the import batch. Extraction/staging is the next action attached to the batch.
+            Staff upload DVA/card/bank statements here. Files become controlled import batches first; extraction then stages rows for review before commit.
           </p>
           <div className="mt-4 flex flex-wrap gap-2">
             <span className="rounded-full bg-sky-50 px-3 py-1 text-sm font-semibold text-sky-700 ring-1 ring-sky-200">PDF-first</span>
-            <span className="rounded-full bg-slate-100 px-3 py-1 text-sm font-semibold text-slate-700 ring-1 ring-slate-200">CSV/XLSX fallback</span>
+            <span className="rounded-full bg-slate-100 px-3 py-1 text-sm font-semibold text-slate-700 ring-1 ring-slate-200">CSV/text active</span>
+            <span className="rounded-full bg-amber-50 px-3 py-1 text-sm font-semibold text-amber-700 ring-1 ring-amber-200">PDF OCR gated</span>
             <span className="rounded-full bg-emerald-50 px-3 py-1 text-sm font-semibold text-emerald-700 ring-1 ring-emerald-200">Staging before commit</span>
           </div>
         </section>
@@ -106,7 +112,7 @@ export default async function DvaStatementImportPage({
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold">Upload statement file</h2>
           <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-            This creates the controlled import batch only. It does not yet consume OCR pages or commit statement rows.
+            Upload creates the batch. For CSV/text, use the extract button on the batch card. For PDF, extraction is deliberately gated until the statement-specific Mindee model is configured and tested.
           </p>
           <form action={createRealStatementImportBatchAction} className="mt-5 grid gap-4 md:grid-cols-4">
             <div>
@@ -225,6 +231,20 @@ export default async function DvaStatementImportPage({
                   <p>Errors: <span className="font-semibold">{num(batch.error_count)}</span></p>
                   <p>Duplicates: <span className="font-semibold">{num(batch.duplicate_count)}</span></p>
                   <p>Committed: <span className="font-semibold">{num(batch.committed_count)}</span></p>
+                </div>
+                <div className="mt-4 flex flex-wrap items-end gap-3">
+                  {canExtract(batch) ? (
+                    <form action="/internal/dva-statement-import/extract" method="post" className="flex flex-wrap items-end gap-3 rounded-2xl border border-sky-100 bg-white p-3">
+                      <input type="hidden" name="import_batch_id" value={text(batch.id)} />
+                      <div>
+                        <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Extraction FX rate</label>
+                        <input className="mt-1 w-36 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" name="manual_fx_rate" type="number" min="0.000001" step="0.000001" placeholder={text(batch.local_ccy) === "GBP" ? "1" : "e.g. 19.2"} />
+                      </div>
+                      <button className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white" type="submit">Extract/stage rows</button>
+                      <span className="text-xs text-slate-500">CSV/text active. PDF creates a gated OCR row until Mindee statement model is wired.</span>
+                    </form>
+                  ) : null}
+                  <Link href="/internal/dva-reconciliation" className="text-sm font-semibold text-sky-600">Open DVA reconciliation →</Link>
                 </div>
                 <p className="mt-3 break-all text-xs text-slate-500">Batch ID: {text(batch.id)}</p>
               </article>
