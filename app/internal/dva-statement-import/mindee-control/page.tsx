@@ -68,7 +68,7 @@ export default async function DvaStatementMindeeControlPage({
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">DVA/card statement OCR</p>
           <h1 className="mt-2 text-3xl font-semibold tracking-tight">PDF Mindee control</h1>
           <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-600">
-            Starts and fetches Mindee V2 OCR for real PDF statement batches using MINDEE_STATEMENT_MODEL_ID only. Smoke/test or already-committed batches are blocked.
+            Starts, fetches, and stages Mindee V2 OCR for real PDF statement batches using MINDEE_STATEMENT_MODEL_ID only. Smoke/test or already-committed batches are blocked.
           </p>
           {batchId ? <p className="mt-3 break-all text-xs text-slate-500">Latest batch: {batchId}</p> : null}
         </section>
@@ -90,6 +90,8 @@ export default async function DvaStatementMindeeControlPage({
             const ocrStatus = text(batch.mindee_statement_ocr_status) || "not_started";
             const jobId = text(batch.mindee_statement_job_id);
             const canStart = canStartMindee(batch, jobId, ocrStatus);
+            const rowCount = Number(batch.row_count ?? 0);
+            const canParse = ocrStatus === "completed" && rowCount === 0;
             return (
               <article key={text(batch.id)} className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
                 <div className="flex flex-wrap items-start justify-between gap-3">
@@ -101,7 +103,7 @@ export default async function DvaStatementMindeeControlPage({
                 </div>
 
                 <div className="mt-4 grid gap-2 text-sm text-slate-700 sm:grid-cols-3">
-                  <p>Rows: <span className="font-semibold">{Number(batch.row_count ?? 0)}</span></p>
+                  <p>Rows: <span className="font-semibold">{rowCount}</span></p>
                   <p>Clean: <span className="font-semibold">{Number(batch.clean_count ?? 0)}</span></p>
                   <p>Errors: <span className="font-semibold">{Number(batch.error_count ?? 0)}</span></p>
                   <p>Duplicates: <span className="font-semibold">{Number(batch.duplicate_count ?? 0)}</span></p>
@@ -125,6 +127,17 @@ export default async function DvaStatementMindeeControlPage({
                     <form action="/internal/dva-statement-import/mindee-fetch" method="post">
                       <input type="hidden" name="import_batch_id" value={text(batch.id)} />
                       <button className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white" type="submit">Fetch OCR result</button>
+                    </form>
+                  ) : null}
+
+                  {canParse ? (
+                    <form action="/internal/dva-statement-import/mindee-parse" method="post" className="flex flex-wrap items-end gap-3 rounded-2xl border border-emerald-100 bg-emerald-50 p-3">
+                      <input type="hidden" name="import_batch_id" value={text(batch.id)} />
+                      <div>
+                        <label className="block text-xs font-semibold uppercase tracking-wide text-emerald-900">FX rate</label>
+                        <input className="mt-1 w-36 rounded-xl border border-emerald-200 bg-white px-3 py-2 text-sm" name="manual_fx_rate" type="number" min="0.000001" step="0.000001" placeholder={text(batch.local_ccy) === "GBP" ? "1" : "e.g. 19.2"} />
+                      </div>
+                      <button className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white" type="submit">Parse/stage Mindee rows</button>
                     </form>
                   ) : null}
 
