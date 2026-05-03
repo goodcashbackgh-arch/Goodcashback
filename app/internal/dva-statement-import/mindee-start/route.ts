@@ -20,6 +20,10 @@ function cleanText(value: unknown) {
   return String(value ?? "").trim();
 }
 
+function enabled(value: string | undefined) {
+  return ["1", "true", "yes", "on"].includes(String(value ?? "").trim().toLowerCase());
+}
+
 function recordValue(value: unknown) {
   if (value === undefined || value === null || value === "") return null;
   return String(value).trim() || null;
@@ -98,7 +102,11 @@ export async function POST(request: Request) {
   const pdfBlob = await fileResponse.blob();
   const mindeeFormData = new FormData();
   mindeeFormData.set("model_id", modelId);
-  mindeeFormData.set("raw_text", "true");
+
+  const rawTextEnabled = enabled(process.env.MINDEE_STATEMENT_RAW_TEXT_ENABLED);
+  if (rawTextEnabled) {
+    mindeeFormData.set("raw_text", "true");
+  }
 
   const webhookId = getStatementWebhookId();
   if (webhookId) {
@@ -145,7 +153,7 @@ export async function POST(request: Request) {
   if (markError) return redirectToImport(request, { import_error: markError.message });
 
   return redirectToImport(request, {
-    import_success: `Mindee statement OCR enqueued with raw text requested. Job: ${jobId}. Wait briefly, then fetch OCR result.`,
+    import_success: `Mindee statement OCR enqueued${rawTextEnabled ? " with raw text requested" : ""}. Job: ${jobId}. Wait briefly, then fetch OCR result.`,
     batch_id: importBatchId,
   });
 }
