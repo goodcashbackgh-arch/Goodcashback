@@ -62,6 +62,10 @@ function canExtract(batch: Row) {
   return !["committed", "voided", "failed"].includes(status);
 }
 
+function displayRowDate(row: Row) {
+  return text(row.transaction_date) || text(row.statement_date) || "—";
+}
+
 function PaginationControls({
   baseParams,
   pageKey,
@@ -232,64 +236,32 @@ export default async function DvaStatementImportPage({
           </form>
         </section>
 
-        <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-950">
-          <h2 className="font-semibold">Temporary smoke-test control</h2>
-          <p className="mt-2">This remains available only to prove the create → stage → commit RPC chain. Use the upload form above for real statement files.</p>
-          <form action={createStageCommitSmokeImportAction} className="mt-4 grid gap-4 md:grid-cols-4">
-            <input type="hidden" name="base_supplier_invoice_id" value="09ed41d2-4a3f-44fa-b292-ed1bdcd92735" />
-            <div>
-              <label className="block text-xs font-semibold uppercase tracking-wide text-amber-900">Base invoice</label>
-              <input className="mt-1 w-full rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm" readOnly value={text(latestInvoice?.invoice_ref) || "4004164248"} />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold uppercase tracking-wide text-amber-900">Amount GBP</label>
-              <input className="mt-1 w-full rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm" name="amount_gbp" type="number" min="0.01" step="0.01" defaultValue="44.44" />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold uppercase tracking-wide text-amber-900">Merchant</label>
-              <input className="mt-1 w-full rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm" name="merchant" defaultValue="SharkNinja Leeds GB" />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold uppercase tracking-wide text-amber-900">Normalised</label>
-              <input className="mt-1 w-full rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm" name="merchant_normalised" defaultValue="sharkninja" />
-            </div>
-            <div className="md:col-span-4">
-              <button className="rounded-xl bg-amber-600 px-4 py-2 text-sm font-semibold text-white" type="submit">Create → stage → commit smoke import</button>
-              <Link href="/internal/dva-reconciliation" className="ml-4 inline-flex text-sm font-semibold text-sky-600">Open DVA reconciliation →</Link>
-            </div>
+        <section className="rounded-3xl border border-sky-100 bg-sky-50 p-6 shadow-sm">
+          <h2 className="text-lg font-semibold text-sky-950">Temporary smoke-test control</h2>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-sky-900">
+            This proves batch creation → staged row → commit without using OCR credits. Do not use this for real statements.
+          </p>
+          <form action={createStageCommitSmokeImportAction} className="mt-4">
+            <button className="rounded-xl bg-sky-700 px-4 py-2 text-sm font-semibold text-white" type="submit">Create test batch, stage row, and commit</button>
           </form>
+          {latestInvoice ? (
+            <p className="mt-3 text-xs text-sky-800">Reference invoice available for matching tests: {text(latestInvoice.invoice_ref)} / {text(latestInvoice.id)}</p>
+          ) : null}
         </section>
-
-        {batchesResult.error ? (
-          <section className="rounded-3xl border border-rose-200 bg-rose-50 p-5 text-sm text-rose-900">
-            Could not read import batches: {batchesResult.error.message}
-          </section>
-        ) : null}
-        {rowsResult.error ? (
-          <section className="rounded-3xl border border-rose-200 bg-rose-50 p-5 text-sm text-rose-900">
-            Could not read import rows: {rowsResult.error.message}
-          </section>
-        ) : null}
-        {importersResult.error ? (
-          <section className="rounded-3xl border border-rose-200 bg-rose-50 p-5 text-sm text-rose-900">
-            Could not read importers: {importersResult.error.message}
-          </section>
-        ) : null}
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold">Upload/import history</h2>
-          <PaginationControls baseParams={params} pageKey="batch_page" currentPage={batchPage} totalCount={batchCount} pageSize={BATCH_PAGE_SIZE} />
-          <div className="mt-5 grid gap-4">
+          <div className="mt-4 grid gap-3">
             {batches.length === 0 ? (
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5 text-sm text-slate-600">No statement import batches visible yet.</div>
+              <p className="text-sm text-slate-500">No import batches yet.</p>
             ) : batches.map((batch) => (
-              <article key={text(batch.id)} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <article key={text(batch.id)} className="rounded-2xl border border-slate-200 p-4">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
-                    <p className="font-semibold text-slate-950">{text(batch.original_filename) || text(batch.source_file_url)}</p>
-                    <p className="mt-1 text-xs text-slate-500">{text(batch.statement_period_from)} → {text(batch.statement_period_to)} · {text(batch.source_bank)} · {text(batch.local_ccy)} · {text(batch.detected_file_type)} → {text(batch.parser_route)}</p>
+                    <h3 className="font-semibold">{text(batch.original_filename) || text(batch.id)}</h3>
+                    <p className="mt-1 text-sm text-slate-600">{text(batch.statement_period_from)} → {text(batch.statement_period_to)} · {text(batch.source_bank)} · {text(batch.local_ccy)} · {text(batch.detected_file_type)} · {text(batch.parser_route)}</p>
                   </div>
-                  <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ${statusClass(text(batch.status))}`}>{text(batch.status)}</span>
+                  <span className={`rounded-full px-3 py-1 text-sm font-semibold ring-1 ${statusClass(text(batch.status))}`}>{text(batch.status)}</span>
                 </div>
                 <div className="mt-3 grid gap-2 text-sm text-slate-700 sm:grid-cols-5">
                   <p>Rows: <span className="font-semibold">{num(batch.row_count)}</span></p>
@@ -298,20 +270,13 @@ export default async function DvaStatementImportPage({
                   <p>Duplicates: <span className="font-semibold">{num(batch.duplicate_count)}</span></p>
                   <p>Committed: <span className="font-semibold">{num(batch.committed_count)}</span></p>
                 </div>
-                <div className="mt-4 flex flex-wrap items-end gap-3">
-                  {canExtract(batch) ? (
-                    <form action="/internal/dva-statement-import/extract" method="post" className="flex flex-wrap items-end gap-3 rounded-2xl border border-sky-100 bg-white p-3">
-                      <input type="hidden" name="import_batch_id" value={text(batch.id)} />
-                      <div>
-                        <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Extraction FX rate</label>
-                        <input className="mt-1 w-36 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" name="manual_fx_rate" type="number" min="0.000001" step="0.000001" placeholder={text(batch.local_ccy) === "GBP" ? "1" : "e.g. 19.2"} />
-                      </div>
-                      <button className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white" type="submit">Extract/stage rows</button>
-                      <span className="text-xs text-slate-500">CSV/text active. PDF OCR route is next.</span>
-                    </form>
-                  ) : null}
-                  <Link href="/internal/dva-reconciliation" className="text-sm font-semibold text-sky-600">Open DVA reconciliation →</Link>
-                </div>
+                {canExtract(batch) && text(batch.detected_file_type) !== "pdf" ? (
+                  <form className="mt-4 flex flex-wrap gap-3" action="/internal/dva-statement-import/extract" method="post">
+                    <input type="hidden" name="import_batch_id" value={text(batch.id)} />
+                    <input className="w-40 rounded-xl border border-slate-200 px-3 py-2 text-sm" name="manual_fx_rate" type="number" min="0.000001" step="0.000001" placeholder="FX rate" />
+                    <button className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white" type="submit">Extract/stage rows</button>
+                  </form>
+                ) : null}
                 <p className="mt-3 break-all text-xs text-slate-500">Batch ID: {text(batch.id)}</p>
               </article>
             ))}
@@ -321,27 +286,28 @@ export default async function DvaStatementImportPage({
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold">Recent staged rows</h2>
-          <PaginationControls baseParams={params} pageKey="row_page" currentPage={rowPage} totalCount={rowCount} pageSize={ROW_PAGE_SIZE} />
-          <div className="mt-5 grid gap-4">
+          <div className="mt-4 grid gap-3">
             {rows.length === 0 ? (
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5 text-sm text-slate-600">No staged rows visible yet.</div>
+              <p className="text-sm text-slate-500">No staged rows yet.</p>
             ) : rows.map((row) => (
-              <article key={text(row.id)} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+              <article key={text(row.id)} className="rounded-2xl border border-slate-200 p-4">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
-                    <p className="font-semibold text-slate-950">Row {num(row.source_row_number)} · {text(row.merchant_raw) || "—"}</p>
-                    <p className="mt-1 text-xs text-slate-500">{text(row.statement_date)} · {text(row.direction)} · {text(row.transaction_type_candidate)}</p>
+                    <h3 className="font-semibold">Row {text(row.source_row_number)} · {text(row.merchant_raw) || "Unidentified transaction"}</h3>
+                    <p className="mt-1 text-sm text-slate-600">{displayRowDate(row)} · {text(row.direction)} · {text(row.transaction_type_candidate)}</p>
                   </div>
-                  <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ${statusClass(text(row.parse_status) === "committed" ? "committed" : text(row.parse_status))}`}>{text(row.parse_status)}</span>
+                  <span className={`rounded-full px-3 py-1 text-sm font-semibold ring-1 ${statusClass(text(row.parse_status))}`}>{text(row.parse_status)}</span>
                 </div>
                 <div className="mt-3 grid gap-2 text-sm text-slate-700 sm:grid-cols-4">
                   <p>Local: <span className="font-semibold">{num(row.amount_local_ccy).toLocaleString("en-GB")} {text(row.local_ccy)}</span></p>
                   <p>GBP: <span className="font-semibold">{gbp(row.amount_gbp_equivalent)}</span></p>
                   <p>Card: <span className="font-semibold">{text(row.card_last4) || "—"}</span></p>
-                  <p>Ref: <span className="font-semibold">{text(row.auth_or_settlement_ref) || text(row.bank_reference) || "—"}</span></p>
+                  <p>Ref: <span className="font-semibold">{text(row.bank_reference) || text(row.auth_or_settlement_ref) || "—"}</span></p>
                 </div>
+                {text(row.statement_date) && text(row.transaction_date) && text(row.statement_date) !== text(row.transaction_date) ? (
+                  <p className="mt-2 text-xs text-slate-500">Statement date: {text(row.statement_date)}</p>
+                ) : null}
                 {text(row.error_message) ? <p className="mt-3 text-sm text-rose-700">{text(row.error_code)}: {text(row.error_message)}</p> : null}
-                {text(row.committed_dva_statement_line_id) ? <p className="mt-3 break-all text-xs text-slate-500">Committed line: {text(row.committed_dva_statement_line_id)}</p> : null}
               </article>
             ))}
           </div>
