@@ -92,12 +92,14 @@ export default async function DvaStatementMindeeControlPage({
             const canStart = canStartMindee(batch, jobId, ocrStatus);
             const rowCount = Number(batch.row_count ?? 0);
             const canParse = ocrStatus === "completed" && rowCount === 0;
+            const localCcy = (text(batch.local_ccy) || "GBP").toUpperCase();
+            const requiresFxRate = localCcy !== "GBP";
             return (
               <article key={text(batch.id)} className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
                     <h2 className="text-lg font-semibold">{text(batch.original_filename) || text(batch.id)}</h2>
-                    <p className="mt-1 text-sm text-slate-600">{text(batch.statement_period_from)} → {text(batch.statement_period_to)} · {text(batch.source_bank)} · {text(batch.local_ccy)} · {text(batch.status)}</p>
+                    <p className="mt-1 text-sm text-slate-600">{text(batch.statement_period_from)} → {text(batch.statement_period_to)} · {text(batch.source_bank)} · {localCcy} · {text(batch.status)}</p>
                   </div>
                   <span className={`rounded-full px-3 py-1 text-sm font-semibold ring-1 ${statusClass(ocrStatus)}`}>{ocrStatus}</span>
                 </div>
@@ -135,7 +137,19 @@ export default async function DvaStatementMindeeControlPage({
                       <input type="hidden" name="import_batch_id" value={text(batch.id)} />
                       <div>
                         <label className="block text-xs font-semibold uppercase tracking-wide text-emerald-900">FX rate</label>
-                        <input className="mt-1 w-36 rounded-xl border border-emerald-200 bg-white px-3 py-2 text-sm" name="manual_fx_rate" type="number" min="0.000001" step="0.000001" placeholder={text(batch.local_ccy) === "GBP" ? "1" : "e.g. 19.2"} />
+                        <input
+                          className="mt-1 w-36 rounded-xl border border-emerald-200 bg-white px-3 py-2 text-sm"
+                          name="manual_fx_rate"
+                          type="number"
+                          min="0.000001"
+                          step="0.000001"
+                          placeholder={requiresFxRate ? "Required" : "1"}
+                          defaultValue={requiresFxRate ? undefined : "1"}
+                          required={requiresFxRate}
+                        />
+                        <p className="mt-1 text-xs font-medium text-emerald-900">
+                          {requiresFxRate ? `Required for ${localCcy} statements.` : "GBP statements default to 1."}
+                        </p>
                       </div>
                       <button className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white" type="submit">Parse/stage Mindee rows</button>
                     </form>
