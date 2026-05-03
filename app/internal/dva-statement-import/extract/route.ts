@@ -37,10 +37,23 @@ type DraftRow = {
   errorMessage?: string | null;
 };
 
-function redirectTo(request: Request, params: Record<string, string>) {
-  const url = new URL("/internal/dva-statement-import/extract", new URL(request.url).origin);
+function importPageUrl(request: Request, params: Record<string, string>) {
+  const url = new URL("/internal/dva-statement-import", new URL(request.url).origin);
   Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, value));
-  return NextResponse.redirect(url, { status: 303 });
+  return url;
+}
+
+function redirectToImportPage(request: Request, params: Record<string, string>) {
+  return NextResponse.redirect(importPageUrl(request, params), { status: 303 });
+}
+
+export async function GET(request: Request) {
+  const source = new URL(request.url);
+  const params: Record<string, string> = {};
+  source.searchParams.forEach((value, key) => {
+    params[key] = value;
+  });
+  return redirectToImportPage(request, params);
 }
 
 function cleanText(value: unknown) {
@@ -331,14 +344,14 @@ export async function POST(request: Request) {
   const fxRaw = cleanText(formData.get("manual_fx_rate"));
   const manualFxRate = fxRaw ? Number(fxRaw) : null;
 
-  if (!batchId) return redirectTo(request, { import_error: "Missing import batch id." });
+  if (!batchId) return redirectToImportPage(request, { import_error: "Missing import batch id." });
   if (manualFxRate !== null && (!Number.isFinite(manualFxRate) || manualFxRate <= 0)) {
-    return redirectTo(request, { import_error: "Extraction FX rate must be greater than zero." });
+    return redirectToImportPage(request, { import_error: "Extraction FX rate must be greater than zero." });
   }
 
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return redirectTo(request, { import_error: "Please sign in again before extracting statement rows." });
+  if (!user) return redirectToImportPage(request, { import_error: "Please sign in again before extracting statement rows." });
 
   const { data: batch, error: batchError } = await supabase
     .from("dva_statement_import_batches")
@@ -346,19 +359,19 @@ export async function POST(request: Request) {
     .eq("id", batchId)
     .maybeSingle();
 
-  if (batchError || !batch) return redirectTo(request, { import_error: batchError?.message ?? "Import batch not found." });
+  if (batchError || !batch) return redirectToImportPage(request, { import_error: batchError?.message ?? "Import batch not found." });
   const typedBatch = batch as Batch;
-  if (["committed", "voided"].includes(typedBatch.status)) return redirectTo(request, { import_error: `Cannot extract rows for batch in status ${typedBatch.status}.` });
+  if (["committed", "voided"].includes(typedBatch.status)) return redirectToImportPage(request, { import_error: `Cannot extract rows for batch in status ${typedBatch.status}.` });
 
   try {
     if (typedBatch.detected_file_type === "pdf") {
       await stageUnsupportedRow(supabase, typedBatch, "PDF statement OCR is gated. Configure and test the Mindee statement model before consuming pages; CSV/text extraction is active now.");
-      return redirectTo(request, { import_success: "PDF batch staged with OCR-gated row-level error. No Mindee pages consumed.", batch_id: batchId });
+      return redirectToImportPage(request, { import_success: "PDF batch staged with OCR-gated row-level error. No Mindee pages consumed.", batch_id: batchId });
     }
 
     if (typedBatch.detected_file_type === "xlsx") {
       await stageUnsupportedRow(supabase, typedBatch, "XLSX direct parsing needs a spreadsheet parser dependency. Export CSV for this batch or add XLSX parser support next.");
-      return redirectTo(request, { import_success: "XLSX batch staged with parser-needed row-level error.", batch_id: batchId });
+      return redirectToImportPage(request, { import_success: "XLSX batch staged with parser-needed row-level error.", batch_id: batchId });
     }
 
     const fileResponse = await fetch(typedBatch.source_file_url, { cache: "no-store" });
@@ -368,15 +381,15 @@ export async function POST(request: Request) {
 
     if (drafts.length === 0) {
       await stageUnsupportedRow(supabase, typedBatch, "No transaction rows could be parsed from the uploaded statement file.");
-      return redirectTo(request, { import_success: "Extraction ran but no usable rows were found; row-level error staged.", batch_id: batchId });
+      return redirectToImportPage(request, { import_success: "Extraction ran but no usable rows were found; row-level error staged.", batch_id: batchId });
     }
 
     for (let index = 0; index < drafts.length; index += 1) {
       await stageRow(supabase, typedBatch, drafts[index], index + 1, manualFxRate);
     }
 
-    return redirectTo(request, { import_success: `Extracted and staged ${drafts.length} row(s). Review clean/errors/duplicates before commit.`, batch_id: batchId });
+    return redirectToImportPage(request, { import_success: `Extracted and staged ${drafts.length} row(s). Review clean/errors/duplicates before commit.`, batch_id: batchId });
   } catch (error) {
-    return redirectTo(request, { import_error: error instanceof Error ? error.message : "Statement extraction failed." });
+    return redirectToImportPage(request, { import_error: error instanceof Error ? error.message : "Statement extraction failed." });
   }
 }
