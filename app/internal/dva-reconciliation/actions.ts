@@ -4,9 +4,9 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 
-function redirectWithAllocationResult(params: Record<string, string>): never {
+function redirectWithAllocationResult(params: Record<string, string>, path = "/internal/dva-reconciliation"): never {
   const query = new URLSearchParams(params);
-  redirect(`/internal/dva-reconciliation?${query.toString()}`);
+  redirect(`${path}?${query.toString()}`);
 }
 
 function readString(formData: FormData, key: string) {
@@ -27,49 +27,59 @@ function booleanish(value: unknown) {
   return value === true || (typeof value === "string" && value.toLowerCase() === "true");
 }
 
+function returnPath(formData: FormData) {
+  const requested = readString(formData, "return_path");
+  if (requested.startsWith("/internal/dva-reconciliation")) return requested;
+  return "/internal/dva-reconciliation";
+}
+
 export async function generateSupplierInvoiceSuggestionsAction(formData: FormData) {
   const supabase = await createClient();
+  const path = returnPath(formData);
 
   const {
     data: { user },
   } = await supabase.auth.getUser();
 
   if (!user) {
-    redirectWithAllocationResult({
-      allocation_error: "Please sign in again before generating suggestions.",
-    });
+    redirectWithAllocationResult(
+      { allocation_error: "Please sign in again before generating suggestions." },
+      path
+    );
   }
 
   const toleranceRaw = readString(formData, "tolerance_gbp") || "5";
   const maxDaysRaw = readString(formData, "max_days") || "14";
+  const statementLineId = readString(formData, "dva_statement_line_id") || null;
   const tolerance = Number(toleranceRaw);
   const maxDays = Number(maxDaysRaw);
 
   if (!Number.isFinite(tolerance) || tolerance < 0) {
-    redirectWithAllocationResult({
-      allocation_error: "Suggestion tolerance must be zero or greater.",
-    });
+    redirectWithAllocationResult(
+      { allocation_error: "Suggestion tolerance must be zero or greater." },
+      path
+    );
   }
 
   if (!Number.isInteger(maxDays) || maxDays < 0) {
-    redirectWithAllocationResult({
-      allocation_error: "Suggestion day window must be a whole number greater than or equal to zero.",
-    });
+    redirectWithAllocationResult(
+      { allocation_error: "Suggestion day window must be a whole number greater than or equal to zero." },
+      path
+    );
   }
 
   const { data, error } = await supabase.rpc("staff_generate_supplier_invoice_match_suggestions", {
-    p_dva_statement_line_id: null,
+    p_dva_statement_line_id: statementLineId,
     p_tolerance_gbp: tolerance,
     p_max_days: maxDays,
   });
 
   if (error) {
-    redirectWithAllocationResult({
-      allocation_error: error.message,
-    });
+    redirectWithAllocationResult({ allocation_error: error.message }, path);
   }
 
   revalidatePath("/internal/dva-reconciliation");
+  revalidatePath("/internal/dva-reconciliation/unmatched");
 
   const insertedCount =
     typeof data === "object" &&
@@ -78,9 +88,10 @@ export async function generateSupplierInvoiceSuggestionsAction(formData: FormDat
       ? String((data as { inserted_count?: unknown }).inserted_count)
       : "0";
 
-  redirectWithAllocationResult({
-    allocation_success: `Generated ${insertedCount} supplier invoice suggestion(s).`,
-  });
+  redirectWithAllocationResult(
+    { allocation_success: `Generated ${insertedCount} supplier invoice suggestion(s).` },
+    path
+  );
 }
 
 export async function allocateStatementLineToFxCardOrFeeAction(formData: FormData) {
