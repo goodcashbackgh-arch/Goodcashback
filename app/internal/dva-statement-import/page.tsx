@@ -5,6 +5,9 @@ import { createRealStatementImportBatchAction, createStageCommitSmokeImportActio
 type Row = Record<string, unknown>;
 type SearchParamsValue = Record<string, string | string[] | undefined>;
 
+const ROW_PAGE_SIZE = 10;
+const BATCH_PAGE_SIZE = 8;
+
 const gbpFormatter = new Intl.NumberFormat("en-GB", {
   style: "currency",
   currency: "GBP",
@@ -25,21 +28,77 @@ function num(value: unknown) {
   return 0;
 }
 
+function positivePage(value: unknown) {
+  const parsed = Number(text(value) || "1");
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 1;
+}
+
+function pageHref(baseParams: SearchParamsValue, key: string, value: number) {
+  const params = new URLSearchParams();
+  for (const [paramKey, paramValue] of Object.entries(baseParams)) {
+    if (paramKey === key) continue;
+    const firstValue = Array.isArray(paramValue) ? paramValue[0] : paramValue;
+    if (firstValue) params.set(paramKey, firstValue);
+  }
+  params.set(key, String(value));
+  return `/internal/dva-statement-import?${params.toString()}`;
+}
+
 function gbp(value: unknown) {
   return gbpFormatter.format(num(value));
 }
 
 function statusClass(status: string) {
   if (status === "committed") return "bg-emerald-50 text-emerald-700 ring-emerald-200";
-  if (status === "parsed_clean") return "bg-sky-50 text-sky-700 ring-sky-200";
+  if (status === "clean" || status === "parsed_clean") return "bg-sky-50 text-sky-700 ring-sky-200";
+  if (status === "duplicate_skipped") return "bg-slate-100 text-slate-700 ring-slate-200";
   if (status === "parsed_with_errors") return "bg-amber-50 text-amber-700 ring-amber-200";
-  if (status === "voided" || status === "failed") return "bg-rose-50 text-rose-700 ring-rose-200";
+  if (status === "voided" || status === "failed" || status === "error") return "bg-rose-50 text-rose-700 ring-rose-200";
   return "bg-slate-100 text-slate-700 ring-slate-200";
 }
 
 function canExtract(batch: Row) {
   const status = text(batch.status);
   return !["committed", "voided", "failed"].includes(status);
+}
+
+function PaginationControls({
+  baseParams,
+  pageKey,
+  currentPage,
+  totalCount,
+  pageSize,
+}: {
+  baseParams: SearchParamsValue;
+  pageKey: string;
+  currentPage: number;
+  totalCount: number;
+  pageSize: number;
+}) {
+  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+  const from = totalCount === 0 ? 0 : (currentPage - 1) * pageSize + 1;
+  const to = Math.min(currentPage * pageSize, totalCount);
+
+  return (
+    <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
+      <p>
+        Showing <span className="font-semibold text-slate-950">{from}</span>–<span className="font-semibold text-slate-950">{to}</span> of <span className="font-semibold text-slate-950">{totalCount}</span>
+      </p>
+      <div className="flex items-center gap-2">
+        {currentPage > 1 ? (
+          <Link className="rounded-xl bg-white px-3 py-2 font-semibold text-sky-700 ring-1 ring-slate-200" href={pageHref(baseParams, pageKey, currentPage - 1)}>Previous</Link>
+        ) : (
+          <span className="rounded-xl bg-slate-100 px-3 py-2 font-semibold text-slate-400 ring-1 ring-slate-200">Previous</span>
+        )}
+        <span className="px-2 font-semibold text-slate-700">Page {currentPage} / {totalPages}</span>
+        {currentPage < totalPages ? (
+          <Link className="rounded-xl bg-white px-3 py-2 font-semibold text-sky-700 ring-1 ring-slate-200" href={pageHref(baseParams, pageKey, currentPage + 1)}>Next</Link>
+        ) : (
+          <span className="rounded-xl bg-slate-100 px-3 py-2 font-semibold text-slate-400 ring-1 ring-slate-200">Next</span>
+        )}
+      </div>
+    </div>
+  );
 }
 
 export default async function DvaStatementImportPage({
@@ -51,19 +110,23 @@ export default async function DvaStatementImportPage({
   const importSuccess = text(params.import_success);
   const importError = text(params.import_error);
   const batchId = text(params.batch_id);
+  const rowPage = positivePage(params.row_page);
+  const batchPage = positivePage(params.batch_page);
+  const rowFrom = (rowPage - 1) * ROW_PAGE_SIZE;
+  const batchFrom = (batchPage - 1) * BATCH_PAGE_SIZE;
   const supabase = await createClient();
 
   const [batchesResult, rowsResult, latestInvoiceResult, importersResult] = await Promise.all([
     supabase
       .from("dva_statement_import_batches")
-      .select("id, importer_id, source_bank, statement_period_from, statement_period_to, local_ccy, source_file_url, original_filename, detected_file_type, parser_route, status, row_count, clean_count, error_count, duplicate_count, committed_count, uploaded_at, parsed_at, committed_at, voided_at, void_reason, notes")
+      .select("id, importer_id, source_bank, statement_period_from, statement_period_to, local_ccy, source_file_url, original_filename, detected_file_type, parser_route, status, row_count, clean_count, error_count, duplicate_count, committed_count, uploaded_at, parsed_at, committed_at, voided_at, void_reason, notes", { count: "exact" })
       .order("uploaded_at", { ascending: false })
-      .limit(20),
+      .range(batchFrom, batchFrom + BATCH_PAGE_SIZE - 1),
     supabase
       .from("dva_statement_import_rows")
-      .select("id, import_batch_id, source_row_number, source_page_number, statement_date, transaction_date, direction, transaction_type_candidate, amount_local_ccy, local_ccy, amount_gbp_equivalent, card_last4, merchant_raw, merchant_normalised, bank_reference, auth_or_settlement_ref, parser_confidence, parse_status, error_code, error_message, committed_dva_statement_line_id, created_at")
+      .select("id, import_batch_id, source_row_number, source_page_number, statement_date, transaction_date, direction, transaction_type_candidate, amount_local_ccy, local_ccy, amount_gbp_equivalent, card_last4, merchant_raw, merchant_normalised, bank_reference, auth_or_settlement_ref, parser_confidence, parse_status, error_code, error_message, committed_dva_statement_line_id, created_at", { count: "exact" })
       .order("created_at", { ascending: false })
-      .limit(30),
+      .range(rowFrom, rowFrom + ROW_PAGE_SIZE - 1),
     supabase
       .from("supplier_invoices")
       .select("id, invoice_ref, order_id")
@@ -81,6 +144,8 @@ export default async function DvaStatementImportPage({
   const latestInvoice = latestInvoiceResult.data as Row | null;
   const importers = (importersResult.data ?? []) as unknown as Row[];
   const today = new Date().toISOString().slice(0, 10);
+  const batchCount = batchesResult.count ?? batches.length;
+  const rowCount = rowsResult.count ?? rows.length;
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-6 text-slate-950 sm:px-6 sm:py-8">
@@ -95,7 +160,7 @@ export default async function DvaStatementImportPage({
           <div className="mt-4 flex flex-wrap gap-2">
             <span className="rounded-full bg-sky-50 px-3 py-1 text-sm font-semibold text-sky-700 ring-1 ring-sky-200">PDF-first</span>
             <span className="rounded-full bg-slate-100 px-3 py-1 text-sm font-semibold text-slate-700 ring-1 ring-slate-200">CSV/text active</span>
-            <span className="rounded-full bg-amber-50 px-3 py-1 text-sm font-semibold text-amber-700 ring-1 ring-amber-200">PDF OCR gated</span>
+            <span className="rounded-full bg-amber-50 px-3 py-1 text-sm font-semibold text-amber-700 ring-1 ring-amber-200">PDF OCR next</span>
             <span className="rounded-full bg-emerald-50 px-3 py-1 text-sm font-semibold text-emerald-700 ring-1 ring-emerald-200">Staging before commit</span>
           </div>
         </section>
@@ -112,7 +177,7 @@ export default async function DvaStatementImportPage({
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold">Upload statement file</h2>
           <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-            Upload creates the batch. For CSV/text, use the extract button on the batch card. For PDF, extraction is deliberately gated until the statement-specific Mindee model is configured and tested.
+            Upload creates the batch. CSV/text parse directly. PDF statements should use Mindee OCR once the statement-specific OCR route is wired.
           </p>
           <form action={createRealStatementImportBatchAction} className="mt-5 grid gap-4 md:grid-cols-4">
             <div>
@@ -213,6 +278,7 @@ export default async function DvaStatementImportPage({
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold">Upload/import history</h2>
+          <PaginationControls baseParams={params} pageKey="batch_page" currentPage={batchPage} totalCount={batchCount} pageSize={BATCH_PAGE_SIZE} />
           <div className="mt-5 grid gap-4">
             {batches.length === 0 ? (
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5 text-sm text-slate-600">No statement import batches visible yet.</div>
@@ -241,7 +307,7 @@ export default async function DvaStatementImportPage({
                         <input className="mt-1 w-36 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" name="manual_fx_rate" type="number" min="0.000001" step="0.000001" placeholder={text(batch.local_ccy) === "GBP" ? "1" : "e.g. 19.2"} />
                       </div>
                       <button className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white" type="submit">Extract/stage rows</button>
-                      <span className="text-xs text-slate-500">CSV/text active. PDF creates a gated OCR row until Mindee statement model is wired.</span>
+                      <span className="text-xs text-slate-500">CSV/text active. PDF OCR route is next.</span>
                     </form>
                   ) : null}
                   <Link href="/internal/dva-reconciliation" className="text-sm font-semibold text-sky-600">Open DVA reconciliation →</Link>
@@ -250,10 +316,12 @@ export default async function DvaStatementImportPage({
               </article>
             ))}
           </div>
+          <PaginationControls baseParams={params} pageKey="batch_page" currentPage={batchPage} totalCount={batchCount} pageSize={BATCH_PAGE_SIZE} />
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold">Recent staged rows</h2>
+          <PaginationControls baseParams={params} pageKey="row_page" currentPage={rowPage} totalCount={rowCount} pageSize={ROW_PAGE_SIZE} />
           <div className="mt-5 grid gap-4">
             {rows.length === 0 ? (
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5 text-sm text-slate-600">No staged rows visible yet.</div>
@@ -277,6 +345,7 @@ export default async function DvaStatementImportPage({
               </article>
             ))}
           </div>
+          <PaginationControls baseParams={params} pageKey="row_page" currentPage={rowPage} totalCount={rowCount} pageSize={ROW_PAGE_SIZE} />
         </section>
       </div>
     </main>
