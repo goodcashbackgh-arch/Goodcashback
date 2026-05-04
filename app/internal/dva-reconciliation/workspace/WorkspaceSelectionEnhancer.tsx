@@ -2,7 +2,10 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@/utils/supabase/client";
-import { allocateStatementLineToSupplierInvoiceAction } from "../actions";
+import {
+  allocateStatementLineToOperationalTargetAction,
+  allocateStatementLineToSupplierInvoiceAction,
+} from "../actions";
 import FxResidualAllocationForm from "./FxResidualAllocationForm";
 
 type Direction = "in" | "out" | "neutral";
@@ -21,6 +24,7 @@ type PickedItem = {
 type AllocationRow = {
   dva_statement_line_id?: string | null;
   supplier_invoice_id?: string | null;
+  dispute_id?: string | null;
   allocation_type?: string | null;
   allocation_status?: string | null;
   allocated_gbp_amount?: number | string | null;
@@ -215,12 +219,20 @@ function addMapTotal(map: Map<string, number>, key: string | null | undefined, v
   map.set(key, (map.get(key) ?? 0) + numeric(value));
 }
 
+function operationalAllocationType(statement?: PickedItem | null, target?: PickedItem | null) {
+  if (!statement || !target || target.targetType !== "exception") return "";
+  if (statement.direction === "in" && target.direction === "in") return "retailer_refund";
+  if (statement.direction === "out" && target.direction === "out") return "exception_hold";
+  return "";
+}
+
 export default function WorkspaceSelectionEnhancer() {
   const [statements, setStatements] = useState<Map<string, PickedItem>>(new Map());
   const [targets, setTargets] = useState<Map<string, PickedItem>>(new Map());
   const [currentPath, setCurrentPath] = useState("/internal/dva-reconciliation/workspace");
   const [allocatedByStatementLine, setAllocatedByStatementLine] = useState<Map<string, number>>(new Map());
   const [allocatedBySupplierInvoice, setAllocatedBySupplierInvoice] = useState<Map<string, number>>(new Map());
+  const [allocatedByOperationalTarget, setAllocatedByOperationalTarget] = useState<Map<string, number>>(new Map());
 
   useEffect(() => {
     setCurrentPath(`${window.location.pathname}${window.location.search}`);
@@ -233,7 +245,7 @@ export default function WorkspaceSelectionEnhancer() {
       const supabase = createClient();
       const { data, error } = await supabase
         .from("dva_statement_line_allocations")
-        .select("dva_statement_line_id, supplier_invoice_id, allocation_type, allocation_status, allocated_gbp_amount")
+        .select("dva_statement_line_id, supplier_invoice_id, dispute_id, allocation_type, allocation_status, allocated_gbp_amount")
         .eq("allocation_status", "confirmed")
         .limit(2000);
 
@@ -241,14 +253,17 @@ export default function WorkspaceSelectionEnhancer() {
 
       const lineMap = new Map<string, number>();
       const invoiceMap = new Map<string, number>();
+      const operationalMap = new Map<string, number>();
 
       for (const row of (data ?? []) as AllocationRow[]) {
         addMapTotal(lineMap, row.dva_statement_line_id, row.allocated_gbp_amount);
         if (row.allocation_type === "supplier_invoice") addMapTotal(invoiceMap, row.supplier_invoice_id, row.allocated_gbp_amount);
+        if (row.dispute_id) addMapTotal(operationalMap, row.dispute_id, row.allocated_gbp_amount);
       }
 
       setAllocatedByStatementLine(lineMap);
       setAllocatedBySupplierInvoice(invoiceMap);
+      setAllocatedByOperationalTarget(operationalMap);
     }
 
     void loadConfirmedAllocations();
@@ -310,7 +325,14 @@ export default function WorkspaceSelectionEnhancer() {
         classified.amount > 0 &&
         (allocatedBySupplierInvoice.get(classified.id) ?? 0) >= classified.amount - 0.009;
 
-      if (isAllocatedStatementInUnmatchedView || isFullyAllocatedInvoiceInUsableView) {
+      const isFullyAllocatedOperationalInUsableView =
+        classified.side === "target" &&
+        classified.targetType === "exception" &&
+        rightStatus === "usable" &&
+        classified.amount > 0 &&
+        (allocatedByOperationalTarget.get(classified.id) ?? 0) >= classified.amount - 0.009;
+
+      if (isAllocatedStatementInUnmatchedView || isFullyAllocatedInvoiceInUsableView || isFullyAllocatedOperationalInUsableView) {
         anchor.style.display = "none";
         continue;
       }
@@ -325,7 +347,7 @@ export default function WorkspaceSelectionEnhancer() {
         anchor.setAttribute("aria-pressed", "false");
       }
     }
-  }, [statements, targets, allocatedByStatementLine, allocatedBySupplierInvoice]);
+  }, [statements, targets, allocatedByStatementLine, allocatedBySupplierInvoice, allocatedByOperationalTarget]);
 
   const statementAbsTotal = useMemo(() => sum(statements), [statements]);
   const targetAbsTotal = useMemo(() => sum(targets), [targets]);
@@ -337,7 +359,12 @@ export default function WorkspaceSelectionEnhancer() {
   const selectedStatement = singleItem(statements);
   const selectedTarget = singleItem(targets);
   const selectedStatementAlreadyAllocated = selectedStatement ? allocatedByStatementLine.get(selectedStatement.id) ?? 0 : 0;
-  const selectedTargetAlreadyAllocated = selectedTarget?.targetType === "invoice" ? allocatedBySupplierInvoice.get(selectedTarget.id) ?? 0 : 0;
+  const selectedTargetAlreadyAllocated =
+    selectedTarget?.targetType === "invoice"
+      ? allocatedBySupplierInvoice.get(selectedTarget.id) ?? 0
+      : selectedTarget?.targetType === "exception"
+        ? allocatedByOperationalTarget.get(selectedTarget.id) ?? 0
+        : 0;
   const selectedStatementAvailable = selectedStatement ? Math.max(0, selectedStatement.amount - selectedStatementAlreadyAllocated) : 0;
   const selectedTargetAvailable = selectedTarget ? Math.max(0, selectedTarget.amount - selectedTargetAlreadyAllocated) : 0;
   const canConfirmSupplierInvoice =
@@ -349,6 +376,14 @@ export default function WorkspaceSelectionEnhancer() {
     selectedStatementAvailable > 0.009 &&
     selectedTargetAvailable > 0.009;
   const supplierInvoiceAllocationAmount = canConfirmSupplierInvoice ? Math.min(selectedStatementAvailable, selectedTargetAvailable) : 0;
+  const operationalType = operationalAllocationType(selectedStatement, selectedTarget);
+  const canConfirmOperationalAllocation =
+    Boolean(operationalType) &&
+    Boolean(selectedStatement) &&
+    Boolean(selectedTarget) &&
+    selectedStatementAvailable > 0.009 &&
+    selectedTargetAvailable > 0.009;
+  const operationalAllocationAmount = canConfirmOperationalAllocation ? Math.min(selectedStatementAvailable, selectedTargetAvailable) : 0;
   const canClassifyFxCardResidual =
     Boolean(selectedStatement) &&
     statements.size === 1 &&
@@ -358,20 +393,24 @@ export default function WorkspaceSelectionEnhancer() {
     selectedStatementAvailable > 0.009;
 
   const disabledReason = !selectedStatement
-    ? "Select one OUT bank/card statement line."
+    ? "Select one bank/card statement line."
     : !selectedTarget
       ? canClassifyFxCardResidual
         ? `Residual available for FX/card/fee classification: ${gbp(selectedStatementAvailable)}.`
-        : "Select one supplier invoice target."
-      : selectedStatement.direction !== "out"
-        ? "Supplier invoice allocation requires an OUT statement line."
-        : selectedTarget.targetType !== "invoice"
-          ? "This button only allocates to supplier invoices. Refunds/exceptions are next build."
-          : selectedTarget.direction !== "out"
-            ? "Supplier invoice target must be an OUT/charge target."
-            : canConfirmSupplierInvoice
-              ? `Ready to confirm supplier allocation of ${gbp(supplierInvoiceAllocationAmount)}.`
-              : "No remaining amount is available on the selected statement line or supplier invoice.";
+        : "Select one supplier invoice, refund, replacement, or exception target."
+      : selectedTarget.targetType === "exception" && canConfirmOperationalAllocation
+        ? `Ready to confirm ${operationalType.replaceAll("_", " ")} allocation of ${gbp(operationalAllocationAmount)}.`
+        : selectedTarget.targetType === "exception"
+          ? "This exception target needs matching direction: OUT→replacement/exception, IN→refund."
+          : selectedStatement.direction !== "out"
+            ? "Supplier invoice allocation requires an OUT statement line."
+            : selectedTarget.targetType !== "invoice"
+              ? "Select a supplier invoice or supported exception target."
+              : selectedTarget.direction !== "out"
+                ? "Supplier invoice target must be an OUT/charge target."
+                : canConfirmSupplierInvoice
+                  ? `Ready to confirm supplier allocation of ${gbp(supplierInvoiceAllocationAmount)}.`
+                  : "No remaining amount is available on the selected statement line or target.";
 
   return (
     <aside className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200 bg-white/95 px-4 py-3 shadow-2xl backdrop-blur">
@@ -416,9 +455,29 @@ export default function WorkspaceSelectionEnhancer() {
             returnPath={currentPath}
           />
 
+          <form action={allocateStatementLineToOperationalTargetAction}>
+            <input type="hidden" name="dva_statement_line_id" value={selectedStatement?.id ?? ""} />
+            <input type="hidden" name="dispute_id" value={selectedTarget?.targetType === "exception" ? selectedTarget.id : ""} />
+            <input type="hidden" name="allocation_type" value={operationalType} />
+            <input type="hidden" name="allocated_gbp_amount" value={canConfirmOperationalAllocation ? operationalAllocationAmount.toFixed(2) : ""} />
+            <input type="hidden" name="notes" value="Allocated from DVA/card matching workspace operational target." />
+            <input type="hidden" name="return_path" value={currentPath} />
+            <button
+              className={
+                canConfirmOperationalAllocation
+                  ? "rounded-xl bg-sky-700 px-4 py-2 font-semibold text-white shadow-sm hover:bg-sky-800"
+                  : "rounded-xl bg-slate-200 px-4 py-2 font-semibold text-slate-500"
+              }
+              type="submit"
+              disabled={!canConfirmOperationalAllocation}
+            >
+              Confirm operational allocation
+            </button>
+          </form>
+
           <form action={allocateStatementLineToSupplierInvoiceAction}>
             <input type="hidden" name="dva_statement_line_id" value={selectedStatement?.id ?? ""} />
-            <input type="hidden" name="supplier_invoice_id" value={selectedTarget?.id ?? ""} />
+            <input type="hidden" name="supplier_invoice_id" value={selectedTarget?.targetType === "invoice" ? selectedTarget.id : ""} />
             <input type="hidden" name="allocated_gbp_amount" value={canConfirmSupplierInvoice ? supplierInvoiceAllocationAmount.toFixed(2) : ""} />
             <input type="hidden" name="notes" value="Allocated from DVA/card matching workspace." />
             <input type="hidden" name="return_path" value={currentPath} />
