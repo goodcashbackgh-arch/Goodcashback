@@ -1,8 +1,10 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { allocateStatementLineToSupplierInvoiceAction } from "../actions";
 
 type Direction = "in" | "out" | "neutral";
+type TargetType = "invoice" | "exception" | "unknown";
 
 type PickedItem = {
   id: string;
@@ -11,6 +13,7 @@ type PickedItem = {
   signedAmount: number;
   kind: "statement" | "target";
   direction: Direction;
+  targetType?: TargetType;
 };
 
 type SelectionMessage = {
@@ -60,6 +63,12 @@ function inferTargetDirection(body: string): Direction {
   return "neutral";
 }
 
+function inferTargetType(body: string): TargetType {
+  if (body.startsWith("Invoice")) return "invoice";
+  if (body.startsWith("Exception")) return "exception";
+  return "unknown";
+}
+
 function classifyCard(anchor: HTMLAnchorElement) {
   const body = anchor.innerText.trim();
   const href = new URL(anchor.href, window.location.origin);
@@ -69,6 +78,7 @@ function classifyCard(anchor: HTMLAnchorElement) {
 
   if (body.startsWith("Invoice") || body.startsWith("Exception")) {
     const direction = inferTargetDirection(body);
+    const targetType = inferTargetType(body);
     const amount = parseGbp(body.match(/Amount\s+£[\d,.]+/)?.[0] || body);
     return {
       side: "target" as const,
@@ -76,6 +86,7 @@ function classifyCard(anchor: HTMLAnchorElement) {
       amount,
       signedAmount: signedAmount(direction, amount),
       direction,
+      targetType,
       label: itemLabel(body),
     };
   }
@@ -191,9 +202,19 @@ function messageClass(tone: SelectionMessage["tone"]) {
   return "text-xs font-semibold text-amber-700";
 }
 
+function singleItem(items: Map<string, PickedItem>) {
+  const values = [...items.values()];
+  return values.length === 1 ? values[0] : null;
+}
+
 export default function WorkspaceSelectionEnhancer() {
   const [statements, setStatements] = useState<Map<string, PickedItem>>(new Map());
   const [targets, setTargets] = useState<Map<string, PickedItem>>(new Map());
+  const [currentPath, setCurrentPath] = useState("/internal/dva-reconciliation/workspace");
+
+  useEffect(() => {
+    setCurrentPath(`${window.location.pathname}${window.location.search}`);
+  }, []);
 
   useEffect(() => {
     const handleClick = (event: MouseEvent) => {
@@ -213,6 +234,7 @@ export default function WorkspaceSelectionEnhancer() {
         signedAmount: classified.signedAmount,
         direction: classified.direction,
         kind: classified.side === "statement" ? "statement" : "target",
+        targetType: classified.side === "target" ? classified.targetType : undefined,
       };
 
       if (classified.side === "statement") {
@@ -252,6 +274,27 @@ export default function WorkspaceSelectionEnhancer() {
   const netDifference = statementSignedTotal - targetSignedTotal;
   const absoluteDifference = statementAbsTotal - targetAbsTotal;
   const statusMessage = selectionMessage(statements, targets, netDifference);
+  const selectedStatement = singleItem(statements);
+  const selectedTarget = singleItem(targets);
+  const canConfirmSupplierInvoice =
+    Boolean(selectedStatement) &&
+    Boolean(selectedTarget) &&
+    selectedStatement?.direction === "out" &&
+    selectedTarget?.direction === "out" &&
+    selectedTarget?.targetType === "invoice" &&
+    selectedTarget.amount > 0;
+
+  const disabledReason = !selectedStatement
+    ? "Select one OUT bank/card statement line."
+    : !selectedTarget
+      ? "Select one supplier invoice target."
+      : selectedStatement.direction !== "out"
+        ? "Supplier invoice allocation requires an OUT statement line."
+        : selectedTarget.targetType !== "invoice"
+          ? "This button only allocates to supplier invoices. Refunds/exceptions are next build."
+          : selectedTarget.direction !== "out"
+            ? "Supplier invoice target must be an OUT/charge target."
+            : "Ready to confirm supplier invoice allocation.";
 
   return (
     <aside className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200 bg-white/95 px-4 py-3 shadow-2xl backdrop-blur">
@@ -269,6 +312,7 @@ export default function WorkspaceSelectionEnhancer() {
           <p className="font-semibold text-slate-950">Net position gap: {gbp(netDifference)}</p>
           <p className="text-xs text-slate-500">Absolute/gross gap: {gbp(absoluteDifference)}</p>
           <p className={messageClass(statusMessage.tone)}>{statusMessage.text}</p>
+          <p className="text-xs text-slate-500">{disabledReason}</p>
         </div>
 
         <div className="flex flex-wrap gap-2">
@@ -282,9 +326,25 @@ export default function WorkspaceSelectionEnhancer() {
           >
             Clear selections
           </button>
-          <button className="rounded-xl bg-slate-200 px-4 py-2 font-semibold text-slate-500" type="button" disabled>
-            Confirm allocation next
-          </button>
+
+          <form action={allocateStatementLineToSupplierInvoiceAction}>
+            <input type="hidden" name="dva_statement_line_id" value={selectedStatement?.id ?? ""} />
+            <input type="hidden" name="supplier_invoice_id" value={selectedTarget?.id ?? ""} />
+            <input type="hidden" name="allocated_gbp_amount" value={canConfirmSupplierInvoice ? selectedTarget?.amount.toFixed(2) : ""} />
+            <input type="hidden" name="notes" value="Allocated from DVA/card matching workspace." />
+            <input type="hidden" name="return_path" value={currentPath} />
+            <button
+              className={
+                canConfirmSupplierInvoice
+                  ? "rounded-xl bg-slate-950 px-4 py-2 font-semibold text-white shadow-sm hover:bg-slate-800"
+                  : "rounded-xl bg-slate-200 px-4 py-2 font-semibold text-slate-500"
+              }
+              type="submit"
+              disabled={!canConfirmSupplierInvoice}
+            >
+              Confirm supplier allocation
+            </button>
+          </form>
         </div>
       </div>
     </aside>
