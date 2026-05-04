@@ -9,6 +9,10 @@ type PageParams = {
   batch_id?: string;
 };
 
+type SearchParamsValue = Record<string, string | string[] | undefined>;
+
+const ROW_PAGE_SIZE = 10;
+
 const gbpFormatter = new Intl.NumberFormat("en-GB", {
   style: "currency",
   currency: "GBP",
@@ -29,6 +33,22 @@ function num(value: unknown) {
     return Number.isFinite(parsed) ? parsed : 0;
   }
   return 0;
+}
+
+function positivePage(value: unknown) {
+  const parsed = Number(text(value) || "1");
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 1;
+}
+
+function pageHref(batchId: string, currentParams: SearchParamsValue, nextPage: number) {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(currentParams)) {
+    if (key === "row_page") continue;
+    const firstValue = Array.isArray(value) ? value[0] : value;
+    if (firstValue) params.set(key, firstValue);
+  }
+  params.set("row_page", String(nextPage));
+  return `/internal/dva-statement-import/${batchId}?${params.toString()}#staged-statement-rows`;
 }
 
 function gbp(value: unknown) {
@@ -67,14 +87,57 @@ function correctionText(row: Row) {
   return note;
 }
 
+function PaginationControls({
+  batchId,
+  currentParams,
+  currentPage,
+  totalCount,
+}: {
+  batchId: string;
+  currentParams: SearchParamsValue;
+  currentPage: number;
+  totalCount: number;
+}) {
+  const totalPages = Math.max(1, Math.ceil(totalCount / ROW_PAGE_SIZE));
+  const from = totalCount === 0 ? 0 : (currentPage - 1) * ROW_PAGE_SIZE + 1;
+  const to = Math.min(currentPage * ROW_PAGE_SIZE, totalCount);
+
+  return (
+    <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
+      <p>
+        Showing <span className="font-semibold text-slate-950">{from}</span>–<span className="font-semibold text-slate-950">{to}</span> of <span className="font-semibold text-slate-950">{totalCount}</span>
+      </p>
+      <div className="flex items-center gap-2">
+        {currentPage > 1 ? (
+          <Link className="rounded-xl bg-white px-3 py-2 font-semibold text-sky-700 ring-1 ring-slate-200" href={pageHref(batchId, currentParams, currentPage - 1)}>Previous</Link>
+        ) : (
+          <span className="rounded-xl bg-slate-100 px-3 py-2 font-semibold text-slate-400 ring-1 ring-slate-200">Previous</span>
+        )}
+        <span className="px-2 font-semibold text-slate-700">Page {currentPage} / {totalPages}</span>
+        {currentPage < totalPages ? (
+          <Link className="rounded-xl bg-white px-3 py-2 font-semibold text-sky-700 ring-1 ring-slate-200" href={pageHref(batchId, currentParams, currentPage + 1)}>Next</Link>
+        ) : (
+          <span className="rounded-xl bg-slate-100 px-3 py-2 font-semibold text-slate-400 ring-1 ring-slate-200">Next</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default async function DvaStatementImportDetailPage({
   params,
+  searchParams,
 }: {
   params: PageParams | Promise<PageParams>;
+  searchParams?: SearchParamsValue | Promise<SearchParamsValue>;
 }) {
   const resolvedParams = await Promise.resolve(params);
+  const currentSearchParams = searchParams ? await Promise.resolve(searchParams) : {};
   const batchId = text(resolvedParams.batch_id);
   if (!batchId) notFound();
+
+  const rowPage = positivePage(currentSearchParams.row_page);
+  const rowFrom = (rowPage - 1) * ROW_PAGE_SIZE;
 
   const supabase = await createClient();
   const [batchResult, rowsResult] = await Promise.all([
@@ -85,14 +148,16 @@ export default async function DvaStatementImportDetailPage({
       .maybeSingle(),
     supabase
       .from("dva_statement_import_rows")
-      .select("id, source_row_number, source_page_number, statement_date, transaction_date, direction, transaction_type_candidate, amount_local_ccy, balance_after_local_ccy, local_ccy, fx_rate_applied, amount_gbp_equivalent, card_last4, merchant_raw, merchant_normalised, bank_reference, auth_or_settlement_ref, parser_confidence, parse_status, error_code, error_message, raw_json, committed_dva_statement_line_id, created_at")
+      .select("id, source_row_number, source_page_number, statement_date, transaction_date, direction, transaction_type_candidate, amount_local_ccy, balance_after_local_ccy, local_ccy, fx_rate_applied, amount_gbp_equivalent, card_last4, merchant_raw, merchant_normalised, bank_reference, auth_or_settlement_ref, parser_confidence, parse_status, error_code, error_message, raw_json, committed_dva_statement_line_id, created_at", { count: "exact" })
       .eq("import_batch_id", batchId)
-      .order("source_row_number", { ascending: true }),
+      .order("source_row_number", { ascending: true })
+      .range(rowFrom, rowFrom + ROW_PAGE_SIZE - 1),
   ]);
 
   const batch = batchResult.data as Row | null;
   if (!batch) notFound();
   const rows = (rowsResult.data ?? []) as unknown as Row[];
+  const rowCount = rowsResult.count ?? rows.length;
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-6 text-slate-950 sm:px-6 sm:py-8">
@@ -128,10 +193,10 @@ export default async function DvaStatementImportDetailPage({
             <div>
               <h2 className="text-xl font-semibold">Staged statement rows</h2>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-                This is the detailed review area. Later, commit/reversal/reconciliation actions should sit here, not on the upload page.
+                Full transaction review before commit. Pagination keeps large statements usable.
               </p>
             </div>
-            <span className="rounded-full bg-slate-100 px-3 py-1 text-sm font-semibold text-slate-700 ring-1 ring-slate-200">{rows.length} row(s)</span>
+            <span className="rounded-full bg-slate-100 px-3 py-1 text-sm font-semibold text-slate-700 ring-1 ring-slate-200">{rowCount} row(s)</span>
           </div>
 
           <div className="mt-5 grid gap-3">
@@ -164,6 +229,8 @@ export default async function DvaStatementImportDetailPage({
               );
             })}
           </div>
+
+          <PaginationControls batchId={batchId} currentParams={currentSearchParams} currentPage={rowPage} totalCount={rowCount} />
         </section>
       </div>
     </main>
