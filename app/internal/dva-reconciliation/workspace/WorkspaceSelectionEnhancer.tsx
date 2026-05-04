@@ -105,12 +105,15 @@ function sum(items: Map<string, PickedItem>, signed = false) {
   return [...items.values()].reduce((total, item) => total + (signed ? item.signedAmount : item.amount), 0);
 }
 
-function clearSelectionStyles(anchor: HTMLAnchorElement) {
+function resetCardVisual(anchor: HTMLAnchorElement) {
   anchor.classList.remove(
+    "ring-2",
     "ring-4",
+    "ring-sky-200",
     "ring-sky-400",
     "ring-emerald-400",
     "ring-rose-400",
+    "border-sky-500",
     "border-sky-600",
     "border-emerald-600",
     "border-rose-600",
@@ -119,22 +122,24 @@ function clearSelectionStyles(anchor: HTMLAnchorElement) {
     "bg-rose-50",
     "shadow-lg"
   );
+  anchor.style.borderColor = "#e2e8f0";
+  anchor.style.borderWidth = "1px";
+  anchor.style.backgroundColor = "#ffffff";
+  anchor.style.boxShadow = "none";
 }
 
-function applySelectionStyles(anchor: HTMLAnchorElement, item: PickedItem) {
-  anchor.classList.add("ring-4", "shadow-lg");
+function applyCardVisual(anchor: HTMLAnchorElement, item: PickedItem) {
+  const palette =
+    item.direction === "in"
+      ? { border: "#059669", bg: "#ecfdf5", shadow: "rgba(5, 150, 105, 0.35)" }
+      : item.direction === "out"
+        ? { border: "#e11d48", bg: "#fff1f2", shadow: "rgba(225, 29, 72, 0.35)" }
+        : { border: "#0284c7", bg: "#f0f9ff", shadow: "rgba(2, 132, 199, 0.35)" };
 
-  if (item.direction === "in") {
-    anchor.classList.add("ring-emerald-400", "border-emerald-600", "bg-emerald-50");
-    return;
-  }
-
-  if (item.direction === "out") {
-    anchor.classList.add("ring-rose-400", "border-rose-600", "bg-rose-50");
-    return;
-  }
-
-  anchor.classList.add("ring-sky-400", "border-sky-600", "bg-sky-50");
+  anchor.style.borderColor = palette.border;
+  anchor.style.borderWidth = "2px";
+  anchor.style.backgroundColor = palette.bg;
+  anchor.style.boxShadow = `0 0 0 4px ${palette.shadow}`;
 }
 
 export default function WorkspaceSelectionEnhancer() {
@@ -180,10 +185,10 @@ export default function WorkspaceSelectionEnhancer() {
       if (!classified?.id) continue;
 
       const selectedItem = classified.side === "statement" ? statements.get(classified.id) : targets.get(classified.id);
-      clearSelectionStyles(anchor);
+      resetCardVisual(anchor);
 
       if (selectedItem) {
-        applySelectionStyles(anchor, selectedItem);
+        applyCardVisual(anchor, selectedItem);
         anchor.setAttribute("aria-pressed", "true");
       } else {
         anchor.setAttribute("aria-pressed", "false");
