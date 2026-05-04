@@ -30,7 +30,15 @@ function booleanish(value: unknown) {
 function returnPath(formData: FormData) {
   const requested = readString(formData, "return_path");
   if (requested.startsWith("/internal/dva-reconciliation")) return requested;
-  return "/internal/dva-reconciliation";
+
+  const importerId = readString(formData, "current_importer_id");
+  const status = readString(formData, "current_status") || "needs";
+  const params = new URLSearchParams();
+  if (status) params.set("status", status);
+  if (importerId) params.set("importer_id", importerId);
+
+  const query = params.toString();
+  return query ? `/internal/dva-reconciliation?${query}` : "/internal/dva-reconciliation";
 }
 
 export async function generateSupplierInvoiceSuggestionsAction(formData: FormData) {
@@ -96,6 +104,7 @@ export async function generateSupplierInvoiceSuggestionsAction(formData: FormDat
 
 export async function allocateStatementLineToFxCardOrFeeAction(formData: FormData) {
   const supabase = await createClient();
+  const path = returnPath(formData);
 
   const {
     data: { user },
@@ -104,7 +113,7 @@ export async function allocateStatementLineToFxCardOrFeeAction(formData: FormDat
   if (!user) {
     redirectWithAllocationResult({
       allocation_error: "Please sign in again before allocating FX/card/fee difference.",
-    });
+    }, path);
   }
 
   const statementLineId = readString(formData, "dva_statement_line_id");
@@ -116,19 +125,19 @@ export async function allocateStatementLineToFxCardOrFeeAction(formData: FormDat
   if (!statementLineId) {
     redirectWithAllocationResult({
       allocation_error: "Missing statement line reference.",
-    });
+    }, path);
   }
 
   if (!["fx_card_difference", "bank_fee"].includes(allocationType)) {
     redirectWithAllocationResult({
       allocation_error: "Unsupported allocation type for FX/card/fee allocation.",
-    });
+    }, path);
   }
 
   if (!Number.isFinite(allocatedAmount) || allocatedAmount <= 0) {
     redirectWithAllocationResult({
       allocation_error: "Allocation amount must be greater than zero.",
-    });
+    }, path);
   }
 
   const { data: summaryRow, error: summaryError } = await supabase
@@ -140,31 +149,31 @@ export async function allocateStatementLineToFxCardOrFeeAction(formData: FormDat
   if (summaryError) {
     redirectWithAllocationResult({
       allocation_error: summaryError.message,
-    });
+    }, path);
   }
 
   if (!summaryRow || summaryRow.direction !== "out") {
     redirectWithAllocationResult({
       allocation_error: "FX/card/fee residual allocation is only allowed for OUT statement lines.",
-    });
+    }, path);
   }
 
   if (booleanish(summaryRow.confirmed_balanced_yn)) {
     redirectWithAllocationResult({
       allocation_error: "This statement line is already balanced.",
-    });
+    }, path);
   }
 
   if (numeric(summaryRow.confirmed_allocated_gbp) <= 0) {
     redirectWithAllocationResult({
       allocation_error: "Residual allocation is only allowed after a supplier invoice, refund, exception, or hold allocation already exists.",
-    });
+    }, path);
   }
 
   if (numeric(summaryRow.confirmed_unallocated_gbp) <= 0) {
     redirectWithAllocationResult({
       allocation_error: "There is no remaining balance to allocate as FX/card/fee.",
-    });
+    }, path);
   }
 
   const { data, error } = await supabase.rpc("staff_allocate_statement_line_to_fx_card_or_fee", {
@@ -177,7 +186,7 @@ export async function allocateStatementLineToFxCardOrFeeAction(formData: FormDat
   if (error) {
     redirectWithAllocationResult({
       allocation_error: error.message,
-    });
+    }, path);
   }
 
   revalidatePath("/internal/dva-reconciliation");
@@ -191,11 +200,12 @@ export async function allocateStatementLineToFxCardOrFeeAction(formData: FormDat
 
   redirectWithAllocationResult({
     allocation_success: `Allocated £${appliedAmount} to ${allocationType.replaceAll("_", " ")}.`,
-  });
+  }, path);
 }
 
 export async function allocateStatementLineToSupplierInvoiceAction(formData: FormData) {
   const supabase = await createClient();
+  const path = returnPath(formData);
 
   const {
     data: { user },
@@ -204,7 +214,7 @@ export async function allocateStatementLineToSupplierInvoiceAction(formData: For
   if (!user) {
     redirectWithAllocationResult({
       allocation_error: "Please sign in again before allocating the statement line.",
-    });
+    }, path);
   }
 
   const statementLineId = readString(formData, "dva_statement_line_id");
@@ -216,13 +226,13 @@ export async function allocateStatementLineToSupplierInvoiceAction(formData: For
   if (!statementLineId || !supplierInvoiceId) {
     redirectWithAllocationResult({
       allocation_error: "Missing statement line or supplier invoice reference.",
-    });
+    }, path);
   }
 
   if (!Number.isFinite(allocatedAmount) || allocatedAmount <= 0) {
     redirectWithAllocationResult({
       allocation_error: "Allocation amount must be greater than zero.",
-    });
+    }, path);
   }
 
   const { data, error } = await supabase.rpc("staff_allocate_statement_line_to_supplier_invoice", {
@@ -235,7 +245,7 @@ export async function allocateStatementLineToSupplierInvoiceAction(formData: For
   if (error) {
     redirectWithAllocationResult({
       allocation_error: error.message,
-    });
+    }, path);
   }
 
   revalidatePath("/internal/dva-reconciliation");
@@ -249,5 +259,5 @@ export async function allocateStatementLineToSupplierInvoiceAction(formData: For
 
   redirectWithAllocationResult({
     allocation_success: `Allocated £${appliedAmount} to supplier invoice.`,
-  });
+  }, path);
 }
