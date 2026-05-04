@@ -24,10 +24,6 @@ function readString(formData: FormData, key: string) {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function todayIsoDate() {
-  return new Date().toISOString().slice(0, 10);
-}
-
 function safeExt(fileName: string) {
   const ext = fileName.includes(".") ? fileName.split(".").pop() : "bin";
   return (ext ?? "bin").toLowerCase().replace(/[^a-z0-9]/g, "") || "bin";
@@ -218,126 +214,15 @@ export async function commitDvaStatementImportBatchAction(formData: FormData) {
 }
 
 export async function createStageCommitSmokeImportAction(formData: FormData) {
-  const supabase = await createClient();
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) {
-    redirectWithResult({ import_error: "Please sign in again before testing statement import." });
-  }
-
-  let importerId = "";
+  const importerId = "";
 
   try {
-    importerId = await resolveImporterId(supabase, formData);
-  } catch (error) {
-    redirectWithResult({ import_error: error instanceof Error ? error.message : "Could not resolve importer for smoke import." });
+    await resolveImporterId(await createClient(), formData);
+  } catch {
+    // Intentionally ignored. The smoke-test path is disabled in production UI flow.
   }
-
-  const today = todayIsoDate();
-  const amount = Number(readString(formData, "amount_gbp") || "44.44");
-  const merchant = readString(formData, "merchant") || "SharkNinja Leeds GB";
-  const merchantNormalised = readString(formData, "merchant_normalised") || "sharkninja";
-  const fingerprint = `smoke-pdf-${importerId}-${Date.now()}`;
-  const rawText = [
-    today,
-    "400149******5757 99999999",
-    merchant,
-    "603713102242",
-    "137POSV26037089J",
-    today,
-    amount.toFixed(2),
-    "TEST PDF-FIRST STATEMENT IMPORT SMOKE",
-  ].join("\n");
-
-  if (!Number.isFinite(amount) || amount <= 0) {
-    redirectWithResult({ import_error: "Smoke amount must be greater than zero." });
-  }
-
-  const { data: batchResult, error: batchError } = await supabase.rpc("staff_create_dva_statement_import_batch", {
-    p_importer_id: importerId,
-    p_source_bank: "other",
-    p_statement_period_from: today,
-    p_statement_period_to: today,
-    p_local_ccy: "GBP",
-    p_source_file_url: `test://pdf-statement-smoke-${Date.now()}.pdf`,
-    p_original_filename: "TEST-PDF-STATEMENT-SMOKE.pdf",
-    p_detected_file_type: "pdf",
-    p_default_card_markup_pct: 0,
-    p_fx_source_context: "TEST ONLY: smoke import uses GBP no FX conversion",
-    p_notes: "TEST ONLY: smoke import batch created from internal page",
-  });
-
-  if (batchError) {
-    redirectWithResult({ import_error: batchError.message });
-  }
-
-  const importBatchId =
-    typeof batchResult === "object" &&
-    batchResult !== null &&
-    "import_batch_id" in batchResult
-      ? String((batchResult as { import_batch_id?: unknown }).import_batch_id)
-      : "";
-
-  if (!importBatchId) {
-    redirectWithResult({ import_error: "Import batch RPC returned no import_batch_id." });
-  }
-
-  const { error: stageError } = await supabase.rpc("staff_stage_dva_statement_import_row", {
-    p_import_batch_id: importBatchId,
-    p_source_row_number: 1,
-    p_source_page_number: 1,
-    p_raw_text: rawText,
-    p_raw_json: { smoke: true, source: "internal/dva-statement-import" },
-    p_statement_date: today,
-    p_transaction_date: today,
-    p_direction: "out",
-    p_transaction_type_candidate: "supplier_purchase_candidate",
-    p_amount_local_ccy: amount,
-    p_balance_after_local_ccy: null,
-    p_local_ccy: "GBP",
-    p_fx_rate_applied: 1,
-    p_card_markup_pct_applied: 0,
-    p_amount_gbp_equivalent: amount,
-    p_card_last4: "5757",
-    p_merchant_raw: merchant,
-    p_merchant_normalised: merchantNormalised,
-    p_bank_reference: "603713102242",
-    p_auth_or_settlement_ref: "137POSV26037089J",
-    p_transaction_family_ref: "SMOKE-PDF-FAMILY-001",
-    p_parser_confidence: "high",
-    p_error_code: null,
-    p_error_message: null,
-    p_statement_line_fingerprint_hash: fingerprint,
-  });
-
-  if (stageError) {
-    redirectWithResult({ import_error: stageError.message });
-  }
-
-  const { data: commitResult, error: commitError } = await supabase.rpc("staff_commit_dva_statement_import_batch", {
-    p_import_batch_id: importBatchId,
-    p_notes: "TEST ONLY: committed smoke import row into active DVA statement lines",
-  });
-
-  if (commitError) {
-    redirectWithResult({ import_error: commitError.message });
-  }
-
-  revalidatePath("/internal/dva-statement-import");
-  revalidatePath("/internal/dva-reconciliation");
-
-  const committedCount =
-    typeof commitResult === "object" &&
-    commitResult !== null &&
-    "committed_count" in commitResult
-      ? String((commitResult as { committed_count?: unknown }).committed_count)
-      : "0";
 
   redirectWithResult({
-    import_success: `Smoke import committed ${committedCount} statement line(s).`,
-    batch_id: importBatchId,
+    import_error: `Temporary smoke-test import is disabled. Use the real statement upload flow${importerId ? ` for importer ${importerId}` : ""}.`,
   });
 }
