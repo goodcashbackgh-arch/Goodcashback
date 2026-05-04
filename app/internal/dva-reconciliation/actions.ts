@@ -7,7 +7,8 @@ import { createClient } from "@/utils/supabase/server";
 
 function redirectWithAllocationResult(params: Record<string, string>, path = "/internal/dva-reconciliation"): never {
   const query = new URLSearchParams(params);
-  redirect(`${path}?${query.toString()}`);
+  const separator = path.includes("?") ? "&" : "?";
+  redirect(`${path}${separator}${query.toString()}`);
 }
 
 function readString(formData: FormData, key: string) {
@@ -101,6 +102,7 @@ export async function generateSupplierInvoiceSuggestionsAction(formData: FormDat
   }
 
   revalidatePath("/internal/dva-reconciliation");
+  revalidatePath("/internal/dva-reconciliation/workspace");
   revalidatePath("/internal/dva-reconciliation/unmatched");
 
   const insertedCount =
@@ -204,6 +206,7 @@ export async function allocateStatementLineToFxCardOrFeeAction(formData: FormDat
   }
 
   revalidatePath("/internal/dva-reconciliation");
+  revalidatePath("/internal/dva-reconciliation/workspace");
 
   const appliedAmount =
     typeof data === "object" &&
@@ -263,6 +266,7 @@ export async function allocateStatementLineToSupplierInvoiceAction(formData: For
   }
 
   revalidatePath("/internal/dva-reconciliation");
+  revalidatePath("/internal/dva-reconciliation/workspace");
 
   const appliedAmount =
     typeof data === "object" &&
