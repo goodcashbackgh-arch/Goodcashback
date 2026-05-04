@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { headers } from "next/headers";
 import { createClient } from "@/utils/supabase/server";
 
 function redirectWithAllocationResult(params: Record<string, string>, path = "/internal/dva-reconciliation"): never {
@@ -27,9 +28,22 @@ function booleanish(value: unknown) {
   return value === true || (typeof value === "string" && value.toLowerCase() === "true");
 }
 
-function returnPath(formData: FormData) {
+async function returnPath(formData: FormData) {
   const requested = readString(formData, "return_path");
   if (requested.startsWith("/internal/dva-reconciliation")) return requested;
+
+  const headerStore = await headers();
+  const referer = headerStore.get("referer");
+  if (referer) {
+    try {
+      const url = new URL(referer);
+      if (url.pathname.startsWith("/internal/dva-reconciliation")) {
+        return `${url.pathname}${url.search}`;
+      }
+    } catch {
+      // Ignore malformed or missing referer headers and use the explicit fallback below.
+    }
+  }
 
   const importerId = readString(formData, "current_importer_id");
   const status = readString(formData, "current_status") || "needs";
@@ -43,7 +57,7 @@ function returnPath(formData: FormData) {
 
 export async function generateSupplierInvoiceSuggestionsAction(formData: FormData) {
   const supabase = await createClient();
-  const path = returnPath(formData);
+  const path = await returnPath(formData);
 
   const {
     data: { user },
@@ -104,7 +118,7 @@ export async function generateSupplierInvoiceSuggestionsAction(formData: FormDat
 
 export async function allocateStatementLineToFxCardOrFeeAction(formData: FormData) {
   const supabase = await createClient();
-  const path = returnPath(formData);
+  const path = await returnPath(formData);
 
   const {
     data: { user },
@@ -205,7 +219,7 @@ export async function allocateStatementLineToFxCardOrFeeAction(formData: FormDat
 
 export async function allocateStatementLineToSupplierInvoiceAction(formData: FormData) {
   const supabase = await createClient();
-  const path = returnPath(formData);
+  const path = await returnPath(formData);
 
   const {
     data: { user },
