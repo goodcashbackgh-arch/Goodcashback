@@ -16,7 +16,9 @@ const gbpFormatter = new Intl.NumberFormat("en-GB", {
 
 function text(value: unknown) {
   if (Array.isArray(value)) return text(value[0]);
-  return typeof value === "string" ? value : "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return "";
 }
 
 function num(value: unknown) {
