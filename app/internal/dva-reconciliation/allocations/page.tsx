@@ -46,14 +46,14 @@ function pretty(value: string | null | undefined) {
 
 function tone(status: string | null | undefined) {
   if (status === "confirmed") return "border-emerald-200 bg-emerald-50 text-emerald-800";
-  if (status === "reversed") return "border-rose-200 bg-rose-50 text-rose-800";
   if (status === "held") return "border-amber-200 bg-amber-50 text-amber-800";
   return "border-slate-200 bg-slate-50 text-slate-700";
 }
 
 export default async function DvaAllocationReviewPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
   const params = await searchParams;
-  const status = params.status || "confirmed";
+  const requestedStatus = params.status || "confirmed";
+  const status = requestedStatus === "held" ? "held" : "confirmed";
   const importerId = params.importer_id || "";
   const workspacePath = `/internal/dva-reconciliation/workspace${importerId ? `?importer_id=${encodeURIComponent(importerId)}` : ""}`;
   const supabase = await createClient();
@@ -61,10 +61,10 @@ export default async function DvaAllocationReviewPage({ searchParams }: { search
   let query = supabase
     .from("dva_statement_line_allocation_detail_vw")
     .select("allocation_id, importer_id, dva_statement_line_id, transaction_date, statement_date, statement_description, statement_reference, statement_direction, statement_gbp_amount, allocation_type, allocation_status, supplier_invoice_ref, dispute_id, order_ref, allocated_gbp_amount, notes, created_at")
+    .eq("allocation_status", status)
     .order("created_at", { ascending: false })
     .limit(200);
 
-  if (status !== "all") query = query.eq("allocation_status", status);
   if (importerId) query = query.eq("importer_id", importerId);
 
   const { data, error } = await query;
@@ -78,7 +78,7 @@ export default async function DvaAllocationReviewPage({ searchParams }: { search
             <p className="text-xs font-semibold uppercase tracking-[0.25em] text-sky-600">DVA/card reconciliation</p>
             <h1 className="mt-2 text-2xl font-bold tracking-tight">Allocation review</h1>
             <p className="mt-1 max-w-3xl text-sm text-slate-600">
-              Supervisor review of active statement-line allocations before downstream accounting/Sage control. Reversed rows stay in the audit trail, but the normal working view is confirmed/held only.
+              Supervisor review of active statement-line allocations before downstream accounting/Sage control. Reversed allocations are hidden from this working page and reopen in the workspace.
             </p>
           </div>
           <Link
@@ -104,12 +104,10 @@ export default async function DvaAllocationReviewPage({ searchParams }: { search
         <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
           <form className="flex flex-wrap gap-3" action="/internal/dva-reconciliation/allocations">
             <label className="grid gap-1 text-xs font-semibold text-slate-600">
-              Status
+              Active status
               <select name="status" defaultValue={status} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900">
                 <option value="confirmed">Confirmed</option>
                 <option value="held">Held</option>
-                <option value="reversed">Reversed audit</option>
-                <option value="all">All including reversed</option>
               </select>
             </label>
             <label className="grid gap-1 text-xs font-semibold text-slate-600">
@@ -129,13 +127,13 @@ export default async function DvaAllocationReviewPage({ searchParams }: { search
 
         <section className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
           <div className="border-b border-slate-100 px-4 py-3 text-sm font-semibold text-slate-700">
-            Showing {rows.length} allocation(s)
+            Showing {rows.length} active allocation(s)
           </div>
 
           {error ? (
             <div className="p-4 text-sm font-semibold text-rose-700">{error.message}</div>
           ) : rows.length === 0 ? (
-            <div className="p-8 text-center text-sm text-slate-500">No allocations found for this filter.</div>
+            <div className="p-8 text-center text-sm text-slate-500">No active allocations found for this filter.</div>
           ) : (
             <div className="divide-y divide-slate-100">
               {rows.map((row) => {
@@ -185,9 +183,7 @@ export default async function DvaAllocationReviewPage({ searchParams }: { search
                           Reverse this allocation only
                         </button>
                       </form>
-                    ) : (
-                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-500">No action available.</div>
-                    )}
+                    ) : null}
                   </article>
                 );
               })}
