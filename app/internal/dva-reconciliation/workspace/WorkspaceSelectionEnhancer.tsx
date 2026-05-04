@@ -131,10 +131,10 @@ function resetCardVisual(anchor: HTMLAnchorElement) {
 function applyCardVisual(anchor: HTMLAnchorElement, item: PickedItem) {
   const palette =
     item.direction === "in"
-      ? { border: "#059669", bg: "#ecfdf5", shadow: "rgba(5, 150, 105, 0.35)" }
+      ? { border: "#059669", bg: "#ecfdf5", shadow: "rgba(5, 150, 105, 0.28)" }
       : item.direction === "out"
-        ? { border: "#e11d48", bg: "#fff1f2", shadow: "rgba(225, 29, 72, 0.35)" }
-        : { border: "#0284c7", bg: "#f0f9ff", shadow: "rgba(2, 132, 199, 0.35)" };
+        ? { border: "#d97706", bg: "#fffbeb", shadow: "rgba(217, 119, 6, 0.28)" }
+        : { border: "#0284c7", bg: "#f0f9ff", shadow: "rgba(2, 132, 199, 0.28)" };
 
   anchor.style.borderColor = palette.border;
   anchor.style.borderWidth = "2px";
@@ -221,7 +221,7 @@ export default function WorkspaceSelectionEnhancer() {
           <p className={Math.abs(netDifference) < 0.01 && statements.size > 0 && targets.size > 0 ? "text-xs font-semibold text-emerald-700" : "text-xs font-semibold text-amber-700"}>
             {Math.abs(netDifference) < 0.01 && statements.size > 0 && targets.size > 0
               ? "Net balanced — ready for allocation wiring."
-              : "Green = IN/refund. Red = OUT/charge. Blue = neutral/hold. Click again to unselect."}
+              : "Green = IN/refund. Amber = OUT/charge. Blue = neutral/hold. Click again to unselect."}
           </p>
         </div>
 
