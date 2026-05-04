@@ -220,6 +220,81 @@ export async function allocateStatementLineToFxCardOrFeeAction(formData: FormDat
   }, path);
 }
 
+export async function allocateStatementLineToOperationalTargetAction(formData: FormData) {
+  const supabase = await createClient();
+  const path = await returnPath(formData);
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    redirectWithAllocationResult({
+      allocation_error: "Please sign in again before allocating the operational target.",
+    }, path);
+  }
+
+  const statementLineId = readString(formData, "dva_statement_line_id");
+  const disputeIdRaw = readString(formData, "dispute_id");
+  const allocationType = readString(formData, "allocation_type");
+  const amountRaw = readString(formData, "allocated_gbp_amount");
+  const notes = readString(formData, "notes") || null;
+  const allocatedAmount = Number(amountRaw);
+  const disputeId = disputeIdRaw || null;
+
+  if (!statementLineId) {
+    redirectWithAllocationResult({
+      allocation_error: "Missing statement line reference.",
+    }, path);
+  }
+
+  if (!["retailer_refund", "exception_hold", "not_charged_closure", "unmatched_hold"].includes(allocationType)) {
+    redirectWithAllocationResult({
+      allocation_error: "Unsupported operational allocation type.",
+    }, path);
+  }
+
+  if (allocationType !== "unmatched_hold" && !disputeId) {
+    redirectWithAllocationResult({
+      allocation_error: "A dispute/exception reference is required for this operational allocation.",
+    }, path);
+  }
+
+  if (!Number.isFinite(allocatedAmount) || allocatedAmount <= 0) {
+    redirectWithAllocationResult({
+      allocation_error: "Allocation amount must be greater than zero.",
+    }, path);
+  }
+
+  const { data, error } = await supabase.rpc("staff_allocate_statement_line_to_dispute_or_hold", {
+    p_dva_statement_line_id: statementLineId,
+    p_allocation_type: allocationType,
+    p_dispute_id: disputeId,
+    p_allocated_gbp_amount: allocatedAmount,
+    p_notes: notes,
+  });
+
+  if (error) {
+    redirectWithAllocationResult({
+      allocation_error: error.message,
+    }, path);
+  }
+
+  revalidatePath("/internal/dva-reconciliation");
+  revalidatePath("/internal/dva-reconciliation/workspace");
+
+  const appliedAmount =
+    typeof data === "object" &&
+    data !== null &&
+    "allocated_gbp_amount" in data
+      ? String((data as { allocated_gbp_amount?: unknown }).allocated_gbp_amount)
+      : allocatedAmount.toFixed(2);
+
+  redirectWithAllocationResult({
+    allocation_success: `Allocated £${appliedAmount} to ${allocationType.replaceAll("_", " ")}.`,
+  }, path);
+}
+
 export async function allocateStatementLineToSupplierInvoiceAction(formData: FormData) {
   const supabase = await createClient();
   const path = await returnPath(formData);
