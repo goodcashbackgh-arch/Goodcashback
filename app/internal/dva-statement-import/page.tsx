@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { createClient } from "@/utils/supabase/server";
 import { createRealStatementImportBatchAction, createStageCommitSmokeImportAction } from "./actions";
+import StatementBalanceCheckCard from "./StatementBalanceCheckCard";
 
 type Row = Record<string, unknown>;
 type SearchParamsValue = Record<string, string | string[] | undefined>;
@@ -285,6 +286,8 @@ export default async function DvaStatementImportPage({
           </div>
           <PaginationControls baseParams={params} pageKey="batch_page" currentPage={batchPage} totalCount={batchCount} pageSize={BATCH_PAGE_SIZE} />
         </section>
+
+        <StatementBalanceCheckCard importBatchId={batchId || null} />
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold">Recent staged rows</h2>
