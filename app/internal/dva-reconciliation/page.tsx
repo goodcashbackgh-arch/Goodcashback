@@ -104,6 +104,7 @@ function statusFilter(row: Row) {
 function actionMessage(row: Row) {
   if (bool(row.confirmed_balanced_yn)) return "Balanced — no further action.";
   if (text(row.direction) === "out") return "No supplier invoice suggestion yet.";
+  if (text(row.direction) === "in") return "Funding route — use funding page/action.";
   return "No action here.";
 }
 
@@ -137,6 +138,51 @@ function filterHref(currentParams: SearchParamsValue, nextStatus: string, nextIm
   params.set("status", nextStatus);
   if (nextImporterId) params.set("importer_id", nextImporterId);
   return `/internal/dva-reconciliation?${params.toString()}`;
+}
+
+function creditSignedAmount(row: Row) {
+  const amount = num(row.amount_gbp);
+  const direction = text(row.direction).toLowerCase();
+  const entryType = text(row.entry_type).toLowerCase();
+
+  if (["debit", "out", "applied", "used"].includes(direction) || entryType.includes("applied")) {
+    return -amount;
+  }
+
+  if (["credit", "in", "available"].includes(direction) || entryType.includes("credit") || entryType.includes("overfund")) {
+    return amount;
+  }
+
+  return amount;
+}
+
+function SummaryMetric({
+  label,
+  value,
+  hint,
+  tone = "slate",
+}: {
+  label: string;
+  value: string;
+  hint: string;
+  tone?: "slate" | "sky" | "emerald" | "amber" | "rose" | "violet";
+}) {
+  const toneClass = {
+    slate: "bg-slate-50 text-slate-950 ring-slate-200",
+    sky: "bg-sky-50 text-sky-950 ring-sky-200",
+    emerald: "bg-emerald-50 text-emerald-950 ring-emerald-200",
+    amber: "bg-amber-50 text-amber-950 ring-amber-200",
+    rose: "bg-rose-50 text-rose-950 ring-rose-200",
+    violet: "bg-violet-50 text-violet-950 ring-violet-200",
+  }[tone];
+
+  return (
+    <div className={`rounded-2xl p-4 ring-1 ${toneClass}`}>
+      <p className="text-xs font-semibold uppercase tracking-wide opacity-70">{label}</p>
+      <p className="mt-2 text-2xl font-semibold">{value}</p>
+      <p className="mt-1 text-xs leading-5 opacity-75">{hint}</p>
+    </div>
+  );
 }
 
 function SupplierInvoiceAllocationForm({ row, invoiceId, defaultAmount }: { row: Row; invoiceId: string; defaultAmount: string }) {
@@ -260,6 +306,7 @@ export default async function DvaReconciliationWorkbenchPage({
   const invoices = (invoicesResult.data ?? []) as unknown as Row[];
   const invoiceLines = (invoiceLinesResult.data ?? []) as unknown as Row[];
   const disputes = (disputesResult.data ?? []) as unknown as Row[];
+  const creditLedger = (creditLedgerResult.data ?? []) as unknown as Row[];
 
   const statementsById = byId(statements);
   const importersById = byId(importers);
@@ -311,18 +358,38 @@ export default async function DvaReconciliationWorkbenchPage({
     };
   });
 
-  const filteredRows = enrichedRows.filter(({ line }) => {
-    const importerOk = !selectedImporterId || text(line.importer_id) === selectedImporterId;
-    const statusOk = selectedStatus === "all" || statusFilter(line) === selectedStatus;
-    return importerOk && statusOk;
-  });
+  const scopedRows = enrichedRows.filter(({ line }) => !selectedImporterId || text(line.importer_id) === selectedImporterId);
+  const scopedOrders = orders.filter((order) => !selectedImporterId || text(order.importer_id) === selectedImporterId);
+  const scopedOrderIds = new Set(scopedOrders.map((order) => text(order.id)).filter(Boolean));
+  const scopedOpenDisputes = openDisputes.filter((dispute) => scopedOrderIds.has(text(dispute.order_id)));
+  const scopedCreditLedger = creditLedger.filter((row) => !selectedImporterId || text(row.importer_id) === selectedImporterId);
+
+  const statementInTotal = scopedRows
+    .filter(({ line }) => text(line.direction) === "in")
+    .reduce((sum, { line }) => sum + num(line.statement_gbp_amount), 0);
+  const statementOutTotal = scopedRows
+    .filter(({ line }) => text(line.direction) === "out")
+    .reduce((sum, { line }) => sum + num(line.statement_gbp_amount), 0);
+  const supplierInvoiceAllocated = scopedRows.reduce((sum, { line }) => sum + num(line.supplier_invoice_allocated_gbp), 0);
+  const retailerRefundAllocated = scopedRows.reduce((sum, { line }) => sum + num(line.retailer_refund_allocated_gbp), 0);
+  const fxCardFeeAllocated = scopedRows.reduce((sum, { line }) => sum + num(line.fx_card_or_fee_allocated_gbp), 0);
+  const exceptionOrHoldAllocated = scopedRows.reduce((sum, { line }) => sum + num(line.exception_or_hold_allocated_gbp), 0);
+  const creditLedgerBalance = scopedCreditLedger.reduce((sum, row) => sum + creditSignedAmount(row), 0);
+  const openExceptionTotalSummary = scopedOpenDisputes.reduce((sum, dispute) => sum + num(dispute.amount_impact_gbp), 0);
+  const unmatchedInCount = scopedRows.filter(({ line }) => text(line.direction) === "in" && !bool(line.confirmed_balanced_yn) && num(line.confirmed_allocated_gbp) === 0).length;
+  const unmatchedOutCount = scopedRows.filter(({ line }) => text(line.direction) === "out" && !bool(line.confirmed_balanced_yn) && num(line.confirmed_allocated_gbp) === 0).length;
+  const indicativeNetPosition = statementInTotal + creditLedgerBalance - statementOutTotal;
+
+  const filteredRows = scopedRows.filter(({ line }) => selectedStatus === "all" || statusFilter(line) === selectedStatus);
 
   const statusCounts = {
-    all: enrichedRows.filter(({ line }) => !selectedImporterId || text(line.importer_id) === selectedImporterId).length,
-    needs: enrichedRows.filter(({ line }) => (!selectedImporterId || text(line.importer_id) === selectedImporterId) && statusFilter(line) === "needs").length,
-    draft: enrichedRows.filter(({ line }) => (!selectedImporterId || text(line.importer_id) === selectedImporterId) && statusFilter(line) === "draft").length,
-    balanced: enrichedRows.filter(({ line }) => (!selectedImporterId || text(line.importer_id) === selectedImporterId) && statusFilter(line) === "balanced").length,
+    all: scopedRows.length,
+    needs: scopedRows.filter(({ line }) => statusFilter(line) === "needs").length,
+    draft: scopedRows.filter(({ line }) => statusFilter(line) === "draft").length,
+    balanced: scopedRows.filter(({ line }) => statusFilter(line) === "balanced").length,
   };
+
+  const selectedImporter = selectedImporterId ? importersById.get(selectedImporterId) : undefined;
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-6 text-slate-950 sm:px-6 sm:py-8">
@@ -330,9 +397,9 @@ export default async function DvaReconciliationWorkbenchPage({
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <Link href="/internal" className="text-sm font-semibold text-sky-600">← Back to internal dashboard</Link>
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">DVA/card reconciliation</p>
-          <h1 className="mt-2 text-3xl font-semibold tracking-tight">Statement-line allocation control view</h1>
+          <h1 className="mt-2 text-3xl font-semibold tracking-tight">Importer financial control hub</h1>
           <p className="mt-3 max-w-5xl text-sm leading-6 text-slate-600">
-            This page consumes existing order, invoice, OCR, progressed-line and exception work. Supplier-invoice suggestions are treated as the primary candidate for OUT lines. Inbound funding belongs to the funding queue. Outbound/refund lines use the allocation layer for supplier invoices, refunds, exceptions, FX/card/fees, or unmatched holds.
+            This page consumes existing order, invoice, OCR, progressed-line, exception, funding and credit-ledger work. It shows IN and OUT together for control visibility, but funding actions and supplier/refund/fee allocations remain separate governed actions.
           </p>
         </section>
 
@@ -387,6 +454,32 @@ export default async function DvaReconciliationWorkbenchPage({
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
+              <p className="text-sm font-medium uppercase tracking-[0.18em] text-sky-500">Importer control position</p>
+              <h2 className="mt-2 text-xl font-semibold">{selectedImporter ? (text(selectedImporter.trading_name) || text(selectedImporter.company_name) || "Selected importer") : "All importers"}</h2>
+              <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
+                Use this summary to catch the £500-in / £450-spent / £50-open-position problem. It is a control view, not a replacement for funding or supplier-allocation RPCs.
+              </p>
+            </div>
+            <Link className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white" href="/internal/funding">
+              Open funding queue →
+            </Link>
+          </div>
+
+          <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <SummaryMetric label="IN statement lines" value={gbp(statementInTotal)} hint="Visible funding/credit inflows from committed statement lines." tone="emerald" />
+            <SummaryMetric label="OUT statement lines" value={gbp(statementOutTotal)} hint="Visible card/supplier/refund/fee outflows from committed statement lines." tone="rose" />
+            <SummaryMetric label="Credit ledger balance" value={gbp(creditLedgerBalance)} hint="Importer credit ledger net from existing ledger rows." tone="sky" />
+            <SummaryMetric label="Indicative net position" value={gbp(indicativeNetPosition)} hint="IN + credit ledger - OUT. Use as a review signal, not a posting figure." tone="violet" />
+            <SummaryMetric label="Supplier allocated" value={gbp(supplierInvoiceAllocated)} hint="Confirmed allocations to supplier invoices." tone="slate" />
+            <SummaryMetric label="Refunds / fees / holds" value={gbp(retailerRefundAllocated + fxCardFeeAllocated + exceptionOrHoldAllocated)} hint="Retailer refund, FX/card/fee and exception/hold allocations." tone="amber" />
+            <SummaryMetric label="Open exceptions" value={gbp(openExceptionTotalSummary)} hint="Open paper/commercial exception impact for this importer scope." tone="amber" />
+            <SummaryMetric label="Unmatched lines" value={`${unmatchedInCount} IN · ${unmatchedOutCount} OUT`} hint="Needs funding route or supplier/refund/fee/exception allocation." tone={unmatchedInCount + unmatchedOutCount > 0 ? "rose" : "emerald"} />
+          </div>
+        </section>
+
+        <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
               <h2 className="text-xl font-semibold">Allocation lines</h2>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
                 Showing {filteredRows.length} line(s). Default view is Needs allocation so supervisors are not buried in completed lines.
@@ -421,6 +514,7 @@ export default async function DvaReconciliationWorkbenchPage({
                     Math.max(0, num(line.confirmed_unallocated_gbp)),
                     Math.max(0, num(invoice?.ocr_invoice_total_gbp) || num(invoice?.reconciliation_gbp_total) || num(line.confirmed_unallocated_gbp))
                   ).toFixed(2);
+                  const hasOrderLink = Boolean(order);
 
                   return (
                     <tr key={text(line.dva_statement_line_id)} className="align-top">
@@ -429,7 +523,7 @@ export default async function DvaReconciliationWorkbenchPage({
                         <p>{gbp(line.statement_gbp_amount)} · {num(line.amount_local_ccy).toLocaleString("en-GB")} {text(line.local_ccy)}</p>
                         <p className="mt-2 text-xs text-slate-500">Ref: {text(line.reference_raw) || "—"}</p>
                         <p className="text-xs text-slate-500">Auth: {text(line.auth_id_ref) || "—"}</p>
-                        <p className="text-xs text-slate-500">Card ref: {text(line.retailer_name_ref) || "—"}</p>
+                        <p className="text-xs text-slate-500">Statement text: {text(line.retailer_name_ref) || "—"}</p>
                         <p className="text-xs text-slate-500">FX: {text(line.fx_rate_applied) || "—"} · markup: {num(line.card_markup_pct_applied)}%</p>
                       </td>
                       <td className="px-4 py-4">
@@ -446,12 +540,18 @@ export default async function DvaReconciliationWorkbenchPage({
                         <p className="text-xs text-slate-500">Bank: {text(statement?.source_bank) || "—"}</p>
                       </td>
                       <td className="px-4 py-4">
-                        <p className="font-semibold">{text(order?.order_ref) || "—"}</p>
-                        <p>{text(retailer?.name) || text(line.retailer_name_ref) || "—"}</p>
-                        <p className="text-xs text-slate-500">Order value: {gbp(order?.order_total_gbp_declared)}</p>
-                        <p className="text-xs text-slate-500">Status: {text(order?.status) || "—"}</p>
-                        <p className="text-xs text-slate-500">Type: {text(order?.order_type) || "—"}</p>
-                        {order ? <Link className="mt-2 inline-block text-xs font-semibold text-sky-700" href={`/internal/evidence/${text(order.id)}`}>Open order →</Link> : null}
+                        <p className="font-semibold">{hasOrderLink ? text(order?.order_ref) : "No order link"}</p>
+                        <p>{hasOrderLink ? (text(retailer?.name) || "No retailer on linked order") : "Statement text only"}</p>
+                        {hasOrderLink ? (
+                          <>
+                            <p className="text-xs text-slate-500">Order value: {gbp(order?.order_total_gbp_declared)}</p>
+                            <p className="text-xs text-slate-500">Status: {text(order?.status) || "—"}</p>
+                            <p className="text-xs text-slate-500">Type: {text(order?.order_type) || "—"}</p>
+                            <Link className="mt-2 inline-block text-xs font-semibold text-sky-700" href={`/internal/evidence/${text(order?.id)}`}>Open order →</Link>
+                          </>
+                        ) : (
+                          <p className="mt-2 break-words text-xs text-slate-500 [overflow-wrap:anywhere]">{text(line.retailer_name_ref) || text(line.reference_raw) || "No statement merchant/reference text"}</p>
+                        )}
                       </td>
                       <td className="px-4 py-4">
                         <p className="font-semibold">{text(invoice?.invoice_ref) || text(invoice?.ocr_invoice_ref) || "No invoice link"}</p>
@@ -473,12 +573,15 @@ export default async function DvaReconciliationWorkbenchPage({
                         <p className="text-xs text-slate-600">Active allocations: {num(line.active_allocation_count)}</p>
                         <p className="text-xs text-slate-600">Balanced: {bool(line.confirmed_balanced_yn) ? "Yes" : "No"}</p>
                         <p className="mt-2 text-xs italic text-slate-600">{actionMessage(line)}</p>
+                        {text(line.direction) === "in" && !bool(line.confirmed_balanced_yn) ? (
+                          <Link className="mt-3 inline-block rounded-xl bg-emerald-600 px-3 py-2 text-xs font-semibold text-white" href="/internal/funding">Open funding queue</Link>
+                        ) : null}
                         {text(line.direction) === "out" && lineSuggestions.length === 0 && !bool(line.confirmed_balanced_yn) ? (
                           <form action={generateSupplierInvoiceSuggestionsAction} className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3">
                             <input type="hidden" name="dva_statement_line_id" value={text(line.dva_statement_line_id)} />
                             <label className="block text-xs font-semibold text-amber-950">Generate suggestions</label>
-                            <input className="mt-2 w-full rounded-xl border border-amber-200 bg-white px-3 py-2 text-xs" name="tolerance_gbp" type="number" min="0" step="0.01" defaultValue="5" />
-                            <input className="mt-2 w-full rounded-xl border border-amber-200 bg-white px-3 py-2 text-xs" name="max_days" type="number" min="0" step="1" defaultValue="14" />
+                            <input className="mt-2 w-full rounded-xl border border-amber-200 bg-white px-3 py-2 text-xs" name="tolerance_gbp" type="number" min="0" step="0.01" defaultValue="20" />
+                            <input className="mt-2 w-full rounded-xl border border-amber-200 bg-white px-3 py-2 text-xs" name="max_days" type="number" min="0" step="1" defaultValue="21" />
                             <button className="mt-2 rounded-xl bg-amber-500 px-3 py-2 text-xs font-semibold text-white" type="submit">Generate</button>
                           </form>
                         ) : null}
