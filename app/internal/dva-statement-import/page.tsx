@@ -140,7 +140,7 @@ export default async function DvaStatementImportPage({
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <Link href="/internal" className="text-sm font-semibold text-sky-600">← Back to internal dashboard</Link>
           <div className="mt-6 flex flex-wrap items-start justify-between gap-4">
-            <div>
+            <div className="min-w-0 flex-1">
               <p className="text-sm font-medium uppercase tracking-[0.2em] text-sky-500">DVA/card statement import</p>
               <h1 className="mt-2 text-3xl font-semibold tracking-tight">Statement upload queue</h1>
               <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-600">
@@ -246,9 +246,9 @@ export default async function DvaStatementImportPage({
             ) : batches.map((batch) => (
               <article key={text(batch.id)} className="rounded-2xl border border-slate-200 p-4">
                 <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <h3 className="font-semibold">{text(batch.original_filename) || text(batch.id)}</h3>
-                    <p className="mt-1 text-sm text-slate-600">{text(batch.statement_period_from)} → {text(batch.statement_period_to)} · {text(batch.source_bank)} · {text(batch.local_ccy)} · {text(batch.detected_file_type)} · {text(batch.parser_route)}</p>
+                  <div className="min-w-0 flex-1">
+                    <h3 className="break-words font-semibold [overflow-wrap:anywhere]">{text(batch.original_filename) || text(batch.id)}</h3>
+                    <p className="mt-1 break-words text-sm text-slate-600 [overflow-wrap:anywhere]">{text(batch.statement_period_from)} → {text(batch.statement_period_to)} · {text(batch.source_bank)} · {text(batch.local_ccy)} · {text(batch.detected_file_type)} · {text(batch.parser_route)}</p>
                   </div>
                   <span className={`rounded-full px-3 py-1 text-sm font-semibold ring-1 ${statusClass(text(batch.status))}`}>{text(batch.status)}</span>
                 </div>
