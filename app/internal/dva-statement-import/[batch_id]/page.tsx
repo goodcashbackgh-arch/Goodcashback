@@ -123,7 +123,7 @@ export default async function DvaStatementImportDetailPage({
 
         <StatementBalanceCheckCard importBatchId={batchId} />
 
-        <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+        <section id="staged-statement-rows" className="scroll-mt-6 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <h2 className="text-xl font-semibold">Staged statement rows</h2>
