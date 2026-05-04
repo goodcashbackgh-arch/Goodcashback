@@ -207,6 +207,7 @@ export async function allocateStatementLineToFxCardOrFeeAction(formData: FormDat
 
   revalidatePath("/internal/dva-reconciliation");
   revalidatePath("/internal/dva-reconciliation/workspace");
+  revalidatePath("/internal/dva-reconciliation/allocations");
 
   const appliedAmount =
     typeof data === "object" &&
@@ -282,6 +283,7 @@ export async function allocateStatementLineToOperationalTargetAction(formData: F
 
   revalidatePath("/internal/dva-reconciliation");
   revalidatePath("/internal/dva-reconciliation/workspace");
+  revalidatePath("/internal/dva-reconciliation/allocations");
 
   const appliedAmount =
     typeof data === "object" &&
@@ -292,6 +294,56 @@ export async function allocateStatementLineToOperationalTargetAction(formData: F
 
   redirectWithAllocationResult({
     allocation_success: `Allocated £${appliedAmount} to ${allocationType.replaceAll("_", " ")}.`,
+  }, path);
+}
+
+export async function reverseDvaStatementLineAllocationAction(formData: FormData) {
+  const supabase = await createClient();
+  const path = await returnPath(formData);
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    redirectWithAllocationResult({
+      allocation_error: "Please sign in again before reversing the allocation.",
+    }, path);
+  }
+
+  const allocationId = readString(formData, "allocation_id");
+  const reversalReason = readString(formData, "reversal_reason");
+
+  if (!allocationId) {
+    redirectWithAllocationResult({ allocation_error: "Missing allocation reference." }, path);
+  }
+
+  if (reversalReason.length < 8) {
+    redirectWithAllocationResult({ allocation_error: "Enter a reversal reason of at least 8 characters." }, path);
+  }
+
+  const { data, error } = await supabase.rpc("staff_reverse_dva_statement_line_allocation", {
+    p_allocation_id: allocationId,
+    p_reversal_reason: reversalReason,
+  });
+
+  if (error) {
+    redirectWithAllocationResult({ allocation_error: error.message }, path);
+  }
+
+  revalidatePath("/internal/dva-reconciliation");
+  revalidatePath("/internal/dva-reconciliation/workspace");
+  revalidatePath("/internal/dva-reconciliation/allocations");
+
+  const reversedAmount =
+    typeof data === "object" &&
+    data !== null &&
+    "reversed_amount_gbp" in data
+      ? String((data as { reversed_amount_gbp?: unknown }).reversed_amount_gbp)
+      : "";
+
+  redirectWithAllocationResult({
+    allocation_success: reversedAmount ? `Reversed allocation of £${reversedAmount}.` : "Allocation reversed.",
   }, path);
 }
 
@@ -342,6 +394,7 @@ export async function allocateStatementLineToSupplierInvoiceAction(formData: For
 
   revalidatePath("/internal/dva-reconciliation");
   revalidatePath("/internal/dva-reconciliation/workspace");
+  revalidatePath("/internal/dva-reconciliation/allocations");
 
   const appliedAmount =
     typeof data === "object" &&
