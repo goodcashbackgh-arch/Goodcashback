@@ -13,6 +13,11 @@ type PickedItem = {
   direction: Direction;
 };
 
+type SelectionMessage = {
+  tone: "green" | "amber" | "rose";
+  text: string;
+};
+
 const gbpFormatter = new Intl.NumberFormat("en-GB", {
   style: "currency",
   currency: "GBP",
@@ -105,6 +110,10 @@ function sum(items: Map<string, PickedItem>, signed = false) {
   return [...items.values()].reduce((total, item) => total + (signed ? item.signedAmount : item.amount), 0);
 }
 
+function countDirection(items: Map<string, PickedItem>, direction: Direction) {
+  return [...items.values()].filter((item) => item.direction === direction).length;
+}
+
 function resetCardVisual(anchor: HTMLAnchorElement) {
   anchor.classList.remove(
     "ring-2",
@@ -140,6 +149,46 @@ function applyCardVisual(anchor: HTMLAnchorElement, item: PickedItem) {
   anchor.style.borderWidth = "2px";
   anchor.style.backgroundColor = palette.bg;
   anchor.style.boxShadow = `0 0 0 4px ${palette.shadow}`;
+}
+
+function selectionMessage(statements: Map<string, PickedItem>, targets: Map<string, PickedItem>, netDifference: number): SelectionMessage {
+  if (statements.size === 0 || targets.size === 0) {
+    return { tone: "amber", text: "Select bank line(s) and operational target(s)." };
+  }
+
+  const statementIn = countDirection(statements, "in");
+  const statementOut = countDirection(statements, "out");
+  const targetIn = countDirection(targets, "in");
+  const targetOut = countDirection(targets, "out");
+
+  if (statementOut > 0 && targetIn > 0 && targetOut === 0 && statementIn === 0) {
+    return {
+      tone: "rose",
+      text: "Direction conflict: bank OUT selected against operational IN/refund. Add the related charge target or choose an IN bank line.",
+    };
+  }
+
+  if (statementIn > 0 && targetOut > 0 && targetIn === 0 && statementOut === 0) {
+    return {
+      tone: "rose",
+      text: "Direction conflict: bank IN selected against operational OUT/charge. Add the matching OUT bank line or choose an IN target.",
+    };
+  }
+
+  if (Math.abs(netDifference) < 0.01) {
+    return { tone: "green", text: "Net balanced — ready for allocation wiring." };
+  }
+
+  return {
+    tone: "amber",
+    text: "Net not balanced yet. Add the related charge/refund/exception line, or leave residual for FX/card/fee handling.",
+  };
+}
+
+function messageClass(tone: SelectionMessage["tone"]) {
+  if (tone === "green") return "text-xs font-semibold text-emerald-700";
+  if (tone === "rose") return "text-xs font-semibold text-rose-700";
+  return "text-xs font-semibold text-amber-700";
 }
 
 export default function WorkspaceSelectionEnhancer() {
@@ -202,27 +251,24 @@ export default function WorkspaceSelectionEnhancer() {
   const targetSignedTotal = useMemo(() => sum(targets, true), [targets]);
   const netDifference = statementSignedTotal - targetSignedTotal;
   const absoluteDifference = statementAbsTotal - targetAbsTotal;
+  const statusMessage = selectionMessage(statements, targets, netDifference);
 
   return (
     <aside className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200 bg-white/95 px-4 py-3 shadow-2xl backdrop-blur">
       <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 text-sm">
         <div>
           <p className="font-semibold text-slate-950">
-            Selected statement lines: {statements.size} · gross {gbp(statementAbsTotal)} · net {gbp(statementSignedTotal)}
+            Bank selected: {statements.size} · gross {gbp(statementAbsTotal)} · net {gbp(statementSignedTotal)}
           </p>
           <p className="text-slate-600">
-            Selected targets: {targets.size} · gross {gbp(targetAbsTotal)} · net {gbp(targetSignedTotal)}
+            Operational selected: {targets.size} · gross {gbp(targetAbsTotal)} · net {gbp(targetSignedTotal)}
           </p>
         </div>
 
-        <div className="grid gap-1 text-right">
-          <p className="font-semibold text-slate-950">Net difference: {gbp(netDifference)}</p>
-          <p className="text-xs text-slate-500">Gross selection gap: {gbp(absoluteDifference)}</p>
-          <p className={Math.abs(netDifference) < 0.01 && statements.size > 0 && targets.size > 0 ? "text-xs font-semibold text-emerald-700" : "text-xs font-semibold text-amber-700"}>
-            {Math.abs(netDifference) < 0.01 && statements.size > 0 && targets.size > 0
-              ? "Net balanced — ready for allocation wiring."
-              : "Green = IN/refund. Amber = OUT/charge. Blue = neutral/hold. Click again to unselect."}
-          </p>
+        <div className="grid max-w-xl gap-1 text-right">
+          <p className="font-semibold text-slate-950">Net position gap: {gbp(netDifference)}</p>
+          <p className="text-xs text-slate-500">Absolute/gross gap: {gbp(absoluteDifference)}</p>
+          <p className={messageClass(statusMessage.tone)}>{statusMessage.text}</p>
         </div>
 
         <div className="flex flex-wrap gap-2">
