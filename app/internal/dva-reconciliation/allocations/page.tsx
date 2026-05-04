@@ -55,6 +55,7 @@ export default async function DvaAllocationReviewPage({ searchParams }: { search
   const params = await searchParams;
   const status = params.status || "confirmed";
   const importerId = params.importer_id || "";
+  const workspacePath = `/internal/dva-reconciliation/workspace${importerId ? `?importer_id=${encodeURIComponent(importerId)}` : ""}`;
   const supabase = await createClient();
 
   let query = supabase
@@ -77,11 +78,11 @@ export default async function DvaAllocationReviewPage({ searchParams }: { search
             <p className="text-xs font-semibold uppercase tracking-[0.25em] text-sky-600">DVA/card reconciliation</p>
             <h1 className="mt-2 text-2xl font-bold tracking-tight">Allocation review</h1>
             <p className="mt-1 max-w-3xl text-sm text-slate-600">
-              Supervisor review of confirmed, held, and reversed statement-line allocations before downstream accounting/Sage control.
+              Supervisor review of active statement-line allocations before downstream accounting/Sage control. Reversed rows stay in the audit trail, but the normal working view is confirmed/held only.
             </p>
           </div>
           <Link
-            href={`/internal/dva-reconciliation/workspace${importerId ? `?importer_id=${importerId}` : ""}`}
+            href={workspacePath}
             className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-50"
           >
             Back to workspace
@@ -107,8 +108,8 @@ export default async function DvaAllocationReviewPage({ searchParams }: { search
               <select name="status" defaultValue={status} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900">
                 <option value="confirmed">Confirmed</option>
                 <option value="held">Held</option>
-                <option value="reversed">Reversed</option>
-                <option value="all">All</option>
+                <option value="reversed">Reversed audit</option>
+                <option value="all">All including reversed</option>
               </select>
             </label>
             <label className="grid gap-1 text-xs font-semibold text-slate-600">
@@ -138,7 +139,6 @@ export default async function DvaAllocationReviewPage({ searchParams }: { search
           ) : (
             <div className="divide-y divide-slate-100">
               {rows.map((row) => {
-                const reversePath = `/internal/dva-reconciliation/allocations?status=${encodeURIComponent(status)}${importerId ? `&importer_id=${encodeURIComponent(importerId)}` : ""}`;
                 return (
                   <article key={row.allocation_id} className="grid gap-4 p-4 lg:grid-cols-[1.2fr_1fr_auto] lg:items-start">
                     <div className="space-y-2">
@@ -170,7 +170,7 @@ export default async function DvaAllocationReviewPage({ searchParams }: { search
                     {row.allocation_status === "confirmed" || row.allocation_status === "held" ? (
                       <form action={reverseDvaStatementLineAllocationAction} className="grid min-w-64 gap-2 rounded-2xl border border-slate-200 bg-white p-3">
                         <input type="hidden" name="allocation_id" value={row.allocation_id} />
-                        <input type="hidden" name="return_path" value={reversePath} />
+                        <input type="hidden" name="return_path" value={workspacePath} />
                         <label className="grid gap-1 text-xs font-semibold text-slate-600">
                           Reversal reason
                           <input
@@ -182,7 +182,7 @@ export default async function DvaAllocationReviewPage({ searchParams }: { search
                           />
                         </label>
                         <button className="rounded-xl bg-rose-600 px-3 py-2 text-sm font-semibold text-white hover:bg-rose-700" type="submit">
-                          Reverse allocation
+                          Reverse this allocation only
                         </button>
                       </form>
                     ) : (
