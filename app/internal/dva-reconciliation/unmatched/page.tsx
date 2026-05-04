@@ -11,6 +11,12 @@ const gbpFormatter = new Intl.NumberFormat("en-GB", {
   minimumFractionDigits: 2,
 });
 
+const suggestionPresets = [
+  { label: "Tight", hint: "£5 · 14 days", tolerance: "5", days: "14" },
+  { label: "Normal", hint: "£20 · 21 days", tolerance: "20", days: "21" },
+  { label: "Broad FX", hint: "£50 · 45 days", tolerance: "50", days: "45" },
+];
+
 function text(value: unknown) {
   if (Array.isArray(value)) return text(value[0]);
   return typeof value === "string" ? value : "";
@@ -27,6 +33,31 @@ function num(value: unknown) {
 
 function gbp(value: unknown) {
   return gbpFormatter.format(num(value));
+}
+
+function SuggestionPresetForms({ row }: { row: Row }) {
+  return (
+    <div className="mt-5 rounded-2xl border border-sky-100 bg-sky-50 p-4">
+      <p className="text-xs font-semibold uppercase tracking-wide text-sky-900">Generate supplier-invoice suggestions</p>
+      <p className="mt-1 text-xs leading-5 text-sky-900">
+        Start broad when FX/card conversion makes exact GBP matching unrealistic. This only suggests; it does not allocate.
+      </p>
+      <div className="mt-3 grid gap-2 sm:grid-cols-3">
+        {suggestionPresets.map((preset) => (
+          <form key={preset.label} action={generateSupplierInvoiceSuggestionsAction}>
+            <input type="hidden" name="return_path" value="/internal/dva-reconciliation/unmatched" />
+            <input type="hidden" name="dva_statement_line_id" value={text(row.dva_statement_line_id)} />
+            <input type="hidden" name="tolerance_gbp" value={preset.tolerance} />
+            <input type="hidden" name="max_days" value={preset.days} />
+            <button className="w-full rounded-xl bg-white px-3 py-2 text-left text-sm font-semibold text-sky-800 ring-1 ring-sky-200" type="submit">
+              {preset.label}
+              <span className="block text-xs font-normal text-sky-700">{preset.hint}</span>
+            </button>
+          </form>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 export default async function DvaUnmatchedStatementActionPage({
@@ -99,22 +130,7 @@ export default async function DvaUnmatchedStatementActionPage({
                 <p><span className="font-semibold text-slate-500">Remaining:</span> {gbp(row.confirmed_unallocated_gbp)}</p>
               </div>
 
-              <div className="mt-5 grid gap-3 rounded-2xl border border-sky-100 bg-sky-50 p-4 sm:grid-cols-[1fr_auto] sm:items-end">
-                <form action={generateSupplierInvoiceSuggestionsAction} className="grid gap-3 sm:grid-cols-[120px_120px_1fr_auto] sm:items-end">
-                  <input type="hidden" name="return_path" value="/internal/dva-reconciliation/unmatched" />
-                  <input type="hidden" name="dva_statement_line_id" value={text(row.dva_statement_line_id)} />
-                  <div>
-                    <label className="block text-xs font-semibold uppercase tracking-wide text-sky-900">Tolerance</label>
-                    <input className="mt-1 w-full rounded-xl border border-sky-200 bg-white px-3 py-2 text-sm" name="tolerance_gbp" type="number" min="0" step="0.01" defaultValue="5" />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold uppercase tracking-wide text-sky-900">Days</label>
-                    <input className="mt-1 w-full rounded-xl border border-sky-200 bg-white px-3 py-2 text-sm" name="max_days" type="number" min="0" step="1" defaultValue="14" />
-                  </div>
-                  <p className="text-xs leading-5 text-sky-900">Generate supplier-invoice suggestions for this line only.</p>
-                  <button className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white" type="submit">Generate suggestion</button>
-                </form>
-              </div>
+              <SuggestionPresetForms row={row} />
 
               <div className="mt-4 grid gap-2 text-sm text-slate-500 sm:grid-cols-3">
                 <div className="rounded-2xl bg-slate-50 p-3">Manual supplier invoice search/link: next build.</div>
