@@ -14,6 +14,11 @@ function redirectWithResult(params: Record<string, string>): never {
   redirect(`/internal/dva-statement-import?${query.toString()}`);
 }
 
+function redirectToBatchWithResult(batchId: string, params: Record<string, string>): never {
+  const query = new URLSearchParams(params);
+  redirect(`/internal/dva-statement-import/${batchId}?${query.toString()}`);
+}
+
 function readString(formData: FormData, key: string) {
   const value = formData.get(key);
   return typeof value === "string" ? value.trim() : "";
@@ -165,6 +170,50 @@ export async function createRealStatementImportBatchAction(formData: FormData) {
   redirectWithResult({
     import_success: `Statement uploaded and import batch created. Parser route: ${parserRoute}. Extraction is the next step.`,
     batch_id: importBatchId,
+  });
+}
+
+export async function commitDvaStatementImportBatchAction(formData: FormData) {
+  const supabase = await createClient();
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  const importBatchId = readString(formData, "import_batch_id");
+  const notes = readString(formData, "notes") || "Committed clean statement rows from statement detail page.";
+
+  if (!importBatchId) {
+    redirectWithResult({ import_error: "Missing statement import batch id." });
+  }
+
+  if (!user) {
+    redirectToBatchWithResult(importBatchId, { commit_error: "Please sign in again before committing statement rows." });
+  }
+
+  const { data: commitResult, error: commitError } = await supabase.rpc("staff_commit_dva_statement_import_batch", {
+    p_import_batch_id: importBatchId,
+    p_notes: notes,
+  });
+
+  if (commitError) {
+    redirectToBatchWithResult(importBatchId, { commit_error: commitError.message });
+  }
+
+  revalidatePath("/internal/dva-statement-import");
+  revalidatePath(`/internal/dva-statement-import/${importBatchId}`);
+  revalidatePath("/internal/dva-reconciliation");
+  revalidatePath("/internal/funding");
+
+  const committedCount =
+    typeof commitResult === "object" &&
+    commitResult !== null &&
+    "committed_count" in commitResult
+      ? String((commitResult as { committed_count?: unknown }).committed_count)
+      : "0";
+
+  redirectToBatchWithResult(importBatchId, {
+    commit_success: `Committed ${committedCount} clean statement line(s). You can now open the matching workbench.`,
   });
 }
 
