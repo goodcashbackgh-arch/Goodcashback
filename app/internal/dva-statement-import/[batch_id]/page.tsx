@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
+import { commitDvaStatementImportBatchAction } from "../actions";
 import StatementBalanceCheckCard from "../StatementBalanceCheckCard";
 
 type Row = Record<string, unknown>;
@@ -138,6 +139,8 @@ export default async function DvaStatementImportDetailPage({
 
   const rowPage = positivePage(currentSearchParams.row_page);
   const rowFrom = (rowPage - 1) * ROW_PAGE_SIZE;
+  const commitSuccess = text(currentSearchParams.commit_success);
+  const commitError = text(currentSearchParams.commit_error);
 
   const supabase = await createClient();
   const [batchResult, rowsResult] = await Promise.all([
@@ -158,6 +161,12 @@ export default async function DvaStatementImportDetailPage({
   if (!batch) notFound();
   const rows = (rowsResult.data ?? []) as unknown as Row[];
   const rowCount = rowsResult.count ?? rows.length;
+  const batchStatus = text(batch.status);
+  const committedCount = num(batch.committed_count);
+  const cleanCount = num(batch.clean_count);
+  const errorCount = num(batch.error_count);
+  const canCommit = cleanCount > 0 && committedCount === 0 && errorCount === 0 && !["committed", "voided", "failed"].includes(batchStatus);
+  const canOpenMatchingWorkbench = batchStatus === "committed" || committedCount > 0 || Boolean(commitSuccess);
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-6 text-slate-950 sm:px-6 sm:py-8">
@@ -172,21 +181,61 @@ export default async function DvaStatementImportDetailPage({
                 Review extracted header, balance chain, staged rows, corrections, and references before committing this statement batch.
               </p>
             </div>
-            <span className={`rounded-full px-3 py-1 text-sm font-semibold ring-1 ${statusClass(text(batch.status))}`}>{text(batch.status)}</span>
+            <span className={`rounded-full px-3 py-1 text-sm font-semibold ring-1 ${statusClass(batchStatus)}`}>{batchStatus}</span>
           </div>
 
           <div className="mt-5 grid gap-3 text-sm text-slate-700 sm:grid-cols-2 lg:grid-cols-5">
             <p><span className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Period entered</span><span className="font-semibold">{text(batch.statement_period_from)} → {text(batch.statement_period_to)}</span></p>
             <p><span className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Source</span><span className="font-semibold">{text(batch.source_bank)} · {text(batch.local_ccy)}</span></p>
-            <p><span className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Rows</span><span className="font-semibold">{num(batch.row_count)} rows · {num(batch.clean_count)} clean</span></p>
-            <p><span className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Errors / duplicates</span><span className="font-semibold">{num(batch.error_count)} errors · {num(batch.duplicate_count)} duplicates</span></p>
-            <p><span className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Committed</span><span className="font-semibold">{num(batch.committed_count)}</span></p>
+            <p><span className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Rows</span><span className="font-semibold">{num(batch.row_count)} rows · {cleanCount} clean</span></p>
+            <p><span className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Errors / duplicates</span><span className="font-semibold">{errorCount} errors · {num(batch.duplicate_count)} duplicates</span></p>
+            <p><span className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Committed</span><span className="font-semibold">{committedCount}</span></p>
           </div>
 
           <p className="mt-4 break-all text-xs text-slate-500">Batch ID: {batchId}</p>
         </section>
 
+        {(commitSuccess || commitError) ? (
+          <section className={`rounded-3xl border p-5 text-sm font-semibold leading-6 ${commitSuccess ? "border-emerald-200 bg-emerald-50 text-emerald-900" : "border-rose-200 bg-rose-50 text-rose-900"}`}>
+            {commitSuccess || commitError}
+          </section>
+        ) : null}
+
         <StatementBalanceCheckCard importBatchId={batchId} />
+
+        <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <p className="text-sm font-medium uppercase tracking-[0.18em] text-sky-500">Next control step</p>
+              <h2 className="mt-2 text-xl font-semibold">Commit clean rows</h2>
+              <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
+                Commit turns reviewed staged rows into live DVA/card statement lines. Only committed lines should move into funding, invoice, refund, fee, or exception matching.
+              </p>
+            </div>
+            {canOpenMatchingWorkbench ? (
+              <Link className="rounded-2xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white" href="/internal/dva-reconciliation">
+                Open matching workbench →
+              </Link>
+            ) : null}
+          </div>
+
+          {canCommit ? (
+            <form action={commitDvaStatementImportBatchAction} className="mt-5 rounded-2xl border border-sky-200 bg-sky-50 p-4">
+              <input type="hidden" name="import_batch_id" value={batchId} />
+              <label className="block text-sm font-semibold text-sky-950">Commit note</label>
+              <input className="mt-2 w-full rounded-xl border border-sky-200 bg-white px-3 py-2 text-sm" name="notes" defaultValue="Reviewed balance chain and staged rows; commit clean statement lines." />
+              <button className="mt-3 rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white" type="submit">
+                Commit clean rows
+              </button>
+            </form>
+          ) : (
+            <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm leading-6 text-slate-600">
+              {canOpenMatchingWorkbench
+                ? "This batch already has committed statement lines. Continue in the matching workbench."
+                : "Commit is disabled until the batch has clean rows, no parse errors, and no previous commit."}
+            </div>
+          )}
+        </section>
 
         <section id="staged-statement-rows" className="scroll-mt-6 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex flex-wrap items-start justify-between gap-3">
