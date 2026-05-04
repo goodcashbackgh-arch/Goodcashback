@@ -1,16 +1,10 @@
+import Link from "next/link";
 import { createClient } from "@/utils/supabase/server";
 
 type Row = Record<string, unknown>;
 
 type BalanceLine = {
   sourceRowNumber: string;
-  transactionDate: string;
-  direction: string;
-  transactionType: string;
-  amount: number;
-  signedAmount: number;
-  calculatedBalance: number | null;
-  extractedBalance: number | null;
   parseStatus: string;
   corrected: boolean;
   ok: boolean;
@@ -116,12 +110,12 @@ export default async function StatementBalanceCheckCard({ importBatchId }: { imp
   const [batchResult, rowsResult] = await Promise.all([
     supabase
       .from("dva_statement_import_batches")
-      .select("id, original_filename, local_ccy, status, row_count, clean_count, error_count, mindee_statement_raw_json")
+      .select("id, original_filename, source_file_url, detected_file_type, local_ccy, status, row_count, clean_count, error_count, mindee_statement_raw_json")
       .eq("id", selectedBatchId)
       .maybeSingle(),
     supabase
       .from("dva_statement_import_rows")
-      .select("source_row_number, transaction_date, direction, transaction_type_candidate, amount_local_ccy, balance_after_local_ccy, parse_status, raw_json")
+      .select("source_row_number, direction, amount_local_ccy, balance_after_local_ccy, parse_status, raw_json")
       .eq("import_batch_id", selectedBatchId)
       .order("source_row_number", { ascending: true }),
   ]);
@@ -132,6 +126,7 @@ export default async function StatementBalanceCheckCard({ importBatchId }: { imp
 
   const rawJson = batch.mindee_statement_raw_json;
   const ccy = text(batch.local_ccy) || "GHS";
+  const sourceFileUrl = text(batch.source_file_url);
   const openingBalance = numberValue(fieldValue(rawJson, "beginning_balance"));
   const endingBalance = numberValue(fieldValue(rawJson, "ending_balance"));
   const totalDebits = numberValue(fieldValue(rawJson, "total_debits"));
@@ -152,13 +147,6 @@ export default async function StatementBalanceCheckCard({ importBatchId }: { imp
     if (extractedBalance !== null) runningBalance = extractedBalance;
     return {
       sourceRowNumber: text(row.source_row_number),
-      transactionDate: text(row.transaction_date),
-      direction,
-      transactionType: text(row.transaction_type_candidate),
-      amount,
-      signedAmount,
-      calculatedBalance,
-      extractedBalance,
       parseStatus: text(row.parse_status),
       corrected: isCorrected(row.raw_json),
       ok,
@@ -168,20 +156,25 @@ export default async function StatementBalanceCheckCard({ importBatchId }: { imp
   const cleanCount = lines.filter((line) => line.parseStatus === "clean").length;
   const correctedCount = lines.filter((line) => line.corrected).length;
   const failedBalanceLines = lines.filter((line) => !line.ok).length;
-  const calculatedEnding = lines.length ? lines[lines.length - 1].calculatedBalance : openingBalance;
+  const calculatedEnding = openingBalance !== null && totalCredits !== null && totalDebits !== null
+    ? round2(openingBalance + totalCredits - totalDebits)
+    : lines.length
+      ? runningBalance
+      : openingBalance;
   const endingMatches = calculatedEnding !== null && endingBalance !== null && Math.abs(calculatedEnding - endingBalance) <= BALANCE_TOLERANCE;
   const allRowsClean = cleanCount === lines.length;
   const status: "passed" | "review" | "failed" = !allRowsClean || failedBalanceLines > 0 || !endingMatches ? "failed" : correctedCount > 0 ? "review" : "passed";
   const statusLabel = status === "passed" ? "PASSED" : status === "review" ? "PASSED WITH CORRECTIONS" : "NEEDS REVIEW";
+  const netMovement = totalCredits !== null && totalDebits !== null ? round2(totalCredits - totalDebits) : null;
 
   return (
     <section className={`rounded-3xl border p-6 shadow-sm ${statusClass(status)}`}>
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
+        <div className="min-w-0 flex-1">
           <p className="text-sm font-medium uppercase tracking-[0.18em] opacity-80">Statement control check</p>
-          <h2 className="mt-2 text-2xl font-semibold tracking-tight">Balance chain before commit</h2>
+          <h2 className="mt-2 text-2xl font-semibold tracking-tight">Summary before commit</h2>
           <p className="mt-2 max-w-3xl text-sm leading-6 opacity-80">
-            Read-only review from Mindee header data plus staged statement rows. This is visibility only; it does not block commit yet.
+            Header, balance, and row-health summary only. Full transaction review sits in the staged rows section below.
           </p>
         </div>
         <span className={`rounded-full px-3 py-1 text-sm font-semibold ring-1 ${pillClass(status)}`}>{statusLabel}</span>
@@ -191,39 +184,33 @@ export default async function StatementBalanceCheckCard({ importBatchId }: { imp
         <p><span className="block text-xs font-semibold uppercase tracking-wide opacity-70">Account holder</span><span className="font-semibold">{accountHolder}</span></p>
         <p><span className="block text-xs font-semibold uppercase tracking-wide opacity-70">Account number</span><span className="font-semibold">{maskAccount(accountNumber)}</span></p>
         <p><span className="block text-xs font-semibold uppercase tracking-wide opacity-70">Extracted period</span><span className="font-semibold">{statementPeriodFrom || "—"} → {statementPeriodTo || "—"}</span></p>
-        <p><span className="block text-xs font-semibold uppercase tracking-wide opacity-70">Batch</span><span className="font-semibold break-all">{text(batch.original_filename) || selectedBatchId}</span></p>
+        <p><span className="block text-xs font-semibold uppercase tracking-wide opacity-70">Batch</span><span className="break-words font-semibold [overflow-wrap:anywhere]">{text(batch.original_filename) || selectedBatchId}</span></p>
         <p><span className="block text-xs font-semibold uppercase tracking-wide opacity-70">Opening balance</span><span className="font-semibold">{money(openingBalance, ccy)}</span></p>
+        <p><span className="block text-xs font-semibold uppercase tracking-wide opacity-70">Credits less debits</span><span className="font-semibold">{money(netMovement, ccy)}</span></p>
         <p><span className="block text-xs font-semibold uppercase tracking-wide opacity-70">Extracted ending</span><span className="font-semibold">{money(endingBalance, ccy)}</span></p>
         <p><span className="block text-xs font-semibold uppercase tracking-wide opacity-70">Calculated ending</span><span className="font-semibold">{money(calculatedEnding, ccy)}</span></p>
-        <p><span className="block text-xs font-semibold uppercase tracking-wide opacity-70">Rows clean / corrections</span><span className="font-semibold">{cleanCount}/{lines.length} clean · {correctedCount} corrected</span></p>
         <p><span className="block text-xs font-semibold uppercase tracking-wide opacity-70">Total debits</span><span className="font-semibold">{money(totalDebits, ccy)}</span></p>
         <p><span className="block text-xs font-semibold uppercase tracking-wide opacity-70">Total credits</span><span className="font-semibold">{money(totalCredits, ccy)}</span></p>
+        <p><span className="block text-xs font-semibold uppercase tracking-wide opacity-70">Rows clean</span><span className="font-semibold">{cleanCount}/{lines.length}</span></p>
+        <p><span className="block text-xs font-semibold uppercase tracking-wide opacity-70">Corrections / mismatches</span><span className="font-semibold">{correctedCount} corrected · {failedBalanceLines} mismatch</span></p>
       </div>
 
-      <div className="mt-5 overflow-hidden rounded-2xl border border-white/50 bg-white/50">
-        <div className="grid grid-cols-12 gap-2 border-b border-white/60 px-3 py-2 text-xs font-semibold uppercase tracking-wide opacity-70">
-          <span className="col-span-2">Row</span>
-          <span className="col-span-3">Transaction</span>
-          <span className="col-span-2 text-right">Movement</span>
-          <span className="col-span-3 text-right">Balance after</span>
-          <span className="col-span-2 text-right">Check</span>
-        </div>
-        {lines.map((line) => (
-          <div key={line.sourceRowNumber} className="grid grid-cols-12 gap-2 border-b border-white/60 px-3 py-2 text-sm last:border-b-0">
-            <span className="col-span-2 font-semibold">Row {line.sourceRowNumber}</span>
-            <span className="col-span-3">{line.transactionDate || "—"}</span>
-            <span className="col-span-2 text-right font-semibold">{line.signedAmount >= 0 ? "+" : "−"}{money(Math.abs(line.signedAmount), ccy)}</span>
-            <span className="col-span-3 text-right font-semibold">{money(line.extractedBalance, ccy)}</span>
-            <span className="col-span-2 text-right font-semibold">{line.ok ? "OK" : "Mismatch"}{line.corrected ? " · corrected" : ""}</span>
-          </div>
-        ))}
+      <div className="mt-5 flex flex-wrap gap-3">
+        {sourceFileUrl ? (
+          <a className="rounded-xl bg-white px-4 py-2 text-sm font-semibold ring-1 ring-current" href={sourceFileUrl} target="_blank" rel="noreferrer">
+            Open uploaded statement PDF
+          </a>
+        ) : null}
+        <Link className="rounded-xl bg-white px-4 py-2 text-sm font-semibold ring-1 ring-current" href="#staged-statement-rows">
+          Review staged rows
+        </Link>
       </div>
 
       {status !== "passed" ? (
         <p className="mt-4 text-sm font-semibold">
           {status === "review"
-            ? "Balance chain passed, but at least one Mindee direction was corrected using balance movement. Review before committing."
-            : "Balance chain or staged row cleanliness failed. Do not commit this batch until reviewed."}
+            ? "Balance totals passed, but at least one Mindee direction was corrected using balance movement. Review the affected rows before committing."
+            : "Balance totals, staged row cleanliness, or row-level balance checks failed. Do not commit this batch until reviewed."}
         </p>
       ) : null}
     </section>
