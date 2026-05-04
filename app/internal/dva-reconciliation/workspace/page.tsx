@@ -101,6 +101,45 @@ function containsNeedle(value: unknown, needle: string) {
   return text(value).toLowerCase().includes(needle.toLowerCase());
 }
 
+function compactSearch(value: unknown) {
+  return text(value)
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function merchantTokens(...values: unknown[]) {
+  const stop = new Set(["bank", "card", "from", "transfer", "wallet", "statement", "goods", "sales", "leeds", "london", "internet", "europe", "kitchen"]);
+  const tokens = new Set<string>();
+  for (const value of values) {
+    for (const token of compactSearch(value).split(/\s+/)) {
+      if (token.length < 4 || /^\d+$/.test(token) || stop.has(token)) continue;
+      tokens.add(token);
+      if (token === "sharkninja" || token === "shark") tokens.add("ninja");
+      if (token === "hennes" || token === "mauritz") tokens.add("hm");
+    }
+  }
+  return [...tokens].slice(0, 6);
+}
+
+function merchantScore(row: OperationalRow, tokens: string[]) {
+  if (tokens.length === 0) return 0;
+  const haystack = compactSearch(`${row.retailerName} ${row.title} ${row.orderRef}`);
+  return tokens.reduce((score, token) => score + (haystack.includes(token) ? 1 : 0), 0);
+}
+
+function amountScore(statementAmount: number, row: OperationalRow) {
+  const targetAmount = row.amount || row.progressedTotal || row.openExceptionTotal;
+  if (statementAmount <= 0 || targetAmount <= 0) return 0;
+  const diff = Math.abs(statementAmount - targetAmount);
+  if (diff < 0.01) return 100;
+  if (diff <= 2) return 75;
+  if (diff <= 5) return 50;
+  if (diff <= 15) return 25;
+  return 0;
+}
+
 function metric(label: string, value: string, hint: string) {
   return (
     <div className="rounded-2xl bg-slate-50 p-4 ring-1 ring-slate-200">
@@ -132,13 +171,12 @@ export default async function DvaMatchingWorkspacePage({
   const leftStatus = firstParam(params.left_status) || "unmatched";
   const leftDirection = firstParam(params.left_direction) || "all";
   const leftRetailer = firstParam(params.left_retailer);
-  const rightRetailer = firstParam(params.right_retailer) || leftRetailer;
+  const manualRightRetailer = firstParam(params.right_retailer);
   const rightStatus = firstParam(params.right_status) || "usable";
 
   const supabase = await createClient();
   const [
     statementLinesResult,
-    statementsResult,
     importersResult,
     ordersResult,
     retailersResult,
@@ -153,7 +191,6 @@ export default async function DvaMatchingWorkspacePage({
       .select("dva_statement_line_id, dva_statement_id, importer_id, statement_date, reference_raw, direction, amount_local_ccy, local_ccy, fx_rate_applied, card_markup_pct_applied, statement_gbp_amount, auth_id_ref, retailer_name_ref, match_status, confirmed_allocated_gbp, open_allocated_gbp, supplier_invoice_allocated_gbp, retailer_refund_allocated_gbp, fx_card_or_fee_allocated_gbp, exception_or_hold_allocated_gbp, active_allocation_count, confirmed_unallocated_gbp, confirmed_balanced_yn")
       .order("statement_date", { ascending: false })
       .limit(300),
-    supabase.from("dva_statements").select("id, importer_id, source_bank, parse_status").limit(200),
     supabase.from("importers").select("id, company_name, trading_name, gcb_dva_ref, dva_card_last_4").limit(200),
     supabase.from("orders").select("id, order_ref, importer_id, retailer_id, order_total_gbp_declared, status, payment_auth_id, order_type, created_at").order("created_at", { ascending: false }).limit(500),
     supabase.from("retailers").select("id, name").limit(500),
@@ -165,14 +202,12 @@ export default async function DvaMatchingWorkspacePage({
   ]);
 
   const allStatementLines = (statementLinesResult.data ?? []) as unknown as Row[];
-  const statementsById = byId((statementsResult.data ?? []) as unknown as Row[]);
   const importers = (importersResult.data ?? []) as unknown as Row[];
   const importersById = byId(importers);
   const fallbackImporterId = requestedImporterId || text(allStatementLines[0]?.importer_id) || text(importers[0]?.id);
   const selectedImporterId = fallbackImporterId;
   const statementLines = allStatementLines.filter((row) => !selectedImporterId || text(row.importer_id) === selectedImporterId);
-  const allOrders = (ordersResult.data ?? []) as unknown as Row[];
-  const orders = allOrders.filter((row) => !selectedImporterId || text(row.importer_id) === selectedImporterId);
+  const orders = ((ordersResult.data ?? []) as unknown as Row[]).filter((row) => !selectedImporterId || text(row.importer_id) === selectedImporterId);
   const orderIds = new Set(orders.map((row) => text(row.id)).filter(Boolean));
   const retailersById = byId((retailersResult.data ?? []) as unknown as Row[]);
   const invoices = ((invoicesResult.data ?? []) as unknown as Row[]).filter((row) => orderIds.has(text(row.order_id)));
@@ -184,6 +219,11 @@ export default async function DvaMatchingWorkspacePage({
   const activeLineId = text(selectedLine?.dva_statement_line_id);
   const selectedImporter = selectedImporterId ? importersById.get(selectedImporterId) : undefined;
   const selectedLineSuggestions = suggestionsByLineId.get(activeLineId) ?? [];
+  const selectedStatementAmount = num(selectedLine?.statement_gbp_amount);
+  const selectedStatementAllocated = num(selectedLine?.confirmed_allocated_gbp);
+  const selectedStatementRemaining = Math.max(0, selectedStatementAmount - selectedStatementAllocated);
+  const selectedMerchantTokens = merchantTokens(selectedLine?.retailer_name_ref, selectedLine?.reference_raw);
+  const rightRetailer = manualRightRetailer || leftRetailer;
 
   const filteredStatementLines = statementLines.filter((row) => {
     const statusOk = leftStatus === "all" || statusFilter(row) === leftStatus;
@@ -237,21 +277,27 @@ export default async function DvaMatchingWorkspacePage({
     };
   });
 
-  const operationalRows = [...invoiceRows, ...exceptionRows]
+  const allOperationalRows = [...invoiceRows, ...exceptionRows];
+  const hasAutoMerchantMatches = !rightRetailer && selectedMerchantTokens.length > 0 && allOperationalRows.some((row) => merchantScore(row, selectedMerchantTokens) > 0);
+  const operationalRows = allOperationalRows
     .filter((row) => {
-      const retailerOk = !rightRetailer || row.retailerName.toLowerCase().includes(rightRetailer.toLowerCase()) || row.title.toLowerCase().includes(rightRetailer.toLowerCase()) || row.orderRef.toLowerCase().includes(rightRetailer.toLowerCase());
+      const manualRetailerOk = !rightRetailer || row.retailerName.toLowerCase().includes(rightRetailer.toLowerCase()) || row.title.toLowerCase().includes(rightRetailer.toLowerCase()) || row.orderRef.toLowerCase().includes(rightRetailer.toLowerCase());
+      const autoRetailerOk = !hasAutoMerchantMatches || merchantScore(row, selectedMerchantTokens) > 0;
       const statusOk =
         rightStatus === "all" ||
         (rightStatus === "usable" ? isUsefulOperationalCandidate(row) : rightStatus === "open" ? row.status !== "resolved" && row.status !== "closed" : row.status === rightStatus);
-      return retailerOk && statusOk;
+      return manualRetailerOk && autoRetailerOk && statusOk;
     })
-    .sort((a, b) => Number(isUsefulOperationalCandidate(b)) - Number(isUsefulOperationalCandidate(a)) || b.amount - a.amount);
+    .sort((a, b) => {
+      const merchantDelta = merchantScore(b, selectedMerchantTokens) - merchantScore(a, selectedMerchantTokens);
+      if (merchantDelta !== 0) return merchantDelta;
+      const amountDelta = amountScore(selectedStatementAmount, b) - amountScore(selectedStatementAmount, a);
+      if (amountDelta !== 0) return amountDelta;
+      return Number(isUsefulOperationalCandidate(b)) - Number(isUsefulOperationalCandidate(a)) || b.amount - a.amount;
+    });
 
   const selectedTarget = operationalRows.find((row) => row.id === selectedTargetId);
-  const selectedStatementAmount = num(selectedLine?.statement_gbp_amount);
-  const selectedStatementAllocated = num(selectedLine?.confirmed_allocated_gbp);
   const selectedTargetAmount = selectedTarget ? selectedTarget.amount || selectedTarget.progressedTotal || selectedTarget.openExceptionTotal : 0;
-  const selectedStatementRemaining = Math.max(0, selectedStatementAmount - selectedStatementAllocated);
   const suggestedAllocation = selectedTarget ? Math.min(selectedStatementRemaining, selectedTargetAmount || selectedStatementRemaining) : 0;
   const remainingAfterSelection = Math.max(0, selectedStatementRemaining - suggestedAllocation);
   const inTotal = statementLines.filter((row) => text(row.direction) === "in").reduce((sum, row) => sum + num(row.statement_gbp_amount), 0);
@@ -294,6 +340,13 @@ export default async function DvaMatchingWorkspacePage({
           {metric("Unmatched lines", String(unmatchedCount), "Statement lines still needing funding or allocation route.")}
         </section>
 
+        {hasAutoMerchantMatches ? (
+          <section className="rounded-3xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-950">
+            <p className="font-semibold">Auto-filtering right pane using selected statement merchant</p>
+            <p className="mt-1">Merchant hints: {selectedMerchantTokens.join(", ")}. Use the right filter to override.</p>
+          </section>
+        ) : null}
+
         {selectedLineSuggestions.length > 0 ? (
           <section className="rounded-3xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-950">
             <p className="font-semibold">Automation signal for selected statement line</p>
@@ -309,7 +362,7 @@ export default async function DvaMatchingWorkspacePage({
                 <input type="hidden" name="importer_id" value={selectedImporterId} />
                 <input type="hidden" name="line_id" value={activeLineId} />
                 <input type="hidden" name="target_id" value={selectedTargetId} />
-                <input type="hidden" name="right_retailer" value={rightRetailer} />
+                <input type="hidden" name="right_retailer" value={manualRightRetailer} />
                 <input type="hidden" name="right_status" value={rightStatus} />
                 <select name="left_status" defaultValue={leftStatus} className="rounded-xl border border-slate-200 px-3 py-2 text-sm">
                   <option value="unmatched">Unmatched</option>
@@ -339,7 +392,7 @@ export default async function DvaMatchingWorkspacePage({
                     left_status: leftStatus,
                     left_direction: leftDirection,
                     left_retailer: leftRetailer,
-                    right_retailer: rightRetailer,
+                    right_retailer: manualRightRetailer,
                     right_status: rightStatus,
                   })}
                   className={`block rounded-2xl border p-4 ${lineTone(row, activeLineId)}`}
@@ -367,7 +420,7 @@ export default async function DvaMatchingWorkspacePage({
                 <input type="hidden" name="left_status" value={leftStatus} />
                 <input type="hidden" name="left_direction" value={leftDirection} />
                 <input type="hidden" name="left_retailer" value={leftRetailer} />
-                <input name="right_retailer" defaultValue={rightRetailer} placeholder="Retailer/order filter, e.g. Ninja" className="rounded-xl border border-slate-200 px-3 py-2 text-sm" />
+                <input name="right_retailer" defaultValue={manualRightRetailer} placeholder={hasAutoMerchantMatches ? `Auto: ${selectedMerchantTokens.join(", ")}` : "Retailer/order filter, e.g. Ninja"} className="rounded-xl border border-slate-200 px-3 py-2 text-sm" />
                 <select name="right_status" defaultValue={rightStatus} className="rounded-xl border border-slate-200 px-3 py-2 text-sm">
                   <option value="usable">Usable candidates</option>
                   <option value="open">Open / active</option>
@@ -392,7 +445,7 @@ export default async function DvaMatchingWorkspacePage({
                     left_status: leftStatus,
                     left_direction: leftDirection,
                     left_retailer: leftRetailer,
-                    right_retailer: rightRetailer,
+                    right_retailer: manualRightRetailer,
                     right_status: rightStatus,
                   })}
                   className={`block rounded-2xl border p-4 ${opTone(row, selectedTargetId)}`}
@@ -405,6 +458,8 @@ export default async function DvaMatchingWorkspacePage({
                     <span className="rounded-full bg-white px-2 py-1 text-xs font-semibold text-slate-700 ring-1 ring-slate-200">{row.status || "open"}</span>
                   </div>
                   <p className="mt-2 text-xs text-slate-500">Amount {gbp(row.amount)} · Progressed {gbp(row.progressedTotal)} · Open exception {gbp(row.openExceptionTotal)}</p>
+                  {merchantScore(row, selectedMerchantTokens) > 0 ? <p className="mt-2 rounded-xl bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800">Merchant match score: {merchantScore(row, selectedMerchantTokens)}</p> : null}
+                  {amountScore(selectedStatementAmount, row) > 0 ? <p className="mt-2 rounded-xl bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">Amount closeness score: {amountScore(selectedStatementAmount, row)}</p> : null}
                   {row.id === selectedTargetId ? <p className="mt-2 rounded-xl bg-sky-100 px-3 py-2 text-xs font-semibold text-sky-900">Selected target</p> : null}
                 </Link>
               ))}
