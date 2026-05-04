@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { createClient } from "@/utils/supabase/server";
-import { createRealStatementImportBatchAction, createStageCommitSmokeImportAction } from "./actions";
+import { createRealStatementImportBatchAction } from "./actions";
 
 type Row = Record<string, unknown>;
 type SearchParamsValue = Record<string, string | string[] | undefined>;
@@ -48,17 +48,13 @@ function statusClass(status: string) {
   return "bg-slate-100 text-slate-700 ring-slate-200";
 }
 
-function canExtract(batch: Row) {
-  const status = text(batch.status);
-  return !["committed", "voided", "failed"].includes(status);
-}
-
 function nextAction(batch: Row) {
   const fileType = text(batch.detected_file_type);
   const rowCount = num(batch.row_count);
   const status = text(batch.status);
   if (status === "committed") return "Committed — open detail to review committed status.";
   if (status === "failed") return "Failed — open detail or upload a corrected batch.";
+  if (status === "voided") return "Voided — kept for audit trail only.";
   if (fileType === "pdf" && rowCount === 0) return "Run PDF OCR / parse rows, then review detail.";
   if (rowCount > 0) return "Open detail to review balance chain and staged rows.";
   return "Extract rows, then review detail.";
@@ -225,16 +221,6 @@ export default async function DvaStatementImportPage({
           </form>
         </section>
 
-        <section className="rounded-3xl border border-sky-100 bg-sky-50 p-6 shadow-sm">
-          <h2 className="text-lg font-semibold text-sky-950">Temporary smoke-test control</h2>
-          <p className="mt-2 max-w-3xl text-sm leading-6 text-sky-900">
-            This proves batch creation → staged row → commit without using OCR credits. Do not use this for real statements.
-          </p>
-          <form action={createStageCommitSmokeImportAction} className="mt-4">
-            <button className="rounded-xl bg-sky-700 px-4 py-2 text-sm font-semibold text-white" type="submit">Create test batch, stage row, and commit</button>
-          </form>
-        </section>
-
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold">Statement batches</h2>
           <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
@@ -243,37 +229,48 @@ export default async function DvaStatementImportPage({
           <div className="mt-4 grid gap-3">
             {batches.length === 0 ? (
               <p className="text-sm text-slate-500">No import batches yet.</p>
-            ) : batches.map((batch) => (
-              <article key={text(batch.id)} className="rounded-2xl border border-slate-200 p-4">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div className="min-w-0 flex-1">
-                    <h3 className="break-words font-semibold [overflow-wrap:anywhere]">{text(batch.original_filename) || text(batch.id)}</h3>
-                    <p className="mt-1 break-words text-sm text-slate-600 [overflow-wrap:anywhere]">{text(batch.statement_period_from)} → {text(batch.statement_period_to)} · {text(batch.source_bank)} · {text(batch.local_ccy)} · {text(batch.detected_file_type)} · {text(batch.parser_route)}</p>
+            ) : batches.map((batch) => {
+              const id = text(batch.id);
+              const status = text(batch.status) || "unknown";
+              const detailHref = `/internal/dva-statement-import/${id}`;
+              const mindeeHref = `/internal/dva-statement-import/mindee-control?batch_id=${id}`;
+
+              return (
+                <article key={id} className="rounded-2xl border border-slate-200 p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <h3 className="break-words font-semibold [overflow-wrap:anywhere]">{text(batch.original_filename) || id}</h3>
+                      <p className="mt-1 break-words text-sm text-slate-600 [overflow-wrap:anywhere]">
+                        {text(batch.statement_period_from)} → {text(batch.statement_period_to)} · {text(batch.source_bank)} · {text(batch.local_ccy)} · {text(batch.detected_file_type)} · {text(batch.parser_route)}
+                      </p>
+                    </div>
+                    <span className={`rounded-full px-3 py-1 text-sm font-semibold ring-1 ${statusClass(status)}`}>{status}</span>
                   </div>
-                  <span className={`rounded-full px-3 py-1 text-sm font-semibold ring-1 ${statusClass(text(batch.status))}`}>{text(batch.status)}</span>
-                </div>
-                <div className="mt-3 grid gap-2 text-sm text-slate-700 sm:grid-cols-5">
-                  <p>Rows: <span className="font-semibold">{num(batch.row_count)}</span></p>
-                  <p>Clean: <span className="font-semibold">{num(batch.clean_count)}</span></p>
-                  <p>Errors: <span className="font-semibold">{num(batch.error_count)}</span></p>
-                  <p>Duplicates: <span className="font-semibold">{num(batch.duplicate_count)}</span></p>
-                  <p>Committed: <span className="font-semibold">{num(batch.committed_count)}</span></p>
-                </div>
-                <div className="mt-4 flex flex-wrap items-center gap-3">
-                  <Link className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white" href={`/internal/dva-statement-import/${text(batch.id)}`}>
-                    Open detail / reconcile
-                  </Link>
-                  {text(batch.detected_file_type) === "pdf" && canExtract(batch) ? (
-                    <Link className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-sky-700 ring-1 ring-sky-200" href="/internal/dva-statement-import/mindee-control">
-                      PDF OCR control
-                    </Link>
+
+                  <div className="mt-4 grid gap-3 text-sm text-slate-700 sm:grid-cols-5">
+                    <p>Rows: <span className="font-semibold text-slate-950">{num(batch.row_count)}</span></p>
+                    <p>Clean: <span className="font-semibold text-slate-950">{num(batch.clean_count)}</span></p>
+                    <p>Errors: <span className="font-semibold text-slate-950">{num(batch.error_count)}</span></p>
+                    <p>Duplicates: <span className="font-semibold text-slate-950">{num(batch.duplicate_count)}</span></p>
+                    <p>Committed: <span className="font-semibold text-slate-950">{num(batch.committed_count)}</span></p>
+                  </div>
+
+                  {text(batch.void_reason) ? (
+                    <p className="mt-3 rounded-2xl bg-rose-50 p-3 text-sm font-semibold text-rose-800 ring-1 ring-rose-200">Void reason: {text(batch.void_reason)}</p>
                   ) : null}
-                  <span className="text-sm font-medium text-slate-600">{nextAction(batch)}</span>
-                </div>
-                <p className="mt-3 break-all text-xs text-slate-500">Batch ID: {text(batch.id)}</p>
-              </article>
-            ))}
+
+                  <div className="mt-4 flex flex-wrap items-center gap-3">
+                    <Link className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white" href={detailHref}>Open detail / reconcile</Link>
+                    <Link className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-sky-700 ring-1 ring-sky-200" href={mindeeHref}>PDF OCR control</Link>
+                    <p className="text-sm text-slate-600">{nextAction(batch)}</p>
+                  </div>
+
+                  <p className="mt-3 break-words text-xs text-slate-500 [overflow-wrap:anywhere]">Batch ID: {id}</p>
+                </article>
+              );
+            })}
           </div>
+
           <PaginationControls baseParams={params} pageKey="batch_page" currentPage={batchPage} totalCount={batchCount} pageSize={BATCH_PAGE_SIZE} />
         </section>
       </div>
