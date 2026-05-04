@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@/utils/supabase/client";
 import { allocateStatementLineToSupplierInvoiceAction } from "../actions";
+import FxResidualAllocationForm from "./FxResidualAllocationForm";
 
 type Direction = "in" | "out" | "neutral";
 type TargetType = "invoice" | "exception" | "unknown";
@@ -127,11 +128,8 @@ function classifyCard(anchor: HTMLAnchorElement) {
 
 function toggleMap(current: Map<string, PickedItem>, item: PickedItem) {
   const next = new Map(current);
-  if (next.has(item.id)) {
-    next.delete(item.id);
-  } else {
-    next.set(item.id, item);
-  }
+  if (next.has(item.id)) next.delete(item.id);
+  else next.set(item.id, item);
   return next;
 }
 
@@ -181,9 +179,7 @@ function applyCardVisual(anchor: HTMLAnchorElement, item: PickedItem) {
 }
 
 function selectionMessage(statements: Map<string, PickedItem>, targets: Map<string, PickedItem>, netDifference: number): SelectionMessage {
-  if (statements.size === 0 || targets.size === 0) {
-    return { tone: "amber", text: "Select bank line(s) and operational target(s)." };
-  }
+  if (statements.size === 0 || targets.size === 0) return { tone: "amber", text: "Select bank line(s) and operational target(s)." };
 
   const statementIn = countDirection(statements, "in");
   const statementOut = countDirection(statements, "out");
@@ -191,27 +187,16 @@ function selectionMessage(statements: Map<string, PickedItem>, targets: Map<stri
   const targetOut = countDirection(targets, "out");
 
   if (statementOut > 0 && targetIn > 0 && targetOut === 0 && statementIn === 0) {
-    return {
-      tone: "rose",
-      text: "Direction conflict: bank OUT selected against operational IN/refund. Add the related charge target or choose an IN bank line.",
-    };
+    return { tone: "rose", text: "Direction conflict: bank OUT selected against operational IN/refund. Add the related charge target or choose an IN bank line." };
   }
 
   if (statementIn > 0 && targetOut > 0 && targetIn === 0 && statementOut === 0) {
-    return {
-      tone: "rose",
-      text: "Direction conflict: bank IN selected against operational OUT/charge. Add the matching OUT bank line or choose an IN target.",
-    };
+    return { tone: "rose", text: "Direction conflict: bank IN selected against operational OUT/charge. Add the matching OUT bank line or choose an IN target." };
   }
 
-  if (Math.abs(netDifference) < 0.01) {
-    return { tone: "green", text: "Net balanced — ready for allocation wiring." };
-  }
+  if (Math.abs(netDifference) < 0.01) return { tone: "green", text: "Net balanced — ready for allocation wiring." };
 
-  return {
-    tone: "amber",
-    text: "Net not balanced yet. Add the related charge/refund/exception line, or leave residual for FX/card/fee handling.",
-  };
+  return { tone: "amber", text: "Net not balanced yet. Add the related charge/refund/exception line, or leave residual for FX/card/fee handling." };
 }
 
 function messageClass(tone: SelectionMessage["tone"]) {
@@ -259,9 +244,7 @@ export default function WorkspaceSelectionEnhancer() {
 
       for (const row of (data ?? []) as AllocationRow[]) {
         addMapTotal(lineMap, row.dva_statement_line_id, row.allocated_gbp_amount);
-        if (row.allocation_type === "supplier_invoice") {
-          addMapTotal(invoiceMap, row.supplier_invoice_id, row.allocated_gbp_amount);
-        }
+        if (row.allocation_type === "supplier_invoice") addMapTotal(invoiceMap, row.supplier_invoice_id, row.allocated_gbp_amount);
       }
 
       setAllocatedByStatementLine(lineMap);
@@ -279,7 +262,6 @@ export default function WorkspaceSelectionEnhancer() {
     const handleClick = (event: MouseEvent) => {
       const anchor = (event.target as HTMLElement | null)?.closest("a") as HTMLAnchorElement | null;
       if (!anchor) return;
-
       const classified = classifyCard(anchor);
       if (!classified || !classified.id) return;
 
@@ -296,11 +278,8 @@ export default function WorkspaceSelectionEnhancer() {
         targetType: classified.side === "target" ? classified.targetType : undefined,
       };
 
-      if (classified.side === "statement") {
-        setStatements((current) => toggleMap(current, item));
-      } else {
-        setTargets((current) => toggleMap(current, item));
-      }
+      if (classified.side === "statement") setStatements((current) => toggleMap(current, item));
+      else setTargets((current) => toggleMap(current, item));
     };
 
     document.addEventListener("click", handleClick, true);
@@ -357,25 +336,42 @@ export default function WorkspaceSelectionEnhancer() {
   const statusMessage = selectionMessage(statements, targets, netDifference);
   const selectedStatement = singleItem(statements);
   const selectedTarget = singleItem(targets);
+  const selectedStatementAlreadyAllocated = selectedStatement ? allocatedByStatementLine.get(selectedStatement.id) ?? 0 : 0;
+  const selectedTargetAlreadyAllocated = selectedTarget?.targetType === "invoice" ? allocatedBySupplierInvoice.get(selectedTarget.id) ?? 0 : 0;
+  const selectedStatementAvailable = selectedStatement ? Math.max(0, selectedStatement.amount - selectedStatementAlreadyAllocated) : 0;
+  const selectedTargetAvailable = selectedTarget ? Math.max(0, selectedTarget.amount - selectedTargetAlreadyAllocated) : 0;
   const canConfirmSupplierInvoice =
     Boolean(selectedStatement) &&
     Boolean(selectedTarget) &&
     selectedStatement?.direction === "out" &&
     selectedTarget?.direction === "out" &&
     selectedTarget?.targetType === "invoice" &&
-    selectedTarget.amount > 0;
+    selectedStatementAvailable > 0.009 &&
+    selectedTargetAvailable > 0.009;
+  const supplierInvoiceAllocationAmount = canConfirmSupplierInvoice ? Math.min(selectedStatementAvailable, selectedTargetAvailable) : 0;
+  const canClassifyFxCardResidual =
+    Boolean(selectedStatement) &&
+    statements.size === 1 &&
+    targets.size === 0 &&
+    selectedStatement?.direction === "out" &&
+    selectedStatementAlreadyAllocated > 0.009 &&
+    selectedStatementAvailable > 0.009;
 
   const disabledReason = !selectedStatement
     ? "Select one OUT bank/card statement line."
     : !selectedTarget
-      ? "Select one supplier invoice target."
+      ? canClassifyFxCardResidual
+        ? `Residual available for FX/card/fee classification: ${gbp(selectedStatementAvailable)}.`
+        : "Select one supplier invoice target."
       : selectedStatement.direction !== "out"
         ? "Supplier invoice allocation requires an OUT statement line."
         : selectedTarget.targetType !== "invoice"
           ? "This button only allocates to supplier invoices. Refunds/exceptions are next build."
           : selectedTarget.direction !== "out"
             ? "Supplier invoice target must be an OUT/charge target."
-            : "Ready to confirm supplier invoice allocation.";
+            : canConfirmSupplierInvoice
+              ? `Ready to confirm supplier allocation of ${gbp(supplierInvoiceAllocationAmount)}.`
+              : "No remaining amount is available on the selected statement line or supplier invoice.";
 
   return (
     <aside className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200 bg-white/95 px-4 py-3 shadow-2xl backdrop-blur">
@@ -387,6 +383,11 @@ export default function WorkspaceSelectionEnhancer() {
           <p className="text-slate-600">
             Operational selected: {targets.size} · gross {gbp(targetAbsTotal)} · net {gbp(targetSignedTotal)}
           </p>
+          {selectedStatement ? (
+            <p className="text-xs text-slate-500">
+              Selected bank remaining: {gbp(selectedStatementAvailable)} · already allocated: {gbp(selectedStatementAlreadyAllocated)}
+            </p>
+          ) : null}
         </div>
 
         <div className="grid max-w-xl gap-1 text-right">
@@ -396,7 +397,7 @@ export default function WorkspaceSelectionEnhancer() {
           <p className="text-xs text-slate-500">{disabledReason}</p>
         </div>
 
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap justify-end gap-2">
           <button
             className="rounded-xl bg-slate-100 px-4 py-2 font-semibold text-slate-700"
             type="button"
@@ -408,10 +409,17 @@ export default function WorkspaceSelectionEnhancer() {
             Clear selections
           </button>
 
+          <FxResidualAllocationForm
+            canAllocate={canClassifyFxCardResidual}
+            statementLineId={selectedStatement?.id ?? ""}
+            remainingAmount={selectedStatementAvailable}
+            returnPath={currentPath}
+          />
+
           <form action={allocateStatementLineToSupplierInvoiceAction}>
             <input type="hidden" name="dva_statement_line_id" value={selectedStatement?.id ?? ""} />
             <input type="hidden" name="supplier_invoice_id" value={selectedTarget?.id ?? ""} />
-            <input type="hidden" name="allocated_gbp_amount" value={canConfirmSupplierInvoice ? selectedTarget?.amount.toFixed(2) : ""} />
+            <input type="hidden" name="allocated_gbp_amount" value={canConfirmSupplierInvoice ? supplierInvoiceAllocationAmount.toFixed(2) : ""} />
             <input type="hidden" name="notes" value="Allocated from DVA/card matching workspace." />
             <input type="hidden" name="return_path" value={currentPath} />
             <button
