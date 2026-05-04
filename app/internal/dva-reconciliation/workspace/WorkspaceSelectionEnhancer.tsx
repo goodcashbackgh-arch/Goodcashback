@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { createClient } from "@/utils/supabase/client";
 import { allocateStatementLineToSupplierInvoiceAction } from "../actions";
 
 type Direction = "in" | "out" | "neutral";
@@ -14,6 +15,14 @@ type PickedItem = {
   kind: "statement" | "target";
   direction: Direction;
   targetType?: TargetType;
+};
+
+type AllocationRow = {
+  dva_statement_line_id?: string | null;
+  supplier_invoice_id?: string | null;
+  allocation_type?: string | null;
+  allocation_status?: string | null;
+  allocated_gbp_amount?: number | string | null;
 };
 
 type SelectionMessage = {
@@ -35,6 +44,15 @@ function parseGbp(value: string) {
   const match = value.match(/£\s*([\d,]+(?:\.\d{1,2})?)/);
   if (!match) return 0;
   return Number(match[1].replace(/,/g, "")) || 0;
+}
+
+function numeric(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
 }
 
 function itemLabel(text: string) {
@@ -207,13 +225,54 @@ function singleItem(items: Map<string, PickedItem>) {
   return values.length === 1 ? values[0] : null;
 }
 
+function addMapTotal(map: Map<string, number>, key: string | null | undefined, value: unknown) {
+  if (!key) return;
+  map.set(key, (map.get(key) ?? 0) + numeric(value));
+}
+
 export default function WorkspaceSelectionEnhancer() {
   const [statements, setStatements] = useState<Map<string, PickedItem>>(new Map());
   const [targets, setTargets] = useState<Map<string, PickedItem>>(new Map());
   const [currentPath, setCurrentPath] = useState("/internal/dva-reconciliation/workspace");
+  const [allocatedByStatementLine, setAllocatedByStatementLine] = useState<Map<string, number>>(new Map());
+  const [allocatedBySupplierInvoice, setAllocatedBySupplierInvoice] = useState<Map<string, number>>(new Map());
 
   useEffect(() => {
     setCurrentPath(`${window.location.pathname}${window.location.search}`);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadConfirmedAllocations() {
+      const supabase = createClient();
+      const { data, error } = await supabase
+        .from("dva_statement_line_allocations")
+        .select("dva_statement_line_id, supplier_invoice_id, allocation_type, allocation_status, allocated_gbp_amount")
+        .eq("allocation_status", "confirmed")
+        .limit(2000);
+
+      if (cancelled || error) return;
+
+      const lineMap = new Map<string, number>();
+      const invoiceMap = new Map<string, number>();
+
+      for (const row of (data ?? []) as AllocationRow[]) {
+        addMapTotal(lineMap, row.dva_statement_line_id, row.allocated_gbp_amount);
+        if (row.allocation_type === "supplier_invoice") {
+          addMapTotal(invoiceMap, row.supplier_invoice_id, row.allocated_gbp_amount);
+        }
+      }
+
+      setAllocatedByStatementLine(lineMap);
+      setAllocatedBySupplierInvoice(invoiceMap);
+    }
+
+    void loadConfirmedAllocations();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -249,11 +308,33 @@ export default function WorkspaceSelectionEnhancer() {
   }, []);
 
   useEffect(() => {
+    const searchParams = new URLSearchParams(window.location.search);
+    const leftStatus = searchParams.get("left_status") || "unmatched";
+    const rightStatus = searchParams.get("right_status") || "usable";
     const anchors = Array.from(document.querySelectorAll<HTMLAnchorElement>('a[href*="/internal/dva-reconciliation/workspace?"]'));
 
     for (const anchor of anchors) {
       const classified = classifyCard(anchor);
       if (!classified?.id) continue;
+
+      anchor.style.display = "";
+
+      const isAllocatedStatementInUnmatchedView =
+        classified.side === "statement" &&
+        leftStatus === "unmatched" &&
+        (allocatedByStatementLine.get(classified.id) ?? 0) > 0.009;
+
+      const isFullyAllocatedInvoiceInUsableView =
+        classified.side === "target" &&
+        classified.targetType === "invoice" &&
+        rightStatus === "usable" &&
+        classified.amount > 0 &&
+        (allocatedBySupplierInvoice.get(classified.id) ?? 0) >= classified.amount - 0.009;
+
+      if (isAllocatedStatementInUnmatchedView || isFullyAllocatedInvoiceInUsableView) {
+        anchor.style.display = "none";
+        continue;
+      }
 
       const selectedItem = classified.side === "statement" ? statements.get(classified.id) : targets.get(classified.id);
       resetCardVisual(anchor);
@@ -265,7 +346,7 @@ export default function WorkspaceSelectionEnhancer() {
         anchor.setAttribute("aria-pressed", "false");
       }
     }
-  }, [statements, targets]);
+  }, [statements, targets, allocatedByStatementLine, allocatedBySupplierInvoice]);
 
   const statementAbsTotal = useMemo(() => sum(statements), [statements]);
   const targetAbsTotal = useMemo(() => sum(targets), [targets]);
