@@ -69,6 +69,9 @@ export default async function DvaStatementMindeeControlPage({
     .from("dva_statement_import_batches")
     .select("id, original_filename, source_file_url, source_bank, statement_period_from, statement_period_to, local_ccy, detected_file_type, parser_route, status, row_count, clean_count, error_count, duplicate_count, mindee_statement_job_id, mindee_statement_model_id, mindee_statement_ocr_status, mindee_statement_enqueued_at, mindee_statement_completed_at, mindee_statement_pages_consumed, mindee_statement_error_message, uploaded_at, voided_at, void_reason")
     .eq("detected_file_type", "pdf")
+    .neq("status", "voided")
+    .is("voided_at", null)
+    .is("void_reason", null)
     .order("uploaded_at", { ascending: false })
     .limit(20);
 
@@ -82,7 +85,7 @@ export default async function DvaStatementMindeeControlPage({
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">DVA/card statement OCR</p>
           <h1 className="mt-2 text-3xl font-semibold tracking-tight">PDF Mindee control</h1>
           <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-600">
-            Starts, fetches, and stages Mindee V2 OCR for real PDF statement batches using MINDEE_STATEMENT_MODEL_ID only. Voided, smoke/test, or already-committed batches are blocked.
+            Starts, fetches, and stages Mindee V2 OCR for active real PDF statement batches using MINDEE_STATEMENT_MODEL_ID only. Voided and audit-only batches are hidden from this worklist.
           </p>
           {batchId ? <p className="mt-3 break-all text-xs text-slate-500">Latest batch: {batchId}</p> : null}
         </section>
@@ -99,7 +102,9 @@ export default async function DvaStatementMindeeControlPage({
 
         <section className="grid gap-4">
           {batches.length === 0 ? (
-            <article className="rounded-3xl border border-slate-200 bg-white p-6 text-sm text-slate-600 shadow-sm">No PDF statement batches visible yet.</article>
+            <article className="rounded-3xl border border-slate-200 bg-white p-6 text-sm text-slate-600 shadow-sm">
+              No active PDF statement batches need OCR. Voided batches are available from the statement import page under “Voided / audit”.
+            </article>
           ) : batches.map((batch) => {
             const ocrStatus = text(batch.mindee_statement_ocr_status) || "not_started";
             const jobId = text(batch.mindee_statement_job_id);
