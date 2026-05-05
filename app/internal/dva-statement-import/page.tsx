@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { createClient } from "@/utils/supabase/server";
-import { createRealStatementImportBatchAction } from "./actions";
+import { createRealStatementImportBatchAction, voidDvaStatementImportBatchAction } from "./actions";
 
 type Row = Record<string, unknown>;
 type SearchParamsValue = Record<string, string | string[] | undefined>;
@@ -52,7 +52,7 @@ function nextAction(batch: Row) {
   const fileType = text(batch.detected_file_type);
   const rowCount = num(batch.row_count);
   const status = text(batch.status);
-  if (status === "committed") return "Committed — open detail to review committed status.";
+  if (status === "committed") return "Committed — available for matching. Void only if this import was uploaded in error.";
   if (status === "failed") return "Failed — open detail or upload a corrected batch.";
   if (status === "voided") return "Voided — kept for audit trail only.";
   if (fileType === "pdf" && rowCount === 0) return "Run PDF OCR / parse rows, then review detail.";
@@ -234,6 +234,7 @@ export default async function DvaStatementImportPage({
               const status = text(batch.status) || "unknown";
               const detailHref = `/internal/dva-statement-import/${id}`;
               const mindeeHref = `/internal/dva-statement-import/mindee-control?batch_id=${id}`;
+              const canVoid = status === "committed";
 
               return (
                 <article key={id} className="rounded-2xl border border-slate-200 p-4">
@@ -264,6 +265,28 @@ export default async function DvaStatementImportPage({
                     <Link className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-sky-700 ring-1 ring-sky-200" href={mindeeHref}>PDF OCR control</Link>
                     <p className="text-sm text-slate-600">{nextAction(batch)}</p>
                   </div>
+
+                  {canVoid ? (
+                    <form action={voidDvaStatementImportBatchAction} className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-3">
+                      <input type="hidden" name="import_batch_id" value={id} />
+                      <label className="block text-xs font-semibold uppercase tracking-wide text-rose-700">Void import reason</label>
+                      <div className="mt-2 flex flex-col gap-2 sm:flex-row">
+                        <input
+                          className="min-w-0 flex-1 rounded-xl border border-rose-200 bg-white px-3 py-2 text-sm text-slate-950"
+                          name="void_reason"
+                          placeholder="Required. Example: uploaded wrong bank statement."
+                          minLength={8}
+                          required
+                        />
+                        <button className="rounded-xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-700" type="submit">
+                          Void import
+                        </button>
+                      </div>
+                      <p className="mt-2 text-xs font-medium text-rose-700">
+                        This removes unallocated lines from active matching. If any line has confirmed/held allocations, the database will block it until those allocations are reversed first.
+                      </p>
+                    </form>
+                  ) : null}
 
                   <p className="mt-3 break-words text-xs text-slate-500 [overflow-wrap:anywhere]">Batch ID: {id}</p>
                 </article>
