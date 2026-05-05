@@ -8,18 +8,39 @@ function moneyPair(text: string) {
   return { used: match[1].replace(/\s+/g, ""), open: match[2].replace(/\s+/g, "") };
 }
 
+function titleCaseKnownNames(value: string) {
+  return value
+    .replace(/\bdavid\b/gi, "David")
+    .replace(/\bhutchison\b/gi, "Hutchison")
+    .replace(/\bian\b/gi, "Ian")
+    .replace(/\beunice\b/gi, "Eunice")
+    .replace(/\bdorothy\b/gi, "Dorothy")
+    .replace(/\bjobyco\b/gi, "Jobyco")
+    .replace(/\bdbrx\b/gi, "DBRX")
+    .replace(/\bbos\b/gi, "BOS");
+}
+
 function readableStatementText(value: string) {
   const original = value.trim();
   if (!original || /^no statement text$/i.test(original)) return original;
 
   let next = original
+    .replace(/cashdepositby/gi, "cash deposit by ")
+    .replace(/corporatecardissuancefees/gi, "corporate card issuance fees ")
+    .replace(/corporatecard/gi, "corporate card ")
+    .replace(/cardissuance/gi, "card issuance ")
+    .replace(/issuancefees/gi, "issuance fees ")
+    .replace(/cashdeposit/gi, "cash deposit")
     .replace(/momoandgiptransfer/gi, "MOMO AND GIP TRANSFER")
     .replace(/banktowallet/gi, "Bank to Wallet")
+    .replace(/wallettobank/gi, "Wallet to Bank")
     .replace(/medicalexpenses/gi, "medical expenses")
     .replace(/ocexpenses/gi, "OC expenses")
     .replace(/expenses/gi, " expenses ")
     .replace(/salaryfrom/gi, "salary from")
     .replace(/fromtrendy/gi, "from TRENDY")
+    .replace(/from(david|ian|eunice|dorothy|jobyco)/gi, "from $1")
+    .replace(/by(david|ian|eunice|dorothy|jobyco)/gi, "by $1")
     .replace(/to(eunice|dorothy|ian|jobyco|sharkninja)/gi, " to $1")
     .replace(/sharkninja/gi, "SharkNinja")
     .replace(/hennesmauritz/gi, "Hennes Mauritz")
@@ -29,6 +50,7 @@ function readableStatementText(value: string) {
     .replace(/\s+/g, " ")
     .trim();
 
+  next = titleCaseKnownNames(next);
   if (next.length > 96) next = `${next.slice(0, 96).trim()}…`;
   return next;
 }
@@ -45,13 +67,14 @@ function improveStatementDescription(anchor: HTMLAnchorElement, balanceParagraph
     return value.length > 8;
   });
 
-  if (!description || description.dataset.statementTextEnhanced === "true") return;
+  if (!description) return;
 
-  const readable = readableStatementText(description.innerText);
-  if (!readable || readable === description.innerText.trim()) return;
+  const originalText = description.dataset.originalStatementText || description.innerText.trim();
+  const readable = readableStatementText(originalText);
+  if (!readable) return;
 
   description.dataset.statementTextEnhanced = "true";
-  description.dataset.originalStatementText = description.innerText.trim();
+  description.dataset.originalStatementText = originalText;
   description.innerText = readable;
   description.style.wordBreak = "normal";
   description.style.overflowWrap = "break-word";
