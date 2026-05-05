@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { createClient } from "@/utils/supabase/server";
 
-type Row = Record<string, unknown>;
 type SearchParamsValue = Record<string, string | string[] | undefined>;
 
 type DisputeRow = {
@@ -53,7 +52,10 @@ const gbpFormatter = new Intl.NumberFormat("en-GB", {
   minimumFractionDigits: 2,
 });
 
-const TERMINAL_STATUSES = new Set(["replaced", "awaiting_refund_credit", "refunded", "closed"]);
+const TERMINAL_STATUSES = new Set(["replaced", "awaiting_refund_credit", "refunded", "closed", "resolved"]);
+const EARLY_REVIEW_STATUSES = new Set(["raised", "under_review"]);
+const FINALISH_STATUSES = new Set(["approved_refund", "awaiting_refund_credit", "refunded", "approved_replacement", "replaced", "closed", "resolved"]);
+const EVIDENCE_READY_STATUSES = new Set(["retailer_response_received", "resolved_refund", "resolved_replacement", "resolved", "closed_no_action"]);
 
 function text(value: unknown) {
   if (Array.isArray(value)) return text(value[0]);
@@ -81,14 +83,22 @@ function importerLabel(importer?: ImporterRow) {
   return importer?.trading_name || importer?.company_name || importer?.id || "All importers";
 }
 
+function hasRetailerReply(messages: MessageRow[]) {
+  return messages.some((message) => text(message.message_type) === "retailer_reply" || text(message.counterparty) === "retailer");
+}
+
+function retailerEvidenceReady(lines: DisputeLineRow[]) {
+  const activeLines = lines.filter((line) => !line.resolved_at);
+  return activeLines.length > 0 && activeLines.every((line) => EVIDENCE_READY_STATUSES.has(text(line.conversation_status)));
+}
+
 function actionState(dispute: DisputeRow, messages: MessageRow[], lines: DisputeLineRow[]) {
   const status = text(dispute.status);
   const outcome = text(dispute.desired_outcome);
   const terminal = TERMINAL_STATUSES.has(status) || Boolean(dispute.resolved_at);
-  const hasRetailerReply = messages.some((message) => message.message_type === "retailer_reply" && message.counterparty === "retailer");
-  const activeLines = lines.filter((line) => !line.resolved_at);
-  const retailerAccepted = activeLines.length > 0 && activeLines.every((line) => line.conversation_status === "retailer_response_received");
-  const canAcceptFinal = hasRetailerReply && retailerAccepted && !terminal;
+  const retailerReply = hasRetailerReply(messages);
+  const evidenceReady = retailerEvidenceReady(lines);
+  const canAcceptFinal = retailerReply && evidenceReady && !terminal;
 
   if (terminal) {
     if (status === "replaced") return { label: "Complete", tone: "emerald", next: "Replacement accepted and child order created." };
@@ -96,7 +106,22 @@ function actionState(dispute: DisputeRow, messages: MessageRow[], lines: Dispute
     return { label: "Closed", tone: "slate", next: "No supervisor action required." };
   }
 
-  if (outcome === "refund" && !dispute.refund_approved_at) {
+  if (FINALISH_STATUSES.has(status) && !canAcceptFinal) {
+    if (status === "approved_refund") {
+      return {
+        label: "Status mismatch review",
+        tone: "amber",
+        next: "Header says refund approved, but retailer evidence is not complete. Do not approve refund pursuit again; review and correct the status/evidence chain.",
+      };
+    }
+    return {
+      label: "Status review needed",
+      tone: "amber",
+      next: `Header status is ${pretty(status)}. Check evidence before allowing any further action.`,
+    };
+  }
+
+  if (outcome === "refund" && EARLY_REVIEW_STATUSES.has(status) && !dispute.refund_approved_at) {
     return { label: "Approve refund pursuit", tone: "amber", next: "Open review and approve/refuse permission for importer to pursue retailer refund." };
   }
 
@@ -214,7 +239,7 @@ export default async function DvaExceptionActionCentrePage({
           <p className="mt-5 text-xs font-bold uppercase tracking-[0.25em] text-sky-600">DVA/card exception actions</p>
           <h1 className="mt-2 text-3xl font-bold tracking-tight">Exception Action Centre</h1>
           <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
-            Supervisor queue for refund and replacement exception outcomes. This page does not invent new write logic; it routes each case into the existing internal exception review where governed approval and final outcome actions already live.
+            Supervisor queue for refund and replacement exception outcomes. This page routes cases into the existing internal exception review and now treats approved/final statuses as later-stage status states, not early refund-pursuit approvals.
           </p>
         </section>
 
