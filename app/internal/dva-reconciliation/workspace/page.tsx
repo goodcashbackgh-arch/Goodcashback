@@ -400,7 +400,7 @@ export default async function DvaMatchingWorkspacePage({
                   <div className="flex items-start justify-between gap-3">
                     <div>
                       <p className="font-semibold">{text(row.statement_date)} · {text(row.direction).toUpperCase()} · {gbp(row.statement_gbp_amount)}</p>
-                      <p className="mt-1 break-words text-sm text-slate-600 [overflow-wrap:anywhere]">{text(row.retailer_name_ref) || text(row.reference_raw) || "No statement text"}</p>
+                      <p className="mt-1 break-words text-sm text-slate-600 [overflow-wrap:anywhere]">{text(row.reference_raw) || text(row.retailer_name_ref) || "No statement text"}</p>
                     </div>
                     <span className="rounded-full bg-white px-2 py-1 text-xs font-semibold text-slate-700 ring-1 ring-slate-200">{statusFilter(row)}</span>
                   </div>
