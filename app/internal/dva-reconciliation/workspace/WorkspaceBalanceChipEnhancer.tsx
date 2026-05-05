@@ -8,19 +8,71 @@ function moneyPair(text: string) {
   return { used: match[1].replace(/\s+/g, ""), open: match[2].replace(/\s+/g, "") };
 }
 
+function readableStatementText(value: string) {
+  const original = value.trim();
+  if (!original || /^no statement text$/i.test(original)) return original;
+
+  let next = original
+    .replace(/momoandgiptransfer/gi, "MOMO AND GIP TRANSFER")
+    .replace(/banktowallet/gi, "Bank to Wallet")
+    .replace(/medicalexpenses/gi, "medical expenses")
+    .replace(/ocexpenses/gi, "OC expenses")
+    .replace(/expenses/gi, " expenses ")
+    .replace(/salaryfrom/gi, "salary from")
+    .replace(/fromtrendy/gi, "from TRENDY")
+    .replace(/to(eunice|dorothy|ian|jobyco|sharkninja)/gi, " to $1")
+    .replace(/sharkninja/gi, "SharkNinja")
+    .replace(/hennesmauritz/gi, "Hennes Mauritz")
+    .replace(/([a-zA-Z])([0-9])/g, "$1 $2")
+    .replace(/([0-9])([a-zA-Z])/g, "$1 $2")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (next.length > 96) next = `${next.slice(0, 96).trim()}…`;
+  return next;
+}
+
+function improveStatementDescription(anchor: HTMLAnchorElement, balanceParagraph: HTMLParagraphElement) {
+  const paragraphs = Array.from(anchor.querySelectorAll<HTMLParagraphElement>("p"));
+  const candidates = paragraphs.filter((paragraph) => paragraph !== balanceParagraph);
+
+  const description = candidates.find((paragraph) => {
+    const value = paragraph.innerText.trim();
+    if (!value || /^\d{4}-\d{2}-\d{2}\s*·/i.test(value)) return false;
+    if (/Allocated\s+£[\d,.]+\s*·\s*Remaining\s+£[\d,.]+/i.test(value)) return false;
+    if (/^(balanced|unmatched|part|part allocated)$/i.test(value)) return false;
+    return value.length > 8;
+  });
+
+  if (!description || description.dataset.statementTextEnhanced === "true") return;
+
+  const readable = readableStatementText(description.innerText);
+  if (!readable || readable === description.innerText.trim()) return;
+
+  description.dataset.statementTextEnhanced = "true";
+  description.dataset.originalStatementText = description.innerText.trim();
+  description.innerText = readable;
+  description.style.wordBreak = "normal";
+  description.style.overflowWrap = "break-word";
+  description.style.lineHeight = "1.35";
+}
+
 function enhanceBalanceChips() {
   const anchors = Array.from(
     document.querySelectorAll<HTMLAnchorElement>('a[href*="/internal/dva-reconciliation/workspace?"][href*="line_id"]')
   );
 
   for (const anchor of anchors) {
-    if (anchor.dataset.balanceChipsEnhanced === "true") continue;
     const paragraphs = Array.from(anchor.querySelectorAll<HTMLParagraphElement>("p"));
     const balanceParagraph = paragraphs.find((paragraph) =>
       /Allocated\s+£[\d,.]+\s*·\s*Remaining\s+£[\d,.]+/i.test(paragraph.innerText)
     );
 
     if (!balanceParagraph) continue;
+    improveStatementDescription(anchor, balanceParagraph);
+
+    if (anchor.dataset.balanceChipsEnhanced === "true") continue;
     const parsed = moneyPair(balanceParagraph.innerText);
     if (!parsed) continue;
 
