@@ -56,10 +56,10 @@ function tone(status: string | null | undefined) {
 }
 
 function targetLabel(row: AllocationDetailRow) {
-  if (row.allocation_type === "supplier_invoice") return `Supplier invoice ${row.supplier_invoice_ref || "—"}`;
-  if (row.allocation_type === "retailer_refund") return `Retailer refund${row.order_ref ? ` · ${row.order_ref}` : ""}`;
-  if (row.allocation_type === "exception_hold") return `Exception / replacement hold${row.order_ref ? ` · ${row.order_ref}` : ""}`;
-  if (row.allocation_type === "not_charged_closure") return `Not-charged closure${row.order_ref ? ` · ${row.order_ref}` : ""}`;
+  if (row.allocation_type === "supplier_invoice") return row.supplier_invoice_ref || "Supplier invoice";
+  if (row.allocation_type === "retailer_refund") return "Retailer refund";
+  if (row.allocation_type === "exception_hold") return "Exception / replacement hold";
+  if (row.allocation_type === "not_charged_closure") return "Not charged closure";
   if (row.allocation_type === "fx_card_difference") return "FX/card difference";
   if (row.allocation_type === "bank_fee") return "Bank/card fee";
   if (row.allocation_type === "unmatched_hold") return "Unmatched hold";
@@ -67,7 +67,7 @@ function targetLabel(row: AllocationDetailRow) {
 }
 
 function sourceText(row: AllocationDetailRow) {
-  return row.statement_description || row.statement_reference || "No statement description/reference captured";
+  return row.statement_description || row.statement_reference || "No statement text";
 }
 
 export default async function DvaAllocationReviewPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
@@ -98,27 +98,20 @@ export default async function DvaAllocationReviewPage({ searchParams }: { search
             <p className="text-xs font-semibold uppercase tracking-[0.25em] text-sky-600">DVA/card reconciliation</p>
             <h1 className="mt-2 text-2xl font-bold tracking-tight">Active allocation records</h1>
             <p className="mt-1 max-w-3xl text-sm text-slate-600">
-              This is not the matching workspace. Each card is one active allocation row: the source statement line, what part of it was allocated, and where it was allocated to.
+              One card = one active allocation. Use this page only to verify or reverse active allocations.
             </p>
           </div>
-          <Link
-            href={workspacePath}
-            className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-50"
-          >
+          <Link href={workspacePath} className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-50">
             Back to workspace
           </Link>
         </div>
 
         {params.allocation_error ? (
-          <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">
-            {params.allocation_error}
-          </div>
+          <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">{params.allocation_error}</div>
         ) : null}
 
         {params.allocation_success ? (
-          <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">
-            {params.allocation_success}
-          </div>
+          <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">{params.allocation_success}</div>
         ) : null}
 
         <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -132,16 +125,9 @@ export default async function DvaAllocationReviewPage({ searchParams }: { search
             </label>
             <label className="grid gap-1 text-xs font-semibold text-slate-600">
               Importer ID
-              <input
-                name="importer_id"
-                defaultValue={importerId}
-                placeholder="Optional importer UUID"
-                className="min-w-72 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900"
-              />
+              <input name="importer_id" defaultValue={importerId} placeholder="Optional importer UUID" className="min-w-72 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900" />
             </label>
-            <button className="self-end rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white" type="submit">
-              Apply filters
-            </button>
+            <button className="self-end rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white" type="submit">Apply filters</button>
           </form>
         </section>
 
@@ -160,70 +146,48 @@ export default async function DvaAllocationReviewPage({ searchParams }: { search
                 const allocated = numeric(row.allocated_gbp_amount);
                 const statement = numeric(row.statement_gbp_amount);
                 const remainingContext = Math.max(0, statement - allocated);
+                const direction = String(row.statement_direction || "—").toUpperCase();
+                const sourceDate = row.transaction_date || row.statement_date || "No date";
 
                 return (
-                  <article key={row.allocation_id} className="grid gap-4 p-4 xl:grid-cols-[1fr_1fr_22rem] xl:items-start">
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                      <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-500">Source statement line</p>
-                      <div className="mt-3 flex flex-wrap items-center gap-2">
-                        <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${tone(row.allocation_status)}`}>
-                          {pretty(row.allocation_status)}
-                        </span>
-                        <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700">
-                          {String(row.statement_direction || "—").toUpperCase()}
-                        </span>
+                  <article key={row.allocation_id} className="grid gap-3 p-4 lg:grid-cols-[1fr_auto] lg:items-start">
+                    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${tone(row.allocation_status)}`}>{pretty(row.allocation_status)}</span>
+                        <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-semibold text-slate-700">{direction}</span>
+                        <span className="rounded-full border border-sky-200 bg-sky-50 px-2.5 py-1 text-xs font-semibold text-sky-800">{pretty(row.allocation_type)}</span>
                       </div>
-                      <p className="mt-3 text-lg font-bold text-slate-950">
-                        Statement total: {gbp(row.statement_gbp_amount)}
-                      </p>
-                      <p className="mt-1 text-sm text-slate-600">
-                        Date: {row.transaction_date || row.statement_date || "No date"}
-                      </p>
-                      <p className="mt-2 text-sm text-slate-500">{sourceText(row)}</p>
-                    </div>
 
-                    <div className="rounded-2xl border border-sky-100 bg-sky-50 p-4">
-                      <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-sky-700">Allocated to</p>
-                      <div className="mt-3 flex flex-wrap items-center gap-2">
-                        <span className="rounded-full border border-sky-200 bg-white px-2.5 py-1 text-xs font-semibold text-sky-800">
-                          {pretty(row.allocation_type)}
-                        </span>
+                      <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                        <div>
+                          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Allocated</p>
+                          <p className="text-2xl font-bold text-slate-950">{gbp(allocated)}</p>
+                        </div>
+                        <div>
+                          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Source line</p>
+                          <p className="text-lg font-semibold text-slate-900">{gbp(statement)}</p>
+                          <p className="text-xs text-slate-500">{sourceDate}</p>
+                        </div>
+                        <div>
+                          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Remaining after this row</p>
+                          <p className="text-lg font-semibold text-slate-900">{gbp(remainingContext)}</p>
+                        </div>
                       </div>
-                      <p className="mt-3 text-lg font-bold text-slate-950">
-                        {gbp(row.allocated_gbp_amount)} → {targetLabel(row)}
-                      </p>
-                      <p className="mt-1 text-sm text-slate-600">
-                        Remaining on this source after this allocation alone: {gbp(remainingContext)}
-                      </p>
-                      <div className="mt-3 space-y-1 rounded-xl bg-white/75 p-3 text-sm text-slate-600">
-                        <p><span className="font-semibold text-slate-700">Supplier invoice:</span> {row.supplier_invoice_ref || "—"}</p>
-                        <p><span className="font-semibold text-slate-700">Order:</span> {row.order_ref || "—"}</p>
-                        <p><span className="font-semibold text-slate-700">Dispute:</span> {row.dispute_id || "—"}</p>
-                        <p><span className="font-semibold text-slate-700">Notes:</span> {row.notes || "—"}</p>
+
+                      <div className="mt-3 rounded-xl bg-slate-50 p-3 text-sm text-slate-600">
+                        <p className="font-semibold text-slate-900">→ {targetLabel(row)}</p>
+                        <p className="mt-1 truncate">Source: {sourceText(row)}</p>
+                        <p className="mt-1 text-xs text-slate-500">Order {row.order_ref || "—"} · Dispute {row.dispute_id || "—"}</p>
                       </div>
                     </div>
 
                     {row.allocation_status === "confirmed" || row.allocation_status === "held" ? (
-                      <form action={reverseDvaStatementLineAllocationAction} className="grid gap-2 rounded-2xl border border-slate-200 bg-white p-4">
-                        <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-rose-700">Action</p>
-                        <p className="text-sm text-slate-600">
-                          This reverses only this {gbp(row.allocated_gbp_amount)} allocation row. It does not unwind other allocations on the same statement line.
-                        </p>
+                      <form action={reverseDvaStatementLineAllocationAction} className="grid gap-2 rounded-2xl border border-slate-200 bg-white p-4 lg:w-80">
+                        <p className="text-xs font-semibold text-slate-600">Reverse only this {gbp(allocated)} row.</p>
                         <input type="hidden" name="allocation_id" value={row.allocation_id} />
                         <input type="hidden" name="return_path" value={workspacePath} />
-                        <label className="grid gap-1 text-xs font-semibold text-slate-600">
-                          Reversal reason
-                          <input
-                            name="reversal_reason"
-                            placeholder="Why reverse this allocation?"
-                            className="rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-900"
-                            minLength={8}
-                            required
-                          />
-                        </label>
-                        <button className="rounded-xl bg-rose-600 px-3 py-2 text-sm font-semibold text-white hover:bg-rose-700" type="submit">
-                          Reverse this allocation only
-                        </button>
+                        <input name="reversal_reason" placeholder="Reason" className="rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-900" minLength={8} required />
+                        <button className="rounded-xl bg-rose-600 px-3 py-2 text-sm font-semibold text-white hover:bg-rose-700" type="submit">Reverse this allocation only</button>
                       </form>
                     ) : null}
                   </article>
