@@ -257,6 +257,16 @@ function toneClass(tone: string) {
   return "border-slate-200 bg-slate-50 text-slate-700";
 }
 
+function refundMatchingHref(order?: OrderRow, dispute?: DisputeRow) {
+  const query = new URLSearchParams();
+  if (order?.importer_id) query.set("importer_id", order.importer_id);
+  query.set("left_direction", "in");
+  query.set("left_status", "unmatched");
+  query.set("right_status", "all");
+  if (dispute?.id) query.set("target_id", dispute.id);
+  return `/internal/dva-reconciliation/workspace?${query.toString()}`;
+}
+
 export default async function ExceptionEligibilityPage({
   searchParams,
 }: {
@@ -386,6 +396,16 @@ export default async function ExceptionEligibilityPage({
                       <div className="rounded-xl border border-slate-200 bg-white p-3"><p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Linked allocations</p><p className="mt-1 font-bold text-slate-950">{gbp(eligibility.allocationTotal)}</p></div>
                       <div className="rounded-xl border border-slate-200 bg-white p-3"><p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Review</p><Link href={`/internal/exceptions/${dispute.id}`} className="mt-1 inline-block font-bold text-sky-700">Open supervisor review</Link></div>
                     </div>
+
+                    {eligibility.financialRoute === "refund_in_line_required" ? (
+                      <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                        <p className="text-sm font-bold text-amber-950">Next DVA/card action</p>
+                        <p className="mt-1 text-sm leading-6 text-amber-900">Open the matching workspace filtered to incoming unmatched statement lines, then select the refund statement line and confirm the operational allocation to this exception.</p>
+                        <Link href={refundMatchingHref(order, dispute)} className="mt-3 inline-flex w-full items-center justify-center rounded-xl bg-slate-950 px-4 py-3 text-sm font-bold text-white sm:w-auto">
+                          Open refund IN matching workspace
+                        </Link>
+                      </div>
+                    ) : null}
                   </div>
                 </article>
               ))}
