@@ -24,6 +24,15 @@ function text(value: unknown) {
   return "";
 }
 
+function num(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value.replace(/,/g, ""));
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
+}
+
 function numberValue(value: unknown) {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string" && value.trim()) {
@@ -110,7 +119,7 @@ export default async function StatementBalanceCheckCard({ importBatchId }: { imp
   const [batchResult, rowsResult] = await Promise.all([
     supabase
       .from("dva_statement_import_batches")
-      .select("id, original_filename, source_file_url, detected_file_type, local_ccy, status, row_count, clean_count, error_count, mindee_statement_raw_json")
+      .select("id, original_filename, source_file_url, detected_file_type, local_ccy, status, row_count, clean_count, error_count, committed_count, committed_at, mindee_statement_raw_json")
       .eq("id", selectedBatchId)
       .maybeSingle(),
     supabase
@@ -127,6 +136,10 @@ export default async function StatementBalanceCheckCard({ importBatchId }: { imp
   const rawJson = batch.mindee_statement_raw_json;
   const ccy = text(batch.local_ccy) || "GHS";
   const sourceFileUrl = text(batch.source_file_url);
+  const batchStatus = text(batch.status);
+  const batchCleanCount = num(batch.clean_count);
+  const batchCommittedCount = num(batch.committed_count);
+  const batchIsCommitted = batchStatus === "committed" || batchCommittedCount > 0 || Boolean(text(batch.committed_at));
   const openingBalance = numberValue(fieldValue(rawJson, "beginning_balance"));
   const endingBalance = numberValue(fieldValue(rawJson, "ending_balance"));
   const totalDebits = numberValue(fieldValue(rawJson, "total_debits"));
@@ -153,7 +166,8 @@ export default async function StatementBalanceCheckCard({ importBatchId }: { imp
     };
   });
 
-  const cleanCount = lines.filter((line) => line.parseStatus === "clean").length;
+  const rowStatusCleanCount = lines.filter((line) => line.parseStatus === "clean").length;
+  const displayedCleanCount = batchIsCommitted ? Math.max(batchCleanCount, batchCommittedCount, rowStatusCleanCount) : rowStatusCleanCount;
   const correctedCount = lines.filter((line) => line.corrected).length;
   const failedBalanceLines = lines.filter((line) => !line.ok).length;
   const calculatedEnding = openingBalance !== null && totalCredits !== null && totalDebits !== null
@@ -162,9 +176,11 @@ export default async function StatementBalanceCheckCard({ importBatchId }: { imp
       ? runningBalance
       : openingBalance;
   const endingMatches = calculatedEnding !== null && endingBalance !== null && Math.abs(calculatedEnding - endingBalance) <= BALANCE_TOLERANCE;
-  const allRowsClean = cleanCount === lines.length;
+  const allRowsClean = displayedCleanCount >= lines.length;
   const status: "passed" | "review" | "failed" = !allRowsClean || failedBalanceLines > 0 || !endingMatches ? "failed" : correctedCount > 0 ? "review" : "passed";
-  const statusLabel = status === "passed" ? "PASSED" : status === "review" ? "PASSED WITH CORRECTIONS" : "NEEDS REVIEW";
+  const statusLabel = batchIsCommitted
+    ? status === "passed" ? "COMMITTED" : status === "review" ? "COMMITTED WITH CORRECTIONS" : "COMMITTED — REVIEW SIGNAL"
+    : status === "passed" ? "PASSED" : status === "review" ? "PASSED WITH CORRECTIONS" : "NEEDS REVIEW";
   const netMovement = totalCredits !== null && totalDebits !== null ? round2(totalCredits - totalDebits) : null;
 
   return (
@@ -172,9 +188,11 @@ export default async function StatementBalanceCheckCard({ importBatchId }: { imp
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <p className="text-sm font-medium uppercase tracking-[0.18em] opacity-80">Statement control check</p>
-          <h2 className="mt-2 text-2xl font-semibold tracking-tight">Summary before commit</h2>
+          <h2 className="mt-2 text-2xl font-semibold tracking-tight">{batchIsCommitted ? "Committed control summary" : "Summary before commit"}</h2>
           <p className="mt-2 max-w-3xl text-sm leading-6 opacity-80">
-            Header, balance, and row-health summary only. Full transaction review sits in the staged rows section below.
+            {batchIsCommitted
+              ? "This batch has already been committed. This card is now a post-commit review signal; matching work sits in the DVA/card workspace."
+              : "Header, balance, and row-health summary only. Full transaction review sits in the staged rows section below."}
           </p>
         </div>
         <span className={`rounded-full px-3 py-1 text-sm font-semibold ring-1 ${pillClass(status)}`}>{statusLabel}</span>
@@ -191,7 +209,7 @@ export default async function StatementBalanceCheckCard({ importBatchId }: { imp
         <p><span className="block text-xs font-semibold uppercase tracking-wide opacity-70">Calculated ending</span><span className="font-semibold">{money(calculatedEnding, ccy)}</span></p>
         <p><span className="block text-xs font-semibold uppercase tracking-wide opacity-70">Total debits</span><span className="font-semibold">{money(totalDebits, ccy)}</span></p>
         <p><span className="block text-xs font-semibold uppercase tracking-wide opacity-70">Total credits</span><span className="font-semibold">{money(totalCredits, ccy)}</span></p>
-        <p><span className="block text-xs font-semibold uppercase tracking-wide opacity-70">Rows clean</span><span className="font-semibold">{cleanCount}/{lines.length}</span></p>
+        <p><span className="block text-xs font-semibold uppercase tracking-wide opacity-70">Rows clean</span><span className="font-semibold">{displayedCleanCount}/{lines.length}</span></p>
         <p><span className="block text-xs font-semibold uppercase tracking-wide opacity-70">Corrections / mismatches</span><span className="font-semibold">{correctedCount} corrected · {failedBalanceLines} mismatch</span></p>
       </div>
 
@@ -204,13 +222,20 @@ export default async function StatementBalanceCheckCard({ importBatchId }: { imp
         <Link className="rounded-xl bg-white px-4 py-2 text-sm font-semibold ring-1 ring-current" href="#staged-statement-rows">
           Review staged rows
         </Link>
+        {batchIsCommitted ? (
+          <Link className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white" href="/internal/dva-reconciliation/workspace">
+            Open matching workspace
+          </Link>
+        ) : null}
       </div>
 
       {status !== "passed" ? (
         <p className="mt-4 text-sm font-semibold">
-          {status === "review"
-            ? "Balance totals passed, but at least one Mindee direction was corrected using balance movement. Review the affected rows before committing."
-            : "Balance totals, staged row cleanliness, or row-level balance checks failed. Do not commit this batch until reviewed."}
+          {batchIsCommitted
+            ? "This does not reverse the commit. It is a post-commit review signal only; check the staged rows or matching workspace before relying on this batch downstream."
+            : status === "review"
+              ? "Balance totals passed, but at least one Mindee direction was corrected using balance movement. Review the affected rows before committing."
+              : "Balance totals, staged row cleanliness, or row-level balance checks failed. Do not commit this batch until reviewed."}
         </p>
       ) : null}
     </section>
