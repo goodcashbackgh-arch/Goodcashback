@@ -26,8 +26,14 @@ const flowLinks = [
     hint: "Review or reverse active allocations",
   },
   {
-    href: "/internal/dva-reconciliation",
+    href: "/internal/dva-reconciliation/review-pack",
     step: "5",
+    label: "Review pack",
+    hint: "Grouped read-only accounting control pack",
+  },
+  {
+    href: "/internal/dva-reconciliation",
+    step: "6",
     label: "Control hub",
     hint: "Summary, suggestions and residual controls",
   },
@@ -46,14 +52,14 @@ export default function DvaSupervisorFlowNav() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-sky-600">Supervisor DVA/card flow</p>
-            <p className="mt-1 text-xs text-slate-500">Import → OCR/commit → match → review/reverse → control summary. Funding is separate.</p>
+            <p className="mt-1 text-xs text-slate-500">Import → OCR/commit → match → review/reverse → accounting review pack → control summary. Funding is separate.</p>
           </div>
           <Link href="/internal" className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50">
             Internal home
           </Link>
         </div>
 
-        <nav className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-6" aria-label="DVA supervisor flow">
+        <nav className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-7" aria-label="DVA supervisor flow">
           {flowLinks.map((link) => (
             <Link
               key={link.href}
