@@ -16,16 +16,29 @@ function statusClass(status: string) {
   return "bg-slate-100 text-slate-700 ring-slate-200";
 }
 
+function batchStatusClass(status: string) {
+  if (status === "voided" || status === "failed" || status === "error") return "bg-rose-50 text-rose-700 ring-rose-200";
+  if (status === "committed") return "bg-emerald-50 text-emerald-700 ring-emerald-200";
+  return "bg-slate-100 text-slate-700 ring-slate-200";
+}
+
 function isHttpUrl(value: string) {
   return /^https?:\/\//i.test(value);
 }
 
+function isVoidedBatch(batch: Row) {
+  return text(batch.status) === "voided" || Boolean(text(batch.voided_at) || text(batch.void_reason));
+}
+
+function isLockedBatch(batch: Row) {
+  return isVoidedBatch(batch) || ["committed", "failed"].includes(text(batch.status));
+}
+
 function canStartMindee(batch: Row, jobId: string, ocrStatus: string) {
-  const status = text(batch.status);
   const sourceUrl = text(batch.source_file_url);
+  if (isLockedBatch(batch)) return false;
   if (jobId) return false;
   if (["queued", "processing", "completed"].includes(ocrStatus)) return false;
-  if (["committed", "voided", "failed"].includes(status)) return false;
   if (!isHttpUrl(sourceUrl)) return false;
   return true;
 }
@@ -33,9 +46,10 @@ function canStartMindee(batch: Row, jobId: string, ocrStatus: string) {
 function blockedReason(batch: Row, jobId: string, ocrStatus: string) {
   const status = text(batch.status);
   const sourceUrl = text(batch.source_file_url);
+  if (isVoidedBatch(batch)) return "Batch is voided; OCR/fetch/parse controls are disabled for audit-only imports.";
   if (jobId) return "OCR already has a Mindee job.";
   if (["queued", "processing", "completed"].includes(ocrStatus)) return `OCR status is ${ocrStatus}.`;
-  if (["committed", "voided", "failed"].includes(status)) return `Batch status is ${status}; upload a fresh real PDF batch for OCR.`;
+  if (["committed", "failed"].includes(status)) return `Batch status is ${status}; upload a fresh real PDF batch for OCR.`;
   if (!isHttpUrl(sourceUrl)) return "No real uploaded file URL; likely a smoke/test batch.";
   return "Not ready for OCR.";
 }
@@ -53,7 +67,7 @@ export default async function DvaStatementMindeeControlPage({
 
   const { data, error } = await supabase
     .from("dva_statement_import_batches")
-    .select("id, original_filename, source_file_url, source_bank, statement_period_from, statement_period_to, local_ccy, detected_file_type, parser_route, status, row_count, clean_count, error_count, duplicate_count, mindee_statement_job_id, mindee_statement_model_id, mindee_statement_ocr_status, mindee_statement_enqueued_at, mindee_statement_completed_at, mindee_statement_pages_consumed, mindee_statement_error_message, uploaded_at")
+    .select("id, original_filename, source_file_url, source_bank, statement_period_from, statement_period_to, local_ccy, detected_file_type, parser_route, status, row_count, clean_count, error_count, duplicate_count, mindee_statement_job_id, mindee_statement_model_id, mindee_statement_ocr_status, mindee_statement_enqueued_at, mindee_statement_completed_at, mindee_statement_pages_consumed, mindee_statement_error_message, uploaded_at, voided_at, void_reason")
     .eq("detected_file_type", "pdf")
     .order("uploaded_at", { ascending: false })
     .limit(20);
@@ -68,7 +82,7 @@ export default async function DvaStatementMindeeControlPage({
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">DVA/card statement OCR</p>
           <h1 className="mt-2 text-3xl font-semibold tracking-tight">PDF Mindee control</h1>
           <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-600">
-            Starts, fetches, and stages Mindee V2 OCR for real PDF statement batches using MINDEE_STATEMENT_MODEL_ID only. Smoke/test or already-committed batches are blocked.
+            Starts, fetches, and stages Mindee V2 OCR for real PDF statement batches using MINDEE_STATEMENT_MODEL_ID only. Voided, smoke/test, or already-committed batches are blocked.
           </p>
           {batchId ? <p className="mt-3 break-all text-xs text-slate-500">Latest batch: {batchId}</p> : null}
         </section>
@@ -89,19 +103,24 @@ export default async function DvaStatementMindeeControlPage({
           ) : batches.map((batch) => {
             const ocrStatus = text(batch.mindee_statement_ocr_status) || "not_started";
             const jobId = text(batch.mindee_statement_job_id);
+            const voided = isVoidedBatch(batch);
             const canStart = canStartMindee(batch, jobId, ocrStatus);
             const rowCount = Number(batch.row_count ?? 0);
-            const canParse = ocrStatus === "completed" && rowCount === 0;
+            const canFetch = Boolean(jobId) && !voided;
+            const canParse = ocrStatus === "completed" && rowCount === 0 && !voided;
             const localCcy = (text(batch.local_ccy) || "GBP").toUpperCase();
             const requiresFxRate = localCcy !== "GBP";
             return (
-              <article key={text(batch.id)} className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+              <article key={text(batch.id)} className={`rounded-3xl border bg-white p-5 shadow-sm ${voided ? "border-rose-200 opacity-80" : "border-slate-200"}`}>
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
-                    <h2 className="text-lg font-semibold">{text(batch.original_filename) || text(batch.id)}</h2>
-                    <p className="mt-1 text-sm text-slate-600">{text(batch.statement_period_from)} → {text(batch.statement_period_to)} · {text(batch.source_bank)} · {localCcy} · {text(batch.status)}</p>
+                    <h2 className="break-words text-lg font-semibold [overflow-wrap:anywhere]">{text(batch.original_filename) || text(batch.id)}</h2>
+                    <p className="mt-1 text-sm text-slate-600">{text(batch.statement_period_from)} → {text(batch.statement_period_to)} · {text(batch.source_bank)} · {localCcy}</p>
                   </div>
-                  <span className={`rounded-full px-3 py-1 text-sm font-semibold ring-1 ${statusClass(ocrStatus)}`}>{ocrStatus}</span>
+                  <div className="flex flex-wrap gap-2">
+                    <span className={`rounded-full px-3 py-1 text-sm font-semibold ring-1 ${batchStatusClass(text(batch.status))}`}>{text(batch.status) || "unknown"}</span>
+                    <span className={`rounded-full px-3 py-1 text-sm font-semibold ring-1 ${statusClass(ocrStatus)}`}>{ocrStatus}</span>
+                  </div>
                 </div>
 
                 <div className="mt-4 grid gap-2 text-sm text-slate-700 sm:grid-cols-3">
@@ -113,6 +132,11 @@ export default async function DvaStatementMindeeControlPage({
                   <p className="break-all">Job: <span className="font-semibold">{jobId || "—"}</span></p>
                 </div>
 
+                {voided ? (
+                  <p className="mt-3 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-800">
+                    Voided audit-only batch. OCR, fetch, and parse controls are disabled. Reason: {text(batch.void_reason) || "—"}
+                  </p>
+                ) : null}
                 {text(batch.mindee_statement_error_message) ? <p className="mt-3 text-sm text-rose-700">{text(batch.mindee_statement_error_message)}</p> : null}
 
                 <div className="mt-5 flex flex-wrap gap-3">
@@ -125,7 +149,7 @@ export default async function DvaStatementMindeeControlPage({
                     <span className="rounded-xl bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-500 ring-1 ring-slate-200">OCR blocked: {blockedReason(batch, jobId, ocrStatus)}</span>
                   )}
 
-                  {jobId ? (
+                  {canFetch ? (
                     <form action="/internal/dva-statement-import/mindee-fetch" method="post">
                       <input type="hidden" name="import_batch_id" value={text(batch.id)} />
                       <button className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white" type="submit">Fetch OCR result</button>
