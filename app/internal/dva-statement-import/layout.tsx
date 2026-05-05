@@ -1,8 +1,10 @@
 import Link from "next/link";
+import DvaSupervisorFlowNav from "../DvaSupervisorFlowNav";
 
 export default function DvaStatementImportLayout({ children }: { children: React.ReactNode }) {
   return (
     <>
+      <DvaSupervisorFlowNav />
       {children}
       <div className="pointer-events-none fixed bottom-5 right-4 z-50 sm:bottom-6 sm:right-6">
         <Link
