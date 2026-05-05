@@ -141,10 +141,13 @@ function groupBy<T>(rows: T[], keyFn: (row: T) => string) {
 
 function amountFromFundingRow(row?: Row) {
   if (!row) return { funded: 0, required: 0, gap: 0, label: "unknown" };
-  const required = num(row.funding_threshold_gbp) || num(row.threshold_gbp) || num(row.required_gbp) || num(row.order_funding_required_gbp) || num(row.order_total_gbp_declared);
-  const funded = num(row.confirmed_funding_gbp) || num(row.total_confirmed_gbp) || num(row.confirmed_received_gbp) || num(row.reconciled_gbp_amount) || num(row.funded_gbp);
-  const gap = required > 0 ? Math.max(0, required - funded) : num(row.funding_gap_gbp);
-  const label = gap <= 0 && (funded > 0 || required > 0) ? "funded" : funded > 0 ? "part funded" : "not proven";
+
+  const required = num(row.purchase_funding_threshold_gbp);
+  const funded = num(row.funded_total_gbp);
+  const gap = num(row.gap_remaining_gbp);
+  const thresholdMet = bool(row.threshold_met_yn) || bool(row.already_funded_yn) || gap <= 0;
+  const label = thresholdMet ? "funded" : funded > 0 ? "part funded" : "funding gap";
+
   return { funded, required, gap, label };
 }
 
@@ -236,7 +239,7 @@ function dvaReadiness(order: OrderRow, disputes: DisputeRow[], statementRows: St
   if (hasRefundNeeded && !hasRefundAllocation) blockers.push("Refund accepted/awaiting credit but no refund IN allocation found");
   if (hasHold) warnings.push("Order/dispute has an exception/unmatched hold allocation that needs supervisor review");
   if (importerRows.length === 0) warnings.push("No committed DVA/card statement lines found for this importer in summary view");
-  if (importerOpen > 0) warnings.push(`Importer has ${gbp(importerOpen)} open/unallocated statement value across visible statement lines`);
+  if (importerOpen > 0) warnings.push(`Importer-level warning: ${gbp(importerOpen)} open/unallocated statement value across visible statement lines`);
 
   return { label: blockers.length === 0 ? "explained enough" : "blocked", ready: blockers.length === 0, blockers, warnings, allocationCount: orderAllocations.length };
 }
