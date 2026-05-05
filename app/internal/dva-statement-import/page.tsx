@@ -6,6 +6,8 @@ type Row = Record<string, unknown>;
 type SearchParamsValue = Record<string, string | string[] | undefined>;
 
 const BATCH_PAGE_SIZE = 8;
+const BATCH_STATUS_FILTERS = ["active", "audit", "all"] as const;
+type BatchStatusFilter = (typeof BATCH_STATUS_FILTERS)[number];
 
 function text(value: unknown) {
   if (Array.isArray(value)) return text(value[0]);
@@ -26,6 +28,27 @@ function num(value: unknown) {
 function positivePage(value: unknown) {
   const parsed = Number(text(value) || "1");
   return Number.isInteger(parsed) && parsed > 0 ? parsed : 1;
+}
+
+function batchStatusFilter(value: unknown): BatchStatusFilter {
+  const parsed = text(value).toLowerCase();
+  return BATCH_STATUS_FILTERS.includes(parsed as BatchStatusFilter) ? parsed as BatchStatusFilter : "active";
+}
+
+function isVoidedBatch(batch: Row) {
+  return text(batch.status) === "voided" || Boolean(text(batch.voided_at) || text(batch.void_reason));
+}
+
+function batchStatusHref(baseParams: SearchParamsValue, status: BatchStatusFilter) {
+  const params = new URLSearchParams();
+  for (const [paramKey, paramValue] of Object.entries(baseParams)) {
+    if (paramKey === "batch_status" || paramKey === "batch_page") continue;
+    const firstValue = Array.isArray(paramValue) ? paramValue[0] : paramValue;
+    if (firstValue) params.set(paramKey, firstValue);
+  }
+  params.set("batch_status", status);
+  params.set("batch_page", "1");
+  return `/internal/dva-statement-import?${params.toString()}`;
 }
 
 function pageHref(baseParams: SearchParamsValue, key: string, value: number) {
@@ -52,9 +75,9 @@ function nextAction(batch: Row) {
   const fileType = text(batch.detected_file_type);
   const rowCount = num(batch.row_count);
   const status = text(batch.status);
+  if (isVoidedBatch(batch)) return "Voided — audit trail only. Upload a fresh statement if this was wrong.";
   if (status === "committed") return "Committed — available for matching. Void only if this import was uploaded in error.";
   if (status === "failed") return "Failed — open detail or upload a corrected batch.";
-  if (status === "voided") return "Voided — kept for audit trail only.";
   if (fileType === "pdf" && rowCount === 0) return "Run PDF OCR / parse rows, then review detail.";
   if (rowCount > 0) return "Open detail to review balance chain and staged rows.";
   return "Extract rows, then review detail.";
@@ -109,15 +132,25 @@ export default async function DvaStatementImportPage({
   const importError = text(params.import_error);
   const batchId = text(params.batch_id);
   const batchPage = positivePage(params.batch_page);
+  const selectedBatchStatus = batchStatusFilter(params.batch_status);
   const batchFrom = (batchPage - 1) * BATCH_PAGE_SIZE;
   const supabase = await createClient();
 
+  let batchQuery = supabase
+    .from("dva_statement_import_batches")
+    .select("id, importer_id, source_bank, statement_period_from, statement_period_to, local_ccy, source_file_url, original_filename, detected_file_type, parser_route, status, row_count, clean_count, error_count, duplicate_count, committed_count, uploaded_at, parsed_at, committed_at, voided_at, void_reason, notes", { count: "exact" })
+    .order("uploaded_at", { ascending: false });
+
+  if (selectedBatchStatus === "active") {
+    batchQuery = batchQuery.neq("status", "voided").is("voided_at", null).is("void_reason", null);
+  }
+
+  if (selectedBatchStatus === "audit") {
+    batchQuery = batchQuery.or("status.eq.voided,voided_at.not.is.null,void_reason.not.is.null");
+  }
+
   const [batchesResult, importersResult] = await Promise.all([
-    supabase
-      .from("dva_statement_import_batches")
-      .select("id, importer_id, source_bank, statement_period_from, statement_period_to, local_ccy, source_file_url, original_filename, detected_file_type, parser_route, status, row_count, clean_count, error_count, duplicate_count, committed_count, uploaded_at, parsed_at, committed_at, voided_at, void_reason, notes", { count: "exact" })
-      .order("uploaded_at", { ascending: false })
-      .range(batchFrom, batchFrom + BATCH_PAGE_SIZE - 1),
+    batchQuery.range(batchFrom, batchFrom + BATCH_PAGE_SIZE - 1),
     supabase
       .from("importers")
       .select("id, company_name, trading_name")
@@ -222,22 +255,38 @@ export default async function DvaStatementImportPage({
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-          <h2 className="text-xl font-semibold">Statement batches</h2>
-          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-            Open a batch to see extracted header data, balance chain, staged rows, and reconciliation controls.
-          </p>
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <h2 className="text-xl font-semibold">Statement batches</h2>
+              <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
+                Active queue hides voided audit batches by default. Use audit-only when you need to inspect void history.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {BATCH_STATUS_FILTERS.map((status) => (
+                <Link
+                  key={status}
+                  href={batchStatusHref(params, status)}
+                  className={`rounded-full px-3 py-2 text-xs font-bold uppercase tracking-wide ring-1 ${selectedBatchStatus === status ? "bg-slate-950 text-white ring-slate-950" : "bg-white text-slate-600 ring-slate-200"}`}
+                >
+                  {status === "active" ? "Active" : status === "audit" ? "Voided / audit" : "All"}
+                </Link>
+              ))}
+            </div>
+          </div>
           <div className="mt-4 grid gap-3">
             {batches.length === 0 ? (
-              <p className="text-sm text-slate-500">No import batches yet.</p>
+              <p className="text-sm text-slate-500">No statement batches in this filter.</p>
             ) : batches.map((batch) => {
               const id = text(batch.id);
               const status = text(batch.status) || "unknown";
+              const voided = isVoidedBatch(batch);
               const detailHref = `/internal/dva-statement-import/${id}`;
               const mindeeHref = `/internal/dva-statement-import/mindee-control?batch_id=${id}`;
-              const canVoid = status === "committed";
+              const canVoid = status === "committed" && !voided;
 
               return (
-                <article key={id} className="rounded-2xl border border-slate-200 p-4">
+                <article key={id} className={`rounded-2xl border p-4 ${voided ? "border-rose-200 bg-rose-50/30" : "border-slate-200"}`}>
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0 flex-1">
                       <h3 className="break-words font-semibold [overflow-wrap:anywhere]">{text(batch.original_filename) || id}</h3>
@@ -245,7 +294,7 @@ export default async function DvaStatementImportPage({
                         {text(batch.statement_period_from)} → {text(batch.statement_period_to)} · {text(batch.source_bank)} · {text(batch.local_ccy)} · {text(batch.detected_file_type)} · {text(batch.parser_route)}
                       </p>
                     </div>
-                    <span className={`rounded-full px-3 py-1 text-sm font-semibold ring-1 ${statusClass(status)}`}>{status}</span>
+                    <span className={`rounded-full px-3 py-1 text-sm font-semibold ring-1 ${statusClass(voided ? "voided" : status)}`}>{voided ? "voided" : status}</span>
                   </div>
 
                   <div className="mt-4 grid gap-3 text-sm text-slate-700 sm:grid-cols-5">
@@ -261,8 +310,14 @@ export default async function DvaStatementImportPage({
                   ) : null}
 
                   <div className="mt-4 flex flex-wrap items-center gap-3">
-                    <Link className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white" href={detailHref}>Open detail / reconcile</Link>
-                    <Link className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-sky-700 ring-1 ring-sky-200" href={mindeeHref}>PDF OCR control</Link>
+                    {voided ? (
+                      <span className="rounded-xl bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-500 ring-1 ring-slate-200">Voided audit-only — operational buttons disabled</span>
+                    ) : (
+                      <>
+                        <Link className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white" href={detailHref}>Open detail / reconcile</Link>
+                        <Link className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-sky-700 ring-1 ring-sky-200" href={mindeeHref}>PDF OCR control</Link>
+                      </>
+                    )}
                     <p className="text-sm text-slate-600">{nextAction(batch)}</p>
                   </div>
 
