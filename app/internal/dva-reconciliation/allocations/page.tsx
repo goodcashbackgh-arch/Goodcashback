@@ -29,6 +29,13 @@ type AllocationDetailRow = {
   created_at: string | null;
 };
 
+type AllocationStatusRow = {
+  dva_statement_line_id: string;
+  confirmed_allocated_gbp: number | string | null;
+  confirmed_unallocated_gbp: number | string | null;
+  allocation_status_bucket: string | null;
+};
+
 const gbpFormatter = new Intl.NumberFormat("en-GB", {
   style: "currency",
   currency: "GBP",
@@ -89,6 +96,20 @@ export default async function DvaAllocationReviewPage({ searchParams }: { search
 
   const { data, error } = await query;
   const rows = (data ?? []) as AllocationDetailRow[];
+  const lineIds = [...new Set(rows.map((row) => row.dva_statement_line_id).filter(Boolean))];
+
+  let statusQuery = supabase
+    .from("dva_statement_line_allocation_status_vw")
+    .select("dva_statement_line_id, confirmed_allocated_gbp, confirmed_unallocated_gbp, allocation_status_bucket")
+    .limit(500);
+
+  if (lineIds.length > 0) statusQuery = statusQuery.in("dva_statement_line_id", lineIds);
+  if (importerId) statusQuery = statusQuery.eq("importer_id", importerId);
+
+  const { data: statusData } = await statusQuery;
+  const statusByLineId = new Map(
+    ((statusData ?? []) as AllocationStatusRow[]).map((row) => [row.dva_statement_line_id, row])
+  );
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-6 text-slate-950 sm:px-6 lg:px-8">
@@ -98,7 +119,7 @@ export default async function DvaAllocationReviewPage({ searchParams }: { search
             <p className="text-xs font-semibold uppercase tracking-[0.25em] text-sky-600">DVA/card reconciliation</p>
             <h1 className="mt-2 text-2xl font-bold tracking-tight">Active allocation records</h1>
             <p className="mt-1 max-w-3xl text-sm text-slate-600">
-              One card = one active allocation. Use this page only to verify or reverse active allocations.
+              One card = one active allocation. Source used/open is the current total across all active rows for that statement line.
             </p>
           </div>
           <Link href={workspacePath} className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-50">
@@ -145,7 +166,9 @@ export default async function DvaAllocationReviewPage({ searchParams }: { search
               {rows.map((row) => {
                 const allocated = numeric(row.allocated_gbp_amount);
                 const statement = numeric(row.statement_gbp_amount);
-                const remainingContext = Math.max(0, statement - allocated);
+                const sourceStatus = statusByLineId.get(row.dva_statement_line_id);
+                const sourceUsedNow = sourceStatus ? numeric(sourceStatus.confirmed_allocated_gbp) : allocated;
+                const sourceOpenNow = sourceStatus ? numeric(sourceStatus.confirmed_unallocated_gbp) : Math.max(0, statement - allocated);
                 const direction = String(row.statement_direction || "—").toUpperCase();
                 const sourceDate = row.transaction_date || row.statement_date || "No date";
 
@@ -156,11 +179,14 @@ export default async function DvaAllocationReviewPage({ searchParams }: { search
                         <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${tone(row.allocation_status)}`}>{pretty(row.allocation_status)}</span>
                         <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-semibold text-slate-700">{direction}</span>
                         <span className="rounded-full border border-sky-200 bg-sky-50 px-2.5 py-1 text-xs font-semibold text-sky-800">{pretty(row.allocation_type)}</span>
+                        {sourceStatus?.allocation_status_bucket ? (
+                          <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-xs font-semibold text-indigo-800">source {pretty(sourceStatus.allocation_status_bucket)}</span>
+                        ) : null}
                       </div>
 
-                      <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                      <div className="mt-3 grid gap-3 sm:grid-cols-4">
                         <div>
-                          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Allocated</p>
+                          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">This row</p>
                           <p className="text-2xl font-bold text-slate-950">{gbp(allocated)}</p>
                         </div>
                         <div>
@@ -168,9 +194,13 @@ export default async function DvaAllocationReviewPage({ searchParams }: { search
                           <p className="text-lg font-semibold text-slate-900">{gbp(statement)}</p>
                           <p className="text-xs text-slate-500">{sourceDate}</p>
                         </div>
-                        <div>
-                          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Remaining after this row</p>
-                          <p className="text-lg font-semibold text-slate-900">{gbp(remainingContext)}</p>
+                        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
+                          <p className="text-[11px] font-bold uppercase tracking-wide text-emerald-700">Source used now</p>
+                          <p className="text-xl font-extrabold text-emerald-900">{gbp(sourceUsedNow)}</p>
+                        </div>
+                        <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+                          <p className="text-[11px] font-bold uppercase tracking-wide text-amber-700">Source open now</p>
+                          <p className="text-xl font-extrabold text-amber-900">{gbp(sourceOpenNow)}</p>
                         </div>
                       </div>
 
