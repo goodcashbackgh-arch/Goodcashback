@@ -82,6 +82,8 @@ const gbpFormatter = new Intl.NumberFormat("en-GB", {
   minimumFractionDigits: 2,
 });
 
+const TERMINAL_EXCEPTION_STATUSES = new Set(["replaced", "awaiting_refund_credit", "refunded", "closed", "resolved"]);
+
 function text(value: unknown) {
   if (Array.isArray(value)) return text(value[0]);
   if (typeof value === "string") return value;
@@ -123,6 +125,18 @@ function importerLabel(importer?: ImporterRow) {
 
 function statementText(row: StatementLineRow) {
   return row.reference_raw || row.retailer_name_ref || "No statement text";
+}
+
+function isTerminalException(dispute: DisputeRow) {
+  return Boolean(dispute.resolved_at) || TERMINAL_EXCEPTION_STATUSES.has(text(dispute.status));
+}
+
+function exceptionActionsHref(importerId: string) {
+  const params = new URLSearchParams();
+  if (importerId) params.set("importer_id", importerId);
+  params.set("status", "open");
+  const query = params.toString();
+  return `/internal/dva-reconciliation/exception-actions${query ? `?${query}` : ""}`;
 }
 
 function readiness(row: StatementLineRow, allocations: AllocationRow[]) {
@@ -250,7 +264,7 @@ export default async function DvaAccountingReviewPackPage({
   const openDisputes = ((disputeResult.data ?? []) as unknown as DisputeRow[]).filter((dispute) => {
     const order = dispute.order_id ? ordersById.get(dispute.order_id) : undefined;
     const importerOk = !requestedImporterId || Boolean(order && order.importer_id === requestedImporterId);
-    return importerOk && !dispute.resolved_at && !["resolved", "closed"].includes(text(dispute.status));
+    return importerOk && !isTerminalException(dispute);
   });
 
   const enrichedLines = allStatementLines.map((line) => {
@@ -284,9 +298,14 @@ export default async function DvaAccountingReviewPackPage({
                 Read-only pack showing every statement line with its supplier invoice, refund, FX/card, fee and exception allocations before accounting handoff. No posting and no financial state changes happen here.
               </p>
             </div>
-            <Link href="/internal/dva-reconciliation/allocations" className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-50">
-              Active allocations
-            </Link>
+            <div className="flex flex-wrap gap-2">
+              <Link href="/internal/dva-reconciliation/allocations" className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-50">
+                Active allocations
+              </Link>
+              <Link href={exceptionActionsHref(requestedImporterId)} className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-800">
+                Exception actions
+              </Link>
+            </div>
           </div>
         </section>
 
@@ -434,14 +453,17 @@ export default async function DvaAccountingReviewPackPage({
         <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h2 className="text-lg font-bold text-slate-950">Open exception cases</h2>
-              <p className="mt-1 text-sm text-slate-600">Read-only list of unresolved dispute cases for the selected importer. These are the candidates for the next supervisor action pack.</p>
+              <h2 className="text-lg font-bold text-slate-950">Open exception action cases</h2>
+              <p className="mt-1 text-sm text-slate-600">Unresolved refund/replacement cases for the selected importer. Use the action centre to approve refund pursuit or accept final retailer outcomes once the gates are met.</p>
             </div>
-            <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-bold text-amber-800 ring-1 ring-amber-200">{openDisputes.length} open</span>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-bold text-amber-800 ring-1 ring-amber-200">{openDisputes.length} open</span>
+              <Link href={exceptionActionsHref(requestedImporterId)} className="rounded-full bg-slate-950 px-3 py-1 text-xs font-bold text-white">Open action centre</Link>
+            </div>
           </div>
 
           {openDisputes.length === 0 ? (
-            <p className="mt-4 text-sm text-slate-500">No open exception cases found for this filter.</p>
+            <p className="mt-4 text-sm text-slate-500">No open exception action cases found for this filter.</p>
           ) : (
             <div className="mt-4 grid gap-3 lg:grid-cols-2">
               {openDisputes.slice(0, 20).map((dispute) => {
@@ -451,7 +473,10 @@ export default async function DvaAccountingReviewPackPage({
                   <div key={dispute.id} className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
                     <p className="text-sm font-bold text-amber-950">{pretty(dispute.desired_outcome)} · {pretty(dispute.status)}</p>
                     <p className="mt-1 text-sm text-amber-900">Impact {gbp(dispute.amount_impact_gbp)} · Order {order?.order_ref || "—"} · {retailer?.name || "No retailer"}</p>
-                    <p className="mt-2 text-xs text-amber-800">Next pack should add controlled supervisor actions for this exception outcome. This page is read-only.</p>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <Link href={`/internal/exceptions/${dispute.id}`} className="rounded-xl bg-white px-3 py-2 text-xs font-bold text-amber-900 ring-1 ring-amber-200">Open supervisor review</Link>
+                      <Link href={exceptionActionsHref(requestedImporterId)} className="rounded-xl bg-amber-700 px-3 py-2 text-xs font-bold text-white">Action centre</Link>
+                    </div>
                   </div>
                 );
               })}
