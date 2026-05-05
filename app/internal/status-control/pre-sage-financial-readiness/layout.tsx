@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import PreSageFundingLabelGuard from "./PreSageFundingLabelGuard";
 
 export default function PreSageFinancialReadinessLayout({ children }: { children: ReactNode }) {
   return (
@@ -7,11 +8,12 @@ export default function PreSageFinancialReadinessLayout({ children }: { children
         <div className="mx-auto max-w-7xl rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm leading-6 text-sky-900 shadow-sm">
           <p className="font-bold text-sky-950">Readiness interpretation note</p>
           <p className="mt-1">
-            This page is a pre-Sage blocker view. DVA/card open-value warnings are importer-level signals until a statement line is allocated to a specific order, invoice, refund, fee or exception. Funding shown as not proven means the current funding-position view has not proved funding for that order; verify the funding queue before treating it as a final commercial conclusion.
+            This page is a pre-Sage blocker view. DVA/card open-value warnings are importer-level signals until a statement line is allocated to a specific order, invoice, refund, fee or exception. Funding shown as a funding gap means the current funding-position view has a positive remaining gap for that order; verify the funding queue where needed before treating it as a final commercial conclusion.
           </p>
         </div>
       </div>
       {children}
+      <PreSageFundingLabelGuard />
     </>
   );
 }
