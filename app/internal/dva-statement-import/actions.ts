@@ -213,6 +213,56 @@ export async function commitDvaStatementImportBatchAction(formData: FormData) {
   });
 }
 
+export async function voidDvaStatementImportBatchAction(formData: FormData) {
+  const supabase = await createClient();
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  const importBatchId = readString(formData, "import_batch_id");
+  const voidReason = readString(formData, "void_reason");
+
+  if (!importBatchId) {
+    redirectWithResult({ import_error: "Missing statement import batch id." });
+  }
+
+  if (!user) {
+    redirectWithResult({ import_error: "Please sign in again before voiding a statement import.", batch_id: importBatchId });
+  }
+
+  if (voidReason.length < 8) {
+    redirectWithResult({ import_error: "Enter a void reason of at least 8 characters.", batch_id: importBatchId });
+  }
+
+  const { data: voidResult, error: voidError } = await supabase.rpc("staff_void_dva_statement_import_batch", {
+    p_import_batch_id: importBatchId,
+    p_void_reason: voidReason,
+  });
+
+  if (voidError) {
+    redirectWithResult({ import_error: voidError.message, batch_id: importBatchId });
+  }
+
+  revalidatePath("/internal/dva-statement-import");
+  revalidatePath(`/internal/dva-statement-import/${importBatchId}`);
+  revalidatePath("/internal/dva-reconciliation");
+  revalidatePath("/internal/dva-reconciliation/workspace");
+  revalidatePath("/internal/dva-reconciliation/allocations");
+
+  const linkedLines =
+    typeof voidResult === "object" &&
+    voidResult !== null &&
+    "linked_lines_inactivated" in voidResult
+      ? String((voidResult as { linked_lines_inactivated?: unknown }).linked_lines_inactivated)
+      : "0";
+
+  redirectWithResult({
+    import_success: `Statement import voided. ${linkedLines} linked statement line(s) removed from active matching.`,
+    batch_id: importBatchId,
+  });
+}
+
 export async function createStageCommitSmokeImportAction(formData: FormData) {
   const importerId = "";
 
