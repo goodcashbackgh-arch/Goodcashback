@@ -9,10 +9,7 @@ import {
   reviewRefundEvidenceAction,
 } from "./actions";
 
-type SearchParams = {
-  success?: string;
-  error?: string;
-};
+type SearchParams = { success?: string; error?: string };
 
 type SupplierInvoiceOption = {
   id: string;
@@ -22,20 +19,19 @@ type SupplierInvoiceOption = {
   review_status?: string | null;
 };
 
-const FINAL_OUTCOME_STATUSES = new Set([
-  "approved_replacement",
-  "replaced",
-  "awaiting_refund_credit",
-  "refunded",
-  "closed",
-]);
+type MessageRow = {
+  id: string;
+  message_type: string | null;
+  counterparty: string | null;
+  body: string | null;
+  generated_by: string | null;
+  created_at: string | null;
+};
+
+const FINAL_OUTCOME_STATUSES = new Set(["approved_replacement", "replaced", "awaiting_refund_credit", "refunded", "closed"]);
 
 function gbp(value: number | null | undefined) {
-  return new Intl.NumberFormat("en-GB", {
-    style: "currency",
-    currency: "GBP",
-    minimumFractionDigits: 2,
-  }).format(Number(value ?? 0));
+  return new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP", minimumFractionDigits: 2 }).format(Number(value ?? 0));
 }
 
 function isProgressed(value: string | null | undefined) {
@@ -57,27 +53,33 @@ function retailerOutcomeFromStatus(status: string | null | undefined) {
 }
 
 function finalOutcomeMessage(dispute: { desired_outcome: string | null; status: string | null; replacement_child_order_id?: string | null }) {
-  if (dispute.desired_outcome === "replacement" && dispute.status === "replaced") {
-    return "Replacement accepted — child order created.";
-  }
-
-  if (dispute.desired_outcome === "refund" && dispute.status === "awaiting_refund_credit") {
-    return "Refund accepted — awaiting refund credit processing";
-  }
-
-  if (dispute.status === "refunded") {
-    return "Refund processed — awaiting closure.";
-  }
-
-  if (dispute.status === "closed") {
-    return "Exception closed.";
-  }
-
+  if (dispute.desired_outcome === "replacement" && dispute.status === "replaced") return "Replacement accepted — child order created.";
+  if (dispute.desired_outcome === "refund" && dispute.status === "awaiting_refund_credit") return "Refund accepted — awaiting refund credit processing.";
+  if (dispute.status === "refunded") return "Refund processed — awaiting closure.";
+  if (dispute.status === "closed") return "Exception closed.";
   return "Final outcome accepted.";
 }
 
-function messageIsRefundEvidence(message: { message_type: string | null }) {
+function messageIsRefundEvidence(message: MessageRow) {
   return ["credit_note_evidence", "refund_evidence"].includes(message.message_type ?? "");
+}
+
+function evidenceNeedsSupervisorReview(body: string | null | undefined) {
+  const text = body ?? "";
+  return (
+    text.includes("variance_supervisor_review_required") ||
+    text.includes("no_document_supervisor_review_required") ||
+    text.includes("supplier_refund_adjustment_review_required")
+  );
+}
+
+function evidenceStatusLabel(body: string | null | undefined) {
+  const text = body ?? "";
+  if (text.includes("credit_note_uploaded_pending_ocr_compare")) return "Credit note uploaded — pending OCR/compare";
+  if (text.includes("refund_adjustment_ready_no_credit_note")) return "No-credit-note refund adjustment ready";
+  if (evidenceNeedsSupervisorReview(text)) return "Supervisor review needed";
+  if (text.includes("balanced_to_exception")) return "Balanced to exception";
+  return "Evidence uploaded";
 }
 
 export default async function InternalExceptionDetailPage({
@@ -99,37 +101,15 @@ export default async function InternalExceptionDetailPage({
 
   if (disputeError || !dispute) notFound();
 
-  const [{ data: order }, { data: screenshots }, { data: supplierInvoices }, { data: messages }, { data: disputeLines }] = await Promise.all([
-    supabase
-      .from("orders")
-      .select("id, order_ref, total_qty_declared, order_total_gbp_declared")
-      .eq("id", dispute.order_id)
-      .maybeSingle(),
-    supabase
-      .from("order_screenshots")
-      .select("id, screenshot_url, display_order, uploaded_at")
-      .eq("order_id", dispute.order_id)
-      .order("display_order", { ascending: true })
-      .order("uploaded_at", { ascending: true }),
-    supabase
-      .from("supplier_invoices")
-      .select("id, invoice_ref, invoice_pdf_url, review_status, uploaded_at")
-      .eq("order_id", dispute.order_id)
-      .order("uploaded_at", { ascending: false }),
-    supabase
-      .from("dispute_messages")
-      .select("id, message_type, counterparty, body, generated_by, created_at")
-      .eq("dispute_id", disputeId)
-      .order("created_at", { ascending: true }),
-    supabase
-      .from("dispute_lines")
-      .select("id, supplier_invoice_line_id, qty_impact, amount_impact_gbp, conversation_status, resolved_at")
-      .eq("dispute_id", disputeId),
+  const [{ data: order }, { data: supplierInvoices }, { data: messages }, { data: disputeLines }] = await Promise.all([
+    supabase.from("orders").select("id, order_ref, total_qty_declared, order_total_gbp_declared").eq("id", dispute.order_id).maybeSingle(),
+    supabase.from("supplier_invoices").select("id, invoice_ref, invoice_pdf_url, review_status, uploaded_at").eq("order_id", dispute.order_id).order("uploaded_at", { ascending: false }),
+    supabase.from("dispute_messages").select("id, message_type, counterparty, body, generated_by, created_at").eq("dispute_id", disputeId).order("created_at", { ascending: true }),
+    supabase.from("dispute_lines").select("id, supplier_invoice_line_id, qty_impact, amount_impact_gbp, conversation_status, resolved_at").eq("dispute_id", disputeId),
   ]);
 
   const invoiceOptions = (supplierInvoices ?? []) as SupplierInvoiceOption[];
   const invoice = invoiceOptions[0] ?? null;
-
   const { data: allInvoiceLines } = invoice
     ? await supabase
         .from("supplier_invoice_lines")
@@ -138,7 +118,7 @@ export default async function InternalExceptionDetailPage({
         .order("line_order", { ascending: true })
     : { data: [] };
 
-  const messageRows = messages ?? [];
+  const messageRows = (messages ?? []) as MessageRow[];
   const progressedCount = (allInvoiceLines ?? []).filter((line) => isProgressed(line.eligible_for_invoice_yn)).length;
   const unresolvedCount = (allInvoiceLines ?? []).filter((line) => !isProgressed(line.eligible_for_invoice_yn)).length;
   const activeConversationStatus = (disputeLines ?? []).find((line) => line.resolved_at === null)?.conversation_status ?? null;
@@ -146,6 +126,7 @@ export default async function InternalExceptionDetailPage({
   const hasRetailerReply = messageRows.some((message) => message.message_type === "retailer_reply" && message.counterparty === "retailer");
   const refundEvidenceMessages = messageRows.filter(messageIsRefundEvidence);
   const latestRefundEvidence = refundEvidenceMessages[refundEvidenceMessages.length - 1] ?? null;
+  const latestEvidenceNeedsReview = evidenceNeedsSupervisorReview(latestRefundEvidence?.body);
   const hasRefundEvidenceReview = messageRows.some((message) => message.message_type === "refund_evidence_review");
   const canAcceptOutcome = hasRetailerReply && retailerOutcomeLabel === "retailer_accepted";
   const isFinalOutcome = FINAL_OUTCOME_STATUSES.has(dispute.status ?? "");
@@ -172,7 +153,7 @@ export default async function InternalExceptionDetailPage({
             <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
               <p className="font-semibold">{finalOutcomeMessage(dispute)}</p>
               {dispute.replacement_child_order_id ? <p className="mt-1">Replacement child order: {dispute.replacement_child_order_id}</p> : null}
-              {latestRefundEvidence ? <p className="mt-1">Refund evidence uploaded by operator and awaiting/requiring supervisor review.</p> : null}
+              {latestRefundEvidence ? <p className="mt-1">Refund evidence status: {evidenceStatusLabel(latestRefundEvidence.body)}</p> : null}
             </div>
           ) : null}
         </section>
@@ -180,7 +161,7 @@ export default async function InternalExceptionDetailPage({
         <section className="grid gap-6 lg:grid-cols-2">
           <article className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
             <h2 className="text-xl font-semibold">Source context</h2>
-            <p className="mt-2 text-sm text-slate-600">Parent order evidence used by importer reconciliation.</p>
+            <p className="mt-2 text-sm text-slate-600">Parent order and supplier invoice context.</p>
             <div className="mt-4 space-y-2 text-sm">
               <p><span className="font-semibold">Latest supplier invoice:</span> {invoice?.invoice_ref ?? "—"}</p>
               {invoice?.invoice_pdf_url ? <a href={invoice.invoice_pdf_url} target="_blank" className="text-sky-700 underline">Open latest supplier invoice PDF</a> : null}
@@ -191,12 +172,10 @@ export default async function InternalExceptionDetailPage({
           <article className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
             <h2 className="text-xl font-semibold">Supervisor actions</h2>
             {!isTerminalAcceptedState ? <p className="mt-3 text-sm text-slate-700"><span className="font-semibold">Retailer outcome:</span> {retailerOutcomeLabel.replaceAll("_", " ")}</p> : null}
-            {isTerminalAcceptedState ? (
-              <p className="mt-3 text-sm text-slate-700"><span className="font-semibold">Active terminal state:</span> {finalOutcomeMessage(dispute)}</p>
-            ) : null}
+            {isTerminalAcceptedState ? <p className="mt-3 text-sm text-slate-700"><span className="font-semibold">Active terminal state:</span> {finalOutcomeMessage(dispute)}</p> : null}
             {isFinalOutcome ? (
               <p className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
-                Final retailer outcome has been accepted. Continue with refund evidence review and DVA/card refund matching where applicable.
+                Final retailer outcome has been accepted. Evidence now routes by system status: matched items go to supplier readiness; variances/no-document cases require supervisor review.
               </p>
             ) : dispute.desired_outcome === "refund" ? (
               <div className="mt-4 space-y-3">
@@ -223,14 +202,14 @@ export default async function InternalExceptionDetailPage({
           <section className="rounded-3xl border border-amber-200 bg-white p-6 shadow-sm">
             <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
               <div>
-                <p className="text-sm font-medium uppercase tracking-[0.2em] text-amber-600">Refund evidence review</p>
-                <h2 className="mt-2 text-xl font-semibold">Supervisor review of operator evidence</h2>
+                <p className="text-sm font-medium uppercase tracking-[0.2em] text-amber-600">Refund evidence status</p>
+                <h2 className="mt-2 text-xl font-semibold">Audit and exception-only review</h2>
                 <p className="mt-2 max-w-3xl text-sm text-slate-600">
-                  Review the operator-uploaded refund/credit-note evidence. This does not clear the money position; DVA/card refund IN must still be matched separately.
+                  Evidence is not manually approved every time. Review controls only appear for variance/no-document cases. DVA/card refund IN matching still clears the money position.
                 </p>
               </div>
               <span className={`rounded-full px-3 py-1 text-xs font-semibold ${latestRefundEvidence ? "bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200" : "bg-amber-50 text-amber-800 ring-1 ring-amber-200"}`}>
-                {latestRefundEvidence ? "Evidence uploaded" : "Waiting for operator evidence"}
+                {latestRefundEvidence ? evidenceStatusLabel(latestRefundEvidence.body) : "Waiting for operator evidence"}
               </span>
             </div>
 
@@ -242,35 +221,32 @@ export default async function InternalExceptionDetailPage({
                   <p className="mt-2 text-xs text-slate-500">{latestRefundEvidence.created_at}</p>
                 </article>
 
-                {hasRefundEvidenceReview ? (
+                {!latestEvidenceNeedsReview ? (
                   <p className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
-                    A supervisor refund evidence review already exists in the conversation log. Add a new review only if the operator uploads corrected evidence or the decision changes.
+                    No manual evidence review is required for this status. Continue via supplier readiness and DVA/card refund matching.
                   </p>
-                ) : null}
-
-                <form action={reviewRefundEvidenceAction} className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                  <input type="hidden" name="dispute_id" value={dispute.id} />
-                  <label className="block text-sm font-semibold text-slate-700">
-                    Review decision
-                    <select name="review_decision" className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm" defaultValue="accepted">
-                      <option value="accepted">Accept evidence for DVA refund matching</option>
-                      <option value="hold">Hold / ask operator for clarification</option>
-                      <option value="rejected">Reject evidence</option>
-                    </select>
-                  </label>
-                  <label className="block text-sm font-semibold text-slate-700">
-                    Review notes optional
-                    <textarea name="review_notes" rows={4} className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Evidence balances to exception / variance needs explanation / wrong document uploaded" />
-                  </label>
-                  <button type="submit" className="rounded-xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white">
-                    Save refund evidence review
-                  </button>
-                </form>
+                ) : (
+                  <form action={reviewRefundEvidenceAction} className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                    <input type="hidden" name="dispute_id" value={dispute.id} />
+                    {hasRefundEvidenceReview ? <p className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900">A supervisor review already exists. Add another only if the decision changed.</p> : null}
+                    <label className="block text-sm font-semibold text-slate-700">
+                      Review decision
+                      <select name="review_decision" className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm" defaultValue="hold">
+                        <option value="accepted">Accept variance/no-document evidence</option>
+                        <option value="hold">Hold / ask operator for clarification</option>
+                        <option value="rejected">Reject evidence</option>
+                      </select>
+                    </label>
+                    <label className="block text-sm font-semibold text-slate-700">
+                      Review notes
+                      <textarea name="review_notes" rows={4} className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Explain why variance/no-document evidence is accepted or held." />
+                    </label>
+                    <button type="submit" className="rounded-xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white">Save exception evidence review</button>
+                  </form>
+                )}
               </div>
             ) : (
-              <p className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
-                Operator evidence has not been uploaded yet. Ask the operator to open the exception and upload credit note / refund proof / no-document explanation.
-              </p>
+              <p className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">Operator evidence has not been uploaded yet.</p>
             )}
           </section>
         ) : null}
