@@ -5,6 +5,7 @@ import {
   allocateStatementLineToOperationalTargetAction,
   allocateStatementLineToSupplierInvoiceAction,
 } from "../actions";
+import FxResidualAllocationForm from "./FxResidualAllocationForm";
 
 type Direction = "in" | "out" | "neutral";
 type TargetType = "invoice" | "exception" | "unknown";
@@ -71,6 +72,16 @@ function inferTargetType(body: string): TargetType {
   return "unknown";
 }
 
+function hideServerSelectedBadges(anchor: HTMLAnchorElement) {
+  const nodes = Array.from(anchor.querySelectorAll<HTMLElement>("*"));
+  for (const node of nodes) {
+    const text = (node.textContent || "").trim().toLowerCase();
+    if (text === "selected target" || text === "selected statement" || text === "selected line") {
+      node.style.display = "none";
+    }
+  }
+}
+
 function classifyAnchor(anchor: HTMLAnchorElement): ClassifiedCard | null {
   const body = anchor.innerText.trim();
   if (!body) return null;
@@ -88,9 +99,6 @@ function classifyAnchor(anchor: HTMLAnchorElement): ClassifiedCard | null {
   const targetId = url.searchParams.get("target_id") || "";
   const isTargetCard = body.startsWith("Invoice") || body.startsWith("Exception");
 
-  // Right-pane cards often preserve the selected line_id in their URL.
-  // Classify them by their visible content first, otherwise a target card
-  // can be mistaken for a statement card and one click paints multiple cards.
   if (targetId && isTargetCard) {
     const direction = inferTargetDirection(body);
     const targetType = inferTargetType(body);
@@ -135,6 +143,10 @@ function sum(items: Map<string, PickedItem>, signed = false) {
   return [...items.values()].reduce((total, item) => total + (signed ? item.signedAmount : item.amount), 0);
 }
 
+function countDirection(items: Map<string, PickedItem>, direction: Direction) {
+  return [...items.values()].filter((item) => item.direction === direction).length;
+}
+
 function singleItem(items: Map<string, PickedItem>) {
   const values = [...items.values()];
   return values.length === 1 ? values[0] : null;
@@ -163,8 +175,22 @@ function applyCardVisual(anchor: HTMLAnchorElement, item: PickedItem) {
 
 function message(statements: Map<string, PickedItem>, targets: Map<string, PickedItem>, net: number) {
   if (statements.size === 0 || targets.size === 0) return "Select bank/card line(s) and operational target(s).";
+
+  const statementIn = countDirection(statements, "in");
+  const statementOut = countDirection(statements, "out");
+  const targetIn = countDirection(targets, "in");
+  const targetOut = countDirection(targets, "out");
+
+  if (statementOut > 0 && targetIn > 0 && targetOut === 0 && statementIn === 0) {
+    return "Direction conflict: bank OUT selected against operational IN/refund. Choose the refund IN line or a matching OUT target.";
+  }
+
+  if (statementIn > 0 && targetOut > 0 && targetIn === 0 && statementOut === 0) {
+    return "Direction conflict: bank IN selected against operational OUT/charge. Choose the matching OUT line or IN target.";
+  }
+
   if (Math.abs(net) < 0.01) return "Net balanced — ready to confirm allocation.";
-  return "Net not balanced yet. Allocate the matched amount or add the related FX/card/fee treatment where needed.";
+  return "Net not balanced yet. Add the related charge/refund/exception line, or classify the residual as FX/card/fee.";
 }
 
 function operationalAllocationType(statement?: PickedItem | null, target?: PickedItem | null) {
@@ -187,7 +213,10 @@ export default function SafeWorkspaceSelectionController() {
     const anchors = Array.from(
       document.querySelectorAll<HTMLAnchorElement>('a[href*="/internal/dva-reconciliation/workspace?"]'),
     );
-    const classified = anchors.map(classifyAnchor).filter((card): card is ClassifiedCard => Boolean(card?.id));
+    const classified = anchors.map((anchor) => {
+      hideServerSelectedBadges(anchor);
+      return classifyAnchor(anchor);
+    }).filter((card): card is ClassifiedCard => Boolean(card?.id));
     setCards(classified);
 
     const params = new URLSearchParams(window.location.search);
@@ -236,6 +265,7 @@ export default function SafeWorkspaceSelectionController() {
 
   useEffect(() => {
     for (const card of cards) {
+      hideServerSelectedBadges(card.anchor);
       resetCardVisual(card.anchor);
       const selected = card.kind === "statement" ? statements.get(card.id) : targets.get(card.id);
       if (selected) applyCardVisual(card.anchor, selected);
@@ -254,6 +284,8 @@ export default function SafeWorkspaceSelectionController() {
   const operationalType = operationalAllocationType(statement, target);
   const canConfirmOperational = Boolean(statement && target?.targetType === "exception" && operationalType);
   const allocationAmount = Math.min(statement?.amount ?? 0, target?.amount ?? 0);
+  const fxResidualAmount = Math.abs(grossGap || statement?.amount || 0);
+  const canAllocateFxResidual = Boolean(statement && fxResidualAmount > 0.009);
 
   const selectedSummary = useMemo(() => message(statements, targets, netGap), [statements, targets, netGap]);
 
@@ -283,6 +315,13 @@ export default function SafeWorkspaceSelectionController() {
           >
             Clear selections
           </button>
+
+          <FxResidualAllocationForm
+            canAllocate={canAllocateFxResidual}
+            statementLineId={statement?.id ?? ""}
+            remainingAmount={fxResidualAmount}
+            returnPath={currentPath}
+          />
 
           <form action={allocateStatementLineToOperationalTargetAction}>
             <input type="hidden" name="return_path" value={currentPath} />
