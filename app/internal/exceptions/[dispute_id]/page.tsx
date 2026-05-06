@@ -7,7 +7,6 @@ import {
   acceptReplacementOutcomeAction,
   approveRefundPursuitAction,
 } from "./actions";
-import { recordExceptionEvidenceAction } from "./return-evidence-actions";
 
 type SearchParams = {
   success?: string;
@@ -165,6 +164,7 @@ export default async function InternalExceptionDetailPage({
             <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
               <p className="font-semibold">{finalOutcomeMessage(dispute)}</p>
               {dispute.replacement_child_order_id ? <p className="mt-1">Replacement child order: {dispute.replacement_child_order_id}</p> : null}
+              {hasCreditNoteEvidence ? <p className="mt-1">Credit-note evidence exists and should be reviewed through the operator evidence trail/control view.</p> : null}
             </div>
           ) : null}
         </section>
@@ -188,13 +188,13 @@ export default async function InternalExceptionDetailPage({
             ) : null}
             {isFinalOutcome ? (
               <p className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
-                Final outcome already accepted. No further supervisor action is required.
+                Final outcome already accepted. No further supervisor action is required here. Operator evidence upload belongs on the operator exception lane after supervisor approval/push.
               </p>
             ) : dispute.desired_outcome === "refund" ? (
               <div className="mt-4 space-y-3">
                 <form action={approveRefundPursuitAction}>
                   <input type="hidden" name="dispute_id" value={dispute.id} />
-                  <button type="submit" disabled={Boolean(dispute.refund_approved_at)} className="rounded-xl bg-amber-700 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">Approve refund pursuit</button>
+                  <button type="submit" disabled={Boolean(dispute.refund_approved_at)} className="rounded-xl bg-amber-700 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">Approve refund pursuit / push to operator</button>
                 </form>
                 <form action={acceptFinalRefundOutcomeAction}>
                   <input type="hidden" name="dispute_id" value={dispute.id} />
@@ -210,121 +210,6 @@ export default async function InternalExceptionDetailPage({
             {dispute.replacement_child_order_id ? <p className="mt-3 text-sm text-slate-700">Replacement child order: {dispute.replacement_child_order_id}</p> : null}
           </article>
         </section>
-
-        {dispute.desired_outcome === "refund" ? (
-          <section className="rounded-3xl border border-amber-200 bg-white p-6 shadow-sm">
-            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-              <div>
-                <p className="text-sm font-medium uppercase tracking-[0.2em] text-amber-600">Physical refund / credit note evidence</p>
-                <h2 className="mt-2 text-2xl font-semibold">Upload supplier credit note evidence</h2>
-                <p className="mt-2 max-w-3xl text-sm text-slate-600">
-                  Use this when the supplier invoice charged the item but the UK intake/refund path creates a supplier credit note. This links the credit note to the original order, supplier invoice and exception for later Sage supplier credit-note handling. It does not create a customer sales invoice line.
-                </p>
-              </div>
-              <span className={`rounded-full px-3 py-1 text-xs font-semibold ${hasCreditNoteEvidence ? "bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200" : "bg-amber-50 text-amber-800 ring-1 ring-amber-200"}`}>
-                {hasCreditNoteEvidence ? "Credit note evidence recorded" : "Credit note evidence not recorded"}
-              </span>
-            </div>
-
-            <form action={recordExceptionEvidenceAction} encType="multipart/form-data" className="mt-6 space-y-5">
-              <input type="hidden" name="dispute_id" value={dispute.id} />
-              <input type="hidden" name="original_order_id" value={order?.id ?? dispute.order_id} />
-
-              <div className="grid gap-4 lg:grid-cols-3">
-                <label className="block text-sm font-semibold text-slate-700">
-                  Original supplier invoice
-                  <select name="original_supplier_invoice_id" required className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm">
-                    {invoiceOptions.map((option) => (
-                      <option key={option.id} value={option.id}>
-                        {option.invoice_ref ?? option.id} {option.review_status ? `· ${option.review_status}` : ""}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="block text-sm font-semibold text-slate-700">
-                  Credit note ref
-                  <input name="credit_note_ref" required className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="e.g. CN-12345" />
-                </label>
-                <label className="block text-sm font-semibold text-slate-700">
-                  Credit note date
-                  <input name="credit_note_date" type="date" className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
-                </label>
-              </div>
-
-              <label className="block text-sm font-semibold text-slate-700">
-                Credit note file
-                <input name="credit_note_file" type="file" required className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm" />
-              </label>
-
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                <h3 className="font-semibold">Credit note lines</h3>
-                <p className="mt-1 text-xs text-slate-500">Enter positive values; the system records them as negative credit-note quantities and amounts.</p>
-                <div className="mt-4 space-y-3">
-                  {[1, 2, 3, 4, 5].map((lineNumber) => (
-                    <div key={lineNumber} className="grid gap-3 md:grid-cols-[1fr_120px_160px]">
-                      <input name={`line_${lineNumber}_description`} className="rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder={`Line ${lineNumber} description`} />
-                      <input name={`line_${lineNumber}_qty`} type="number" step="0.01" min="0" className="rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Qty" />
-                      <input name={`line_${lineNumber}_amount_gbp`} type="number" step="0.01" min="0" className="rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Amount GBP" />
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="grid gap-4 md:grid-cols-2">
-                <label className="block text-sm font-semibold text-slate-700">
-                  Delivery refund / adjustment GBP optional
-                  <input name="delivery_adjustment_gbp" type="number" step="0.01" min="0" className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="0.00" />
-                </label>
-                <label className="block text-sm font-semibold text-slate-700">
-                  Discount adjustment GBP optional
-                  <input name="discount_adjustment_gbp" type="number" step="0.01" min="0" className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="0.00" />
-                </label>
-              </div>
-
-              <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                <h3 className="font-semibold">Return / collection evidence optional</h3>
-                <p className="mt-1 text-xs text-slate-500">Retailer collection, label and proof are optional because retailers handle returns differently.</p>
-                <div className="mt-4 grid gap-4 md:grid-cols-3">
-                  <label className="block text-sm font-semibold text-slate-700">
-                    Return required
-                    <select name="return_required" className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm">
-                      <option value="unknown">Unknown</option>
-                      <option value="no">No</option>
-                      <option value="yes">Yes</option>
-                    </select>
-                  </label>
-                  <label className="block text-sm font-semibold text-slate-700">
-                    Collection date optional
-                    <input name="collection_date" type="date" className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
-                  </label>
-                  <label className="block text-sm font-semibold text-slate-700">
-                    Return tracking ref optional
-                    <input name="return_tracking_ref" className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
-                  </label>
-                </div>
-                <div className="mt-4 grid gap-4 md:grid-cols-2">
-                  <label className="block text-sm font-semibold text-slate-700">
-                    Return label upload optional
-                    <input name="return_label_file" type="file" className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm" />
-                  </label>
-                  <label className="block text-sm font-semibold text-slate-700">
-                    Return proof upload optional
-                    <input name="return_proof_file" type="file" className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm" />
-                  </label>
-                </div>
-              </div>
-
-              <label className="block text-sm font-semibold text-slate-700">
-                Notes optional
-                <textarea name="notes" rows={4} className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Retailer confirmed refund / collection / credit note details" />
-              </label>
-
-              <button type="submit" disabled={invoiceOptions.length === 0} className="rounded-xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">
-                Upload credit note evidence
-              </button>
-            </form>
-          </section>
-        ) : null}
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold">Conversation log</h2>
