@@ -1,4 +1,5 @@
 import AllocationResultToast from "./AllocationResultToast";
+import CompletedTargetGuard from "./CompletedTargetGuard";
 import SafeWorkspaceSelectionController from "./SafeWorkspaceSelectionController";
 
 export default function DvaWorkspaceLayout({ children }: { children: React.ReactNode }) {
@@ -6,6 +7,7 @@ export default function DvaWorkspaceLayout({ children }: { children: React.React
     <>
       <AllocationResultToast />
       {children}
+      <CompletedTargetGuard />
       <SafeWorkspaceSelectionController />
     </>
   );
