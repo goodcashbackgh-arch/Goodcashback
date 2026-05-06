@@ -43,18 +43,14 @@ export default function WorkspaceUrlSelectionHydrator() {
       return didEverything;
     };
 
-    const firstTimer = window.setTimeout(hydrateFromUrl, 120);
-    const secondTimer = window.setTimeout(hydrateFromUrl, 450);
-
-    const observer = new MutationObserver(() => {
-      hydrateFromUrl();
-    });
-    observer.observe(document.body, { childList: true, subtree: true });
+    const timers = [
+      window.setTimeout(hydrateFromUrl, 150),
+      window.setTimeout(hydrateFromUrl, 500),
+      window.setTimeout(hydrateFromUrl, 1000),
+    ];
 
     return () => {
-      window.clearTimeout(firstTimer);
-      window.clearTimeout(secondTimer);
-      observer.disconnect();
+      for (const timer of timers) window.clearTimeout(timer);
     };
   }, []);
 
