@@ -86,22 +86,12 @@ function classifyAnchor(anchor: HTMLAnchorElement): ClassifiedCard | null {
 
   const lineId = url.searchParams.get("line_id") || "";
   const targetId = url.searchParams.get("target_id") || "";
+  const isTargetCard = body.startsWith("Invoice") || body.startsWith("Exception");
 
-  if (lineId) {
-    const direction: Direction = /\bIN\b/.test(body) ? "in" : /\bOUT\b/.test(body) ? "out" : "neutral";
-    const amount = parseGbp(body);
-    return {
-      anchor,
-      id: lineId,
-      label: itemLabel(body),
-      amount,
-      signedAmount: signedAmount(direction, amount),
-      kind: "statement",
-      direction,
-    };
-  }
-
-  if (targetId && (body.startsWith("Invoice") || body.startsWith("Exception"))) {
+  // Right-pane cards often preserve the selected line_id in their URL.
+  // Classify them by their visible content first, otherwise a target card
+  // can be mistaken for a statement card and one click paints multiple cards.
+  if (targetId && isTargetCard) {
     const direction = inferTargetDirection(body);
     const targetType = inferTargetType(body);
     const amount = parseGbp(body.match(/Amount\s+£[\d,.]+/)?.[0] || body);
@@ -114,6 +104,20 @@ function classifyAnchor(anchor: HTMLAnchorElement): ClassifiedCard | null {
       kind: "target",
       direction,
       targetType,
+    };
+  }
+
+  if (lineId && !isTargetCard) {
+    const direction: Direction = /\bIN\b/.test(body) ? "in" : /\bOUT\b/.test(body) ? "out" : "neutral";
+    const amount = parseGbp(body);
+    return {
+      anchor,
+      id: lineId,
+      label: itemLabel(body),
+      amount,
+      signedAmount: signedAmount(direction, amount),
+      kind: "statement",
+      direction,
     };
   }
 
