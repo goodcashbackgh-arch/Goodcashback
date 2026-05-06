@@ -34,9 +34,7 @@ async function requireActiveOperator() {
     data: { user },
   } = await supabase.auth.getUser();
 
-  if (!user) {
-    return { supabase, ok: false as const, error: "Please sign in again." };
-  }
+  if (!user) return { supabase, ok: false as const, error: "Please sign in again." };
 
   const { data: operator } = await supabase
     .from("operators")
@@ -45,9 +43,7 @@ async function requireActiveOperator() {
     .eq("active", true)
     .maybeSingle();
 
-  if (!operator) {
-    return { supabase, ok: false as const, error: "Active operator account not found." };
-  }
+  if (!operator) return { supabase, ok: false as const, error: "Active operator account not found." };
 
   return { supabase, ok: true as const, operatorId: operator.id };
 }
@@ -59,9 +55,7 @@ async function requireDisputeAccess(supabase: Awaited<ReturnType<typeof createCl
     .eq("id", disputeId)
     .maybeSingle();
 
-  if (disputeError || !dispute) {
-    return { ok: false as const, error: "Dispute not found." };
-  }
+  if (disputeError || !dispute) return { ok: false as const, error: "Dispute not found." };
 
   const { data: order, error: orderError } = await supabase
     .from("orders")
@@ -69,9 +63,7 @@ async function requireDisputeAccess(supabase: Awaited<ReturnType<typeof createCl
     .eq("id", dispute.order_id)
     .maybeSingle();
 
-  if (orderError || !order?.importer_id) {
-    return { ok: false as const, error: "Dispute order importer could not be resolved." };
-  }
+  if (orderError || !order?.importer_id) return { ok: false as const, error: "Dispute order importer could not be resolved." };
 
   const { data: importerAccess, error: importerAccessError } = await supabase
     .from("operator_importers")
@@ -118,10 +110,7 @@ async function uploadEvidenceFile(
   if (!file) return "";
 
   const objectPath = `${folder}/${disputeId}/${Date.now()}-${safeFilename(file.name)}`;
-  const { error } = await supabase.storage
-    .from(INVOICE_EVIDENCE_BUCKET)
-    .upload(objectPath, file, { upsert: false });
-
+  const { error } = await supabase.storage.from(INVOICE_EVIDENCE_BUCKET).upload(objectPath, file, { upsert: false });
   if (error) throw new Error(error.message);
 
   const { data } = supabase.storage.from(INVOICE_EVIDENCE_BUCKET).getPublicUrl(objectPath);
@@ -190,6 +179,7 @@ export async function uploadOperatorCreditNoteEvidenceAction(formData: FormData)
   const documentMode = readString(formData, "document_mode") || "credit_note";
   const creditNoteRef = readString(formData, "credit_note_ref");
   const creditNoteDate = readString(formData, "credit_note_date");
+  const expectedCreditNoteTotalGbp = parseNumber(readString(formData, "expected_credit_note_total_gbp"));
   const returnRequired = readString(formData, "return_required") || "unknown";
   const collectionDate = readString(formData, "collection_date");
   const returnTrackingRef = readString(formData, "return_tracking_ref");
@@ -207,17 +197,16 @@ export async function uploadOperatorCreditNoteEvidenceAction(formData: FormData)
   const refundProofFile = readFile(formData, "refund_proof_file");
 
   if (documentMode === "credit_note" && !creditNoteRef) redirectWithResult(disputeId, { error: "Credit note reference is required when a credit note exists." });
+  if (documentMode === "credit_note" && expectedCreditNoteTotalGbp <= 0) redirectWithResult(disputeId, { error: "Expected credit note total is required when a credit note exists." });
   if (documentMode === "credit_note" && !creditNoteFile) redirectWithResult(disputeId, { error: "Credit note file upload is required when a credit note exists." });
   if (documentMode === "refund_proof_no_credit_note" && !refundProofFile && !notes) {
     redirectWithResult(disputeId, { error: "Upload refund proof or add notes when no credit note was issued." });
   }
-  if (documentMode === "no_document" && !notes) {
-    redirectWithResult(disputeId, { error: "Add notes explaining why no document was issued." });
-  }
+  if (documentMode === "no_document" && !notes) redirectWithResult(disputeId, { error: "Add notes explaining why no document was issued." });
 
   const refundLines = buildRefundEvidenceLines(formData);
-  if (refundLines.lines.length < 1 && deliveryAdjustmentGbp === 0 && discountAdjustmentGbp === 0) {
-    redirectWithResult(disputeId, { error: "Add at least one refund evidence line or adjustment." });
+  if (documentMode !== "credit_note" && refundLines.lines.length < 1 && deliveryAdjustmentGbp === 0 && discountAdjustmentGbp === 0) {
+    redirectWithResult(disputeId, { error: "Confirm at least one prefilled refund line or adjustment." });
   }
 
   const guard = await requireActiveOperator();
@@ -226,17 +215,11 @@ export async function uploadOperatorCreditNoteEvidenceAction(formData: FormData)
   const accessGuard = await requireDisputeAccess(guard.supabase, guard.operatorId, disputeId);
   if (!accessGuard.ok) redirectWithResult(disputeId, { error: accessGuard.error });
 
-  if (accessGuard.dispute.desired_outcome !== "refund") {
-    redirectWithResult(disputeId, { error: "Refund evidence belongs to refund exceptions only." });
-  }
-
+  if (accessGuard.dispute.desired_outcome !== "refund") redirectWithResult(disputeId, { error: "Refund evidence belongs to refund exceptions only." });
   if (accessGuard.dispute.status !== "awaiting_refund_credit") {
     redirectWithResult(disputeId, { error: "Supervisor must accept the final retailer refund outcome before refund evidence is uploaded." });
   }
-
-  if (accessGuard.dispute.order_id !== originalOrderId) {
-    redirectWithResult(disputeId, { error: "Original order link does not match this dispute." });
-  }
+  if (accessGuard.dispute.order_id !== originalOrderId) redirectWithResult(disputeId, { error: "Original order link does not match this dispute." });
 
   const { data: invoice, error: invoiceError } = await guard.supabase
     .from("supplier_invoices")
@@ -245,40 +228,35 @@ export async function uploadOperatorCreditNoteEvidenceAction(formData: FormData)
     .eq("order_id", originalOrderId)
     .maybeSingle();
 
-  if (invoiceError || !invoice) {
-    redirectWithResult(disputeId, { error: invoiceError?.message ?? "Supplier invoice is not linked to this dispute order." });
-  }
+  if (invoiceError || !invoice) redirectWithResult(disputeId, { error: invoiceError?.message ?? "Supplier invoice is not linked to this dispute order." });
 
   const expectedAmountAbs = Math.abs(Number(accessGuard.dispute.amount_impact_gbp ?? 0));
-  const capturedAmountAbs = refundLines.totalAmountAbs + Math.abs(deliveryAdjustmentGbp) + Math.abs(discountAdjustmentGbp);
+  const capturedAmountAbs =
+    documentMode === "credit_note"
+      ? expectedCreditNoteTotalGbp + Math.abs(deliveryAdjustmentGbp) + Math.abs(discountAdjustmentGbp)
+      : refundLines.totalAmountAbs + Math.abs(deliveryAdjustmentGbp) + Math.abs(discountAdjustmentGbp);
   const varianceAbs = Math.abs(capturedAmountAbs - expectedAmountAbs);
-  const balanceStatus = varianceAbs <= 0.01 ? "balanced_to_exception" : "variance_supervisor_review_required";
+  const amountBalanceStatus = varianceAbs <= 0.01 ? "balanced_to_exception" : "variance_supervisor_review_required";
+  const evidenceControlStatus =
+    documentMode === "credit_note"
+      ? "credit_note_uploaded_pending_ocr_compare"
+      : documentMode === "no_document"
+        ? "no_document_supervisor_review_required"
+        : amountBalanceStatus === "balanced_to_exception"
+          ? "refund_adjustment_ready_no_credit_note"
+          : "variance_supervisor_review_required";
+  const supplierReadinessRoute =
+    documentMode === "credit_note"
+      ? "supplier_credit_note_readiness_pending_ocr"
+      : evidenceControlStatus === "refund_adjustment_ready_no_credit_note"
+        ? "supplier_refund_adjustment_ready"
+        : "supplier_refund_adjustment_review_required";
 
   try {
-    const creditNoteFileUrl = await uploadEvidenceFile(
-      guard.supabase,
-      disputeId,
-      "exception-credit-notes",
-      documentMode === "credit_note" ? creditNoteFile : null,
-    );
-    const refundProofFileUrl = await uploadEvidenceFile(
-      guard.supabase,
-      disputeId,
-      "exception-refund-proofs",
-      documentMode === "refund_proof_no_credit_note" ? refundProofFile : null,
-    );
-    const returnLabelFileUrl = await uploadEvidenceFile(
-      guard.supabase,
-      disputeId,
-      "exception-return-labels",
-      readFile(formData, "return_label_file"),
-    );
-    const returnProofFileUrl = await uploadEvidenceFile(
-      guard.supabase,
-      disputeId,
-      "exception-return-proofs",
-      readFile(formData, "return_proof_file"),
-    );
+    const creditNoteFileUrl = await uploadEvidenceFile(guard.supabase, disputeId, "exception-credit-notes", documentMode === "credit_note" ? creditNoteFile : null);
+    const refundProofFileUrl = await uploadEvidenceFile(guard.supabase, disputeId, "exception-refund-proofs", documentMode === "refund_proof_no_credit_note" ? refundProofFile : null);
+    const returnLabelFileUrl = await uploadEvidenceFile(guard.supabase, disputeId, "exception-return-labels", readFile(formData, "return_label_file"));
+    const returnProofFileUrl = await uploadEvidenceFile(guard.supabase, disputeId, "exception-return-proofs", readFile(formData, "return_proof_file"));
 
     const body = [
       "[REFUND_EVIDENCE_V1]",
@@ -291,16 +269,20 @@ export async function uploadOperatorCreditNoteEvidenceAction(formData: FormData)
       `dispute_id: ${disputeId}`,
       `credit_note_ref: ${creditNoteRef || "—"}`,
       `credit_note_date: ${creditNoteDate || "—"}`,
+      `operator_expected_credit_note_total_gbp: ${expectedCreditNoteTotalGbp.toFixed(2)}`,
       `credit_note_file_url: ${creditNoteFileUrl || "—"}`,
       `refund_proof_file_url: ${refundProofFileUrl || "—"}`,
+      `ocr_status: ${documentMode === "credit_note" ? "pending_credit_note_ocr_compare" : "not_applicable"}`,
       "refund_evidence_lines:",
-      ...(refundLines.lines.length ? refundLines.lines : ["  - none"]),
+      ...(documentMode === "credit_note" ? ["  - OCR to extract credit note lines"] : refundLines.lines.length ? refundLines.lines : ["  - none"]),
       `delivery_adjustment_gbp: ${deliveryAdjustmentGbp.toFixed(2)}`,
       `discount_adjustment_gbp: ${discountAdjustmentGbp.toFixed(2)}`,
       `expected_exception_amount_abs_gbp: ${expectedAmountAbs.toFixed(2)}`,
       `captured_refund_amount_abs_gbp: ${capturedAmountAbs.toFixed(2)}`,
       `variance_abs_gbp: ${varianceAbs.toFixed(2)}`,
-      `evidence_balance_status: ${balanceStatus}`,
+      `amount_balance_status: ${amountBalanceStatus}`,
+      `evidence_control_status: ${evidenceControlStatus}`,
+      `supplier_readiness_route: ${supplierReadinessRoute}`,
       `return_required: ${returnRequired}`,
       optionalLine("collection_date", collectionDate),
       optionalLine("return_tracking_ref", returnTrackingRef),
@@ -325,7 +307,8 @@ export async function uploadOperatorCreditNoteEvidenceAction(formData: FormData)
 
   revalidatePath(`/importer/exceptions/${disputeId}`);
   revalidatePath(`/internal/exceptions/${disputeId}`);
+  revalidatePath(`/internal/supplier-draft-ready`);
   revalidatePath(`/internal/dva-reconciliation/exception-actions`);
   revalidatePath(`/internal/status-control/pre-sage-financial-readiness`);
-  redirectWithResult(disputeId, { success: "Refund evidence uploaded for supervisor review." });
+  redirectWithResult(disputeId, { success: "Refund evidence uploaded and routed to supplier readiness control." });
 }
