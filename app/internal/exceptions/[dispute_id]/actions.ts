@@ -76,7 +76,6 @@ async function requireRetailerMessageAndAcceptedOutcome(supabase: Awaited<Return
   return { ok: true as const };
 }
 
-
 async function transitionDisputeStatus(
   supabase: Awaited<ReturnType<typeof createClient>>,
   disputeId: string,
@@ -199,6 +198,69 @@ export async function acceptFinalRefundOutcomeAction(formData: FormData) {
   redirectWithResult(disputeId, { success: "Final refund outcome accepted." });
 }
 
+export async function reviewRefundEvidenceAction(formData: FormData) {
+  const disputeId = readString(formData, "dispute_id");
+  const reviewDecision = readString(formData, "review_decision");
+  const reviewNotes = readString(formData, "review_notes");
+
+  if (!disputeId) redirect("/internal/exceptions");
+  if (!["accepted", "hold", "rejected"].includes(reviewDecision)) {
+    redirectWithResult(disputeId, { error: "Select a valid refund evidence review decision." });
+  }
+
+  const guard = await requireActiveStaff();
+  if (!guard.ok) redirectWithResult(disputeId, { error: guard.error });
+
+  const { data: dispute, error: disputeError } = await guard.supabase
+    .from("disputes")
+    .select("id, desired_outcome, status")
+    .eq("id", disputeId)
+    .maybeSingle();
+
+  if (disputeError || !dispute) redirectWithResult(disputeId, { error: "Dispute not found." });
+  if (dispute.desired_outcome !== "refund") redirectWithResult(disputeId, { error: "Refund evidence review is only available for refund disputes." });
+  if (dispute.status !== "awaiting_refund_credit") {
+    redirectWithResult(disputeId, { error: `Refund evidence review requires awaiting_refund_credit status. Current status: ${dispute.status}.` });
+  }
+
+  const { data: evidenceMessages, error: evidenceError } = await guard.supabase
+    .from("dispute_messages")
+    .select("id, created_at")
+    .eq("dispute_id", disputeId)
+    .in("message_type", ["credit_note_evidence", "refund_evidence"])
+    .order("created_at", { ascending: false })
+    .limit(1);
+
+  if (evidenceError) redirectWithResult(disputeId, { error: evidenceError.message });
+  if (!evidenceMessages || evidenceMessages.length < 1) {
+    redirectWithResult(disputeId, { error: "Operator refund/credit-note evidence must be uploaded before supervisor review." });
+  }
+
+  const body = [
+    "[REFUND_EVIDENCE_REVIEW_V1]",
+    `reviewed_by_staff_id: ${guard.staffId}`,
+    `review_decision: ${reviewDecision}`,
+    `source_evidence_message_id: ${evidenceMessages[0].id}`,
+    "",
+    reviewNotes || "No review notes.",
+  ].join("\n");
+
+  const { error } = await guard.supabase.from("dispute_messages").insert({
+    dispute_id: disputeId,
+    message_type: "refund_evidence_review",
+    counterparty: "internal",
+    body,
+    generated_by: "supervisor_review",
+  });
+
+  if (error) redirectWithResult(disputeId, { error: error.message });
+
+  revalidatePath(`/internal/exceptions/${disputeId}`);
+  revalidatePath(`/importer/exceptions/${disputeId}`);
+  revalidatePath(`/internal/status-control/pre-sage-financial-readiness`);
+  redirectWithResult(disputeId, { success: `Refund evidence review saved: ${reviewDecision}.` });
+}
+
 export async function acceptReplacementOutcomeAction(formData: FormData) {
   const disputeId = readString(formData, "dispute_id");
   if (!disputeId) redirect("/internal/exceptions");
@@ -314,6 +376,6 @@ export async function acceptReplacementOutcomeAction(formData: FormData) {
 
   revalidatePath(`/internal/exceptions/${disputeId}`);
   revalidatePath(`/importer/exceptions/${disputeId}`);
-  revalidatePath("/internal/exceptions");
+  revalidatePath("/importer");
   redirectWithResult(disputeId, { success: "Replacement outcome accepted and child order created." });
 }
