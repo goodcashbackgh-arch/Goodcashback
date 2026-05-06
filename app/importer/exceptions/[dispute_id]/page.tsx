@@ -2,7 +2,8 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import FlashQueryParamCleaner from "@/app/_components/FlashQueryParamCleaner";
 import { createClient } from "@/utils/supabase/server";
-import { saveRetailerUpdateAction, uploadOperatorCreditNoteEvidenceAction } from "./actions";
+import { saveRetailerUpdateAction } from "./actions";
+import RefundEvidenceModeSelector from "./RefundEvidenceModeSelector";
 
 type SearchParams = {
   success?: string;
@@ -58,81 +59,6 @@ function normaliseAbsNumber(value: unknown) {
   return Number.isFinite(parsed) ? Math.abs(parsed) : 0;
 }
 
-function RefundLineInputs({ prefillLines }: { prefillLines: PrefillLine[] }) {
-  return (
-    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-      <h3 className="font-semibold">Refund adjustment lines</h3>
-      <p className="mt-1 text-xs text-slate-500">
-        Prefilled from the exception. Use this only when there is no retailer credit note. Values are stored as negative refund adjustment evidence.
-      </p>
-      <div className="mt-4 space-y-3">
-        {prefillLines.map((line, index) => {
-          const lineNumber = index + 1;
-          return (
-            <div key={lineNumber} className="grid gap-3 md:grid-cols-[1fr_120px_160px]">
-              <input name={`line_${lineNumber}_description`} defaultValue={line.description} className="rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder={`Line ${lineNumber} description`} />
-              <input name={`line_${lineNumber}_qty`} type="number" step="0.01" min="0" defaultValue={line.qty || ""} className="rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Qty" />
-              <input name={`line_${lineNumber}_amount_gbp`} type="number" step="0.01" min="0" defaultValue={line.amount || ""} className="rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Amount GBP" />
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function ReturnEvidenceInputs() {
-  return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-4">
-      <h3 className="font-semibold">Return / collection evidence optional</h3>
-      <p className="mt-1 text-xs text-slate-500">Retailer collection, label and proof are optional because retailers handle returns differently.</p>
-      <div className="mt-4 grid gap-4 md:grid-cols-3">
-        <label className="block text-sm font-semibold text-slate-700">
-          Return required
-          <select name="return_required" className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm">
-            <option value="unknown">Unknown</option>
-            <option value="no">No</option>
-            <option value="yes">Yes</option>
-          </select>
-        </label>
-        <label className="block text-sm font-semibold text-slate-700">
-          Collection date optional
-          <input name="collection_date" type="date" className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
-        </label>
-        <label className="block text-sm font-semibold text-slate-700">
-          Return tracking ref optional
-          <input name="return_tracking_ref" className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
-        </label>
-      </div>
-      <div className="mt-4 grid gap-4 md:grid-cols-2">
-        <label className="block text-sm font-semibold text-slate-700">
-          Return label upload optional
-          <input name="return_label_file" type="file" className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm" />
-        </label>
-        <label className="block text-sm font-semibold text-slate-700">
-          Return proof upload optional
-          <input name="return_proof_file" type="file" className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm" />
-        </label>
-      </div>
-    </div>
-  );
-}
-
-function InvoiceSelector({ invoiceOptions }: { invoiceOptions: SupplierInvoiceOption[] }) {
-  return (
-    <label className="block text-sm font-semibold text-slate-700">
-      Original supplier invoice
-      <select name="original_supplier_invoice_id" required className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm">
-        {invoiceOptions.map((option) => (
-          <option key={option.id} value={option.id}>
-            {option.invoice_ref ?? option.id} {option.review_status ? `· ${option.review_status}` : ""}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-}
-
 export default async function ImporterExceptionDetailPage({
   params,
   searchParams,
@@ -153,14 +79,26 @@ export default async function ImporterExceptionDetailPage({
   if (disputeError || !dispute) notFound();
 
   const [{ data: order }, { data: lines }, { data: messages }, { data: supplierInvoices }] = await Promise.all([
-    supabase.from("orders").select("id, order_ref, total_qty_declared, order_total_gbp_declared").eq("id", dispute.order_id).maybeSingle(),
+    supabase
+      .from("orders")
+      .select("id, order_ref, total_qty_declared, order_total_gbp_declared")
+      .eq("id", dispute.order_id)
+      .maybeSingle(),
     supabase
       .from("dispute_lines")
       .select("id, qty_impact, amount_impact_gbp, conversation_status, supplier_invoice_lines!inner(id, line_order, line_source, description)")
       .eq("dispute_id", disputeId)
       .order("created_at", { ascending: true }),
-    supabase.from("dispute_messages").select("id, message_type, counterparty, body, generated_by, created_at").eq("dispute_id", disputeId).order("created_at", { ascending: true }),
-    supabase.from("supplier_invoices").select("id, invoice_ref, review_status, uploaded_at").eq("order_id", dispute.order_id).order("uploaded_at", { ascending: false }),
+    supabase
+      .from("dispute_messages")
+      .select("id, message_type, counterparty, body, generated_by, created_at")
+      .eq("dispute_id", disputeId)
+      .order("created_at", { ascending: true }),
+    supabase
+      .from("supplier_invoices")
+      .select("id, invoice_ref, review_status, uploaded_at")
+      .eq("order_id", dispute.order_id)
+      .order("uploaded_at", { ascending: false }),
   ]);
 
   const activeStatus = (lines ?? []).find((line) => line.conversation_status)?.conversation_status ?? "retailer_contacted";
@@ -263,7 +201,7 @@ export default async function ImporterExceptionDetailPage({
                 <p className="text-sm font-medium uppercase tracking-[0.2em] text-amber-600">Refund evidence after supervisor acceptance</p>
                 <h2 className="mt-2 text-xl font-semibold">Route refund evidence to supplier readiness</h2>
                 <p className="mt-2 max-w-3xl text-sm text-slate-600">
-                  Credit notes follow the invoice-style path: submit expected total and file first, then OCR/compare later. If no credit note exists, confirm the prefilled exception lines so the system can create a refund-adjustment readiness item.
+                  Choose what the retailer provided. The page then shows only the relevant form, reducing operator error.
                 </p>
               </div>
               <span className={`rounded-full px-3 py-1 text-xs font-semibold ${hasRefundEvidence ? "bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200" : "bg-amber-50 text-amber-800 ring-1 ring-amber-200"}`}>
@@ -278,88 +216,12 @@ export default async function ImporterExceptionDetailPage({
             ) : invoiceOptions.length === 0 ? (
               <p className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">No supplier invoice is linked to this order yet, so refund evidence cannot be linked safely.</p>
             ) : (
-              <div className="mt-6 grid gap-6 lg:grid-cols-2">
-                <form action={uploadOperatorCreditNoteEvidenceAction} encType="multipart/form-data" className="space-y-5 rounded-3xl border border-slate-200 bg-slate-50 p-5">
-                  <input type="hidden" name="dispute_id" value={dispute.id} />
-                  <input type="hidden" name="original_order_id" value={order?.id ?? dispute.order_id} />
-                  <input type="hidden" name="document_mode" value="credit_note" />
-                  <h3 className="text-lg font-semibold">A. Retailer issued credit note</h3>
-                  <p className="text-sm text-slate-600">Use this like supplier invoice upload: enter the expected credit-note total and upload the document. OCR/compare should decide whether it is ready or needs review.</p>
-                  <InvoiceSelector invoiceOptions={invoiceOptions} />
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <label className="block text-sm font-semibold text-slate-700">
-                      Credit note ref
-                      <input name="credit_note_ref" required className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="e.g. CN-12345" />
-                    </label>
-                    <label className="block text-sm font-semibold text-slate-700">
-                      Expected credit note total GBP
-                      <input name="expected_credit_note_total_gbp" type="number" step="0.01" min="0" required className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="0.00" />
-                    </label>
-                  </div>
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <label className="block text-sm font-semibold text-slate-700">
-                      Credit note date optional
-                      <input name="credit_note_date" type="date" className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
-                    </label>
-                    <label className="block text-sm font-semibold text-slate-700">
-                      Credit note file
-                      <input name="credit_note_file" type="file" required className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm" />
-                    </label>
-                  </div>
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <label className="block text-sm font-semibold text-slate-700">
-                      Delivery refund / adjustment GBP optional
-                      <input name="delivery_adjustment_gbp" type="number" step="0.01" min="0" className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="0.00" />
-                    </label>
-                    <label className="block text-sm font-semibold text-slate-700">
-                      Discount adjustment GBP optional
-                      <input name="discount_adjustment_gbp" type="number" step="0.01" min="0" className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="0.00" />
-                    </label>
-                  </div>
-                  <ReturnEvidenceInputs />
-                  <label className="block text-sm font-semibold text-slate-700">
-                    Notes optional
-                    <textarea name="notes" rows={3} className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
-                  </label>
-                  <button type="submit" className="rounded-xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white">Submit credit note for OCR/readiness</button>
-                </form>
-
-                <form action={uploadOperatorCreditNoteEvidenceAction} encType="multipart/form-data" className="space-y-5 rounded-3xl border border-slate-200 bg-white p-5">
-                  <input type="hidden" name="dispute_id" value={dispute.id} />
-                  <input type="hidden" name="original_order_id" value={order?.id ?? dispute.order_id} />
-                  <h3 className="text-lg font-semibold">B. Refund without credit note</h3>
-                  <p className="text-sm text-slate-600">Use this when the retailer refunds without issuing a credit note. The prefilled lines become the stand-in refund adjustment source for supplier readiness if the amount matches.</p>
-                  <InvoiceSelector invoiceOptions={invoiceOptions} />
-                  <label className="block text-sm font-semibold text-slate-700">
-                    Document position
-                    <select name="document_mode" className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm" defaultValue="refund_proof_no_credit_note">
-                      <option value="refund_proof_no_credit_note">Refund proof but no credit note</option>
-                      <option value="no_document">No document issued</option>
-                    </select>
-                  </label>
-                  <label className="block text-sm font-semibold text-slate-700">
-                    Refund proof file optional if notes explain it
-                    <input name="refund_proof_file" type="file" className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm" />
-                  </label>
-                  <RefundLineInputs prefillLines={prefillLines} />
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <label className="block text-sm font-semibold text-slate-700">
-                      Delivery refund / adjustment GBP optional
-                      <input name="delivery_adjustment_gbp" type="number" step="0.01" min="0" className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="0.00" />
-                    </label>
-                    <label className="block text-sm font-semibold text-slate-700">
-                      Discount adjustment GBP optional
-                      <input name="discount_adjustment_gbp" type="number" step="0.01" min="0" className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="0.00" />
-                    </label>
-                  </div>
-                  <ReturnEvidenceInputs />
-                  <label className="block text-sm font-semibold text-slate-700">
-                    Notes required if no document
-                    <textarea name="notes" rows={3} className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Retailer refunded without credit note / no document issued" />
-                  </label>
-                  <button type="submit" className="rounded-xl bg-sky-700 px-5 py-3 text-sm font-semibold text-white">Submit refund adjustment evidence</button>
-                </form>
-              </div>
+              <RefundEvidenceModeSelector
+                disputeId={dispute.id}
+                originalOrderId={order?.id ?? dispute.order_id}
+                invoiceOptions={invoiceOptions}
+                prefillLines={prefillLines}
+              />
             )}
           </section>
         ) : null}
