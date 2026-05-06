@@ -33,6 +33,30 @@ type InvoiceRow = {
   order_value_adjustments: { adjustment_type: string; amount_gbp: number | null; approval_status: string | null }[] | null;
 };
 
+type RefundEvidenceMessage = {
+  id: string;
+  dispute_id: string;
+  message_type: string | null;
+  body: string | null;
+  created_at: string | null;
+  generated_by: string | null;
+};
+
+type DisputeRow = {
+  id: string;
+  order_id: string;
+  desired_outcome: string | null;
+  status: string | null;
+  amount_impact_gbp: number | null;
+};
+
+type OrderLite = {
+  id: string;
+  order_ref: string | null;
+  retailers: { name: string | null } | { name: string | null }[] | null;
+  importers: { company_name: string | null } | { company_name: string | null }[] | null;
+};
+
 function firstRelated<T>(value: T | T[] | null | undefined): T | null {
   if (!value) return null;
   return Array.isArray(value) ? value[0] ?? null : value;
@@ -82,6 +106,33 @@ function adjustmentTotal(invoice: InvoiceRow, type: string) {
 
 function activeFlagCount(invoice: InvoiceRow) {
   return (invoice.supplier_invoice_review_flags ?? []).filter((flag) => ["open", "under_review"].includes(flag.status)).length;
+}
+
+function bodyValue(body: string | null | undefined, key: string) {
+  const line = (body ?? "").split("\n").find((row) => row.startsWith(`${key}:`));
+  return line ? line.slice(key.length + 1).trim() : "";
+}
+
+function evidenceStatus(body: string | null | undefined) {
+  const text = body ?? "";
+  if (text.includes("credit_note_uploaded_pending_ocr_compare")) return "Credit note pending OCR/compare";
+  if (text.includes("refund_adjustment_ready_no_credit_note")) return "Refund adjustment ready";
+  if (text.includes("variance_supervisor_review_required")) return "Variance review needed";
+  if (text.includes("no_document_supervisor_review_required")) return "No-document review needed";
+  if (text.includes("supplier_refund_adjustment_review_required")) return "Review needed";
+  return "Evidence uploaded";
+}
+
+function evidenceBadgeClass(body: string | null | undefined) {
+  const text = body ?? "";
+  if (text.includes("refund_adjustment_ready_no_credit_note")) return "bg-emerald-100 text-emerald-800";
+  if (text.includes("credit_note_uploaded_pending_ocr_compare")) return "bg-sky-100 text-sky-800";
+  if (text.includes("review_required")) return "bg-amber-100 text-amber-800";
+  return "bg-slate-100 text-slate-800";
+}
+
+function evidenceRoute(body: string | null | undefined) {
+  return bodyValue(body, "supplier_readiness_route") || "—";
 }
 
 export default async function SupplierDraftReadyPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
@@ -136,6 +187,41 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
   const readyInvoices = invoices.filter((invoice) => !readinessByInvoiceId.get(invoice.id) && !invoice.is_current_for_order);
   const blockedCount = invoices.length - readyInvoices.length;
 
+  const { data: refundEvidenceRaw } = await supabase
+    .from("dispute_messages")
+    .select("id, dispute_id, message_type, body, created_at, generated_by")
+    .in("message_type", ["credit_note_evidence", "refund_evidence"])
+    .order("created_at", { ascending: false })
+    .limit(50);
+
+  const refundEvidence = (refundEvidenceRaw ?? []) as RefundEvidenceMessage[];
+  const disputeIds = [...new Set(refundEvidence.map((row) => row.dispute_id).filter(Boolean))];
+
+  const { data: disputesRaw } = disputeIds.length
+    ? await supabase
+        .from("disputes")
+        .select("id, order_id, desired_outcome, status, amount_impact_gbp")
+        .in("id", disputeIds)
+    : { data: [] };
+
+  const disputes = (disputesRaw ?? []) as DisputeRow[];
+  const orderIds = [...new Set(disputes.map((row) => row.order_id).filter(Boolean))];
+
+  const { data: ordersRaw } = orderIds.length
+    ? await supabase
+        .from("orders")
+        .select("id, order_ref, retailers(name), importers(company_name)")
+        .in("id", orderIds)
+    : { data: [] };
+
+  const disputeById = new Map(disputes.map((row) => [row.id, row]));
+  const orderById = new Map(((ordersRaw ?? []) as unknown as OrderLite[]).map((row) => [row.id, row]));
+  const latestEvidenceByDispute = new Map<string, RefundEvidenceMessage>();
+  for (const row of refundEvidence) {
+    if (!latestEvidenceByDispute.has(row.dispute_id)) latestEvidenceByDispute.set(row.dispute_id, row);
+  }
+  const refundReadinessRows = [...latestEvidenceByDispute.values()];
+
   return (
     <main className="min-h-screen bg-slate-50 px-6 py-8 text-slate-950">
       <div className="mx-auto flex max-w-7xl flex-col gap-6">
@@ -144,9 +230,9 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-emerald-500">Supplier draft ready</p>
           <div className="mt-3 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
             <div>
-              <h1 className="text-3xl font-semibold tracking-tight">Clean supplier invoices ready for approval</h1>
+              <h1 className="text-3xl font-semibold tracking-tight">Supplier invoices and refund credits ready for control</h1>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-                This lane shows active invoices that have passed the readiness gate. Approving here marks the supplier invoice as current for later Sage supplier draft preparation; it does not post to Sage yet.
+                This lane shows active supplier invoices ready for current approval and refund/credit-note evidence routed from exceptions. Approving here marks supplier-side records as ready for later Sage preparation; it does not post to Sage yet.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700">
@@ -160,10 +246,66 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
 
         {error ? <section className="rounded-3xl border border-rose-200 bg-rose-50 p-5 text-sm text-rose-800">Failed to load supplier draft queue: {error.message}</section> : null}
 
-        <section className="grid gap-4 md:grid-cols-3">
-          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-sm uppercase tracking-wide text-slate-500">Ready for approval</p><p className="mt-2 text-3xl font-semibold">{readyInvoices.length}</p></div>
-          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-sm uppercase tracking-wide text-slate-500">Blocked elsewhere</p><p className="mt-2 text-3xl font-semibold">{blockedCount}</p></div>
-          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-sm uppercase tracking-wide text-slate-500">Loaded active invoices checked</p><p className="mt-2 text-3xl font-semibold">{invoices.length}</p></div>
+        <section className="grid gap-4 md:grid-cols-4">
+          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-sm uppercase tracking-wide text-slate-500">Invoices ready</p><p className="mt-2 text-3xl font-semibold">{readyInvoices.length}</p></div>
+          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-sm uppercase tracking-wide text-slate-500">Blocked invoices</p><p className="mt-2 text-3xl font-semibold">{blockedCount}</p></div>
+          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-sm uppercase tracking-wide text-slate-500">Refund/credit evidence</p><p className="mt-2 text-3xl font-semibold">{refundReadinessRows.length}</p></div>
+          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-sm uppercase tracking-wide text-slate-500">Loaded invoices checked</p><p className="mt-2 text-3xl font-semibold">{invoices.length}</p></div>
+        </section>
+
+        <section className="rounded-3xl border border-sky-200 bg-white p-6 shadow-sm">
+          <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+            <div>
+              <p className="text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Refund / credit-note readiness</p>
+              <h2 className="mt-2 text-xl font-semibold">Supplier-side refund evidence routed from exceptions</h2>
+              <p className="mt-2 max-w-3xl text-sm text-slate-600">
+                Credit notes should be OCR-compared before supplier credit-note readiness. Refunds without credit notes can become refund-adjustment readiness if the amount matches the exception. DVA/card refund IN matching still clears the money position.
+              </p>
+            </div>
+          </div>
+
+          {refundReadinessRows.length === 0 ? (
+            <p className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">No refund or credit-note evidence has been routed here yet.</p>
+          ) : (
+            <div className="mt-5 grid gap-4">
+              {refundReadinessRows.map((evidence) => {
+                const dispute = disputeById.get(evidence.dispute_id);
+                const order = dispute ? orderById.get(dispute.order_id) : null;
+                const retailer = firstRelated(order?.retailers)?.name ?? "—";
+                const importer = firstRelated(order?.importers)?.company_name ?? "—";
+                const documentMode = bodyValue(evidence.body, "document_mode") || "—";
+                const expectedTotal = bodyValue(evidence.body, "operator_expected_credit_note_total_gbp") || bodyValue(evidence.body, "captured_refund_amount_abs_gbp") || "0";
+                const creditNoteRef = bodyValue(evidence.body, "credit_note_ref") || "—";
+                const route = evidenceRoute(evidence.body);
+
+                return (
+                  <article key={evidence.id} className="rounded-3xl border border-sky-100 bg-sky-50 p-5 shadow-sm">
+                    <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                      <div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <h3 className="text-lg font-semibold">{order?.order_ref ?? dispute?.order_id ?? evidence.dispute_id}</h3>
+                          <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${evidenceBadgeClass(evidence.body)}`}>{evidenceStatus(evidence.body)}</span>
+                        </div>
+                        <p className="mt-2 text-sm text-slate-600">Importer: {importer} · Retailer: {retailer}</p>
+                        <p className="text-sm text-slate-600">Document mode: {documentMode} · Credit note ref: {creditNoteRef}</p>
+                        <p className="text-sm text-slate-600">Route: {route}</p>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <Link href={`/internal/exceptions/${evidence.dispute_id}`} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">Open exception</Link>
+                        {dispute?.order_id ? <Link href={`/internal/evidence/${dispute.order_id}`} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">Open order</Link> : null}
+                      </div>
+                    </div>
+                    <div className="mt-4 grid gap-3 md:grid-cols-4">
+                      <div className="rounded-2xl bg-white p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Exception amount</p><p className="mt-1 font-semibold">{gbp(dispute?.amount_impact_gbp)}</p></div>
+                      <div className="rounded-2xl bg-white p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Captured / expected</p><p className="mt-1 font-semibold">{gbp(expectedTotal)}</p></div>
+                      <div className="rounded-2xl bg-white p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Evidence date</p><p className="mt-1 font-semibold">{evidence.created_at ? new Date(evidence.created_at).toLocaleDateString("en-GB") : "—"}</p></div>
+                      <div className="rounded-2xl bg-white p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Generated by</p><p className="mt-1 font-semibold">{evidence.generated_by ?? "—"}</p></div>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          )}
         </section>
 
         <form id="bulk-approve-supplier-invoices" action={bulkApproveSupplierInvoicesCurrentAction} />
@@ -208,12 +350,7 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
                     <Link href={`/internal/evidence/${invoice.order_id}`} className="rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">Open order</Link>
                     <Link href={`/internal/reconciliation/${invoice.order_id}`} className="rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">Open reconciliation</Link>
                     <a href={invoice.invoice_pdf_url} target="_blank" rel="noreferrer" className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white">Open invoice</a>
-                    <button
-                      form={singleApproveFormId}
-                      className="rounded-xl bg-emerald-700 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-600"
-                    >
-                      Approve current
-                    </button>
+                    <button form={singleApproveFormId} className="rounded-xl bg-emerald-700 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-600">Approve current</button>
                   </div>
                 </div>
 
