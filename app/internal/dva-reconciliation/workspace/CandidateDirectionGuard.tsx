@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 
-type Direction = "IN" | "OUT" | "UNKNOWN";
+type Direction = "IN" | "OUT" | "MIXED" | "UNKNOWN";
 
 function cardText(anchor: HTMLAnchorElement) {
   return (anchor.innerText || "").trim();
@@ -30,10 +30,10 @@ function targetDirection(anchor: HTMLAnchorElement): Direction {
 
   if (body.startsWith("invoice")) return "OUT";
   if (body.startsWith("exception") && body.includes("refund")) return "IN";
-  if (body.startsWith("exception") && body.includes("replacement") && body.includes("raised")) return "OUT";
-  if (body.startsWith("exception") && body.includes("replacement") && body.includes("replaced")) return "UNKNOWN";
   if (body.startsWith("exception") && body.includes("awaiting_refund_credit")) return "IN";
   if (body.startsWith("exception") && body.includes("approved_refund")) return "IN";
+  if (body.startsWith("exception") && body.includes("replacement") && body.includes("raised")) return "OUT";
+  if (body.startsWith("exception") && body.includes("replacement") && body.includes("replaced")) return "UNKNOWN";
 
   return "UNKNOWN";
 }
@@ -46,8 +46,43 @@ function targetStatus(anchor: HTMLAnchorElement) {
   return "open";
 }
 
+function isSelectedByClient(anchor: HTMLAnchorElement) {
+  const style = anchor.getAttribute("style") || "";
+  const klass = anchor.className || "";
+  return (
+    style.includes("border-width: 2px") ||
+    style.includes("box-shadow") ||
+    klass.includes("ring-2") ||
+    klass.includes("border-sky")
+  );
+}
+
+function clearDirectionGuard() {
+  const guarded = Array.from(document.querySelectorAll<HTMLAnchorElement>("a[data-direction-guard-disabled='true']"));
+
+  for (const anchor of guarded) {
+    if (anchor.dataset.completedTargetDisabled === "true") continue;
+
+    anchor.removeAttribute("aria-disabled");
+    delete anchor.dataset.directionGuardDisabled;
+    delete anchor.dataset.directionGuardReason;
+
+    if (anchor.dataset.directionGuardHidden === "true") {
+      anchor.style.display = "";
+      delete anchor.dataset.directionGuardHidden;
+    }
+
+    anchor.style.opacity = "";
+    anchor.style.cursor = "";
+
+    const badge = anchor.querySelector("[data-direction-guard-badge='true']");
+    if (badge) badge.remove();
+  }
+}
+
 function disableCandidate(anchor: HTMLAnchorElement, reason: string, hide: boolean) {
   anchor.dataset.directionGuardDisabled = "true";
+  anchor.dataset.directionGuardReason = reason;
   anchor.setAttribute("aria-disabled", "true");
   anchor.style.opacity = "0.42";
   anchor.style.background = "#f8fafc";
@@ -56,6 +91,7 @@ function disableCandidate(anchor: HTMLAnchorElement, reason: string, hide: boole
   anchor.style.cursor = "not-allowed";
 
   if (hide) {
+    anchor.dataset.directionGuardHidden = "true";
     anchor.style.display = "none";
   } else if (!anchor.querySelector("[data-direction-guard-badge='true']")) {
     const badge = document.createElement("div");
@@ -77,6 +113,7 @@ function disableCandidate(anchor: HTMLAnchorElement, reason: string, hide: boole
     anchor.addEventListener(
       "click",
       (event) => {
+        if (anchor.dataset.directionGuardDisabled !== "true") return;
         event.preventDefault();
         event.stopPropagation();
         if (typeof event.stopImmediatePropagation === "function") event.stopImmediatePropagation();
@@ -88,21 +125,23 @@ function disableCandidate(anchor: HTMLAnchorElement, reason: string, hide: boole
 }
 
 function activeSelectedStatementDirection() {
-  const selected = Array.from(
-    document.querySelectorAll<HTMLAnchorElement>('a[href*="/internal/dva-reconciliation/workspace?"]'),
-  ).find((anchor) => isStatementCard(anchor) && /ring-2|border-sky|border-orange|border-amber|border-emerald/.test(anchor.className + " " + anchor.getAttribute("style")));
+  const statementAnchors = Array.from(
+    document.querySelectorAll<HTMLAnchorElement>('a[href*="/internal/dva-reconciliation/workspace?"][href*="line_id="]'),
+  ).filter(isStatementCard);
 
-  if (selected) return statementDirection(selected);
+  const selected = statementAnchors.filter(isSelectedByClient);
+  const selectedDirections = new Set(selected.map(statementDirection).filter((direction) => direction === "IN" || direction === "OUT"));
+
+  if (selectedDirections.size === 1) return [...selectedDirections][0];
+  if (selectedDirections.size > 1) return "MIXED";
 
   const params = new URLSearchParams(window.location.search);
   const lineId = params.get("line_id") || "";
   if (!lineId) return "UNKNOWN";
 
-  const byUrl = Array.from(
-    document.querySelectorAll<HTMLAnchorElement>('a[href*="/internal/dva-reconciliation/workspace?"][href*="line_id="]'),
-  ).find((anchor) => {
+  const byUrl = statementAnchors.find((anchor) => {
     try {
-      return new URL(anchor.href, window.location.origin).searchParams.get("line_id") === lineId && isStatementCard(anchor);
+      return new URL(anchor.href, window.location.origin).searchParams.get("line_id") === lineId;
     } catch {
       return false;
     }
@@ -112,8 +151,10 @@ function activeSelectedStatementDirection() {
 }
 
 function applyCandidateDirectionGuard() {
+  clearDirectionGuard();
+
   const selectedDirection = activeSelectedStatementDirection();
-  if (selectedDirection === "UNKNOWN") return;
+  if (selectedDirection === "UNKNOWN" || selectedDirection === "MIXED") return;
 
   const params = new URLSearchParams(window.location.search);
   const rightStatus = params.get("right_status") || "usable";
@@ -124,6 +165,8 @@ function applyCandidateDirectionGuard() {
   ).filter(isTargetCard);
 
   for (const target of targets) {
+    if (target.dataset.completedTargetDisabled === "true") continue;
+
     const direction = targetDirection(target);
     const status = targetStatus(target);
 
@@ -145,14 +188,22 @@ function applyCandidateDirectionGuard() {
 
 export default function CandidateDirectionGuard() {
   useEffect(() => {
+    const runSoon = () => {
+      window.setTimeout(applyCandidateDirectionGuard, 0);
+      window.setTimeout(applyCandidateDirectionGuard, 75);
+    };
+
     const timers = [
       window.setTimeout(applyCandidateDirectionGuard, 50),
       window.setTimeout(applyCandidateDirectionGuard, 250),
       window.setTimeout(applyCandidateDirectionGuard, 750),
     ];
 
+    document.addEventListener("click", runSoon, true);
+
     return () => {
       for (const timer of timers) window.clearTimeout(timer);
+      document.removeEventListener("click", runSoon, true);
     };
   }, []);
 
