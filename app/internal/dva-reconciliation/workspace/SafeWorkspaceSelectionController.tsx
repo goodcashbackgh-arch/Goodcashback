@@ -190,7 +190,7 @@ function message(statements: Map<string, PickedItem>, targets: Map<string, Picke
   }
 
   if (Math.abs(net) < 0.01) return "Net balanced — ready to confirm allocation.";
-  return "Net not balanced yet. Add the related charge/refund/exception line, or classify the residual as FX/card/fee.";
+  return "Net not balanced yet. Confirm the primary allocation first; classify any remaining source balance afterwards.";
 }
 
 function operationalAllocationType(statement?: PickedItem | null, target?: PickedItem | null) {
@@ -280,12 +280,13 @@ export default function SafeWorkspaceSelectionController() {
   const grossGap = statementGross - targetGross;
   const statement = singleItem(statements);
   const target = singleItem(targets);
+  const hasPrimaryTarget = targets.size > 0;
   const canConfirmSupplier = Boolean(statement && target?.targetType === "invoice");
   const operationalType = operationalAllocationType(statement, target);
   const canConfirmOperational = Boolean(statement && target?.targetType === "exception" && operationalType);
   const allocationAmount = Math.min(statement?.amount ?? 0, target?.amount ?? 0);
-  const fxResidualAmount = Math.abs(grossGap || statement?.amount || 0);
-  const canAllocateFxResidual = Boolean(statement && fxResidualAmount > 0.009);
+  const fxResidualAmount = Math.abs(statement?.amount ?? 0);
+  const canAllocateFxResidual = Boolean(statement && !hasPrimaryTarget && fxResidualAmount > 0.009);
 
   const selectedSummary = useMemo(() => message(statements, targets, netGap), [statements, targets, netGap]);
 
