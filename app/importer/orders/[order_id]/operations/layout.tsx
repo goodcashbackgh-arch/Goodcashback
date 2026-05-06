@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { createClient } from "@/utils/supabase/server";
+import OrderOperationsUxCleanup from "./OrderOperationsUxCleanup";
 
 type OrderShape = {
   id: string;
@@ -55,6 +56,7 @@ export default async function OrderOperationsLayout({
 
   return (
     <>
+      <OrderOperationsUxCleanup fallbackRetailerName={displayRetailer !== "—" ? displayRetailer : ""} />
       <div className="px-6 pt-6">
         <section className="mx-auto max-w-7xl rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-950 shadow-sm">
           <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
