@@ -17,6 +17,12 @@ type SupplierInvoiceOption = {
   uploaded_at?: string | null;
 };
 
+type PrefillLine = {
+  description: string;
+  qty: number;
+  amount: number;
+};
+
 const FINAL_OUTCOME_STATUSES = new Set([
   "approved_replacement",
   "replaced",
@@ -67,6 +73,11 @@ function finalOutcomeMessage(dispute: { desired_outcome: string | null; status: 
   return "Final outcome accepted — no further retailer update is available.";
 }
 
+function normaliseAbsNumber(value: unknown) {
+  const parsed = Number(value ?? 0);
+  return Number.isFinite(parsed) ? Math.abs(parsed) : 0;
+}
+
 export default async function ImporterExceptionDetailPage({
   params,
   searchParams,
@@ -113,11 +124,22 @@ export default async function ImporterExceptionDetailPage({
   const retailerOutcome = retailerOutcomeFromStatus(activeStatus);
   const isFinalOutcome = FINAL_OUTCOME_STATUSES.has(dispute.status ?? "");
   const isTerminalAcceptedState = dispute.status === "replaced" || dispute.status === "awaiting_refund_credit";
-  const canUploadCreditNoteEvidence =
-    dispute.desired_outcome === "refund" &&
-    Boolean(dispute.refund_approved_at || dispute.status === "awaiting_refund_credit");
-  const hasCreditNoteEvidence = (messages ?? []).some((message) => message.message_type === "credit_note_evidence");
+  const canUploadRefundEvidence = dispute.desired_outcome === "refund" && dispute.status === "awaiting_refund_credit";
+  const hasRefundEvidence = (messages ?? []).some((message) => ["credit_note_evidence", "refund_evidence"].includes(message.message_type ?? ""));
   const invoiceOptions = (supplierInvoices ?? []) as SupplierInvoiceOption[];
+
+  const prefillLines: PrefillLine[] = (lines ?? []).slice(0, 5).map((line) => {
+    const sourceLine = Array.isArray(line.supplier_invoice_lines) ? line.supplier_invoice_lines[0] : line.supplier_invoice_lines;
+    return {
+      description: sourceLine?.description ?? "Refund line",
+      qty: normaliseAbsNumber(line.qty_impact),
+      amount: normaliseAbsNumber(line.amount_impact_gbp),
+    };
+  });
+
+  while (prefillLines.length < 5) {
+    prefillLines.push({ description: "", qty: 0, amount: 0 });
+  }
 
   return (
     <main className="min-h-screen bg-slate-50 px-6 py-8 text-slate-950">
@@ -133,7 +155,7 @@ export default async function ImporterExceptionDetailPage({
             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3"><p className="text-xs uppercase text-slate-500">Declared value</p><p className="mt-1 font-semibold">{gbp(order?.order_total_gbp_declared)}</p></div>
             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3"><p className="text-xs uppercase text-slate-500">Dispute amount</p><p className="mt-1 font-semibold">{gbp(dispute.amount_impact_gbp)}</p></div>
             {dispute.desired_outcome === "refund" ? (
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3"><p className="text-xs uppercase text-slate-500">Refund approval</p><p className="mt-1 font-semibold">{dispute.refund_approved_at ? "Approved" : "Pending staff approval"}</p></div>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3"><p className="text-xs uppercase text-slate-500">Refund approval</p><p className="mt-1 font-semibold">{dispute.refund_approved_at ? "Pursuit approved" : "Pending staff approval"}</p></div>
             ) : (
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3"><p className="text-xs uppercase text-slate-500">Dispute type</p><p className="mt-1 font-semibold">Replacement</p></div>
             )}
@@ -166,7 +188,7 @@ export default async function ImporterExceptionDetailPage({
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold">Retailer update</h2>
-          <p className="mt-2 text-sm text-slate-600">Save retailer response and outcome after supervisor approval/push.</p>
+          <p className="mt-2 text-sm text-slate-600">Paste the retailer response first. If the retailer accepts the refund, mark the outcome as accepted so the supervisor can review and accept the final outcome.</p>
           {!isTerminalAcceptedState ? <p className="mt-3 text-sm text-slate-700"><span className="font-semibold">Current retailer outcome:</span> {retailerOutcome.replaceAll("_", " ")}</p> : null}
           {isTerminalAcceptedState ? (
             <p className="mt-3 text-sm text-slate-700">
@@ -175,7 +197,7 @@ export default async function ImporterExceptionDetailPage({
           ) : null}
           {isFinalOutcome ? (
             <p className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
-              Retailer updates are locked because the final outcome has already been accepted.
+              Retailer update is locked because the supervisor has accepted the final outcome. Upload refund evidence below where applicable.
             </p>
           ) : (
             <form action={saveRetailerUpdateAction} className="mt-4 space-y-3">
@@ -187,10 +209,10 @@ export default async function ImporterExceptionDetailPage({
               <label className="block space-y-1">
                 <span className="text-sm font-medium text-slate-700">Retailer outcome</span>
                 <select name="retailer_outcome" defaultValue={retailerOutcome} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm">
-                  <option value="still_waiting">still_waiting</option>
-                  <option value="retailer_accepted">retailer_accepted</option>
-                  <option value="retailer_disputed">retailer_disputed</option>
-                  <option value="more_info_requested">more_info_requested</option>
+                  <option value="still_waiting">Still waiting</option>
+                  <option value="retailer_accepted">Retailer accepted refund / remedy</option>
+                  <option value="retailer_disputed">Retailer disputed / rejected</option>
+                  <option value="more_info_requested">More information requested</option>
                 </select>
               </label>
               <button type="submit" className="rounded-xl bg-sky-700 px-4 py-2 text-sm font-semibold text-white">Save retailer update</button>
@@ -202,24 +224,24 @@ export default async function ImporterExceptionDetailPage({
           <section className="rounded-3xl border border-amber-200 bg-white p-6 shadow-sm">
             <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
               <div>
-                <p className="text-sm font-medium uppercase tracking-[0.2em] text-amber-600">Retailer refund / credit-note evidence</p>
-                <h2 className="mt-2 text-xl font-semibold">Upload credit note and return evidence</h2>
+                <p className="text-sm font-medium uppercase tracking-[0.2em] text-amber-600">Refund evidence after supervisor acceptance</p>
+                <h2 className="mt-2 text-xl font-semibold">Upload refund / credit-note evidence</h2>
                 <p className="mt-2 max-w-3xl text-sm text-slate-600">
-                  Use this only after supervisor approval/push. Upload the retailer credit note and capture negative lines for supervisor review. This evidence links to the original order, supplier invoice and exception; it does not approve the outcome.
+                  This appears only after the supervisor accepts the final retailer refund outcome. Lines are prefilled from the exception and recorded as negative refund evidence for supervisor review and later DVA/Sage treatment.
                 </p>
               </div>
-              <span className={`rounded-full px-3 py-1 text-xs font-semibold ${hasCreditNoteEvidence ? "bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200" : "bg-amber-50 text-amber-800 ring-1 ring-amber-200"}`}>
-                {hasCreditNoteEvidence ? "Evidence uploaded" : "No credit-note evidence yet"}
+              <span className={`rounded-full px-3 py-1 text-xs font-semibold ${hasRefundEvidence ? "bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200" : "bg-amber-50 text-amber-800 ring-1 ring-amber-200"}`}>
+                {hasRefundEvidence ? "Evidence uploaded" : "No refund evidence yet"}
               </span>
             </div>
 
-            {!canUploadCreditNoteEvidence ? (
+            {!canUploadRefundEvidence ? (
               <p className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
-                Waiting for supervisor approval/push before operator credit-note evidence can be uploaded.
+                Waiting for supervisor to accept the final retailer refund outcome. The operator should first paste the retailer response and mark the retailer outcome above.
               </p>
             ) : invoiceOptions.length === 0 ? (
               <p className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
-                No supplier invoice is linked to this order yet, so credit-note evidence cannot be linked safely.
+                No supplier invoice is linked to this order yet, so refund evidence cannot be linked safely.
               </p>
             ) : (
               <form action={uploadOperatorCreditNoteEvidenceAction} encType="multipart/form-data" className="mt-6 space-y-5">
@@ -238,31 +260,48 @@ export default async function ImporterExceptionDetailPage({
                     </select>
                   </label>
                   <label className="block text-sm font-semibold text-slate-700">
-                    Credit note ref
-                    <input name="credit_note_ref" required className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="e.g. CN-12345" />
+                    Refund document mode
+                    <select name="document_mode" defaultValue="credit_note" className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm">
+                      <option value="credit_note">Retailer refund with credit note</option>
+                      <option value="refund_proof_no_credit_note">Retailer refund without credit note</option>
+                      <option value="no_document">No document issued</option>
+                    </select>
                   </label>
+                  <label className="block text-sm font-semibold text-slate-700">
+                    Credit note ref, if issued
+                    <input name="credit_note_ref" className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="e.g. CN-12345" />
+                  </label>
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-3">
                   <label className="block text-sm font-semibold text-slate-700">
                     Credit note date optional
                     <input name="credit_note_date" type="date" className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
                   </label>
+                  <label className="block text-sm font-semibold text-slate-700">
+                    Credit note file, if issued
+                    <input name="credit_note_file" type="file" className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm" />
+                  </label>
+                  <label className="block text-sm font-semibold text-slate-700">
+                    Refund proof file, if no credit note
+                    <input name="refund_proof_file" type="file" className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm" />
+                  </label>
                 </div>
 
-                <label className="block text-sm font-semibold text-slate-700">
-                  Credit note file
-                  <input name="credit_note_file" type="file" required className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm" />
-                </label>
-
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                  <h3 className="font-semibold">Credit note lines</h3>
-                  <p className="mt-1 text-xs text-slate-500">Enter positive values. The system records them as negative credit-note quantities and amounts.</p>
+                  <h3 className="font-semibold">Refund evidence lines</h3>
+                  <p className="mt-1 text-xs text-slate-500">Prefilled from the exception. Values are recorded as negative refund evidence. Edit only if the retailer refund differs.</p>
                   <div className="mt-4 space-y-3">
-                    {[1, 2, 3, 4, 5].map((lineNumber) => (
-                      <div key={lineNumber} className="grid gap-3 md:grid-cols-[1fr_120px_160px]">
-                        <input name={`line_${lineNumber}_description`} className="rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder={`Line ${lineNumber} description`} />
-                        <input name={`line_${lineNumber}_qty`} type="number" step="0.01" min="0" className="rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Qty" />
-                        <input name={`line_${lineNumber}_amount_gbp`} type="number" step="0.01" min="0" className="rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Amount GBP" />
-                      </div>
-                    ))}
+                    {prefillLines.map((line, index) => {
+                      const lineNumber = index + 1;
+                      return (
+                        <div key={lineNumber} className="grid gap-3 md:grid-cols-[1fr_120px_160px]">
+                          <input name={`line_${lineNumber}_description`} defaultValue={line.description} className="rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder={`Line ${lineNumber} description`} />
+                          <input name={`line_${lineNumber}_qty`} type="number" step="0.01" min="0" defaultValue={line.qty || ""} className="rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Qty" />
+                          <input name={`line_${lineNumber}_amount_gbp`} type="number" step="0.01" min="0" defaultValue={line.amount || ""} className="rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Amount GBP" />
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
 
@@ -316,7 +355,7 @@ export default async function ImporterExceptionDetailPage({
                 </label>
 
                 <button type="submit" className="rounded-xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white">
-                  Upload evidence for supervisor review
+                  Upload refund evidence for supervisor review
                 </button>
               </form>
             )}
@@ -327,7 +366,7 @@ export default async function ImporterExceptionDetailPage({
           <h2 className="text-xl font-semibold">Conversation history</h2>
           <div className="mt-5 space-y-3">
             {(messages ?? []).map((message) => (
-              <article key={message.id} className={`rounded-2xl border p-4 text-sm ${message.message_type === "credit_note_evidence" ? "border-amber-200 bg-amber-50" : "border-slate-200 bg-slate-50"}`}>
+              <article key={message.id} className={`rounded-2xl border p-4 text-sm ${["credit_note_evidence", "refund_evidence"].includes(message.message_type ?? "") ? "border-amber-200 bg-amber-50" : "border-slate-200 bg-slate-50"}`}>
                 <p className="font-semibold">{message.message_type} · {message.counterparty} · generated_by {message.generated_by}</p>
                 <p className="mt-1 whitespace-pre-wrap">{message.body}</p>
                 <p className="mt-2 text-xs text-slate-500">{message.created_at}</p>
