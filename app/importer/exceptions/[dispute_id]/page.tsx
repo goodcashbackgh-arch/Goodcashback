@@ -2,11 +2,19 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import FlashQueryParamCleaner from "@/app/_components/FlashQueryParamCleaner";
 import { createClient } from "@/utils/supabase/server";
-import { saveRetailerUpdateAction } from "./actions";
+import { saveRetailerUpdateAction, uploadOperatorCreditNoteEvidenceAction } from "./actions";
 
 type SearchParams = {
   success?: string;
   error?: string;
+};
+
+type SupplierInvoiceOption = {
+  id: string;
+  invoice_ref: string | null;
+  invoice_pdf_url: string | null;
+  review_status?: string | null;
+  uploaded_at?: string | null;
 };
 
 const FINAL_OUTCOME_STATUSES = new Set([
@@ -78,7 +86,7 @@ export default async function ImporterExceptionDetailPage({
 
   if (disputeError || !dispute) notFound();
 
-  const [{ data: order }, { data: lines }, { data: messages }] = await Promise.all([
+  const [{ data: order }, { data: lines }, { data: messages }, { data: supplierInvoices }] = await Promise.all([
     supabase
       .from("orders")
       .select("id, order_ref, total_qty_declared, order_total_gbp_declared")
@@ -94,12 +102,22 @@ export default async function ImporterExceptionDetailPage({
       .select("id, message_type, counterparty, body, generated_by, created_at")
       .eq("dispute_id", disputeId)
       .order("created_at", { ascending: true }),
+    supabase
+      .from("supplier_invoices")
+      .select("id, invoice_ref, invoice_pdf_url, review_status, uploaded_at")
+      .eq("order_id", dispute.order_id)
+      .order("uploaded_at", { ascending: false }),
   ]);
 
   const activeStatus = (lines ?? []).find((line) => line.conversation_status)?.conversation_status ?? "retailer_contacted";
   const retailerOutcome = retailerOutcomeFromStatus(activeStatus);
   const isFinalOutcome = FINAL_OUTCOME_STATUSES.has(dispute.status ?? "");
   const isTerminalAcceptedState = dispute.status === "replaced" || dispute.status === "awaiting_refund_credit";
+  const canUploadCreditNoteEvidence =
+    dispute.desired_outcome === "refund" &&
+    Boolean(dispute.refund_approved_at || dispute.status === "awaiting_refund_credit");
+  const hasCreditNoteEvidence = (messages ?? []).some((message) => message.message_type === "credit_note_evidence");
+  const invoiceOptions = (supplierInvoices ?? []) as SupplierInvoiceOption[];
 
   return (
     <main className="min-h-screen bg-slate-50 px-6 py-8 text-slate-950">
@@ -148,7 +166,7 @@ export default async function ImporterExceptionDetailPage({
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold">Retailer update</h2>
-          <p className="mt-2 text-sm text-slate-600">Save retailer response and outcome in one atomic update.</p>
+          <p className="mt-2 text-sm text-slate-600">Save retailer response and outcome after supervisor approval/push.</p>
           {!isTerminalAcceptedState ? <p className="mt-3 text-sm text-slate-700"><span className="font-semibold">Current retailer outcome:</span> {retailerOutcome.replaceAll("_", " ")}</p> : null}
           {isTerminalAcceptedState ? (
             <p className="mt-3 text-sm text-slate-700">
@@ -180,11 +198,136 @@ export default async function ImporterExceptionDetailPage({
           )}
         </section>
 
+        {dispute.desired_outcome === "refund" ? (
+          <section className="rounded-3xl border border-amber-200 bg-white p-6 shadow-sm">
+            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+              <div>
+                <p className="text-sm font-medium uppercase tracking-[0.2em] text-amber-600">Retailer refund / credit-note evidence</p>
+                <h2 className="mt-2 text-xl font-semibold">Upload credit note and return evidence</h2>
+                <p className="mt-2 max-w-3xl text-sm text-slate-600">
+                  Use this only after supervisor approval/push. Upload the retailer credit note and capture negative lines for supervisor review. This evidence links to the original order, supplier invoice and exception; it does not approve the outcome.
+                </p>
+              </div>
+              <span className={`rounded-full px-3 py-1 text-xs font-semibold ${hasCreditNoteEvidence ? "bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200" : "bg-amber-50 text-amber-800 ring-1 ring-amber-200"}`}>
+                {hasCreditNoteEvidence ? "Evidence uploaded" : "No credit-note evidence yet"}
+              </span>
+            </div>
+
+            {!canUploadCreditNoteEvidence ? (
+              <p className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+                Waiting for supervisor approval/push before operator credit-note evidence can be uploaded.
+              </p>
+            ) : invoiceOptions.length === 0 ? (
+              <p className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
+                No supplier invoice is linked to this order yet, so credit-note evidence cannot be linked safely.
+              </p>
+            ) : (
+              <form action={uploadOperatorCreditNoteEvidenceAction} encType="multipart/form-data" className="mt-6 space-y-5">
+                <input type="hidden" name="dispute_id" value={dispute.id} />
+                <input type="hidden" name="original_order_id" value={order?.id ?? dispute.order_id} />
+
+                <div className="grid gap-4 lg:grid-cols-3">
+                  <label className="block text-sm font-semibold text-slate-700">
+                    Original supplier invoice
+                    <select name="original_supplier_invoice_id" required className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm">
+                      {invoiceOptions.map((option) => (
+                        <option key={option.id} value={option.id}>
+                          {option.invoice_ref ?? option.id} {option.review_status ? `· ${option.review_status}` : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="block text-sm font-semibold text-slate-700">
+                    Credit note ref
+                    <input name="credit_note_ref" required className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="e.g. CN-12345" />
+                  </label>
+                  <label className="block text-sm font-semibold text-slate-700">
+                    Credit note date optional
+                    <input name="credit_note_date" type="date" className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
+                  </label>
+                </div>
+
+                <label className="block text-sm font-semibold text-slate-700">
+                  Credit note file
+                  <input name="credit_note_file" type="file" required className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm" />
+                </label>
+
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                  <h3 className="font-semibold">Credit note lines</h3>
+                  <p className="mt-1 text-xs text-slate-500">Enter positive values. The system records them as negative credit-note quantities and amounts.</p>
+                  <div className="mt-4 space-y-3">
+                    {[1, 2, 3, 4, 5].map((lineNumber) => (
+                      <div key={lineNumber} className="grid gap-3 md:grid-cols-[1fr_120px_160px]">
+                        <input name={`line_${lineNumber}_description`} className="rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder={`Line ${lineNumber} description`} />
+                        <input name={`line_${lineNumber}_qty`} type="number" step="0.01" min="0" className="rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Qty" />
+                        <input name={`line_${lineNumber}_amount_gbp`} type="number" step="0.01" min="0" className="rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Amount GBP" />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  <label className="block text-sm font-semibold text-slate-700">
+                    Delivery refund / adjustment GBP optional
+                    <input name="delivery_adjustment_gbp" type="number" step="0.01" min="0" className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="0.00" />
+                  </label>
+                  <label className="block text-sm font-semibold text-slate-700">
+                    Discount adjustment GBP optional
+                    <input name="discount_adjustment_gbp" type="number" step="0.01" min="0" className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="0.00" />
+                  </label>
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                  <h3 className="font-semibold">Return / collection evidence optional</h3>
+                  <p className="mt-1 text-xs text-slate-500">Retailer collection, label and proof are optional because retailers handle returns differently.</p>
+                  <div className="mt-4 grid gap-4 md:grid-cols-3">
+                    <label className="block text-sm font-semibold text-slate-700">
+                      Return required
+                      <select name="return_required" className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm">
+                        <option value="unknown">Unknown</option>
+                        <option value="no">No</option>
+                        <option value="yes">Yes</option>
+                      </select>
+                    </label>
+                    <label className="block text-sm font-semibold text-slate-700">
+                      Collection date optional
+                      <input name="collection_date" type="date" className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
+                    </label>
+                    <label className="block text-sm font-semibold text-slate-700">
+                      Return tracking ref optional
+                      <input name="return_tracking_ref" className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
+                    </label>
+                  </div>
+                  <div className="mt-4 grid gap-4 md:grid-cols-2">
+                    <label className="block text-sm font-semibold text-slate-700">
+                      Return label upload optional
+                      <input name="return_label_file" type="file" className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm" />
+                    </label>
+                    <label className="block text-sm font-semibold text-slate-700">
+                      Return proof upload optional
+                      <input name="return_proof_file" type="file" className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm" />
+                    </label>
+                  </div>
+                </div>
+
+                <label className="block text-sm font-semibold text-slate-700">
+                  Notes optional
+                  <textarea name="notes" rows={4} className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Retailer confirmed refund / collection / credit note details" />
+                </label>
+
+                <button type="submit" className="rounded-xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white">
+                  Upload evidence for supervisor review
+                </button>
+              </form>
+            )}
+          </section>
+        ) : null}
+
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold">Conversation history</h2>
           <div className="mt-5 space-y-3">
             {(messages ?? []).map((message) => (
-              <article key={message.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
+              <article key={message.id} className={`rounded-2xl border p-4 text-sm ${message.message_type === "credit_note_evidence" ? "border-amber-200 bg-amber-50" : "border-slate-200 bg-slate-50"}`}>
                 <p className="font-semibold">{message.message_type} · {message.counterparty} · generated_by {message.generated_by}</p>
                 <p className="mt-1 whitespace-pre-wrap">{message.body}</p>
                 <p className="mt-2 text-xs text-slate-500">{message.created_at}</p>
