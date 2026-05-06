@@ -35,12 +35,15 @@ function addCompatibilityMarkers() {
 
 export default function StatementCardSelectionCompatibility() {
   useEffect(() => {
-    addCompatibilityMarkers();
+    const timers = [
+      window.setTimeout(addCompatibilityMarkers, 50),
+      window.setTimeout(addCompatibilityMarkers, 250),
+      window.setTimeout(addCompatibilityMarkers, 750),
+    ];
 
-    const observer = new MutationObserver(addCompatibilityMarkers);
-    observer.observe(document.body, { childList: true, subtree: true });
-
-    return () => observer.disconnect();
+    return () => {
+      for (const timer of timers) window.clearTimeout(timer);
+    };
   }, []);
 
   return null;
