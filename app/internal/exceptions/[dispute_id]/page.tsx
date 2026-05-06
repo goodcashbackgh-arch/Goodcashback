@@ -6,6 +6,7 @@ import {
   acceptFinalRefundOutcomeAction,
   acceptReplacementOutcomeAction,
   approveRefundPursuitAction,
+  reviewRefundEvidenceAction,
 } from "./actions";
 
 type SearchParams = {
@@ -75,6 +76,10 @@ function finalOutcomeMessage(dispute: { desired_outcome: string | null; status: 
   return "Final outcome accepted.";
 }
 
+function messageIsRefundEvidence(message: { message_type: string | null }) {
+  return ["credit_note_evidence", "refund_evidence"].includes(message.message_type ?? "");
+}
+
 export default async function InternalExceptionDetailPage({
   params,
   searchParams,
@@ -133,12 +138,15 @@ export default async function InternalExceptionDetailPage({
         .order("line_order", { ascending: true })
     : { data: [] };
 
+  const messageRows = messages ?? [];
   const progressedCount = (allInvoiceLines ?? []).filter((line) => isProgressed(line.eligible_for_invoice_yn)).length;
   const unresolvedCount = (allInvoiceLines ?? []).filter((line) => !isProgressed(line.eligible_for_invoice_yn)).length;
   const activeConversationStatus = (disputeLines ?? []).find((line) => line.resolved_at === null)?.conversation_status ?? null;
   const retailerOutcomeLabel = retailerOutcomeFromStatus(activeConversationStatus);
-  const hasRetailerReply = (messages ?? []).some((message) => message.message_type === "retailer_reply" && message.counterparty === "retailer");
-  const hasCreditNoteEvidence = (messages ?? []).some((message) => message.message_type === "credit_note_evidence");
+  const hasRetailerReply = messageRows.some((message) => message.message_type === "retailer_reply" && message.counterparty === "retailer");
+  const refundEvidenceMessages = messageRows.filter(messageIsRefundEvidence);
+  const latestRefundEvidence = refundEvidenceMessages[refundEvidenceMessages.length - 1] ?? null;
+  const hasRefundEvidenceReview = messageRows.some((message) => message.message_type === "refund_evidence_review");
   const canAcceptOutcome = hasRetailerReply && retailerOutcomeLabel === "retailer_accepted";
   const isFinalOutcome = FINAL_OUTCOME_STATUSES.has(dispute.status ?? "");
   const isTerminalAcceptedState = dispute.status === "replaced" || dispute.status === "awaiting_refund_credit";
@@ -164,7 +172,7 @@ export default async function InternalExceptionDetailPage({
             <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
               <p className="font-semibold">{finalOutcomeMessage(dispute)}</p>
               {dispute.replacement_child_order_id ? <p className="mt-1">Replacement child order: {dispute.replacement_child_order_id}</p> : null}
-              {hasCreditNoteEvidence ? <p className="mt-1">Credit-note evidence exists and should be reviewed through the operator evidence trail/control view.</p> : null}
+              {latestRefundEvidence ? <p className="mt-1">Refund evidence uploaded by operator and awaiting/requiring supervisor review.</p> : null}
             </div>
           ) : null}
         </section>
@@ -188,7 +196,7 @@ export default async function InternalExceptionDetailPage({
             ) : null}
             {isFinalOutcome ? (
               <p className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
-                Final outcome already accepted. No further supervisor action is required here. Operator evidence upload belongs on the operator exception lane after supervisor approval/push.
+                Final retailer outcome has been accepted. Continue with refund evidence review and DVA/card refund matching where applicable.
               </p>
             ) : dispute.desired_outcome === "refund" ? (
               <div className="mt-4 space-y-3">
@@ -211,17 +219,73 @@ export default async function InternalExceptionDetailPage({
           </article>
         </section>
 
+        {dispute.desired_outcome === "refund" && dispute.status === "awaiting_refund_credit" ? (
+          <section className="rounded-3xl border border-amber-200 bg-white p-6 shadow-sm">
+            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+              <div>
+                <p className="text-sm font-medium uppercase tracking-[0.2em] text-amber-600">Refund evidence review</p>
+                <h2 className="mt-2 text-xl font-semibold">Supervisor review of operator evidence</h2>
+                <p className="mt-2 max-w-3xl text-sm text-slate-600">
+                  Review the operator-uploaded refund/credit-note evidence. This does not clear the money position; DVA/card refund IN must still be matched separately.
+                </p>
+              </div>
+              <span className={`rounded-full px-3 py-1 text-xs font-semibold ${latestRefundEvidence ? "bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200" : "bg-amber-50 text-amber-800 ring-1 ring-amber-200"}`}>
+                {latestRefundEvidence ? "Evidence uploaded" : "Waiting for operator evidence"}
+              </span>
+            </div>
+
+            {latestRefundEvidence ? (
+              <div className="mt-5 space-y-4">
+                <article className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm">
+                  <p className="font-semibold">Latest refund evidence · {latestRefundEvidence.message_type} · {latestRefundEvidence.generated_by}</p>
+                  <p className="mt-2 whitespace-pre-wrap">{latestRefundEvidence.body}</p>
+                  <p className="mt-2 text-xs text-slate-500">{latestRefundEvidence.created_at}</p>
+                </article>
+
+                {hasRefundEvidenceReview ? (
+                  <p className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
+                    A supervisor refund evidence review already exists in the conversation log. Add a new review only if the operator uploads corrected evidence or the decision changes.
+                  </p>
+                ) : null}
+
+                <form action={reviewRefundEvidenceAction} className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                  <input type="hidden" name="dispute_id" value={dispute.id} />
+                  <label className="block text-sm font-semibold text-slate-700">
+                    Review decision
+                    <select name="review_decision" className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm" defaultValue="accepted">
+                      <option value="accepted">Accept evidence for DVA refund matching</option>
+                      <option value="hold">Hold / ask operator for clarification</option>
+                      <option value="rejected">Reject evidence</option>
+                    </select>
+                  </label>
+                  <label className="block text-sm font-semibold text-slate-700">
+                    Review notes optional
+                    <textarea name="review_notes" rows={4} className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Evidence balances to exception / variance needs explanation / wrong document uploaded" />
+                  </label>
+                  <button type="submit" className="rounded-xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white">
+                    Save refund evidence review
+                  </button>
+                </form>
+              </div>
+            ) : (
+              <p className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+                Operator evidence has not been uploaded yet. Ask the operator to open the exception and upload credit note / refund proof / no-document explanation.
+              </p>
+            )}
+          </section>
+        ) : null}
+
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold">Conversation log</h2>
           <div className="mt-5 space-y-3">
-            {(messages ?? []).map((message) => (
-              <article key={message.id} className={`rounded-2xl border p-4 text-sm ${message.message_type === "credit_note_evidence" ? "border-amber-200 bg-amber-50" : "border-slate-200 bg-slate-50"}`}>
+            {messageRows.map((message) => (
+              <article key={message.id} className={`rounded-2xl border p-4 text-sm ${["credit_note_evidence", "refund_evidence", "refund_evidence_review"].includes(message.message_type ?? "") ? "border-amber-200 bg-amber-50" : "border-slate-200 bg-slate-50"}`}>
                 <p className="font-semibold">{message.message_type} · {message.counterparty} · generated_by {message.generated_by}</p>
                 <p className="mt-1 whitespace-pre-wrap">{message.body}</p>
                 <p className="mt-2 text-xs text-slate-500">{message.created_at}</p>
               </article>
             ))}
-            {(messages ?? []).length === 0 ? <p className="text-sm text-slate-600">No conversation messages yet.</p> : null}
+            {messageRows.length === 0 ? <p className="text-sm text-slate-600">No conversation messages yet.</p> : null}
           </div>
         </section>
       </div>
