@@ -35,6 +35,10 @@ function groupBy(rows: Row[], keyFn: (row: Row) => string) {
 
 const TERMINAL_EXCEPTION_STATUSES = new Set(["replaced", "awaiting_refund_credit", "refunded", "closed", "resolved"]);
 
+function messageReferencesDispute(row: Row, disputeId: string) {
+  return text(row.dispute_id) === disputeId || text(row.body).includes(`dispute_id: ${disputeId}`);
+}
+
 export async function GET(request: Request) {
   const supabase = await createClient();
   const { searchParams } = new URL(request.url);
@@ -56,7 +60,7 @@ export async function GET(request: Request) {
   const orderIds = new Set(orders.map((order) => text(order.id)));
   const orderRefs = new Set(orders.map((order) => text(order.order_ref)));
 
-  const [fundingResult, invoiceResult, disputeResult, allocationResult] = await Promise.all([
+  const [fundingResult, invoiceResult, disputeResult, allocationResult, refundApprovalResult] = await Promise.all([
     supabase
       .from("order_funding_position_vw")
       .select("order_id, order_ref, importer_id, purchase_funding_threshold_gbp, confirmed_dva_funding_gbp, applied_credit_gbp, funded_total_gbp, gap_remaining_gbp, threshold_met_yn, already_funded_yn")
@@ -73,15 +77,21 @@ export async function GET(request: Request) {
       .from("dva_statement_line_allocation_detail_vw")
       .select("importer_id, order_ref, dispute_id, allocation_type, allocation_status, allocated_gbp_amount")
       .limit(2000),
+    supabase
+      .from("dispute_messages")
+      .select("id, dispute_id, message_type, body")
+      .eq("message_type", "supplier_refund_current_approved")
+      .limit(2000),
   ]);
 
-  const firstError = fundingResult.error || invoiceResult.error || disputeResult.error || allocationResult.error;
+  const firstError = fundingResult.error || invoiceResult.error || disputeResult.error || allocationResult.error || refundApprovalResult.error;
   if (firstError) return NextResponse.json({ error: firstError.message }, { status: 500 });
 
   const fundingRows = ((fundingResult.data ?? []) as Row[]).filter((row) => orderIds.has(text(row.order_id)));
   const invoicesByOrderId = groupBy(((invoiceResult.data ?? []) as Row[]).filter((row) => orderIds.has(text(row.order_id))), (row) => text(row.order_id));
   const disputesByOrderId = groupBy(((disputeResult.data ?? []) as Row[]).filter((row) => orderIds.has(text(row.order_id))), (row) => text(row.order_id));
   const allocations = ((allocationResult.data ?? []) as Row[]).filter((row) => orderRefs.has(text(row.order_ref)) || text(row.dispute_id));
+  const refundApprovalRows = (refundApprovalResult.data ?? []) as Row[];
   const fundingByOrderId = new Map(fundingRows.map((row) => [text(row.order_id), row]));
 
   const cards = orders.map((order) => {
@@ -119,10 +129,16 @@ export async function GET(request: Request) {
       .filter((dispute) => !TERMINAL_EXCEPTION_STATUSES.has(text(dispute.status)) && !text(dispute.resolved_at))
       .reduce((sum, dispute) => sum + num(dispute.amount_impact_gbp), 0);
 
-    const refundAwaitingWithoutAllocation = disputes.some((dispute) =>
-      text(dispute.desired_outcome) === "refund" &&
-      ["approved_refund", "awaiting_refund_credit"].includes(text(dispute.status)) &&
+    const acceptedRefundDisputes = disputes.filter((dispute) =>
+      text(dispute.desired_outcome) === "refund" && ["approved_refund", "awaiting_refund_credit"].includes(text(dispute.status))
+    );
+
+    const refundAwaitingWithoutAllocation = acceptedRefundDisputes.some((dispute) =>
       !confirmedAllocations.some((allocation) => text(allocation.dispute_id) === text(dispute.id) && text(allocation.allocation_type) === "retailer_refund")
+    );
+
+    const refundAwaitingWithoutSupplierApproval = acceptedRefundDisputes.some((dispute) =>
+      !refundApprovalRows.some((approval) => messageReferencesDispute(approval, text(dispute.id)))
     );
 
     const approvedCurrentInvoiceCount = invoices.filter((invoice) => text(invoice.review_status) === "approved_current").length;
@@ -135,6 +151,7 @@ export async function GET(request: Request) {
     if (!fundingMet) blockers.push("funding gap remains");
     if (approvedCurrentInvoiceCount === 0) blockers.push("no approved-current supplier invoice");
     if (supplierAllocationGap > 0) blockers.push("supplier OUT allocation below invoice total");
+    if (refundAwaitingWithoutSupplierApproval) blockers.push("refund accepted but supplier refund/credit evidence not approved current");
     if (refundAwaitingWithoutAllocation) blockers.push("refund accepted but no refund IN allocation");
     if (unresolvedExceptionImpact > 0) blockers.push("unresolved exception impact remains");
     if (blockedInvoiceCount > 0) blockers.push("supplier invoice review blocker exists");
@@ -165,6 +182,8 @@ export async function GET(request: Request) {
       allocation_count: activeAllocations.length,
       invoice_count: invoices.length,
       approved_current_invoice_count: approvedCurrentInvoiceCount,
+      refund_supplier_approval_missing_yn: refundAwaitingWithoutSupplierApproval,
+      refund_in_allocation_missing_yn: refundAwaitingWithoutAllocation,
       blocker_count: blockers.length,
       blockers,
       warnings,
