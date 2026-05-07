@@ -159,6 +159,25 @@ async function alreadyApprovedRefundEvidenceCurrent(supabase: Awaited<ReturnType
   return { ok: true as const, existing };
 }
 
+async function assertOperatorRefundEvidenceReviewGate(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  evidenceMessageId: string,
+) {
+  const { data, error } = await supabase
+    .from("dispute_refund_evidence_submissions")
+    .select("operator_review_status, supplier_approval_status, document_mode, evidence_control_status, supplier_readiness_route")
+    .eq("source_dispute_message_id", evidenceMessageId)
+    .maybeSingle();
+
+  if (error) return error.message;
+  if (!data) return "Refund evidence has not been synced into the structured refund evidence table yet.";
+  if (data.supplier_approval_status === "approved_current") return "This refund evidence has already been approved current.";
+  if (data.operator_review_status === "pending_review") return "Operator must review and confirm this refund evidence before supplier current approval.";
+  if (data.operator_review_status === "needs_supervisor_review") return "Operator marked this refund evidence for supervisor review. Accept the supervisor review before current approval.";
+  if (data.operator_review_status !== "confirmed_clean") return `Unsupported operator review status: ${data.operator_review_status}.`;
+  return null;
+}
+
 export async function approveSupplierInvoiceCurrentAction(formData: FormData) {
   const supplierInvoiceId = String(formData.get("single_supplier_invoice_id") ?? "").trim();
   if (!supplierInvoiceId) redirectWithResult({ error: "Missing supplier invoice id." });
@@ -237,6 +256,9 @@ export async function approveSupplierRefundEvidenceCurrentAction(formData: FormD
   if (!["credit_note_evidence", "refund_evidence"].includes(String(evidence.message_type))) {
     redirectWithResult({ error: "Only refund or credit-note evidence can be approved here." });
   }
+
+  const operatorGateError = await assertOperatorRefundEvidenceReviewGate(guard.supabase, evidenceMessageId);
+  if (operatorGateError) redirectWithResult({ error: operatorGateError });
 
   const body = String(evidence.body ?? "");
   const documentMode = bodyValue(body, "document_mode");
