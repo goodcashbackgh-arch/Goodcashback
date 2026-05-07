@@ -93,6 +93,12 @@ const cards: QueueCard[] = [
     proof: "Bulk approval lane v1",
   },
   {
+    title: "Refund document control",
+    href: "/internal/refund-document-control",
+    description: "Supplier credit and refund-document queue for credit notes, refund proof without credit note, and no-document evidence. Open the detail page to release, code net/VAT/gross, and approve current.",
+    proof: "Supplier credit control lane v1",
+  },
+  {
     title: "Adjustment review",
     href: "/internal/adjustments",
     description: "Supervisor approval for retailer discounts and over-limit delivery charges before final invoice drafting.",
