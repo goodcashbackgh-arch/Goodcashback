@@ -64,6 +64,36 @@ function normaliseAbsNumber(value: unknown) {
   return Number.isFinite(parsed) ? Math.abs(parsed) : 0;
 }
 
+function returnTrackingBody(row: {
+  courier_id: string | null;
+  couriers?: { name?: string | null } | { name?: string | null }[] | null;
+  tracking_ref: string | null;
+  tracking_date: string | null;
+  tracking_evidence_url: string | null;
+  retailer_return_instructions_file_url: string | null;
+  return_label_file_url: string | null;
+  return_proof_file_url: string | null;
+  is_final_return_yn: boolean | null;
+  review_status: string | null;
+  note: string | null;
+}) {
+  const courier = Array.isArray(row.couriers) ? row.couriers[0] : row.couriers;
+  return [
+    "[RETURN_COLLECTION_TRACKING_V1]",
+    `courier: ${courier?.name ?? row.courier_id ?? "—"}`,
+    `tracking_ref: ${row.tracking_ref ?? "—"}`,
+    `tracking_date: ${row.tracking_date ?? "—"}`,
+    `tracking_evidence_url: ${row.tracking_evidence_url ?? "—"}`,
+    `is_final_return_yn: ${row.is_final_return_yn ? "true" : "false"}`,
+    `review_status: ${row.review_status ?? "pending_review"}`,
+    `retailer_return_instructions_file_url: ${row.retailer_return_instructions_file_url ?? "—"}`,
+    `return_label_file_url: ${row.return_label_file_url ?? "—"}`,
+    `return_proof_file_url: ${row.return_proof_file_url ?? "—"}`,
+    "",
+    row.note || "No note.",
+  ].join("\n");
+}
+
 export default async function ImporterExceptionDetailPage({
   params,
   searchParams,
@@ -83,7 +113,14 @@ export default async function ImporterExceptionDetailPage({
 
   if (disputeError || !dispute) notFound();
 
-  const [{ data: order }, { data: lines }, { data: messages }, { data: supplierInvoices }, { data: couriers }] = await Promise.all([
+  const [
+    { data: order },
+    { data: lines },
+    { data: messages },
+    { data: supplierInvoices },
+    { data: couriers },
+    { data: returnTrackingRows },
+  ] = await Promise.all([
     supabase
       .from("orders")
       .select("id, order_ref, total_qty_declared, order_total_gbp_declared")
@@ -108,6 +145,11 @@ export default async function ImporterExceptionDetailPage({
       .from("couriers")
       .select("id, name")
       .order("name", { ascending: true }),
+    supabase
+      .from("dispute_return_tracking_submissions")
+      .select("id, courier_id, tracking_ref, tracking_date, tracking_evidence_url, retailer_return_instructions_file_url, return_label_file_url, return_proof_file_url, submitted_at, is_final_return_yn, review_status, note, couriers(name)")
+      .eq("dispute_id", disputeId)
+      .order("submitted_at", { ascending: false }),
   ]);
 
   const activeStatus = (lines ?? []).find((line) => line.conversation_status)?.conversation_status ?? "retailer_contacted";
@@ -118,9 +160,17 @@ export default async function ImporterExceptionDetailPage({
   const hasRefundEvidence = (messages ?? []).some((message) => ["credit_note_evidence", "refund_evidence"].includes(message.message_type ?? ""));
   const invoiceOptions = (supplierInvoices ?? []) as SupplierInvoiceOption[];
   const courierOptions = (couriers ?? []) as CourierOption[];
-  const returnHistory = (messages ?? []).filter((message) =>
+  const messageReturnHistory = (messages ?? []).filter((message) =>
     ["return_collection_evidence", "return_collection_evidence_review"].includes(message.message_type ?? "")
   );
+  const structuredReturnHistory = (returnTrackingRows ?? []).map((row) => ({
+    id: row.id,
+    message_type: "return_collection_evidence",
+    body: returnTrackingBody(row),
+    generated_by: row.review_status ? `review: ${row.review_status}` : "operator_upload",
+    created_at: row.submitted_at,
+  }));
+  const returnHistory = [...structuredReturnHistory, ...messageReturnHistory];
 
   const prefillLines: PrefillLine[] = (lines ?? []).slice(0, 5).map((line) => {
     const sourceLine = Array.isArray(line.supplier_invoice_lines) ? line.supplier_invoice_lines[0] : line.supplier_invoice_lines;
