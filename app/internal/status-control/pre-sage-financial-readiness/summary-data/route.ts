@@ -43,6 +43,18 @@ function structuredRefundApprovalReferencesDispute(row: Row, disputeId: string) 
   return text(row.dispute_id) === disputeId && text(row.supplier_approval_status) === "approved_current";
 }
 
+function approvedRefundAmountForDispute(rows: Row[], disputeId: string) {
+  return rows
+    .filter((row) => structuredRefundApprovalReferencesDispute(row, disputeId))
+    .reduce((sum, row) => sum + Math.max(num(row.captured_refund_amount_abs_gbp), num(row.expected_exception_amount_abs_gbp)), 0);
+}
+
+function confirmedRetailerRefundAllocatedForDispute(allocations: Row[], disputeId: string) {
+  return allocations
+    .filter((allocation) => text(allocation.dispute_id) === disputeId && text(allocation.allocation_type) === "retailer_refund")
+    .reduce((sum, allocation) => sum + num(allocation.allocated_gbp_amount), 0);
+}
+
 export async function GET(request: Request) {
   const supabase = await createClient();
   const { searchParams } = new URL(request.url);
@@ -88,7 +100,7 @@ export async function GET(request: Request) {
       .limit(2000),
     supabase
       .from("dispute_refund_evidence_submissions")
-      .select("id, dispute_id, supplier_approval_status, supplier_control_status, document_mode")
+      .select("id, dispute_id, supplier_approval_status, supplier_control_status, document_mode, captured_refund_amount_abs_gbp, expected_exception_amount_abs_gbp")
       .eq("supplier_approval_status", "approved_current")
       .limit(2000),
   ]);
@@ -143,9 +155,16 @@ export async function GET(request: Request) {
       text(dispute.desired_outcome) === "refund" && ["approved_refund", "awaiting_refund_credit"].includes(text(dispute.status))
     );
 
-    const refundAwaitingWithoutAllocation = acceptedRefundDisputes.some((dispute) =>
-      !confirmedAllocations.some((allocation) => text(allocation.dispute_id) === text(dispute.id) && text(allocation.allocation_type) === "retailer_refund")
-    );
+    let refundAllocationGap = 0;
+    const refundAwaitingWithoutAllocation = acceptedRefundDisputes.some((dispute) => {
+      const disputeId = text(dispute.id);
+      const requiredFromStructuredEvidence = approvedRefundAmountForDispute(structuredRefundApprovalRows, disputeId);
+      const requiredAmount = Math.max(requiredFromStructuredEvidence, num(dispute.amount_impact_gbp));
+      const allocatedAmount = confirmedRetailerRefundAllocatedForDispute(confirmedAllocations, disputeId);
+      const gap = Math.max(0, requiredAmount - allocatedAmount);
+      refundAllocationGap += gap;
+      return gap > 0.01;
+    });
 
     const refundAwaitingWithoutSupplierApproval = acceptedRefundDisputes.some((dispute) => {
       const disputeId = text(dispute.id);
@@ -165,7 +184,7 @@ export async function GET(request: Request) {
     if (approvedCurrentInvoiceCount === 0) blockers.push("no approved-current supplier invoice");
     if (supplierAllocationGap > 0) blockers.push("supplier OUT allocation below invoice total");
     if (refundAwaitingWithoutSupplierApproval) blockers.push("refund accepted but supplier refund/credit evidence not approved current");
-    if (refundAwaitingWithoutAllocation) blockers.push("refund accepted but no refund IN allocation");
+    if (refundAwaitingWithoutAllocation) blockers.push("refund accepted but refund IN allocation is below approved refund amount");
     if (unresolvedExceptionImpact > 0) blockers.push("unresolved exception impact remains");
     if (blockedInvoiceCount > 0) blockers.push("supplier invoice review blocker exists");
 
@@ -188,6 +207,7 @@ export async function GET(request: Request) {
       supplier_invoice_total_gbp: supplierInvoiceTotal,
       supplier_allocation_gap_gbp: supplierAllocationGap,
       retailer_refund_in_gbp: retailerRefundIn,
+      refund_in_allocation_gap_gbp: refundAllocationGap,
       fx_card_fee_gbp: fxCardFee,
       exception_hold_gbp: exceptionHold,
       unresolved_exception_impact_gbp: unresolvedExceptionImpact,
@@ -211,10 +231,11 @@ export async function GET(request: Request) {
       credit_applied_gbp: sum.credit_applied_gbp + card.credit_applied_gbp,
       supplier_out_gbp: sum.supplier_out_gbp + card.supplier_out_gbp,
       retailer_refund_in_gbp: sum.retailer_refund_in_gbp + card.retailer_refund_in_gbp,
+      refund_in_allocation_gap_gbp: sum.refund_in_allocation_gap_gbp + card.refund_in_allocation_gap_gbp,
       controlled_net_gbp: sum.controlled_net_gbp + card.controlled_net_gbp,
       unresolved_exception_impact_gbp: sum.unresolved_exception_impact_gbp + card.unresolved_exception_impact_gbp,
     }),
-    { importer_funding_in_gbp: 0, credit_applied_gbp: 0, supplier_out_gbp: 0, retailer_refund_in_gbp: 0, controlled_net_gbp: 0, unresolved_exception_impact_gbp: 0 },
+    { importer_funding_in_gbp: 0, credit_applied_gbp: 0, supplier_out_gbp: 0, retailer_refund_in_gbp: 0, refund_in_allocation_gap_gbp: 0, controlled_net_gbp: 0, unresolved_exception_impact_gbp: 0 },
   );
 
   return NextResponse.json({ cards: visibleCards, totals });
