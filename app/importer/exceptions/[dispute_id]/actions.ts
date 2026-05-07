@@ -113,27 +113,37 @@ async function uploadEvidenceFile(
   return data.publicUrl || objectPath;
 }
 
+type RefundEvidenceLine = {
+  description: string;
+  qty: number;
+  amount_gbp: number;
+};
+
 type RefundLineBuild = {
-  lines: string[];
+  lines: RefundEvidenceLine[];
   totalAmountAbs: number;
   totalQtyAbs: number;
 };
 
 function buildRefundEvidenceLines(formData: FormData): RefundLineBuild {
-  const lines: string[] = [];
+  const lines: RefundEvidenceLine[] = [];
   let totalAmountAbs = 0;
   let totalQtyAbs = 0;
 
   for (let index = 1; index <= 5; index += 1) {
     const description = readString(formData, `line_${index}_description`);
-    const qty = negative(readString(formData, `line_${index}_qty`));
-    const amount = negative(readString(formData, `line_${index}_amount_gbp`));
+    const qtyAbs = Math.abs(parseNumber(readString(formData, `line_${index}_qty`)));
+    const amountAbs = Math.abs(parseNumber(readString(formData, `line_${index}_amount_gbp`)));
 
-    if (!description && qty === 0 && amount === 0) continue;
+    if (!description && qtyAbs === 0 && amountAbs === 0) continue;
 
-    totalQtyAbs += Math.abs(qty);
-    totalAmountAbs += Math.abs(amount);
-    lines.push(`  - ${description || "Refund evidence line"} | qty ${qty} | amount_gbp ${amount.toFixed(2)}`);
+    totalQtyAbs += qtyAbs;
+    totalAmountAbs += amountAbs;
+    lines.push({
+      description: description || "Refund evidence line",
+      qty: qtyAbs,
+      amount_gbp: amountAbs,
+    });
   }
 
   return { lines, totalAmountAbs, totalQtyAbs };
@@ -202,36 +212,35 @@ export async function uploadReturnCollectionEvidenceAction(formData: FormData) {
     redirectWithResult(disputeId, { error: "Supervisor must accept the final retailer refund outcome before return/collection evidence is uploaded." });
   }
 
-let saveError = "";
+  let saveError = "";
 
-try {
-  const retailerInstructionsFileUrl = await uploadEvidenceFile(guard.supabase, disputeId, "exception-return-instructions", retailerInstructionsFile);
-  const returnLabelFileUrl = await uploadEvidenceFile(guard.supabase, disputeId, "exception-return-labels", returnLabelFile);
-  const returnProofFileUrl = await uploadEvidenceFile(guard.supabase, disputeId, "exception-return-proofs", returnProofFile);
+  try {
+    const retailerInstructionsFileUrl = await uploadEvidenceFile(guard.supabase, disputeId, "exception-return-instructions", retailerInstructionsFile);
+    const returnLabelFileUrl = await uploadEvidenceFile(guard.supabase, disputeId, "exception-return-labels", returnLabelFile);
+    const returnProofFileUrl = await uploadEvidenceFile(guard.supabase, disputeId, "exception-return-proofs", returnProofFile);
 
-  const { data, error } = await guard.supabase.rpc("operator_submit_return_collection_tracking", {
-    p_dispute_id: disputeId,
-    p_courier_id: courierId || null,
-    p_tracking_ref: trackingRef || null,
-    p_tracking_date: trackingDate || null,
-    p_tracking_evidence_url: trackingEvidenceUrl || null,
-    p_is_final_return_yn: isFinalReturn,
-    p_retailer_return_instructions_file_url: retailerInstructionsFileUrl || null,
-    p_return_label_file_url: returnLabelFileUrl || null,
-    p_return_proof_file_url: returnProofFileUrl || null,
-    p_note: note || null,
-  });
+    const { data, error } = await guard.supabase.rpc("operator_submit_return_collection_tracking", {
+      p_dispute_id: disputeId,
+      p_courier_id: courierId || null,
+      p_tracking_ref: trackingRef || null,
+      p_tracking_date: trackingDate || null,
+      p_tracking_evidence_url: trackingEvidenceUrl || null,
+      p_is_final_return_yn: isFinalReturn,
+      p_retailer_return_instructions_file_url: retailerInstructionsFileUrl || null,
+      p_return_label_file_url: returnLabelFileUrl || null,
+      p_return_proof_file_url: returnProofFileUrl || null,
+      p_note: note || null,
+    });
 
-  if (error) saveError = error.message;
-  if (!error && !data?.ok) saveError = "Failed to save return/collection tracking.";
-} catch (error) {
-  saveError = error instanceof Error ? error.message : "Failed to upload return/collection tracking.";
-}
+    if (error) saveError = error.message;
+    if (!error && !data?.ok) saveError = "Failed to save return/collection tracking.";
+  } catch (error) {
+    saveError = error instanceof Error ? error.message : "Failed to upload return/collection tracking.";
+  }
 
-if (saveError) {
-  redirectWithResult(disputeId, { error: saveError });
-}
-  
+  if (saveError) {
+    redirectWithResult(disputeId, { error: saveError });
+  }
 
   revalidatePath(`/importer/exceptions/${disputeId}`);
   revalidatePath(`/internal/exceptions/${disputeId}`);
@@ -242,7 +251,6 @@ export async function uploadOperatorCreditNoteEvidenceAction(formData: FormData)
   const disputeId = readString(formData, "dispute_id");
   const originalOrderId = readString(formData, "original_order_id");
   const originalSupplierInvoiceId = readString(formData, "original_supplier_invoice_id");
-  const originalSupplierInvoiceRef = readString(formData, "original_supplier_invoice_ref");
   const documentMode = readString(formData, "document_mode") || "credit_note";
   const creditNoteRef = readString(formData, "credit_note_ref");
   const creditNoteDate = readString(formData, "credit_note_date");
@@ -294,78 +302,43 @@ export async function uploadOperatorCreditNoteEvidenceAction(formData: FormData)
 
   if (invoiceError || !invoice) redirectWithResult(disputeId, { error: invoiceError?.message ?? "Supplier invoice is not linked to this dispute order." });
 
-  const expectedAmountAbs = Math.abs(Number(accessGuard.dispute.amount_impact_gbp ?? 0));
-  const capturedAmountAbs =
-    documentMode === "credit_note"
-      ? expectedCreditNoteTotalGbp + Math.abs(deliveryAdjustmentGbp) + Math.abs(discountAdjustmentGbp)
-      : refundLines.totalAmountAbs + Math.abs(deliveryAdjustmentGbp) + Math.abs(discountAdjustmentGbp);
-  const varianceAbs = Math.abs(capturedAmountAbs - expectedAmountAbs);
-  const amountBalanceStatus = varianceAbs <= 0.01 ? "balanced_to_exception" : "variance_supervisor_review_required";
-  const evidenceControlStatus =
-    documentMode === "credit_note"
-      ? "credit_note_uploaded_pending_ocr_compare"
-      : documentMode === "no_document"
-        ? "no_document_supervisor_review_required"
-        : amountBalanceStatus === "balanced_to_exception"
-          ? "refund_adjustment_ready_no_credit_note"
-          : "variance_supervisor_review_required";
-  const supplierReadinessRoute =
-    documentMode === "credit_note"
-      ? "supplier_credit_note_readiness_pending_ocr"
-      : evidenceControlStatus === "refund_adjustment_ready_no_credit_note"
-        ? "supplier_refund_adjustment_ready"
-        : "supplier_refund_adjustment_review_required";
+  let saveError = "";
 
   try {
     const creditNoteFileUrl = await uploadEvidenceFile(guard.supabase, disputeId, "exception-credit-notes", documentMode === "credit_note" ? creditNoteFile : null);
     const refundProofFileUrl = await uploadEvidenceFile(guard.supabase, disputeId, "exception-refund-proofs", documentMode === "refund_proof_no_credit_note" ? refundProofFile : null);
 
-    const body = [
-      "[REFUND_EVIDENCE_V1]",
-      "uploaded_by: operator",
-      `operator_id: ${guard.operatorId}`,
-      `document_mode: ${documentMode}`,
-      `original_order_id: ${originalOrderId}`,
-      `original_supplier_invoice_id: ${originalSupplierInvoiceId}`,
-      `original_supplier_invoice_ref: ${originalSupplierInvoiceRef || invoice.invoice_ref || "—"}`,
-      `dispute_id: ${disputeId}`,
-      `credit_note_ref: ${creditNoteRef || "—"}`,
-      `credit_note_date: ${creditNoteDate || "—"}`,
-      `operator_expected_credit_note_total_gbp: ${expectedCreditNoteTotalGbp.toFixed(2)}`,
-      `credit_note_file_url: ${creditNoteFileUrl || "—"}`,
-      `refund_proof_file_url: ${refundProofFileUrl || "—"}`,
-      `ocr_status: ${documentMode === "credit_note" ? "pending_credit_note_ocr_compare" : "not_applicable"}`,
-      "refund_evidence_lines:",
-      ...(documentMode === "credit_note" ? ["  - OCR to extract credit note lines"] : refundLines.lines.length ? refundLines.lines : ["  - none"]),
-      `delivery_adjustment_gbp: ${deliveryAdjustmentGbp.toFixed(2)}`,
-      `discount_adjustment_gbp: ${discountAdjustmentGbp.toFixed(2)}`,
-      `expected_exception_amount_abs_gbp: ${expectedAmountAbs.toFixed(2)}`,
-      `captured_refund_amount_abs_gbp: ${capturedAmountAbs.toFixed(2)}`,
-      `variance_abs_gbp: ${varianceAbs.toFixed(2)}`,
-      `amount_balance_status: ${amountBalanceStatus}`,
-      `evidence_control_status: ${evidenceControlStatus}`,
-      `supplier_readiness_route: ${supplierReadinessRoute}`,
-      "",
-      notes || "No extra notes.",
-    ].join("\n");
-
-    const { error } = await guard.supabase.from("dispute_messages").insert({
-      dispute_id: disputeId,
-      message_type: documentMode === "credit_note" ? "credit_note_evidence" : "refund_evidence",
-      counterparty: "retailer",
-      body,
-      generated_by: "operator_upload",
+    const { data, error } = await guard.supabase.rpc("operator_submit_refund_document_evidence", {
+      p_dispute_id: disputeId,
+      p_original_order_id: originalOrderId,
+      p_original_supplier_invoice_id: originalSupplierInvoiceId,
+      p_document_mode: documentMode,
+      p_credit_note_ref: creditNoteRef || null,
+      p_credit_note_date: creditNoteDate || null,
+      p_expected_credit_note_total_gbp: documentMode === "credit_note" ? expectedCreditNoteTotalGbp : null,
+      p_credit_note_file_url: creditNoteFileUrl || null,
+      p_refund_proof_file_url: refundProofFileUrl || null,
+      p_refund_lines: refundLines.lines,
+      p_delivery_adjustment_gbp: deliveryAdjustmentGbp,
+      p_discount_adjustment_gbp: discountAdjustmentGbp,
+      p_notes: notes || null,
     });
 
-    if (error) redirectWithResult(disputeId, { error: error.message });
+    if (error) saveError = error.message;
+    if (!error && !data?.ok) saveError = "Failed to save refund document evidence.";
   } catch (error) {
-    redirectWithResult(disputeId, { error: error instanceof Error ? error.message : "Failed to upload refund evidence." });
+    saveError = error instanceof Error ? error.message : "Failed to upload refund document evidence.";
+  }
+
+  if (saveError) {
+    redirectWithResult(disputeId, { error: saveError });
   }
 
   revalidatePath(`/importer/exceptions/${disputeId}`);
   revalidatePath(`/internal/exceptions/${disputeId}`);
-  revalidatePath(`/internal/supplier-draft-ready`);
-  revalidatePath(`/internal/dva-reconciliation/exception-actions`);
-  revalidatePath(`/internal/status-control/pre-sage-financial-readiness`);
-  redirectWithResult(disputeId, { success: "Refund evidence uploaded and routed to supplier readiness control." });
+  revalidatePath("/internal/refund-document-control");
+  revalidatePath("/internal/supplier-draft-ready");
+  revalidatePath("/internal/dva-reconciliation/exception-actions");
+  revalidatePath("/internal/status-control/pre-sage-financial-readiness");
+  redirectWithResult(disputeId, { success: "Refund document evidence saved and routed to supplier credit control." });
 }
