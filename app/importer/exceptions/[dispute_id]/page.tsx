@@ -16,6 +16,11 @@ type SupplierInvoiceOption = {
   review_status?: string | null;
 };
 
+type CourierOption = {
+  id: string;
+  name: string;
+};
+
 type PrefillLine = {
   description: string;
   qty: number;
@@ -78,7 +83,7 @@ export default async function ImporterExceptionDetailPage({
 
   if (disputeError || !dispute) notFound();
 
-  const [{ data: order }, { data: lines }, { data: messages }, { data: supplierInvoices }] = await Promise.all([
+  const [{ data: order }, { data: lines }, { data: messages }, { data: supplierInvoices }, { data: couriers }] = await Promise.all([
     supabase
       .from("orders")
       .select("id, order_ref, total_qty_declared, order_total_gbp_declared")
@@ -99,6 +104,10 @@ export default async function ImporterExceptionDetailPage({
       .select("id, invoice_ref, review_status, uploaded_at")
       .eq("order_id", dispute.order_id)
       .order("uploaded_at", { ascending: false }),
+    supabase
+      .from("couriers")
+      .select("id, name")
+      .order("name", { ascending: true }),
   ]);
 
   const activeStatus = (lines ?? []).find((line) => line.conversation_status)?.conversation_status ?? "retailer_contacted";
@@ -108,6 +117,7 @@ export default async function ImporterExceptionDetailPage({
   const canUploadRefundEvidence = dispute.desired_outcome === "refund" && dispute.status === "awaiting_refund_credit";
   const hasRefundEvidence = (messages ?? []).some((message) => ["credit_note_evidence", "refund_evidence"].includes(message.message_type ?? ""));
   const invoiceOptions = (supplierInvoices ?? []) as SupplierInvoiceOption[];
+  const courierOptions = (couriers ?? []) as CourierOption[];
 
   const prefillLines: PrefillLine[] = (lines ?? []).slice(0, 5).map((line) => {
     const sourceLine = Array.isArray(line.supplier_invoice_lines) ? line.supplier_invoice_lines[0] : line.supplier_invoice_lines;
@@ -220,6 +230,7 @@ export default async function ImporterExceptionDetailPage({
                 disputeId={dispute.id}
                 originalOrderId={order?.id ?? dispute.order_id}
                 invoiceOptions={invoiceOptions}
+                courierOptions={courierOptions}
                 prefillLines={prefillLines}
               />
             )}
@@ -230,7 +241,7 @@ export default async function ImporterExceptionDetailPage({
           <h2 className="text-xl font-semibold">Conversation history</h2>
           <div className="mt-5 space-y-3">
             {(messages ?? []).map((message) => (
-              <article key={message.id} className={`rounded-2xl border p-4 text-sm ${["credit_note_evidence", "refund_evidence", "refund_evidence_review"].includes(message.message_type ?? "") ? "border-amber-200 bg-amber-50" : "border-slate-200 bg-slate-50"}`}>
+              <article key={message.id} className={`rounded-2xl border p-4 text-sm ${["credit_note_evidence", "refund_evidence", "refund_evidence_review", "return_collection_evidence", "return_collection_evidence_review"].includes(message.message_type ?? "") ? "border-amber-200 bg-amber-50" : "border-slate-200 bg-slate-50"}`}>
                 <p className="font-semibold">{message.message_type} · {message.counterparty} · generated_by {message.generated_by}</p>
                 <p className="mt-1 whitespace-pre-wrap">{message.body}</p>
                 <p className="mt-2 text-xs text-slate-500">{message.created_at}</p>
