@@ -17,7 +17,10 @@ type Submission = {
   original_supplier_invoice_id: string | null;
   document_mode: string;
   credit_note_ref: string | null;
+  credit_note_date: string | null;
   expected_credit_note_total_gbp: number | null;
+  credit_note_file_url: string | null;
+  refund_proof_file_url: string | null;
   captured_refund_amount_abs_gbp: number | null;
   expected_exception_amount_abs_gbp: number | null;
   variance_abs_gbp: number | null;
@@ -31,7 +34,9 @@ type Submission = {
   supplier_control_status?: string | null;
   ocr_credit_note_ref?: string | null;
   ocr_retailer_name?: string | null;
+  ocr_credit_note_date?: string | null;
   ocr_credit_note_total_gbp?: number | null;
+  raw_body?: string | null;
   notes: string | null;
 };
 
@@ -91,9 +96,31 @@ type Totals = {
   gross_variance_gbp: number | null;
 };
 
-type Dispute = { id: string; order_id: string; status: string | null; desired_outcome: string | null; amount_impact_gbp: number | null };
-type OrderRow = { id: string; order_ref: string | null; retailers: { name: string | null } | { name: string | null }[] | null; importers: { company_name: string | null } | { company_name: string | null }[] | null };
-type SupplierInvoice = { id: string; invoice_ref: string | null; ocr_invoice_ref: string | null; ocr_invoice_total_gbp: number | null; ocr_retailer_name: string | null };
+type Dispute = {
+  id: string;
+  order_id: string;
+  status: string | null;
+  desired_outcome: string | null;
+  amount_impact_gbp: number | null;
+};
+
+type OrderRow = {
+  id: string;
+  order_ref: string | null;
+  retailers: { name: string | null } | { name: string | null }[] | null;
+  importers: { company_name: string | null } | { company_name: string | null }[] | null;
+};
+
+type SupplierInvoice = {
+  id: string;
+  invoice_ref: string | null;
+  invoice_pdf_url: string | null;
+  review_status: string | null;
+  ocr_invoice_ref: string | null;
+  ocr_invoice_total_gbp: number | null;
+  ocr_retailer_name: string | null;
+  ocr_invoice_date: string | null;
+};
 
 function first<T>(value: T | T[] | null | undefined): T | null {
   if (!value) return null;
@@ -139,6 +166,30 @@ function statusLabel(value: string | null | undefined) {
   return String(value ?? "—").replaceAll("_", " ");
 }
 
+function modeLabel(value: string | null | undefined) {
+  if (value === "credit_note") return "Credit note issued";
+  if (value === "refund_proof_no_credit_note") return "Refund proof, no credit note";
+  if (value === "no_document") return "No document issued";
+  return statusLabel(value);
+}
+
+function badgeClass(value: string | null | undefined) {
+  const status = String(value ?? "");
+  if (["approved_current", "matched_ready_to_release", "released_to_supplier_control", "balanced"].includes(status)) return "bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200";
+  if (["pending", "pending_ocr", "not_released", "not_started", "needs_operator_review", "needs_supervisor_review", "pending_review"].includes(status)) return "bg-amber-50 text-amber-800 ring-1 ring-amber-200";
+  if (["blocked", "failed", "variance", "rejected"].includes(status)) return "bg-rose-50 text-rose-800 ring-1 ring-rose-200";
+  return "bg-slate-100 text-slate-700 ring-1 ring-slate-200";
+}
+
+function EvidenceLink({ href, children }: { href?: string | null; children: React.ReactNode }) {
+  if (!href) return <span className="text-slate-400">—</span>;
+  return (
+    <a href={href} target="_blank" rel="noreferrer" className="font-semibold text-sky-700 underline underline-offset-2">
+      {children}
+    </a>
+  );
+}
+
 export default async function RefundDocumentControlPage({
   params,
   searchParams,
@@ -164,7 +215,7 @@ export default async function RefundDocumentControlPage({
 
   const { data: submissionRaw, error: submissionError } = await supabase
     .from("dispute_refund_evidence_submissions")
-    .select("id, dispute_id, original_supplier_invoice_id, document_mode, credit_note_ref, expected_credit_note_total_gbp, captured_refund_amount_abs_gbp, expected_exception_amount_abs_gbp, variance_abs_gbp, amount_balance_status, evidence_control_status, supplier_readiness_route, supplier_approval_status, supervisor_review_status, ocr_status, match_status, supplier_control_status, ocr_credit_note_ref, ocr_retailer_name, ocr_credit_note_total_gbp, notes")
+    .select("id, dispute_id, original_supplier_invoice_id, document_mode, credit_note_ref, credit_note_date, expected_credit_note_total_gbp, credit_note_file_url, refund_proof_file_url, captured_refund_amount_abs_gbp, expected_exception_amount_abs_gbp, variance_abs_gbp, amount_balance_status, evidence_control_status, supplier_readiness_route, supplier_approval_status, supervisor_review_status, ocr_status, match_status, supplier_control_status, ocr_credit_note_ref, ocr_retailer_name, ocr_credit_note_date, ocr_credit_note_total_gbp, raw_body, notes")
     .eq("id", submissionId)
     .maybeSingle();
 
@@ -191,14 +242,14 @@ export default async function RefundDocumentControlPage({
   const { data: invoiceRaw } = submission.original_supplier_invoice_id
     ? await supabase
         .from("supplier_invoices")
-        .select("id, invoice_ref, ocr_invoice_ref, ocr_invoice_total_gbp, ocr_retailer_name")
+        .select("id, invoice_ref, invoice_pdf_url, review_status, ocr_invoice_ref, ocr_invoice_total_gbp, ocr_retailer_name, ocr_invoice_date")
         .eq("id", submission.original_supplier_invoice_id)
         .maybeSingle()
     : { data: null };
 
   const invoice = invoiceRaw as SupplierInvoice | null;
 
-  const { data: linesRaw } = await supabase
+  const { data: linesRaw, error: linesError } = await supabase
     .from("dispute_refund_document_lines")
     .select("id, line_order, line_source, description, qty, amount_gbp, progressed_to_supplier_control_yn")
     .eq("refund_evidence_submission_id", submissionId)
@@ -206,6 +257,7 @@ export default async function RefundDocumentControlPage({
 
   const lines = (linesRaw ?? []) as RefundLine[];
   const lineIds = lines.map((line) => line.id);
+  const unreleasedLines = lines.filter((line) => !line.progressed_to_supplier_control_yn);
   const progressedLines = lines.filter((line) => line.progressed_to_supplier_control_yn);
 
   const { data: codeRowsRaw } = lineIds.length
@@ -241,59 +293,82 @@ export default async function RefundDocumentControlPage({
   const grossVariance = num(totals?.gross_variance_gbp ?? codedGross - acceptedGross);
   const grossOk = Math.abs(grossVariance) <= 0.01;
   const canApprove = Boolean(totals?.all_progressed_lines_coded_yn && totals?.gross_reconciled_to_document_yn && num(totals?.progressed_line_count) > 0);
+  const allReleased = lines.length > 0 && unreleasedLines.length === 0;
 
   return (
     <main className="min-h-screen bg-slate-50 px-6 py-8 text-slate-950">
       <div className="mx-auto flex max-w-[1500px] flex-col gap-6">
-        <section className="rounded-3xl border bg-white p-6 shadow-sm">
-          <Link href="/internal/supplier-draft-ready" className="text-sm font-semibold text-sky-700">← Back to supplier draft ready</Link>
-          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Supplier credit / refund document control</p>
-          <h1 className="mt-2 text-3xl font-semibold">{order?.order_ref ?? dispute.order_id}</h1>
-          <p className="mt-2 text-sm text-slate-600">{staff.full_name} · {staff.role_type}</p>
-          <p className="mt-2 text-sm text-slate-600">Importer: {importer} · Retailer: {retailer}</p>
+        <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <Link href="/internal/supplier-draft-ready" className="text-sm font-semibold text-sky-700">← Back to supplier draft ready</Link>
+              <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Supplier credit / refund document control</p>
+              <h1 className="mt-2 text-3xl font-semibold">{order?.order_ref ?? dispute.order_id}</h1>
+              <p className="mt-2 text-sm text-slate-600">Importer: {importer} · Retailer: {retailer}</p>
+              <p className="mt-1 text-sm text-slate-600">Staff: {staff.full_name} · {staff.role_type}</p>
+            </div>
+            <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-950 lg:w-[430px]">
+              <p className="font-semibold">Same control pattern as supplier invoice coding</p>
+              <p className="mt-1 leading-6">This page codes a supplier credit / credit-note-equivalent document. The Sage payload should later treat it as a credit, not a normal AP invoice.</p>
+            </div>
+          </div>
           {qp.success ? <p className="mt-4 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">{qp.success}</p> : null}
           {qp.error ? <p className="mt-4 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-900">{qp.error}</p> : null}
         </section>
 
         <section className="grid gap-4 md:grid-cols-6">
-          <div className="rounded-2xl border bg-white p-4"><p className="text-xs uppercase text-slate-500">Document mode</p><p className="text-lg font-semibold capitalize">{statusLabel(submission.document_mode)}</p></div>
+          <div className="rounded-2xl border bg-white p-4"><p className="text-xs uppercase text-slate-500">Document mode</p><p className="text-lg font-semibold">{modeLabel(submission.document_mode)}</p></div>
           <div className="rounded-2xl border bg-white p-4"><p className="text-xs uppercase text-slate-500">Accepted gross</p><p className="text-2xl font-semibold">{gbp(acceptedGross)}</p></div>
           <div className="rounded-2xl border bg-white p-4"><p className="text-xs uppercase text-slate-500">Coded net</p><p className="text-2xl font-semibold">{gbp(codedNet)}</p></div>
           <div className="rounded-2xl border bg-white p-4"><p className="text-xs uppercase text-slate-500">Coded VAT</p><p className="text-2xl font-semibold">{gbp(codedVat)}</p></div>
           <div className="rounded-2xl border bg-white p-4"><p className="text-xs uppercase text-slate-500">Coded gross</p><p className="text-2xl font-semibold">{gbp(codedGross)}</p></div>
-          <div className={`rounded-2xl border p-4 ${grossOk ? "bg-emerald-50" : "bg-amber-50"}`}><p className="text-xs uppercase text-slate-500">Gross status</p><p className="text-2xl font-semibold">{grossOk ? "OK" : "Check"}</p></div>
+          <div className={`rounded-2xl border p-4 ${grossOk ? "border-emerald-200 bg-emerald-50" : "border-amber-200 bg-amber-50"}`}><p className="text-xs uppercase text-slate-500">Gross status</p><p className="text-2xl font-semibold">{grossOk ? "Balanced" : "Check"}</p><p className="mt-1 text-xs text-slate-600">Variance {gbp(grossVariance)}</p></div>
         </section>
 
-        <section className="grid gap-6 lg:grid-cols-2">
+        <section className="grid gap-6 lg:grid-cols-[1fr_1fr]">
           <article className="rounded-3xl border bg-white p-5 shadow-sm">
-            <h2 className="text-xl font-semibold">Refund document header</h2>
-            <div className="mt-4 space-y-2 text-sm">
-              <p>Credit note/operator ref: <strong>{submission.credit_note_ref ?? "—"}</strong></p>
-              <p>OCR ref: <strong>{submission.ocr_credit_note_ref ?? "—"}</strong></p>
-              <p>OCR retailer: <strong>{submission.ocr_retailer_name ?? "—"}</strong></p>
-              <p>OCR gross: <strong>{gbp(submission.ocr_credit_note_total_gbp)}</strong></p>
-              <p>Match status: <strong>{statusLabel(submission.match_status)}</strong></p>
-              <p>Supplier control status: <strong>{statusLabel(submission.supplier_control_status)}</strong></p>
-              <p>Supplier approval status: <strong>{statusLabel(submission.supplier_approval_status)}</strong></p>
+            <h2 className="text-xl font-semibold">Submitted refund document / evidence</h2>
+            <div className="mt-4 grid gap-3 text-sm md:grid-cols-2">
+              <p>Mode<br /><strong>{modeLabel(submission.document_mode)}</strong></p>
+              <p>Operator ref<br /><strong>{submission.credit_note_ref ?? "—"}</strong></p>
+              <p>Credit note date<br /><strong>{submission.credit_note_date ?? "—"}</strong></p>
+              <p>Balance status<br /><span className={`inline-flex rounded-full px-2 py-1 text-xs font-semibold ${badgeClass(submission.amount_balance_status)}`}>{statusLabel(submission.amount_balance_status)}</span></p>
+              <p>Match status<br /><span className={`inline-flex rounded-full px-2 py-1 text-xs font-semibold ${badgeClass(submission.match_status)}`}>{statusLabel(submission.match_status)}</span></p>
+              <p>Supplier approval<br /><span className={`inline-flex rounded-full px-2 py-1 text-xs font-semibold ${badgeClass(submission.supplier_approval_status)}`}>{statusLabel(submission.supplier_approval_status)}</span></p>
+              <p>Credit note file<br /><EvidenceLink href={submission.credit_note_file_url}>Open credit note</EvidenceLink></p>
+              <p>Refund proof file<br /><EvidenceLink href={submission.refund_proof_file_url}>Open refund proof</EvidenceLink></p>
             </div>
+            {submission.notes ? <p className="mt-4 rounded-2xl bg-slate-50 p-3 text-sm text-slate-700">{submission.notes}</p> : null}
           </article>
 
           <article className="rounded-3xl border bg-white p-5 shadow-sm">
-            <h2 className="text-xl font-semibold">Original supplier invoice link</h2>
-            <div className="mt-4 space-y-2 text-sm">
-              <p>Invoice ref: <strong>{invoice?.invoice_ref ?? "—"}</strong></p>
-              <p>OCR invoice ref: <strong>{invoice?.ocr_invoice_ref ?? "—"}</strong></p>
-              <p>OCR retailer: <strong>{invoice?.ocr_retailer_name ?? "—"}</strong></p>
-              <p>OCR total: <strong>{gbp(invoice?.ocr_invoice_total_gbp)}</strong></p>
+            <h2 className="text-xl font-semibold">Original supplier invoice reference</h2>
+            <div className="mt-4 grid gap-3 text-sm md:grid-cols-2">
+              <p>Invoice ref<br /><strong>{invoice?.invoice_ref ?? "—"}</strong></p>
+              <p>Review status<br /><strong>{statusLabel(invoice?.review_status)}</strong></p>
+              <p>OCR invoice ref<br /><strong>{invoice?.ocr_invoice_ref ?? "—"}</strong></p>
+              <p>OCR retailer<br /><strong>{invoice?.ocr_retailer_name ?? "—"}</strong></p>
+              <p>OCR total<br /><strong>{gbp(invoice?.ocr_invoice_total_gbp)}</strong></p>
+              <p>Invoice file<br /><EvidenceLink href={invoice?.invoice_pdf_url}>Open original invoice</EvidenceLink></p>
             </div>
           </article>
         </section>
 
         <section className="rounded-3xl border bg-white p-5 shadow-sm">
-          <h2 className="text-xl font-semibold">Release refund document lines to supplier control</h2>
-          <p className="mt-2 text-sm text-slate-600">Release only the clean credit/refund lines that should be coded as a supplier credit/adjustment. This mirrors progressing supplier invoice lines before coding.</p>
+          <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+            <div>
+              <h2 className="text-xl font-semibold">Supplier credit document lines</h2>
+              <p className="mt-2 text-sm text-slate-600">Same concept as progressing clean supplier invoice lines: release the clean refund/credit lines before coding them.</p>
+            </div>
+            <div className="text-sm text-slate-600">Lines {lines.length} · Released {progressedLines.length}</div>
+          </div>
+
+          {linesError ? <p className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-900">Could not read refund document lines: {linesError.message}</p> : null}
+
           {lines.length === 0 ? (
-            <p className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">No structured refund document lines exist yet. The next operator upload/OCR sync must populate dispute_refund_document_lines before this control page can be used.</p>
+            <p className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+              No structured refund document lines exist yet. For credit notes, OCR/compare must create lines first. For refund proof/no-document, the operator prefilled lines should appear here.
+            </p>
           ) : (
             <form action={releaseRefundDocumentLinesAction} className="mt-4 space-y-4">
               <input type="hidden" name="refund_evidence_submission_id" value={submission.id} />
@@ -301,7 +376,13 @@ export default async function RefundDocumentControlPage({
                 <table className="min-w-full text-left text-sm">
                   <thead className="bg-slate-100 text-xs uppercase text-slate-500">
                     <tr>
-                      <th className="p-3">Release</th><th className="p-3">Line</th><th className="p-3">Source</th><th className="p-3">Description</th><th className="p-3">Qty</th><th className="p-3">Gross</th><th className="p-3">Status</th>
+                      <th className="p-3">Release</th>
+                      <th className="p-3">Line</th>
+                      <th className="p-3">Source</th>
+                      <th className="p-3">Description</th>
+                      <th className="p-3">Qty</th>
+                      <th className="p-3 text-right">Gross credit value</th>
+                      <th className="p-3">Status</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -312,18 +393,21 @@ export default async function RefundDocumentControlPage({
                         <td className="p-3">{statusLabel(line.line_source)}</td>
                         <td className="p-3 font-medium">{line.description}</td>
                         <td className="p-3">{line.qty ?? "—"}</td>
-                        <td className="p-3 font-semibold">{gbp(line.amount_gbp)}</td>
+                        <td className="p-3 text-right font-semibold">{gbp(line.amount_gbp)}</td>
                         <td className="p-3">{line.progressed_to_supplier_control_yn ? "Released" : "Not released"}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
-              <label className="block text-sm font-semibold text-slate-700">
-                Release notes optional
-                <textarea name="notes" rows={2} className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
-              </label>
-              <button className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white">Release selected lines</button>
+              <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+                <label className="block flex-1 text-sm font-semibold text-slate-700">
+                  Release notes optional
+                  <textarea name="notes" rows={2} className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
+                </label>
+                <button className="rounded-xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white">Release selected lines</button>
+              </div>
+              {allReleased ? <p className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900">All refund document lines are released to supplier control.</p> : null}
             </form>
           )}
         </section>
@@ -331,8 +415,8 @@ export default async function RefundDocumentControlPage({
         <section className="rounded-3xl border bg-white p-5 shadow-sm">
           <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
             <div>
-              <h2 className="text-xl font-semibold">Refund document accounting coding</h2>
-              <p className="mt-2 text-sm text-slate-600">Code released refund document lines to Sage GL/tax treatment. Gross is locked to the accepted refund/credit line amount.</p>
+              <h2 className="text-xl font-semibold">Accounting coding</h2>
+              <p className="mt-2 text-sm text-slate-600">Code released supplier credit/refund lines using the same net/VAT/gross discipline as supplier invoice coding. Gross is locked to the refund/credit line amount.</p>
             </div>
             <div className="text-sm text-slate-600">Released {progressedLines.length} · Coded {totals?.coded_line_count ?? 0}</div>
           </div>
@@ -342,10 +426,21 @@ export default async function RefundDocumentControlPage({
           ) : (
             <form action={saveAllRefundDocumentLineAccountingCodesAction} className="mt-5 overflow-x-auto rounded-2xl border">
               <input type="hidden" name="refund_evidence_submission_id" value={submission.id} />
-              <table className="min-w-[1400px] text-left text-sm">
+              <table className="min-w-[1450px] text-left text-sm">
                 <thead className="bg-slate-100 text-xs uppercase text-slate-500">
                   <tr>
-                    <th className="p-2">Line</th><th className="p-2">Description</th><th className="p-2">SKU</th><th className="p-2">Size</th><th className="p-2">Gross</th><th className="p-2">Nominal</th><th className="p-2">Sage ledger</th><th className="p-2">VAT rate</th><th className="p-2">Net</th><th className="p-2">VAT</th><th className="p-2">Review?</th><th className="p-2">Reason</th>
+                    <th className="p-2">Line</th>
+                    <th className="p-2">Description</th>
+                    <th className="p-2">SKU</th>
+                    <th className="p-2">Size</th>
+                    <th className="p-2 text-right">Gross</th>
+                    <th className="p-2">Nominal</th>
+                    <th className="p-2">Sage ledger</th>
+                    <th className="p-2">VAT rate</th>
+                    <th className="p-2">Net</th>
+                    <th className="p-2">VAT</th>
+                    <th className="p-2">Review?</th>
+                    <th className="p-2">Reason</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -359,12 +454,14 @@ export default async function RefundDocumentControlPage({
                         <td className="p-2"><input name={`description_override_${line.id}`} defaultValue={code?.description_override ?? line.description} className="w-72 rounded-lg border px-2 py-1" /></td>
                         <td className="p-2"><input name={`sku_override_${line.id}`} defaultValue={code?.sku_override ?? ""} className="w-28 rounded-lg border px-2 py-1" /></td>
                         <td className="p-2"><input name={`size_override_${line.id}`} defaultValue={code?.size_override ?? ""} className="w-20 rounded-lg border px-2 py-1" /></td>
-                        <td className="p-2 font-semibold">{gbp(line.amount_gbp)}</td>
+                        <td className="p-2 text-right font-semibold">{gbp(line.amount_gbp)}</td>
                         <td className="p-2"><input name={`nominal_code_${line.id}`} defaultValue={code?.nominal_code ?? ""} className="w-24 rounded-lg border px-2 py-1" /></td>
                         <td className="p-2"><input name={`sage_ledger_account_id_${line.id}`} defaultValue={code?.sage_ledger_account_id ?? ""} className="w-36 rounded-lg border px-2 py-1" /></td>
                         <td className="p-2">
                           <select name={`vat_rate_percent_${line.id}`} defaultValue={String(rate)} className="w-32 rounded-lg border px-2 py-1">
-                            <option value="20">20% std</option><option value="5">5% reduced</option><option value="0">0%</option>
+                            <option value="20">20% std</option>
+                            <option value="5">5% reduced</option>
+                            <option value="0">0%</option>
                           </select>
                           <input type="hidden" name={`tax_rate_label_${line.id}`} value={code?.tax_rate_label ?? taxLabel(rate)} />
                           <input type="hidden" name={`tax_rate_id_${line.id}`} value={code?.tax_rate_id ?? taxId(rate)} />
@@ -376,22 +473,44 @@ export default async function RefundDocumentControlPage({
                       </tr>
                     );
                   })}
-
-                  {adjustments.map((line) => (
-                    <tr key={line.id} className="border-t bg-amber-50 align-top">
-                      <td className="p-2">Adj</td><td className="p-2">{line.description}</td><td className="p-2">{line.sku ?? "—"}</td><td className="p-2">{line.size ?? "—"}</td><td className="p-2 font-semibold">{gbp(line.gross_amount_gbp)}</td><td className="p-2">{line.nominal_code ?? "—"}</td><td className="p-2">{line.sage_ledger_account_id ?? "—"}</td><td className="p-2">{line.tax_rate_label ?? `${line.vat_rate_percent ?? 0}%`}</td><td className="p-2">{gbp(line.net_amount_gbp)}</td><td className="p-2">{gbp(line.vat_amount_gbp)}</td><td className="p-2">manual</td>
-                      <td className="p-2"><form action={deleteRefundDocumentAccountingAdjustmentLineAction}><input type="hidden" name="refund_evidence_submission_id" value={submission.id} /><input type="hidden" name="adjustment_line_id" value={line.id} /><button className="rounded-lg border border-rose-300 bg-rose-50 px-3 py-1 font-semibold text-rose-800">Delete</button></form></td>
-                    </tr>
-                  ))}
                 </tbody>
               </table>
-              <div className="flex justify-end border-t bg-slate-50 p-4"><button className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white">Save all refund document coding</button></div>
+              <div className="flex justify-end border-t bg-slate-50 p-4"><button className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white">Save all coding</button></div>
             </form>
           )}
         </section>
 
         <section className="rounded-3xl border bg-white p-5 shadow-sm">
-          <h2 className="text-xl font-semibold">Manual accounting adjustment row</h2>
+          <h2 className="text-xl font-semibold">Manual accounting adjustment rows</h2>
+          <p className="mt-2 text-sm text-slate-600">Use this for rounding, delivery/refund adjustments, or controlled credit adjustments, same as supplier invoice coding adjustments.</p>
+
+          {adjustments.length > 0 ? (
+            <div className="mt-4 overflow-x-auto rounded-2xl border">
+              <table className="min-w-full text-left text-sm">
+                <thead className="bg-slate-100 text-xs uppercase text-slate-500"><tr><th className="p-3">Description</th><th className="p-3">Nominal</th><th className="p-3">Sage ledger</th><th className="p-3 text-right">Net</th><th className="p-3 text-right">VAT</th><th className="p-3 text-right">Gross</th><th className="p-3">Action</th></tr></thead>
+                <tbody>
+                  {adjustments.map((line) => (
+                    <tr key={line.id} className="border-t bg-amber-50">
+                      <td className="p-3 font-medium">{line.description}</td>
+                      <td className="p-3">{line.nominal_code ?? "—"}</td>
+                      <td className="p-3">{line.sage_ledger_account_id ?? "—"}</td>
+                      <td className="p-3 text-right">{gbp(line.net_amount_gbp)}</td>
+                      <td className="p-3 text-right">{gbp(line.vat_amount_gbp)}</td>
+                      <td className="p-3 text-right font-semibold">{gbp(line.gross_amount_gbp)}</td>
+                      <td className="p-3">
+                        <form action={deleteRefundDocumentAccountingAdjustmentLineAction}>
+                          <input type="hidden" name="refund_evidence_submission_id" value={submission.id} />
+                          <input type="hidden" name="adjustment_line_id" value={line.id} />
+                          <button className="rounded-lg border border-rose-300 bg-rose-50 px-3 py-1 font-semibold text-rose-800">Delete</button>
+                        </form>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+
           <form action={addRefundDocumentAccountingAdjustmentLineAction} className="mt-4 grid gap-3 md:grid-cols-[1fr_110px_90px_110px_140px_120px_120px_auto]">
             <input type="hidden" name="refund_evidence_submission_id" value={submission.id} />
             <input name="description" className="rounded-lg border px-2 py-2 text-sm" placeholder="Rounding / adjustment" />
@@ -415,7 +534,7 @@ export default async function RefundDocumentControlPage({
             <form action={approveRefundDocumentCurrentAction} className="flex flex-col gap-2 md:w-[420px]">
               <input type="hidden" name="refund_evidence_submission_id" value={submission.id} />
               <textarea name="review_notes" rows={2} className="rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Approval notes" />
-              <button disabled={!canApprove} className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">Approve refund document current</button>
+              <button disabled={!canApprove} className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">Approve supplier credit current</button>
             </form>
           </div>
         </section>
