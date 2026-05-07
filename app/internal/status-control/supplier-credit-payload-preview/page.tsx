@@ -84,7 +84,14 @@ type TotalsRow = {
   gross_reconciled_to_document_yn: boolean | string | null;
   gross_variance_gbp: number | string | null;
 };
-type AllocationRow = { dispute_id: string | null; allocation_type: string | null; allocation_status: string | null; allocated_gbp_amount: number | string | null };
+type AllocationRow = {
+  dispute_id: string | null;
+  allocation_type: string | null;
+  allocation_status: string | null;
+  allocated_gbp_amount: number | string | null;
+  statement_date?: string | null;
+  statement_reference_raw?: string | null;
+};
 
 const gbpFormatter = new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP", minimumFractionDigits: 2 });
 
@@ -126,11 +133,6 @@ function shortId(value: string | null | undefined) {
   return (value ?? "").slice(0, 8);
 }
 
-function pretty(value: unknown) {
-  const raw = text(value);
-  return raw ? raw.replaceAll("_", " ") : "—";
-}
-
 function groupBy<T>(rows: T[], keyFn: (row: T) => string) {
   const map = new Map<string, T[]>();
   for (const row of rows) {
@@ -152,6 +154,32 @@ function keyBy<T>(rows: T[], keyFn: (row: T) => string) {
 
 function statusClass(ok: boolean) {
   return ok ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-900";
+}
+
+function dateOnly(value: unknown) {
+  const raw = text(value);
+  return raw ? raw.slice(0, 10) : "";
+}
+
+function confirmedRefundAllocationsForDispute(allocations: AllocationRow[], disputeId: string) {
+  return allocations.filter((row) =>
+    text(row.dispute_id) === disputeId &&
+    text(row.allocation_type) === "retailer_refund" &&
+    text(row.allocation_status) === "confirmed"
+  );
+}
+
+function refundStatementDateForDispute(allocations: AllocationRow[], disputeId: string) {
+  return confirmedRefundAllocationsForDispute(allocations, disputeId)
+    .map((row) => dateOnly(row.statement_date))
+    .filter(Boolean)
+    .sort()[0] || "";
+}
+
+function refundStatementReferencesForDispute(allocations: AllocationRow[], disputeId: string) {
+  return confirmedRefundAllocationsForDispute(allocations, disputeId)
+    .map((row) => text(row.statement_reference_raw))
+    .filter(Boolean);
 }
 
 function linePayload(line: RefundLineRow, code?: LineCodeRow) {
@@ -209,11 +237,10 @@ function buildPreview(args: {
   const codedLines = progressedLines.filter((line) => codeByLineId.has(line.id));
   const acceptedGross = Math.max(num(totals?.accepted_document_gross_gbp), num(submission.captured_refund_amount_abs_gbp), num(submission.expected_exception_amount_abs_gbp), num(dispute?.amount_impact_gbp));
   const codedGross = round2(num(totals?.total_coded_gross_gbp));
-  const refundInAllocated = round2(
-    allocations
-      .filter((row) => text(row.dispute_id) === submission.dispute_id && text(row.allocation_type) === "retailer_refund" && text(row.allocation_status) === "confirmed")
-      .reduce((sum, row) => sum + num(row.allocated_gbp_amount), 0),
-  );
+  const refundAllocations = confirmedRefundAllocationsForDispute(allocations, submission.dispute_id);
+  const refundInAllocated = round2(refundAllocations.reduce((sum, row) => sum + num(row.allocated_gbp_amount), 0));
+  const refundStatementDate = refundStatementDateForDispute(allocations, submission.dispute_id);
+  const refundStatementReferences = refundStatementReferencesForDispute(allocations, submission.dispute_id);
 
   const blockers: string[] = [];
   const warnings: string[] = [];
@@ -224,6 +251,7 @@ function buildPreview(args: {
   if (progressedLines.length === 0) blockers.push("no refund document lines released to supplier control");
   if (codedLines.length !== progressedLines.length) blockers.push("not all released refund document lines are coded");
   if (refundInAllocated + 0.01 < acceptedGross) blockers.push("confirmed refund-IN allocation is below accepted refund amount");
+  if (!refundStatementDate) warnings.push("No DVA/card refund-IN statement date found; document date is falling back to approval/submission date");
 
   for (const line of progressedLines) {
     const code = codeByLineId.get(line.id);
@@ -233,7 +261,14 @@ function buildPreview(args: {
 
   const ready = blockers.length === 0;
   const orderRef = order?.order_ref || shortId(dispute?.order_id ?? submission.id);
-  const documentDate = (submission.supplier_approved_at || submission.credit_note_date || submission.submitted_at || new Date().toISOString()).slice(0, 10);
+  const documentDate = dateOnly(submission.credit_note_date) || refundStatementDate || dateOnly(submission.supplier_approved_at) || dateOnly(submission.submitted_at) || dateOnly(new Date().toISOString());
+  const documentDateSource = dateOnly(submission.credit_note_date)
+    ? "credit_note_date"
+    : refundStatementDate
+      ? "dva_refund_in_statement_date"
+      : dateOnly(submission.supplier_approved_at)
+        ? "supplier_approved_at_fallback"
+        : "submitted_at_fallback";
   const payload = {
     preview_version: "supplier_credit_equivalent_preview_v0",
     preview_only_not_posted: true,
@@ -250,6 +285,7 @@ function buildPreview(args: {
     header: {
       document_reference: submission.credit_note_ref || `REFUND-${orderRef}-${shortId(submission.id)}`,
       document_date: documentDate,
+      document_date_source: documentDateSource,
       currency: "GBP",
       order_ref: orderRef,
       importer_name: importer?.trading_name || importer?.company_name || null,
@@ -257,6 +293,7 @@ function buildPreview(args: {
       original_supplier_invoice_ref: invoice?.invoice_ref || null,
       gross_credit_gbp: round2(acceptedGross),
       refund_in_allocated_gbp: refundInAllocated,
+      refund_statement_references: refundStatementReferences,
     },
     lines: progressedLines.map((line) => linePayload(line, codeByLineId.get(line.id))),
     adjustments: adjustments.map(adjustmentPayload),
@@ -362,7 +399,7 @@ export default async function SupplierCreditPayloadPreviewPage({
     disputeIds.length
       ? supabase
           .from("dva_statement_line_allocation_detail_vw")
-          .select("dispute_id, allocation_type, allocation_status, allocated_gbp_amount")
+          .select("dispute_id, allocation_type, allocation_status, allocated_gbp_amount, statement_date, statement_reference_raw")
           .in("dispute_id", disputeIds)
       : { data: [] as AllocationRow[], error: null },
   ]);
