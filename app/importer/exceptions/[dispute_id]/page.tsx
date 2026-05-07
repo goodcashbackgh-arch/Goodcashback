@@ -118,6 +118,9 @@ export default async function ImporterExceptionDetailPage({
   const hasRefundEvidence = (messages ?? []).some((message) => ["credit_note_evidence", "refund_evidence"].includes(message.message_type ?? ""));
   const invoiceOptions = (supplierInvoices ?? []) as SupplierInvoiceOption[];
   const courierOptions = (couriers ?? []) as CourierOption[];
+  const returnHistory = (messages ?? []).filter((message) =>
+    ["return_collection_evidence", "return_collection_evidence_review"].includes(message.message_type ?? "")
+  );
 
   const prefillLines: PrefillLine[] = (lines ?? []).slice(0, 5).map((line) => {
     const sourceLine = Array.isArray(line.supplier_invoice_lines) ? line.supplier_invoice_lines[0] : line.supplier_invoice_lines;
@@ -232,6 +235,7 @@ export default async function ImporterExceptionDetailPage({
                 invoiceOptions={invoiceOptions}
                 courierOptions={courierOptions}
                 prefillLines={prefillLines}
+                returnHistory={returnHistory}
               />
             )}
           </section>
