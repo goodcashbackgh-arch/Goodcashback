@@ -202,7 +202,9 @@ export async function uploadReturnCollectionEvidenceAction(formData: FormData) {
     redirectWithResult(disputeId, { error: "Supervisor must accept the final retailer refund outcome before return/collection evidence is uploaded." });
   }
 
- try {
+let saveError = "";
+
+try {
   const retailerInstructionsFileUrl = await uploadEvidenceFile(guard.supabase, disputeId, "exception-return-instructions", retailerInstructionsFile);
   const returnLabelFileUrl = await uploadEvidenceFile(guard.supabase, disputeId, "exception-return-labels", returnLabelFile);
   const returnProofFileUrl = await uploadEvidenceFile(guard.supabase, disputeId, "exception-return-proofs", returnProofFile);
@@ -220,10 +222,14 @@ export async function uploadReturnCollectionEvidenceAction(formData: FormData) {
     p_note: note || null,
   });
 
-  if (error) redirectWithResult(disputeId, { error: error.message });
-  if (!data?.ok) redirectWithResult(disputeId, { error: "Failed to save return/collection tracking." });
+  if (error) saveError = error.message;
+  if (!error && !data?.ok) saveError = "Failed to save return/collection tracking.";
 } catch (error) {
-  redirectWithResult(disputeId, { error: error instanceof Error ? error.message : "Failed to upload return/collection tracking." });
+  saveError = error instanceof Error ? error.message : "Failed to upload return/collection tracking.";
+}
+
+if (saveError) {
+  redirectWithResult(disputeId, { error: saveError });
 }
   
 
