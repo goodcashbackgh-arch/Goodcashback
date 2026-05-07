@@ -202,45 +202,30 @@ export async function uploadReturnCollectionEvidenceAction(formData: FormData) {
     redirectWithResult(disputeId, { error: "Supervisor must accept the final retailer refund outcome before return/collection evidence is uploaded." });
   }
 
-  const { data: courier } = courierId
-    ? await guard.supabase.from("couriers").select("name").eq("id", courierId).maybeSingle()
-    : { data: null };
+ try {
+  const retailerInstructionsFileUrl = await uploadEvidenceFile(guard.supabase, disputeId, "exception-return-instructions", retailerInstructionsFile);
+  const returnLabelFileUrl = await uploadEvidenceFile(guard.supabase, disputeId, "exception-return-labels", returnLabelFile);
+  const returnProofFileUrl = await uploadEvidenceFile(guard.supabase, disputeId, "exception-return-proofs", returnProofFile);
 
-  try {
-    const retailerInstructionsFileUrl = await uploadEvidenceFile(guard.supabase, disputeId, "exception-return-instructions", retailerInstructionsFile);
-    const returnLabelFileUrl = await uploadEvidenceFile(guard.supabase, disputeId, "exception-return-labels", returnLabelFile);
-    const returnProofFileUrl = await uploadEvidenceFile(guard.supabase, disputeId, "exception-return-proofs", returnProofFile);
+  const { data, error } = await guard.supabase.rpc("operator_submit_return_collection_tracking", {
+    p_dispute_id: disputeId,
+    p_courier_id: courierId || null,
+    p_tracking_ref: trackingRef || null,
+    p_tracking_date: trackingDate || null,
+    p_tracking_evidence_url: trackingEvidenceUrl || null,
+    p_is_final_return_yn: isFinalReturn,
+    p_retailer_return_instructions_file_url: retailerInstructionsFileUrl || null,
+    p_return_label_file_url: returnLabelFileUrl || null,
+    p_return_proof_file_url: returnProofFileUrl || null,
+    p_note: note || null,
+  });
 
-    const body = [
-      "[RETURN_COLLECTION_EVIDENCE_V1]",
-      "uploaded_by: operator",
-      `operator_id: ${guard.operatorId}`,
-      `dispute_id: ${disputeId}`,
-      `courier_id: ${courierId || "—"}`,
-      `courier_name: ${courier?.name || "—"}`,
-      `tracking_ref: ${trackingRef || "—"}`,
-      `tracking_date: ${trackingDate || "—"}`,
-      `tracking_evidence_url: ${trackingEvidenceUrl || "—"}`,
-      `is_final_return_yn: ${isFinalReturn ? "true" : "false"}`,
-      `retailer_return_instructions_file_url: ${retailerInstructionsFileUrl || "—"}`,
-      `return_label_file_url: ${returnLabelFileUrl || "—"}`,
-      `return_proof_file_url: ${returnProofFileUrl || "—"}`,
-      "",
-      note || "No note.",
-    ].join("\n");
-
-    const { error } = await guard.supabase.from("dispute_messages").insert({
-      dispute_id: disputeId,
-      message_type: "return_collection_evidence",
-      counterparty: "retailer",
-      body,
-      generated_by: "operator_upload",
-    });
-
-    if (error) redirectWithResult(disputeId, { error: error.message });
-  } catch (error) {
-    redirectWithResult(disputeId, { error: error instanceof Error ? error.message : "Failed to upload return/collection evidence." });
-  }
+  if (error) redirectWithResult(disputeId, { error: error.message });
+  if (!data?.ok) redirectWithResult(disputeId, { error: "Failed to save return/collection tracking." });
+} catch (error) {
+  redirectWithResult(disputeId, { error: error instanceof Error ? error.message : "Failed to upload return/collection tracking." });
+}
+  
 
   revalidatePath(`/importer/exceptions/${disputeId}`);
   revalidatePath(`/internal/exceptions/${disputeId}`);
