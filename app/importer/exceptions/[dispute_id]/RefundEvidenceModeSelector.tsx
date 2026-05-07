@@ -20,12 +20,21 @@ type PrefillLine = {
   amount: number;
 };
 
+type HistoryRow = {
+  id: string;
+  message_type: string | null;
+  body: string | null;
+  generated_by: string | null;
+  created_at: string | null;
+};
+
 type Props = {
   disputeId: string;
   originalOrderId: string;
   invoiceOptions: SupplierInvoiceOption[];
   courierOptions: CourierOption[];
   prefillLines: PrefillLine[];
+  returnHistory: HistoryRow[];
 };
 
 type Mode = "credit_note" | "refund_proof_no_credit_note" | "no_document";
@@ -91,6 +100,40 @@ function HiddenBaseFields({ disputeId, originalOrderId, mode }: { disputeId: str
   );
 }
 
+function ReturnHistory({ rows }: { rows: HistoryRow[] }) {
+  if (rows.length === 0) {
+    return (
+      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+        No return/collection submissions yet.
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-3xl border border-slate-200 bg-white p-5">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h3 className="text-lg font-semibold">Return / collection submission history</h3>
+          <p className="mt-1 text-sm text-slate-600">Operator submissions and supervisor reviews appear here, so the operator can see what has already been sent.</p>
+        </div>
+        <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-800 ring-1 ring-emerald-200">{rows.length} record(s)</span>
+      </div>
+      <div className="mt-4 space-y-3">
+        {rows.map((row) => (
+          <article key={row.id} className={`rounded-2xl border p-4 text-sm ${row.message_type === "return_collection_evidence_review" ? "border-amber-200 bg-amber-50" : "border-slate-200 bg-slate-50"}`}>
+            <p className="font-semibold">
+              {row.message_type === "return_collection_evidence_review" ? "Supervisor review" : "Operator return/collection submission"}
+              {row.generated_by ? ` · ${row.generated_by}` : ""}
+            </p>
+            <p className="mt-2 whitespace-pre-wrap text-slate-700">{row.body}</p>
+            <p className="mt-2 text-xs text-slate-500">{row.created_at ?? "—"}</p>
+          </article>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ReturnCollectionEvidenceForm({ disputeId, courierOptions }: { disputeId: string; courierOptions: CourierOption[] }) {
   return (
     <form action={uploadReturnCollectionEvidenceAction} encType="multipart/form-data" className="space-y-5 rounded-3xl border border-slate-200 bg-white p-5">
@@ -152,17 +195,24 @@ function ReturnCollectionEvidenceForm({ disputeId, courierOptions }: { disputeId
         This completes return/collection for this exception
       </label>
 
-      <button type="submit" className="rounded-xl bg-slate-700 px-5 py-3 text-sm font-semibold text-white">Save return / collection evidence</button>
+      <button type="submit" className="rounded-xl bg-slate-700 px-5 py-3 text-sm font-semibold text-white">Save return / collection evidence only</button>
     </form>
   );
 }
 
-export default function RefundEvidenceModeSelector({ disputeId, originalOrderId, invoiceOptions, courierOptions, prefillLines }: Props) {
+export default function RefundEvidenceModeSelector({ disputeId, originalOrderId, invoiceOptions, courierOptions, prefillLines, returnHistory }: Props) {
   const [mode, setMode] = useState<Mode>("credit_note");
 
   return (
     <div className="mt-6 space-y-6">
       <ReturnCollectionEvidenceForm disputeId={disputeId} courierOptions={courierOptions} />
+      <ReturnHistory rows={returnHistory} />
+
+      <div className="rounded-3xl border-2 border-dashed border-sky-200 bg-sky-50 p-5">
+        <p className="text-sm font-medium uppercase tracking-[0.2em] text-sky-600">Refund document / credit note evidence</p>
+        <h3 className="mt-2 text-lg font-semibold">Submit this only when the retailer gives the refund document or confirms no document exists</h3>
+        <p className="mt-1 text-sm text-slate-600">This is separate from return tracking. This section feeds supplier draft readiness.</p>
+      </div>
 
       <fieldset className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
         <legend className="px-2 text-sm font-semibold text-slate-700">What refund document did the retailer provide?</legend>
