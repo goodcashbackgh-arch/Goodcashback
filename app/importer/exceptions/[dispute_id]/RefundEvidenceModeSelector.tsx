@@ -100,6 +100,36 @@ function HiddenBaseFields({ disputeId, originalOrderId, mode }: { disputeId: str
   );
 }
 
+function historyValue(body: string, label: string) {
+  return body.match(new RegExp(`${label}:\\s*(.*)`))?.[1]?.trim() || "";
+}
+
+function compactHistoryLine(row: HistoryRow) {
+  const body = row.body ?? "";
+  const courier = historyValue(body, "Courier");
+  const trackingRef = historyValue(body, "Tracking reference");
+  const trackingDate = historyValue(body, "Tracking date");
+  const status = row.generated_by || historyValue(body, "Supervisor review") || "Pending review";
+
+  if (row.message_type === "return_collection_evidence_review") {
+    return `Supervisor review · ${status}`;
+  }
+
+  return [
+    courier || "Courier not provided",
+    trackingRef || "No tracking ref",
+    trackingDate || "No date",
+    status,
+  ].join(" · ");
+}
+
+function detailRows(body: string | null) {
+  return (body ?? "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
 function ReturnHistory({ rows }: { rows: HistoryRow[] }) {
   if (rows.length === 0) {
     return (
@@ -114,20 +144,25 @@ function ReturnHistory({ rows }: { rows: HistoryRow[] }) {
       <div className="flex items-center justify-between gap-3">
         <div>
           <h3 className="text-lg font-semibold">Return / collection submission history</h3>
-          <p className="mt-1 text-sm text-slate-600">Operator submissions and supervisor reviews appear here, so the operator can see what has already been sent.</p>
+          <p className="mt-1 text-sm text-slate-600">Latest return tracking is shown compactly. Expand a row to see files, notes and review detail.</p>
         </div>
         <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-800 ring-1 ring-emerald-200">{rows.length} record(s)</span>
       </div>
-      <div className="mt-4 space-y-3">
+
+      <div className="mt-4 divide-y divide-slate-200 overflow-hidden rounded-2xl border border-slate-200">
         {rows.map((row) => (
-          <article key={row.id} className={`rounded-2xl border p-4 text-sm ${row.message_type === "return_collection_evidence_review" ? "border-amber-200 bg-amber-50" : "border-slate-200 bg-slate-50"}`}>
-            <p className="font-semibold">
-              {row.message_type === "return_collection_evidence_review" ? "Supervisor review" : "Operator return/collection submission"}
-              {row.generated_by ? ` · ${row.generated_by}` : ""}
-            </p>
-            <p className="mt-2 whitespace-pre-wrap text-slate-700">{row.body}</p>
-            <p className="mt-2 text-xs text-slate-500">{row.created_at ?? "—"}</p>
-          </article>
+          <details key={row.id} className="group bg-white open:bg-slate-50">
+            <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm hover:bg-slate-50">
+              <span className="font-semibold text-slate-900">{compactHistoryLine(row)}</span>
+              <span className="shrink-0 rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600 group-open:bg-sky-100 group-open:text-sky-700">View details</span>
+            </summary>
+            <div className="space-y-2 border-t border-slate-200 px-4 py-4 text-sm text-slate-700">
+              {detailRows(row.body).map((line, index) => (
+                <p key={`${row.id}-${index}`} className="break-words">{line}</p>
+              ))}
+              <p className="pt-2 text-xs text-slate-500">Submitted: {row.created_at ?? "—"}</p>
+            </div>
+          </details>
         ))}
       </div>
     </div>
