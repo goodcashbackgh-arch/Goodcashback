@@ -14,6 +14,35 @@ type MessageRow = {
   generated_by: string | null;
 };
 
+type RefundEvidenceSubmission = {
+  id: string;
+  dispute_id: string;
+  original_order_id: string | null;
+  original_supplier_invoice_id: string | null;
+  document_mode: string;
+  credit_note_ref: string | null;
+  credit_note_date: string | null;
+  expected_credit_note_total_gbp: number | null;
+  credit_note_file_url: string | null;
+  refund_proof_file_url: string | null;
+  refund_lines_json: unknown;
+  delivery_adjustment_gbp: number | null;
+  discount_adjustment_gbp: number | null;
+  expected_exception_amount_abs_gbp: number | null;
+  captured_refund_amount_abs_gbp: number | null;
+  variance_abs_gbp: number | null;
+  amount_balance_status: string | null;
+  evidence_control_status: string | null;
+  supplier_readiness_route: string | null;
+  supplier_approval_status: string;
+  supervisor_review_status: string;
+  operator_review_status: string;
+  operator_reviewed_at: string | null;
+  operator_review_notes: string | null;
+  source_dispute_message_id: string | null;
+  notes: string | null;
+};
+
 type DisputeRow = {
   id: string;
   order_id: string;
@@ -56,10 +85,6 @@ function bodyValue(body: string | null | undefined, key: string) {
   return line ? line.slice(key.length + 1).trim() : "";
 }
 
-function bodyLines(body: string | null | undefined, marker: string) {
-  return (body ?? "").split("\n").filter((line) => line.trim().startsWith(marker));
-}
-
 function gbp(value: unknown) {
   return new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" }).format(Number(value ?? 0));
 }
@@ -76,9 +101,17 @@ function normalise(value: string | null | undefined) {
   return String(value ?? "").trim().toLowerCase();
 }
 
-function amountNumber(value: string | null | undefined) {
-  const parsed = Number(String(value ?? "").replace(/,/g, ""));
-  return Number.isFinite(parsed) ? parsed : 0;
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function lineLabel(line: unknown, index: number) {
+  if (typeof line !== "object" || line === null) return `Refund line ${index + 1}`;
+  const obj = line as Record<string, unknown>;
+  const description = String(obj.description ?? obj.line_description ?? `Refund line ${index + 1}`);
+  const qty = obj.qty ?? obj.quantity ?? "—";
+  const amount = obj.amount_gbp ?? obj.amount ?? "—";
+  return `${description} · qty ${qty} · amount ${amount}`;
 }
 
 export default async function RefundEvidenceReviewPage({
@@ -112,8 +145,28 @@ export default async function RefundEvidenceReviewPage({
 
   if (evidenceError || !evidence) notFound();
   if (!["credit_note_evidence", "refund_evidence"].includes(String(evidence.message_type))) notFound();
-
   const typedEvidence = evidence as MessageRow;
+
+  const { data: submissionRaw, error: submissionError } = await supabase
+    .from("dispute_refund_evidence_submissions")
+    .select("id, dispute_id, original_order_id, original_supplier_invoice_id, document_mode, credit_note_ref, credit_note_date, expected_credit_note_total_gbp, credit_note_file_url, refund_proof_file_url, refund_lines_json, delivery_adjustment_gbp, discount_adjustment_gbp, expected_exception_amount_abs_gbp, captured_refund_amount_abs_gbp, variance_abs_gbp, amount_balance_status, evidence_control_status, supplier_readiness_route, supplier_approval_status, supervisor_review_status, operator_review_status, operator_reviewed_at, operator_review_notes, source_dispute_message_id, notes")
+    .eq("source_dispute_message_id", evidenceId)
+    .maybeSingle();
+
+  if (submissionError || !submissionRaw) {
+    return (
+      <main className="min-h-screen bg-slate-50 px-6 py-8 text-slate-950">
+        <div className="mx-auto max-w-4xl rounded-3xl border border-amber-200 bg-amber-50 p-6 text-amber-900">
+          <Link href={`/importer/exceptions/${typedEvidence.dispute_id}`} className="text-sm font-semibold text-sky-700">← Back to refund exception</Link>
+          <h1 className="mt-4 text-2xl font-semibold">Refund evidence is not synced to the structured review table yet.</h1>
+          <p className="mt-2 text-sm">Run the refund evidence backend patch and resubmit/fetch the evidence sync before using this review page.</p>
+          {submissionError ? <p className="mt-3 text-sm">Database message: {submissionError.message}</p> : null}
+        </div>
+      </main>
+    );
+  }
+
+  const submission = submissionRaw as RefundEvidenceSubmission;
 
   const { data: dispute, error: disputeError } = await supabase
     .from("disputes")
@@ -144,12 +197,11 @@ export default async function RefundEvidenceReviewPage({
 
   if (!access) redirect("/importer");
 
-  const originalSupplierInvoiceId = bodyValue(typedEvidence.body, "original_supplier_invoice_id");
-  const { data: supplierInvoice } = originalSupplierInvoiceId
+  const { data: supplierInvoice } = submission.original_supplier_invoice_id
     ? await supabase
         .from("supplier_invoices")
         .select("id, invoice_ref, ocr_invoice_ref, ocr_invoice_total_gbp, ocr_retailer_name, invoice_pdf_url")
-        .eq("id", originalSupplierInvoiceId)
+        .eq("id", submission.original_supplier_invoice_id)
         .maybeSingle()
     : { data: null };
 
@@ -159,34 +211,21 @@ export default async function RefundEvidenceReviewPage({
     .eq("dispute_id", typedDispute.id)
     .order("created_at", { ascending: true });
 
-  const { data: operatorReviewRaw } = await supabase
-    .from("dispute_messages")
-    .select("id, dispute_id, message_type, body, created_at, generated_by")
-    .eq("dispute_id", typedDispute.id)
-    .eq("message_type", "refund_evidence_operator_review")
-    .order("created_at", { ascending: false })
-    .limit(20);
-
-  const existingReview = ((operatorReviewRaw ?? []) as MessageRow[]).find((message) => String(message.body ?? "").includes(`source_evidence_message_id: ${evidenceId}`));
   const typedInvoice = supplierInvoice as SupplierInvoiceRow | null;
   const disputeLines = (disputeLinesRaw ?? []) as unknown as DisputeLineRow[];
+  const refundLines = asArray(submission.refund_lines_json);
 
   const retailer = firstRelated(typedOrder.retailers)?.name ?? "—";
   const importer = firstRelated(typedOrder.importers)?.company_name ?? "—";
-  const documentMode = bodyValue(typedEvidence.body, "document_mode") || "—";
-  const evidenceRef = bodyValue(typedEvidence.body, "credit_note_ref") || bodyValue(typedEvidence.body, "refund_proof_file_url") || "—";
-  const expectedExceptionAmount = amountNumber(bodyValue(typedEvidence.body, "expected_exception_amount_abs_gbp")) || Number(typedDispute.amount_impact_gbp ?? 0);
-  const capturedAmount = amountNumber(bodyValue(typedEvidence.body, "captured_refund_amount_abs_gbp"));
-  const variance = amountNumber(bodyValue(typedEvidence.body, "variance_abs_gbp"));
-  const controlStatus = bodyValue(typedEvidence.body, "evidence_control_status") || "—";
-  const readinessRoute = bodyValue(typedEvidence.body, "supplier_readiness_route") || "—";
-  const originalInvoiceRef = bodyValue(typedEvidence.body, "original_supplier_invoice_ref") || typedInvoice?.invoice_ref || "—";
+  const expectedExceptionAmount = Number(submission.expected_exception_amount_abs_gbp ?? typedDispute.amount_impact_gbp ?? 0);
+  const capturedAmount = Number(submission.captured_refund_amount_abs_gbp ?? 0);
+  const variance = Number(submission.variance_abs_gbp ?? 0);
   const amountMatches = variance <= 0.01;
-  const linkedInvoiceMatches = !typedInvoice || !originalSupplierInvoiceId ? false : typedInvoice.id === originalSupplierInvoiceId;
-  const retailerEvidenceName = bodyValue(typedEvidence.body, "ocr_retailer_name") || bodyValue(typedEvidence.body, "retailer_name") || "";
+  const linkedInvoiceMatches = Boolean(typedInvoice && typedInvoice.id === submission.original_supplier_invoice_id);
+  const retailerEvidenceName = typedInvoice?.ocr_retailer_name || bodyValue(typedEvidence.body, "ocr_retailer_name") || bodyValue(typedEvidence.body, "retailer_name") || "";
   const retailerMatches = retailerEvidenceName ? normalise(retailerEvidenceName).includes(normalise(retailer)) || normalise(retailer).includes(normalise(retailerEvidenceName)) : true;
-  const lineItems = bodyLines(typedEvidence.body, "-");
-  const hasLinesOrAdjustments = lineItems.length > 0 || capturedAmount > 0;
+  const hasLinesOrAdjustments = refundLines.length > 0 || capturedAmount > 0;
+  const existingReview = submission.operator_review_status !== "pending_review";
 
   return (
     <main className="min-h-screen bg-slate-50 px-6 py-8 text-slate-950">
@@ -200,7 +239,7 @@ export default async function RefundEvidenceReviewPage({
           </p>
           {qp.success ? <p className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">{qp.success}</p> : null}
           {qp.error ? <p className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">{qp.error}</p> : null}
-          {existingReview ? <p className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">Operator review already recorded: {bodyValue(existingReview.body, "review_decision") || "reviewed"}</p> : null}
+          {existingReview ? <p className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">Operator review already recorded: {submission.operator_review_status.replaceAll("_", " ")}</p> : null}
         </section>
 
         <section className="grid gap-4 md:grid-cols-4">
@@ -213,12 +252,12 @@ export default async function RefundEvidenceReviewPage({
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold">Reconciled evidence view</h2>
           <div className="mt-4 grid gap-3 md:grid-cols-3">
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase text-slate-500">Document mode</p><p className="mt-1 font-semibold">{documentMode.replaceAll("_", " ")}</p></div>
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase text-slate-500">Evidence ref/source</p><p className="mt-1 break-words font-semibold">{evidenceRef}</p></div>
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase text-slate-500">Original supplier invoice</p><p className="mt-1 font-semibold">{originalInvoiceRef}</p></div>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase text-slate-500">Document mode</p><p className="mt-1 font-semibold">{submission.document_mode.replaceAll("_", " ")}</p></div>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase text-slate-500">Evidence ref/source</p><p className="mt-1 break-words font-semibold">{submission.credit_note_ref ?? submission.refund_proof_file_url ?? "—"}</p></div>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase text-slate-500">Original supplier invoice</p><p className="mt-1 font-semibold">{typedInvoice?.invoice_ref ?? "—"}</p></div>
             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase text-slate-500">Captured refund amount</p><p className="mt-1 font-semibold">{gbp(capturedAmount)}</p></div>
             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase text-slate-500">Variance</p><p className="mt-1 font-semibold">{gbp(variance)}</p></div>
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase text-slate-500">Readiness route</p><p className="mt-1 break-words font-semibold">{readinessRoute}</p></div>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase text-slate-500">Readiness route</p><p className="mt-1 break-words font-semibold">{submission.supplier_readiness_route ?? "—"}</p></div>
           </div>
 
           <div className="mt-5 grid gap-3 md:grid-cols-4">
@@ -230,7 +269,7 @@ export default async function RefundEvidenceReviewPage({
 
           <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4">
             <p className="text-sm font-semibold">Control status</p>
-            <p className="mt-1 text-sm text-slate-700">{controlStatus.replaceAll("_", " ")}</p>
+            <p className="mt-1 text-sm text-slate-700">{(submission.evidence_control_status ?? "—").replaceAll("_", " ")}</p>
           </div>
         </section>
 
@@ -254,8 +293,8 @@ export default async function RefundEvidenceReviewPage({
           <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
             <h2 className="text-xl font-semibold">Captured refund evidence lines</h2>
             <div className="mt-4 space-y-2 text-sm text-slate-700">
-              {lineItems.map((line, index) => <p key={index} className="rounded-xl border border-slate-200 bg-slate-50 p-3">{line}</p>)}
-              {lineItems.length === 0 ? <p>No line detail captured in the evidence body. Check captured amount and notes before confirming.</p> : null}
+              {refundLines.map((line, index) => <p key={index} className="rounded-xl border border-slate-200 bg-slate-50 p-3">{lineLabel(line, index)}</p>)}
+              {refundLines.length === 0 ? <p>No line detail captured in the structured evidence row. Check captured amount and notes before confirming.</p> : null}
             </div>
             {typedInvoice?.invoice_pdf_url ? <Link href={typedInvoice.invoice_pdf_url} className="mt-4 inline-block text-sm font-semibold text-sky-600">Open original invoice evidence →</Link> : null}
           </div>
@@ -278,7 +317,7 @@ export default async function RefundEvidenceReviewPage({
               Notes optional
               <textarea name="notes" rows={3} className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Explain any variance, missing OCR, or confirmation received from retailer." />
             </label>
-            <button disabled={Boolean(existingReview)} type="submit" className="rounded-xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50">Save operator review decision</button>
+            <button disabled={existingReview} type="submit" className="rounded-xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50">Save operator review decision</button>
           </form>
         </section>
       </div>
