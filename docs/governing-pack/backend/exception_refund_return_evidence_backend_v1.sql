@@ -1,0 +1,121 @@
+-- =============================================================================
+-- exception_refund_return_evidence_backend_v1.sql
+-- Governing-pack backend reference
+--
+-- Canonical runnable migration:
+--   supabase/migrations/20260507_exception_refund_return_evidence_backend.sql
+--
+-- Purpose:
+--   This file records the governing/backend decision for the refund-exception
+--   return tracking and refund document evidence backend. The executable SQL is
+--   intentionally kept in supabase/migrations so there is one runnable migration
+--   source for Supabase. Do not copy/paste this reference file into Supabase.
+--
+-- Why this exists:
+--   The previous implementation treated return/collection tracking as only a
+--   dispute_messages entry. That was not aligned tightly enough with the proven
+--   order tracking pattern:
+--
+--     order_tracking_submissions
+--       + importer_add_order_tracking_submission SECURITY DEFINER RPC
+--
+--   Refund exception return/collection tracking must therefore have its own
+--   structured backend model while preserving dispute_messages only as an audit
+--   and compatibility trail.
+--
+-- Governing sources considered:
+--   - docs/governing-pack/ui/EXCEPTION_BRANCHING_MVP_CONTRACT.md
+--   - docs/governing-pack/role-matrices/importer_role_stage_matrix_v7.md
+--   - docs/governing-pack/role-matrices/supervisor_role_stage_matrix_v7.md
+--   - existing order tracking RPC pattern in:
+--       supabase/migrations/20260429_importer_order_and_tracking_rpcs.sql
+--   - supplier draft ready refund evidence path in:
+--       app/internal/supplier-draft-ready/page.tsx
+--       app/internal/supplier-draft-ready/actions.ts
+--
+-- Backend objects introduced by the runnable migration:
+--
+-- 1) public.dispute_return_tracking_submissions
+--    Structured operational return/collection tracking evidence for refund
+--    exceptions. It is the refund-exception equivalent of order tracking and
+--    stores:
+--      - dispute_id
+--      - courier_id
+--      - tracking_ref
+--      - tracking_date
+--      - tracking_evidence_url
+--      - retailer_return_instructions_file_url
+--      - return_label_file_url
+--      - return_proof_file_url
+--      - submitted_by_operator_id
+--      - submitted_at
+--      - is_final_return_yn
+--      - note
+--      - review_status / reviewed_by_staff_id / reviewed_at / review_notes
+--      - source_dispute_message_id for compatibility/audit linking
+--
+-- 2) public.dispute_refund_evidence_submissions
+--    Structured supplier-side refund evidence for the three operator choices:
+--      - credit_note
+--      - refund_proof_no_credit_note
+--      - no_document
+--
+--    This supports supplier-draft-ready and pre-Sage readiness controls without
+--    pretending that refund document evidence is the same thing as return
+--    tracking.
+--
+-- 3) Narrow RLS/read policies on the structured tables.
+--    Staff can read. Linked operators can read their importer-linked disputes.
+--
+-- 4) Narrow compatibility INSERT policies on public.dispute_messages.
+--    These exist only to stop the currently deployed message-based forms from
+--    failing while the UI is moved to the new structured RPCs. They do not open
+--    arbitrary dispute_messages writes.
+--
+-- 5) Compatibility trigger:
+--      public.gcb_sync_exception_evidence_message()
+--
+--    This mirrors these message types into structured tables:
+--      - return_collection_evidence
+--      - return_collection_evidence_review
+--      - credit_note_evidence
+--      - refund_evidence
+--      - refund_evidence_review
+--      - supplier_refund_current_approved
+--
+-- 6) Future-safe RPCs:
+--      public.operator_submit_return_collection_tracking(...)
+--      public.staff_review_return_collection_tracking(...)
+--
+--    The next app patch should call these RPCs directly rather than inserting
+--    operational return tracking via dispute_messages.
+--
+-- Non-negotiable controls:
+--   - Return/collection tracking is operational evidence. It must not feed
+--     supplier-draft-ready directly.
+--   - Credit note / refund proof / no-document evidence is supplier-side refund
+--     evidence. It feeds supplier-draft-ready / pre-Sage readiness.
+--   - Nothing in this flow posts to Sage.
+--   - DVA/card refund IN matching remains separate and still required for money
+--     clearance.
+--   - Do not loosen dispute_messages RLS generally.
+--   - Prefer SECURITY DEFINER RPCs with explicit operator/staff checks.
+--
+-- Application patch sequence after migration is applied:
+--   1) Change operator return tracking submit action to call:
+--        public.operator_submit_return_collection_tracking(...)
+--   2) Change operator return tracking history to read from:
+--        public.dispute_return_tracking_submissions
+--      with courier relation where possible.
+--   3) Change supervisor return review to target structured tracking submission
+--      ids and call:
+--        public.staff_review_return_collection_tracking(...)
+--   4) Move supplier refund evidence display/approval toward
+--        public.dispute_refund_evidence_submissions
+--      while preserving compatibility with existing message-derived rows.
+--
+-- Live execution instruction:
+--   Run only this file in Supabase SQL Editor:
+--     supabase/migrations/20260507_exception_refund_return_evidence_backend.sql
+--
+-- =============================================================================
