@@ -7,6 +7,7 @@ import {
   acceptReplacementOutcomeAction,
   approveRefundPursuitAction,
   reviewRefundEvidenceAction,
+  reviewReturnCollectionEvidenceAction,
 } from "./actions";
 
 type SearchParams = { success?: string; error?: string };
@@ -82,6 +83,13 @@ function evidenceStatusLabel(body: string | null | undefined) {
   return "Evidence uploaded";
 }
 
+function returnEvidenceStatusLabel(body: string | null | undefined) {
+  const text = body ?? "";
+  if (text.includes("is_final_return_yn: true")) return "Final return/collection submitted";
+  if (text.includes("tracking_ref: —") && text.includes("return_label_file_url: —") && text.includes("return_proof_file_url: —")) return "Return instructions / note only";
+  return "Return/collection evidence submitted";
+}
+
 export default async function InternalExceptionDetailPage({
   params,
   searchParams,
@@ -128,6 +136,9 @@ export default async function InternalExceptionDetailPage({
   const latestRefundEvidence = refundEvidenceMessages[refundEvidenceMessages.length - 1] ?? null;
   const latestEvidenceNeedsReview = evidenceNeedsSupervisorReview(latestRefundEvidence?.body);
   const hasRefundEvidenceReview = messageRows.some((message) => message.message_type === "refund_evidence_review");
+  const returnEvidenceMessages = messageRows.filter((message) => message.message_type === "return_collection_evidence");
+  const latestReturnEvidence = returnEvidenceMessages[returnEvidenceMessages.length - 1] ?? null;
+  const hasReturnEvidenceReview = messageRows.some((message) => message.message_type === "return_collection_evidence_review");
   const canAcceptOutcome = hasRetailerReply && retailerOutcomeLabel === "retailer_accepted";
   const isFinalOutcome = FINAL_OUTCOME_STATUSES.has(dispute.status ?? "");
   const isTerminalAcceptedState = dispute.status === "replaced" || dispute.status === "awaiting_refund_credit";
@@ -154,6 +165,7 @@ export default async function InternalExceptionDetailPage({
               <p className="font-semibold">{finalOutcomeMessage(dispute)}</p>
               {dispute.replacement_child_order_id ? <p className="mt-1">Replacement child order: {dispute.replacement_child_order_id}</p> : null}
               {latestRefundEvidence ? <p className="mt-1">Refund evidence status: {evidenceStatusLabel(latestRefundEvidence.body)}</p> : null}
+              {latestReturnEvidence ? <p className="mt-1">Return evidence status: {returnEvidenceStatusLabel(latestReturnEvidence.body)}</p> : null}
             </div>
           ) : null}
         </section>
@@ -175,7 +187,7 @@ export default async function InternalExceptionDetailPage({
             {isTerminalAcceptedState ? <p className="mt-3 text-sm text-slate-700"><span className="font-semibold">Active terminal state:</span> {finalOutcomeMessage(dispute)}</p> : null}
             {isFinalOutcome ? (
               <p className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
-                Final retailer outcome has been accepted. Evidence now routes by system status: matched items go to supplier readiness; variances/no-document cases require supervisor review.
+                Final retailer outcome has been accepted. Evidence now routes by system status: matched refund evidence goes to supplier readiness; variances/no-document cases require supervisor review. Return/collection evidence is operational evidence and can be accepted, held or rejected.
               </p>
             ) : dispute.desired_outcome === "refund" ? (
               <div className="mt-4 space-y-3">
@@ -197,6 +209,58 @@ export default async function InternalExceptionDetailPage({
             {dispute.replacement_child_order_id ? <p className="mt-3 text-sm text-slate-700">Replacement child order: {dispute.replacement_child_order_id}</p> : null}
           </article>
         </section>
+
+        {dispute.desired_outcome === "refund" && dispute.status === "awaiting_refund_credit" ? (
+          <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+              <div>
+                <p className="text-sm font-medium uppercase tracking-[0.2em] text-slate-500">Return / collection evidence</p>
+                <h2 className="mt-2 text-xl font-semibold">Supervisor review of return tracking and uploads</h2>
+                <p className="mt-2 max-w-3xl text-sm text-slate-600">
+                  Review courier/tracking details, retailer instructions, labels and proof. This is operational evidence and does not approve the supplier refund/credit-note value.
+                </p>
+              </div>
+              <span className={`rounded-full px-3 py-1 text-xs font-semibold ${latestReturnEvidence ? "bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200" : "bg-slate-100 text-slate-700 ring-1 ring-slate-200"}`}>
+                {latestReturnEvidence ? returnEvidenceStatusLabel(latestReturnEvidence.body) : "No return evidence yet"}
+              </span>
+            </div>
+
+            {latestReturnEvidence ? (
+              <div className="mt-5 space-y-4">
+                <article className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
+                  <p className="font-semibold">Latest return evidence · {latestReturnEvidence.generated_by}</p>
+                  <p className="mt-2 whitespace-pre-wrap">{latestReturnEvidence.body}</p>
+                  <p className="mt-2 text-xs text-slate-500">{latestReturnEvidence.created_at}</p>
+                </article>
+
+                {hasReturnEvidenceReview ? (
+                  <p className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
+                    A supervisor return/collection evidence review already exists. Add a new review only if the operator submits corrected or additional evidence.
+                  </p>
+                ) : null}
+
+                <form action={reviewReturnCollectionEvidenceAction} className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4">
+                  <input type="hidden" name="dispute_id" value={dispute.id} />
+                  <label className="block text-sm font-semibold text-slate-700">
+                    Review decision
+                    <select name="review_decision" className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm" defaultValue="accepted">
+                      <option value="accepted">Accept return/collection evidence</option>
+                      <option value="hold">Hold / ask operator to resubmit</option>
+                      <option value="rejected">Reject return/collection evidence</option>
+                    </select>
+                  </label>
+                  <label className="block text-sm font-semibold text-slate-700">
+                    Review notes
+                    <textarea name="review_notes" rows={4} className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Accepted / missing tracking ref / wrong label / ask operator to upload proof" />
+                  </label>
+                  <button type="submit" className="rounded-xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white">Save return evidence review</button>
+                </form>
+              </div>
+            ) : (
+              <p className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">Operator return/collection evidence has not been uploaded yet.</p>
+            )}
+          </section>
+        ) : null}
 
         {dispute.desired_outcome === "refund" && dispute.status === "awaiting_refund_credit" ? (
           <section className="rounded-3xl border border-amber-200 bg-white p-6 shadow-sm">
@@ -255,7 +319,7 @@ export default async function InternalExceptionDetailPage({
           <h2 className="text-xl font-semibold">Conversation log</h2>
           <div className="mt-5 space-y-3">
             {messageRows.map((message) => (
-              <article key={message.id} className={`rounded-2xl border p-4 text-sm ${["credit_note_evidence", "refund_evidence", "refund_evidence_review"].includes(message.message_type ?? "") ? "border-amber-200 bg-amber-50" : "border-slate-200 bg-slate-50"}`}>
+              <article key={message.id} className={`rounded-2xl border p-4 text-sm ${["credit_note_evidence", "refund_evidence", "refund_evidence_review", "return_collection_evidence", "return_collection_evidence_review"].includes(message.message_type ?? "") ? "border-amber-200 bg-amber-50" : "border-slate-200 bg-slate-50"}`}>
                 <p className="font-semibold">{message.message_type} · {message.counterparty} · generated_by {message.generated_by}</p>
                 <p className="mt-1 whitespace-pre-wrap">{message.body}</p>
                 <p className="mt-2 text-xs text-slate-500">{message.created_at}</p>
