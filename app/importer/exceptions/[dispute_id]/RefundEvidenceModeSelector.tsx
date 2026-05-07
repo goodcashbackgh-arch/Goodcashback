@@ -9,6 +9,11 @@ type SupplierInvoiceOption = {
   review_status?: string | null;
 };
 
+type CourierOption = {
+  id: string;
+  name: string;
+};
+
 type PrefillLine = {
   description: string;
   qty: number;
@@ -19,6 +24,7 @@ type Props = {
   disputeId: string;
   originalOrderId: string;
   invoiceOptions: SupplierInvoiceOption[];
+  courierOptions: CourierOption[];
   prefillLines: PrefillLine[];
 };
 
@@ -43,9 +49,7 @@ function RefundLineInputs({ prefillLines }: { prefillLines: PrefillLine[] }) {
   return (
     <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
       <h3 className="font-semibold">Refund adjustment lines</h3>
-      <p className="mt-1 text-xs text-slate-500">
-        Prefilled from the exception. Values are stored as negative refund adjustment evidence.
-      </p>
+      <p className="mt-1 text-xs text-slate-500">Prefilled from the exception. Values are stored as negative refund adjustment evidence.</p>
       <div className="mt-4 space-y-3">
         {prefillLines.map((line, index) => {
           const lineNumber = index + 1;
@@ -87,7 +91,7 @@ function HiddenBaseFields({ disputeId, originalOrderId, mode }: { disputeId: str
   );
 }
 
-function ReturnCollectionEvidenceForm({ disputeId }: { disputeId: string }) {
+function ReturnCollectionEvidenceForm({ disputeId, courierOptions }: { disputeId: string; courierOptions: CourierOption[] }) {
   return (
     <form action={uploadReturnCollectionEvidenceAction} encType="multipart/form-data" className="space-y-5 rounded-3xl border border-slate-200 bg-white p-5">
       <input type="hidden" name="dispute_id" value={disputeId} />
@@ -95,27 +99,34 @@ function ReturnCollectionEvidenceForm({ disputeId }: { disputeId: string }) {
         <p className="text-sm font-medium uppercase tracking-[0.2em] text-slate-500">Operational evidence</p>
         <h3 className="mt-2 text-lg font-semibold">Return / collection / tracking evidence</h3>
         <p className="mt-1 text-sm text-slate-600">
-          Use this as soon as the retailer gives return instructions, collection details, label, or tracking. This does not feed supplier draft readiness; credit note/refund evidence can be submitted later.
+          Use this as soon as the retailer gives return instructions, collection details, label, tracking or proof. You can submit more than once. This does not feed supplier draft readiness; credit note/refund evidence can be submitted later.
         </p>
       </div>
-      <div className="grid gap-4 md:grid-cols-3">
+
+      <div className="grid gap-4 md:grid-cols-2">
         <label className="block text-sm font-semibold text-slate-700">
-          Return required
-          <select name="return_required" className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm">
-            <option value="unknown">Unknown</option>
-            <option value="no">No</option>
-            <option value="yes">Yes</option>
+          Courier
+          <select name="courier_id" className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm">
+            <option value="">Courier</option>
+            {courierOptions.map((courier) => (
+              <option key={courier.id} value={courier.id}>{courier.name}</option>
+            ))}
           </select>
         </label>
         <label className="block text-sm font-semibold text-slate-700">
-          Collection date optional
-          <input name="collection_date" type="date" className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
+          Tracking ref
+          <input name="tracking_ref" className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Tracking ref" />
         </label>
         <label className="block text-sm font-semibold text-slate-700">
-          Return tracking ref optional
-          <input name="return_tracking_ref" className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
+          Tracking date
+          <input name="tracking_date" type="date" className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
+        </label>
+        <label className="block text-sm font-semibold text-slate-700">
+          Tracking URL / evidence link
+          <input name="tracking_evidence_url" className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Tracking URL / evidence link" />
         </label>
       </div>
+
       <div className="grid gap-4 md:grid-cols-3">
         <label className="block text-sm font-semibold text-slate-700">
           Retailer instructions upload optional
@@ -130,21 +141,28 @@ function ReturnCollectionEvidenceForm({ disputeId }: { disputeId: string }) {
           <input name="return_proof_file" type="file" className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm" />
         </label>
       </div>
+
       <label className="block text-sm font-semibold text-slate-700">
-        Return / collection notes optional
-        <textarea name="return_notes" rows={3} className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Retailer collection instructions, tracking detail, label notes, pickup window, etc." />
+        Note
+        <input name="note" className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Note" />
       </label>
+
+      <label className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+        <input type="checkbox" name="is_final_return_yn" className="h-4 w-4 rounded border-slate-300" />
+        This completes return/collection for this exception
+      </label>
+
       <button type="submit" className="rounded-xl bg-slate-700 px-5 py-3 text-sm font-semibold text-white">Save return / collection evidence</button>
     </form>
   );
 }
 
-export default function RefundEvidenceModeSelector({ disputeId, originalOrderId, invoiceOptions, prefillLines }: Props) {
+export default function RefundEvidenceModeSelector({ disputeId, originalOrderId, invoiceOptions, courierOptions, prefillLines }: Props) {
   const [mode, setMode] = useState<Mode>("credit_note");
 
   return (
     <div className="mt-6 space-y-6">
-      <ReturnCollectionEvidenceForm disputeId={disputeId} />
+      <ReturnCollectionEvidenceForm disputeId={disputeId} courierOptions={courierOptions} />
 
       <fieldset className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
         <legend className="px-2 text-sm font-semibold text-slate-700">What refund document did the retailer provide?</legend>
