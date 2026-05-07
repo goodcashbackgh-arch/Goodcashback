@@ -64,6 +64,11 @@ function normaliseAbsNumber(value: unknown) {
   return Number.isFinite(parsed) ? Math.abs(parsed) : 0;
 }
 
+function friendlyStatus(status: string | null | undefined) {
+  if (!status) return "Pending review";
+  return status.replaceAll("_", " ").replace(/^./, (first) => first.toUpperCase());
+}
+
 function returnTrackingBody(row: {
   courier_id: string | null;
   couriers?: { name?: string | null } | { name?: string | null }[] | null;
@@ -78,20 +83,21 @@ function returnTrackingBody(row: {
   note: string | null;
 }) {
   const courier = Array.isArray(row.couriers) ? row.couriers[0] : row.couriers;
-  return [
-    "[RETURN_COLLECTION_TRACKING_V1]",
-    `courier: ${courier?.name ?? row.courier_id ?? "—"}`,
-    `tracking_ref: ${row.tracking_ref ?? "—"}`,
-    `tracking_date: ${row.tracking_date ?? "—"}`,
-    `tracking_evidence_url: ${row.tracking_evidence_url ?? "—"}`,
-    `is_final_return_yn: ${row.is_final_return_yn ? "true" : "false"}`,
-    `review_status: ${row.review_status ?? "pending_review"}`,
-    `retailer_return_instructions_file_url: ${row.retailer_return_instructions_file_url ?? "—"}`,
-    `return_label_file_url: ${row.return_label_file_url ?? "—"}`,
-    `return_proof_file_url: ${row.return_proof_file_url ?? "—"}`,
-    "",
-    row.note || "No note.",
-  ].join("\n");
+  const lines = [
+    `Courier: ${courier?.name ?? row.courier_id ?? "Not provided"}`,
+    `Tracking reference: ${row.tracking_ref ?? "Not provided"}`,
+    `Tracking date: ${row.tracking_date ?? "Not provided"}`,
+    `Tracking / evidence link: ${row.tracking_evidence_url ?? "Not provided"}`,
+    `Final return / collection: ${row.is_final_return_yn ? "Yes" : "No"}`,
+    `Supervisor review: ${friendlyStatus(row.review_status)}`,
+  ];
+
+  if (row.retailer_return_instructions_file_url) lines.push(`Retailer instructions file: ${row.retailer_return_instructions_file_url}`);
+  if (row.return_label_file_url) lines.push(`Return label file: ${row.return_label_file_url}`);
+  if (row.return_proof_file_url) lines.push(`Return proof file: ${row.return_proof_file_url}`);
+
+  lines.push(`Note: ${row.note || "No note."}`);
+  return lines.join("\n");
 }
 
 export default async function ImporterExceptionDetailPage({
@@ -167,7 +173,7 @@ export default async function ImporterExceptionDetailPage({
     id: row.id,
     message_type: "return_collection_evidence",
     body: returnTrackingBody(row),
-    generated_by: row.review_status ? `review: ${row.review_status}` : "operator_upload",
+    generated_by: friendlyStatus(row.review_status),
     created_at: row.submitted_at,
   }));
   const returnHistory = [...structuredReturnHistory, ...messageReturnHistory];
