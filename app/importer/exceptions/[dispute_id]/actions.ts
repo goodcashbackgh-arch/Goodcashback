@@ -97,10 +97,6 @@ function negative(value: string) {
   return -Math.abs(parsed);
 }
 
-function optionalLine(label: string, value: string) {
-  return value ? `${label}: ${value}` : `${label}: —`;
-}
-
 async function uploadEvidenceFile(
   supabase: Awaited<ReturnType<typeof createClient>>,
   disputeId: string,
@@ -171,6 +167,78 @@ export async function saveRetailerUpdateAction(formData: FormData) {
   redirectWithResult(disputeId, { success: "Retailer update saved." });
 }
 
+export async function uploadReturnCollectionEvidenceAction(formData: FormData) {
+  const disputeId = readString(formData, "dispute_id");
+  const returnRequired = readString(formData, "return_required") || "unknown";
+  const collectionDate = readString(formData, "collection_date");
+  const returnTrackingRef = readString(formData, "return_tracking_ref");
+  const notes = readString(formData, "return_notes");
+  const returnLabelFile = readFile(formData, "return_label_file");
+  const returnProofFile = readFile(formData, "return_proof_file");
+  const retailerInstructionsFile = readFile(formData, "retailer_return_instructions_file");
+
+  if (!disputeId) redirect("/importer");
+  if (returnRequired === "unknown" && !collectionDate && !returnTrackingRef && !notes && !returnLabelFile && !returnProofFile && !retailerInstructionsFile) {
+    redirectWithResult(disputeId, { error: "Add return/collection details, tracking, a file, or notes before saving." });
+  }
+
+  const guard = await requireActiveOperator();
+  if (!guard.ok) redirectWithResult(disputeId, { error: guard.error });
+
+  const accessGuard = await requireDisputeAccess(guard.supabase, guard.operatorId, disputeId);
+  if (!accessGuard.ok) redirectWithResult(disputeId, { error: accessGuard.error });
+
+  if (accessGuard.dispute.desired_outcome !== "refund") {
+    redirectWithResult(disputeId, { error: "Return/collection evidence currently belongs to refund exceptions only." });
+  }
+
+  if (accessGuard.dispute.status !== "awaiting_refund_credit") {
+    redirectWithResult(disputeId, { error: "Supervisor must accept the final retailer refund outcome before return/collection evidence is uploaded." });
+  }
+
+  try {
+    const returnLabelFileUrl = await uploadEvidenceFile(guard.supabase, disputeId, "exception-return-labels", returnLabelFile);
+    const returnProofFileUrl = await uploadEvidenceFile(guard.supabase, disputeId, "exception-return-proofs", returnProofFile);
+    const retailerInstructionsFileUrl = await uploadEvidenceFile(
+      guard.supabase,
+      disputeId,
+      "exception-return-instructions",
+      retailerInstructionsFile,
+    );
+
+    const body = [
+      "[RETURN_COLLECTION_EVIDENCE_V1]",
+      "uploaded_by: operator",
+      `operator_id: ${guard.operatorId}`,
+      `dispute_id: ${disputeId}`,
+      `return_required: ${returnRequired}`,
+      `collection_date: ${collectionDate || "—"}`,
+      `return_tracking_ref: ${returnTrackingRef || "—"}`,
+      `return_label_file_url: ${returnLabelFileUrl || "—"}`,
+      `return_proof_file_url: ${returnProofFileUrl || "—"}`,
+      `retailer_return_instructions_file_url: ${retailerInstructionsFileUrl || "—"}`,
+      "",
+      notes || "No extra notes.",
+    ].join("\n");
+
+    const { error } = await guard.supabase.from("dispute_messages").insert({
+      dispute_id: disputeId,
+      message_type: "return_collection_evidence",
+      counterparty: "retailer",
+      body,
+      generated_by: "operator_upload",
+    });
+
+    if (error) redirectWithResult(disputeId, { error: error.message });
+  } catch (error) {
+    redirectWithResult(disputeId, { error: error instanceof Error ? error.message : "Failed to upload return/collection evidence." });
+  }
+
+  revalidatePath(`/importer/exceptions/${disputeId}`);
+  revalidatePath(`/internal/exceptions/${disputeId}`);
+  redirectWithResult(disputeId, { success: "Return/collection evidence saved. Credit note/refund evidence can be added later." });
+}
+
 export async function uploadOperatorCreditNoteEvidenceAction(formData: FormData) {
   const disputeId = readString(formData, "dispute_id");
   const originalOrderId = readString(formData, "original_order_id");
@@ -180,9 +248,6 @@ export async function uploadOperatorCreditNoteEvidenceAction(formData: FormData)
   const creditNoteRef = readString(formData, "credit_note_ref");
   const creditNoteDate = readString(formData, "credit_note_date");
   const expectedCreditNoteTotalGbp = parseNumber(readString(formData, "expected_credit_note_total_gbp"));
-  const returnRequired = readString(formData, "return_required") || "unknown";
-  const collectionDate = readString(formData, "collection_date");
-  const returnTrackingRef = readString(formData, "return_tracking_ref");
   const deliveryAdjustmentGbp = negative(readString(formData, "delivery_adjustment_gbp"));
   const discountAdjustmentGbp = negative(readString(formData, "discount_adjustment_gbp"));
   const notes = readString(formData, "notes");
@@ -255,8 +320,6 @@ export async function uploadOperatorCreditNoteEvidenceAction(formData: FormData)
   try {
     const creditNoteFileUrl = await uploadEvidenceFile(guard.supabase, disputeId, "exception-credit-notes", documentMode === "credit_note" ? creditNoteFile : null);
     const refundProofFileUrl = await uploadEvidenceFile(guard.supabase, disputeId, "exception-refund-proofs", documentMode === "refund_proof_no_credit_note" ? refundProofFile : null);
-    const returnLabelFileUrl = await uploadEvidenceFile(guard.supabase, disputeId, "exception-return-labels", readFile(formData, "return_label_file"));
-    const returnProofFileUrl = await uploadEvidenceFile(guard.supabase, disputeId, "exception-return-proofs", readFile(formData, "return_proof_file"));
 
     const body = [
       "[REFUND_EVIDENCE_V1]",
@@ -283,11 +346,6 @@ export async function uploadOperatorCreditNoteEvidenceAction(formData: FormData)
       `amount_balance_status: ${amountBalanceStatus}`,
       `evidence_control_status: ${evidenceControlStatus}`,
       `supplier_readiness_route: ${supplierReadinessRoute}`,
-      `return_required: ${returnRequired}`,
-      optionalLine("collection_date", collectionDate),
-      optionalLine("return_tracking_ref", returnTrackingRef),
-      optionalLine("return_label_file_url", returnLabelFileUrl),
-      optionalLine("return_proof_file_url", returnProofFileUrl),
       "",
       notes || "No extra notes.",
     ].join("\n");
