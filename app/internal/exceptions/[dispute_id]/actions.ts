@@ -261,6 +261,56 @@ export async function reviewRefundEvidenceAction(formData: FormData) {
   redirectWithResult(disputeId, { success: `Refund evidence review saved: ${reviewDecision}.` });
 }
 
+export async function reviewReturnCollectionEvidenceAction(formData: FormData) {
+  const disputeId = readString(formData, "dispute_id");
+  const reviewDecision = readString(formData, "review_decision");
+  const reviewNotes = readString(formData, "review_notes");
+
+  if (!disputeId) redirect("/internal/exceptions");
+  if (!["accepted", "hold", "rejected"].includes(reviewDecision)) {
+    redirectWithResult(disputeId, { error: "Select a valid return evidence review decision." });
+  }
+
+  const guard = await requireActiveStaff();
+  if (!guard.ok) redirectWithResult(disputeId, { error: guard.error });
+
+  const { data: evidenceMessages, error: evidenceError } = await guard.supabase
+    .from("dispute_messages")
+    .select("id, created_at")
+    .eq("dispute_id", disputeId)
+    .eq("message_type", "return_collection_evidence")
+    .order("created_at", { ascending: false })
+    .limit(1);
+
+  if (evidenceError) redirectWithResult(disputeId, { error: evidenceError.message });
+  if (!evidenceMessages || evidenceMessages.length < 1) {
+    redirectWithResult(disputeId, { error: "Operator return/collection evidence must be uploaded before supervisor review." });
+  }
+
+  const body = [
+    "[RETURN_COLLECTION_EVIDENCE_REVIEW_V1]",
+    `reviewed_by_staff_id: ${guard.staffId}`,
+    `review_decision: ${reviewDecision}`,
+    `source_evidence_message_id: ${evidenceMessages[0].id}`,
+    "",
+    reviewNotes || "No review notes.",
+  ].join("\n");
+
+  const { error } = await guard.supabase.from("dispute_messages").insert({
+    dispute_id: disputeId,
+    message_type: "return_collection_evidence_review",
+    counterparty: "internal",
+    body,
+    generated_by: "supervisor_review",
+  });
+
+  if (error) redirectWithResult(disputeId, { error: error.message });
+
+  revalidatePath(`/internal/exceptions/${disputeId}`);
+  revalidatePath(`/importer/exceptions/${disputeId}`);
+  redirectWithResult(disputeId, { success: `Return/collection evidence review saved: ${reviewDecision}.` });
+}
+
 export async function acceptReplacementOutcomeAction(formData: FormData) {
   const disputeId = readString(formData, "dispute_id");
   if (!disputeId) redirect("/internal/exceptions");
