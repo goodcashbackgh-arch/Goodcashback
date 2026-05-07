@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { uploadOperatorCreditNoteEvidenceAction } from "./actions";
+import { uploadOperatorCreditNoteEvidenceAction, uploadReturnCollectionEvidenceAction } from "./actions";
 
 type SupplierInvoiceOption = {
   id: string;
@@ -36,43 +36,6 @@ function InvoiceSelector({ invoiceOptions }: { invoiceOptions: SupplierInvoiceOp
         ))}
       </select>
     </label>
-  );
-}
-
-function ReturnEvidenceInputs() {
-  return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-4">
-      <h3 className="font-semibold">Return / collection evidence optional</h3>
-      <p className="mt-1 text-xs text-slate-500">Retailer collection, label and proof are optional because retailers handle returns differently.</p>
-      <div className="mt-4 grid gap-4 md:grid-cols-3">
-        <label className="block text-sm font-semibold text-slate-700">
-          Return required
-          <select name="return_required" className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm">
-            <option value="unknown">Unknown</option>
-            <option value="no">No</option>
-            <option value="yes">Yes</option>
-          </select>
-        </label>
-        <label className="block text-sm font-semibold text-slate-700">
-          Collection date optional
-          <input name="collection_date" type="date" className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
-        </label>
-        <label className="block text-sm font-semibold text-slate-700">
-          Return tracking ref optional
-          <input name="return_tracking_ref" className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
-        </label>
-      </div>
-      <div className="mt-4 grid gap-4 md:grid-cols-2">
-        <label className="block text-sm font-semibold text-slate-700">
-          Return label upload optional
-          <input name="return_label_file" type="file" className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm" />
-        </label>
-        <label className="block text-sm font-semibold text-slate-700">
-          Return proof upload optional
-          <input name="return_proof_file" type="file" className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm" />
-        </label>
-      </div>
-    </div>
   );
 }
 
@@ -124,13 +87,67 @@ function HiddenBaseFields({ disputeId, originalOrderId, mode }: { disputeId: str
   );
 }
 
+function ReturnCollectionEvidenceForm({ disputeId }: { disputeId: string }) {
+  return (
+    <form action={uploadReturnCollectionEvidenceAction} encType="multipart/form-data" className="space-y-5 rounded-3xl border border-slate-200 bg-white p-5">
+      <input type="hidden" name="dispute_id" value={disputeId} />
+      <div>
+        <p className="text-sm font-medium uppercase tracking-[0.2em] text-slate-500">Operational evidence</p>
+        <h3 className="mt-2 text-lg font-semibold">Return / collection / tracking evidence</h3>
+        <p className="mt-1 text-sm text-slate-600">
+          Use this as soon as the retailer gives return instructions, collection details, label, or tracking. This does not feed supplier draft readiness; credit note/refund evidence can be submitted later.
+        </p>
+      </div>
+      <div className="grid gap-4 md:grid-cols-3">
+        <label className="block text-sm font-semibold text-slate-700">
+          Return required
+          <select name="return_required" className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm">
+            <option value="unknown">Unknown</option>
+            <option value="no">No</option>
+            <option value="yes">Yes</option>
+          </select>
+        </label>
+        <label className="block text-sm font-semibold text-slate-700">
+          Collection date optional
+          <input name="collection_date" type="date" className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
+        </label>
+        <label className="block text-sm font-semibold text-slate-700">
+          Return tracking ref optional
+          <input name="return_tracking_ref" className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
+        </label>
+      </div>
+      <div className="grid gap-4 md:grid-cols-3">
+        <label className="block text-sm font-semibold text-slate-700">
+          Retailer instructions upload optional
+          <input name="retailer_return_instructions_file" type="file" className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm" />
+        </label>
+        <label className="block text-sm font-semibold text-slate-700">
+          Return label upload optional
+          <input name="return_label_file" type="file" className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm" />
+        </label>
+        <label className="block text-sm font-semibold text-slate-700">
+          Return proof upload optional
+          <input name="return_proof_file" type="file" className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm" />
+        </label>
+      </div>
+      <label className="block text-sm font-semibold text-slate-700">
+        Return / collection notes optional
+        <textarea name="return_notes" rows={3} className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Retailer collection instructions, tracking detail, label notes, pickup window, etc." />
+      </label>
+      <button type="submit" className="rounded-xl bg-slate-700 px-5 py-3 text-sm font-semibold text-white">Save return / collection evidence</button>
+    </form>
+  );
+}
+
 export default function RefundEvidenceModeSelector({ disputeId, originalOrderId, invoiceOptions, prefillLines }: Props) {
   const [mode, setMode] = useState<Mode>("credit_note");
 
   return (
-    <div className="mt-6 space-y-5">
+    <div className="mt-6 space-y-6">
+      <ReturnCollectionEvidenceForm disputeId={disputeId} />
+
       <fieldset className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
-        <legend className="px-2 text-sm font-semibold text-slate-700">What did the retailer provide?</legend>
+        <legend className="px-2 text-sm font-semibold text-slate-700">What refund document did the retailer provide?</legend>
         <div className="mt-3 grid gap-3 md:grid-cols-3">
           {[
             ["credit_note", "Credit note issued", "Use invoice-style upload; OCR/compare comes next."],
@@ -173,7 +190,6 @@ export default function RefundEvidenceModeSelector({ disputeId, originalOrderId,
             </label>
           </div>
           <AdjustmentInputs />
-          <ReturnEvidenceInputs />
           <label className="block text-sm font-semibold text-slate-700">
             Notes optional
             <textarea name="notes" rows={3} className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
@@ -194,7 +210,6 @@ export default function RefundEvidenceModeSelector({ disputeId, originalOrderId,
           </label>
           <RefundLineInputs prefillLines={prefillLines} />
           <AdjustmentInputs />
-          <ReturnEvidenceInputs />
           <label className="block text-sm font-semibold text-slate-700">
             Notes
             <textarea name="notes" rows={3} className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Retailer refunded without issuing a credit note" />
@@ -211,7 +226,6 @@ export default function RefundEvidenceModeSelector({ disputeId, originalOrderId,
           <InvoiceSelector invoiceOptions={invoiceOptions} />
           <RefundLineInputs prefillLines={prefillLines} />
           <AdjustmentInputs />
-          <ReturnEvidenceInputs />
           <label className="block text-sm font-semibold text-slate-700">
             Notes required
             <textarea name="notes" rows={3} required className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Explain why no document was issued and what the retailer confirmed" />
