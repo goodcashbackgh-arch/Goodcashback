@@ -17,6 +17,11 @@ function readInvoiceIds(formData: FormData) {
     .map((value) => value.trim());
 }
 
+function readString(formData: FormData, key: string) {
+  const value = formData.get(key);
+  return typeof value === "string" ? value.trim() : "";
+}
+
 function firstRelated<T>(value: T | T[] | null | undefined): T | null {
   if (!value) return null;
   return Array.isArray(value) ? value[0] ?? null : value;
@@ -28,6 +33,20 @@ function moneyOrNull(value: unknown) {
   return Number.isFinite(n) ? Math.round(n * 100) / 100 : null;
 }
 
+function bodyValue(body: string | null | undefined, key: string) {
+  const line = (body ?? "").split("\n").find((row) => row.startsWith(`${key}:`));
+  return line ? line.slice(key.length + 1).trim() : "";
+}
+
+function evidenceNeedsSupervisorReview(body: string | null | undefined) {
+  const text = body ?? "";
+  return (
+    text.includes("variance_supervisor_review_required") ||
+    text.includes("no_document_supervisor_review_required") ||
+    text.includes("supplier_refund_adjustment_review_required")
+  );
+}
+
 async function requireSupervisorOrAdmin() {
   const supabase = await createClient();
   const {
@@ -35,7 +54,7 @@ async function requireSupervisorOrAdmin() {
   } = await supabase.auth.getUser();
 
   if (!user) {
-    return { ok: false as const, supabase, error: "Please sign in again." };
+    return { ok: false as const, supabase, staffId: "", error: "Please sign in again." };
   }
 
   const { data: staff, error } = await supabase
@@ -46,14 +65,14 @@ async function requireSupervisorOrAdmin() {
     .maybeSingle();
 
   if (error || !staff) {
-    return { ok: false as const, supabase, error: "Active staff user not found." };
+    return { ok: false as const, supabase, staffId: "", error: "Active staff user not found." };
   }
 
   if (!["admin", "supervisor"].includes(String(staff.role_type))) {
-    return { ok: false as const, supabase, error: "Only admin or supervisor staff can approve supplier invoices." };
+    return { ok: false as const, supabase, staffId: "", error: "Only admin or supervisor staff can approve supplier records." };
   }
 
-  return { ok: true as const, supabase };
+  return { ok: true as const, supabase, staffId: String(staff.id) };
 }
 
 async function assertAccountingCodingReadyForApproval(supabase: Awaited<ReturnType<typeof createClient>>, supplierInvoiceId: string) {
@@ -105,6 +124,39 @@ async function approveOneSupplierInvoiceCurrent(
   });
 
   return error?.message ?? null;
+}
+
+async function latestAcceptedSupervisorReviewExists(supabase: Awaited<ReturnType<typeof createClient>>, disputeId: string, evidenceMessageId: string) {
+  const { data, error } = await supabase
+    .from("dispute_messages")
+    .select("id, body")
+    .eq("dispute_id", disputeId)
+    .eq("message_type", "refund_evidence_review")
+    .order("created_at", { ascending: false })
+    .limit(5);
+
+  if (error) return { ok: false as const, error: error.message };
+
+  const accepted = (data ?? []).some((message) => {
+    const body = String(message.body ?? "");
+    return body.includes("review_decision: accepted") && body.includes(`source_evidence_message_id: ${evidenceMessageId}`);
+  });
+
+  return { ok: true as const, accepted };
+}
+
+async function alreadyApprovedRefundEvidenceCurrent(supabase: Awaited<ReturnType<typeof createClient>>, disputeId: string, evidenceMessageId: string) {
+  const { data, error } = await supabase
+    .from("dispute_messages")
+    .select("id, body")
+    .eq("dispute_id", disputeId)
+    .eq("message_type", "supplier_refund_current_approved")
+    .limit(20);
+
+  if (error) return { ok: false as const, error: error.message };
+
+  const existing = (data ?? []).some((message) => String(message.body ?? "").includes(`source_evidence_message_id: ${evidenceMessageId}`));
+  return { ok: true as const, existing };
 }
 
 export async function approveSupplierInvoiceCurrentAction(formData: FormData) {
@@ -164,4 +216,75 @@ export async function bulkApproveSupplierInvoicesCurrentAction(formData: FormDat
   }
 
   redirectWithResult({ success: `Approved ${approvedCount} supplier invoice(s) as current.` });
+}
+
+export async function approveSupplierRefundEvidenceCurrentAction(formData: FormData) {
+  const evidenceMessageId = readString(formData, "evidence_message_id");
+  const disputeId = readString(formData, "dispute_id");
+  if (!evidenceMessageId || !disputeId) redirectWithResult({ error: "Missing refund evidence approval context." });
+
+  const guard = await requireSupervisorOrAdmin();
+  if (!guard.ok) redirectWithResult({ error: guard.error });
+
+  const { data: evidence, error: evidenceError } = await guard.supabase
+    .from("dispute_messages")
+    .select("id, dispute_id, message_type, body")
+    .eq("id", evidenceMessageId)
+    .eq("dispute_id", disputeId)
+    .maybeSingle();
+
+  if (evidenceError || !evidence) redirectWithResult({ error: evidenceError?.message ?? "Refund evidence message not found." });
+  if (!["credit_note_evidence", "refund_evidence"].includes(String(evidence.message_type))) {
+    redirectWithResult({ error: "Only refund or credit-note evidence can be approved here." });
+  }
+
+  const body = String(evidence.body ?? "");
+  const documentMode = bodyValue(body, "document_mode");
+  const route = bodyValue(body, "supplier_readiness_route");
+  const controlStatus = bodyValue(body, "evidence_control_status");
+
+  if (documentMode === "credit_note" || route === "supplier_credit_note_readiness_pending_ocr" || controlStatus === "credit_note_uploaded_pending_ocr_compare") {
+    redirectWithResult({ error: "Credit-note evidence needs OCR/compare before supplier credit-note current approval." });
+  }
+
+  const reviewRequired = evidenceNeedsSupervisorReview(body);
+  if (reviewRequired) {
+    const review = await latestAcceptedSupervisorReviewExists(guard.supabase, disputeId, evidenceMessageId);
+    if (!review.ok) redirectWithResult({ error: review.error });
+    if (!review.accepted) redirectWithResult({ error: "This refund evidence needs an accepted supervisor exception review before approval." });
+  }
+
+  const duplicateGuard = await alreadyApprovedRefundEvidenceCurrent(guard.supabase, disputeId, evidenceMessageId);
+  if (!duplicateGuard.ok) redirectWithResult({ error: duplicateGuard.error });
+  if (duplicateGuard.existing) redirectWithResult({ error: "This refund evidence has already been approved current." });
+
+  const approvalBody = [
+    "[SUPPLIER_REFUND_CURRENT_APPROVAL_V1]",
+    `approved_by_staff_id: ${guard.staffId}`,
+    `source_evidence_message_id: ${evidenceMessageId}`,
+    `dispute_id: ${disputeId}`,
+    `document_mode: ${documentMode || "—"}`,
+    `supplier_readiness_route: ${route || "—"}`,
+    `evidence_control_status: ${controlStatus || "—"}`,
+    `captured_refund_amount_abs_gbp: ${bodyValue(body, "captured_refund_amount_abs_gbp") || "—"}`,
+    `expected_exception_amount_abs_gbp: ${bodyValue(body, "expected_exception_amount_abs_gbp") || "—"}`,
+    `variance_abs_gbp: ${bodyValue(body, "variance_abs_gbp") || "—"}`,
+    "",
+    "Approved current from supplier draft ready queue. Sage posting remains a later controlled step. DVA/card refund IN still needs matching for money clearance.",
+  ].join("\n");
+
+  const { error: insertError } = await guard.supabase.from("dispute_messages").insert({
+    dispute_id: disputeId,
+    message_type: "supplier_refund_current_approved",
+    counterparty: "internal",
+    body: approvalBody,
+    generated_by: "supplier_draft_ready",
+  });
+
+  if (insertError) redirectWithResult({ error: insertError.message });
+
+  revalidatePath("/internal/supplier-draft-ready");
+  revalidatePath(`/internal/exceptions/${disputeId}`);
+  revalidatePath("/internal/status-control/pre-sage-financial-readiness");
+  redirectWithResult({ success: "Approved refund adjustment evidence as supplier-side current." });
 }
