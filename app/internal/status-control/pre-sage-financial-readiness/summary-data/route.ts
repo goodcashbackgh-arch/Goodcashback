@@ -39,6 +39,10 @@ function messageReferencesDispute(row: Row, disputeId: string) {
   return text(row.dispute_id) === disputeId || text(row.body).includes(`dispute_id: ${disputeId}`);
 }
 
+function structuredRefundApprovalReferencesDispute(row: Row, disputeId: string) {
+  return text(row.dispute_id) === disputeId && text(row.supplier_approval_status) === "approved_current";
+}
+
 export async function GET(request: Request) {
   const supabase = await createClient();
   const { searchParams } = new URL(request.url);
@@ -60,7 +64,7 @@ export async function GET(request: Request) {
   const orderIds = new Set(orders.map((order) => text(order.id)));
   const orderRefs = new Set(orders.map((order) => text(order.order_ref)));
 
-  const [fundingResult, invoiceResult, disputeResult, allocationResult, refundApprovalResult] = await Promise.all([
+  const [fundingResult, invoiceResult, disputeResult, allocationResult, refundApprovalResult, structuredRefundApprovalResult] = await Promise.all([
     supabase
       .from("order_funding_position_vw")
       .select("order_id, order_ref, importer_id, purchase_funding_threshold_gbp, confirmed_dva_funding_gbp, applied_credit_gbp, funded_total_gbp, gap_remaining_gbp, threshold_met_yn, already_funded_yn")
@@ -82,9 +86,14 @@ export async function GET(request: Request) {
       .select("id, dispute_id, message_type, body")
       .eq("message_type", "supplier_refund_current_approved")
       .limit(2000),
+    supabase
+      .from("dispute_refund_evidence_submissions")
+      .select("id, dispute_id, supplier_approval_status, supplier_control_status, document_mode")
+      .eq("supplier_approval_status", "approved_current")
+      .limit(2000),
   ]);
 
-  const firstError = fundingResult.error || invoiceResult.error || disputeResult.error || allocationResult.error || refundApprovalResult.error;
+  const firstError = fundingResult.error || invoiceResult.error || disputeResult.error || allocationResult.error || refundApprovalResult.error || structuredRefundApprovalResult.error;
   if (firstError) return NextResponse.json({ error: firstError.message }, { status: 500 });
 
   const fundingRows = ((fundingResult.data ?? []) as Row[]).filter((row) => orderIds.has(text(row.order_id)));
@@ -92,6 +101,7 @@ export async function GET(request: Request) {
   const disputesByOrderId = groupBy(((disputeResult.data ?? []) as Row[]).filter((row) => orderIds.has(text(row.order_id))), (row) => text(row.order_id));
   const allocations = ((allocationResult.data ?? []) as Row[]).filter((row) => orderRefs.has(text(row.order_ref)) || text(row.dispute_id));
   const refundApprovalRows = (refundApprovalResult.data ?? []) as Row[];
+  const structuredRefundApprovalRows = (structuredRefundApprovalResult.data ?? []) as Row[];
   const fundingByOrderId = new Map(fundingRows.map((row) => [text(row.order_id), row]));
 
   const cards = orders.map((order) => {
@@ -137,9 +147,12 @@ export async function GET(request: Request) {
       !confirmedAllocations.some((allocation) => text(allocation.dispute_id) === text(dispute.id) && text(allocation.allocation_type) === "retailer_refund")
     );
 
-    const refundAwaitingWithoutSupplierApproval = acceptedRefundDisputes.some((dispute) =>
-      !refundApprovalRows.some((approval) => messageReferencesDispute(approval, text(dispute.id)))
-    );
+    const refundAwaitingWithoutSupplierApproval = acceptedRefundDisputes.some((dispute) => {
+      const disputeId = text(dispute.id);
+      const legacyApproved = refundApprovalRows.some((approval) => messageReferencesDispute(approval, disputeId));
+      const structuredApproved = structuredRefundApprovalRows.some((approval) => structuredRefundApprovalReferencesDispute(approval, disputeId));
+      return !legacyApproved && !structuredApproved;
+    });
 
     const approvedCurrentInvoiceCount = invoices.filter((invoice) => text(invoice.review_status) === "approved_current").length;
     const blockedInvoiceCount = invoices.filter((invoice) => bool(invoice.blocked_from_sage_yn) || ["needs_action", "pending_review", "duplicate_blocked", "rejected_resubmit_required"].includes(text(invoice.review_status))).length;
