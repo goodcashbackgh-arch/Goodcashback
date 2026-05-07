@@ -9,8 +9,44 @@
 --   dispute_refund_evidence_submissions.
 --   This patch stores operator review state on the structured table and exposes
 --   a SECURITY DEFINER RPC for linked operators.
+--
+-- Also fixes live drift where RLS policies/triggers already expect evidence
+-- message types but dispute_messages CHECK constraints still allow only the
+-- original conversation message values.
 
 begin;
+
+alter table public.dispute_messages
+  drop constraint if exists dispute_messages_message_type_check;
+
+alter table public.dispute_messages
+  add constraint dispute_messages_message_type_check
+  check ((message_type)::text = any (array[
+    'opening',
+    'retailer_reply',
+    'gc_draft',
+    'gc_sent',
+    'supervisor_note',
+    'return_collection_evidence',
+    'return_collection_evidence_review',
+    'credit_note_evidence',
+    'refund_evidence',
+    'refund_evidence_review',
+    'supplier_refund_current_approved'
+  ]::text[]));
+
+alter table public.dispute_messages
+  drop constraint if exists dispute_messages_generated_by_check;
+
+alter table public.dispute_messages
+  add constraint dispute_messages_generated_by_check
+  check ((generated_by)::text = any (array[
+    'claude',
+    'manual',
+    'retailer_paste',
+    'operator_upload',
+    'supplier_draft_ready'
+  ]::text[]));
 
 alter table public.dispute_refund_evidence_submissions
   add column if not exists operator_review_status text not null default 'pending_review',
