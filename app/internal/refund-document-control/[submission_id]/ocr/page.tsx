@@ -35,7 +35,6 @@ type LineRow = {
   description: string | null;
   qty: string | number | null;
   amount_gbp: string | number | null;
-  progressed_to_supplier_control_yn: boolean | string | null;
 };
 
 function text(value: unknown) {
@@ -118,7 +117,7 @@ export default async function RefundCreditNoteOcrPage({
   const submission = submissionRaw as SubmissionRow;
   const { data: linesRaw } = await supabase
     .from("dispute_refund_document_lines")
-    .select("id, line_order, line_source, description, qty, amount_gbp, progressed_to_supplier_control_yn")
+    .select("id, line_order, line_source, description, qty, amount_gbp")
     .eq("refund_evidence_submission_id", submissionId)
     .order("line_order", { ascending: true });
 
@@ -130,13 +129,13 @@ export default async function RefundCreditNoteOcrPage({
     <main className="min-h-screen bg-slate-50 px-6 py-8 text-slate-950">
       <div className="mx-auto flex max-w-6xl flex-col gap-6">
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-          <Link href={`/internal/refund-document-control/${submissionId}`} className="text-sm font-semibold text-sky-700">← Back to refund document control</Link>
-          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Credit-note OCR</p>
+          <Link href="/internal/refund-document-control" className="text-sm font-semibold text-sky-700">← Back to refund document OCR queue</Link>
+          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Credit-note OCR only</p>
           <div className="mt-3 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
             <div>
-              <h1 className="text-3xl font-semibold tracking-tight">Credit-note OCR control</h1>
+              <h1 className="text-3xl font-semibold tracking-tight">Credit-note OCR extraction</h1>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-                Uses the same Mindee V2 invoice/OCR pattern as supplier invoices, but saves into refund-document credit-note fields and refund document lines. This page does not post to Sage.
+                This page is only for starting Mindee OCR and safely fetching the OCR result for a submitted credit note. It does not release lines, code VAT/nominals, approve supplier credit control, or post to Sage.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700">
@@ -149,11 +148,10 @@ export default async function RefundCreditNoteOcrPage({
         {success ? <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-semibold text-emerald-900">{success}</div> : null}
         {error ? <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm font-semibold text-rose-900">{error}</div> : null}
 
-        <section className="grid gap-4 md:grid-cols-4">
+        <section className="grid gap-4 md:grid-cols-3">
           <StatusPill label="OCR status" value={submission.ocr_status} />
           <StatusPill label="Match status" value={submission.match_status} />
           <StatusPill label="Amount balance" value={submission.amount_balance_status} />
-          <StatusPill label="Supplier control" value={submission.supplier_control_status} />
         </section>
 
         <section className="grid gap-5 lg:grid-cols-2">
@@ -181,7 +179,7 @@ export default async function RefundCreditNoteOcrPage({
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-          <h2 className="text-lg font-semibold">Actions</h2>
+          <h2 className="text-lg font-semibold">OCR actions</h2>
           <div className="mt-4 flex flex-wrap gap-3">
             <form action="/internal/refund-document-control/credit-note-ocr-start" method="post">
               <input type="hidden" name="refund_evidence_submission_id" value={submissionId} />
@@ -191,19 +189,20 @@ export default async function RefundCreditNoteOcrPage({
               <input type="hidden" name="refund_evidence_submission_id" value={submissionId} />
               <button disabled={!canFetch} className="rounded-xl bg-sky-700 px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">Safe fetch OCR result</button>
             </form>
-            <Link href={`/internal/refund-document-control/${submissionId}`} className="rounded-xl border border-slate-300 bg-white px-5 py-3 text-sm font-semibold text-slate-700">Release / code / approve page</Link>
+            <Link href="/internal/refund-document-control" className="rounded-xl border border-slate-300 bg-white px-5 py-3 text-sm font-semibold text-slate-700">Back to OCR queue</Link>
           </div>
-          <p className="mt-3 text-xs text-slate-500">Start OCR consumes a Mindee page. Safe fetch does not re-upload the document; it only reads the existing Mindee job result.</p>
+          <p className="mt-3 text-xs text-slate-500">Start OCR consumes a Mindee page. Safe fetch does not re-upload the document; it only reads the existing Mindee job result. Release, coding and approval remain in the supplier credit/refund document control lane.</p>
           {submission.mindee_error_message ? <p className="mt-3 rounded-xl bg-rose-50 p-3 text-sm text-rose-800">{submission.mindee_error_message}</p> : null}
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-          <h2 className="text-lg font-semibold">Refund document lines</h2>
+          <h2 className="text-lg font-semibold">OCR extracted refund document lines</h2>
+          <p className="mt-1 text-xs text-slate-500">These are extracted lines only. Release, coding and approval are handled outside this OCR page.</p>
           <div className="mt-4 overflow-x-auto">
             <table className="min-w-full text-left text-sm">
-              <thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr><th className="p-3">Line</th><th className="p-3">Source</th><th className="p-3">Description</th><th className="p-3 text-right">Qty</th><th className="p-3 text-right">Amount</th><th className="p-3">Released?</th></tr></thead>
+              <thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr><th className="p-3">Line</th><th className="p-3">Source</th><th className="p-3">Description</th><th className="p-3 text-right">Qty</th><th className="p-3 text-right">Amount</th></tr></thead>
               <tbody>
-                {lines.length === 0 ? <tr><td colSpan={6} className="p-4 text-slate-500">No refund document lines yet.</td></tr> : null}
+                {lines.length === 0 ? <tr><td colSpan={5} className="p-4 text-slate-500">No OCR extracted refund document lines yet.</td></tr> : null}
                 {lines.map((line) => (
                   <tr key={line.id} className="border-t">
                     <td className="p-3">{line.line_order}</td>
@@ -211,7 +210,6 @@ export default async function RefundCreditNoteOcrPage({
                     <td className="p-3 font-medium">{line.description}</td>
                     <td className="p-3 text-right">{line.qty}</td>
                     <td className="p-3 text-right font-semibold">{gbp(line.amount_gbp)}</td>
-                    <td className="p-3">{String(line.progressed_to_supplier_control_yn) === "true" ? "Yes" : "No"}</td>
                   </tr>
                 ))}
               </tbody>
