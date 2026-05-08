@@ -94,8 +94,9 @@ function linePayload(line: Row, code?: Row) {
     line_order: num(line.line_order),
     line_source: text(line.line_source) || null,
     description: text(code?.description_override) || text(line.description) || "Supplier credit line",
-    sku: text(code?.sku_override) || null,
-    size: text(code?.size_override) || null,
+    sku: text(code?.sku_override) || text(line.retailer_sku) || null,
+    size: text(code?.size_override) || text(line.size) || null,
+    qty: num(line.qty),
     nominal_code: text(code?.nominal_code) || null,
     sage_ledger_account_id: text(code?.sage_ledger_account_id) || null,
     tax_rate_id: text(code?.tax_rate_id) || null,
@@ -153,7 +154,6 @@ function buildPreview(args: {
 
   const blockers: string[] = [];
   const warnings: string[] = [];
-  if (text(submission.document_mode) !== "refund_proof_no_credit_note") blockers.push("thin preview currently covers refund proof / no credit note only");
   if (text(submission.supplier_approval_status) !== "approved_current") blockers.push("supplier refund evidence is not approved current");
   if (text(submission.supplier_control_status) !== "approved_current") blockers.push("supplier control status is not approved current");
   if (!bool(totals?.gross_reconciled_to_document_yn)) blockers.push("coded gross does not reconcile to accepted refund document gross");
@@ -250,7 +250,7 @@ export default async function SupplierCreditPayloadPreviewPage({
   let submissionQuery = supabase
     .from("dispute_refund_evidence_submissions")
     .select("id, dispute_id, original_order_id, original_supplier_invoice_id, submitted_at, document_mode, credit_note_ref, credit_note_date, credit_note_file_url, refund_proof_file_url, captured_refund_amount_abs_gbp, expected_exception_amount_abs_gbp, variance_abs_gbp, amount_balance_status, supplier_approval_status, supplier_control_status, supplier_approved_at, match_status")
-    .eq("document_mode", "refund_proof_no_credit_note")
+    .in("document_mode", ["credit_note", "refund_proof_no_credit_note", "no_document"])
     .eq("supplier_approval_status", "approved_current")
     .eq("supplier_control_status", "approved_current")
     .order("supplier_approved_at", { ascending: false })
@@ -271,7 +271,7 @@ export default async function SupplierCreditPayloadPreviewPage({
 
   const [linesResult, totalsResult, disputesResult, invoicesResult, allocationsResult] = await Promise.all([
     submissionIds.length
-      ? supabase.from("dispute_refund_document_lines").select("id, refund_evidence_submission_id, line_order, line_source, description, qty, amount_gbp, progressed_to_supplier_control_yn").in("refund_evidence_submission_id", submissionIds).order("line_order", { ascending: true })
+      ? supabase.from("dispute_refund_document_lines").select("id, refund_evidence_submission_id, line_order, line_source, description, retailer_sku, size, qty, amount_gbp, progressed_to_supplier_control_yn").in("refund_evidence_submission_id", submissionIds).order("line_order", { ascending: true })
       : { data: [] as Row[], error: null },
     submissionIds.length
       ? supabase.from("dispute_refund_document_accounting_totals_vw").select("refund_evidence_submission_id, accepted_document_gross_gbp, total_coded_net_gbp, total_coded_vat_gbp, total_coded_gross_gbp, adjustment_gross_gbp, progressed_line_count, coded_line_count, all_progressed_lines_coded_yn, gross_reconciled_to_document_yn, gross_variance_gbp").in("refund_evidence_submission_id", submissionIds)
@@ -361,7 +361,7 @@ export default async function SupplierCreditPayloadPreviewPage({
             <div>
               <h1 className="text-3xl font-semibold tracking-tight">Supplier credit-equivalent payload preview</h1>
               <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
-                Thin preview for the proven refund-proof/no-credit-note path only. This validates approved refund evidence, coded supplier-credit lines, and confirmed DVA/card refund-IN allocation. It does not post to Sage.
+                Preview for approved refund-document submissions: credit notes, refund proof without credit note, and approved no-document refund adjustments. This validates coded supplier-credit lines and confirmed DVA/card refund-IN allocation. It does not post to Sage.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700">
@@ -374,14 +374,14 @@ export default async function SupplierCreditPayloadPreviewPage({
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
           <h2 className="text-lg font-semibold">Filters</h2>
           <div className="mt-3 grid gap-3 md:grid-cols-3">
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm"><p className="text-xs font-bold uppercase text-slate-500">Submission filter</p><p className="mt-2 font-mono text-xs break-all">{submissionId || "all approved refund-proof submissions"}</p></div>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm"><p className="text-xs font-bold uppercase text-slate-500">Submission filter</p><p className="mt-2 font-mono text-xs break-all">{submissionId || "all approved refund-document submissions"}</p></div>
             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm"><p className="text-xs font-bold uppercase text-slate-500">Dispute filter</p><p className="mt-2 font-mono text-xs break-all">{disputeId || "none"}</p></div>
             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm"><p className="text-xs font-bold uppercase text-slate-500">Rows</p><p className="mt-2 text-2xl font-semibold">{previews.length}</p></div>
           </div>
         </section>
 
         {previews.length === 0 ? (
-          <section className="rounded-3xl border border-amber-200 bg-amber-50 p-6 text-sm text-amber-900">No approved refund-proof/no-credit-note submissions are available for this filter.</section>
+          <section className="rounded-3xl border border-amber-200 bg-amber-50 p-6 text-sm text-amber-900">No approved refund-document submissions are available for this filter.</section>
         ) : null}
 
         {previews.map((preview) => {
@@ -412,12 +412,15 @@ export default async function SupplierCreditPayloadPreviewPage({
                   <div className="border-b bg-slate-100 px-4 py-3 font-semibold">Supplier credit preview lines</div>
                   <div className="overflow-x-auto">
                     <table className="min-w-full text-left text-sm">
-                      <thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr><th className="p-3">Line</th><th className="p-3">Description</th><th className="p-3">Nominal</th><th className="p-3 text-right">Net</th><th className="p-3 text-right">VAT</th><th className="p-3 text-right">Gross</th></tr></thead>
+                      <thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr><th className="p-3">Line</th><th className="p-3">Description</th><th className="p-3">SKU</th><th className="p-3">Size</th><th className="p-3 text-right">Qty</th><th className="p-3">Nominal</th><th className="p-3 text-right">Net</th><th className="p-3 text-right">VAT</th><th className="p-3 text-right">Gross</th></tr></thead>
                       <tbody>
                         {payload.lines.map((line) => (
                           <tr key={line.source_refund_document_line_id} className="border-t">
                             <td className="p-3">{line.line_order}</td>
                             <td className="p-3 font-medium">{line.description}</td>
+                            <td className="p-3">{line.sku || "—"}</td>
+                            <td className="p-3">{line.size || "—"}</td>
+                            <td className="p-3 text-right">{line.qty || "—"}</td>
                             <td className="p-3">{line.nominal_code || line.sage_ledger_account_id || "—"}</td>
                             <td className="p-3 text-right">{gbp(line.net_credit_gbp)}</td>
                             <td className="p-3 text-right">{gbp(line.vat_credit_gbp)}</td>
