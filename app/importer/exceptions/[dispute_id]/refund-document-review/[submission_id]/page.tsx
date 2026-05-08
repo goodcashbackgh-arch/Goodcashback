@@ -32,6 +32,7 @@ type SubmissionRow = {
   ocr_credit_note_total_gbp: number | null;
   match_status: string | null;
   amount_balance_status: string | null;
+  evidence_control_status: string | null;
   supplier_control_status: string | null;
   supplier_approval_status: string | null;
   supervisor_review_status: string | null;
@@ -125,10 +126,10 @@ function modeLabel(value: string | null | undefined) {
 
 function badgeClass(value: string | null | undefined) {
   const status = String(value ?? "");
-  if (["completed", "balanced", "matched_ready_to_release", "accepted", "confirmed"].includes(status)) {
+  if (["completed", "balanced", "matched_ready_to_release", "accepted", "confirmed", "operator_confirmed_ready_for_staff_control"].includes(status)) {
     return "bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200";
   }
-  if (["needs_supervisor_review", "pending", "pending_ocr", "blocked", "not_released", "not_required"].includes(status)) {
+  if (["needs_supervisor_review", "pending", "pending_ocr", "blocked", "not_released", "not_required", "operator_rejection_requested_wrong_upload"].includes(status)) {
     return "bg-amber-50 text-amber-800 ring-1 ring-amber-200";
   }
   if (["failed", "rejected", "variance"].includes(status)) {
@@ -142,8 +143,18 @@ function firstLine(value: DisputeLine["supplier_invoice_lines"]) {
   return Array.isArray(value) ? value[0] ?? null : value;
 }
 
+function operatorDecisionLabel(submission: SubmissionRow) {
+  if (submission.evidence_control_status === "operator_confirmed_ready_for_staff_control") return "Progressed to staff control queue";
+  if (submission.evidence_control_status === "operator_rejection_requested_wrong_upload") return "Rejection/resubmission requested";
+  if (submission.match_status === "matched_ready_to_release") return "Ready to progress";
+  if (submission.match_status === "needs_supervisor_review") return "Needs decision";
+  return "Awaiting operator decision";
+}
+
 function canOperatorEdit(submission: SubmissionRow, lines: RefundLine[]) {
+  const operatorDecisionMade = ["operator_confirmed_ready_for_staff_control", "operator_rejection_requested_wrong_upload"].includes(String(submission.evidence_control_status ?? ""));
   const blockedByControl =
+    operatorDecisionMade ||
     lines.some((line) => line.progressed_to_supplier_control_yn) ||
     !["blocked", "not_released", "pending", "pending_ocr", "needs_operator_review", "needs_supervisor_review", null].includes(submission.supplier_control_status);
   const blockedByApproval = !["blocked", "pending", "not_started", null].includes(submission.supplier_approval_status);
@@ -196,7 +207,7 @@ export default async function OperatorRefundDocumentReviewPage({
 
   const { data: submissionRaw, error: submissionError } = await supabase
     .from("dispute_refund_evidence_submissions")
-    .select("id, dispute_id, original_supplier_invoice_id, document_mode, credit_note_ref, credit_note_date, expected_credit_note_total_gbp, captured_refund_amount_abs_gbp, expected_exception_amount_abs_gbp, variance_abs_gbp, credit_note_file_url, refund_proof_file_url, ocr_status, ocr_credit_note_ref, ocr_retailer_name, ocr_credit_note_date, ocr_credit_note_total_gbp, match_status, amount_balance_status, supplier_control_status, supplier_approval_status, supervisor_review_status, notes, submitted_at")
+    .select("id, dispute_id, original_supplier_invoice_id, document_mode, credit_note_ref, credit_note_date, expected_credit_note_total_gbp, captured_refund_amount_abs_gbp, expected_exception_amount_abs_gbp, variance_abs_gbp, credit_note_file_url, refund_proof_file_url, ocr_status, ocr_credit_note_ref, ocr_retailer_name, ocr_credit_note_date, ocr_credit_note_total_gbp, match_status, amount_balance_status, evidence_control_status, supplier_control_status, supplier_approval_status, supervisor_review_status, notes, submitted_at")
     .eq("id", submissionId)
     .eq("dispute_id", disputeId)
     .maybeSingle();
@@ -220,7 +231,7 @@ export default async function OperatorRefundDocumentReviewPage({
       .from("dispute_messages")
       .select("id, message_type, body, generated_by, created_at")
       .eq("dispute_id", disputeId)
-      .in("message_type", ["refund_document_operator_review_request", "refund_document_operator_confirmed"])
+      .in("message_type", ["refund_document_operator_progressed", "refund_document_operator_rejection_requested"])
       .order("created_at", { ascending: false }),
   ]);
 
@@ -244,7 +255,7 @@ export default async function OperatorRefundDocumentReviewPage({
   const amountMatched = Math.abs(amountVariance) <= 0.01;
   const lineSetBalanced = amountMatched && (qtyMatched || submission.document_mode !== "credit_note");
   const editable = canOperatorEdit(submission, lines);
-  const alreadyConfirmed = messages.some((message) => message.message_type === "refund_document_operator_confirmed");
+  const operatorDecisionMade = ["operator_confirmed_ready_for_staff_control", "operator_rejection_requested_wrong_upload"].includes(String(submission.evidence_control_status ?? ""));
   const canConfirm = editable && lines.length > 0 && amountMatched;
 
   return (
@@ -256,12 +267,12 @@ export default async function OperatorRefundDocumentReviewPage({
           <Link href={`/importer/exceptions/${disputeId}`} className="text-sm font-semibold text-sky-600">
             ← Back to exact exception
           </Link>
-          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Refund document reconciliation</p>
+          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Refund document check</p>
           <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">
             Exception {disputeId.slice(0, 8)} · Order {order?.order_ref ?? dispute.order_id}
           </h1>
           <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-600">
-            Same review pattern as invoice reconciliation: compare the submitted refund document against the exception baseline, review OCR/manual lines, correct commercial line issues, then confirm. Accounting release, VAT coding, approval and Sage readiness stay in the internal refund document control lane.
+            Check the submitted refund document lines. If the upload is correct, progress it to the staff control queue. If it is the wrong upload or cannot be used, request rejection/resubmission.
           </p>
           <p className="mt-2 text-sm text-slate-600">Signed in as: {operator.full_name}</p>
           {qp.success ? <p className="mt-4 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">{qp.success}</p> : null}
@@ -275,7 +286,7 @@ export default async function OperatorRefundDocumentReviewPage({
               <h2 className="mt-1 text-xl font-semibold">Exception baseline vs refund document lines</h2>
             </div>
             <span className={`w-fit rounded-full px-3 py-1 text-xs font-semibold ${lineSetBalanced ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>
-              {lineSetBalanced ? "Refund value accounted for" : "Variance needs review"}
+              {lineSetBalanced ? "Refund value accounted for" : "Variance needs decision"}
             </span>
           </div>
           <div className="mt-5 grid gap-3 md:grid-cols-3">
@@ -331,14 +342,15 @@ export default async function OperatorRefundDocumentReviewPage({
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div>
-              <p className="text-sm font-medium uppercase tracking-[0.16em] text-slate-500">Line reconciliation</p>
+              <p className="text-sm font-medium uppercase tracking-[0.16em] text-slate-500">Line check</p>
               <h2 className="mt-1 text-xl font-semibold">Refund document lines</h2>
-              <p className="mt-2 text-sm text-slate-600">Same concept as invoice OCR reconciliation: review OCR/manual lines and save corrections before confirmation. OCR lines are editable but not deletable. Manual correction lines can be added/deleted before supplier control release.</p>
+              <p className="mt-2 text-sm text-slate-600">Check OCR/manual lines before deciding. OCR lines are editable but not deletable. Manual correction lines can be added or deleted before the operator decision.</p>
             </div>
             <div className="flex flex-wrap gap-2">
               <span className={`rounded-full px-3 py-1 text-xs font-semibold ${badgeClass(submission.ocr_status)}`}>OCR {statusLabel(submission.ocr_status)}</span>
               <span className={`rounded-full px-3 py-1 text-xs font-semibold ${badgeClass(submission.match_status)}`}>Match {statusLabel(submission.match_status)}</span>
               <span className={`rounded-full px-3 py-1 text-xs font-semibold ${badgeClass(submission.amount_balance_status)}`}>Amount {statusLabel(submission.amount_balance_status)}</span>
+              <span className={`rounded-full px-3 py-1 text-xs font-semibold ${badgeClass(submission.evidence_control_status)}`}>{operatorDecisionLabel(submission)}</span>
             </div>
           </div>
 
@@ -375,7 +387,7 @@ export default async function OperatorRefundDocumentReviewPage({
                     <button type="submit" disabled={locked} className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">Save line</button>
                   </form>
                   <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-slate-600">
-                    <span>{line.progressed_to_supplier_control_yn ? "Released to supplier control" : "Not released to supplier control"}</span>
+                    <span>{locked ? "Line locked after decision/staff action" : "Editable before operator decision"}</span>
                     {line.line_source === "manually_added" ? (
                       <form action={deleteManualRefundDocumentLineAction}>
                         <input type="hidden" name="dispute_id" value={disputeId} />
@@ -388,7 +400,7 @@ export default async function OperatorRefundDocumentReviewPage({
                 </article>
               );
             })}
-            {lines.length === 0 ? <p className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">No refund document lines exist yet. Ask supervisor to run/fetch OCR for a credit note, or add manual lines if this is a no-credit-note/no-document case.</p> : null}
+            {lines.length === 0 ? <p className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">No refund document lines exist yet. Ask staff to run/fetch OCR for a credit note, or add manual lines if this is a no-credit-note/no-document case.</p> : null}
           </div>
         </section>
 
@@ -424,32 +436,32 @@ export default async function OperatorRefundDocumentReviewPage({
         </section>
 
         <section className="rounded-3xl border border-sky-200 bg-sky-50 p-5 shadow-sm sm:p-6">
-          <p className="text-sm font-medium uppercase tracking-[0.16em] text-sky-700">Progression / exception path</p>
-          <h2 className="mt-1 text-xl font-semibold">Confirm or request supervisor review</h2>
-          <p className="mt-2 text-sm text-slate-700">If the refund document lines now match the exception value, confirm them. If the document is wrong, incomplete or needs resubmission, ask supervisor to review.</p>
+          <p className="text-sm font-medium uppercase tracking-[0.16em] text-sky-700">Operator decision</p>
+          <h2 className="mt-1 text-xl font-semibold">Progress correct upload or request rejection</h2>
+          <p className="mt-2 text-sm text-slate-700">Choose one path. If the refund document lines are correct, progress it to the staff control queue. If this is the wrong upload, ask staff to reject it or request resubmission.</p>
           <div className="mt-4 grid gap-3 lg:grid-cols-2">
             <form action={confirmRefundDocumentLinesAction} className="space-y-3 rounded-2xl border border-sky-200 bg-white p-4">
               <input type="hidden" name="dispute_id" value={disputeId} />
               <input type="hidden" name="refund_evidence_submission_id" value={submissionId} />
-              <textarea name="notes" rows={3} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Optional confirmation notes" />
-              <button type="submit" disabled={!canConfirm || alreadyConfirmed} className="w-full rounded-xl bg-sky-700 px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">
-                {alreadyConfirmed ? "Already confirmed" : "Confirm refund document lines"}
+              <textarea name="notes" rows={3} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Optional progress notes" />
+              <button type="submit" disabled={!canConfirm || operatorDecisionMade} className="w-full rounded-xl bg-sky-700 px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">
+                {operatorDecisionMade ? "Decision already sent" : "Progress correct upload to staff control"}
               </button>
-              {!amountMatched ? <p className="text-xs text-amber-800">Cannot confirm until refund document value matches the expected value, or supervisor accepts the variance.</p> : null}
+              {!amountMatched ? <p className="text-xs text-amber-800">Cannot progress until refund document value matches the expected value.</p> : null}
             </form>
             <form action={requestSupervisorRefundDocumentResubmissionAction} className="space-y-3 rounded-2xl border border-amber-200 bg-white p-4">
               <input type="hidden" name="dispute_id" value={disputeId} />
               <input type="hidden" name="refund_evidence_submission_id" value={submissionId} />
-              <textarea name="reason" rows={3} required className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Explain what is wrong: missing line, bad OCR, wrong document, needs resubmission, etc." />
-              <button type="submit" disabled={!editable} className="w-full rounded-xl border border-amber-300 bg-amber-50 px-5 py-3 text-sm font-semibold text-amber-900 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400">Ask supervisor to review / request resubmission</button>
+              <textarea name="reason" rows={3} required className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Explain why this is the wrong upload or needs resubmission." />
+              <button type="submit" disabled={!editable || operatorDecisionMade} className="w-full rounded-xl border border-amber-300 bg-amber-50 px-5 py-3 text-sm font-semibold text-amber-900 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400">Request rejection / resubmission</button>
             </form>
           </div>
-          {!editable ? <p className="mt-3 rounded-xl border border-amber-200 bg-white p-3 text-sm text-amber-900">This document has moved into supplier control or approval. Operator commercial edits are locked.</p> : null}
+          {!editable ? <p className="mt-3 rounded-xl border border-amber-200 bg-white p-3 text-sm text-amber-900">This document is locked because an operator decision or staff action already exists.</p> : null}
         </section>
 
         {messages.length > 0 ? (
           <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-            <h2 className="text-xl font-semibold">Operator review history</h2>
+            <h2 className="text-xl font-semibold">Operator decision history</h2>
             <div className="mt-4 space-y-3">
               {messages.map((message) => (
                 <article key={message.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
