@@ -43,7 +43,9 @@ type RefundLine = {
   id: string;
   line_order: number;
   line_source: string;
+  retailer_sku: string | null;
   description: string | null;
+  size: string | null;
   qty: number | null;
   amount_gbp: number | null;
   progressed_to_supplier_control_yn: boolean | null;
@@ -185,7 +187,7 @@ export default async function OperatorRefundDocumentReviewPage({
   const [{ data: linesRaw }, { data: disputeLinesRaw }, { data: messagesRaw }] = await Promise.all([
     supabase
       .from("dispute_refund_document_lines")
-      .select("id, line_order, line_source, description, qty, amount_gbp, progressed_to_supplier_control_yn")
+      .select("id, line_order, line_source, retailer_sku, description, size, qty, amount_gbp, progressed_to_supplier_control_yn")
       .eq("refund_evidence_submission_id", submissionId)
       .order("line_order", { ascending: true }),
     supabase
@@ -313,16 +315,30 @@ export default async function OperatorRefundDocumentReviewPage({
               const locked = !editable || Boolean(line.progressed_to_supplier_control_yn);
               return (
                 <article key={line.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                  <form action={updateRefundDocumentLineAction} className="grid gap-3 md:grid-cols-[1fr_110px_160px_auto] md:items-end">
+                  <form action={updateRefundDocumentLineAction} className="grid gap-3 md:grid-cols-[1fr_1.7fr_1fr_90px_150px_auto] md:items-end">
                     <input type="hidden" name="dispute_id" value={disputeId} />
                     <input type="hidden" name="refund_evidence_submission_id" value={submissionId} />
                     <input type="hidden" name="line_id" value={line.id} />
                     <label className="block text-sm font-semibold text-slate-700">
+                      SKU
+                      <input name="retailer_sku" defaultValue={line.retailer_sku ?? ""} disabled={locked} className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm disabled:bg-slate-100" />
+                    </label>
+                    <label className="block text-sm font-semibold text-slate-700">
                       Line {line.line_order} · {line.line_source}
                       <input name="description" defaultValue={line.description ?? ""} disabled={locked} className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm disabled:bg-slate-100" />
                     </label>
-                    <label className="block text-sm font-semibold text-slate-700">Qty<input name="qty" type="number" step="0.01" min="0" defaultValue={line.qty ?? 1} disabled={locked} className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm disabled:bg-slate-100" /></label>
-                    <label className="block text-sm font-semibold text-slate-700">Amount GBP<input name="amount_gbp" type="number" step="0.01" min="0" defaultValue={line.amount_gbp ?? 0} disabled={locked} className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm disabled:bg-slate-100" /></label>
+                    <label className="block text-sm font-semibold text-slate-700">
+                      Size
+                      <input name="size" defaultValue={line.size ?? ""} disabled={locked} className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm disabled:bg-slate-100" />
+                    </label>
+                    <label className="block text-sm font-semibold text-slate-700">
+                      Qty
+                      <input name="qty" type="number" step="0.01" min="0" defaultValue={line.qty ?? 1} disabled={locked} className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm disabled:bg-slate-100" />
+                    </label>
+                    <label className="block text-sm font-semibold text-slate-700">
+                      Amount GBP
+                      <input name="amount_gbp" type="number" step="0.01" min="0" defaultValue={line.amount_gbp ?? 0} disabled={locked} className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm disabled:bg-slate-100" />
+                    </label>
                     <button type="submit" disabled={locked} className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">Save line</button>
                   </form>
                   <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-slate-600">
@@ -347,12 +363,29 @@ export default async function OperatorRefundDocumentReviewPage({
           <p className="text-sm font-medium uppercase tracking-[0.16em] text-slate-500">Manual line</p>
           <h2 className="mt-1 text-xl font-semibold">Add manual correction line</h2>
           <p className="mt-2 text-sm text-slate-600">Use this only when OCR missed a refund line or the retailer provided refund proof/no-document evidence without clean line extraction.</p>
-          <form action={addManualRefundDocumentLineAction} className="mt-4 grid gap-3 md:grid-cols-[1fr_110px_160px_auto] md:items-end">
+          <form action={addManualRefundDocumentLineAction} className="mt-4 grid gap-3 md:grid-cols-[1fr_1.7fr_1fr_90px_150px_auto] md:items-end">
             <input type="hidden" name="dispute_id" value={disputeId} />
             <input type="hidden" name="refund_evidence_submission_id" value={submissionId} />
-            <label className="block text-sm font-semibold text-slate-700">Description<input name="description" required disabled={!editable} className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm disabled:bg-slate-100" /></label>
-            <label className="block text-sm font-semibold text-slate-700">Qty<input name="qty" type="number" step="0.01" min="0" defaultValue="1" disabled={!editable} className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm disabled:bg-slate-100" /></label>
-            <label className="block text-sm font-semibold text-slate-700">Amount GBP<input name="amount_gbp" type="number" step="0.01" min="0" required disabled={!editable} className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm disabled:bg-slate-100" /></label>
+            <label className="block text-sm font-semibold text-slate-700">
+              SKU
+              <input name="retailer_sku" className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm" />
+            </label>
+            <label className="block text-sm font-semibold text-slate-700">
+              Description
+              <input name="description" required disabled={!editable} className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm disabled:bg-slate-100" />
+            </label>
+            <label className="block text-sm font-semibold text-slate-700">
+              Size
+              <input name="size" className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm" />
+            </label>
+            <label className="block text-sm font-semibold text-slate-700">
+              Qty
+              <input name="qty" type="number" step="0.01" min="0" defaultValue="1" disabled={!editable} className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm disabled:bg-slate-100" />
+            </label>
+            <label className="block text-sm font-semibold text-slate-700">
+              Amount GBP
+              <input name="amount_gbp" type="number" step="0.01" min="0" required disabled={!editable} className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm disabled:bg-slate-100" />
+            </label>
             <button type="submit" disabled={!editable} className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">Add line</button>
           </form>
         </section>
