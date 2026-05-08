@@ -86,7 +86,11 @@ type OrderRow = {
 };
 
 function gbp(value: unknown) {
-  return new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP", minimumFractionDigits: 2 }).format(Number(value ?? 0));
+  return new Intl.NumberFormat("en-GB", {
+    style: "currency",
+    currency: "GBP",
+    minimumFractionDigits: 2,
+  }).format(Number(value ?? 0));
 }
 
 function signedGbp(value: number) {
@@ -97,6 +101,14 @@ function signedGbp(value: number) {
 function signedNumber(value: number) {
   if (Math.abs(value) < 0.005) return "0";
   return `${value > 0 ? "+" : ""}${value}`;
+}
+
+function cleanDescription(value: string | null | undefined) {
+  return (value ?? "")
+    .replace(/\s*\[\[object Object\]\]\s*/gi, " ")
+    .replace(/\s*\[object Object\]\s*/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function statusLabel(value: string | null | undefined) {
@@ -113,9 +125,15 @@ function modeLabel(value: string | null | undefined) {
 
 function badgeClass(value: string | null | undefined) {
   const status = String(value ?? "");
-  if (["completed", "balanced", "matched_ready_to_release", "accepted", "confirmed"].includes(status)) return "bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200";
-  if (["needs_supervisor_review", "pending", "pending_ocr", "blocked", "not_released", "not_required"].includes(status)) return "bg-amber-50 text-amber-800 ring-1 ring-amber-200";
-  if (["failed", "rejected", "variance"].includes(status)) return "bg-rose-50 text-rose-800 ring-1 ring-rose-200";
+  if (["completed", "balanced", "matched_ready_to_release", "accepted", "confirmed"].includes(status)) {
+    return "bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200";
+  }
+  if (["needs_supervisor_review", "pending", "pending_ocr", "blocked", "not_released", "not_required"].includes(status)) {
+    return "bg-amber-50 text-amber-800 ring-1 ring-amber-200";
+  }
+  if (["failed", "rejected", "variance"].includes(status)) {
+    return "bg-rose-50 text-rose-800 ring-1 ring-rose-200";
+  }
   return "bg-slate-100 text-slate-700 ring-1 ring-slate-200";
 }
 
@@ -163,7 +181,9 @@ export default async function OperatorRefundDocumentReviewPage({
     .eq("id", disputeId)
     .maybeSingle();
 
-  if (disputeError || !disputeRaw) redirect(`/importer/exceptions/${disputeId}?error=Refund+document+review+could+not+load+the+source+exception`);
+  if (disputeError || !disputeRaw) {
+    redirect(`/importer/exceptions/${disputeId}?error=Refund+document+review+could+not+load+the+source+exception`);
+  }
   const dispute = disputeRaw as DisputeRow;
 
   const { data: orderRaw } = await supabase
@@ -181,7 +201,9 @@ export default async function OperatorRefundDocumentReviewPage({
     .eq("dispute_id", disputeId)
     .maybeSingle();
 
-  if (submissionError || !submissionRaw) redirect(`/importer/exceptions/${disputeId}?error=Refund+document+submission+not+found`);
+  if (submissionError || !submissionRaw) {
+    redirect(`/importer/exceptions/${disputeId}?error=Refund+document+submission+not+found`);
+  }
   const submission = submissionRaw as SubmissionRow;
 
   const [{ data: linesRaw }, { data: disputeLinesRaw }, { data: messagesRaw }] = await Promise.all([
@@ -205,7 +227,13 @@ export default async function OperatorRefundDocumentReviewPage({
   const lines = (linesRaw ?? []) as RefundLine[];
   const disputeLines = (disputeLinesRaw ?? []) as DisputeLine[];
   const messages = (messagesRaw ?? []) as MessageRow[];
-  const expectedTotal = Number(submission.expected_credit_note_total_gbp ?? submission.captured_refund_amount_abs_gbp ?? submission.expected_exception_amount_abs_gbp ?? dispute.amount_impact_gbp ?? 0);
+  const expectedTotal = Number(
+    submission.expected_credit_note_total_gbp ??
+      submission.captured_refund_amount_abs_gbp ??
+      submission.expected_exception_amount_abs_gbp ??
+      dispute.amount_impact_gbp ??
+      0,
+  );
   const baselineQty = disputeLines.reduce((sum, line) => sum + Math.abs(Number(line.qty_impact ?? 0)), 0);
   const baselineAmount = expectedTotal;
   const lineQtyTotal = lines.reduce((sum, line) => sum + Number(line.qty ?? 0), 0);
@@ -225,9 +253,13 @@ export default async function OperatorRefundDocumentReviewPage({
         <FlashQueryParamCleaner />
 
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-          <Link href={`/importer/exceptions/${disputeId}`} className="text-sm font-semibold text-sky-600">← Back to exact exception</Link>
+          <Link href={`/importer/exceptions/${disputeId}`} className="text-sm font-semibold text-sky-600">
+            ← Back to exact exception
+          </Link>
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Refund document reconciliation</p>
-          <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">Exception {disputeId.slice(0, 8)} · Order {order?.order_ref ?? dispute.order_id}</h1>
+          <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">
+            Exception {disputeId.slice(0, 8)} · Order {order?.order_ref ?? dispute.order_id}
+          </h1>
           <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-600">
             Same review pattern as invoice reconciliation: compare the submitted refund document against the exception baseline, review OCR/manual lines, correct commercial line issues, then confirm. Accounting release, VAT coding, approval and Sage readiness stay in the internal refund document control lane.
           </p>
@@ -313,19 +345,20 @@ export default async function OperatorRefundDocumentReviewPage({
           <div className="mt-5 space-y-4">
             {lines.map((line) => {
               const locked = !editable || Boolean(line.progressed_to_supplier_control_yn);
+              const description = cleanDescription(line.description);
               return (
                 <article key={line.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                  <form action={updateRefundDocumentLineAction} className="grid gap-3 md:grid-cols-[1fr_1.7fr_1fr_90px_150px_auto] md:items-end">
+                  <form action={updateRefundDocumentLineAction} className="grid gap-3 md:grid-cols-[1.7fr_1fr_1fr_90px_150px_auto] md:items-end">
                     <input type="hidden" name="dispute_id" value={disputeId} />
                     <input type="hidden" name="refund_evidence_submission_id" value={submissionId} />
                     <input type="hidden" name="line_id" value={line.id} />
                     <label className="block text-sm font-semibold text-slate-700">
-                      SKU
-                      <input name="retailer_sku" defaultValue={line.retailer_sku ?? ""} disabled={locked} className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm disabled:bg-slate-100" />
+                      Line {line.line_order} · {line.line_source}
+                      <input name="description" defaultValue={description} disabled={locked} className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm disabled:bg-slate-100" />
                     </label>
                     <label className="block text-sm font-semibold text-slate-700">
-                      Line {line.line_order} · {line.line_source}
-                      <input name="description" defaultValue={line.description ?? ""} disabled={locked} className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm disabled:bg-slate-100" />
+                      SKU
+                      <input name="retailer_sku" defaultValue={line.retailer_sku ?? ""} disabled={locked} className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm disabled:bg-slate-100" />
                     </label>
                     <label className="block text-sm font-semibold text-slate-700">
                       Size
@@ -363,20 +396,20 @@ export default async function OperatorRefundDocumentReviewPage({
           <p className="text-sm font-medium uppercase tracking-[0.16em] text-slate-500">Manual line</p>
           <h2 className="mt-1 text-xl font-semibold">Add manual correction line</h2>
           <p className="mt-2 text-sm text-slate-600">Use this only when OCR missed a refund line or the retailer provided refund proof/no-document evidence without clean line extraction.</p>
-          <form action={addManualRefundDocumentLineAction} className="mt-4 grid gap-3 md:grid-cols-[1fr_1.7fr_1fr_90px_150px_auto] md:items-end">
+          <form action={addManualRefundDocumentLineAction} className="mt-4 grid gap-3 md:grid-cols-[1.7fr_1fr_1fr_90px_150px_auto] md:items-end">
             <input type="hidden" name="dispute_id" value={disputeId} />
             <input type="hidden" name="refund_evidence_submission_id" value={submissionId} />
-            <label className="block text-sm font-semibold text-slate-700">
-              SKU
-              <input name="retailer_sku" className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm" />
-            </label>
             <label className="block text-sm font-semibold text-slate-700">
               Description
               <input name="description" required disabled={!editable} className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm disabled:bg-slate-100" />
             </label>
             <label className="block text-sm font-semibold text-slate-700">
+              SKU
+              <input name="retailer_sku" disabled={!editable} className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm disabled:bg-slate-100" />
+            </label>
+            <label className="block text-sm font-semibold text-slate-700">
               Size
-              <input name="size" className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm" />
+              <input name="size" disabled={!editable} className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm disabled:bg-slate-100" />
             </label>
             <label className="block text-sm font-semibold text-slate-700">
               Qty
