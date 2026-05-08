@@ -129,7 +129,11 @@ export default async function RefundCreditNoteOcrPage({
     <main className="min-h-screen bg-slate-50 px-6 py-8 text-slate-950">
       <div className="mx-auto flex max-w-6xl flex-col gap-6">
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-          <Link href="/internal/refund-document-control" className="text-sm font-semibold text-sky-700">← Back to refund document OCR queue</Link>
+          <div className="flex flex-wrap gap-3 text-sm font-semibold">
+            <Link href={`/internal/refund-document-control/${submissionId}`} className="text-sky-700 underline underline-offset-2">← Back to refund document control</Link>
+            {submission.dispute_id ? <Link href={`/internal/exceptions/${submission.dispute_id}`} className="text-sky-700 underline underline-offset-2">Open internal exception</Link> : null}
+            <Link href="/internal/refund-document-control" className="text-slate-600 underline underline-offset-2">Open refund document queue</Link>
+          </div>
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Credit-note OCR only</p>
           <div className="mt-3 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
             <div>
@@ -147,6 +151,15 @@ export default async function RefundCreditNoteOcrPage({
 
         {success ? <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-semibold text-emerald-900">{success}</div> : null}
         {error ? <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm font-semibold text-rose-900">{error}</div> : null}
+
+        <section className="rounded-3xl border border-sky-200 bg-sky-50 p-5 shadow-sm">
+          <p className="text-sm font-semibold uppercase tracking-[0.2em] text-sky-700">Next action</p>
+          <div className="mt-3 flex flex-wrap gap-3">
+            <Link href={`/internal/refund-document-control/${submissionId}`} className="rounded-xl bg-sky-700 px-5 py-3 text-sm font-semibold text-white">Go to release / coding / approval control</Link>
+            {submission.dispute_id ? <Link href={`/internal/exceptions/${submission.dispute_id}`} className="rounded-xl border border-sky-300 bg-white px-5 py-3 text-sm font-semibold text-sky-800">Back to exception review</Link> : null}
+          </div>
+          <p className="mt-3 text-sm text-slate-600">After OCR is completed or already stored, continue in the refund document control page. Do not hunt for the URL manually.</p>
+        </section>
 
         <section className="grid gap-4 md:grid-cols-3">
           <StatusPill label="OCR status" value={submission.ocr_status} />
@@ -189,7 +202,7 @@ export default async function RefundCreditNoteOcrPage({
               <input type="hidden" name="refund_evidence_submission_id" value={submissionId} />
               <button disabled={!canFetch} className="rounded-xl bg-sky-700 px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">Safe fetch OCR result</button>
             </form>
-            <Link href="/internal/refund-document-control" className="rounded-xl border border-slate-300 bg-white px-5 py-3 text-sm font-semibold text-slate-700">Back to OCR queue</Link>
+            <Link href={`/internal/refund-document-control/${submissionId}`} className="rounded-xl border border-slate-300 bg-white px-5 py-3 text-sm font-semibold text-slate-700">Back to control page</Link>
           </div>
           <p className="mt-3 text-xs text-slate-500">Start OCR consumes a Mindee page. Safe fetch does not re-upload the document; it only reads the existing Mindee job result. Release, coding and approval remain in the supplier credit/refund document control lane.</p>
           {submission.mindee_error_message ? <p className="mt-3 rounded-xl bg-rose-50 p-3 text-sm text-rose-800">{submission.mindee_error_message}</p> : null}
