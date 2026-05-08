@@ -138,19 +138,9 @@ export default async function OperatorRefundDocumentReviewPage({
     .eq("id", disputeId)
     .maybeSingle();
 
-  if (disputeError || !disputeRaw) redirect("/importer");
+  if (disputeError || !disputeRaw) redirect(`/importer/exceptions/${disputeId}?error=Refund+document+review+could+not+load+the+source+exception`);
   const dispute = disputeRaw as unknown as { id: string; order_id: string; desired_outcome: string | null; status: string | null; amount_impact_gbp: number | null; orders: { importer_id: string; order_ref: string | null; order_total_gbp_declared: number | null; total_qty_declared: number | null } | { importer_id: string; order_ref: string | null; order_total_gbp_declared: number | null; total_qty_declared: number | null }[] };
   const order = Array.isArray(dispute.orders) ? dispute.orders[0] : dispute.orders;
-
-  const { data: importerAccess } = await supabase
-    .from("operator_importers")
-    .select("id")
-    .eq("operator_id", operator.id)
-    .eq("importer_id", order.importer_id)
-    .is("revoked_at", null)
-    .maybeSingle();
-
-  if (!importerAccess) redirect("/importer");
 
   const { data: submissionRaw, error: submissionError } = await supabase
     .from("dispute_refund_evidence_submissions")
