@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { supabaseAdmin } from "@/lib/supabase/admin";
 import { createClient } from "@/utils/supabase/server";
 
 function asString(value: FormDataEntryValue | null) {
@@ -20,11 +21,6 @@ function redirectBack(disputeId: string, submissionId: string, params: Record<st
   redirect(`/importer/exceptions/${disputeId}/refund-document-review/${submissionId}?${query.toString()}`);
 }
 
-function firstRelated<T>(value: T | T[] | null | undefined): T | null {
-  if (!value) return null;
-  return Array.isArray(value) ? value[0] ?? null : value;
-}
-
 async function requireOperatorAccess(disputeId: string, submissionId: string) {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -39,29 +35,36 @@ async function requireOperatorAccess(disputeId: string, submissionId: string) {
 
   if (!operator) return { ok: false as const, supabase, error: "Active operator account not found." };
 
-  const { data: disputeRaw, error: disputeError } = await supabase
+  const { data: disputeRaw, error: disputeError } = await supabaseAdmin
     .from("disputes")
-    .select("id, order_id, orders!inner(importer_id)")
+    .select("id, order_id")
     .eq("id", disputeId)
     .maybeSingle();
 
   if (disputeError || !disputeRaw) return { ok: false as const, supabase, error: disputeError?.message ?? "Dispute not found." };
+  const dispute = disputeRaw as { id: string; order_id: string };
 
-  const dispute = disputeRaw as unknown as { orders: { importer_id?: string | null } | { importer_id?: string | null }[] | null };
-  const orderImporter = firstRelated(dispute.orders)?.importer_id;
-  if (!orderImporter) return { ok: false as const, supabase, error: "Dispute order importer not found." };
+  const { data: orderRaw, error: orderError } = await supabaseAdmin
+    .from("orders")
+    .select("id, importer_id")
+    .eq("id", dispute.order_id)
+    .maybeSingle();
 
-  const { data: importerAccess, error: importerAccessError } = await supabase
+  if (orderError || !orderRaw) return { ok: false as const, supabase, error: orderError?.message ?? "Dispute order not found." };
+  const order = orderRaw as { id: string; importer_id: string | null };
+  if (!order.importer_id) return { ok: false as const, supabase, error: "Dispute order importer not found." };
+
+  const { data: importerAccess, error: importerAccessError } = await supabaseAdmin
     .from("operator_importers")
     .select("id")
     .eq("operator_id", operator.id)
-    .eq("importer_id", orderImporter)
+    .eq("importer_id", order.importer_id)
     .is("revoked_at", null)
     .maybeSingle();
 
   if (importerAccessError || !importerAccess) return { ok: false as const, supabase, error: importerAccessError?.message ?? "Operator is not assigned to this importer." };
 
-  const { data: submissionRaw, error: submissionError } = await supabase
+  const { data: submissionRaw, error: submissionError } = await supabaseAdmin
     .from("dispute_refund_evidence_submissions")
     .select("id, dispute_id, supplier_control_status, supplier_approval_status")
     .eq("id", submissionId)
@@ -91,7 +94,7 @@ export async function updateRefundDocumentLineAction(formData: FormData) {
   const guard = await requireOperatorAccess(disputeId, submissionId);
   if (!guard.ok) redirectBack(disputeId, submissionId, { error: guard.error });
 
-  const { error } = await guard.supabase
+  const { error } = await supabaseAdmin
     .from("dispute_refund_document_lines")
     .update({
       description: asString(formData.get("description")) || "Refund document line",
@@ -125,7 +128,7 @@ export async function addManualRefundDocumentLineAction(formData: FormData) {
   if (!description) redirectBack(disputeId, submissionId, { error: "Manual line description is required." });
   if (amount <= 0) redirectBack(disputeId, submissionId, { error: "Manual line amount must be above zero." });
 
-  const { data: existingLinesRaw } = await guard.supabase
+  const { data: existingLinesRaw } = await supabaseAdmin
     .from("dispute_refund_document_lines")
     .select("line_order")
     .eq("refund_evidence_submission_id", submissionId)
@@ -134,7 +137,7 @@ export async function addManualRefundDocumentLineAction(formData: FormData) {
 
   const existingLines = (existingLinesRaw ?? []) as Array<{ line_order: number | string | null }>;
   const nextOrder = Number(existingLines[0]?.line_order ?? 0) + 1;
-  const { error } = await guard.supabase
+  const { error } = await supabaseAdmin
     .from("dispute_refund_document_lines")
     .insert({
       refund_evidence_submission_id: submissionId,
@@ -164,7 +167,7 @@ export async function deleteManualRefundDocumentLineAction(formData: FormData) {
   const guard = await requireOperatorAccess(disputeId, submissionId);
   if (!guard.ok) redirectBack(disputeId, submissionId, { error: guard.error });
 
-  const { error } = await guard.supabase
+  const { error } = await supabaseAdmin
     .from("dispute_refund_document_lines")
     .delete()
     .eq("id", lineId)
