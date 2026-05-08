@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import FlashQueryParamCleaner from "@/app/_components/FlashQueryParamCleaner";
 import { createClient } from "@/utils/supabase/server";
 import { saveRetailerUpdateAction } from "./actions";
-import RefundEvidenceModeSelector from "./RefundEvidenceModeSelector";
+import RefundEvidenceModeSelector, { type RefundDocumentHistoryRow } from "./RefundEvidenceModeSelector";
 
 type SearchParams = {
   success?: string;
@@ -27,9 +27,47 @@ type PrefillLine = {
   amount: number;
 };
 
+type MessageRow = {
+  id: string;
+  message_type: string | null;
+  body: string | null;
+  generated_by: string | null;
+  created_at: string | null;
+};
+
+type ReturnTrackingRow = {
+  id: string;
+  courier_id: string | null;
+  couriers?: { name?: string | null } | { name?: string | null }[] | null;
+  tracking_ref: string | null;
+  tracking_date: string | null;
+  tracking_evidence_url: string | null;
+  retailer_return_instructions_file_url: string | null;
+  return_label_file_url: string | null;
+  return_proof_file_url: string | null;
+  submitted_at: string | null;
+  is_final_return_yn: boolean | null;
+  review_status: string | null;
+  note: string | null;
+};
+
+type SourceLine = {
+  line_order: number | string | null;
+  line_source: string | null;
+  description: string | null;
+};
+
+type DisputeLine = {
+  id: string;
+  qty_impact: number | string | null;
+  amount_impact_gbp: number | string | null;
+  conversation_status: string | null;
+  supplier_invoice_lines: SourceLine | SourceLine[] | null;
+};
+
 const FINAL_OUTCOME_STATUSES = new Set(["approved_replacement", "replaced", "awaiting_refund_credit", "refunded", "closed"]);
 
-function gbp(value: number | null | undefined) {
+function gbp(value: number | string | null | undefined) {
   return new Intl.NumberFormat("en-GB", {
     style: "currency",
     currency: "GBP",
@@ -69,19 +107,7 @@ function friendlyStatus(status: string | null | undefined) {
   return status.replaceAll("_", " ").replace(/^./, (first) => first.toUpperCase());
 }
 
-function returnTrackingBody(row: {
-  courier_id: string | null;
-  couriers?: { name?: string | null } | { name?: string | null }[] | null;
-  tracking_ref: string | null;
-  tracking_date: string | null;
-  tracking_evidence_url: string | null;
-  retailer_return_instructions_file_url: string | null;
-  return_label_file_url: string | null;
-  return_proof_file_url: string | null;
-  is_final_return_yn: boolean | null;
-  review_status: string | null;
-  note: string | null;
-}) {
+function returnTrackingBody(row: ReturnTrackingRow) {
   const courier = Array.isArray(row.couriers) ? row.couriers[0] : row.couriers;
   const lines = [
     `Courier: ${courier?.name ?? row.courier_id ?? "Not provided"}`,
@@ -98,6 +124,11 @@ function returnTrackingBody(row: {
 
   lines.push(`Note: ${row.note || "No note."}`);
   return lines.join("\n");
+}
+
+function firstSourceLine(value: SourceLine | SourceLine[] | null | undefined) {
+  if (!value) return null;
+  return Array.isArray(value) ? value[0] ?? null : value;
 }
 
 export default async function ImporterExceptionDetailPage({
@@ -121,11 +152,12 @@ export default async function ImporterExceptionDetailPage({
 
   const [
     { data: order },
-    { data: lines },
-    { data: messages },
-    { data: supplierInvoices },
-    { data: couriers },
-    { data: returnTrackingRows },
+    { data: linesRaw },
+    { data: messagesRaw },
+    { data: supplierInvoicesRaw },
+    { data: couriersRaw },
+    { data: returnTrackingRowsRaw },
+    { data: refundEvidenceRowsRaw },
   ] = await Promise.all([
     supabase
       .from("orders")
@@ -156,20 +188,31 @@ export default async function ImporterExceptionDetailPage({
       .select("id, courier_id, tracking_ref, tracking_date, tracking_evidence_url, retailer_return_instructions_file_url, return_label_file_url, return_proof_file_url, submitted_at, is_final_return_yn, review_status, note, couriers(name)")
       .eq("dispute_id", disputeId)
       .order("submitted_at", { ascending: false }),
+    supabase
+      .from("dispute_refund_evidence_submissions")
+      .select("id, document_mode, credit_note_ref, credit_note_date, expected_credit_note_total_gbp, captured_refund_amount_abs_gbp, expected_exception_amount_abs_gbp, variance_abs_gbp, credit_note_file_url, refund_proof_file_url, ocr_status, match_status, amount_balance_status, supplier_control_status, supplier_approval_status, supervisor_review_status, notes, submitted_at")
+      .eq("dispute_id", disputeId)
+      .order("submitted_at", { ascending: false }),
   ]);
 
-  const activeStatus = (lines ?? []).find((line) => line.conversation_status)?.conversation_status ?? "retailer_contacted";
+  const lines = (linesRaw ?? []) as DisputeLine[];
+  const messages = (messagesRaw ?? []) as MessageRow[];
+  const invoiceOptions = (supplierInvoicesRaw ?? []) as SupplierInvoiceOption[];
+  const courierOptions = (couriersRaw ?? []) as CourierOption[];
+  const refundDocumentHistory = (refundEvidenceRowsRaw ?? []) as RefundDocumentHistoryRow[];
+
+  const activeStatus = lines.find((line) => line.conversation_status)?.conversation_status ?? "retailer_contacted";
   const retailerOutcome = retailerOutcomeFromStatus(activeStatus);
   const isFinalOutcome = FINAL_OUTCOME_STATUSES.has(dispute.status ?? "");
   const isTerminalAcceptedState = dispute.status === "replaced" || dispute.status === "awaiting_refund_credit";
   const canUploadRefundEvidence = dispute.desired_outcome === "refund" && dispute.status === "awaiting_refund_credit";
-  const hasRefundEvidence = (messages ?? []).some((message) => ["credit_note_evidence", "refund_evidence"].includes(message.message_type ?? ""));
-  const invoiceOptions = (supplierInvoices ?? []) as SupplierInvoiceOption[];
-  const courierOptions = (couriers ?? []) as CourierOption[];
-  const messageReturnHistory = (messages ?? []).filter((message) =>
+  const legacyRefundEvidenceExists = messages.some((message) => ["credit_note_evidence", "refund_evidence"].includes(message.message_type ?? ""));
+  const hasRefundEvidence = refundDocumentHistory.length > 0 || legacyRefundEvidenceExists;
+
+  const messageReturnHistory = messages.filter((message) =>
     ["return_collection_evidence", "return_collection_evidence_review"].includes(message.message_type ?? "")
   );
-  const structuredReturnHistory = (returnTrackingRows ?? []).map((row) => ({
+  const structuredReturnHistory = ((returnTrackingRowsRaw ?? []) as ReturnTrackingRow[]).map((row) => ({
     id: row.id,
     message_type: "return_collection_evidence",
     body: returnTrackingBody(row),
@@ -178,8 +221,8 @@ export default async function ImporterExceptionDetailPage({
   }));
   const returnHistory = [...structuredReturnHistory, ...messageReturnHistory];
 
-  const prefillLines: PrefillLine[] = (lines ?? []).slice(0, 5).map((line) => {
-    const sourceLine = Array.isArray(line.supplier_invoice_lines) ? line.supplier_invoice_lines[0] : line.supplier_invoice_lines;
+  const prefillLines: PrefillLine[] = lines.slice(0, 5).map((line) => {
+    const sourceLine = firstSourceLine(line.supplier_invoice_lines);
     return {
       description: sourceLine?.description ?? "Refund line",
       qty: normaliseAbsNumber(line.qty_impact),
@@ -215,6 +258,7 @@ export default async function ImporterExceptionDetailPage({
             <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
               <p className="font-semibold">{finalOutcomeMessage(dispute)}</p>
               {dispute.replacement_child_order_id ? <p className="mt-1">Replacement child order: {dispute.replacement_child_order_id}</p> : null}
+              {hasRefundEvidence ? <p className="mt-1">Refund document evidence has been submitted and is visible below.</p> : null}
             </div>
           ) : null}
         </section>
@@ -222,8 +266,8 @@ export default async function ImporterExceptionDetailPage({
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold">Affected lines</h2>
           <div className="mt-4 space-y-2">
-            {(lines ?? []).map((line) => {
-              const sourceLine = Array.isArray(line.supplier_invoice_lines) ? line.supplier_invoice_lines[0] : line.supplier_invoice_lines;
+            {lines.map((line) => {
+              const sourceLine = firstSourceLine(line.supplier_invoice_lines);
               return (
                 <article key={line.id} className="rounded-2xl border border-amber-300 bg-amber-50 p-3 text-sm">
                   <p className="font-semibold">Line {sourceLine?.line_order ?? "—"} · {sourceLine?.line_source ?? "—"}</p>
@@ -268,48 +312,28 @@ export default async function ImporterExceptionDetailPage({
             <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
               <div>
                 <p className="text-sm font-medium uppercase tracking-[0.2em] text-amber-600">Refund evidence after supervisor acceptance</p>
-                <h2 className="mt-2 text-xl font-semibold">Route refund evidence to supplier readiness</h2>
-                <p className="mt-2 max-w-3xl text-sm text-slate-600">
-                  Choose what the retailer provided. The page then shows only the relevant form, reducing operator error.
-                </p>
+                <h2 className="mt-2 text-xl font-semibold">Return tracking and refund document evidence</h2>
+                <p className="mt-2 max-w-3xl text-sm text-slate-600">Return/collection evidence is operational. Credit-note/refund/no-document evidence feeds the supplier credit/refund document control lane.</p>
               </div>
-              <span className={`rounded-full px-3 py-1 text-xs font-semibold ${hasRefundEvidence ? "bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200" : "bg-amber-50 text-amber-800 ring-1 ring-amber-200"}`}>
-                {hasRefundEvidence ? "Evidence uploaded" : "No refund evidence yet"}
+              <span className={`rounded-full px-3 py-1 text-xs font-semibold ${canUploadRefundEvidence ? "bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200" : "bg-amber-50 text-amber-800 ring-1 ring-amber-200"}`}>
+                {canUploadRefundEvidence ? "Evidence upload enabled" : "Waiting for final refund acceptance"}
               </span>
             </div>
-
-            {!canUploadRefundEvidence ? (
-              <p className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
-                Waiting for supervisor to accept the final retailer refund outcome. The operator should first paste the retailer response and mark the retailer outcome above.
-              </p>
-            ) : invoiceOptions.length === 0 ? (
-              <p className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">No supplier invoice is linked to this order yet, so refund evidence cannot be linked safely.</p>
-            ) : (
+            {canUploadRefundEvidence ? (
               <RefundEvidenceModeSelector
                 disputeId={dispute.id}
-                originalOrderId={order?.id ?? dispute.order_id}
+                originalOrderId={dispute.order_id}
                 invoiceOptions={invoiceOptions}
                 courierOptions={courierOptions}
                 prefillLines={prefillLines}
                 returnHistory={returnHistory}
+                refundDocumentHistory={refundDocumentHistory}
               />
+            ) : (
+              <p className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">Supervisor must accept the final refund outcome before return tracking or refund document evidence can be submitted here.</p>
             )}
           </section>
         ) : null}
-
-        <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-          <h2 className="text-xl font-semibold">Conversation history</h2>
-          <div className="mt-5 space-y-3">
-            {(messages ?? []).map((message) => (
-              <article key={message.id} className={`rounded-2xl border p-4 text-sm ${["credit_note_evidence", "refund_evidence", "refund_evidence_review", "return_collection_evidence", "return_collection_evidence_review"].includes(message.message_type ?? "") ? "border-amber-200 bg-amber-50" : "border-slate-200 bg-slate-50"}`}>
-                <p className="font-semibold">{message.message_type} · {message.counterparty} · generated_by {message.generated_by}</p>
-                <p className="mt-1 whitespace-pre-wrap">{message.body}</p>
-                <p className="mt-2 text-xs text-slate-500">{message.created_at}</p>
-              </article>
-            ))}
-            {(messages ?? []).length === 0 ? <p className="text-sm text-slate-600">No conversation messages yet.</p> : null}
-          </div>
-        </section>
       </div>
     </main>
   );
