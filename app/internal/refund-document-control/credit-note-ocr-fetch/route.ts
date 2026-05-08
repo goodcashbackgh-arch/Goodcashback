@@ -44,19 +44,7 @@ function textFromUnknown(value: unknown, depth = 0): string | null {
 
   if (typeof resolved === "object") {
     const record = resolved as Record<string, unknown>;
-    const directKeys = [
-      "text",
-      "content",
-      "raw_value",
-      "value",
-      "description",
-      "name",
-      "label",
-      "product_name",
-      "product_code",
-      "sku",
-      "reference",
-    ];
+    const directKeys = ["text", "content", "raw_value", "value", "description", "name", "label", "product_name", "product_code", "sku", "reference"];
 
     for (const key of directKeys) {
       const text = textFromUnknown(record[key], depth + 1);
@@ -235,7 +223,7 @@ export async function POST(request: Request) {
 
   const { data: submission, error: submissionError } = await supabase
     .from("dispute_refund_evidence_submissions")
-    .select("id, document_mode, mindee_job_id, mindee_model_id")
+    .select("id, document_mode, mindee_job_id, mindee_model_id, ocr_status")
     .eq("id", submissionId)
     .maybeSingle();
 
@@ -257,7 +245,15 @@ export async function POST(request: Request) {
   const raw = await jobResponse.json().catch(() => null);
   const resolvedInferenceId = extractMindeeInferenceId(raw);
 
-  if (!jobResponse.ok) return redirectToSubmission(request, submissionId, { error: `Mindee job fetch failed (${jobResponse.status}). ${parseMindeeDetail(raw) || "No detail returned."}` });
+  if (!jobResponse.ok) {
+    if (jobResponse.status === 404 && String(submission.ocr_status) === "completed") {
+      return redirectToSubmission(request, submissionId, {
+        success: "Stored OCR is already completed. The Mindee job is no longer available to re-fetch, so no new OCR page was used.",
+      });
+    }
+    return redirectToSubmission(request, submissionId, { error: `Mindee job fetch failed (${jobResponse.status}). ${parseMindeeDetail(raw) || "No detail returned."}` });
+  }
+
   if (!raw || !hasInferencePayload(raw)) return redirectToSubmission(request, submissionId, { success: `Mindee job ${jobId} has no completed inference payload yet. Wait briefly, then fetch again. No new OCR page was used.` });
 
   const parsed = parseMindeeV2CreditNoteResult(raw);
