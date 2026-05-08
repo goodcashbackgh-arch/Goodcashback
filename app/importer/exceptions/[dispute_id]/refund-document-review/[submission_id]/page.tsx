@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import FlashQueryParamCleaner from "@/app/_components/FlashQueryParamCleaner";
+import { supabaseAdmin } from "@/lib/supabase/admin";
 import { createClient } from "@/utils/supabase/server";
 import {
   addManualRefundDocumentLineAction,
@@ -176,7 +177,7 @@ export default async function OperatorRefundDocumentReviewPage({
   const submission = submissionRaw as SubmissionRow;
 
   const [{ data: linesRaw }, { data: disputeLinesRaw }, { data: messagesRaw }] = await Promise.all([
-    supabase
+    supabaseAdmin
       .from("dispute_refund_document_lines")
       .select("id, line_order, line_source, description, qty, amount_gbp, progressed_to_supplier_control_yn")
       .eq("refund_evidence_submission_id", submissionId)
