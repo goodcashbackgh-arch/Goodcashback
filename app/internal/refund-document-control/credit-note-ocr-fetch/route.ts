@@ -25,15 +25,70 @@ function plainOrFieldValue(value: unknown) {
   return value === undefined || value === null || value === "" ? null : value;
 }
 
-function stringValue(value: unknown) {
+function textFromUnknown(value: unknown, depth = 0): string | null {
+  if (depth > 4 || value === undefined || value === null || value === "") return null;
   const resolved = plainOrFieldValue(value);
-  return resolved === null ? null : String(resolved).trim() || null;
+  if (resolved === undefined || resolved === null || resolved === "") return null;
+
+  if (typeof resolved === "string" || typeof resolved === "number" || typeof resolved === "boolean") {
+    const text = String(resolved).trim();
+    return text && text !== "[object Object]" ? text : null;
+  }
+
+  if (Array.isArray(resolved)) {
+    const parts = resolved
+      .map((item) => textFromUnknown(item, depth + 1))
+      .filter((item): item is string => Boolean(item));
+    return parts.length ? parts.join(" ").replace(/\s+/g, " ").trim() : null;
+  }
+
+  if (typeof resolved === "object") {
+    const record = resolved as Record<string, unknown>;
+    const directKeys = [
+      "text",
+      "content",
+      "raw_value",
+      "value",
+      "description",
+      "name",
+      "label",
+      "product_name",
+      "product_code",
+      "sku",
+      "reference",
+    ];
+
+    for (const key of directKeys) {
+      const text = textFromUnknown(record[key], depth + 1);
+      if (text) return text;
+    }
+
+    const candidateParts = Object.entries(record)
+      .filter(([key]) => !["confidence", "polygon", "bounding_box", "page_id", "id"].includes(key))
+      .map(([, entryValue]) => textFromUnknown(entryValue, depth + 1))
+      .filter((item): item is string => Boolean(item));
+
+    return candidateParts.length ? candidateParts.join(" ").replace(/\s+/g, " ").trim() : null;
+  }
+
+  return null;
+}
+
+function stringValue(value: unknown) {
+  return textFromUnknown(value);
 }
 
 function numberValue(value: unknown) {
   const resolved = plainOrFieldValue(value);
   if (resolved === null) return null;
-  const n = Number(resolved);
+  if (typeof resolved === "number") return Number.isFinite(resolved) ? Math.round(resolved * 100) / 100 : null;
+  if (typeof resolved === "object") {
+    const nested = textFromUnknown(resolved);
+    if (!nested) return null;
+    const n = Number(nested.replace(/[^0-9.-]/g, ""));
+    return Number.isFinite(n) ? Math.round(n * 100) / 100 : null;
+  }
+  const n = Number(String(resolved).replace(/[^0-9.-]/g, ""));
   return Number.isFinite(n) ? Math.round(n * 100) / 100 : null;
 }
 
@@ -43,7 +98,7 @@ function dateValue(value: unknown) {
 }
 
 function recordValue(value: unknown) {
-  return value === undefined || value === null || value === "" ? null : String(value).trim() || null;
+  return textFromUnknown(value);
 }
 
 function getByPath(root: unknown, path: string[]) {
@@ -140,7 +195,7 @@ function normalizeV2CreditNoteLine(line: unknown, lineOrder: number, singleLineH
   const singleDiscountedLineGross = singleLineHeaderTotal !== null && (unitGross === null || singleLineHeaderTotal <= unitGross) ? singleLineHeaderTotal : null;
   const amount = explicitLineAmount ?? singleDiscountedLineGross ?? unitGross;
   const sku = stringValue(row.product_code) ?? stringValue(row.sku) ?? stringValue(row.reference);
-  if (!description || amount === null || amount < 0) return null;
+  if (!description || description.includes("[object Object]") || amount === null || amount < 0) return null;
   return { retailer_sku: sku, description, qty, amount_gbp: amount };
 }
 
