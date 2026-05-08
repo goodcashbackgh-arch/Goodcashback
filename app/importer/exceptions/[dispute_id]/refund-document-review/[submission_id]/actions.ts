@@ -8,6 +8,14 @@ function asString(value: FormDataEntryValue | null) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function cleanDescription(value: string) {
+  return value
+    .replace(/\s*\[\[object Object\]\]\s*/gi, " ")
+    .replace(/\s*\[object Object\]\s*/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function asOptionalString(value: FormDataEntryValue | null) {
   const text = asString(value);
   return text.length > 0 ? text : null;
@@ -101,8 +109,8 @@ export async function updateRefundDocumentLineAction(formData: FormData) {
   const { error } = await guard.supabase
     .from("dispute_refund_document_lines")
     .update({
+      description: cleanDescription(asString(formData.get("description"))) || "Refund document line",
       retailer_sku: asOptionalString(formData.get("retailer_sku")),
-      description: asString(formData.get("description")) || "Refund document line",
       size: asOptionalString(formData.get("size")),
       qty: asNumber(formData.get("qty"), 1),
       amount_gbp: asNumber(formData.get("amount_gbp"), 0),
@@ -129,7 +137,7 @@ export async function addManualRefundDocumentLineAction(formData: FormData) {
   const guard = await requireOperatorAccess(disputeId, submissionId);
   if (!guard.ok) redirectBack(disputeId, submissionId, { error: guard.error });
 
-  const description = asString(formData.get("description"));
+  const description = cleanDescription(asString(formData.get("description")));
   const amount = asNumber(formData.get("amount_gbp"), 0);
   if (!description) redirectBack(disputeId, submissionId, { error: "Manual line description is required." });
   if (amount <= 0) redirectBack(disputeId, submissionId, { error: "Manual line amount must be above zero." });
@@ -149,8 +157,8 @@ export async function addManualRefundDocumentLineAction(formData: FormData) {
       refund_evidence_submission_id: submissionId,
       line_order: nextOrder,
       line_source: "manually_added",
-      retailer_sku: asOptionalString(formData.get("retailer_sku")),
       description,
+      retailer_sku: asOptionalString(formData.get("retailer_sku")),
       size: asOptionalString(formData.get("size")),
       qty: asNumber(formData.get("qty"), 1),
       amount_gbp: amount,
