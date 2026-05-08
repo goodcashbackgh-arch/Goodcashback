@@ -20,6 +20,11 @@ function redirectBack(disputeId: string, submissionId: string, params: Record<st
   redirect(`/importer/exceptions/${disputeId}/refund-document-review/${submissionId}?${query.toString()}`);
 }
 
+function firstRelated<T>(value: T | T[] | null | undefined): T | null {
+  if (!value) return null;
+  return Array.isArray(value) ? value[0] ?? null : value;
+}
+
 async function requireOperatorAccess(disputeId: string, submissionId: string) {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -34,15 +39,16 @@ async function requireOperatorAccess(disputeId: string, submissionId: string) {
 
   if (!operator) return { ok: false as const, supabase, error: "Active operator account not found." };
 
-  const { data: dispute, error: disputeError } = await supabase
+  const { data: disputeRaw, error: disputeError } = await supabase
     .from("disputes")
     .select("id, order_id, orders!inner(importer_id)")
     .eq("id", disputeId)
     .maybeSingle();
 
-  if (disputeError || !dispute) return { ok: false as const, supabase, error: disputeError?.message ?? "Dispute not found." };
+  if (disputeError || !disputeRaw) return { ok: false as const, supabase, error: disputeError?.message ?? "Dispute not found." };
 
-  const orderImporter = Array.isArray(dispute.orders) ? dispute.orders[0]?.importer_id : dispute.orders?.importer_id;
+  const dispute = disputeRaw as unknown as { orders: { importer_id?: string | null } | { importer_id?: string | null }[] | null };
+  const orderImporter = firstRelated(dispute.orders)?.importer_id;
   if (!orderImporter) return { ok: false as const, supabase, error: "Dispute order importer not found." };
 
   const { data: importerAccess, error: importerAccessError } = await supabase
@@ -55,14 +61,15 @@ async function requireOperatorAccess(disputeId: string, submissionId: string) {
 
   if (importerAccessError || !importerAccess) return { ok: false as const, supabase, error: importerAccessError?.message ?? "Operator is not assigned to this importer." };
 
-  const { data: submission, error: submissionError } = await supabase
+  const { data: submissionRaw, error: submissionError } = await supabase
     .from("dispute_refund_evidence_submissions")
     .select("id, dispute_id, supplier_control_status, supplier_approval_status")
     .eq("id", submissionId)
     .eq("dispute_id", disputeId)
     .maybeSingle();
 
-  if (submissionError || !submission) return { ok: false as const, supabase, error: submissionError?.message ?? "Refund document submission not found." };
+  if (submissionError || !submissionRaw) return { ok: false as const, supabase, error: submissionError?.message ?? "Refund document submission not found." };
+  const submission = submissionRaw as { supplier_control_status?: string | null; supplier_approval_status?: string | null };
   if (!["blocked", "not_released", "pending", "pending_ocr", "needs_operator_review", "needs_supervisor_review"].includes(String(submission.supplier_control_status ?? "blocked"))) {
     return { ok: false as const, supabase, error: "This refund document is already in supplier control and cannot be edited by the operator." };
   }
@@ -118,14 +125,15 @@ export async function addManualRefundDocumentLineAction(formData: FormData) {
   if (!description) redirectBack(disputeId, submissionId, { error: "Manual line description is required." });
   if (amount <= 0) redirectBack(disputeId, submissionId, { error: "Manual line amount must be above zero." });
 
-  const { data: existingLines } = await guard.supabase
+  const { data: existingLinesRaw } = await guard.supabase
     .from("dispute_refund_document_lines")
     .select("line_order")
     .eq("refund_evidence_submission_id", submissionId)
     .order("line_order", { ascending: false })
     .limit(1);
 
-  const nextOrder = Number(existingLines?.[0]?.line_order ?? 0) + 1;
+  const existingLines = (existingLinesRaw ?? []) as Array<{ line_order: number | string | null }>;
+  const nextOrder = Number(existingLines[0]?.line_order ?? 0) + 1;
   const { error } = await guard.supabase
     .from("dispute_refund_document_lines")
     .insert({
