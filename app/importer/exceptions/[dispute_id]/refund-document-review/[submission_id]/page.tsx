@@ -64,6 +64,22 @@ type MessageRow = {
   created_at: string | null;
 };
 
+type DisputeRow = {
+  id: string;
+  order_id: string;
+  desired_outcome: string | null;
+  status: string | null;
+  amount_impact_gbp: number | null;
+};
+
+type OrderRow = {
+  id: string;
+  importer_id: string | null;
+  order_ref: string | null;
+  order_total_gbp_declared: number | null;
+  total_qty_declared: number | null;
+};
+
 function gbp(value: unknown) {
   return new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP", minimumFractionDigits: 2 }).format(Number(value ?? 0));
 }
@@ -134,13 +150,20 @@ export default async function OperatorRefundDocumentReviewPage({
 
   const { data: disputeRaw, error: disputeError } = await supabase
     .from("disputes")
-    .select("id, order_id, desired_outcome, status, amount_impact_gbp, orders!inner(importer_id, order_ref, order_total_gbp_declared, total_qty_declared)")
+    .select("id, order_id, desired_outcome, status, amount_impact_gbp")
     .eq("id", disputeId)
     .maybeSingle();
 
   if (disputeError || !disputeRaw) redirect(`/importer/exceptions/${disputeId}?error=Refund+document+review+could+not+load+the+source+exception`);
-  const dispute = disputeRaw as unknown as { id: string; order_id: string; desired_outcome: string | null; status: string | null; amount_impact_gbp: number | null; orders: { importer_id: string; order_ref: string | null; order_total_gbp_declared: number | null; total_qty_declared: number | null } | { importer_id: string; order_ref: string | null; order_total_gbp_declared: number | null; total_qty_declared: number | null }[] };
-  const order = Array.isArray(dispute.orders) ? dispute.orders[0] : dispute.orders;
+  const dispute = disputeRaw as DisputeRow;
+
+  const { data: orderRaw } = await supabase
+    .from("orders")
+    .select("id, importer_id, order_ref, order_total_gbp_declared, total_qty_declared")
+    .eq("id", dispute.order_id)
+    .maybeSingle();
+
+  const order = orderRaw as OrderRow | null;
 
   const { data: submissionRaw, error: submissionError } = await supabase
     .from("dispute_refund_evidence_submissions")
@@ -195,7 +218,7 @@ export default async function OperatorRefundDocumentReviewPage({
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
           <Link href={`/importer/exceptions/${disputeId}`} className="text-sm font-semibold text-sky-600">← Back to exact exception</Link>
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Refund document reconciliation</p>
-          <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">Exception {disputeId.slice(0, 8)} · Order {order.order_ref ?? dispute.order_id}</h1>
+          <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">Exception {disputeId.slice(0, 8)} · Order {order?.order_ref ?? dispute.order_id}</h1>
           <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-600">
             Same review pattern as invoice reconciliation: compare the submitted refund document against the exception baseline, review OCR/manual lines, correct commercial line issues, then confirm. Accounting release, VAT coding, approval and Sage readiness stay in the internal refund document control lane.
           </p>
