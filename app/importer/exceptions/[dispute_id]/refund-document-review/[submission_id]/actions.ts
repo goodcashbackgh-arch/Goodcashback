@@ -8,6 +8,11 @@ function asString(value: FormDataEntryValue | null) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function asOptionalString(value: FormDataEntryValue | null) {
+  const text = asString(value);
+  return text.length > 0 ? text : null;
+}
+
 function asNumber(value: FormDataEntryValue | null, fallback = 0) {
   const raw = asString(value);
   if (!raw) return fallback;
@@ -96,7 +101,9 @@ export async function updateRefundDocumentLineAction(formData: FormData) {
   const { error } = await guard.supabase
     .from("dispute_refund_document_lines")
     .update({
+      retailer_sku: asOptionalString(formData.get("retailer_sku")),
       description: asString(formData.get("description")) || "Refund document line",
+      size: asOptionalString(formData.get("size")),
       qty: asNumber(formData.get("qty"), 1),
       amount_gbp: asNumber(formData.get("amount_gbp"), 0),
     })
@@ -142,7 +149,9 @@ export async function addManualRefundDocumentLineAction(formData: FormData) {
       refund_evidence_submission_id: submissionId,
       line_order: nextOrder,
       line_source: "manually_added",
+      retailer_sku: asOptionalString(formData.get("retailer_sku")),
       description,
+      size: asOptionalString(formData.get("size")),
       qty: asNumber(formData.get("qty"), 1),
       amount_gbp: amount,
       progressed_to_supplier_control_yn: false,
