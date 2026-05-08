@@ -86,7 +86,7 @@ async function requireOperatorAccess(disputeId: string, submissionId: string) {
   if (submissionError || !submissionRaw) return { ok: false as const, supabase, error: submissionError?.message ?? "Refund document submission not found." };
   const submission = submissionRaw as { supplier_control_status?: string | null; supplier_approval_status?: string | null };
   if (!["blocked", "not_released", "pending", "pending_ocr", "needs_operator_review", "needs_supervisor_review"].includes(String(submission.supplier_control_status ?? "blocked"))) {
-    return { ok: false as const, supabase, error: "This refund document is already in supplier control and cannot be edited by the operator." };
+    return { ok: false as const, supabase, error: "This refund document is already in staff control and cannot be edited by the operator." };
   }
   if (!["blocked", "pending", "not_started", ""].includes(String(submission.supplier_approval_status ?? "blocked"))) {
     return { ok: false as const, supabase, error: "This refund document has moved beyond operator review." };
@@ -205,33 +205,25 @@ export async function requestSupervisorRefundDocumentResubmissionAction(formData
 
   if (!disputeId) redirect("/importer");
   if (!submissionId) redirect(`/importer/exceptions/${disputeId}?error=Missing+refund+document+submission`);
-  if (!reason) redirectBack(disputeId, submissionId, { error: "Explain why supervisor review/resubmission is needed." });
+  if (!reason) redirectBack(disputeId, submissionId, { error: "Explain why this upload should be rejected or resubmitted." });
 
   const guard = await requireOperatorAccess(disputeId, submissionId);
   if (!guard.ok) redirectBack(disputeId, submissionId, { error: guard.error });
 
-  const body = [
-    "[REFUND_DOCUMENT_OPERATOR_REVIEW_REQUEST_V1]",
-    `operator_id: ${guard.operatorId}`,
-    `refund_evidence_submission_id: ${submissionId}`,
-    "request_type: resubmission_or_supervisor_decision",
-    "",
-    reason,
-  ].join("\n");
-
-  const { error } = await guard.supabase.from("dispute_messages").insert({
-    dispute_id: disputeId,
-    message_type: "refund_document_operator_review_request",
-    counterparty: "internal",
-    body,
-    generated_by: "operator_review",
+  const { data, error } = await guard.supabase.rpc("operator_request_refund_document_rejection", {
+    p_refund_evidence_submission_id: submissionId,
+    p_reason: reason,
   });
 
   if (error) redirectBack(disputeId, submissionId, { error: error.message });
+  if (!data?.ok) redirectBack(disputeId, submissionId, { error: "Failed to request rejection/resubmission." });
 
   revalidatePath(`/importer/exceptions/${disputeId}/refund-document-review/${submissionId}`);
+  revalidatePath(`/importer/exceptions/${disputeId}`);
   revalidatePath(`/internal/exceptions/${disputeId}`);
-  redirectBack(disputeId, submissionId, { success: "Supervisor review/resubmission request sent." });
+  revalidatePath("/internal/refund-document-control");
+  revalidatePath(`/internal/refund-document-control/${submissionId}`);
+  redirectBack(disputeId, submissionId, { success: "Rejection/resubmission request sent to staff." });
 }
 
 export async function confirmRefundDocumentLinesAction(formData: FormData) {
@@ -245,28 +237,18 @@ export async function confirmRefundDocumentLinesAction(formData: FormData) {
   const guard = await requireOperatorAccess(disputeId, submissionId);
   if (!guard.ok) redirectBack(disputeId, submissionId, { error: guard.error });
 
-  const body = [
-    "[REFUND_DOCUMENT_OPERATOR_CONFIRMATION_V1]",
-    `operator_id: ${guard.operatorId}`,
-    `refund_evidence_submission_id: ${submissionId}`,
-    "confirmation: commercial_lines_confirmed_for_supplier_credit_control",
-    "",
-    notes || "No notes.",
-  ].join("\n");
-
-  const { error } = await guard.supabase.from("dispute_messages").insert({
-    dispute_id: disputeId,
-    message_type: "refund_document_operator_confirmed",
-    counterparty: "internal",
-    body,
-    generated_by: "operator_review",
+  const { data, error } = await guard.supabase.rpc("operator_progress_refund_document_submission_to_staff_control", {
+    p_refund_evidence_submission_id: submissionId,
+    p_notes: notes || null,
   });
 
   if (error) redirectBack(disputeId, submissionId, { error: error.message });
+  if (!data?.ok) redirectBack(disputeId, submissionId, { error: "Failed to progress refund document to staff control." });
 
   revalidatePath(`/importer/exceptions/${disputeId}/refund-document-review/${submissionId}`);
   revalidatePath(`/importer/exceptions/${disputeId}`);
   revalidatePath(`/internal/exceptions/${disputeId}`);
+  revalidatePath("/internal/refund-document-control");
   revalidatePath(`/internal/refund-document-control/${submissionId}`);
-  redirectBack(disputeId, submissionId, { success: "Refund document lines confirmed. Supervisor can now continue the supplier credit control lane." });
+  redirectBack(disputeId, submissionId, { success: "Refund document progressed to staff control queue." });
 }
