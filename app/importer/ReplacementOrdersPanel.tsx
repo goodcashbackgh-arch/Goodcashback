@@ -112,6 +112,7 @@ export default function ReplacementOrdersPanel() {
                   <h3 className="mt-2 text-base font-extrabold text-slate-950">{order.order_ref}</h3>
                   <p className="mt-1 text-sm text-slate-600">Parent order: {order.parent_order_ref || order.parent_order_id || "—"}</p>
                   <p className="mt-1 text-sm text-slate-600">Retailer: {order.retailer_name || "—"} · Qty {order.total_qty_declared ?? "—"} · Goods {gbp(order.order_total_gbp_declared)}</p>
+                  <p className="mt-1 text-xs text-slate-500">Linked exception id: {order.dispute_id || "not linked"}</p>
                   <p className="mt-2 text-sm font-semibold text-sky-900">Next action: {nextAction(order)}</p>
                 </div>
 
@@ -124,7 +125,7 @@ export default function ReplacementOrdersPanel() {
                   </Link>
                   {order.dispute_id ? (
                     <Link href={`/importer/exceptions/${order.dispute_id}`} className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-800 hover:bg-amber-100">
-                      Parent exception
+                      Open linked exception
                     </Link>
                   ) : null}
                 </div>
