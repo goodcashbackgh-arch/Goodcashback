@@ -265,6 +265,7 @@ export async function reviewReturnCollectionEvidenceAction(formData: FormData) {
   const disputeId = readString(formData, "dispute_id");
   const reviewDecision = readString(formData, "review_decision");
   const reviewNotes = readString(formData, "review_notes");
+  const explicitSubmissionId = readString(formData, "return_tracking_submission_id");
 
   if (!disputeId) redirect("/internal/exceptions");
   if (!["accepted", "hold", "rejected"].includes(reviewDecision)) {
@@ -274,37 +275,35 @@ export async function reviewReturnCollectionEvidenceAction(formData: FormData) {
   const guard = await requireActiveStaff();
   if (!guard.ok) redirectWithResult(disputeId, { error: guard.error });
 
-  const { data: evidenceMessages, error: evidenceError } = await guard.supabase
-    .from("dispute_messages")
-    .select("id, created_at")
-    .eq("dispute_id", disputeId)
-    .eq("message_type", "return_collection_evidence")
-    .order("created_at", { ascending: false })
-    .limit(1);
+  let submissionId = explicitSubmissionId;
 
-  if (evidenceError) redirectWithResult(disputeId, { error: evidenceError.message });
-  if (!evidenceMessages || evidenceMessages.length < 1) {
-    redirectWithResult(disputeId, { error: "Operator return/collection evidence must be uploaded before supervisor review." });
+  if (!submissionId) {
+    const { data: latestSubmission, error: latestSubmissionError } = await guard.supabase
+      .from("dispute_return_tracking_submissions")
+      .select("id, submitted_at")
+      .eq("dispute_id", disputeId)
+      .order("submitted_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (latestSubmissionError) redirectWithResult(disputeId, { error: latestSubmissionError.message });
+    if (!latestSubmission?.id) {
+      redirectWithResult(disputeId, { error: "Operator return/collection evidence must be uploaded before supervisor review." });
+    }
+
+    submissionId = latestSubmission.id;
   }
 
-  const body = [
-    "[RETURN_COLLECTION_EVIDENCE_REVIEW_V1]",
-    `reviewed_by_staff_id: ${guard.staffId}`,
-    `review_decision: ${reviewDecision}`,
-    `source_evidence_message_id: ${evidenceMessages[0].id}`,
-    "",
-    reviewNotes || "No review notes.",
-  ].join("\n");
-
-  const { error } = await guard.supabase.from("dispute_messages").insert({
-    dispute_id: disputeId,
-    message_type: "return_collection_evidence_review",
-    counterparty: "internal",
-    body,
-    generated_by: "supervisor_review",
+  const { data: rpcData, error: rpcError } = await guard.supabase.rpc("staff_review_return_collection_tracking", {
+    p_return_tracking_submission_id: submissionId,
+    p_review_decision: reviewDecision,
+    p_review_notes: reviewNotes || null,
   });
 
-  if (error) redirectWithResult(disputeId, { error: error.message });
+  if (rpcError) redirectWithResult(disputeId, { error: rpcError.message });
+  if (rpcData && typeof rpcData === "object" && "ok" in rpcData && !(rpcData as { ok?: boolean }).ok) {
+    redirectWithResult(disputeId, { error: "Failed to save structured return/collection review." });
+  }
 
   revalidatePath(`/internal/exceptions/${disputeId}`);
   revalidatePath(`/importer/exceptions/${disputeId}`);
