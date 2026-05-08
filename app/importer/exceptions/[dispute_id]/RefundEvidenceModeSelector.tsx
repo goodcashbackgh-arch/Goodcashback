@@ -205,7 +205,7 @@ function ReturnHistory({ rows }: { rows: HistoryRow[] }) {
   );
 }
 
-function RefundDocumentHistory({ rows }: { rows: RefundDocumentHistoryRow[] }) {
+function RefundDocumentHistory({ rows, disputeId }: { rows: RefundDocumentHistoryRow[]; disputeId: string }) {
   return (
     <div className="rounded-3xl border border-sky-200 bg-white p-5">
       <div className="flex items-center justify-between gap-3">
@@ -237,8 +237,9 @@ function RefundDocumentHistory({ rows }: { rows: RefundDocumentHistoryRow[] }) {
                   </div>
                 </div>
                 <div className="mt-3 flex flex-wrap gap-3 text-xs">
-                  {row.credit_note_file_url ? <a href={row.credit_note_file_url} target="_blank" className="font-semibold text-sky-700 underline">Open credit note file</a> : null}
-                  {row.refund_proof_file_url ? <a href={row.refund_proof_file_url} target="_blank" className="font-semibold text-sky-700 underline">Open refund proof</a> : null}
+                  <a href={`/importer/exceptions/${disputeId}/refund-document-review/${row.id}`} className="font-semibold text-sky-700 underline">Review refund document lines</a>
+                  {row.credit_note_file_url ? <a href={row.credit_note_file_url} target="_blank" rel="noreferrer" className="font-semibold text-sky-700 underline">Open credit note file</a> : null}
+                  {row.refund_proof_file_url ? <a href={row.refund_proof_file_url} target="_blank" rel="noreferrer" className="font-semibold text-sky-700 underline">Open refund proof</a> : null}
                   <span className="text-slate-500">Control: {statusLabel(row.supplier_control_status)}</span>
                   <span className="text-slate-500">Review: {statusLabel(row.supervisor_review_status)}</span>
                   {Math.abs(Number(row.variance_abs_gbp ?? 0)) > 0.01 ? <span className="font-semibold text-amber-700">Variance {gbp(row.variance_abs_gbp)}</span> : null}
@@ -300,7 +301,7 @@ export default function RefundEvidenceModeSelector({ disputeId, originalOrderId,
     <div className="mt-6 space-y-6">
       <ReturnCollectionEvidenceForm disputeId={disputeId} courierOptions={courierOptions} />
       <ReturnHistory rows={returnHistory} />
-      <RefundDocumentHistory rows={refundDocumentHistory} />
+      <RefundDocumentHistory rows={refundDocumentHistory} disputeId={disputeId} />
 
       <div className="rounded-3xl border-2 border-dashed border-sky-200 bg-sky-50 p-5">
         <p className="text-sm font-medium uppercase tracking-[0.2em] text-sky-600">Refund document / credit note evidence</p>
