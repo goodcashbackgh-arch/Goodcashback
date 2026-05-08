@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import FlashQueryParamCleaner from "@/app/_components/FlashQueryParamCleaner";
-import { supabaseAdmin } from "@/lib/supabase/admin";
 import { createClient } from "@/utils/supabase/server";
 import {
   addManualRefundDocumentLineAction,
@@ -54,7 +53,10 @@ type DisputeLine = {
   id: string;
   qty_impact: number | null;
   amount_impact_gbp: number | null;
-  supplier_invoice_lines: { description: string | null; line_order: number | null; line_source: string | null } | { description: string | null; line_order: number | null; line_source: string | null }[] | null;
+  supplier_invoice_lines:
+    | { description: string | null; line_order: number | null; line_source: string | null }
+    | { description: string | null; line_order: number | null; line_source: string | null }[]
+    | null;
 };
 
 type MessageRow = {
@@ -121,7 +123,9 @@ function firstLine(value: DisputeLine["supplier_invoice_lines"]) {
 }
 
 function canOperatorEdit(submission: SubmissionRow, lines: RefundLine[]) {
-  const blockedByControl = lines.some((line) => line.progressed_to_supplier_control_yn) || !["blocked", "not_released", "pending", "pending_ocr", "needs_operator_review", "needs_supervisor_review", null].includes(submission.supplier_control_status);
+  const blockedByControl =
+    lines.some((line) => line.progressed_to_supplier_control_yn) ||
+    !["blocked", "not_released", "pending", "pending_ocr", "needs_operator_review", "needs_supervisor_review", null].includes(submission.supplier_control_status);
   const blockedByApproval = !["blocked", "pending", "not_started", null].includes(submission.supplier_approval_status);
   return !blockedByControl && !blockedByApproval;
 }
@@ -137,7 +141,9 @@ export default async function OperatorRefundDocumentReviewPage({
   const qp = searchParams ? await searchParams : {};
   const supabase = await createClient();
 
-  const { data: { user } } = await supabase.auth.getUser();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
   const { data: operator } = await supabase
@@ -177,7 +183,7 @@ export default async function OperatorRefundDocumentReviewPage({
   const submission = submissionRaw as SubmissionRow;
 
   const [{ data: linesRaw }, { data: disputeLinesRaw }, { data: messagesRaw }] = await Promise.all([
-    supabaseAdmin
+    supabase
       .from("dispute_refund_document_lines")
       .select("id, line_order, line_source, description, qty, amount_gbp, progressed_to_supplier_control_yn")
       .eq("refund_evidence_submission_id", submissionId)
