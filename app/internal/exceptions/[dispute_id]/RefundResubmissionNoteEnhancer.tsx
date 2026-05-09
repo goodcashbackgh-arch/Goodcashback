@@ -57,11 +57,9 @@ function compactCompletedApprovalLogs() {
     if (card.hasAttribute(COMPACTED_MARKER)) continue;
     card.setAttribute(COMPACTED_MARKER, "true");
 
-    const reason = text.split("\n").map((line) => line.trim()).filter(Boolean).at(-2) || "Approved; resubmit";
     card.innerHTML = `
       <p class="font-semibold text-slate-900">Resubmission request approved</p>
       <p class="mt-1 text-sm text-slate-600">Operator should submit corrected refund evidence.</p>
-      <p class="mt-2 text-sm text-slate-700">${reason}</p>
     `;
   }
 }
@@ -69,10 +67,10 @@ function compactCompletedApprovalLogs() {
 export default function RefundResubmissionNoteEnhancer() {
   useEffect(() => {
     const run = () => {
+      const completedSubmissionIds = approvedSubmissionIds();
       document.querySelectorAll(`[${BUTTON_MARKER}]`).forEach((node) => node.remove());
       compactCompletedApprovalLogs();
 
-      const completedSubmissionIds = approvedSubmissionIds();
       const seenSubmissionIds = new Set<string>();
       const candidates = Array.from(document.querySelectorAll<HTMLElement>("div, article, section, p"));
 
