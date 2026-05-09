@@ -1,10 +1,12 @@
--- Fix staff_review_return_collection_tracking audit insert to use allowed dispute_messages values.
+-- Fix staff_review_return_collection_tracking audit insert to use allowed dispute_messages values
+-- and make reviewed return/collection submissions terminal for that evidence row.
 --
 -- Scope:
 --   - replaces only the existing staff review RPC body
 --   - keeps the same review decisions: accepted / hold / rejected
 --   - keeps the same return tracking table
 --   - writes the audit message using allowed values: generated_by = manual
+--   - blocks repeated review of the same return tracking submission
 --   - does not touch refund document control, DVA/card, Sage, orders, or shipper flow
 
 BEGIN;
@@ -27,6 +29,7 @@ DECLARE
   v_staff_id uuid;
   v_dispute_id uuid;
   v_source_message_id uuid;
+  v_existing_review_status text;
   v_message_id uuid;
   v_body text;
 BEGIN
@@ -49,14 +52,18 @@ BEGIN
     RAISE EXCEPTION 'Invalid return tracking review decision: %', p_review_decision;
   END IF;
 
-  SELECT dispute_id, source_dispute_message_id
-    INTO v_dispute_id, v_source_message_id
+  SELECT dispute_id, source_dispute_message_id, review_status
+    INTO v_dispute_id, v_source_message_id, v_existing_review_status
   FROM public.dispute_return_tracking_submissions
   WHERE id = p_return_tracking_submission_id
-  LIMIT 1;
+  FOR UPDATE;
 
   IF v_dispute_id IS NULL THEN
     RAISE EXCEPTION 'Return tracking submission not found.';
+  END IF;
+
+  IF coalesce(v_existing_review_status, 'pending_review') <> 'pending_review' THEN
+    RAISE EXCEPTION 'This return/collection evidence has already been reviewed. The operator must submit corrected/additional evidence as a new row.';
   END IF;
 
   v_body := array_to_string(array[
