@@ -338,6 +338,56 @@ export async function acceptReplacementOutcomeAction(formData: FormData) {
 
   if (parentOrderError || !parentOrder) redirectWithResult(disputeId, { error: "Parent order not found." });
 
+  const { data: replacementLinesRaw, error: replacementLinesError } = await guard.supabase
+    .from("dispute_lines")
+    .select("id, qty_impact, amount_impact_gbp, supplier_invoice_lines(id, line_source, description)")
+    .eq("dispute_id", disputeId)
+    .is("resolved_at", null);
+
+  if (replacementLinesError) redirectWithResult(disputeId, { error: replacementLinesError.message });
+
+  const replacementLines = (replacementLinesRaw ?? []) as Array<{
+    id: string;
+    qty_impact: number | string | null;
+    amount_impact_gbp: number | string | null;
+    supplier_invoice_lines:
+      | { id?: string | null; line_source?: string | null; description?: string | null }
+      | { id?: string | null; line_source?: string | null; description?: string | null }[]
+      | null;
+  }>;
+
+  if (replacementLines.length < 1) {
+    redirectWithResult(disputeId, { error: "No active replacement dispute lines found." });
+  }
+
+  const sourceLineFor = (line: (typeof replacementLines)[number]) => {
+    const source = line.supplier_invoice_lines;
+    return Array.isArray(source) ? source[0] ?? null : source;
+  };
+
+  const nonManualLine = replacementLines.find((line) => sourceLineFor(line)?.line_source !== "manually_added");
+  if (nonManualLine) {
+    redirectWithResult(disputeId, { error: "Replacement child creation requires manual missing-item lines. Use the refund path for OCR/supplier-issued lines." });
+  }
+
+  const replacementQty = replacementLines.reduce((sum, line) => {
+    const value = Number(line.qty_impact ?? 0);
+    return sum + (Number.isFinite(value) ? Math.abs(value) : 0);
+  }, 0);
+
+  const replacementValue = Math.round(replacementLines.reduce((sum, line) => {
+    const value = Number(line.amount_impact_gbp ?? 0);
+    return sum + (Number.isFinite(value) ? Math.abs(value) : 0);
+  }, 0) * 100) / 100;
+
+  if (!Number.isFinite(replacementQty) || replacementQty <= 0) {
+    redirectWithResult(disputeId, { error: "Replacement child creation requires a positive manual missing-item quantity." });
+  }
+
+  if (!Number.isFinite(replacementValue) || replacementValue <= 0) {
+    redirectWithResult(disputeId, { error: "Replacement child creation requires a positive manual missing-item value." });
+  }
+
   const { count: childCount, error: childCountError } = await guard.supabase
     .from("orders")
     .select("id", { count: "exact", head: true })
@@ -374,8 +424,8 @@ export async function acceptReplacementOutcomeAction(formData: FormData) {
       destination_hub_id: parentOrder.destination_hub_id,
       parent_order_id: parentOrder.id,
       order_type: "replacement_child",
-      order_total_gbp_declared: 0,
-      total_qty_declared: 0,
+      order_total_gbp_declared: replacementValue,
+      total_qty_declared: replacementQty,
       status: "evidence_collecting",
       sop_version: parentOrder.sop_version,
     })
@@ -425,6 +475,7 @@ export async function acceptReplacementOutcomeAction(formData: FormData) {
 
   revalidatePath(`/internal/exceptions/${disputeId}`);
   revalidatePath(`/importer/exceptions/${disputeId}`);
+  revalidatePath(`/importer/orders/${childOrder.id}/operations`);
   revalidatePath("/importer");
-  redirectWithResult(disputeId, { success: "Replacement outcome accepted and child order created." });
+  redirectWithResult(disputeId, { success: `Replacement outcome accepted and child order created with qty ${replacementQty} / value £${replacementValue.toFixed(2)}.` });
 }
