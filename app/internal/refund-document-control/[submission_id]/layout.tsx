@@ -17,13 +17,13 @@ export default async function RefundDocumentControlDetailLayout({
         <div className="mx-auto flex max-w-[1500px] flex-wrap items-center justify-between gap-3">
           <span className="font-semibold">Supervisor refund document control:</span>
           <span className="text-amber-900">
-            If the uploaded credit note/refund evidence is wrong, send it back for operator resubmission.
+            If the operator has flagged the uploaded credit note/refund evidence as wrong, approve the send-back and require corrected evidence.
           </span>
           <Link
             href={`/internal/refund-document-control/${submissionId}/request-resubmission`}
             className="rounded-xl bg-amber-700 px-3 py-2 font-semibold text-white hover:bg-amber-600"
           >
-            Request resubmission
+            Approve resubmission request
           </Link>
         </div>
       </div>
