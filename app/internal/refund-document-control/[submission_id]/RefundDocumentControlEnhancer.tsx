@@ -9,6 +9,10 @@ type LineMeta = {
   qty: number | null;
 };
 
+type AuditStatus = {
+  auditOnly?: boolean;
+};
+
 function parseMoney(text: string | null | undefined) {
   const parsed = Number(String(text ?? "").replace(/[^0-9.-]/g, ""));
   return Number.isFinite(parsed) ? parsed : 0;
@@ -39,6 +43,53 @@ function setInputValue(input: HTMLInputElement | null, value: string, onlyIfEmpt
   input.value = value;
   input.dispatchEvent(new Event("input", { bubbles: true }));
   input.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+function nearestSection(element: Element | null) {
+  return element?.closest("section") as HTMLElement | null;
+}
+
+function hideActiveControlSections() {
+  const sections = Array.from(document.querySelectorAll<HTMLElement>("section"));
+  for (const section of sections) {
+    const title = section.querySelector("h2")?.textContent?.trim().toLowerCase() ?? "";
+    if (
+      title.includes("supplier credit document lines") ||
+      title.includes("accounting coding") ||
+      title.includes("manual accounting adjustment") ||
+      title.includes("approve supplier credit")
+    ) {
+      section.style.display = "none";
+    }
+  }
+
+  const releaseForms = Array.from(document.querySelectorAll<HTMLFormElement>('form[action]'));
+  for (const form of releaseForms) {
+    const text = form.textContent?.toLowerCase() ?? "";
+    if (text.includes("release selected lines") || text.includes("save all coding") || text.includes("approve current")) {
+      const section = nearestSection(form);
+      if (section) section.style.display = "none";
+      else form.style.display = "none";
+    }
+  }
+}
+
+function insertAuditOnlyBanner() {
+  if (document.querySelector("[data-refund-audit-only-banner]")) return;
+  const mainContainer = document.querySelector("main .mx-auto") ?? document.querySelector("main");
+  if (!mainContainer) return;
+
+  const banner = document.createElement("section");
+  banner.setAttribute("data-refund-audit-only-banner", "true");
+  banner.className = "rounded-3xl border border-rose-200 bg-rose-50 p-5 text-sm text-rose-900 shadow-sm";
+  banner.innerHTML = `
+    <h2 class="text-lg font-semibold text-rose-950">Rejected refund document — audit only</h2>
+    <p class="mt-2">This submission was rejected and removed from the active refund-control path. It cannot be released, coded, adjusted, approved, or used for Sage readiness.</p>
+    <p class="mt-2 font-semibold">The operator must submit corrected refund evidence. The corrected upload starts the refund-document flow again from step 1.</p>
+  `;
+
+  const firstChild = mainContainer.children[1] ?? mainContainer.firstChild;
+  mainContainer.insertBefore(banner, firstChild);
 }
 
 function enhanceReleaseTable(metaById: Map<string, LineMeta>) {
@@ -147,6 +198,17 @@ export default function RefundDocumentControlEnhancer({ submissionId }: { submis
     let cancelled = false;
 
     async function run() {
+      const statusResponse = await fetch(`/internal/refund-document-control/${submissionId}/audit-status`, { cache: "no-store" });
+      if (statusResponse.ok) {
+        const status = (await statusResponse.json()) as AuditStatus;
+        if (cancelled) return;
+        if (status.auditOnly) {
+          insertAuditOnlyBanner();
+          hideActiveControlSections();
+          return;
+        }
+      }
+
       const response = await fetch(`/internal/refund-document-control/${submissionId}/line-metadata`, { cache: "no-store" });
       if (!response.ok) return;
       const payload = (await response.json()) as { lines?: LineMeta[] };
