@@ -9,6 +9,7 @@ import {
 type AdjustmentLine = {
   id: string;
   description: string;
+  qty?: number | null;
   sku: string | null;
   size: string | null;
   sage_ledger_account_id: string | null;
@@ -25,6 +26,12 @@ type DraftRow = { id: string };
 
 function gbp(value: unknown) {
   return new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" }).format(Number(value ?? 0));
+}
+
+function qtyDisplay(value: unknown) {
+  const n = Number(value ?? 1);
+  if (!Number.isFinite(n) || n <= 0) return "1";
+  return Number.isInteger(n) ? String(n) : n.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
 }
 
 export default function ManualAdjustmentRows({
@@ -55,7 +62,7 @@ export default function ManualAdjustmentRows({
           <td className="p-2">{line.description}</td>
           <td className="p-2">{line.sku ?? "—"}</td>
           <td className="p-2">{line.size ?? "—"}</td>
-          <td className="p-2">—</td>
+          <td className="p-2">{qtyDisplay(line.qty)}</td>
           <td className="p-2">{line.nominal_code ?? "—"}</td>
           <td className="p-2">{line.sage_ledger_account_id ?? "—"}</td>
           <td className="p-2">{line.tax_rate_label ?? `${line.vat_rate_percent ?? 0}%`}</td>
@@ -78,10 +85,10 @@ export default function ManualAdjustmentRows({
         return (
           <tr key={row.id} className="border-t bg-slate-50 align-top">
             <td className="p-2 font-semibold">New</td>
-            <td className="p-2"><input form={formId} name="description" className="w-72 rounded-lg border px-2 py-1" placeholder="Rounding / adjustment" /></td>
+            <td className="p-2"><input form={formId} name="description" className="w-72 rounded-lg border px-2 py-1" placeholder="Manual line description" /></td>
             <td className="p-2"><input form={formId} name="sku" className="w-28 rounded-lg border px-2 py-1" /></td>
             <td className="p-2"><input form={formId} name="size" className="w-20 rounded-lg border px-2 py-1" /></td>
-            <td className="p-2">—</td>
+            <td className="p-2"><input form={formId} name="qty" type="number" min="0.001" step="0.001" defaultValue="1" className="w-20 rounded-lg border px-2 py-1" /></td>
             <td className="p-2"><input form={formId} name="nominal_code" className="w-24 rounded-lg border px-2 py-1" /></td>
             <td className="p-2"><input form={formId} name="sage_ledger_account_id" className="w-36 rounded-lg border px-2 py-1" /></td>
             <td className="p-2">
