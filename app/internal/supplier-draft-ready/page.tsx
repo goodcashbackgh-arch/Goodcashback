@@ -1,7 +1,10 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
-import { assertInvoiceReadyForCurrentApproval } from "../invoice-review/readiness";
+import {
+  assertInvoiceReadyForCurrentApproval,
+  assertSupplierInvoiceAccountingCodingReady,
+} from "../invoice-review/readiness";
 import {
   approveSupplierInvoiceCurrentAction,
   approveSupplierRefundEvidenceCurrentAction,
@@ -164,6 +167,10 @@ function approvalReferencesEvidence(approval: ApprovalMessage, evidenceId: strin
   return String(approval.body ?? "").includes(`source_evidence_message_id: ${evidenceId}`);
 }
 
+function approvalBlocker(invoiceId: string, invoiceReadinessById: Map<string, string | null>, codingReadinessById: Map<string, string | null>) {
+  return invoiceReadinessById.get(invoiceId) || codingReadinessById.get(invoiceId) || null;
+}
+
 export default async function SupplierDraftReadyPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
   const qp = await searchParams;
   const supabase = await createClient();
@@ -206,15 +213,25 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
     .limit(100);
 
   const invoices = (data ?? []) as unknown as InvoiceRow[];
-  const readinessEntries = await Promise.all(
+  const invoiceReadinessEntries = await Promise.all(
     invoices.map(async (invoice) => [
       invoice.id,
       await assertInvoiceReadyForCurrentApproval(supabase, invoice.id),
     ] as const),
   );
-  const readinessByInvoiceId = new Map(readinessEntries);
-  const readyInvoices = invoices.filter((invoice) => !readinessByInvoiceId.get(invoice.id) && !invoice.is_current_for_order);
-  const blockedCount = invoices.length - readyInvoices.length;
+  const invoiceReadinessById = new Map(invoiceReadinessEntries);
+
+  const codingReadinessEntries = await Promise.all(
+    invoices.map(async (invoice) => [
+      invoice.id,
+      await assertSupplierInvoiceAccountingCodingReady(supabase, invoice.id),
+    ] as const),
+  );
+  const codingReadinessById = new Map(codingReadinessEntries);
+
+  const readyInvoices = invoices.filter((invoice) => !approvalBlocker(invoice.id, invoiceReadinessById, codingReadinessById) && !invoice.is_current_for_order);
+  const blockedInvoices = invoices.filter((invoice) => approvalBlocker(invoice.id, invoiceReadinessById, codingReadinessById) && !invoice.is_current_for_order);
+  const blockedCount = blockedInvoices.length;
 
   const { data: refundEvidenceRaw } = await supabase
     .from("dispute_messages")
@@ -367,11 +384,11 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
 
         <div className="grid gap-4">
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
-            <p className="text-sm text-slate-600">Select clean invoices below, then bulk approve current. Sage posting remains a later controlled step.</p>
-            <button form="bulk-approve-supplier-invoices" className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-600">Bulk approve selected</button>
+            <p className="text-sm text-slate-600">Only fully reconciled and accounting-coded supplier invoices can be approved current. Sage posting remains a later controlled step.</p>
+            <button form="bulk-approve-supplier-invoices" disabled={readyInvoices.length === 0} className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-300">Bulk approve selected</button>
           </div>
 
-          {readyInvoices.length === 0 ? <p className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900">No clean supplier invoices are currently ready. Check the invoice exceptions queue for blocked invoices.</p> : null}
+          {readyInvoices.length === 0 ? <p className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900">No fully coded supplier invoices are currently ready. Open reconciliation/accounting coding for blocked invoices below.</p> : null}
 
           {readyInvoices.map((invoice) => {
             const order = getOrder(invoice);
@@ -418,6 +435,49 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
               </article>
             );
           })}
+
+          {blockedInvoices.length > 0 ? (
+            <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 shadow-sm">
+              <h2 className="text-xl font-semibold text-amber-950">Blocked invoices needing reconciliation/coding</h2>
+              <p className="mt-2 text-sm text-amber-900">These are not approval-ready and cannot be bulk approved. Fix the blocker from reconciliation/accounting coding first.</p>
+              <div className="mt-4 grid gap-3">
+                {blockedInvoices.map((invoice) => {
+                  const order = getOrder(invoice);
+                  const blocker = approvalBlocker(invoice.id, invoiceReadinessById, codingReadinessById) ?? "Invoice is blocked.";
+                  const enteredTotal = getEnteredTotal(invoice);
+                  const acceptedTotal = invoice.ocr_invoice_total_gbp ?? enteredTotal;
+                  const totalLines = lineTotal(invoice);
+                  const flagCount = activeFlagCount(invoice);
+                  return (
+                    <article key={invoice.id} className="rounded-2xl border border-amber-200 bg-white p-4">
+                      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                        <div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h3 className="text-lg font-semibold">{order?.order_ref ?? invoice.order_id}</h3>
+                            <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-800">Blocked</span>
+                          </div>
+                          <p className="mt-2 text-sm text-slate-600">Importer: {getOrderImporterName(invoice) ?? "—"}</p>
+                          <p className="text-sm text-slate-600">Retailer: {getOrderRetailerName(invoice) ?? "—"}</p>
+                          <p className="text-sm text-slate-600">Invoice ref: {invoice.ocr_invoice_ref ?? invoice.invoice_ref}</p>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <Link href={`/internal/evidence/${invoice.order_id}`} className="rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">Open order</Link>
+                          <Link href={`/internal/reconciliation/${invoice.order_id}`} className="rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">Open reconciliation/coding</Link>
+                          <a href={invoice.invoice_pdf_url} target="_blank" rel="noreferrer" className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white">Open invoice</a>
+                        </div>
+                      </div>
+                      <p className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">{blocker}</p>
+                      <div className="mt-4 grid gap-3 md:grid-cols-3">
+                        <div className="rounded-2xl bg-slate-50 p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Accepted total</p><p className="mt-1 font-semibold">{acceptedTotal === null ? "—" : gbp(acceptedTotal)}</p></div>
+                        <div className="rounded-2xl bg-slate-50 p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Line total</p><p className="mt-1 font-semibold">{gbp(totalLines)}</p></div>
+                        <div className="rounded-2xl bg-slate-50 p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Open flags</p><p className="mt-1 font-semibold">{flagCount}</p></div>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            </section>
+          ) : null}
         </div>
       </div>
     </main>
