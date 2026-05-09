@@ -40,6 +40,7 @@ type AccountingCode = {
 type AdjustmentLine = {
   id: string;
   description: string;
+  qty: number | null;
   sku: string | null;
   size: string | null;
   sage_ledger_account_id: string | null;
@@ -185,7 +186,7 @@ export default async function InternalReconciliationPage({
   const { data: adjustmentRows } = invoice?.id
     ? await supabase
         .from("supplier_invoice_accounting_adjustment_lines")
-        .select("id, description, sku, size, sage_ledger_account_id, nominal_code, tax_rate_id, tax_rate_label, vat_rate_percent, net_amount_gbp, vat_amount_gbp, gross_amount_gbp")
+        .select("id, description, qty, sku, size, sage_ledger_account_id, nominal_code, tax_rate_id, tax_rate_label, vat_rate_percent, net_amount_gbp, vat_amount_gbp, gross_amount_gbp")
         .eq("supplier_invoice_id", invoice.id)
         .order("created_at", { ascending: true })
     : { data: [] as AdjustmentLine[] };
