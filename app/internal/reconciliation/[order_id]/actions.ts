@@ -53,6 +53,37 @@ async function requireSupervisorOrAdmin() {
   return { ok: true as const, supabase };
 }
 
+export async function supervisorProgressSupplierInvoiceLinesAction(formData: FormData) {
+  const orderId = asString(formData.get("order_id"));
+  const invoiceId = asString(formData.get("supplier_invoice_id"));
+  const lineIds = formData.getAll("line_ids").map((value) => asString(value)).filter(Boolean);
+  const progressNotes = asString(formData.get("progress_notes")).trim();
+
+  if (!orderId || !invoiceId) redirect(`/internal/reconciliation/${orderId || ""}?error=Missing+invoice+or+order+id`);
+  if (lineIds.length === 0) redirect(`/internal/reconciliation/${orderId}?error=Select+at+least+one+blocked+line+to+progress`);
+
+  const guard = await requireSupervisorOrAdmin();
+  if (!guard.ok) redirect(`/internal/reconciliation/${orderId}?error=${encodeURIComponent(guard.error)}`);
+
+  const { data, error } = await guard.supabase.rpc("staff_progress_supplier_invoice_lines", {
+    p_order_id: orderId,
+    p_supplier_invoice_id: invoiceId,
+    p_line_ids: lineIds,
+    p_progress_notes: progressNotes || null,
+  });
+
+  if (error) redirect(`/internal/reconciliation/${orderId}?error=${encodeURIComponent(error.message)}`);
+
+  const count = Number(data ?? lineIds.length);
+
+  revalidatePath(`/internal/reconciliation/${orderId}`);
+  revalidatePath("/internal/supplier-draft-ready");
+  revalidatePath("/internal/invoice-review");
+  revalidatePath("/internal");
+
+  redirect(`/internal/reconciliation/${orderId}?success=${encodeURIComponent(`${count} line(s) progressed by supervisor takeover. Continue accounting coding.`)}`);
+}
+
 export async function approveCurrentSupplierInvoiceFromReconciliationAction(formData: FormData) {
   const orderId = asString(formData.get("order_id"));
   const invoiceId = asString(formData.get("supplier_invoice_id"));
