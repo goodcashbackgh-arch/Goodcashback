@@ -16,6 +16,11 @@ function asNumber(value: unknown) {
   return Number.isFinite(n) ? n : 0;
 }
 
+function isPositiveNumber(value: unknown) {
+  const n = Number(value ?? 0);
+  return Number.isFinite(n) && n > 0;
+}
+
 function isProgressedLine(line: any) {
   return line.eligible_for_invoice_yn === "Y" && line.qty_confirmed !== null && line.amount_confirmed !== null;
 }
@@ -135,13 +140,31 @@ export async function assertSupplierInvoiceAccountingCodingReady(
 ) {
   const { data: totals, error } = await supabase
     .from("supplier_invoice_accounting_coding_totals_vw")
-    .select("all_progressed_lines_coded_yn, net_reconciled_to_invoice_yn, vat_reconciled_to_invoice_yn, gross_reconciled_to_invoice_yn, net_variance_gbp, vat_variance_gbp, gross_variance_gbp")
+    .select("accepted_invoice_net_gbp, accepted_invoice_vat_gbp, accepted_invoice_gross_gbp, total_coded_net_gbp, total_coded_vat_gbp, total_coded_gross_gbp, progressed_line_count, coded_line_count, all_progressed_lines_coded_yn, net_reconciled_to_invoice_yn, vat_reconciled_to_invoice_yn, gross_reconciled_to_invoice_yn, net_variance_gbp, vat_variance_gbp, gross_variance_gbp")
     .eq("supplier_invoice_id", supplierInvoiceId)
     .maybeSingle();
 
   if (error) return error.message;
   if (!totals) return "Accounting coding totals not found. Open reconciliation and save coding first.";
+
+  if (!isPositiveNumber(totals.accepted_invoice_gross_gbp)) {
+    return "Cannot approve current invoice yet. Accepted invoice gross total is missing from OCR/operator upload.";
+  }
+
+  if (Number(totals.progressed_line_count ?? 0) < 1) {
+    return "Cannot approve current invoice yet. No progressed supplier invoice lines exist for current approval.";
+  }
+
+  if (Number(totals.coded_line_count ?? 0) < 1) {
+    return "Cannot approve current invoice yet. No accounting coding has been saved for progressed lines.";
+  }
+
   if (!totals.all_progressed_lines_coded_yn) return "All progressed lines must be accounting coded before approval.";
+
+  if (!isPositiveNumber(totals.total_coded_gross_gbp)) {
+    return "Cannot approve current invoice yet. Coded gross total is zero or missing.";
+  }
+
   if (!totals.net_reconciled_to_invoice_yn || !totals.vat_reconciled_to_invoice_yn || !totals.gross_reconciled_to_invoice_yn) {
     return `Net/VAT/Gross coding does not reconcile. Net variance ${totals.net_variance_gbp ?? 0}, VAT variance ${totals.vat_variance_gbp ?? 0}, gross variance ${totals.gross_variance_gbp ?? 0}.`;
   }
