@@ -20,16 +20,28 @@ function findMessageCard(element: HTMLElement) {
   return element;
 }
 
+function isSmallestMarkerElement(element: HTMLElement) {
+  return !Array.from(element.children).some((child) => {
+    const childText = (child as HTMLElement).innerText ?? "";
+    return childText.includes(REQUEST_MARKER);
+  });
+}
+
 export default function RefundResubmissionNoteEnhancer() {
   useEffect(() => {
-    const cards = Array.from(document.querySelectorAll<HTMLElement>("div, article, section, p"));
+    document.querySelectorAll(`[${BUTTON_MARKER}]`).forEach((node) => node.remove());
 
-    for (const element of cards) {
+    const seenSubmissionIds = new Set<string>();
+    const candidates = Array.from(document.querySelectorAll<HTMLElement>("div, article, section, p"));
+
+    for (const element of candidates) {
       const text = element.innerText ?? "";
       if (!text.includes(REQUEST_MARKER)) continue;
+      if (!isSmallestMarkerElement(element)) continue;
 
       const submissionId = extractSubmissionId(text);
-      if (!submissionId) continue;
+      if (!submissionId || seenSubmissionIds.has(submissionId)) continue;
+      seenSubmissionIds.add(submissionId);
 
       const card = findMessageCard(element);
       if (card.querySelector(`[${BUTTON_MARKER}]`)) continue;
@@ -44,7 +56,7 @@ export default function RefundResubmissionNoteEnhancer() {
 
       const help = document.createElement("p");
       help.className = "mt-1 text-amber-900";
-      help.textContent = "Open the control page to approve the send-back and require corrected evidence.";
+      help.textContent = "Approve the send-back and require corrected evidence.";
 
       const link = document.createElement("a");
       link.href = `/internal/refund-document-control/${submissionId}/request-resubmission`;
