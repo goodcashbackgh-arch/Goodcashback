@@ -53,6 +53,29 @@ function redirectBack(submissionId: string, params: Record<string, string>): nev
   redirect(`/internal/refund-document-control/${submissionId}?${query.toString()}`);
 }
 
+async function assertSubmissionActiveForControl(supabase: Awaited<ReturnType<typeof createClient>>, submissionId: string) {
+  const { data, error } = await supabase
+    .from("dispute_refund_evidence_submissions")
+    .select("supervisor_review_status, evidence_control_status, supplier_readiness_route, supplier_approval_status, supplier_control_status")
+    .eq("id", submissionId)
+    .maybeSingle();
+
+  if (error) return error.message;
+  if (!data) return "Refund evidence submission not found.";
+
+  const rejected =
+    data.supervisor_review_status === "rejected" ||
+    data.evidence_control_status === "staff_rejected_resubmission_required" ||
+    data.supplier_readiness_route === "operator_resubmission_required";
+
+  if (rejected) return "This refund document was rejected and is audit-only. Submit a corrected refund document instead.";
+
+  const approved = data.supplier_approval_status === "approved_current" || data.supplier_control_status === "approved_current";
+  if (approved) return "This refund document is already approved current and cannot be changed here.";
+
+  return null;
+}
+
 export async function releaseRefundDocumentLinesAction(formData: FormData) {
   const submissionId = asString(formData.get("refund_evidence_submission_id"));
   const lineIds = formData.getAll("line_ids").map((value) => asString(value)).filter(Boolean);
@@ -62,6 +85,9 @@ export async function releaseRefundDocumentLinesAction(formData: FormData) {
   if (lineIds.length === 0) redirectBack(submissionId, { error: "Select at least one line to release." });
 
   const supabase = await createClient();
+  const activeError = await assertSubmissionActiveForControl(supabase, submissionId);
+  if (activeError) redirectBack(submissionId, { error: activeError });
+
   const { data, error } = await supabase.rpc("staff_release_refund_document_lines_to_supplier_control", {
     p_refund_evidence_submission_id: submissionId,
     p_line_ids: lineIds,
@@ -84,6 +110,9 @@ export async function saveAllRefundDocumentLineAccountingCodesAction(formData: F
   if (lineIds.length === 0) redirectBack(submissionId, { error: "No progressed refund document lines to save." });
 
   const supabase = await createClient();
+  const activeError = await assertSubmissionActiveForControl(supabase, submissionId);
+  if (activeError) redirectBack(submissionId, { error: activeError });
+
   const { data: refundLines, error: refundLinesError } = await supabase
     .from("dispute_refund_document_lines")
     .select("id, amount_gbp")
@@ -144,9 +173,12 @@ export async function addRefundDocumentAccountingAdjustmentLineAction(formData: 
   if (!description.trim()) redirectBack(submissionId, { error: "Adjustment description is required." });
   if (net === null) redirectBack(submissionId, { error: "Adjustment net is required." });
 
+  const supabase = await createClient();
+  const activeError = await assertSubmissionActiveForControl(supabase, submissionId);
+  if (activeError) redirectBack(submissionId, { error: activeError });
+
   const vat = round2(net * vatRate / 100);
 
-  const supabase = await createClient();
   const { error } = await supabase.rpc("staff_create_refund_document_accounting_adjustment_line", {
     p_refund_evidence_submission_id: submissionId,
     p_description: description,
@@ -175,6 +207,9 @@ export async function deleteRefundDocumentAccountingAdjustmentLineAction(formDat
   if (!adjustmentLineId) redirectBack(submissionId, { error: "Missing adjustment line id." });
 
   const supabase = await createClient();
+  const activeError = await assertSubmissionActiveForControl(supabase, submissionId);
+  if (activeError) redirectBack(submissionId, { error: activeError });
+
   const { error } = await supabase.rpc("staff_delete_refund_document_accounting_adjustment_line", {
     p_adjustment_line_id: adjustmentLineId,
   });
@@ -192,6 +227,9 @@ export async function approveRefundDocumentCurrentAction(formData: FormData) {
   if (!submissionId) redirect("/internal/supplier-draft-ready?error=Missing+refund+evidence+submission");
 
   const supabase = await createClient();
+  const activeError = await assertSubmissionActiveForControl(supabase, submissionId);
+  if (activeError) redirectBack(submissionId, { error: activeError });
+
   const { data, error } = await supabase.rpc("staff_approve_refund_document_current", {
     p_refund_evidence_submission_id: submissionId,
     p_review_notes: notes || null,
