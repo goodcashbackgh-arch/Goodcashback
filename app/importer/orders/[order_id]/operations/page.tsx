@@ -62,6 +62,17 @@ function signedMoney(value: number) {
   return `${value > 0 ? "+" : ""}${money(value)}`;
 }
 
+function friendlyValue(value: string | null | undefined) {
+  if (!value) return "—";
+  return value.replaceAll("_", " ").replace(/^./, (first) => first.toUpperCase());
+}
+
+function fundingStatusClass(status: string | null | undefined, thresholdMet: boolean) {
+  if (thresholdMet || status === "funded") return "bg-emerald-100 text-emerald-800";
+  if (status === "pending_dva_funding" || status === "pending_funding") return "bg-amber-100 text-amber-800";
+  return "bg-slate-100 text-slate-700";
+}
+
 export default async function OrderOperationsPage({params,searchParams}:{params: Promise<{order_id:string}>, searchParams: Promise<{success?:string;order_ref?:string;auth_ref?:string;error?:string}>}) {
   const {order_id:orderId} = await params;
   const qp = await searchParams;
@@ -101,6 +112,8 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
   });
   const reviewFlagRows = (reviewFlags ?? []) as ReviewFlagRow[];
   const orderGoodsBaseline = Number(order.order_total_gbp_declared ?? 0);
+  const fundingStatus = funding?.status as string | null | undefined;
+  const thresholdMet = Boolean(funding?.threshold_met_yn);
 
   const lineTotalsByInvoice = new Map<string, { qty: number; amount: number }>();
   for (const line of (invoiceLines ?? []) as InvoiceLineTotalRow[]) {
@@ -155,7 +168,49 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
       </div>
     </section>
 
-    <section><h2 className="font-semibold">Funding</h2><pre className="text-xs bg-slate-100 p-2 rounded overflow-x-auto">{JSON.stringify(funding ?? {}, null, 2)}</pre></section>
+    <section className="rounded border p-4">
+      <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+        <div>
+          <h2 className="font-semibold">Funding</h2>
+          <p className="mt-1 text-xs text-slate-500">Purchase funding threshold excludes shipping. Confirmed DVA funding and applied credit count toward the threshold.</p>
+        </div>
+        <span className={`w-fit rounded-full px-3 py-1 text-xs font-semibold ${fundingStatusClass(fundingStatus, thresholdMet)}`}>
+          {thresholdMet ? "Threshold reached" : friendlyValue(fundingStatus)}
+        </span>
+      </div>
+
+      <div className="mt-4 grid gap-3 text-sm md:grid-cols-3 lg:grid-cols-6">
+        <div className="rounded border border-slate-200 bg-slate-50 p-3">
+          <div className="text-xs uppercase tracking-wide text-slate-500">Funding threshold</div>
+          <div className="mt-1 font-semibold">{money(funding?.purchase_funding_threshold_gbp ?? order.order_total_gbp_declared)}</div>
+        </div>
+        <div className="rounded border border-slate-200 bg-slate-50 p-3">
+          <div className="text-xs uppercase tracking-wide text-slate-500">Confirmed DVA</div>
+          <div className="mt-1 font-semibold">{money(funding?.confirmed_dva_funding_gbp)}</div>
+        </div>
+        <div className="rounded border border-slate-200 bg-slate-50 p-3">
+          <div className="text-xs uppercase tracking-wide text-slate-500">Applied credit</div>
+          <div className="mt-1 font-semibold">{money(funding?.applied_credit_gbp)}</div>
+        </div>
+        <div className="rounded border border-slate-200 bg-slate-50 p-3">
+          <div className="text-xs uppercase tracking-wide text-slate-500">Funded total</div>
+          <div className="mt-1 font-semibold">{money(funding?.funded_total_gbp)}</div>
+        </div>
+        <div className="rounded border border-slate-200 bg-slate-50 p-3">
+          <div className="text-xs uppercase tracking-wide text-slate-500">Gap remaining</div>
+          <div className="mt-1 font-semibold">{money(funding?.gap_remaining_gbp)}</div>
+        </div>
+        <div className="rounded border border-slate-200 bg-slate-50 p-3">
+          <div className="text-xs uppercase tracking-wide text-slate-500">Auth ref</div>
+          <div className="mt-1 break-words font-semibold">{funding?.payment_auth_id ?? order.payment_auth_id ?? "—"}</div>
+        </div>
+      </div>
+
+      <details className="mt-3 rounded border border-slate-200 bg-slate-50 p-3">
+        <summary className="cursor-pointer text-xs font-semibold text-slate-600">Show funding diagnostic JSON</summary>
+        <pre className="mt-2 overflow-x-auto rounded bg-white p-2 text-xs">{JSON.stringify(funding ?? {}, null, 2)}</pre>
+      </details>
+    </section>
 
     <section>
       <h2 className="font-semibold">Screenshots</h2>
