@@ -6,6 +6,7 @@ const REQUEST_MARKER = "[REFUND_DOCUMENT_OPERATOR_REJECTION_REQUESTED_V1]";
 const APPROVED_MARKER = "[REFUND_DOCUMENT_STAFF_RESUBMISSION_APPROVED_V1]";
 const BUTTON_MARKER = "data-refund-resubmission-note-action";
 const COMPACTED_MARKER = "data-refund-log-compacted";
+const APPROVED_ID_ATTR = "data-refund-approved-submission-id";
 
 function extractSubmissionId(text: string) {
   const match = text.match(/refund_evidence_submission_id:\s*([0-9a-fA-F-]{36})/);
@@ -36,6 +37,12 @@ function isSmallestMarkerElement(element: HTMLElement, marker: string) {
 
 function approvedSubmissionIds() {
   const ids = new Set<string>();
+
+  document.querySelectorAll<HTMLElement>(`[${APPROVED_ID_ATTR}]`).forEach((element) => {
+    const id = element.getAttribute(APPROVED_ID_ATTR);
+    if (id) ids.add(id);
+  });
+
   const candidates = Array.from(document.querySelectorAll<HTMLElement>("div, article, section, p"));
   for (const element of candidates) {
     const text = element.innerText ?? "";
@@ -53,7 +60,9 @@ function compactCompletedApprovalLogs() {
     if (!text.includes(APPROVED_MARKER)) continue;
     if (!isSmallestMarkerElement(element, APPROVED_MARKER)) continue;
 
+    const sourceSubmissionId = extractSourceSubmissionId(text);
     const card = findMessageCard(element);
+    if (sourceSubmissionId) card.setAttribute(APPROVED_ID_ATTR, sourceSubmissionId);
     if (card.hasAttribute(COMPACTED_MARKER)) continue;
     card.setAttribute(COMPACTED_MARKER, "true");
 
@@ -66,10 +75,13 @@ function compactCompletedApprovalLogs() {
 
 export default function RefundResubmissionNoteEnhancer() {
   useEffect(() => {
+    const completedCache = new Set<string>();
+
     const run = () => {
-      const completedSubmissionIds = approvedSubmissionIds();
+      for (const id of approvedSubmissionIds()) completedCache.add(id);
       document.querySelectorAll(`[${BUTTON_MARKER}]`).forEach((node) => node.remove());
       compactCompletedApprovalLogs();
+      for (const id of approvedSubmissionIds()) completedCache.add(id);
 
       const seenSubmissionIds = new Set<string>();
       const candidates = Array.from(document.querySelectorAll<HTMLElement>("div, article, section, p"));
@@ -82,7 +94,7 @@ export default function RefundResubmissionNoteEnhancer() {
         const submissionId = extractSubmissionId(text);
         if (!submissionId || seenSubmissionIds.has(submissionId)) continue;
         seenSubmissionIds.add(submissionId);
-        if (completedSubmissionIds.has(submissionId)) continue;
+        if (completedCache.has(submissionId)) continue;
 
         const card = findMessageCard(element);
         if (card.querySelector(`[${BUTTON_MARKER}]`)) continue;
