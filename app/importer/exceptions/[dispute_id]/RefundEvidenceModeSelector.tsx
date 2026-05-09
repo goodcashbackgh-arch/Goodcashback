@@ -82,7 +82,7 @@ function badgeClass(value: string | null | undefined) {
   if (["completed", "balanced", "approved_current", "accepted", "released_to_supplier_control", "matched_ready_to_release"].includes(status)) {
     return "bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200";
   }
-  if (["needs_supervisor_review", "pending", "pending_review", "pending_ocr", "not_released", "not_required"].includes(status)) {
+  if (["needs_supervisor_review", "pending", "pending_review", "pending_ocr", "not_released", "not_required", "needs_operator_review"].includes(status)) {
     return "bg-amber-50 text-amber-800 ring-1 ring-amber-200";
   }
   if (["blocked", "failed", "rejected", "variance"].includes(status)) {
@@ -172,6 +172,10 @@ function detailRows(body: string | null) {
   return (body ?? "").split("\n").map((line) => line.trim()).filter(Boolean);
 }
 
+function hasApprovedResubmission(row: RefundDocumentHistoryRow) {
+  return row.supervisor_review_status === "rejected" || String(row.notes ?? "").toLowerCase().includes("supervisor resubmission request:");
+}
+
 function ReturnHistory({ rows }: { rows: HistoryRow[] }) {
   return (
     <div className="rounded-3xl border border-slate-200 bg-white p-5">
@@ -222,8 +226,9 @@ function RefundDocumentHistory({ rows, disputeId }: { rows: RefundDocumentHistor
         <div className="mt-4 space-y-3">
           {rows.map((row) => {
             const amount = row.expected_credit_note_total_gbp ?? row.captured_refund_amount_abs_gbp ?? row.expected_exception_amount_abs_gbp ?? 0;
+            const resubmissionApproved = hasApprovedResubmission(row);
             return (
-              <article key={row.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
+              <article key={row.id} className={`rounded-2xl border p-4 text-sm ${resubmissionApproved ? "border-rose-200 bg-rose-50" : "border-slate-200 bg-slate-50"}`}>
                 <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                   <div>
                     <p className="font-semibold text-slate-950">{modeLabel(row.document_mode)} · {gbp(amount)}</p>
@@ -244,6 +249,11 @@ function RefundDocumentHistory({ rows, disputeId }: { rows: RefundDocumentHistor
                   <span className="text-slate-500">Review: {statusLabel(row.supervisor_review_status)}</span>
                   {Math.abs(Number(row.variance_abs_gbp ?? 0)) > 0.01 ? <span className="font-semibold text-amber-700">Variance {gbp(row.variance_abs_gbp)}</span> : null}
                 </div>
+                {resubmissionApproved ? (
+                  <p className="mt-3 rounded-2xl border border-rose-200 bg-white p-3 text-xs font-semibold text-rose-800">
+                    This submission was rejected by supervisor. Submit the corrected refund document below; the old file remains here as audit history.
+                  </p>
+                ) : null}
                 {row.notes ? <p className="mt-2 text-xs text-slate-600">Notes: {row.notes}</p> : null}
               </article>
             );
@@ -296,6 +306,7 @@ function NotesBox({ required = false }: { required?: boolean }) {
 export default function RefundEvidenceModeSelector({ disputeId, originalOrderId, invoiceOptions, courierOptions, prefillLines, returnHistory, refundDocumentHistory }: Props) {
   const [mode, setMode] = useState<Mode>("credit_note");
   const hasPriorRefundDocument = refundDocumentHistory.length > 0;
+  const hasRejectedRefundDocument = refundDocumentHistory.some(hasApprovedResubmission);
 
   return (
     <div className="mt-6 space-y-6">
@@ -303,11 +314,15 @@ export default function RefundEvidenceModeSelector({ disputeId, originalOrderId,
       <ReturnHistory rows={returnHistory} />
       <RefundDocumentHistory rows={refundDocumentHistory} disputeId={disputeId} />
 
-      <div className="rounded-3xl border-2 border-dashed border-sky-200 bg-sky-50 p-5">
-        <p className="text-sm font-medium uppercase tracking-[0.2em] text-sky-600">Refund document / credit note evidence</p>
-        <h3 className="mt-2 text-lg font-semibold">Submit this only when the retailer gives the refund document or confirms no document exists</h3>
-        <p className="mt-1 text-sm text-slate-600">This is separate from return tracking. This section feeds supplier credit/refund document control.</p>
-        {hasPriorRefundDocument ? <p className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">A refund document has already been submitted. Submit again only if the retailer issued a revised or additional document.</p> : null}
+      <div className={`rounded-3xl border-2 border-dashed p-5 ${hasRejectedRefundDocument ? "border-rose-300 bg-rose-50" : "border-sky-200 bg-sky-50"}`}>
+        <p className={`text-sm font-medium uppercase tracking-[0.2em] ${hasRejectedRefundDocument ? "text-rose-600" : "text-sky-600"}`}>Refund document / credit note evidence</p>
+        <h3 className="mt-2 text-lg font-semibold">{hasRejectedRefundDocument ? "Submit corrected refund document / credit note evidence" : "Submit this only when the retailer gives the refund document or confirms no document exists"}</h3>
+        <p className="mt-1 text-sm text-slate-600">
+          {hasRejectedRefundDocument
+            ? "The previous submission was rejected by supervisor. Upload the corrected credit note, refund proof or no-document evidence here."
+            : "This is separate from return tracking. This section feeds supplier credit/refund document control."}
+        </p>
+        {hasPriorRefundDocument && !hasRejectedRefundDocument ? <p className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">A refund document has already been submitted. Submit again only if the retailer issued a revised or additional document.</p> : null}
       </div>
 
       <fieldset className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
@@ -330,7 +345,7 @@ export default function RefundEvidenceModeSelector({ disputeId, originalOrderId,
       {mode === "credit_note" ? (
         <form action={uploadOperatorCreditNoteEvidenceAction} encType="multipart/form-data" className="space-y-5 rounded-3xl border border-sky-200 bg-white p-5">
           <HiddenBaseFields disputeId={disputeId} originalOrderId={originalOrderId} mode="credit_note" />
-          <h3 className="text-lg font-semibold">Credit note issued</h3>
+          <h3 className="text-lg font-semibold">{hasRejectedRefundDocument ? "Corrected credit note issued" : "Credit note issued"}</h3>
           <p className="text-sm text-slate-600">Enter the expected credit-note total and upload the document. OCR/compare will decide whether it is ready or needs review.</p>
           <InvoiceSelector invoiceOptions={invoiceOptions} />
           <div className="grid gap-4 md:grid-cols-2">
@@ -341,34 +356,34 @@ export default function RefundEvidenceModeSelector({ disputeId, originalOrderId,
           </div>
           <AdjustmentInputs />
           <NotesBox />
-          <button type="submit" className="rounded-xl bg-sky-700 px-5 py-3 text-sm font-semibold text-white">Submit credit note evidence</button>
+          <button type="submit" className="rounded-xl bg-sky-700 px-5 py-3 text-sm font-semibold text-white">{hasRejectedRefundDocument ? "Submit corrected credit note evidence" : "Submit credit note evidence"}</button>
         </form>
       ) : null}
 
       {mode === "refund_proof_no_credit_note" ? (
         <form action={uploadOperatorCreditNoteEvidenceAction} encType="multipart/form-data" className="space-y-5 rounded-3xl border border-sky-200 bg-white p-5">
           <HiddenBaseFields disputeId={disputeId} originalOrderId={originalOrderId} mode="refund_proof_no_credit_note" />
-          <h3 className="text-lg font-semibold">Refund proof, no credit note</h3>
+          <h3 className="text-lg font-semibold">{hasRejectedRefundDocument ? "Corrected refund proof, no credit note" : "Refund proof, no credit note"}</h3>
           <p className="text-sm text-slate-600">Use this when the retailer refunded or confirmed the adjustment but did not issue a formal credit note.</p>
           <InvoiceSelector invoiceOptions={invoiceOptions} />
           <RefundLineInputs prefillLines={prefillLines} />
           <AdjustmentInputs />
           <label className="block text-sm font-semibold text-slate-700">Refund proof upload optional<input name="refund_proof_file" type="file" className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
           <NotesBox />
-          <button type="submit" className="rounded-xl bg-sky-700 px-5 py-3 text-sm font-semibold text-white">Submit refund proof evidence</button>
+          <button type="submit" className="rounded-xl bg-sky-700 px-5 py-3 text-sm font-semibold text-white">{hasRejectedRefundDocument ? "Submit corrected refund proof evidence" : "Submit refund proof evidence"}</button>
         </form>
       ) : null}
 
       {mode === "no_document" ? (
         <form action={uploadOperatorCreditNoteEvidenceAction} encType="multipart/form-data" className="space-y-5 rounded-3xl border border-amber-200 bg-white p-5">
           <HiddenBaseFields disputeId={disputeId} originalOrderId={originalOrderId} mode="no_document" />
-          <h3 className="text-lg font-semibold">No document issued</h3>
+          <h3 className="text-lg font-semibold">{hasRejectedRefundDocument ? "Corrected no-document evidence" : "No document issued"}</h3>
           <p className="text-sm text-slate-600">Use only when the retailer confirms no credit note/refund document exists. This stays under supervisor exception control.</p>
           <InvoiceSelector invoiceOptions={invoiceOptions} />
           <RefundLineInputs prefillLines={prefillLines} />
           <AdjustmentInputs />
           <NotesBox required />
-          <button type="submit" className="rounded-xl bg-amber-700 px-5 py-3 text-sm font-semibold text-white">Submit no-document evidence</button>
+          <button type="submit" className="rounded-xl bg-amber-700 px-5 py-3 text-sm font-semibold text-white">{hasRejectedRefundDocument ? "Submit corrected no-document evidence" : "Submit no-document evidence"}</button>
         </form>
       ) : null}
     </div>
