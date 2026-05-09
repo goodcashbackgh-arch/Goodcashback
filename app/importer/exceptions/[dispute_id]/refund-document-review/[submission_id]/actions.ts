@@ -78,13 +78,31 @@ async function requireOperatorAccess(disputeId: string, submissionId: string) {
 
   const { data: submissionRaw, error: submissionError } = await supabase
     .from("dispute_refund_evidence_submissions")
-    .select("id, dispute_id, supplier_control_status, supplier_approval_status, evidence_control_status")
+    .select("id, dispute_id, supplier_control_status, supplier_approval_status, evidence_control_status, supervisor_review_status, supplier_readiness_route")
     .eq("id", submissionId)
     .eq("dispute_id", disputeId)
     .maybeSingle();
 
   if (submissionError || !submissionRaw) return { ok: false as const, supabase, error: submissionError?.message ?? "Refund document submission not found." };
-  const submission = submissionRaw as { supplier_control_status?: string | null; supplier_approval_status?: string | null; evidence_control_status?: string | null };
+  const submission = submissionRaw as {
+    supplier_control_status?: string | null;
+    supplier_approval_status?: string | null;
+    evidence_control_status?: string | null;
+    supervisor_review_status?: string | null;
+    supplier_readiness_route?: string | null;
+  };
+
+  if (
+    submission.supervisor_review_status === "rejected" ||
+    submission.evidence_control_status === "staff_rejected_resubmission_required" ||
+    submission.supplier_readiness_route === "operator_resubmission_required"
+  ) {
+    return {
+      ok: false as const,
+      supabase,
+      error: "This refund document was rejected and is audit-only. Submit corrected refund evidence from the exception page.",
+    };
+  }
 
   if (["operator_confirmed_ready_for_staff_control", "operator_rejection_requested_wrong_upload"].includes(String(submission.evidence_control_status ?? ""))) {
     return { ok: false as const, supabase, error: "This refund document already has an operator decision." };
