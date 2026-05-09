@@ -179,6 +179,8 @@ export async function saveAllSupplierLineAccountingCodesAction(formData: FormDat
   });
 
   if (error) redirect(`/internal/reconciliation/${orderId}?error=${encodeURIComponent(error.message)}`);
+  revalidatePath(`/internal/reconciliation/${orderId}`);
+  revalidatePath("/internal/supplier-draft-ready");
   redirect(`/internal/reconciliation/${orderId}?success=All+coding+lines+saved+and+balanced`);
 }
 
@@ -210,6 +212,8 @@ export async function saveSupplierLineAccountingCodeAction(formData: FormData) {
   });
 
   if (error) redirect(`/internal/reconciliation/${orderId}?error=${encodeURIComponent(error.message)}`);
+  revalidatePath(`/internal/reconciliation/${orderId}`);
+  revalidatePath("/internal/supplier-draft-ready");
   redirect(`/internal/reconciliation/${orderId}?success=Accounting+code+saved`);
 }
 
@@ -218,17 +222,20 @@ export async function addSupplierAccountingAdjustmentLineAction(formData: FormDa
   const orderId = asString(formData.get("order_id"));
   const invoiceId = asString(formData.get("supplier_invoice_id"));
   const description = asString(formData.get("description"));
+  const qty = asNumber(formData.get("qty"), 1);
   const net = asNullableNumber(formData.get("net_amount_gbp"));
   const vat = asNullableNumber(formData.get("vat_amount_gbp"));
   const vatRate = asNullableNumber(formData.get("vat_rate_percent")) ?? 20;
 
   if (!orderId || !invoiceId) redirect(`/internal/reconciliation/${orderId || ""}?error=Missing+invoice+or+order+id`);
   if (!description.trim()) redirect(`/internal/reconciliation/${orderId}?error=Adjustment+description+is+required`);
+  if (!Number.isFinite(qty) || qty <= 0) redirect(`/internal/reconciliation/${orderId}?error=Adjustment+quantity+must+be+greater+than+zero`);
   if (net === null || vat === null) redirect(`/internal/reconciliation/${orderId}?error=Adjustment+net+and+VAT+are+required`);
 
-  const { error } = await supabase.rpc("staff_create_supplier_invoice_accounting_adjustment_line", {
+  const { error } = await supabase.rpc("staff_create_supplier_invoice_accounting_adjustment_line_v2", {
     p_supplier_invoice_id: invoiceId,
     p_description: description,
+    p_qty: qty,
     p_sku: asString(formData.get("sku")),
     p_size: asString(formData.get("size")),
     p_sage_ledger_account_id: asString(formData.get("sage_ledger_account_id")),
@@ -241,6 +248,8 @@ export async function addSupplierAccountingAdjustmentLineAction(formData: FormDa
   });
 
   if (error) redirect(`/internal/reconciliation/${orderId}?error=${encodeURIComponent(error.message)}`);
+  revalidatePath(`/internal/reconciliation/${orderId}`);
+  revalidatePath("/internal/supplier-draft-ready");
   redirect(`/internal/reconciliation/${orderId}?success=Adjustment+line+added`);
 }
 
@@ -256,5 +265,7 @@ export async function deleteSupplierAccountingAdjustmentLineAction(formData: For
   });
 
   if (error) redirect(`/internal/reconciliation/${orderId}?error=${encodeURIComponent(error.message)}`);
+  revalidatePath(`/internal/reconciliation/${orderId}`);
+  revalidatePath("/internal/supplier-draft-ready");
   redirect(`/internal/reconciliation/${orderId}?success=Adjustment+line+deleted`);
 }
