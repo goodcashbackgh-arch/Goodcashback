@@ -128,3 +128,22 @@ export async function assertInvoiceReadyForCurrentApproval(
 
   return null;
 }
+
+export async function assertSupplierInvoiceAccountingCodingReady(
+  supabase: SupabaseLike,
+  supplierInvoiceId: string,
+) {
+  const { data: totals, error } = await supabase
+    .from("supplier_invoice_accounting_coding_totals_vw")
+    .select("all_progressed_lines_coded_yn, net_reconciled_to_invoice_yn, vat_reconciled_to_invoice_yn, gross_reconciled_to_invoice_yn, net_variance_gbp, vat_variance_gbp, gross_variance_gbp")
+    .eq("supplier_invoice_id", supplierInvoiceId)
+    .maybeSingle();
+
+  if (error) return error.message;
+  if (!totals) return "Accounting coding totals not found. Open reconciliation and save coding first.";
+  if (!totals.all_progressed_lines_coded_yn) return "All progressed lines must be accounting coded before approval.";
+  if (!totals.net_reconciled_to_invoice_yn || !totals.vat_reconciled_to_invoice_yn || !totals.gross_reconciled_to_invoice_yn) {
+    return `Net/VAT/Gross coding does not reconcile. Net variance ${totals.net_variance_gbp ?? 0}, VAT variance ${totals.vat_variance_gbp ?? 0}, gross variance ${totals.gross_variance_gbp ?? 0}.`;
+  }
+  return null;
+}
