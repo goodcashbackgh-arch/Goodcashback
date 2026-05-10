@@ -249,11 +249,11 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
         </select>
         <input name="tracking_ref" required className="border p-2" placeholder="Tracking ref"/>
         <input name="tracking_date" type="date" required className="border p-2"/>
+        <input name="tracking_screenshot_url" className="border p-2" placeholder="Tracking URL / courier tracking link"/>
         <input name="tracking_evidence_file" type="file" accept=".pdf,image/*,.png,.jpg,.jpeg,.webp" className="border p-2" />
-        <input name="tracking_screenshot_url" className="border p-2" placeholder="Optional tracking evidence URL if no file"/>
         <input name="note" className="border p-2" placeholder="Note"/>
         <label className="text-sm flex items-center gap-2"><input type="checkbox" name="is_final_delivery_yn"/>This completes delivery for this order</label>
-        <p className="text-xs text-slate-500 md:col-span-2">Upload the dispatch/tracking document where possible. The URL field is only a fallback.</p>
+        <p className="text-xs text-slate-500 md:col-span-2">Use the retailer/courier tracking URL as the main live tracking source. Upload a dispatch screenshot, PDF, or delivery note as supporting evidence where useful.</p>
         <button className="bg-sky-600 text-white px-4 py-2 rounded w-fit">Add tracking</button>
       </form>
       {trackingRows.length === 0 ? (
@@ -261,23 +261,30 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
       ) : (
         <div className="space-y-2 text-sm">
           {trackingRows.map(t=> (
-            <article key={t.id} className="rounded border border-slate-200 bg-slate-50 p-3">
-              <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
-                <div>
-                  <p className="font-semibold">{t.couriers?.name ?? "Courier"} — {t.tracking_ref}</p>
-                  <div className="mt-1 grid gap-1 text-xs text-slate-600 md:grid-cols-3">
-                    <p><span className="font-medium text-slate-700">Tracking date:</span> {formatDate(t.tracking_date)}</p>
-                    <p><span className="font-medium text-slate-700">Submitted:</span> {formatDate(t.submitted_at)}</p>
-                    <p><span className="font-medium text-slate-700">Final delivery:</span> {t.is_final_delivery_yn ? "Yes" : "No"}</p>
+            <details key={t.id} className="rounded border border-slate-200 bg-slate-50 p-3">
+              <summary className="cursor-pointer list-none">
+                <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-semibold">{t.couriers?.name ?? "Courier"} · {t.tracking_ref}</span>
+                    <span className="text-slate-500">·</span>
+                    <span>{formatDate(t.tracking_date)}</span>
+                    {t.is_final_delivery_yn ? <span className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-semibold text-emerald-800">Final delivery</span> : null}
                   </div>
-                  {t.note ? <p className="mt-2 rounded bg-white p-2 text-xs text-slate-700"><span className="font-medium">Note:</span> {t.note}</p> : null}
+                  <span className="font-semibold text-sky-700 underline">View details</span>
                 </div>
-                <div className="flex shrink-0 flex-col gap-2 text-right">
-                  {t.tracking_screenshot_url ? <a href={t.tracking_screenshot_url} target="_blank" rel="noreferrer" className="font-semibold text-sky-700 underline">Open evidence</a> : <span className="text-xs text-slate-500">No evidence attached</span>}
-                  {t.is_final_delivery_yn ? <span className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-semibold text-emerald-800">Final delivery</span> : null}
+              </summary>
+              <div className="mt-3 rounded border border-slate-200 bg-white p-3">
+                <div className="grid gap-2 text-xs text-slate-700 md:grid-cols-4">
+                  <p><span className="font-medium text-slate-900">Courier:</span> {t.couriers?.name ?? "—"}</p>
+                  <p><span className="font-medium text-slate-900">Tracking ref:</span> {t.tracking_ref}</p>
+                  <p><span className="font-medium text-slate-900">Tracking date:</span> {formatDate(t.tracking_date)}</p>
+                  <p><span className="font-medium text-slate-900">Submitted:</span> {formatDate(t.submitted_at)}</p>
+                  <p><span className="font-medium text-slate-900">Final delivery:</span> {t.is_final_delivery_yn ? "Yes" : "No"}</p>
+                  <p className="md:col-span-3"><span className="font-medium text-slate-900">Tracking URL / evidence:</span> {t.tracking_screenshot_url ? <a href={t.tracking_screenshot_url} target="_blank" rel="noreferrer" className="ml-1 font-semibold text-sky-700 underline">Open</a> : "—"}</p>
                 </div>
+                {t.note ? <p className="mt-3 rounded bg-slate-50 p-2 text-xs text-slate-700"><span className="font-medium">Note:</span> {t.note}</p> : null}
               </div>
-            </article>
+            </details>
           ))}
         </div>
       )}
