@@ -6,6 +6,34 @@
 
 ---
 
+## 0. Required companion addendum
+
+This addendum must be read together with:
+
+```text
+docs/governing-pack/backend/Shipping_Control_Centre_Document_Intake_and_Export_Evidence_Flow_Addendum_v1.md
+```
+
+That companion addendum governs:
+
+- `/internal/shipping-control`;
+- shared document/OCR queue usage;
+- shipper invoice/receipt document intake;
+- shipping cost apportionment;
+- master-shipment grouping;
+- final COS/BOL/POD/container evidence lane;
+- Sage/AP/customer recharge readiness for shipping costs.
+
+If there is any doubt:
+
+```text
+Importer shipment batch = package movement truth only.
+Shipper invoice/receipt = shipping cost/Sage/AP lane.
+COS/BOL/POD/container = export evidence/master-shipment lane.
+```
+
+---
+
 ## 1. Governing effect
 
 This addendum supplements and clarifies:
@@ -19,6 +47,7 @@ This addendum supplements and clarifies:
 7. `docs/governing-pack/role-matrices/supervisor_role_stage_matrix_v7.md`
 8. `docs/governing-pack/ui/ORDER_OPERATIONS_MVP_CONTRACT.md`
 9. `docs/governing-pack/ui/EXCEPTION_BRANCHING_MVP_CONTRACT.md`
+10. `docs/governing-pack/backend/Shipping_Control_Centre_Document_Intake_and_Export_Evidence_Flow_Addendum_v1.md`
 
 Where older wording implies that final COS/BOL/POD/export evidence must exist before any stable goods customer invoice release, this addendum overrides that reading.
 
@@ -255,6 +284,18 @@ Shipping charge treatment:
 
 Customer/importer invoicing remains per importer. A master container/BOL may include multiple importers, but importer evidence/invoice packs must remain separately traceable.
 
+Operational clarification:
+
+```text
+Shipper invoices/receipts are not importer/operator documents. They enter the supervisor/admin document/OCR queue and then the shipping-cost lane, not the operator goods-invoice lane.
+```
+
+See companion addendum:
+
+```text
+docs/governing-pack/backend/Shipping_Control_Centre_Document_Intake_and_Export_Evidence_Flow_Addendum_v1.md
+```
+
 ---
 
 ## 10. Shipping cost apportionment
@@ -368,10 +409,12 @@ The shipper contents preview must be read-only.
 
 Recommended UI placement:
 
-1. `/shipper` package worklist — link or expandable row next to each tracking ref: `View contents`.
-2. `/shipper/package-receipts` — link or expandable row next to each package before receipt action.
-3. `/shipper/shipments/new` — link or expandable row next to each eligible package before selection.
-4. `/shipper/shipments/[shipment_batch_id]` — link or expandable row in selected packages table.
+1. `/shipper` package worklist — link next to each tracking ref: `View contents`.
+2. `/shipper/package-receipts` — link next to each package before receipt action.
+3. `/shipper/shipments/new` — link next to each eligible package before selection.
+4. `/shipper/shipments/[shipment_batch_id]` — link in selected packages table.
+
+For high-volume packages, do not show item descriptions inline in worklists. The worklist should show only a compact count/quantity link, and full descriptions should open on a dedicated detail page.
 
 If the operator/supervisor has not allocated contents yet, the shipper should see:
 
@@ -542,6 +585,10 @@ Actions:
 
 ### Supervisor/internal
 
+`/internal/shipping-control`
+
+Central status and action spine for shipment batches, shipper invoice/receipt intake, OCR status, shipping cost apportionment, draft COS/export basis, master shipment grouping, final export evidence and Sage readiness.
+
 `/internal/delivery-allocation/[order_id]`
 
 Actions:
@@ -573,15 +620,19 @@ Shows:
 - final COS/BOL/POD evidence upload/review;
 - supervisor export evidence clearance controls.
 
+`/internal/shipping-documents/[document_id]` or equivalent
+
+Shows shipper invoice/receipt OCR review, shipment/master-shipment linking, shipping-cost review status and Sage/AP readiness controls. This is not the retailer goods invoice progression page.
+
 ### Shipper
 
 `/shipper`
 
-Shows expected/received/outstanding packages by importer/order. Each tracking ref/package should have a read-only `View contents` detail showing description and quantity only where allocation exists.
+Shows expected/received/outstanding packages by importer/order. Each tracking ref/package should have a read-only `View contents` link showing description and quantity only where allocation exists.
 
 `/shipper/package-receipts`
 
-Package receipt action page. Each package should allow receipt action and read-only contents preview. Receipt actions do not lock item allocation, COS, Sage or VAT.
+Package receipt action page. Each package should allow receipt action and read-only contents link. Receipt actions do not lock item allocation, COS, Sage or VAT.
 
 `/shipper/shipments/new`
 
@@ -592,7 +643,7 @@ Must show:
 - package/tracking refs;
 - order ref;
 - retailer;
-- read-only contents preview: description and quantity only;
+- read-only contents link: description and quantity only;
 - no values;
 - no COS/BOL/POD upload;
 - no final container evidence.
@@ -608,12 +659,16 @@ Must show:
 - box/carton count;
 - notes;
 - selected packages/tracking refs;
-- read-only contents preview: description and quantity only;
+- read-only contents link: description and quantity only;
 - tracking evidence links.
 
 May allow header correction while status is still `created` and export-evidence review has not started.
 
 Must not be used for final COS/BOL/POD upload. Final evidence belongs to the master-shipment/export-evidence lane.
+
+`/shipper/shipping-documents/new` or equivalent
+
+Allows shipper to upload shipper invoice/receipt only, linked to shipment batch or master shipment where applicable. It must not perform cost allocation approval, Sage approval or VAT/export clearance.
 
 ---
 
@@ -653,11 +708,15 @@ Unknown package may move operationally but export evidence clearance blocks unti
 
 ### I. Shipper invoice after goods invoice
 
-Goods invoice released first. Shipper invoice arrives later. Shipping is apportioned and supplementary shipping/export adjustment can be created if needed.
+Goods invoice released first. Shipper invoice later enters supervisor/admin document OCR queue, is linked to shipment batch/master shipment, and drives shipping-cost apportionment/Sage AP/customer recharge readiness.
 
 ### J. Shipper contents preview without values
 
-Shipper can see package item description and quantity but cannot see supplier/customer values, VAT, margin, Sage coding, or DVA/payment data.
+Shipper can see package item description and quantity on a dedicated detail page but cannot see supplier/customer values, VAT, margin, Sage coding, or DVA/payment data.
+
+### K. Shipper invoice not visible to importer/operator
+
+Importer/operator cannot see shipper invoice/receipt document, OCR, cost, apportionment, Sage/AP coding or internal shipping cost controls.
 
 ---
 
@@ -670,18 +729,22 @@ Efficient build sequence:
 3. Operator/supervisor delivery allocation workspace.
 4. Shipper package receipt and received-package queue.
 5. Shipper importer shipment batch creation using received tracking refs.
-6. Shipper contents preview: description and quantity only, no values.
-7. Export evidence draft review and allocation guardrails.
-8. Master shipment grouping and final COS/BOL/POD upload/review.
-9. Shipping invoice/cost apportionment and supplementary adjustment path.
-10. Status-control/VAT readiness integration.
+6. Shipper contents link: description and quantity only, no values.
+7. `/internal/shipping-control` read-only control centre from existing shipment batches/packages/receipt/content data.
+8. Shipper invoice/receipt document type and upload route.
+9. Shared document/OCR queue filter for shipper invoice/receipt.
+10. Supervisor shipper invoice review and shipment/master-shipment linking.
+11. Shipping cost apportionment and supplementary customer recharge/Sage readiness.
+12. Export evidence draft review and allocation guardrails.
+13. Master shipment grouping and final COS/BOL/POD upload/review.
+14. Status-control/VAT readiness integration.
 
-Do not jump to final COS/POD screens before allocation, receipt truth, shipment batch truth and supervisor review controls exist.
+Do not jump to final COS/POD screens before allocation, receipt truth, shipment batch truth, shipping-control visibility and shipper invoice/document lane exist.
 
 ---
 
 ## 20. Final locked sentence
 
 ```text
-Tracking ref is the package. Operator/supervisor allocates progressed invoice lines and adjusted net allocation values to packages. Shipper may view package contents as description and quantity only, then bulk-selects received packages into importer shipment batches. Master shipment/BOL/container/final COS/POD evidence is a later export-evidence layer, not the shipment batch header. Supervisor reviews the joined item/package/shipment truth before draft COS. Goods invoicing remains progressive and is not held behind final COS/BOL/POD; export evidence clearance and final closure are held behind those documents.
+Tracking ref is the package. Operator/supervisor allocates progressed invoice lines and adjusted net allocation values to packages. Shipper may view package contents as description and quantity only, then bulk-selects received packages into importer shipment batches. Master shipment/BOL/container/final COS/POD evidence is a later export-evidence layer, not the shipment batch header. Shipper invoices/receipts enter the supervisor/admin document/OCR queue and shipping-cost lane, not importer/operator workflows. Supervisor reviews the joined item/package/shipment/document truth through the shipping control centre before COS, Sage and VAT readiness. Goods invoicing remains progressive and is not held behind final COS/BOL/POD; export evidence clearance and final closure are held behind those documents.
 ```
