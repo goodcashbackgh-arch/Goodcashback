@@ -273,7 +273,7 @@ export default async function InternalShippingControlPage({
                       </td>
                       <td className="px-3 py-3 align-top">
                         <div className="flex flex-col gap-2">
-                          <Link href={`/shipper/shipments/${row.shipment_batch_id}`} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50">
+                          <Link href={`/internal/shipping-control/${row.shipment_batch_id}`} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50">
                             View batch detail
                           </Link>
                           <span className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-500">
