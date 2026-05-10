@@ -16,6 +16,11 @@ function readOptionalNumber(formData: FormData, key: string) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function readNullableDateTime(formData: FormData, key: string) {
+  const value = readString(formData, key);
+  return value || null;
+}
+
 export async function createShipmentBatchAction(formData: FormData) {
   const supabase = await createClient();
   const importerId = readString(formData, "importer_id");
@@ -49,6 +54,42 @@ export async function createShipmentBatchAction(formData: FormData) {
   }
 
   revalidatePath("/shipper");
+  revalidatePath("/shipper/shipments");
   revalidatePath("/shipper/shipments/new");
-  redirect(`/shipper/shipments/new?success=${encodeURIComponent(`Shipment batch created: ${data}`)}`);
+  redirect(`/shipper/shipments/${data}?success=${encodeURIComponent("Shipment batch created")}`);
+}
+
+export async function updateShipmentBatchHeaderAction(formData: FormData) {
+  const supabase = await createClient();
+  const shipmentBatchId = readString(formData, "shipment_batch_id");
+  const bookingRef = readString(formData, "booking_ref");
+  const shipmentCutoffAt = readNullableDateTime(formData, "shipment_cutoff_at");
+  const dispatchedAt = readNullableDateTime(formData, "dispatched_at");
+  const boxCount = readOptionalNumber(formData, "box_count");
+  const containerRef = readString(formData, "container_ref") || null;
+  const bolRef = readString(formData, "bol_ref") || null;
+  const notes = readString(formData, "notes") || null;
+
+  if (!shipmentBatchId) redirect("/shipper/shipments?error=Missing%20shipment%20batch%20id.");
+  if (!bookingRef) redirect(`/shipper/shipments/${shipmentBatchId}?error=Booking%20reference%20is%20required.`);
+
+  const { error } = await (supabase as any).rpc("shipper_update_shipment_batch_header_v1", {
+    p_shipment_batch_id: shipmentBatchId,
+    p_booking_ref: bookingRef,
+    p_shipment_cutoff_at: shipmentCutoffAt,
+    p_dispatched_at: dispatchedAt,
+    p_box_count: boxCount,
+    p_container_ref: containerRef,
+    p_bol_ref: bolRef,
+    p_notes: notes,
+  });
+
+  if (error) {
+    redirect(`/shipper/shipments/${shipmentBatchId}?error=${encodeURIComponent(error.message)}`);
+  }
+
+  revalidatePath("/shipper");
+  revalidatePath("/shipper/shipments");
+  revalidatePath(`/shipper/shipments/${shipmentBatchId}`);
+  redirect(`/shipper/shipments/${shipmentBatchId}?success=${encodeURIComponent("Shipment batch header updated")}`);
 }
