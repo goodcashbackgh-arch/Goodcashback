@@ -177,7 +177,10 @@ export default async function ShipperPage({
             This dashboard is scoped to your shipper account. Work by importer and package row: review tracking evidence, record receipt, and keep package-level truth separate from item-content allocation.
           </p>
           <div className="mt-5 flex flex-wrap gap-3">
-            <Link href="/shipper/shipments/new" className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">
+            <Link href="/shipper/shipments" className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">
+              View shipment batches
+            </Link>
+            <Link href="/shipper/shipments/new" className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">
               Create shipment batch
             </Link>
             <Link href="/shipper/package-receipts" className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">
