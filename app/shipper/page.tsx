@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 
@@ -102,6 +103,11 @@ export default async function ShipperPage() {
           <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-600">
             This dashboard is scoped to your shipper account. It shows expected tracking refs/packages grouped by importer/order. Shipper work stays package-level: receive, hold, damage/query, and later select received packages into shipment batches.
           </p>
+          <div className="mt-5 flex flex-wrap gap-3">
+            <Link href="/shipper/package-receipts" className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">
+              Record package receipt
+            </Link>
+          </div>
           {rpcError ? (
             <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
               Dashboard RPC is not available yet: {rpcError.message}. Apply the latest Supabase migration before live package testing.
@@ -133,10 +139,12 @@ export default async function ShipperPage() {
             <div>
               <h2 className="text-xl font-semibold">Outstanding package list</h2>
               <p className="mt-2 text-sm leading-6 text-slate-600">
-                Select/receipt actions are deliberately not enabled yet. This read-only slice proves shipper scoping before we add package receipt writes.
+                Use the package receipt action page to record received clean, damaged, held/query, or not received. This dashboard remains the scoped package overview.
               </p>
             </div>
-            <span className="rounded-full bg-sky-100 px-3 py-1 text-xs font-semibold text-sky-800">Read-only Batch 2 foundation</span>
+            <Link href="/shipper/package-receipts" className="rounded-full bg-sky-100 px-3 py-1 text-xs font-semibold text-sky-800 hover:bg-sky-200">
+              Package receipt actions
+            </Link>
           </div>
 
           {rows.length === 0 ? (
