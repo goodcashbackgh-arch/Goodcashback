@@ -158,6 +158,7 @@ export default async function ShipperPage({
   const unallocatedPackages = packageRows.length - allocatedPackages.length;
   const awaitingReceiptPackages = packageRows.filter((row) => !row.latest_receipt_status);
   const receiptIssuePackages = packageRows.filter((row) => ["received_damaged", "held_query", "not_received"].includes(String(row.latest_receipt_status ?? "")));
+  const receivedCleanPackages = packageRows.filter((row) => row.latest_receipt_status === "received_clean");
   const importerGroups = groupByImporter(filteredRows);
   const importerOptions = groupByImporter(rows);
   const shipper = Array.isArray((shipperUser as any).shippers) ? (shipperUser as any).shippers[0] : (shipperUser as any).shippers;
@@ -175,6 +176,14 @@ export default async function ShipperPage({
           <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-600">
             This dashboard is scoped to your shipper account. Work by importer and package row: review tracking evidence, record receipt, and keep package-level truth separate from item-content allocation.
           </p>
+          <div className="mt-5 flex flex-wrap gap-3">
+            <Link href="/shipper/shipments/new" className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">
+              Create shipment batch
+            </Link>
+            <Link href="/shipper/package-receipts" className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">
+              Package receipt actions
+            </Link>
+          </div>
           {rpcError ? (
             <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
               Receipt dashboard RPC is not available yet: {rpcError.message}. Apply the latest Supabase migration before live package testing.
@@ -182,7 +191,7 @@ export default async function ShipperPage({
           ) : null}
         </section>
 
-        <section className="grid gap-4 md:grid-cols-6">
+        <section className="grid gap-4 md:grid-cols-7">
           <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
             <p className="text-xs uppercase tracking-wide text-slate-500">Orders in shipper lane</p>
             <p className="mt-1 text-2xl font-semibold">{new Set(rows.map((row) => row.order_id)).size}</p>
@@ -202,6 +211,10 @@ export default async function ShipperPage({
           <div className={`rounded-3xl border p-4 shadow-sm ${awaitingReceiptPackages.length > 0 ? "border-sky-200 bg-sky-50" : "border-slate-200 bg-white"}`}>
             <p className="text-xs uppercase tracking-wide text-slate-500">Awaiting receipt</p>
             <p className="mt-1 text-2xl font-semibold">{awaitingReceiptPackages.length}</p>
+          </div>
+          <div className="rounded-3xl border border-emerald-200 bg-emerald-50 p-4 shadow-sm">
+            <p className="text-xs uppercase tracking-wide text-emerald-700">Ready to ship</p>
+            <p className="mt-1 text-2xl font-semibold text-emerald-950">{receivedCleanPackages.length}</p>
           </div>
           <div className={`rounded-3xl border p-4 shadow-sm ${receiptIssuePackages.length > 0 ? "border-rose-200 bg-rose-50" : "border-slate-200 bg-white"}`}>
             <p className="text-xs uppercase tracking-wide text-slate-500">Receipt issues</p>
@@ -308,9 +321,16 @@ export default async function ShipperPage({
                             </td>
                             <td className="px-3 py-2">
                               {row.tracking_submission_id ? (
-                                <Link href={`/shipper/package-receipts?tracking=${row.tracking_submission_id}`} className="rounded-xl bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-800">
-                                  Record receipt
-                                </Link>
+                                <div className="flex flex-col gap-2">
+                                  <Link href={`/shipper/package-receipts?tracking=${row.tracking_submission_id}`} className="rounded-xl bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-800">
+                                    Record receipt
+                                  </Link>
+                                  {row.latest_receipt_status === "received_clean" ? (
+                                    <Link href={`/shipper/shipments/new?importer=${row.importer_id}`} className="rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-900 hover:bg-emerald-100">
+                                      Add to shipment
+                                    </Link>
+                                  ) : null}
+                                </div>
                               ) : (
                                 <span className="text-xs text-slate-500">Waiting for operator tracking</span>
                               )}
