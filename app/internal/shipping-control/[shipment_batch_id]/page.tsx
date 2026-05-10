@@ -202,7 +202,7 @@ export default async function InternalShippingBatchDetailPage({
                             </td>
                             <td className="px-3 py-2">
                               {row.tracking_submission_id ? (
-                                <Link href={`/shipper/package-contents/${row.tracking_submission_id}`} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50">
+                                <Link href={`/internal/shipping-control/package-contents/${row.tracking_submission_id}`} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50">
                                   View contents
                                 </Link>
                               ) : "—"}
