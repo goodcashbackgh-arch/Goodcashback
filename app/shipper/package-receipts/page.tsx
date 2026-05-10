@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 import { recordPackageReceiptAction } from "../actions";
+import { PackageContentsPreview } from "../PackageContentsPreview";
 
 type PackageRow = {
   order_id: string;
@@ -73,7 +74,7 @@ export default async function ShipperPackageReceiptsPage({
           <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">Package receipt actions</h1>
           <p className="mt-2 text-sm text-slate-600">{shipperUser.full_name} · {shipper?.name ?? "Shipper"}</p>
           <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-600">
-            Record package-level physical truth only. This does not lock operator/supervisor item-content allocation and does not create shipment, COS, VAT or Sage effects.
+            Record package-level physical truth only. Contents preview shows description and quantity only. This does not lock operator/supervisor item-content allocation and does not create shipment, COS, VAT or Sage effects.
           </p>
           {queryParams.success ? <p className="mt-4 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">{queryParams.success}</p> : null}
           {queryParams.error ? <p className="mt-4 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-900">{queryParams.error}</p> : null}
@@ -96,6 +97,10 @@ export default async function ShipperPackageReceiptsPage({
                       <p className="mt-1 text-sm text-slate-600">Allocated qty: {Number(row.allocated_qty ?? 0)}</p>
                     </div>
                     <span className={`w-fit rounded-full px-3 py-1 text-xs font-semibold ${receiptClass(row.latest_receipt_status)}`}>{receiptLabel(row.latest_receipt_status)}</span>
+                  </div>
+
+                  <div className="mt-3">
+                    <PackageContentsPreview trackingSubmissionId={row.tracking_submission_id} />
                   </div>
 
                   <div className="mt-3 flex flex-wrap gap-3 text-sm">
