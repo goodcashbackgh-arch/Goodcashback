@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 import { updateShipmentBatchHeaderAction } from "../actions";
+import { PackageContentsPreview } from "../../PackageContentsPreview";
 
 type BatchPackageRow = {
   id: string;
@@ -26,8 +27,6 @@ type BatchRow = {
   shipment_cutoff_at: string | null;
   dispatched_at: string | null;
   box_count: number | null;
-  container_ref: string | null;
-  bol_ref: string | null;
   notes: string | null;
   status: string;
   created_at: string;
@@ -91,7 +90,7 @@ export default async function ShipperShipmentDetailPage({
   const [{ data: batch, error }, { data: packageDashboardRows }] = await Promise.all([
     supabase
       .from("shipper_shipment_batches")
-      .select("id, booking_ref, importer_id, shipper_id, shipment_cutoff_at, dispatched_at, box_count, container_ref, bol_ref, notes, status, created_at, importers(company_name, trading_name), shipper_shipment_batch_packages(id, tracking_submission_id, order_id, active, created_at, orders(order_ref, retailers(name)), order_tracking_submissions(tracking_ref, tracking_date, tracking_screenshot_url, couriers(name)))")
+      .select("id, booking_ref, importer_id, shipper_id, shipment_cutoff_at, dispatched_at, box_count, notes, status, created_at, importers(company_name, trading_name), shipper_shipment_batch_packages(id, tracking_submission_id, order_id, active, created_at, orders(order_ref, retailers(name)), order_tracking_submissions(tracking_ref, tracking_date, tracking_screenshot_url, couriers(name)))")
       .eq("id", shipmentBatchId)
       .eq("shipper_id", (shipperUser as any).shipper_id)
       .maybeSingle(),
@@ -156,7 +155,7 @@ export default async function ShipperShipmentDetailPage({
               <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                 <div>
                   <h2 className="text-xl font-semibold">Batch header</h2>
-                  <p className="mt-1 text-sm text-slate-600">Shipment booking and dispatch facts used later for export-evidence review. This does not create COS/BOL/POD or Sage/VAT effects.</p>
+                  <p className="mt-1 text-sm text-slate-600">Shipment booking and dispatch facts used later for export-evidence review. This does not create COS/BOL/POD, master shipment evidence or Sage/VAT effects.</p>
                 </div>
                 {canEditHeader ? <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-800">Editable until export review starts</span> : <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">Locked by status</span>}
               </div>
@@ -165,8 +164,6 @@ export default async function ShipperShipmentDetailPage({
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3"><span className="text-slate-500">Cut-off</span><p className="font-semibold">{formatDate(row.shipment_cutoff_at)}</p></div>
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3"><span className="text-slate-500">Dispatch</span><p className="font-semibold">{formatDate(row.dispatched_at)}</p></div>
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3"><span className="text-slate-500">Box/carton count</span><p className="font-semibold">{row.box_count ?? "—"}</p></div>
-                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3"><span className="text-slate-500">Container ref</span><p className="font-semibold">{row.container_ref ?? "—"}</p></div>
-                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3"><span className="text-slate-500">BOL ref</span><p className="font-semibold">{row.bol_ref ?? "—"}</p></div>
               </div>
               {row.notes ? <p className="mt-4 rounded-2xl bg-slate-50 p-3 text-sm text-slate-700"><span className="font-semibold">Notes:</span> {row.notes}</p> : null}
 
@@ -191,22 +188,14 @@ export default async function ShipperShipmentDetailPage({
                       <span className="text-xs uppercase tracking-wide text-slate-500">Box/carton count</span>
                       <input name="box_count" type="number" min="0" step="1" defaultValue={row.box_count ?? ""} className="w-full rounded-xl border border-slate-300 px-3 py-2" />
                     </label>
-                    <label className="space-y-1 text-sm">
-                      <span className="text-xs uppercase tracking-wide text-slate-500">Container ref</span>
-                      <input name="container_ref" defaultValue={row.container_ref ?? ""} className="w-full rounded-xl border border-slate-300 px-3 py-2" />
-                    </label>
-                    <label className="space-y-1 text-sm">
-                      <span className="text-xs uppercase tracking-wide text-slate-500">BOL ref</span>
-                      <input name="bol_ref" defaultValue={row.bol_ref ?? ""} className="w-full rounded-xl border border-slate-300 px-3 py-2" />
-                    </label>
-                    <label className="space-y-1 text-sm md:col-span-3">
+                    <label className="space-y-1 text-sm md:col-span-2">
                       <span className="text-xs uppercase tracking-wide text-slate-500">Notes</span>
-                      <textarea name="notes" rows={2} defaultValue={row.notes ?? ""} className="w-full rounded-xl border border-slate-300 px-3 py-2" />
+                      <input name="notes" defaultValue={row.notes ?? ""} className="w-full rounded-xl border border-slate-300 px-3 py-2" />
                     </label>
                     <div className="md:col-span-3">
                       <button type="submit" className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">Save header correction</button>
                     </div>
-                    <p className="text-xs text-slate-500 md:col-span-3">This updates booking/dispatch facts only. Package membership, item allocation, export evidence and Sage/VAT readiness are not changed.</p>
+                    <p className="text-xs text-slate-500 md:col-span-3">This updates booking/dispatch facts only. Package membership, item allocation, master shipment, COS/BOL/POD, export evidence and Sage/VAT readiness are not changed.</p>
                   </form>
                 </details>
               ) : null}
@@ -214,7 +203,7 @@ export default async function ShipperShipmentDetailPage({
 
             <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
               <h2 className="text-xl font-semibold">Selected packages</h2>
-              <p className="mt-1 text-sm text-slate-600">These are the package/tracking refs included in this shipment batch. Item-level allocation remains owned by operator/supervisor and is reviewed later for export evidence.</p>
+              <p className="mt-1 text-sm text-slate-600">These are the package/tracking refs included in this importer shipment batch. Contents preview shows description and quantity only. Final COS/BOL/POD belongs to the later export-evidence/master-shipment lane.</p>
               {packages.length === 0 ? (
                 <p className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">No active packages are linked to this batch.</p>
               ) : (
@@ -227,6 +216,7 @@ export default async function ShipperShipmentDetailPage({
                         <th className="px-3 py-2 text-left">Tracking/package</th>
                         <th className="px-3 py-2 text-left">Tracking date</th>
                         <th className="px-3 py-2 text-left">Selected</th>
+                        <th className="px-3 py-2 text-left">Contents</th>
                         <th className="px-3 py-2 text-left">Evidence</th>
                       </tr>
                     </thead>
@@ -242,6 +232,7 @@ export default async function ShipperShipmentDetailPage({
                             <td className="px-3 py-2">{tracking?.couriers?.name ?? "Courier"} · {tracking?.tracking_ref ?? pkg.tracking_submission_id}</td>
                             <td className="px-3 py-2">{formatDate(tracking?.tracking_date)}</td>
                             <td className="px-3 py-2">{formatDate(pkg.created_at)}</td>
+                            <td className="px-3 py-2"><PackageContentsPreview trackingSubmissionId={pkg.tracking_submission_id} compact /></td>
                             <td className="px-3 py-2">{evidenceUrl ? <a href={evidenceUrl} target="_blank" rel="noreferrer" className="font-semibold text-sky-700 underline">Open</a> : "—"}</td>
                           </tr>
                         );
