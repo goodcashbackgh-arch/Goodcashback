@@ -75,6 +75,12 @@ const cards: QueueCard[] = [
     proof: "Separate from card spend matching",
   },
   {
+    title: "Shipping control centre",
+    href: "/internal/shipping-control",
+    description: "Supervisor spine for importer shipment batches, package receipt truth, allocation status, shipper invoice lane, draft COS lane, master shipment lane and Sage readiness placeholders.",
+    proof: "Shipping control read-only v1",
+  },
+  {
     title: "Evidence / OCR queue",
     href: "/internal/evidence",
     description: "Invoice-first, tracking-first, OCR review, progressed subset, and source-line protection.",
@@ -113,7 +119,7 @@ const cards: QueueCard[] = [
   {
     title: "Shipping handoff",
     href: "/internal/shipping",
-    description: "Progressed shipment-ready scope, quote confirmation, booking, dispatch, and delivery evidence.",
+    description: "Legacy/progressive shipment-ready scope, quote confirmation, booking, dispatch, and delivery evidence. Use Shipping control centre for the new package-batch flow.",
     proof: "Day 5 regression passed",
   },
   {
@@ -161,7 +167,7 @@ export default async function InternalPage() {
                 Staff control dashboard
               </h1>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-                Use the DVA/card statement workflow below for bank/card statement work. Keep importer funding separate from supplier/card spend reconciliation.
+                Use DVA/card workflow for statement work and Shipping control centre for package/shipment, shipper invoice, export evidence and Sage readiness visibility.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700">
@@ -227,7 +233,7 @@ export default async function InternalPage() {
             Stable progressed subsets may move forward. Open children block final
             whole-order closure, not stable subset release. VAT is
             prepayment-first and sales-invoice based. Sage posting remains queued
-            and idempotent. Shipper only acts on confirmed progressed shipment scope.
+            and idempotent. Shipper package batches are movement truth only; shipper invoices, export evidence and Sage readiness stay in separate supervisor lanes.
           </p>
         </section>
       </div>
