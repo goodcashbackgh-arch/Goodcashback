@@ -107,10 +107,10 @@ export default async function NewShippingDocumentPage({
             <Link href="/shipper/shipments">Shipment batches</Link>
           </div>
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Goodcashback Shipper</p>
-          <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">Shipping invoice / receipt upload</h1>
+          <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">Shipping charge document upload</h1>
           <p className="mt-2 text-sm text-slate-600">{(shipperUser as any).full_name} · {shipper?.name ?? "Shipper"}</p>
           <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-600">
-            Upload shipping invoices, receipts or supporting charge documents for supervisor processing. You can replace an uploaded document until supervisor accepts it. After supervisor acceptance, submit a resubmission request message instead of silently replacing it.
+            Upload the single current money document for this shipment batch. It may be a shipper invoice, receipt or supporting charge document, but only one active document can feed OCR, supervisor money review, shipping apportionment and Sage readiness. Uploading a new document before supervisor acceptance replaces the current one for this batch.
           </p>
           {qp.success ? <p className="mt-4 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">{qp.success}</p> : null}
           {qp.error ? <p className="mt-4 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-900">{qp.error}</p> : null}
@@ -123,7 +123,7 @@ export default async function NewShippingDocumentPage({
             <p className="mt-1 text-2xl font-semibold">{rows.length}</p>
           </div>
           <div className="rounded-3xl border border-amber-200 bg-amber-50 p-4 shadow-sm">
-            <p className="text-xs uppercase tracking-wide text-slate-500">Not started</p>
+            <p className="text-xs uppercase tracking-wide text-slate-500">No charge doc</p>
             <p className="mt-1 text-2xl font-semibold">{rows.filter((row) => !row.latest_document_id).length}</p>
           </div>
           <div className="rounded-3xl border border-sky-200 bg-sky-50 p-4 shadow-sm">
@@ -140,7 +140,7 @@ export default async function NewShippingDocumentPage({
           <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
             <div>
               <h2 className="text-xl font-semibold">Choose shipment batch</h2>
-              <p className="mt-2 text-sm leading-6 text-slate-600">Select the importer shipment batch that the shipper invoice/receipt relates to.</p>
+              <p className="mt-2 text-sm leading-6 text-slate-600">Select the importer shipment batch. There is only one current charge document per batch.</p>
             </div>
             <form action="/shipper/shipping-documents/new" className="flex flex-wrap items-end gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
               <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
@@ -170,7 +170,7 @@ export default async function NewShippingDocumentPage({
                 </div>
 
                 <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4 text-sm">
-                  <h4 className="font-semibold">Current document status</h4>
+                  <h4 className="font-semibold">Current charge document</h4>
                   <p className="mt-2"><span className="text-slate-500">Status:</span> <span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(selectedRow.latest_review_status)}`}>{friendly(selectedRow.latest_review_status ?? "not_started")}</span></p>
                   {selectedRow.latest_document_id ? (
                     <div className="mt-3 space-y-1 text-slate-700">
@@ -180,18 +180,18 @@ export default async function NewShippingDocumentPage({
                       <p><span className="text-slate-500">Amount:</span> {money(selectedRow.latest_total_amount, selectedRow.latest_currency_code ?? "GBP")}</p>
                       <p><span className="text-slate-500">OCR:</span> {friendly(selectedRow.latest_ocr_status)}</p>
                       <p><span className="text-slate-500">Version:</span> {selectedRow.latest_version_no ?? "—"}</p>
-                      {normalizeLink(selectedRow.latest_file_url) ? <a href={normalizeLink(selectedRow.latest_file_url) ?? "#"} target="_blank" rel="noreferrer" className="inline-block font-semibold text-sky-700 underline">Open uploaded document</a> : null}
+                      {normalizeLink(selectedRow.latest_file_url) ? <a href={normalizeLink(selectedRow.latest_file_url) ?? "#"} target="_blank" rel="noreferrer" className="inline-block font-semibold text-sky-700 underline">Open current document</a> : null}
                     </div>
-                  ) : <p className="mt-2 text-slate-600">No shipping invoice/receipt uploaded yet.</p>}
+                  ) : <p className="mt-2 text-slate-600">No current shipping charge document uploaded yet.</p>}
                 </div>
               </article>
 
               <article className="rounded-3xl border border-slate-200 bg-white p-4">
                 {selectedRow.can_upload_or_replace ? (
                   <>
-                    <h3 className="text-lg font-semibold">{selectedRow.latest_document_id ? "Replace uploaded document" : "Upload shipping document"}</h3>
+                    <h3 className="text-lg font-semibold">{selectedRow.latest_document_id ? "Replace current charge document" : "Upload charge document"}</h3>
                     <p className="mt-2 text-sm leading-6 text-slate-600">
-                      Replacement is allowed only before supervisor acceptance. The previous active version will be superseded when you upload a replacement of the same document type.
+                      Replacement is allowed only before supervisor acceptance. A new upload supersedes the current active charge document for this shipment batch, even if the document type is different.
                     </p>
                     <form action={submitShippingDocumentAction} className="mt-4 grid gap-3 md:grid-cols-2">
                       <input type="hidden" name="shipment_batch_id" value={selectedRow.shipment_batch_id} />
@@ -238,7 +238,7 @@ export default async function NewShippingDocumentPage({
                   <>
                     <h3 className="text-lg font-semibold">Accepted document locked</h3>
                     <p className="mt-2 text-sm leading-6 text-slate-600">
-                      Supervisor has accepted the current document. Submit a resubmission request message if a replacement is needed.
+                      Supervisor has accepted the current charge document. Submit a resubmission request message if a replacement is needed.
                     </p>
                     <form action={requestShippingDocumentResubmissionAction} className="mt-4 space-y-3">
                       <input type="hidden" name="shipping_document_id" value={selectedRow.latest_document_id ?? ""} />
