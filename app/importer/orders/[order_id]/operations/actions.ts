@@ -59,6 +59,26 @@ function safeExt(fileName: string) {
   return (ext ?? "bin").toLowerCase().replace(/[^a-z0-9]/g, "") || "bin";
 }
 
+async function uploadEvidenceFile(params: {
+  supabase: Awaited<ReturnType<typeof createClient>>;
+  importerId: string;
+  orderId: string;
+  file: File;
+  folder: string;
+}) {
+  const objectPath = `${params.importerId}/${params.orderId}/${params.folder}/${Date.now()}.${safeExt(params.file.name)}`;
+  const { error } = await params.supabase.storage
+    .from(INVOICE_EVIDENCE_BUCKET)
+    .upload(objectPath, params.file, { upsert: false });
+
+  if (error) {
+    throw new Error(`Evidence upload failed. Ensure bucket '${INVOICE_EVIDENCE_BUCKET}' exists and is writable. ${error.message}`);
+  }
+
+  const { data } = params.supabase.storage.from(INVOICE_EVIDENCE_BUCKET).getPublicUrl(objectPath);
+  return data.publicUrl || objectPath;
+}
+
 async function getDeliveryLimit(supabase: Awaited<ReturnType<typeof createClient>>, shipperId: string) {
   const { data: shipperPolicy } = await supabase
     .from("order_adjustment_policy")
@@ -87,12 +107,28 @@ export async function addTrackingSubmissionAction(formData: FormData) {
   const courierId = rs(formData, "courier_id");
   const trackingRef = rs(formData, "tracking_ref");
   const trackingDate = rs(formData, "tracking_date");
-  const trackingScreenshotUrl = rs(formData, "tracking_screenshot_url") || null;
+  const trackingEvidenceUrlInput = rs(formData, "tracking_screenshot_url") || null;
+  const trackingEvidenceFile = formData.get("tracking_evidence_file");
   const note = rs(formData, "note") || null;
   const isFinalDelivery = rs(formData, "is_final_delivery_yn") === "on";
 
   if (!orderId) redirect("/importer?error=Missing+order+id");
-  const { operator } = await requireOperatorAccess(supabase, orderId);
+  const { operator, importerId } = await requireOperatorAccess(supabase, orderId);
+
+  let trackingEvidenceUrl = trackingEvidenceUrlInput;
+  if (trackingEvidenceFile instanceof File && trackingEvidenceFile.size > 0) {
+    try {
+      trackingEvidenceUrl = await uploadEvidenceFile({
+        supabase,
+        importerId,
+        orderId,
+        file: trackingEvidenceFile,
+        folder: "tracking-evidence",
+      });
+    } catch (error) {
+      redirect(`/importer/orders/${orderId}/operations?error=${encodeURIComponent(error instanceof Error ? error.message : "Tracking evidence upload failed")}`);
+    }
+  }
 
   const { error } = await supabase.rpc("importer_add_order_tracking_submission", {
     p_order_id: orderId,
@@ -100,12 +136,14 @@ export async function addTrackingSubmissionAction(formData: FormData) {
     p_courier_id: courierId,
     p_tracking_ref: trackingRef,
     p_tracking_date: trackingDate,
-    p_tracking_screenshot_url: trackingScreenshotUrl,
+    p_tracking_screenshot_url: trackingEvidenceUrl,
     p_note: note,
     p_is_final_delivery_yn: isFinalDelivery,
   });
   if (error) redirect(`/importer/orders/${orderId}/operations?error=${encodeURIComponent(error.message)}`);
   revalidatePath(`/importer/orders/${orderId}/operations`);
+  revalidatePath(`/shipper`);
+  revalidatePath(`/shipper/package-receipts`);
   redirect(`/importer/orders/${orderId}/operations?success=Tracking+added`);
 }
 
