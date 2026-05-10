@@ -43,7 +43,7 @@ function receiptClass(status: string | null | undefined) {
 export default async function ShipperPackageReceiptsPage({
   searchParams,
 }: {
-  searchParams?: Promise<{ success?: string; error?: string }>;
+  searchParams?: Promise<{ success?: string; error?: string; tracking?: string }>;
 }) {
   const queryParams = searchParams ? await searchParams : {};
   const supabase = await createClient();
@@ -60,7 +60,8 @@ export default async function ShipperPackageReceiptsPage({
   if (!shipperUser) redirect("/auth/check");
 
   const { data: rpcRows, error: rpcError } = await (supabase as any).rpc("shipper_package_receipt_dashboard_v1");
-  const rows = ((rpcRows ?? []) as PackageRow[]).filter((row) => row.tracking_submission_id);
+  const allRows = ((rpcRows ?? []) as PackageRow[]).filter((row) => row.tracking_submission_id);
+  const rows = queryParams.tracking ? allRows.filter((row) => row.tracking_submission_id === queryParams.tracking) : allRows;
   const shipper = Array.isArray((shipperUser as any).shippers) ? (shipperUser as any).shippers[0] : (shipperUser as any).shippers;
 
   return (
@@ -117,8 +118,12 @@ export default async function ShipperPackageReceiptsPage({
                         </select>
                       </label>
                       <label className="space-y-1 text-sm">
-                        <span className="text-xs uppercase tracking-wide text-slate-500">Evidence URL</span>
-                        <input name="evidence_url" className="w-full rounded-xl border border-slate-300 px-3 py-2" placeholder="Optional photo/evidence link" />
+                        <span className="text-xs uppercase tracking-wide text-slate-500">Receipt evidence file</span>
+                        <input name="receipt_evidence_file" type="file" accept=".pdf,image/*,.png,.jpg,.jpeg,.webp" className="w-full rounded-xl border border-slate-300 px-3 py-2" />
+                      </label>
+                      <label className="space-y-1 text-sm md:col-span-2">
+                        <span className="text-xs uppercase tracking-wide text-slate-500">Optional evidence URL fallback</span>
+                        <input name="evidence_url" className="w-full rounded-xl border border-slate-300 px-3 py-2" placeholder="Use only if no file is uploaded" />
                       </label>
                       <label className="space-y-1 text-sm md:col-span-2">
                         <span className="text-xs uppercase tracking-wide text-slate-500">Note</span>
