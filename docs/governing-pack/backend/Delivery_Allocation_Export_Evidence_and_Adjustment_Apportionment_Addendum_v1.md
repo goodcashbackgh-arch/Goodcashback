@@ -2,7 +2,7 @@
 
 **Project:** Multi Tenant Platform Build  
 **Status:** Governing backend/control addendum  
-**Purpose:** Lock the agreed delivery-allocation, package/shipment, COS/BOL/export evidence, adjustment-apportionment and fast-invoicing control model so implementation does not invent parallel flows or over-gate customer invoicing.
+**Purpose:** Lock the agreed delivery-allocation, package/shipment, master-shipment, COS/BOL/export evidence, adjustment-apportionment and fast-invoicing control model so implementation does not invent parallel flows, expose values to the wrong role, or over-gate customer invoicing.
 
 ---
 
@@ -35,7 +35,7 @@ Export evidence clearance and whole-order closure remain later controlled stages
 
 ```text
 Operator/supervisor owns item-to-tracking allocation.
-Shipper owns package-to-shipment confirmation.
+Shipper owns package receipt and package-to-shipment confirmation.
 Supervisor owns final export evidence review.
 ```
 
@@ -43,8 +43,9 @@ Plain-English interpretation:
 
 - Tracking ref = package / parcel handle.
 - Operator or supervisor allocates progressed supplier invoice/OCR lines to tracking refs/packages.
-- Shipper confirms package receipt and selects received packages/tracking refs into shipment batches.
+- Shipper confirms package receipt and selects received packages/tracking refs into importer shipment batches.
 - Supervisor reviews the joined item/package/shipment truth before draft COS/export evidence is generated.
+- Master shipment / BOL / container / final COS / POD evidence is a later export-evidence layer, not the initial package-batch layer.
 
 This keeps shipper workload low while preserving item/package/shipment traceability for export evidence and HMRC audit support.
 
@@ -62,6 +63,8 @@ Do not:
 6. Alter original supplier invoice/OCR lines merely to support package allocation.
 7. Use gross/unadjusted invoice-line value for COS/export evidence where retailer discounts or retailer delivery charges exist.
 8. Allow export evidence completion where selected package contents are unknown unless supervisor has accepted a controlled basis.
+9. Put final COS, BOL, master BOL, container evidence, or POD upload onto the ordinary shipper shipment batch header page.
+10. Expose supplier values, customer values, VAT values, margin, Sage coding, or adjusted net values to the shipper package workflow unless a later controlled role matrix explicitly permits it.
 
 ---
 
@@ -93,7 +96,8 @@ progressed supplier invoice/OCR line
 → quantity/value allocation
 → tracking ref/package
 → shipper package receipt
-→ shipment batch
+→ importer shipment batch
+→ master shipment / export evidence review
 → COS/BOL/export evidence pack
 ```
 
@@ -280,7 +284,7 @@ The allocation basis and any override must be stored and locked once approved.
 
 ---
 
-## 11. Shipper receipt and shipment batch flow
+## 11. Shipper receipt and importer shipment batch flow
 
 ### 11.1 Shipper package receipt
 
@@ -301,13 +305,15 @@ parcel received, contents not counted
 
 For appliances or bulky/high-risk goods, stronger unit/model/condition confirmation may be required.
 
-### 11.2 Shipper shipment batch
+### 11.2 Importer shipment batch
 
 Shipper bulk-selects received packages/tracking refs, grouped by importer/order.
 
 Shipper does not select invoice lines.
 
-Shipment batch fields conceptually include:
+The importer shipment batch is the package-level statement that certain received packages left the shipper’s UK lane under a booking/cutoff.
+
+Importer shipment batch fields conceptually include:
 
 - importer;
 - shipper;
@@ -316,28 +322,89 @@ Shipment batch fields conceptually include:
 - dispatch date;
 - selected tracking refs/packages;
 - box/carton count;
-- container/BOL ref if known;
 - exclusions with reason;
-- final COS/BOL/POD evidence links later.
+- package/shipment notes.
 
-The system derives the related item lines/quantities/values from the delivery allocation layer.
+Importer shipment batch must not be treated as final export evidence.
+
+Do not put the following on the ordinary importer shipment batch header as final evidence fields:
+
+- final COS upload;
+- BOL upload;
+- master BOL upload;
+- final container evidence;
+- POD upload;
+- zero-rating clearance decision;
+- Sage/VAT posting release decision.
+
+If the shipper has early operational hints such as a provisional container/loading note, they may only be captured later as clearly marked provisional notes or on the master-shipment/export-evidence lane. They must not be used as final export evidence until supervisor review accepts them.
+
+The system derives the related item descriptions, quantities, and values from the delivery allocation layer. The shipper’s batch action remains package-level only.
+
+### 11.3 Shipper-visible package contents preview
+
+Shippers should be able to see what is expected inside a package at a practical operations level, but they must not see values.
+
+Allowed shipper-visible contents:
+
+- item description;
+- allocated quantity;
+- order ref;
+- retailer;
+- tracking ref/package;
+- allocation status, e.g. allocated / partial / unknown / needs operator evidence.
+
+Not allowed in shipper package views:
+
+- supplier cost;
+- customer sales value;
+- VAT value;
+- adjusted net allocation value;
+- margin;
+- Sage code;
+- DVA/card funding or payment data.
+
+The shipper contents preview must be read-only.
+
+Recommended UI placement:
+
+1. `/shipper` package worklist — link or expandable row next to each tracking ref: `View contents`.
+2. `/shipper/package-receipts` — link or expandable row next to each package before receipt action.
+3. `/shipper/shipments/new` — link or expandable row next to each eligible package before selection.
+4. `/shipper/shipments/[shipment_batch_id]` — link or expandable row in selected packages table.
+
+If the operator/supervisor has not allocated contents yet, the shipper should see:
+
+```text
+Contents not allocated yet — package can be received, but export evidence/COS review will require operator/supervisor allocation.
+```
+
+This supports practical receiving and shipping without forcing the shipper to count every item.
 
 ---
 
 ## 12. Master shipment and importer shipment batches
 
-When one container/BOL contains multiple importers, use two levels:
+When one container/BOL contains multiple importers, use two levels.
 
-### Master shipment
+### 12.1 Master shipment
+
+Master shipment represents the shared export movement.
+
+Master shipment owns:
 
 - container ref;
 - master BOL;
 - shipper;
 - route;
-- dispatch date;
-- final shipment evidence.
+- dispatch/export movement date;
+- vessel/flight/vehicle details where relevant;
+- final shipment/export evidence;
+- links to one or more importer shipment batches.
 
-### Importer shipment batch
+### 12.2 Importer shipment batch
+
+Importer shipment batch owns:
 
 - importer;
 - selected packages/tracking refs;
@@ -347,6 +414,20 @@ When one container/BOL contains multiple importers, use two levels:
 - importer-specific manifest / COS support pack.
 
 This prevents mixed customer evidence and supports one BOL/container across multiple importer batches.
+
+### 12.3 Bulk master shipment creation
+
+A later master shipment page should allow staff/supervisor, and possibly shipper where role matrices permit, to bulk group importer shipment batches that share the same export movement.
+
+The grouping criteria may include:
+
+- same shipper;
+- same dispatch/export date;
+- same container/loading reference;
+- same route;
+- same master BOL.
+
+This is where container ref, master BOL, final export movement documents, and shared shipment evidence belong — not on the initial importer shipment batch form.
 
 ---
 
@@ -382,6 +463,7 @@ Supervisor checks before draft COS generation:
 6. Unknown contents are resolved or supervisor-accepted with reason.
 7. Draft COS only shows goods actually in that shipment batch.
 8. Full sales invoices are not blindly attached as if wholly exported where only partial invoice lines shipped.
+9. The correct importer shipment batch or batches are linked to the correct master shipment where one container/BOL covers multiple importers.
 
 ---
 
@@ -394,7 +476,9 @@ Discount/delivery apportionment and item-to-tracking allocation should lock when
 - Sage payload is queued;
 - export evidence allocation is marked complete.
 
-After lock, changes must use reversal, correction, supplementary invoice, credit note, or controlled adjustment. Do not silently edit historical allocation truth.
+Importer shipment batch header details may be corrected while the batch is still a package-level operational batch and before export-evidence review begins.
+
+Once export-evidence review, COS generation, final evidence upload, Sage queueing, or VAT/export lock exists, changes must use supervisor-controlled correction, reversal, supplementary evidence, or adjustment. Do not silently edit historical allocation truth.
 
 ---
 
@@ -480,23 +564,56 @@ Shows:
 - warnings;
 - draft COS/export manifest preview.
 
+`/internal/export-evidence/master-shipments` or equivalent
+
+Shows:
+
+- importer shipment batches ready for master shipment grouping;
+- shared dispatch/container/BOL movement;
+- final COS/BOL/POD evidence upload/review;
+- supervisor export evidence clearance controls.
+
 ### Shipper
 
 `/shipper`
 
-Shows expected/received/outstanding packages by importer/order.
+Shows expected/received/outstanding packages by importer/order. Each tracking ref/package should have a read-only `View contents` detail showing description and quantity only where allocation exists.
 
-`/shipper/receipt/[tracking_submission_id]`
+`/shipper/package-receipts`
 
-Package receipt form.
+Package receipt action page. Each package should allow receipt action and read-only contents preview. Receipt actions do not lock item allocation, COS, Sage or VAT.
 
 `/shipper/shipments/new`
 
-Bulk shipment creation by importer/cutoff using received packages/tracking refs.
+Bulk importer shipment batch creation by importer/cutoff using received packages/tracking refs.
+
+Must show:
+
+- package/tracking refs;
+- order ref;
+- retailer;
+- read-only contents preview: description and quantity only;
+- no values;
+- no COS/BOL/POD upload;
+- no final container evidence.
 
 `/shipper/shipments/[shipment_batch_id]`
 
-Final COS/BOL/POD/evidence upload.
+Importer shipment batch detail.
+
+Must show:
+
+- booking ref;
+- cutoff/dispatch facts;
+- box/carton count;
+- notes;
+- selected packages/tracking refs;
+- read-only contents preview: description and quantity only;
+- tracking evidence links.
+
+May allow header correction while status is still `created` and export-evidence review has not started.
+
+Must not be used for final COS/BOL/POD upload. Final evidence belongs to the master-shipment/export-evidence lane.
 
 ---
 
@@ -538,6 +655,10 @@ Unknown package may move operationally but export evidence clearance blocks unti
 
 Goods invoice released first. Shipper invoice arrives later. Shipping is apportioned and supplementary shipping/export adjustment can be created if needed.
 
+### J. Shipper contents preview without values
+
+Shipper can see package item description and quantity but cannot see supplier/customer values, VAT, margin, Sage coding, or DVA/payment data.
+
 ---
 
 ## 19. Implementation sequencing
@@ -548,18 +669,19 @@ Efficient build sequence:
 2. Delivery allocation data model and read model.
 3. Operator/supervisor delivery allocation workspace.
 4. Shipper package receipt and received-package queue.
-5. Shipper shipment batch creation using received tracking refs.
-6. Export evidence draft review and allocation guardrails.
-7. Final COS/BOL/POD upload and export evidence status.
-8. Shipping invoice/cost apportionment and supplementary adjustment path.
-9. Status-control/VAT readiness integration.
+5. Shipper importer shipment batch creation using received tracking refs.
+6. Shipper contents preview: description and quantity only, no values.
+7. Export evidence draft review and allocation guardrails.
+8. Master shipment grouping and final COS/BOL/POD upload/review.
+9. Shipping invoice/cost apportionment and supplementary adjustment path.
+10. Status-control/VAT readiness integration.
 
-Do not jump to final COS/POD screens before allocation and receipt truth exist.
+Do not jump to final COS/POD screens before allocation, receipt truth, shipment batch truth and supervisor review controls exist.
 
 ---
 
 ## 20. Final locked sentence
 
 ```text
-Tracking ref is the package. Operator/supervisor allocates progressed invoice lines and adjusted net allocation values to packages. Shipper bulk-selects received packages into shipment batches. Supervisor reviews the joined item/package/shipment truth before draft COS. Goods invoicing remains progressive and is not held behind final COS/BOL/POD; export evidence clearance and final closure are held behind those documents.
+Tracking ref is the package. Operator/supervisor allocates progressed invoice lines and adjusted net allocation values to packages. Shipper may view package contents as description and quantity only, then bulk-selects received packages into importer shipment batches. Master shipment/BOL/container/final COS/POD evidence is a later export-evidence layer, not the shipment batch header. Supervisor reviews the joined item/package/shipment truth before draft COS. Goods invoicing remains progressive and is not held behind final COS/BOL/POD; export evidence clearance and final closure are held behind those documents.
 ```
