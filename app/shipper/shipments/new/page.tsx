@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 import { createShipmentBatchAction } from "../actions";
+import { PackageContentsPreview } from "../../PackageContentsPreview";
 
 type CandidateRow = {
   importer_id: string;
@@ -18,10 +19,6 @@ type CandidateRow = {
   latest_receipt_status: string | null;
   latest_receipt_recorded_at: string | null;
 };
-
-function gbp(value: unknown) {
-  return new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" }).format(Number(value ?? 0));
-}
 
 function groupByImporter(rows: CandidateRow[]) {
   const groups = new Map<string, CandidateRow[]>();
@@ -70,7 +67,7 @@ export default async function NewShipperShipmentPage({
           <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">Create shipment batch</h1>
           <p className="mt-2 text-sm text-slate-600">{shipperUser.full_name} · {shipper?.name ?? "Shipper"}</p>
           <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-600">
-            Select received-clean packages for one importer and group them under a booking ref. This creates package/shipment truth only. It does not generate COS/BOL, post to Sage, clear VAT, or lock item-content allocation.
+            Select received-clean packages for one importer and group them under a booking ref. This creates package/shipment truth only. It does not create COS/BOL/POD, post to Sage, clear VAT, or lock item-content allocation.
           </p>
           {queryParams.success ? <p className="mt-4 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">{queryParams.success}</p> : null}
           {queryParams.error ? <p className="mt-4 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-900">{queryParams.error}</p> : null}
@@ -82,7 +79,7 @@ export default async function NewShipperShipmentPage({
             <div>
               <h2 className="text-xl font-semibold">Eligible received packages</h2>
               <p className="mt-2 text-sm leading-6 text-slate-600">
-                Only latest received-clean packages not already in an active shipment batch are shown.
+                Only latest received-clean packages not already in an active shipment batch are shown. Contents preview shows description and quantity only — no values.
               </p>
             </div>
             <form action="/shipper/shipments/new" className="flex flex-wrap items-end gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
@@ -125,17 +122,9 @@ export default async function NewShipperShipmentPage({
                     <span className="text-xs uppercase tracking-wide text-slate-500">Box/carton count</span>
                     <input name="box_count" type="number" min="0" step="1" className="w-full rounded-xl border border-slate-300 px-3 py-2" />
                   </label>
-                  <label className="space-y-1 text-sm">
-                    <span className="text-xs uppercase tracking-wide text-slate-500">Container ref</span>
-                    <input name="container_ref" className="w-full rounded-xl border border-slate-300 px-3 py-2" placeholder="Optional" />
-                  </label>
-                  <label className="space-y-1 text-sm">
-                    <span className="text-xs uppercase tracking-wide text-slate-500">BOL ref</span>
-                    <input name="bol_ref" className="w-full rounded-xl border border-slate-300 px-3 py-2" placeholder="Optional" />
-                  </label>
-                  <label className="space-y-1 text-sm md:col-span-3">
+                  <label className="space-y-1 text-sm md:col-span-2">
                     <span className="text-xs uppercase tracking-wide text-slate-500">Notes</span>
-                    <textarea name="notes" rows={2} className="w-full rounded-xl border border-slate-300 px-3 py-2" placeholder="Optional shipment/package notes" />
+                    <input name="notes" className="w-full rounded-xl border border-slate-300 px-3 py-2" placeholder="Optional package/shipment note" />
                   </label>
                 </div>
               </div>
@@ -150,7 +139,7 @@ export default async function NewShipperShipmentPage({
                       <th className="px-3 py-2 text-left">Tracking/package</th>
                       <th className="px-3 py-2 text-left">Date</th>
                       <th className="px-3 py-2 text-right">Allocated qty</th>
-                      <th className="px-3 py-2 text-right">Allocated net</th>
+                      <th className="px-3 py-2 text-left">Contents</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
@@ -164,7 +153,7 @@ export default async function NewShipperShipmentPage({
                         <td className="px-3 py-2">{row.courier_name ?? "Courier"} · {row.tracking_ref}</td>
                         <td className="px-3 py-2">{row.tracking_date ?? "—"}</td>
                         <td className="px-3 py-2 text-right">{Number(row.allocated_qty ?? 0)}</td>
-                        <td className="px-3 py-2 text-right font-semibold">{gbp(row.allocated_net_value_gbp)}</td>
+                        <td className="px-3 py-2"><PackageContentsPreview trackingSubmissionId={row.tracking_submission_id} compact /></td>
                       </tr>
                     ))}
                   </tbody>
