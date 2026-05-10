@@ -23,12 +23,6 @@ function formatTotalQty(value: number) {
   return value % 1 === 0 ? String(Math.trunc(value)) : value.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
 }
 
-function firstItemLabel(rows: PackageContentsRow[]) {
-  const first = rows[0]?.item_description?.trim();
-  if (!first) return "Contents allocated";
-  return first.length > 42 ? `${first.slice(0, 39)}…` : first;
-}
-
 export async function PackageContentsPreview({
   trackingSubmissionId,
   compact = false,
@@ -51,7 +45,7 @@ export async function PackageContentsPreview({
     return (
       <Link href={href} className={compact ? "block rounded-xl border border-amber-200 bg-amber-50 p-2 text-xs hover:bg-amber-100" : "block rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm hover:bg-amber-100"}>
         <span className="font-semibold text-amber-950">View contents</span>
-        <span className="mt-1 block text-amber-900">Preview unavailable</span>
+        <span className="mt-1 block text-amber-900">Unavailable</span>
       </Link>
     );
   }
@@ -60,7 +54,7 @@ export async function PackageContentsPreview({
     return (
       <Link href={href} className={compact ? "block rounded-xl border border-amber-200 bg-amber-50 p-2 text-xs hover:bg-amber-100" : "block rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm hover:bg-amber-100"}>
         <span className="font-semibold text-amber-950">View contents</span>
-        <span className="mt-1 block text-amber-900">Not allocated yet</span>
+        <span className="mt-1 block text-amber-900">Not allocated</span>
       </Link>
     );
   }
@@ -71,7 +65,6 @@ export async function PackageContentsPreview({
       <span className="mt-1 block text-slate-700">
         {rows.length} item{rows.length === 1 ? "" : "s"} · {formatTotalQty(totalQty)} unit{totalQty === 1 ? "" : "s"}
       </span>
-      <span className="mt-1 block text-slate-500">{firstItemLabel(rows)}{rows.length > 1 ? ` +${rows.length - 1} more` : ""}</span>
     </Link>
   );
 }
