@@ -119,13 +119,12 @@ async function calculateAllocationValues(params: {
   const { data: existingAllocations, error: existingError } = await db
     .from("order_tracking_line_allocations")
     .select("qty_allocated")
-    .eq("supplier_invoice_line_id", params.lineId)
-    .is("locked_for_export_pack_at", null);
+    .eq("supplier_invoice_line_id", params.lineId);
 
   if (existingError) return { ok: false as const, error: existingError.message };
   const alreadyAllocatedQty = (existingAllocations ?? []).reduce((sum: number, row: any) => sum + Number(row.qty_allocated ?? 0), 0);
   if (alreadyAllocatedQty + params.qtyAllocated > lineQty + 0.0001) {
-    return { ok: false as const, error: "Allocation would exceed the progressed line quantity. Clear or reduce existing allocations first." };
+    return { ok: false as const, error: "Allocation would exceed the progressed line quantity. Clear unlocked allocations or review locked export allocations first." };
   }
 
   const { data: invoiceLines, error: invoiceLinesError } = await db
@@ -163,6 +162,15 @@ async function calculateAllocationValues(params: {
   };
 }
 
+function deriveAllocationStatus(params: { mode: "operator" | "staff"; contentState: string }) {
+  if (params.contentState === "unknown_contents") return "unknown_contents";
+  if (params.contentState === "needs_operator_evidence") return "needs_operator_evidence";
+  if (params.mode === "staff" && params.contentState === "supervisor_accepted_estimate") {
+    return "supervisor_accepted_estimate";
+  }
+  return "allocated";
+}
+
 export async function saveDeliveryAllocationAction(formData: FormData) {
   const supabase = await createClient();
   const mode = readString(formData, "mode") === "staff" ? "staff" : "operator";
@@ -173,15 +181,15 @@ export async function saveDeliveryAllocationAction(formData: FormData) {
   const allocationBasis = readString(formData, "allocation_basis") || "operator_declaration";
   const evidenceUrl = readString(formData, "evidence_url") || null;
   const notes = readString(formData, "notes") || null;
-  const statusInput = readString(formData, "allocation_status");
-  const allocationStatus = statusInput || "allocated";
+  const contentState = readString(formData, "content_state") || "confirmed";
+  const allocationStatus = deriveAllocationStatus({ mode, contentState });
 
   if (!orderId || !lineId) redirect("/importer");
   if (qtyAllocated === null || qtyAllocated <= 0) redirectBack(mode, orderId, { error: "Allocated quantity must be greater than zero." });
 
   const trackingSubmissionId = trackingSubmissionIdRaw || null;
   if (!["unknown_contents", "needs_operator_evidence"].includes(allocationStatus) && !trackingSubmissionId) {
-    redirectBack(mode, orderId, { error: "Select a tracking ref/package, or mark the allocation as unknown/needs evidence." });
+    redirectBack(mode, orderId, { error: "Select a tracking ref/package, or mark the contents as unknown/needs evidence." });
   }
 
   const actor = await requireActor({ supabase, mode, orderId });
@@ -232,7 +240,7 @@ export async function saveDeliveryAllocationAction(formData: FormData) {
   revalidatePath(`/internal/delivery-allocation/${orderId}`);
   revalidatePath(`/importer/reconciliation/${orderId}`);
   revalidatePath(`/internal/reconciliation/${orderId}`);
-  redirectBack(mode, orderId, { success: "Delivery allocation saved." });
+  redirectBack(mode, orderId, { success: "Package allocation saved. Remaining quantity stays open until fully allocated." });
 }
 
 export async function clearDeliveryAllocationForLineAction(formData: FormData) {
@@ -257,5 +265,5 @@ export async function clearDeliveryAllocationForLineAction(formData: FormData) {
 
   revalidatePath(`/importer/delivery-allocation/${orderId}`);
   revalidatePath(`/internal/delivery-allocation/${orderId}`);
-  redirectBack(mode, orderId, { success: "Unlocked allocations cleared for this line." });
+  redirectBack(mode, orderId, { success: "Unlocked package allocations cleared for this line." });
 }
