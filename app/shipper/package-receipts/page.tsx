@@ -59,7 +59,7 @@ export default async function ShipperPackageReceiptsPage({
 
   if (!shipperUser) redirect("/auth/check");
 
-  const { data: rpcRows, error: rpcError } = await (supabase as any).rpc("shipper_package_dashboard_v1");
+  const { data: rpcRows, error: rpcError } = await (supabase as any).rpc("shipper_package_receipt_dashboard_v1");
   const rows = ((rpcRows ?? []) as PackageRow[]).filter((row) => row.tracking_submission_id);
   const shipper = Array.isArray((shipperUser as any).shippers) ? (shipperUser as any).shippers[0] : (shipperUser as any).shippers;
 
