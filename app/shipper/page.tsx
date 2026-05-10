@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
+import { PackageContentsPreview } from "./PackageContentsPreview";
 
 type PackageRow = {
   shipper_user_id: string;
@@ -27,10 +28,6 @@ type PackageRow = {
   latest_receipt_evidence_url?: string | null;
   latest_receipt_recorded_at?: string | null;
 };
-
-function gbp(value: unknown) {
-  return new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" }).format(Number(value ?? 0));
-}
 
 function formatDate(value: string | null | undefined) {
   if (!value) return "—";
@@ -174,7 +171,7 @@ export default async function ShipperPage({
             Welcome: <span className="font-semibold text-slate-900">{shipperUser.full_name}</span> · {shipperName}
           </p>
           <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-600">
-            This dashboard is scoped to your shipper account. Work by importer and package row: review tracking evidence, record receipt, and keep package-level truth separate from item-content allocation.
+            This dashboard is scoped to your shipper account. Work by importer and package row: review tracking evidence, view contents by description/quantity only, record receipt, and keep package-level truth separate from item-content allocation.
           </p>
           <div className="mt-5 flex flex-wrap gap-3">
             <Link href="/shipper/shipments" className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">
@@ -285,7 +282,7 @@ export default async function ShipperPage({
                           <th className="px-3 py-2 text-left">Tracking/package</th>
                           <th className="px-3 py-2 text-left">Date</th>
                           <th className="px-3 py-2 text-right">Allocated qty</th>
-                          <th className="px-3 py-2 text-right">Allocated net</th>
+                          <th className="px-3 py-2 text-left">Contents</th>
                           <th className="px-3 py-2 text-left">Allocation</th>
                           <th className="px-3 py-2 text-left">Receipt</th>
                           <th className="px-3 py-2 text-left">Evidence</th>
@@ -310,7 +307,7 @@ export default async function ShipperPage({
                             </td>
                             <td className="px-3 py-2">{formatDate(row.tracking_date ?? row.submitted_at)}</td>
                             <td className="px-3 py-2 text-right">{Number(row.allocated_qty ?? 0)}</td>
-                            <td className="px-3 py-2 text-right font-semibold">{gbp(row.allocated_net_value_gbp)}</td>
+                            <td className="px-3 py-2">{row.tracking_submission_id ? <PackageContentsPreview trackingSubmissionId={row.tracking_submission_id} compact /> : "—"}</td>
                             <td className="px-3 py-2">
                               <span className={`rounded-full px-2 py-1 text-xs font-semibold ${allocationStatusClass(row)}`}>{allocationStatusLabel(row)}</span>
                             </td>
