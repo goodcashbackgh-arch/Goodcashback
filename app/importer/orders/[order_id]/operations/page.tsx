@@ -3,7 +3,16 @@ import { createClient } from "@/utils/supabase/server";
 import { addTrackingSubmissionAction, flagSupplierInvoiceForReviewAction, submitInvoiceEvidenceAction } from "./actions";
 
 type ScreenshotRow = { id: string; screenshot_url: string };
-type TrackingRow = { id: string; tracking_ref: string; is_final_delivery_yn: boolean | null; couriers: { name: string } | null; tracking_screenshot_url?: string | null };
+type TrackingRow = {
+  id: string;
+  tracking_ref: string;
+  tracking_date: string | null;
+  submitted_at: string | null;
+  note: string | null;
+  is_final_delivery_yn: boolean | null;
+  couriers: { name: string } | null;
+  tracking_screenshot_url?: string | null;
+};
 type InvoiceRow = { id: string; invoice_ref: string; review_status: string | null; review_notes: string | null; uploaded_at: string | null };
 type InvoiceLineTotalRow = { supplier_invoice_id: string; qty: number; amount_inc_vat_gbp: number };
 type InvoiceSummaryRow = { supplier_invoice_id: string; invoice_total_gbp: number };
@@ -25,6 +34,11 @@ function localAmount(value: number | string | null | undefined, currencyCode?: s
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(n)}`;
+}
+
+function formatDate(value: string | null | undefined) {
+  if (!value) return "—";
+  return value.includes("T") ? value.slice(0, 10) : value;
 }
 
 function adjustmentLabel(type: string) {
@@ -96,7 +110,8 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
   ]);
 
   if (!order) return <main className="p-6">Order not found.</main>;
-  const finalTrackingExists = ((tracking ?? []) as TrackingRow[]).some((t) => t.is_final_delivery_yn);
+  const trackingRows = (tracking ?? []) as TrackingRow[];
+  const finalTrackingExists = trackingRows.some((t) => t.is_final_delivery_yn);
   const currencyCode = order.importers?.countries?.currencies?.code ?? null;
   const orderRetailerName = order.retailers?.name ?? "—";
   const adjustmentRows = (adjustments ?? []) as AdjustmentRow[];
@@ -223,7 +238,7 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
       </div>
     </section>
 
-    <section id="tracking" className="space-y-2 rounded border p-4">
+    <section id="tracking" className="space-y-3 rounded border p-4">
       <h2 className="font-semibold">Tracking</h2>
       {finalTrackingExists ? <p className="text-sm text-amber-700">Final delivery has already been marked. Add more tracking only if this was done in error.</p> : null}
       <form action={addTrackingSubmissionAction} className="grid gap-2 md:grid-cols-2">
@@ -241,14 +256,31 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
         <p className="text-xs text-slate-500 md:col-span-2">Upload the dispatch/tracking document where possible. The URL field is only a fallback.</p>
         <button className="bg-sky-600 text-white px-4 py-2 rounded w-fit">Add tracking</button>
       </form>
-      <ul className="space-y-1 text-sm">
-        {((tracking??[]) as TrackingRow[]).map(t=> (
-          <li key={t.id} className="rounded bg-slate-50 p-2">
-            {t.couriers?.name ?? "Courier"} — {t.tracking_ref} {t.is_final_delivery_yn ? "(Final delivery)" : ""}
-            {t.tracking_screenshot_url ? <a href={t.tracking_screenshot_url} target="_blank" rel="noreferrer" className="ml-2 text-sky-700 underline">Open evidence</a> : null}
-          </li>
-        ))}
-      </ul>
+      {trackingRows.length === 0 ? (
+        <p className="rounded bg-slate-50 p-3 text-sm text-slate-600">No tracking submitted yet.</p>
+      ) : (
+        <div className="space-y-2 text-sm">
+          {trackingRows.map(t=> (
+            <article key={t.id} className="rounded border border-slate-200 bg-slate-50 p-3">
+              <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                <div>
+                  <p className="font-semibold">{t.couriers?.name ?? "Courier"} — {t.tracking_ref}</p>
+                  <div className="mt-1 grid gap-1 text-xs text-slate-600 md:grid-cols-3">
+                    <p><span className="font-medium text-slate-700">Tracking date:</span> {formatDate(t.tracking_date)}</p>
+                    <p><span className="font-medium text-slate-700">Submitted:</span> {formatDate(t.submitted_at)}</p>
+                    <p><span className="font-medium text-slate-700">Final delivery:</span> {t.is_final_delivery_yn ? "Yes" : "No"}</p>
+                  </div>
+                  {t.note ? <p className="mt-2 rounded bg-white p-2 text-xs text-slate-700"><span className="font-medium">Note:</span> {t.note}</p> : null}
+                </div>
+                <div className="flex shrink-0 flex-col gap-2 text-right">
+                  {t.tracking_screenshot_url ? <a href={t.tracking_screenshot_url} target="_blank" rel="noreferrer" className="font-semibold text-sky-700 underline">Open evidence</a> : <span className="text-xs text-slate-500">No evidence attached</span>}
+                  {t.is_final_delivery_yn ? <span className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-semibold text-emerald-800">Final delivery</span> : null}
+                </div>
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
     </section>
 
     <section id="invoice" className="space-y-2 rounded border p-4">
