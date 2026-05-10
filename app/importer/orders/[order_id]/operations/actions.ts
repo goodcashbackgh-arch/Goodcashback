@@ -22,6 +22,14 @@ function automaticOcrEnabled() {
   return process.env.MINDEE_AUTO_RUN_ON_UPLOAD === "true";
 }
 
+function normalizeExternalUrl(raw: string | null) {
+  const value = (raw ?? "").trim();
+  if (!value) return null;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(value)) return value;
+  if (value.startsWith("//")) return `https:${value}`;
+  return `https://${value}`;
+}
+
 async function requireOperatorAccess(supabase: Awaited<ReturnType<typeof createClient>>, orderId: string) {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
@@ -107,7 +115,7 @@ export async function addTrackingSubmissionAction(formData: FormData) {
   const courierId = rs(formData, "courier_id");
   const trackingRef = rs(formData, "tracking_ref");
   const trackingDate = rs(formData, "tracking_date");
-  const trackingEvidenceUrlInput = rs(formData, "tracking_screenshot_url") || null;
+  const trackingEvidenceUrlInput = normalizeExternalUrl(rs(formData, "tracking_screenshot_url") || null);
   const trackingEvidenceFile = formData.get("tracking_evidence_file");
   const note = rs(formData, "note") || null;
   const isFinalDelivery = rs(formData, "is_final_delivery_yn") === "on";
