@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
-import DeliveryAllocationWorkspace from "@/app/delivery-allocation/DeliveryAllocationWorkspace";
-import { loadDeliveryAllocationData } from "@/app/delivery-allocation/data";
+import DeliveryAllocationWorkspace from "../../../delivery-allocation/DeliveryAllocationWorkspace";
+import { loadDeliveryAllocationData } from "../../../delivery-allocation/data";
 
 export default async function ImporterDeliveryAllocationPage({
   params,
