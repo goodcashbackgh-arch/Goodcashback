@@ -81,6 +81,7 @@ export default function DeliveryAllocationWorkspace({
             <span className="rounded-full bg-emerald-100 px-3 py-1 text-emerald-800">Original invoice lines stay intact</span>
             <span className="rounded-full bg-slate-100 px-3 py-1 text-slate-700">Partial/full derived by quantity</span>
             <span className="rounded-full bg-slate-100 px-3 py-1 text-slate-700">No operator value apportionment</span>
+            <span className="rounded-full bg-slate-100 px-3 py-1 text-slate-700">Editable until downstream lock</span>
             {mode === "staff" ? <span className="rounded-full bg-purple-100 px-3 py-1 text-purple-800">Supervisor takeover / review</span> : null}
           </div>
           {success ? <p className="mt-4 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">{success}</p> : null}
@@ -184,7 +185,15 @@ export default function DeliveryAllocationWorkspace({
                 const lineAllocatedQty = sumAllocatedQty(lineAllocations);
                 const remainingQty = Math.max(0, originalQty - lineAllocatedQty);
                 const complete = remainingQty <= 0.0001;
-                const nextAction = complete ? "No remaining quantity" : lineAllocatedQty > 0 ? "Continue allocating remaining qty" : "Allocate this line to a package";
+                const hasDownstreamLock = lineAllocations.some((allocation) => Boolean(allocation.locked_for_export_pack_at));
+                const canRework = lineAllocations.length > 0 && !hasDownstreamLock;
+                const nextAction = hasDownstreamLock
+                  ? "Downstream locked"
+                  : complete
+                    ? "Fully allocated — still editable until lock"
+                    : lineAllocatedQty > 0
+                      ? "Continue allocating remaining qty"
+                      : "Allocate this line to a package";
 
                 return (
                   <article key={line.id} className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
@@ -193,8 +202,8 @@ export default function DeliveryAllocationWorkspace({
                         <p className="text-sm font-semibold text-slate-900">Line {line.line_order}: {line.description}</p>
                         <p className="mt-1 text-sm text-slate-600">Original line value {gbp(line.amount_inc_vat_gbp)}</p>
                       </div>
-                      <span className={`w-fit rounded-full px-3 py-1 text-xs font-semibold ${complete ? "bg-emerald-100 text-emerald-800" : lineAllocatedQty > 0 ? "bg-amber-100 text-amber-800" : "bg-slate-100 text-slate-700"}`}>
-                        {complete ? "Fully allocated" : nextAction}
+                      <span className={`w-fit rounded-full px-3 py-1 text-xs font-semibold ${hasDownstreamLock ? "bg-slate-200 text-slate-800" : complete ? "bg-emerald-100 text-emerald-800" : lineAllocatedQty > 0 ? "bg-amber-100 text-amber-800" : "bg-slate-100 text-slate-700"}`}>
+                        {nextAction}
                       </span>
                     </div>
 
@@ -244,8 +253,8 @@ export default function DeliveryAllocationWorkspace({
                       </div>
                     ) : null}
 
-                    {!complete ? (
-                      <div className="mt-4 grid gap-4 lg:grid-cols-[2fr_1fr]">
+                    <div className="mt-4 grid gap-4 lg:grid-cols-[2fr_1fr]">
+                      {!complete && !hasDownstreamLock ? (
                         <form action={saveDeliveryAllocationAction} className="rounded-2xl border border-slate-200 bg-white p-4">
                           <input type="hidden" name="mode" value={mode} />
                           <input type="hidden" name="order_id" value={data.order.id} />
@@ -301,25 +310,31 @@ export default function DeliveryAllocationWorkspace({
                             <span className="rounded-xl bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-800">Default qty = remaining qty</span>
                           </div>
                         </form>
+                      ) : hasDownstreamLock ? (
+                        <div className="rounded-2xl border border-slate-300 bg-slate-100 p-4 text-sm text-slate-800">
+                          This line has a downstream export/accounting lock. Corrections must use a controlled reversal, amendment, supplementary invoice, credit note, or supervisor/admin correction route.
+                        </div>
+                      ) : (
+                        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
+                          This line is fully allocated. It can still be reworked until sales invoice release, export pack generation, Sage queue, or final evidence lock.
+                        </div>
+                      )}
 
+                      {canRework ? (
                         <form action={clearDeliveryAllocationForLineAction} className="rounded-2xl border border-rose-200 bg-rose-50 p-4">
                           <input type="hidden" name="mode" value={mode} />
                           <input type="hidden" name="order_id" value={data.order.id} />
                           <input type="hidden" name="supplier_invoice_line_id" value={line.id} />
-                          <p className="text-sm font-semibold text-rose-900">Start this line again</p>
+                          <p className="text-sm font-semibold text-rose-900">Rework this line</p>
                           <p className="mt-2 text-sm leading-6 text-rose-800">
-                            Clears unlocked package allocations for this line. Locked export-pack allocations are not touched.
+                            Clears unlocked package allocations for this line. Shipper receipt, package selection, or quote does not lock contents. Export/accounting locks are not touched.
                           </p>
                           <button type="submit" className="mt-3 rounded-xl border border-rose-300 bg-white px-4 py-2 text-sm font-semibold text-rose-800 hover:bg-rose-100">
                             Clear unlocked allocations
                           </button>
                         </form>
-                      </div>
-                    ) : (
-                      <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
-                        This line is fully allocated. Clear unlocked allocations if you need to rework it before export-pack lock.
-                      </div>
-                    )}
+                      ) : null}
+                    </div>
                   </article>
                 );
               })}
