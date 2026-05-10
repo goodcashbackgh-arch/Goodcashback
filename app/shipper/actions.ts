@@ -11,6 +11,13 @@ function readString(formData: FormData, key: string) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function readNullableNumber(formData: FormData, key: string) {
+  const value = readString(formData, key);
+  if (!value) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function safeExt(fileName: string) {
   const ext = fileName.includes(".") ? fileName.split(".").pop() : "bin";
   return (ext ?? "bin").toLowerCase().replace(/[^a-z0-9]/g, "") || "bin";
@@ -28,6 +35,25 @@ async function uploadReceiptEvidence(params: {
 
   if (error) {
     throw new Error(`Receipt evidence upload failed. Ensure bucket '${EVIDENCE_BUCKET}' exists and is writable. ${error.message}`);
+  }
+
+  const { data } = params.supabase.storage.from(EVIDENCE_BUCKET).getPublicUrl(objectPath);
+  return data.publicUrl || objectPath;
+}
+
+async function uploadShippingDocument(params: {
+  supabase: Awaited<ReturnType<typeof createClient>>;
+  shipmentBatchId: string;
+  documentKind: string;
+  file: File;
+}) {
+  const objectPath = `shipper-shipping-documents/${params.shipmentBatchId}/${params.documentKind}/${Date.now()}.${safeExt(params.file.name)}`;
+  const { error } = await params.supabase.storage
+    .from(EVIDENCE_BUCKET)
+    .upload(objectPath, params.file, { upsert: false });
+
+  if (error) {
+    throw new Error(`Shipping document upload failed. Ensure bucket '${EVIDENCE_BUCKET}' exists and is writable. ${error.message}`);
   }
 
   const { data } = params.supabase.storage.from(EVIDENCE_BUCKET).getPublicUrl(objectPath);
@@ -77,4 +103,78 @@ export async function recordPackageReceiptAction(formData: FormData) {
   revalidatePath("/shipper");
   revalidatePath("/shipper/package-receipts");
   redirect("/shipper?success=Package%20receipt%20recorded.");
+}
+
+export async function submitShippingDocumentAction(formData: FormData) {
+  const supabase = await createClient();
+  const shipmentBatchId = readString(formData, "shipment_batch_id");
+  const documentKind = readString(formData, "document_kind");
+  const documentRef = readString(formData, "document_ref");
+  const documentDate = readString(formData, "document_date") || null;
+  const currencyCode = readString(formData, "currency_code") || "GBP";
+  const totalAmount = readNullableNumber(formData, "total_amount");
+  const notes = readString(formData, "notes") || null;
+  const file = formData.get("shipping_document_file");
+
+  if (!shipmentBatchId) redirect("/shipper/shipping-documents/new?error=Choose%20a%20shipment%20batch.");
+  if (!["shipper_invoice", "shipper_receipt", "supporting_charge_document"].includes(documentKind)) {
+    redirect("/shipper/shipping-documents/new?error=Choose%20a%20valid%20document%20type.");
+  }
+  if (!(file instanceof File) || file.size === 0) {
+    redirect(`/shipper/shipping-documents/new?batch=${encodeURIComponent(shipmentBatchId)}&error=Upload%20the%20shipping%20document%20file.`);
+  }
+
+  let fileUrl: string;
+  try {
+    fileUrl = await uploadShippingDocument({
+      supabase,
+      shipmentBatchId,
+      documentKind,
+      file,
+    });
+  } catch (error) {
+    redirect(`/shipper/shipping-documents/new?batch=${encodeURIComponent(shipmentBatchId)}&error=${encodeURIComponent(error instanceof Error ? error.message : "Shipping document upload failed")}`);
+  }
+
+  const { error } = await (supabase as any).rpc("shipper_submit_shipping_document_v1", {
+    p_shipment_batch_id: shipmentBatchId,
+    p_document_kind: documentKind,
+    p_document_ref: documentRef || null,
+    p_document_date: documentDate,
+    p_currency_code: currencyCode,
+    p_total_amount: totalAmount,
+    p_file_url: fileUrl,
+    p_notes: notes,
+  });
+
+  if (error) {
+    redirect(`/shipper/shipping-documents/new?batch=${encodeURIComponent(shipmentBatchId)}&error=${encodeURIComponent(error.message)}`);
+  }
+
+  revalidatePath("/shipper");
+  revalidatePath("/shipper/shipping-documents/new");
+  revalidatePath("/internal/shipping-control");
+  redirect(`/shipper/shipping-documents/new?batch=${encodeURIComponent(shipmentBatchId)}&success=${encodeURIComponent("Shipping document uploaded")}`);
+}
+
+export async function requestShippingDocumentResubmissionAction(formData: FormData) {
+  const supabase = await createClient();
+  const shippingDocumentId = readString(formData, "shipping_document_id");
+  const message = readString(formData, "message");
+
+  if (!shippingDocumentId) redirect("/shipper/shipping-documents/new?error=Missing%20shipping%20document.");
+  if (!message) redirect("/shipper/shipping-documents/new?error=Enter%20a%20resubmission%20message.");
+
+  const { error } = await (supabase as any).rpc("shipper_request_shipping_document_resubmission_v1", {
+    p_shipping_document_id: shippingDocumentId,
+    p_message: message,
+  });
+
+  if (error) {
+    redirect(`/shipper/shipping-documents/new?error=${encodeURIComponent(error.message)}`);
+  }
+
+  revalidatePath("/shipper/shipping-documents/new");
+  revalidatePath("/internal/shipping-control");
+  redirect(`/shipper/shipping-documents/new?success=${encodeURIComponent("Resubmission request sent")}`);
 }
