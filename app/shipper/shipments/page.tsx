@@ -18,13 +18,22 @@ type BatchRow = {
   shipper_shipment_batch_packages?: { id: string; tracking_submission_id: string; order_id: string; active: boolean }[] | null;
 };
 
+type PackageDashboardRow = {
+  importer_id: string | null;
+  importer_name: string | null;
+  order_id: string;
+  order_ref: string | null;
+  retailer_name: string | null;
+  tracking_submission_id: string | null;
+};
+
 function formatDate(value: string | null | undefined) {
   if (!value) return "—";
   return value.includes("T") ? value.slice(0, 10) : value;
 }
 
-function importerName(batch: BatchRow) {
-  return batch.importers?.trading_name || batch.importers?.company_name || batch.importer_id;
+function importerName(batch: BatchRow, importerNameById: Map<string, string>) {
+  return importerNameById.get(batch.importer_id) || batch.importers?.trading_name || batch.importers?.company_name || batch.importer_id;
 }
 
 export default async function ShipperShipmentsPage() {
@@ -41,11 +50,20 @@ export default async function ShipperShipmentsPage() {
 
   if (!shipperUser) redirect("/auth/check");
 
-  const { data: batches, error } = await supabase
-    .from("shipper_shipment_batches")
-    .select("id, booking_ref, importer_id, shipper_id, shipment_cutoff_at, dispatched_at, box_count, container_ref, bol_ref, status, created_at, importers(company_name, trading_name), shipper_shipment_batch_packages(id, tracking_submission_id, order_id, active)")
-    .eq("shipper_id", (shipperUser as any).shipper_id)
-    .order("created_at", { ascending: false });
+  const [{ data: batches, error }, { data: packageDashboardRows }] = await Promise.all([
+    supabase
+      .from("shipper_shipment_batches")
+      .select("id, booking_ref, importer_id, shipper_id, shipment_cutoff_at, dispatched_at, box_count, container_ref, bol_ref, status, created_at, importers(company_name, trading_name), shipper_shipment_batch_packages(id, tracking_submission_id, order_id, active)")
+      .eq("shipper_id", (shipperUser as any).shipper_id)
+      .order("created_at", { ascending: false }),
+    (supabase as any).rpc("shipper_package_receipt_dashboard_v1"),
+  ]);
+
+  const nameRows = (packageDashboardRows ?? []) as PackageDashboardRow[];
+  const importerNameById = new Map<string, string>();
+  for (const row of nameRows) {
+    if (row.importer_id && row.importer_name) importerNameById.set(row.importer_id, row.importer_name);
+  }
 
   const rows = ((batches ?? []) as unknown as BatchRow[]).filter((batch) => batch.status !== "voided");
   const shipper = Array.isArray((shipperUser as any).shippers) ? (shipperUser as any).shippers[0] : (shipperUser as any).shippers;
@@ -102,7 +120,7 @@ export default async function ShipperShipmentsPage() {
                   {rows.map((batch) => (
                     <tr key={batch.id}>
                       <td className="px-3 py-2 font-semibold">{batch.booking_ref ?? batch.id}</td>
-                      <td className="px-3 py-2">{importerName(batch)}</td>
+                      <td className="px-3 py-2">{importerName(batch, importerNameById)}</td>
                       <td className="px-3 py-2">{formatDate(batch.created_at)}</td>
                       <td className="px-3 py-2">{formatDate(batch.dispatched_at)}</td>
                       <td className="px-3 py-2 text-right">{batch.shipper_shipment_batch_packages?.filter((p) => p.active).length ?? 0}</td>
