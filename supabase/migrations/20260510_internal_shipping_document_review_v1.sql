@@ -333,7 +333,6 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.internal_review_shipping_document_v1(uuid,text,text,date,text,numeric) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.internal_review_shipping_document_v1(uuid,text,text,text,date,text,numeric) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.internal_review_shipping_document_v1(uuid,text,text,text,date,text,numeric) TO authenticated;
 
