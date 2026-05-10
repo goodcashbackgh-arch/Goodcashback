@@ -3,7 +3,7 @@ import { createClient } from "@/utils/supabase/server";
 import { addTrackingSubmissionAction, flagSupplierInvoiceForReviewAction, submitInvoiceEvidenceAction } from "./actions";
 
 type ScreenshotRow = { id: string; screenshot_url: string };
-type TrackingRow = { id: string; tracking_ref: string; is_final_delivery_yn: boolean | null; couriers: { name: string } | null };
+type TrackingRow = { id: string; tracking_ref: string; is_final_delivery_yn: boolean | null; couriers: { name: string } | null; tracking_screenshot_url?: string | null };
 type InvoiceRow = { id: string; invoice_ref: string; review_status: string | null; review_notes: string | null; uploaded_at: string | null };
 type InvoiceLineTotalRow = { supplier_invoice_id: string; qty: number; amount_inc_vat_gbp: number };
 type InvoiceSummaryRow = { supplier_invoice_id: string; invoice_total_gbp: number };
@@ -234,14 +234,19 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
         </select>
         <input name="tracking_ref" required className="border p-2" placeholder="Tracking ref"/>
         <input name="tracking_date" type="date" required className="border p-2"/>
-        <input name="tracking_screenshot_url" className="border p-2" placeholder="Tracking URL / evidence link"/>
+        <input name="tracking_evidence_file" type="file" accept=".pdf,image/*,.png,.jpg,.jpeg,.webp" className="border p-2" />
+        <input name="tracking_screenshot_url" className="border p-2" placeholder="Optional tracking evidence URL if no file"/>
         <input name="note" className="border p-2" placeholder="Note"/>
         <label className="text-sm flex items-center gap-2"><input type="checkbox" name="is_final_delivery_yn"/>This completes delivery for this order</label>
+        <p className="text-xs text-slate-500 md:col-span-2">Upload the dispatch/tracking document where possible. The URL field is only a fallback.</p>
         <button className="bg-sky-600 text-white px-4 py-2 rounded w-fit">Add tracking</button>
       </form>
       <ul className="space-y-1 text-sm">
         {((tracking??[]) as TrackingRow[]).map(t=> (
-          <li key={t.id} className="rounded bg-slate-50 p-2">{t.couriers?.name ?? "Courier"} — {t.tracking_ref} {t.is_final_delivery_yn ? "(Final delivery)" : ""}</li>
+          <li key={t.id} className="rounded bg-slate-50 p-2">
+            {t.couriers?.name ?? "Courier"} — {t.tracking_ref} {t.is_final_delivery_yn ? "(Final delivery)" : ""}
+            {t.tracking_screenshot_url ? <a href={t.tracking_screenshot_url} target="_blank" rel="noreferrer" className="ml-2 text-sky-700 underline">Open evidence</a> : null}
+          </li>
         ))}
       </ul>
     </section>
