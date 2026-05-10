@@ -28,8 +28,6 @@ export async function createShipmentBatchAction(formData: FormData) {
   const shipmentCutoffAt = readString(formData, "shipment_cutoff_at") || null;
   const dispatchedAt = readString(formData, "dispatched_at") || null;
   const boxCount = readOptionalNumber(formData, "box_count");
-  const containerRef = readString(formData, "container_ref") || null;
-  const bolRef = readString(formData, "bol_ref") || null;
   const notes = readString(formData, "notes") || null;
   const selected = formData.getAll("tracking_submission_ids").filter((value): value is string => typeof value === "string" && value.trim().length > 0);
 
@@ -44,8 +42,8 @@ export async function createShipmentBatchAction(formData: FormData) {
     p_shipment_cutoff_at: shipmentCutoffAt,
     p_dispatched_at: dispatchedAt,
     p_box_count: boxCount,
-    p_container_ref: containerRef,
-    p_bol_ref: bolRef,
+    p_container_ref: null,
+    p_bol_ref: null,
     p_notes: notes,
   });
 
@@ -66,8 +64,6 @@ export async function updateShipmentBatchHeaderAction(formData: FormData) {
   const shipmentCutoffAt = readNullableDateTime(formData, "shipment_cutoff_at");
   const dispatchedAt = readNullableDateTime(formData, "dispatched_at");
   const boxCount = readOptionalNumber(formData, "box_count");
-  const containerRef = readString(formData, "container_ref") || null;
-  const bolRef = readString(formData, "bol_ref") || null;
   const notes = readString(formData, "notes") || null;
 
   if (!shipmentBatchId) redirect("/shipper/shipments?error=Missing%20shipment%20batch%20id.");
@@ -79,8 +75,6 @@ export async function updateShipmentBatchHeaderAction(formData: FormData) {
     p_shipment_cutoff_at: shipmentCutoffAt,
     p_dispatched_at: dispatchedAt,
     p_box_count: boxCount,
-    p_container_ref: containerRef,
-    p_bol_ref: bolRef,
     p_notes: notes,
   });
 
