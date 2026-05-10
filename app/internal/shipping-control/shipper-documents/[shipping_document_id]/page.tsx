@@ -144,24 +144,28 @@ export default async function ShippingDocumentReviewDetailPage({ params, searchP
                 <p className="mt-2 text-sm leading-6 text-slate-600">Use OCR/manual extracted fields for document control only. Shipping apportionment and Sage posting happen later.</p>
                 <form action={reviewShippingDocumentAction} className="mt-4 grid gap-3 md:grid-cols-2">
                   <input type="hidden" name="shipping_document_id" value={doc.shipping_document_id} />
-                  <label className="space-y-1 text-sm md:col-span-2"><span className="text-xs uppercase tracking-wide text-slate-500">Decision</span>
-                    <select name="decision" required className="w-full rounded-xl border border-slate-300 px-3 py-2" disabled={isAccepted}>
-                      <option value="mark_ocr_queued">Mark OCR queued</option>
-                      <option value="mark_ocr_not_applicable">OCR not applicable / manual review</option>
-                      <option value="accept_current">Accept current document</option>
-                      <option value="reject_resubmit_required">Reject and request resubmission</option>
-                    </select>
-                  </label>
+
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm md:col-span-2">
+                    <p className="font-semibold text-slate-950">Decision guide</p>
+                    <p className="mt-1 text-slate-600"><strong>Queue OCR</strong> means extraction/review is still pending. <strong>Accept current document</strong> means this document is confirmed as the shipment money source and replacement is locked.</p>
+                  </div>
+
                   <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-slate-500">Extracted ref</span><input name="extracted_document_ref" defaultValue={doc.extracted_document_ref ?? doc.document_ref ?? ""} className="w-full rounded-xl border border-slate-300 px-3 py-2" disabled={isAccepted} /></label>
                   <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-slate-500">Extracted date</span><input name="extracted_document_date" type="date" defaultValue={doc.extracted_document_date ?? doc.document_date ?? ""} className="w-full rounded-xl border border-slate-300 px-3 py-2" disabled={isAccepted} /></label>
                   <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-slate-500">Currency</span><input name="extracted_currency_code" defaultValue={doc.extracted_currency_code ?? doc.currency_code ?? "GBP"} maxLength={3} className="w-full rounded-xl border border-slate-300 px-3 py-2 uppercase" disabled={isAccepted} /></label>
                   <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-slate-500">Extracted total</span><input name="extracted_total_amount" type="number" step="0.01" min="0" defaultValue={String(doc.extracted_total_amount ?? doc.total_amount ?? "")} className="w-full rounded-xl border border-slate-300 px-3 py-2" disabled={isAccepted} /></label>
                   <label className="space-y-1 text-sm md:col-span-2"><span className="text-xs uppercase tracking-wide text-slate-500">Review note</span><textarea name="review_note" rows={3} defaultValue={doc.review_note ?? ""} className="w-full rounded-xl border border-slate-300 px-3 py-2" placeholder="Required if rejecting/resubmission is needed" disabled={isAccepted} /></label>
+
                   <div className="md:col-span-2">
                     {isAccepted ? (
                       <p className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-900">Accepted and locked. Shipper can no longer silently replace this document.</p>
                     ) : (
-                      <button type="submit" className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">Save review decision</button>
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        <button type="submit" name="decision" value="mark_ocr_queued" className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">Queue OCR</button>
+                        <button type="submit" name="decision" value="mark_ocr_not_applicable" className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">Manual review / no OCR</button>
+                        <button type="submit" name="decision" value="accept_current" className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-800">Accept current document</button>
+                        <button type="submit" name="decision" value="reject_resubmit_required" className="rounded-xl bg-rose-700 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-800">Reject / request resubmission</button>
+                      </div>
                     )}
                   </div>
                 </form>
