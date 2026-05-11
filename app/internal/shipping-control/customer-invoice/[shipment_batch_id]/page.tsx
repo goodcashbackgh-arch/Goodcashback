@@ -102,7 +102,7 @@ export default async function ShippingCustomerInvoiceReadinessPage({ params }: {
             <div>
               <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Customer invoice readiness preview</h1>
               <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
-                Read-only preview of the customer-side document that shipping recharge should feed next. It prepares the basis for either main sales invoice release or supplementary shipping invoice. It does not create or post an invoice.
+                Read-only preview of the customer-side document that shipping recharge should feed next. The customer payload is bundled; the adjusted goods/shipping split is shown only as a sanity check. It does not create or post an invoice.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700"><div className="font-medium text-slate-950">{staff.full_name}</div><div>{staff.role_type}</div></div>
@@ -131,13 +131,13 @@ export default async function ShippingCustomerInvoiceReadinessPage({ params }: {
             ) : null}
 
             <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-              <h2 className="text-xl font-semibold">Draft document summary</h2>
-              <p className="mt-2 text-sm leading-6 text-slate-600">This is the customer-side invoice basis that the later release/posting lane should prepare.</p>
+              <h2 className="text-xl font-semibold">Draft customer document summary</h2>
+              <p className="mt-2 text-sm leading-6 text-slate-600">This is the customer-facing invoice basis. The invoice payload uses the bundled charge; the split below is retained only for review evidence.</p>
               <div className="mt-4 grid gap-3 md:grid-cols-4">
                 <div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Invoice type</p><p className="mt-1 text-lg font-semibold">{invoiceTypeLabel(first.proposed_invoice_type)}</p></div>
-                <div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Goods amount</p><p className="mt-1 text-lg font-semibold">{money(first.proposed_goods_amount_gbp)}</p></div>
-                <div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Shipping amount</p><p className="mt-1 text-lg font-semibold">{money(first.proposed_shipping_amount_gbp)}</p></div>
-                <div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Invoice total</p><p className="mt-1 text-lg font-semibold">{money(first.proposed_amount_gbp)}</p></div>
+                <div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Sanity: adjusted goods</p><p className="mt-1 text-lg font-semibold">{money(first.proposed_goods_amount_gbp)}</p></div>
+                <div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Sanity: apportioned shipping</p><p className="mt-1 text-lg font-semibold">{money(first.proposed_shipping_amount_gbp)}</p></div>
+                <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4"><p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Bundled customer charge</p><p className="mt-1 text-lg font-semibold">{money(first.proposed_amount_gbp)}</p></div>
               </div>
               <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
                 <p><span className="font-semibold">Route:</span> {friendly(first.customer_recharge_route)}</p>
@@ -147,7 +147,7 @@ export default async function ShippingCustomerInvoiceReadinessPage({ params }: {
 
             <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
               <h2 className="text-xl font-semibold">Line-level customer invoice preview</h2>
-              <p className="mt-2 text-sm leading-6 text-slate-600">Goods amount is zero for supplementary shipping invoices. Main invoice previews include adjusted goods plus allocated shipping.</p>
+              <p className="mt-2 text-sm leading-6 text-slate-600">The split is displayed for sanity checking only. The eventual customer invoice line is the bundled customer charge.</p>
 
               <div className="mt-4 grid gap-3 md:hidden">
                 {rows.map((row, index) => (
@@ -161,11 +161,11 @@ export default async function ShippingCustomerInvoiceReadinessPage({ params }: {
                       <span className={`shrink-0 rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.readiness_status)}`}>{friendly(row.readiness_status)}</span>
                     </div>
                     <p className="mt-3 text-sm text-slate-700">{row.item_description ?? "—"}</p>
-                    <div className="mt-4 grid grid-cols-4 gap-2 text-sm">
+                    <div className="mt-4 grid grid-cols-2 gap-2 text-sm">
                       <div className="rounded-xl bg-white p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Qty</p><p className="mt-1 font-semibold">{qty(row.qty_allocated)}</p></div>
-                      <div className="rounded-xl bg-white p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Goods</p><p className="mt-1 font-semibold">{money(row.goods_amount_gbp)}</p></div>
-                      <div className="rounded-xl bg-white p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Ship</p><p className="mt-1 font-semibold">{money(row.shipping_amount_gbp)}</p></div>
-                      <div className="rounded-xl bg-white p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Total</p><p className="mt-1 font-semibold">{money(row.total_line_amount_gbp)}</p></div>
+                      <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3"><p className="text-xs uppercase tracking-wide text-emerald-700">Bundled charge</p><p className="mt-1 font-semibold">{money(row.total_line_amount_gbp)}</p></div>
+                      <div className="rounded-xl bg-white p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Sanity goods</p><p className="mt-1 font-semibold">{money(row.goods_amount_gbp)}</p></div>
+                      <div className="rounded-xl bg-white p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Sanity shipping</p><p className="mt-1 font-semibold">{money(row.shipping_amount_gbp)}</p></div>
                     </div>
                   </article>
                 ))}
@@ -178,9 +178,9 @@ export default async function ShippingCustomerInvoiceReadinessPage({ params }: {
                       <th className="px-3 py-2 text-left">Order / package</th>
                       <th className="px-3 py-2 text-left">Item</th>
                       <th className="px-3 py-2 text-right">Qty</th>
-                      <th className="px-3 py-2 text-right">Goods</th>
-                      <th className="px-3 py-2 text-right">Shipping</th>
-                      <th className="px-3 py-2 text-right">Total</th>
+                      <th className="px-3 py-2 text-right">Sanity goods</th>
+                      <th className="px-3 py-2 text-right">Sanity shipping</th>
+                      <th className="px-3 py-2 text-right">Bundled charge</th>
                       <th className="px-3 py-2 text-left">Status</th>
                     </tr>
                   </thead>
@@ -202,8 +202,8 @@ export default async function ShippingCustomerInvoiceReadinessPage({ params }: {
             </section>
 
             <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-              <h2 className="text-xl font-semibold">Line items JSON preview</h2>
-              <p className="mt-2 text-sm leading-6 text-slate-600">Read-only preview of the eventual sales_invoices.line_items_json shape.</p>
+              <h2 className="text-xl font-semibold">Bundled payload JSON preview</h2>
+              <p className="mt-2 text-sm leading-6 text-slate-600">Read-only preview of the eventual sales_invoices.line_items_json shape. The split is deliberately excluded from this payload.</p>
               <pre className="mt-4 max-h-96 overflow-auto rounded-2xl bg-slate-950 p-4 text-xs leading-5 text-slate-100">{JSON.stringify(first.line_items_json ?? [], null, 2)}</pre>
             </section>
 
