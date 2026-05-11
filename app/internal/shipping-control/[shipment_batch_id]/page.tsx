@@ -158,7 +158,7 @@ export default async function InternalShippingBatchDetailPage({
 
             <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
               <h2 className="text-xl font-semibold">Selected packages</h2>
-              <p className="mt-2 text-sm text-slate-600">Package-level movement truth only. Use the contents page for full description/qty list. Values remain hidden here.</p>
+              <p className="mt-2 text-sm text-slate-600">Package-level movement truth only. Use Review delivery allocation to inspect or correct order/item allocation before shipping fee apportionment.</p>
               {packageRows.length === 0 ? (
                 <p className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">No active packages linked to this batch.</p>
               ) : (
@@ -174,7 +174,7 @@ export default async function InternalShippingBatchDetailPage({
                         <th className="px-3 py-2 text-left">Allocation</th>
                         <th className="px-3 py-2 text-left">Receipt</th>
                         <th className="px-3 py-2 text-left">Evidence</th>
-                        <th className="px-3 py-2 text-left">Contents</th>
+                        <th className="px-3 py-2 text-left">Actions</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 bg-white">
@@ -201,11 +201,18 @@ export default async function InternalShippingBatchDetailPage({
                               </div>
                             </td>
                             <td className="px-3 py-2">
-                              {row.tracking_submission_id ? (
-                                <Link href={`/internal/shipping-control/package-contents/${row.tracking_submission_id}`} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50">
-                                  View contents
-                                </Link>
-                              ) : "—"}
+                              <div className="flex flex-col gap-2">
+                                {row.order_id ? (
+                                  <Link href={`/internal/delivery-allocation/${row.order_id}`} className="rounded-xl bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-800">
+                                    Review delivery allocation
+                                  </Link>
+                                ) : null}
+                                {row.tracking_submission_id ? (
+                                  <Link href={`/internal/shipping-control/package-contents/${row.tracking_submission_id}`} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50">
+                                    View contents
+                                  </Link>
+                                ) : null}
+                              </div>
                             </td>
                           </tr>
                         );
