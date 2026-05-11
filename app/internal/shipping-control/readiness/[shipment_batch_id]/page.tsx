@@ -137,6 +137,7 @@ export default async function ShippingReadinessPreviewPage({ params }: { params:
             <Link href="/internal/shipping-control">← Shipping control</Link>
             {first?.shipping_document_id ? <Link href={`/internal/shipping-control/shipper-documents/${first.shipping_document_id}`}>Review shipper document</Link> : null}
             {first?.shipping_document_id ? <Link href={`/internal/shipping-control/apportionment/${first.shipping_document_id}`}>Review apportionment</Link> : null}
+            <Link href={`/internal/shipping-control/customer-invoice/${shipmentBatchId}`}>Customer invoice preview</Link>
           </div>
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Goodcashback Internal</p>
           <div className="mt-2 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
@@ -184,6 +185,7 @@ export default async function ShippingReadinessPreviewPage({ params }: { params:
                   <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Customer recharge</p>
                   <p className="mt-1 text-lg font-semibold">{routeLabel(primaryCustomerRoute)}</p>
                   <p className="mt-1 text-sm text-slate-600">{money(totalShippingAllocated, currency)} shipping recharge on {money(totalAdjustedGoods, "GBP")} adjusted goods basis</p>
+                  <Link href={`/internal/shipping-control/customer-invoice/${shipmentBatchId}`} className="mt-3 inline-block rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">Open customer invoice preview</Link>
                 </div>
               </div>
             </section>
