@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
-import { reviewShippingDocumentAction } from "../actions";
+import { reviewShippingDocumentAction, reviewShippingDocumentResubmissionRequestAction } from "../actions";
 
 type DetailRow = {
   shipping_document_id: string;
@@ -31,6 +31,14 @@ type DetailRow = {
   item_qty: number | string | null;
 };
 
+type ResubmissionRequestRow = {
+  message_id: string;
+  message_body: string | null;
+  created_at: string | null;
+  shipper_user_name: string | null;
+  status: string | null;
+};
+
 function n(value: number | string | null | undefined) {
   const parsed = Number(value ?? 0);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -53,7 +61,7 @@ function friendly(value: string | null | undefined) {
 
 function statusClass(status: string | null | undefined) {
   if (!status || ["uploaded_pending_ocr", "ocr_pending", "needs_supervisor_review", "not_started"].includes(status)) return "bg-amber-100 text-amber-800";
-  if (["accepted_current"].includes(status)) return "bg-emerald-100 text-emerald-800";
+  if (["accepted_current", "resubmission_approved"].includes(status)) return "bg-emerald-100 text-emerald-800";
   if (["rejected_resubmit_required"].includes(status)) return "bg-rose-100 text-rose-800";
   return "bg-slate-100 text-slate-700";
 }
@@ -88,8 +96,21 @@ export default async function ShippingDocumentReviewDetailPage({ params, searchP
   });
   const rows = (data ?? []) as DetailRow[];
   const doc = rows[0] ?? null;
+
+  let resubmissionRequests: ResubmissionRequestRow[] = [];
+  let resubmissionError: string | null = null;
+  if (doc) {
+    const { data: requestData, error: requestError } = await (supabase as any).rpc("internal_shipping_document_resubmission_requests_v1", {
+      p_shipping_document_id: shippingDocumentId,
+    });
+    resubmissionRequests = (requestData ?? []) as ResubmissionRequestRow[];
+    resubmissionError = requestError?.message ?? null;
+  }
+
   const fileUrl = normalizeLink(doc?.file_url);
   const isAccepted = doc?.review_status === "accepted_current";
+  const replacementApproved = doc?.review_status === "resubmission_approved";
+  const hasOpenResubmissionRequest = resubmissionRequests.length > 0;
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-6 text-slate-950 sm:px-6 sm:py-8">
@@ -110,6 +131,7 @@ export default async function ShippingDocumentReviewDetailPage({ params, searchP
           {qp.success ? <p className="mt-4 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">{qp.success}</p> : null}
           {qp.error ? <p className="mt-4 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-900">{qp.error}</p> : null}
           {error ? <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">{error.message}</p> : null}
+          {resubmissionError ? <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">Resubmission request view unavailable: {resubmissionError}. Run the latest migration before testing unlock approval.</p> : null}
           {!doc && !error ? <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">Shipping document not found.</p> : null}
         </section>
 
@@ -150,14 +172,16 @@ export default async function ShippingDocumentReviewDetailPage({ params, searchP
                     <p className="mt-1 text-slate-600"><strong>Queue OCR</strong> means extraction/review is still pending. <strong>Accept current document</strong> means this document is confirmed as the shipment money source and replacement is locked.</p>
                   </div>
 
-                  <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-slate-500">Extracted ref</span><input name="extracted_document_ref" defaultValue={doc.extracted_document_ref ?? doc.document_ref ?? ""} className="w-full rounded-xl border border-slate-300 px-3 py-2" disabled={isAccepted} /></label>
-                  <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-slate-500">Extracted date</span><input name="extracted_document_date" type="date" defaultValue={doc.extracted_document_date ?? doc.document_date ?? ""} className="w-full rounded-xl border border-slate-300 px-3 py-2" disabled={isAccepted} /></label>
-                  <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-slate-500">Currency</span><input name="extracted_currency_code" defaultValue={doc.extracted_currency_code ?? doc.currency_code ?? "GBP"} maxLength={3} className="w-full rounded-xl border border-slate-300 px-3 py-2 uppercase" disabled={isAccepted} /></label>
-                  <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-slate-500">Extracted total</span><input name="extracted_total_amount" type="number" step="0.01" min="0" defaultValue={String(doc.extracted_total_amount ?? doc.total_amount ?? "")} className="w-full rounded-xl border border-slate-300 px-3 py-2" disabled={isAccepted} /></label>
-                  <label className="space-y-1 text-sm md:col-span-2"><span className="text-xs uppercase tracking-wide text-slate-500">Review note</span><textarea name="review_note" rows={3} defaultValue={doc.review_note ?? ""} className="w-full rounded-xl border border-slate-300 px-3 py-2" placeholder="Required if rejecting/resubmission is needed" disabled={isAccepted} /></label>
+                  <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-slate-500">Extracted ref</span><input name="extracted_document_ref" defaultValue={doc.extracted_document_ref ?? doc.document_ref ?? ""} className="w-full rounded-xl border border-slate-300 px-3 py-2" disabled={isAccepted || replacementApproved} /></label>
+                  <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-slate-500">Extracted date</span><input name="extracted_document_date" type="date" defaultValue={doc.extracted_document_date ?? doc.document_date ?? ""} className="w-full rounded-xl border border-slate-300 px-3 py-2" disabled={isAccepted || replacementApproved} /></label>
+                  <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-slate-500">Currency</span><input name="extracted_currency_code" defaultValue={doc.extracted_currency_code ?? doc.currency_code ?? "GBP"} maxLength={3} className="w-full rounded-xl border border-slate-300 px-3 py-2 uppercase" disabled={isAccepted || replacementApproved} /></label>
+                  <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-slate-500">Extracted total</span><input name="extracted_total_amount" type="number" step="0.01" min="0" defaultValue={String(doc.extracted_total_amount ?? doc.total_amount ?? "")} className="w-full rounded-xl border border-slate-300 px-3 py-2" disabled={isAccepted || replacementApproved} /></label>
+                  <label className="space-y-1 text-sm md:col-span-2"><span className="text-xs uppercase tracking-wide text-slate-500">Review note</span><textarea name="review_note" rows={3} defaultValue={doc.review_note ?? ""} className="w-full rounded-xl border border-slate-300 px-3 py-2" placeholder="Required if rejecting/resubmission is needed" disabled={isAccepted || replacementApproved} /></label>
 
                   <div className="md:col-span-2">
-                    {isAccepted ? (
+                    {replacementApproved ? (
+                      <p className="rounded-2xl border border-sky-200 bg-sky-50 p-3 text-sm font-semibold text-sky-900">Replacement upload approved. Shipper can now upload the revised current charge document.</p>
+                    ) : isAccepted ? (
                       <p className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-900">Accepted and locked. Shipper can no longer silently replace this document.</p>
                     ) : (
                       <div className="grid gap-2 sm:grid-cols-2">
@@ -171,6 +195,37 @@ export default async function ShippingDocumentReviewDetailPage({ params, searchP
                 </form>
               </article>
             </section>
+
+            {(hasOpenResubmissionRequest || replacementApproved) ? (
+              <section className={`rounded-3xl border p-5 shadow-sm ${replacementApproved ? "border-sky-200 bg-sky-50" : "border-amber-200 bg-amber-50"}`}>
+                <h2 className="text-xl font-semibold">Replacement / resubmission control</h2>
+                {replacementApproved ? (
+                  <p className="mt-2 text-sm leading-6 text-sky-900">Replacement has been approved. The shipper can now upload a revised charge document. The revised upload will supersede this accepted version and become the only active document for the batch.</p>
+                ) : null}
+                {hasOpenResubmissionRequest ? (
+                  <>
+                    <p className="mt-2 text-sm leading-6 text-amber-900">The shipper has requested permission to replace the accepted charge document. Approving this does not upload the replacement; it only unlocks one controlled replacement upload.</p>
+                    <div className="mt-4 space-y-2">
+                      {resubmissionRequests.map((request) => (
+                        <div key={request.message_id} className="rounded-2xl bg-white p-3 text-sm text-slate-700">
+                          <p className="font-semibold text-slate-950">{request.shipper_user_name ?? "Shipper"} · {shortDate(request.created_at)}</p>
+                          <p className="mt-1">{request.message_body}</p>
+                        </div>
+                      ))}
+                    </div>
+                    <form action={reviewShippingDocumentResubmissionRequestAction} className="mt-4 grid gap-3 md:grid-cols-2">
+                      <input type="hidden" name="shipping_document_id" value={doc.shipping_document_id} />
+                      <label className="space-y-1 text-sm md:col-span-2">
+                        <span className="text-xs uppercase tracking-wide text-slate-500">Supervisor note</span>
+                        <textarea name="resubmission_review_note" rows={3} className="w-full rounded-xl border border-slate-300 px-3 py-2" placeholder="Optional note shown in the audit trail" />
+                      </label>
+                      <button type="submit" name="resubmission_decision" value="approve_replacement" className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-800">Approve replacement upload</button>
+                      <button type="submit" name="resubmission_decision" value="decline_request" className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">Decline request / keep locked</button>
+                    </form>
+                  </>
+                ) : null}
+              </section>
+            ) : null}
 
             <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-900">
               <h2 className="font-semibold">Locked rule</h2>
