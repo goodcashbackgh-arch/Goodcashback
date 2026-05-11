@@ -31,6 +31,20 @@ function money(value: unknown) {
   return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0;
 }
 
+async function refreshInvoiceAdjustmentLedger(params: {
+  supabase: Awaited<ReturnType<typeof createClient>>;
+  supplierInvoiceId: string | null | undefined;
+  mode: "operator" | "staff";
+  orderId: string;
+}) {
+  if (!params.supplierInvoiceId) return { ok: true as const };
+  const { error } = await (params.supabase as any).rpc("recalculate_invoice_adjustment_consumption_v1", {
+    p_supplier_invoice_id: params.supplierInvoiceId,
+  });
+  if (error) return { ok: false as const, error: error.message };
+  return { ok: true as const };
+}
+
 async function getOperatorActor(supabase: Awaited<ReturnType<typeof createClient>>, orderId: string) {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { ok: false as const, error: "Please sign in again." };
@@ -127,38 +141,15 @@ async function calculateAllocationValues(params: {
     return { ok: false as const, error: "Allocation would exceed the progressed line quantity. Clear unlocked allocations or review locked export allocations first." };
   }
 
-  const { data: invoiceLines, error: invoiceLinesError } = await db
-    .from("supplier_invoice_lines")
-    .select("amount_inc_vat_gbp, amount_confirmed")
-    .eq("supplier_invoice_id", line.supplier_invoice_id);
-
-  if (invoiceLinesError) return { ok: false as const, error: invoiceLinesError.message };
-  const invoiceGrossTotal = (invoiceLines ?? []).reduce((sum: number, row: any) => sum + money(row.amount_confirmed ?? row.amount_inc_vat_gbp), 0);
-
-  const { data: adjustments, error: adjustmentsError } = await db
-    .from("order_value_adjustments")
-    .select("adjustment_type, amount_gbp, approval_status")
-    .eq("order_id", params.orderId)
-    .eq("supplier_invoice_id", line.supplier_invoice_id);
-
-  if (adjustmentsError) return { ok: false as const, error: adjustmentsError.message };
-  const approved = (adjustments ?? []).filter((row: any) => ["approved", "auto_approved"].includes(String(row.approval_status ?? "")));
-  const totalDiscount = approved.filter((row: any) => row.adjustment_type === "retailer_discount").reduce((sum: number, row: any) => sum + money(row.amount_gbp), 0);
-  const totalDelivery = approved.filter((row: any) => row.adjustment_type === "retailer_delivery").reduce((sum: number, row: any) => sum + money(row.amount_gbp), 0);
-
   const baseValue = money((lineAmount / lineQty) * params.qtyAllocated);
-  const allocationRatio = invoiceGrossTotal > 0 ? baseValue / invoiceGrossTotal : 0;
-  const discountShare = money(totalDiscount * allocationRatio);
-  const deliveryShare = money(totalDelivery * allocationRatio);
-  const adjustedNet = money(baseValue - discountShare + deliveryShare);
 
   return {
     ok: true as const,
     supplierInvoiceId: line.supplier_invoice_id as string,
     baseValue,
-    discountShare,
-    deliveryShare,
-    adjustedNet,
+    discountShare: 0,
+    deliveryShare: 0,
+    adjustedNet: baseValue,
   };
 }
 
@@ -236,11 +227,19 @@ export async function saveDeliveryAllocationAction(formData: FormData) {
   const { error } = await (supabase as any).from("order_tracking_line_allocations").insert(insertPayload);
   if (error) redirectBack(mode, orderId, { error: error.message });
 
+  const refresh = await refreshInvoiceAdjustmentLedger({
+    supabase,
+    supplierInvoiceId: values.supplierInvoiceId,
+    mode,
+    orderId,
+  });
+  if (!refresh.ok) redirectBack(mode, orderId, { error: refresh.error });
+
   revalidatePath(`/importer/delivery-allocation/${orderId}`);
   revalidatePath(`/internal/delivery-allocation/${orderId}`);
   revalidatePath(`/importer/reconciliation/${orderId}`);
   revalidatePath(`/internal/reconciliation/${orderId}`);
-  redirectBack(mode, orderId, { success: "Package allocation saved. Remaining quantity stays open until fully allocated." });
+  redirectBack(mode, orderId, { success: "Package allocation saved. Invoice adjustment ledger refreshed from locked basis." });
 }
 
 export async function clearDeliveryAllocationForLineAction(formData: FormData) {
@@ -254,6 +253,14 @@ export async function clearDeliveryAllocationForLineAction(formData: FormData) {
   const actor = await requireActor({ supabase, mode, orderId });
   if (!actor.ok) redirectBack(mode, orderId, { error: actor.error });
 
+  const { data: lineBeforeClear, error: lineBeforeClearError } = await (supabase as any)
+    .from("supplier_invoice_lines")
+    .select("supplier_invoice_id")
+    .eq("id", lineId)
+    .maybeSingle();
+
+  if (lineBeforeClearError) redirectBack(mode, orderId, { error: lineBeforeClearError.message });
+
   const { error } = await (supabase as any)
     .from("order_tracking_line_allocations")
     .delete()
@@ -263,7 +270,15 @@ export async function clearDeliveryAllocationForLineAction(formData: FormData) {
 
   if (error) redirectBack(mode, orderId, { error: error.message });
 
+  const refresh = await refreshInvoiceAdjustmentLedger({
+    supabase,
+    supplierInvoiceId: lineBeforeClear?.supplier_invoice_id,
+    mode,
+    orderId,
+  });
+  if (!refresh.ok) redirectBack(mode, orderId, { error: refresh.error });
+
   revalidatePath(`/importer/delivery-allocation/${orderId}`);
   revalidatePath(`/internal/delivery-allocation/${orderId}`);
-  redirectBack(mode, orderId, { success: "Unlocked package allocations cleared for this line." });
+  redirectBack(mode, orderId, { success: "Unlocked package allocations cleared and invoice adjustment ledger refreshed." });
 }
