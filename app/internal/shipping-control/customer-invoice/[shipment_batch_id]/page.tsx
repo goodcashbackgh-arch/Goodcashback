@@ -5,12 +5,8 @@ import { createClient } from "@/utils/supabase/server";
 type Row = {
   shipment_batch_id: string;
   booking_ref: string | null;
-  importer_id: string | null;
   importer_name: string | null;
-  shipper_id: string | null;
-  shipper_name: string | null;
   proposed_invoice_type: string | null;
-  proposed_invoice_status: string | null;
   customer_recharge_route: string | null;
   sales_invoice_state: string | null;
   vat_code: string | null;
@@ -53,14 +49,14 @@ function friendly(value: string | null | undefined) {
 
 function invoiceTypeLabel(value: string | null | undefined) {
   if (value === "main") return "Add to main invoice draft/release";
-  if (value === "supplementary") return "Create supplementary shipping invoice";
+  if (value === "supplementary") return "Create supplementary export sale invoice";
   return friendly(value);
 }
 
 function routeLabel(value: string | null | undefined) {
-  if (value === "include_shipping_in_main_sales_invoice_release") return "Add bundled charge to main invoice draft/release";
-  if (value === "supplementary_shipping_recharge_invoice") return "Create supplementary shipping invoice";
-  if (value === "supplementary_shipping_recharge_invoice_review_required") return "Supplementary invoice review required";
+  if (value === "include_shipping_in_main_sales_invoice_release") return "Add bundled export sale charge to main invoice draft/release";
+  if (value === "supplementary_shipping_recharge_invoice") return "Create supplementary export sale invoice";
+  if (value === "supplementary_shipping_recharge_invoice_review_required") return "Supplementary export sale invoice review required";
   return friendly(value);
 }
 
@@ -117,14 +113,14 @@ export default async function ShippingCustomerInvoiceReadinessPage({ params }: {
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
           <div className="flex flex-wrap gap-3 text-sm font-semibold text-sky-700">
             <Link href="/internal/shipping-control">← Shipping control</Link>
-            <Link href={`/internal/shipping-control/readiness/${shipmentBatchId}`}>AP / recharge preview</Link>
+            <Link href={`/internal/shipping-control/readiness/${shipmentBatchId}`}>AP / sale preview</Link>
           </div>
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Goodcashback Internal</p>
           <div className="mt-2 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
             <div>
               <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Customer invoice readiness preview</h1>
               <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
-                Read-only preview of what the later customer invoice creation lane should prepare. It does not mean a Sage invoice has already been posted. The customer payload is bundled; the adjusted goods/shipping split is shown only as a sanity check.
+                Read-only preview of what the later customer invoice creation lane should prepare. It does not mean a Sage invoice has already been posted. The customer payload is an export sale charge; the adjusted goods/shipping split is shown only as a sanity check.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700"><div className="font-medium text-slate-950">{staff.full_name}</div><div>{staff.role_type}</div></div>
@@ -169,7 +165,7 @@ export default async function ShippingCustomerInvoiceReadinessPage({ params }: {
 
             <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
               <h2 className="text-xl font-semibold">Line-level customer invoice preview</h2>
-              <p className="mt-2 text-sm leading-6 text-slate-600">The split is displayed for sanity checking only. The eventual customer invoice line is the bundled customer charge.</p>
+              <p className="mt-2 text-sm leading-6 text-slate-600">The split is displayed for sanity checking only. The eventual customer invoice line is the bundled export sale charge.</p>
 
               <div className="mt-4 grid gap-3 md:hidden">
                 {rows.map((row, index) => (
@@ -198,7 +194,7 @@ export default async function ShippingCustomerInvoiceReadinessPage({ params }: {
                   <thead className="bg-slate-100 text-xs uppercase tracking-wide text-slate-500">
                     <tr>
                       <th className="px-3 py-2 text-left">Order / package</th>
-                      <th className="px-3 py-2 text-left">Item</th>
+                      <th className="px-3 py-2 text-left">Description</th>
                       <th className="px-3 py-2 text-right">Qty</th>
                       <th className="px-3 py-2 text-right">Sanity goods</th>
                       <th className="px-3 py-2 text-right">Sanity shipping</th>
