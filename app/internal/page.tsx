@@ -58,15 +58,15 @@ const shippingFlowSteps: FlowStep[] = [
   },
   {
     step: "3",
-    title: "Apportionment next",
-    href: "/internal/shipping-control",
-    description: "Next build lane: accepted charge document → shipping cost apportionment preview and Sage/AP readiness.",
+    title: "Customer invoice release queue",
+    href: "/internal/shipping-control/customer-invoice-release",
+    description: "Create controlled customer sales invoice drafts from stable shipment/customer invoice intents.",
   },
   {
     step: "4",
-    title: "Export evidence later",
-    href: "/internal/shipping-control",
-    description: "COS/BOL/POD/container evidence stays separate from shipper charge document review.",
+    title: "Ready for Sage queue",
+    href: "/internal/sage-ready",
+    description: "One filtered queue for customer sales drafts and shipper/AP purchase invoice intents before Sage posting.",
   },
 ];
 
@@ -112,6 +112,18 @@ const cards: QueueCard[] = [
     href: "/internal/shipping-control/shipper-documents",
     description: "Supervisor lane for uploaded shipper charge documents. Accept current document to lock the money source before apportionment.",
     proof: "One active charge document per batch",
+  },
+  {
+    title: "Customer invoice release queue",
+    href: "/internal/shipping-control/customer-invoice-release",
+    description: "Bulk-create controlled customer sales invoice drafts from stable, approved customer invoice intents.",
+    proof: "Internal sales invoice draft gate",
+  },
+  {
+    title: "Ready for Sage queue",
+    href: "/internal/sage-ready",
+    description: "One filtered accounting queue for customer sales drafts and shipper/AP purchase invoice intents before external Sage posting.",
+    proof: "Read-only Sage readiness queue",
   },
   {
     title: "Evidence / OCR queue",
@@ -200,7 +212,7 @@ export default async function InternalPage() {
                 Staff control dashboard
               </h1>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-                Use DVA/card workflow for statement work and Shipping control centre for package/shipment, shipper invoice, export evidence and Sage readiness visibility.
+                Use DVA/card workflow for statement work, Shipping control centre for package/shipment work, and Ready for Sage for the combined pre-posting accounting queue.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700">
@@ -247,13 +259,13 @@ export default async function InternalPage() {
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <p className="text-xs font-bold uppercase tracking-[0.22em] text-emerald-600">Start here for shipper-side testing</p>
-              <h2 className="mt-2 text-2xl font-semibold tracking-tight">Shipping control workflow</h2>
+              <h2 className="mt-2 text-2xl font-semibold tracking-tight">Shipping and Sage readiness workflow</h2>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-                Use these links after logging in as staff/supervisor. This avoids manual URL copying when testing uploaded shipper charge documents and acceptance locks.
+                Use these links after logging in as staff/supervisor. The flow moves from shipping truth to customer invoice draft creation, then into one Ready for Sage queue.
               </p>
             </div>
-            <Link href="/internal/shipping-control/shipper-documents" className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-emerald-800">
-              Review shipper docs →
+            <Link href="/internal/sage-ready" className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-emerald-800">
+              Open Ready for Sage →
             </Link>
           </div>
 
