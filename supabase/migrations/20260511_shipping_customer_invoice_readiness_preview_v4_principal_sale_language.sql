@@ -101,8 +101,8 @@ BEGIN
       END AS calc_bundled_customer_charge_gbp,
       CONCAT(
         CASE
-          WHEN r.resolved_invoice_type = 'supplementary' THEN 'Supplementary principal export sale charge'
-          ELSE 'Principal export sale charge'
+          WHEN r.resolved_invoice_type = 'supplementary' THEN 'Supplementary export sale charge'
+          ELSE 'Export sale charge'
         END,
         ' - ', COALESCE(NULLIF(s.order_ref, ''), s.order_id::text),
         ' - Booking ', COALESCE(NULLIF(s.booking_ref, ''), s.shipment_batch_id::text)
@@ -126,13 +126,12 @@ BEGIN
           'customer_charge_amount_gbp', lc.calc_bundled_customer_charge_gbp,
           'total_line_amount_gbp', lc.calc_bundled_customer_charge_gbp,
           'billed_or_credited_flag', 'billed',
-          'presentation', 'bundled_principal_export_sale_charge',
+          'presentation', 'bundled_export_sale_charge',
           'sage_tax_rate_id', 'GB_ZERO',
           'sage_tax_rate_display', 'Zero Rated 0.00%',
           'display_vat_code', 'T0',
-          'customer_gl_role', 'principal_export_sale_income',
-          'ap_gl_role_note', 'AP shipper bill should use freight/shipping cost GL; customer sale uses principal export sale income treatment',
-          'principal_status_note', 'Customer document is treated as principal sale, not agency recharge',
+          'customer_gl_role', 'export_sale_income',
+          'ap_gl_role_note', 'AP shipper bill should use freight/shipping cost GL; customer invoice uses export sale income treatment',
           'source', 'shipping_customer_invoice_readiness_preview'
         ) ORDER BY lc.order_ref NULLS LAST, lc.booking_ref NULLS LAST, lc.customer_payload_description NULLS LAST
       ) AS preview_line_items_json
