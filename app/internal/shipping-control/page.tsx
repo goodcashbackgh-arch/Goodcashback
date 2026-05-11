@@ -53,10 +53,29 @@ function friendly(value: string | null | undefined) {
 
 function statusClass(status: string | null | undefined) {
   if (!status) return "bg-slate-100 text-slate-700";
-  if (["received_clean", "contents_allocated", "ready_for_shipping_document_or_draft_export_review"].includes(status)) return "bg-emerald-100 text-emerald-800";
-  if (["allocation_missing", "mixed_or_missing_receipt", "not_started", "not_grouped", "not_ready", "uploaded_pending_ocr", "shipper_invoice_or_export_review_needed", "shipping_document_uploaded_needs_supervisor_processing"].includes(status)) return "bg-amber-100 text-amber-800";
+  if ([
+    "received_clean",
+    "contents_allocated",
+    "accepted_current",
+    "shipping_apportionment_approved",
+    "ready_for_sage_ap_readiness_review",
+    "ready_for_shipping_document_or_draft_export_review",
+    "shipping_document_ready_for_next_review",
+  ].includes(status)) return "bg-emerald-100 text-emerald-800";
+  if ([
+    "allocation_missing",
+    "mixed_or_missing_receipt",
+    "not_started",
+    "not_grouped",
+    "not_ready",
+    "uploaded_pending_ocr",
+    "queued",
+    "processing",
+    "shipping_apportionment_pending",
+    "shipper_invoice_or_export_review_needed",
+    "shipping_document_uploaded_needs_supervisor_processing",
+  ].includes(status)) return "bg-amber-100 text-amber-800";
   if (["receipt_issue", "check_empty_batch", "rejected_resubmit_required"].includes(status)) return "bg-rose-100 text-rose-800";
-  if (["accepted_current", "shipping_document_ready_for_next_review"].includes(status)) return "bg-emerald-100 text-emerald-800";
   if (["voided_no_action", "voided"].includes(status)) return "bg-slate-200 text-slate-700";
   return "bg-slate-100 text-slate-700";
 }
@@ -71,7 +90,8 @@ function matchesFilter(row: ShippingControlRow, filter: string) {
   if (filter === "allocation_missing") return row.allocation_status_summary === "allocation_missing";
   if (filter === "receipt_issue") return row.receipt_status_summary === "receipt_issue";
   if (filter === "missing_shipper_invoice") return row.shipper_invoice_status === "not_started";
-  if (filter === "ready_for_export_review") return row.next_action === "ready_for_shipping_document_or_draft_export_review";
+  if (filter === "apportionment_pending") return row.next_action === "shipping_apportionment_pending";
+  if (filter === "sage_ap_ready") return row.next_action === "ready_for_sage_ap_readiness_review";
   if (filter === "voided") return row.batch_status === "voided";
   return true;
 }
@@ -107,7 +127,7 @@ export default async function InternalShippingControlPage({ searchParams }: { se
   const packageTotal = allRows.reduce((sum, row) => sum + n(row.package_count), 0);
   const allocationMissing = allRows.filter((row) => row.allocation_status_summary === "allocation_missing").length;
   const receiptIssues = allRows.filter((row) => row.receipt_status_summary === "receipt_issue").length;
-  const readyForNext = allRows.filter((row) => row.next_action === "ready_for_shipping_document_or_draft_export_review").length;
+  const readyForNext = allRows.filter((row) => row.next_action === "ready_for_sage_ap_readiness_review").length;
   const missingShipperInvoice = allRows.filter((row) => row.shipper_invoice_status === "not_started").length;
 
   return (
@@ -119,7 +139,7 @@ export default async function InternalShippingControlPage({ searchParams }: { se
           <div className="mt-2 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
             <div>
               <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Shipping control centre</h1>
-              <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">Read-only supervisor view of shipment batches, selected packages, receipt truth, content allocation status and the next lanes for shipper invoice, draft COS, master shipment and Sage readiness. This page does not approve, post, clear VAT, generate COS/BOL/POD or apportion costs.</p>
+              <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">Read-only supervisor view of shipment batches, selected packages, receipt truth, content allocation status and the next lanes for shipper invoice, shipping apportionment, draft COS, master shipment and Sage/AP readiness. This page does not approve, post, clear VAT, generate COS/BOL/POD or apportion costs.</p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700"><div className="font-medium text-slate-950">{staff.full_name}</div><div>{staff.role_type}</div></div>
           </div>
@@ -138,12 +158,12 @@ export default async function InternalShippingControlPage({ searchParams }: { se
           <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
             <div><h2 className="text-xl font-semibold">Shipment batch worklist</h2><p className="mt-2 text-sm leading-6 text-slate-600">Summary-first control view. Use drill-down links for package contents, shipment batch detail, shipper invoice review and future export evidence review.</p></div>
             <form action="/internal/shipping-control" className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3 sm:grid-cols-[1fr_1fr_auto]">
-              <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Status<select name="status" defaultValue={selectedStatus} className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-950"><option value="all">All</option><option value="allocation_missing">Allocation missing</option><option value="receipt_issue">Receipt issue</option><option value="missing_shipper_invoice">Missing shipper invoice</option><option value="ready_for_export_review">Ready for next review</option><option value="voided">Voided</option></select></label>
+              <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Status<select name="status" defaultValue={selectedStatus} className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-950"><option value="all">All</option><option value="allocation_missing">Allocation missing</option><option value="receipt_issue">Receipt issue</option><option value="missing_shipper_invoice">Missing shipper invoice</option><option value="apportionment_pending">Apportionment pending</option><option value="sage_ap_ready">Ready for Sage/AP review</option><option value="voided">Voided</option></select></label>
               <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Search<input name="q" defaultValue={qp.q ?? ""} placeholder="Booking, importer, shipper, tracking" className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-950" /></label>
               <div className="flex items-end gap-2"><button type="submit" className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">Apply</button><Link href="/internal/shipping-control" className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-100">Reset</Link></div>
             </form>
           </div>
-          <p className="mt-4 text-xs font-semibold uppercase tracking-wide text-slate-500">Showing {rows.length} row(s) · Ready for next review: {readyForNext}</p>
+          <p className="mt-4 text-xs font-semibold uppercase tracking-wide text-slate-500">Showing {rows.length} row(s) · Ready for Sage/AP review: {readyForNext}</p>
           {rows.length === 0 ? <p className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">No shipment batches match the selected filters.</p> : (
             <div className="mt-5 overflow-x-auto rounded-2xl border border-slate-200"><table className="min-w-full divide-y divide-slate-200 text-sm"><thead className="bg-slate-100 text-xs uppercase tracking-wide text-slate-500"><tr><th className="px-3 py-2 text-left">Shipment batch</th><th className="px-3 py-2 text-left">Parties</th><th className="px-3 py-2 text-left">Dispatch</th><th className="px-3 py-2 text-right">Packages / qty</th><th className="px-3 py-2 text-left">Receipt</th><th className="px-3 py-2 text-left">Allocation</th><th className="px-3 py-2 text-left">Documents</th><th className="px-3 py-2 text-left">Next action</th><th className="px-3 py-2 text-left">Links</th></tr></thead><tbody className="divide-y divide-slate-100 bg-white">
               {rows.map((row) => (
@@ -154,7 +174,7 @@ export default async function InternalShippingControlPage({ searchParams }: { se
                   <td className="px-3 py-3 text-right align-top"><p className="font-semibold">{n(row.package_count)} package{n(row.package_count) === 1 ? "" : "s"}</p><p className="mt-1 text-xs text-slate-600">{qty(row.item_qty)} unit{n(row.item_qty) === 1 ? "" : "s"}</p><p className="mt-2 text-xs text-slate-500">{truncate(row.package_refs_preview, 52)}</p></td>
                   <td className="px-3 py-3 align-top"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.receipt_status_summary)}`}>{friendly(row.receipt_status_summary)}</span>{n(row.receipt_issue_count) > 0 ? <p className="mt-2 text-xs font-semibold text-rose-700">{n(row.receipt_issue_count)} issue(s)</p> : null}</td>
                   <td className="px-3 py-3 align-top"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.allocation_status_summary)}`}>{friendly(row.allocation_status_summary)}</span><p className="mt-2 text-xs text-slate-600">{n(row.allocated_package_count)} allocated · {n(row.unallocated_package_count)} missing</p></td>
-                  <td className="px-3 py-3 align-top"><div className="space-y-1"><span className={`inline-block rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.shipper_invoice_status)}`}>Shipper invoice: {friendly(row.shipper_invoice_status)}</span><span className={`block w-fit rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.export_evidence_status)}`}>Export evidence: {friendly(row.export_evidence_status)}</span><span className={`block w-fit rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.master_shipment_status)}`}>Master shipment: {friendly(row.master_shipment_status)}</span><span className={`block w-fit rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.sage_readiness_status)}`}>Sage: {friendly(row.sage_readiness_status)}</span></div></td>
+                  <td className="px-3 py-3 align-top"><div className="space-y-1"><span className={`inline-block rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.shipper_invoice_status)}`}>Shipper invoice: {friendly(row.shipper_invoice_status)}</span><span className={`block w-fit rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.export_evidence_status)}`}>Export evidence: {friendly(row.export_evidence_status)}</span><span className={`block w-fit rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.master_shipment_status)}`}>Master shipment: {friendly(row.master_shipment_status)}</span><span className={`block w-fit rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.sage_readiness_status)}`}>AP/Sage: {friendly(row.sage_readiness_status)}</span></div></td>
                   <td className="px-3 py-3 align-top"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.next_action)}`}>{friendly(row.next_action)}</span></td>
                   <td className="px-3 py-3 align-top"><div className="flex flex-col gap-2"><Link href={`/internal/shipping-control/${row.shipment_batch_id}`} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50">View batch detail</Link><Link href="/internal/shipping-control/shipper-documents" className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50">Review shipper docs</Link><span className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-500">Draft COS review later</span></div></td>
                 </tr>
@@ -162,7 +182,7 @@ export default async function InternalShippingControlPage({ searchParams }: { se
             </tbody></table></div>
           )}
         </section>
-        <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-900"><h2 className="font-semibold">Control rule</h2><p className="mt-2">Shipper invoice/receipt supports shipping cost and Sage/AP readiness. COS/BOL/POD/container supports export evidence and VAT zero-rating clearance. This page only joins visibility; approvals stay in their separate lanes.</p></section>
+        <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-900"><h2 className="font-semibold">Control rule</h2><p className="mt-2">Shipper invoice/receipt supports shipping cost and Sage/AP readiness after apportionment is approved. COS/BOL/POD/container supports export evidence and VAT zero-rating clearance. This page only joins visibility; approvals stay in their separate lanes.</p></section>
       </div>
     </main>
   );
