@@ -69,6 +69,10 @@ function routeLabel(value: string | null | undefined) {
 
 function invoiceStateLabel(value: string | null | undefined) {
   if (value === "no_main_sales_invoice_found") return "No main sales invoice found";
+  if (value === "main_sales_invoice_posted") return "Main sales invoice posted";
+  if (value === "main_sales_invoice_draft_exists") return "Main sales invoice draft exists";
+  if (value === "main_sales_invoice_void_ignored") return "Main sales invoice void ignored";
+  if (value === "main_sales_invoice_exists_sage_status_unavailable") return "Main invoice exists — Sage status unavailable";
   if (value === "main_sales_invoice_exists") return "Main sales invoice exists";
   if (value === "main_sales_invoice_exists_status_unknown") return "Main invoice exists — status unknown";
   if (value === "sales_invoice_exists_type_unknown") return "Sales invoice exists — type unknown";
