@@ -52,8 +52,30 @@ function friendly(value: string | null | undefined) {
 }
 
 function invoiceTypeLabel(value: string | null | undefined) {
-  if (value === "main") return "Main sales invoice";
-  if (value === "supplementary") return "Supplementary shipping invoice";
+  if (value === "main") return "Add to main invoice draft/release";
+  if (value === "supplementary") return "Create supplementary shipping invoice";
+  return friendly(value);
+}
+
+function routeLabel(value: string | null | undefined) {
+  if (value === "include_shipping_in_main_sales_invoice_release") return "Add bundled charge to main invoice draft/release";
+  if (value === "supplementary_shipping_recharge_invoice") return "Create supplementary shipping invoice";
+  if (value === "supplementary_shipping_recharge_invoice_review_required") return "Supplementary invoice review required";
+  return friendly(value);
+}
+
+function invoiceStateLabel(value: string | null | undefined) {
+  if (value === "no_main_sales_invoice_found") return "No main invoice draft/posting exists yet";
+  if (value === "main_sales_invoice_draft_exists") return "Main invoice draft exists";
+  if (value === "main_sales_invoice_posted") return "Main invoice already posted";
+  if (value === "main_sales_invoice_void_ignored") return "Voided main invoice ignored";
+  return friendly(value);
+}
+
+function readinessLabel(value: string | null | undefined) {
+  if (!value) return "—";
+  if (value.startsWith("ready_")) return "Ready";
+  if (value.startsWith("blocked")) return "Blocked";
   return friendly(value);
 }
 
@@ -102,7 +124,7 @@ export default async function ShippingCustomerInvoiceReadinessPage({ params }: {
             <div>
               <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Customer invoice readiness preview</h1>
               <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
-                Read-only preview of the customer-side document that shipping recharge should feed next. The customer payload is bundled; the adjusted goods/shipping split is shown only as a sanity check. It does not create or post an invoice.
+                Read-only preview of what the later customer invoice creation lane should prepare. It does not mean a Sage invoice has already been posted. The customer payload is bundled; the adjusted goods/shipping split is shown only as a sanity check.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700"><div className="font-medium text-slate-950">{staff.full_name}</div><div>{staff.role_type}</div></div>
@@ -116,7 +138,7 @@ export default async function ShippingCustomerInvoiceReadinessPage({ params }: {
             <section className="grid gap-4 md:grid-cols-5">
               <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Booking ref</p><p className="mt-1 text-xl font-semibold">{first.booking_ref ?? shipmentBatchId}</p></div>
               <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Importer</p><p className="mt-1 text-xl font-semibold">{first.importer_name ?? "—"}</p></div>
-              <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Proposed doc</p><p className="mt-1 text-xl font-semibold">{invoiceTypeLabel(first.proposed_invoice_type)}</p></div>
+              <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Customer action</p><p className="mt-1 text-xl font-semibold">{invoiceTypeLabel(first.proposed_invoice_type)}</p></div>
               <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">VAT code</p><p className="mt-1 text-xl font-semibold">{first.vat_code ?? "T0"}</p></div>
               <div className={`rounded-3xl border p-4 shadow-sm ${ready ? "border-emerald-200 bg-emerald-50" : "border-rose-200 bg-rose-50"}`}><p className="text-xs uppercase tracking-wide text-slate-500">Readiness</p><p className="mt-1 text-xl font-semibold">{ready ? "Ready" : "Blocked"}</p></div>
             </section>
@@ -134,14 +156,14 @@ export default async function ShippingCustomerInvoiceReadinessPage({ params }: {
               <h2 className="text-xl font-semibold">Draft customer document summary</h2>
               <p className="mt-2 text-sm leading-6 text-slate-600">This is the customer-facing invoice basis. The invoice payload uses the bundled charge; the split below is retained only for review evidence.</p>
               <div className="mt-4 grid gap-3 md:grid-cols-4">
-                <div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Invoice type</p><p className="mt-1 text-lg font-semibold">{invoiceTypeLabel(first.proposed_invoice_type)}</p></div>
+                <div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Customer action</p><p className="mt-1 text-lg font-semibold">{invoiceTypeLabel(first.proposed_invoice_type)}</p></div>
                 <div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Sanity: adjusted goods</p><p className="mt-1 text-lg font-semibold">{money(first.proposed_goods_amount_gbp)}</p></div>
                 <div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Sanity: apportioned shipping</p><p className="mt-1 text-lg font-semibold">{money(first.proposed_shipping_amount_gbp)}</p></div>
                 <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4"><p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Bundled customer charge</p><p className="mt-1 text-lg font-semibold">{money(first.proposed_amount_gbp)}</p></div>
               </div>
               <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
-                <p><span className="font-semibold">Route:</span> {friendly(first.customer_recharge_route)}</p>
-                <p className="mt-1"><span className="font-semibold">Sales invoice state:</span> {friendly(first.sales_invoice_state)}</p>
+                <p><span className="font-semibold">Route:</span> {routeLabel(first.customer_recharge_route)}</p>
+                <p className="mt-1"><span className="font-semibold">Sales invoice state:</span> {invoiceStateLabel(first.sales_invoice_state)}</p>
               </div>
             </section>
 
@@ -158,7 +180,7 @@ export default async function ShippingCustomerInvoiceReadinessPage({ params }: {
                         <p className="mt-1 font-semibold">{row.order_ref ?? row.order_id ?? "—"}</p>
                         <p className="text-sm text-slate-500">{row.tracking_ref ?? row.tracking_submission_id ?? "—"}</p>
                       </div>
-                      <span className={`shrink-0 rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.readiness_status)}`}>{friendly(row.readiness_status)}</span>
+                      <span className={`shrink-0 rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.readiness_status)}`}>{readinessLabel(row.readiness_status)}</span>
                     </div>
                     <p className="mt-3 text-sm text-slate-700">{row.item_description ?? "—"}</p>
                     <div className="mt-4 grid grid-cols-2 gap-2 text-sm">
@@ -193,7 +215,7 @@ export default async function ShippingCustomerInvoiceReadinessPage({ params }: {
                         <td className="px-3 py-3 text-right align-top">{money(row.goods_amount_gbp)}</td>
                         <td className="px-3 py-3 text-right align-top">{money(row.shipping_amount_gbp)}</td>
                         <td className="px-3 py-3 text-right align-top font-semibold">{money(row.total_line_amount_gbp)}</td>
-                        <td className="px-3 py-3 align-top"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.readiness_status)}`}>{friendly(row.readiness_status)}</span></td>
+                        <td className="px-3 py-3 align-top"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.readiness_status)}`}>{readinessLabel(row.readiness_status)}</span></td>
                       </tr>
                     ))}
                   </tbody>
