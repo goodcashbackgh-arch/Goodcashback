@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
+import { createCustomerInvoiceDrafts } from "./actions";
 
 type Row = {
   shipment_batch_id: string;
@@ -57,7 +58,8 @@ function actionLabel(status: string | null | undefined) {
   return friendly(status);
 }
 
-export default async function CustomerInvoiceReleaseQueuePage() {
+export default async function CustomerInvoiceReleaseQueuePage({ searchParams }: { searchParams?: Promise<{ result?: string; created?: string; skipped?: string; message?: string }> }) {
+  const params = searchParams ? await searchParams : {};
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
@@ -91,7 +93,7 @@ export default async function CustomerInvoiceReleaseQueuePage() {
             <div>
               <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Customer invoice release queue</h1>
               <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
-                Focused supervisor queue for stable customer invoice intents. This page does not create invoices yet, post to Sage, clear VAT, generate COS/BOL/POD, or close export evidence. It proves the ready set before bulk draft creation is enabled.
+                Focused supervisor queue for stable customer invoice intents. Create draft records only for ready rows. This does not post to Sage, clear VAT, generate COS/BOL/POD, or close export evidence.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700">
@@ -100,6 +102,9 @@ export default async function CustomerInvoiceReleaseQueuePage() {
             </div>
           </div>
           {error ? <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">Queue unavailable: {error.message}. Run the latest Supabase migration before testing this page.</p> : null}
+          {params.result === "created" ? <p className="mt-4 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">Draft creation complete: {params.created ?? "0"} created, {params.skipped ?? "0"} skipped.</p> : null}
+          {params.result === "error" ? <p className="mt-4 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-900">Draft creation failed: {params.message ?? "Unknown error"}</p> : null}
+          {params.result === "no_ready_rows_selected" ? <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">No ready rows selected.</p> : null}
         </section>
 
         <section className="grid gap-4 md:grid-cols-4">
@@ -113,9 +118,14 @@ export default async function CustomerInvoiceReleaseQueuePage() {
           <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
             <div>
               <h2 className="text-xl font-semibold">Ready and blocked invoice intents</h2>
-              <p className="mt-2 text-sm leading-6 text-slate-600">Bulk draft creation comes after this queue is proven. For now, use Preview to inspect the exact intent for any booking.</p>
+              <p className="mt-2 text-sm leading-6 text-slate-600">Use Preview to inspect a booking. Use the bulk action when the ready set looks right.</p>
             </div>
-            <button disabled className="rounded-xl border border-dashed border-slate-300 bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-500">Create selected drafts later</button>
+            <form action={createCustomerInvoiceDrafts}>
+              {readyRows.map((row) => <input key={row.shipment_batch_id} type="hidden" name="shipment_batch_id" value={row.shipment_batch_id} />)}
+              <button disabled={readyRows.length === 0 || Boolean(error)} className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:border disabled:border-dashed disabled:border-slate-300 disabled:bg-slate-100 disabled:text-slate-500">
+                Create drafts for all ready ({readyRows.length})
+              </button>
+            </form>
           </div>
 
           {rows.length === 0 ? <p className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">No customer invoice intents found yet.</p> : null}
@@ -181,7 +191,7 @@ export default async function CustomerInvoiceReleaseQueuePage() {
 
         <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-900">
           <h2 className="font-semibold">Control rule</h2>
-          <p className="mt-2">This queue only identifies stable customer invoice intents. Draft creation, Sage posting, VAT/export evidence clearance, COS/BOL/POD and final order closure remain separate controlled steps.</p>
+          <p className="mt-2">This queue creates internal draft customer invoice records only. It does not post to Sage, clear VAT/export evidence, generate COS/BOL/POD, or close the order.</p>
         </section>
       </div>
     </main>
