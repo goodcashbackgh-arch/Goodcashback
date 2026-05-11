@@ -63,6 +63,7 @@ function statusClass(status: string | null | undefined) {
   if (!status || ["uploaded_pending_ocr", "ocr_pending", "needs_supervisor_review", "not_started"].includes(status)) return "bg-amber-100 text-amber-800";
   if (["accepted_current", "resubmission_approved"].includes(status)) return "bg-emerald-100 text-emerald-800";
   if (["rejected_resubmit_required"].includes(status)) return "bg-rose-100 text-rose-800";
+  if (["superseded"].includes(status)) return "bg-slate-200 text-slate-700";
   return "bg-slate-100 text-slate-700";
 }
 
@@ -110,7 +111,9 @@ export default async function ShippingDocumentReviewDetailPage({ params, searchP
   const fileUrl = normalizeLink(doc?.file_url);
   const isAccepted = doc?.review_status === "accepted_current";
   const replacementApproved = doc?.review_status === "resubmission_approved";
+  const isSuperseded = doc?.review_status === "superseded";
   const hasOpenResubmissionRequest = resubmissionRequests.length > 0;
+  const disableProcessing = isAccepted || replacementApproved || isSuperseded;
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-6 text-slate-950 sm:px-6 sm:py-8">
@@ -137,6 +140,14 @@ export default async function ShippingDocumentReviewDetailPage({ params, searchP
 
         {doc ? (
           <>
+            {isSuperseded ? (
+              <section className="rounded-3xl border border-slate-300 bg-slate-100 p-5 text-sm leading-6 text-slate-800 shadow-sm">
+                <h2 className="text-lg font-semibold text-slate-950">Superseded audit record</h2>
+                <p className="mt-2">This document was replaced by a revised shipper upload. It remains visible for audit trail only and cannot be processed. Use the shipper document queue to open the current active document for this shipment batch.</p>
+                <Link href="/internal/shipping-control/shipper-documents" className="mt-3 inline-block rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">Open current document queue</Link>
+              </section>
+            ) : null}
+
             <section className="grid gap-4 md:grid-cols-5">
               <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Booking ref</p><p className="mt-1 text-xl font-semibold">{doc.booking_ref ?? doc.shipment_batch_id}</p></div>
               <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Importer</p><p className="mt-1 text-xl font-semibold">{doc.importer_name ?? "—"}</p></div>
@@ -172,14 +183,16 @@ export default async function ShippingDocumentReviewDetailPage({ params, searchP
                     <p className="mt-1 text-slate-600"><strong>Queue OCR</strong> means extraction/review is still pending. <strong>Accept current document</strong> means this document is confirmed as the shipment money source and replacement is locked.</p>
                   </div>
 
-                  <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-slate-500">Extracted ref</span><input name="extracted_document_ref" defaultValue={doc.extracted_document_ref ?? doc.document_ref ?? ""} className="w-full rounded-xl border border-slate-300 px-3 py-2" disabled={isAccepted || replacementApproved} /></label>
-                  <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-slate-500">Extracted date</span><input name="extracted_document_date" type="date" defaultValue={doc.extracted_document_date ?? doc.document_date ?? ""} className="w-full rounded-xl border border-slate-300 px-3 py-2" disabled={isAccepted || replacementApproved} /></label>
-                  <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-slate-500">Currency</span><input name="extracted_currency_code" defaultValue={doc.extracted_currency_code ?? doc.currency_code ?? "GBP"} maxLength={3} className="w-full rounded-xl border border-slate-300 px-3 py-2 uppercase" disabled={isAccepted || replacementApproved} /></label>
-                  <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-slate-500">Extracted total</span><input name="extracted_total_amount" type="number" step="0.01" min="0" defaultValue={String(doc.extracted_total_amount ?? doc.total_amount ?? "")} className="w-full rounded-xl border border-slate-300 px-3 py-2" disabled={isAccepted || replacementApproved} /></label>
-                  <label className="space-y-1 text-sm md:col-span-2"><span className="text-xs uppercase tracking-wide text-slate-500">Review note</span><textarea name="review_note" rows={3} defaultValue={doc.review_note ?? ""} className="w-full rounded-xl border border-slate-300 px-3 py-2" placeholder="Required if rejecting/resubmission is needed" disabled={isAccepted || replacementApproved} /></label>
+                  <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-slate-500">Extracted ref</span><input name="extracted_document_ref" defaultValue={doc.extracted_document_ref ?? doc.document_ref ?? ""} className="w-full rounded-xl border border-slate-300 px-3 py-2" disabled={disableProcessing} /></label>
+                  <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-slate-500">Extracted date</span><input name="extracted_document_date" type="date" defaultValue={doc.extracted_document_date ?? doc.document_date ?? ""} className="w-full rounded-xl border border-slate-300 px-3 py-2" disabled={disableProcessing} /></label>
+                  <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-slate-500">Currency</span><input name="extracted_currency_code" defaultValue={doc.extracted_currency_code ?? doc.currency_code ?? "GBP"} maxLength={3} className="w-full rounded-xl border border-slate-300 px-3 py-2 uppercase" disabled={disableProcessing} /></label>
+                  <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-slate-500">Extracted total</span><input name="extracted_total_amount" type="number" step="0.01" min="0" defaultValue={String(doc.extracted_total_amount ?? doc.total_amount ?? "")} className="w-full rounded-xl border border-slate-300 px-3 py-2" disabled={disableProcessing} /></label>
+                  <label className="space-y-1 text-sm md:col-span-2"><span className="text-xs uppercase tracking-wide text-slate-500">Review note</span><textarea name="review_note" rows={3} defaultValue={doc.review_note ?? ""} className="w-full rounded-xl border border-slate-300 px-3 py-2" placeholder="Required if rejecting/resubmission is needed" disabled={disableProcessing} /></label>
 
                   <div className="md:col-span-2">
-                    {replacementApproved ? (
+                    {isSuperseded ? (
+                      <p className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm font-semibold text-slate-800">Superseded audit record. Open the current document from the queue to continue processing.</p>
+                    ) : replacementApproved ? (
                       <p className="rounded-2xl border border-sky-200 bg-sky-50 p-3 text-sm font-semibold text-sky-900">Replacement upload approved. Shipper can now upload the revised current charge document.</p>
                     ) : isAccepted ? (
                       <p className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-900">Accepted and locked. Shipper can no longer silently replace this document.</p>
@@ -196,7 +209,7 @@ export default async function ShippingDocumentReviewDetailPage({ params, searchP
               </article>
             </section>
 
-            {(hasOpenResubmissionRequest || replacementApproved) ? (
+            {(hasOpenResubmissionRequest || replacementApproved) && !isSuperseded ? (
               <section className={`rounded-3xl border p-5 shadow-sm ${replacementApproved ? "border-sky-200 bg-sky-50" : "border-amber-200 bg-amber-50"}`}>
                 <h2 className="text-xl font-semibold">Replacement / resubmission control</h2>
                 {replacementApproved ? (
