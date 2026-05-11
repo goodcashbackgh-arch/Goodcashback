@@ -156,6 +156,14 @@ export default async function ShippingDocumentReviewDetailPage({ params, searchP
               <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Status</p><span className={`mt-1 inline-block rounded-full px-2 py-1 text-xs font-semibold ${statusClass(doc.review_status)}`}>{friendly(doc.review_status)}</span></div>
             </section>
 
+            {isAccepted ? (
+              <section className="rounded-3xl border border-emerald-200 bg-emerald-50 p-5 text-sm leading-6 text-emerald-900 shadow-sm">
+                <h2 className="text-lg font-semibold">Next lane: shipping cost apportionment</h2>
+                <p className="mt-2">This accepted document is ready for supervisor shipping-cost apportionment. This still does not post to Sage, generate COS/BOL/POD or clear VAT.</p>
+                <Link href={`/internal/shipping-control/apportionment/${doc.shipping_document_id}`} className="mt-3 inline-block rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-800">Review apportionment</Link>
+              </section>
+            ) : null}
+
             <section className="grid gap-6 lg:grid-cols-[1fr_1.1fr]">
               <article className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
                 <h2 className="text-xl font-semibold">Uploaded document</h2>
