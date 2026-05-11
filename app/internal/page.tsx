@@ -43,6 +43,33 @@ const dvaFlowSteps: FlowStep[] = [
   },
 ];
 
+const shippingFlowSteps: FlowStep[] = [
+  {
+    step: "1",
+    title: "Shipping control centre",
+    href: "/internal/shipping-control",
+    description: "Start here for shipment batches, package truth, receipt status, allocation status and next-lane visibility.",
+  },
+  {
+    step: "2",
+    title: "Review shipper docs",
+    href: "/internal/shipping-control/shipper-documents",
+    description: "Supervisor reviews uploaded shipper charge documents and accepts/rejects the current money source.",
+  },
+  {
+    step: "3",
+    title: "Apportionment next",
+    href: "/internal/shipping-control",
+    description: "Next build lane: accepted charge document → shipping cost apportionment preview and Sage/AP readiness.",
+  },
+  {
+    step: "4",
+    title: "Export evidence later",
+    href: "/internal/shipping-control",
+    description: "COS/BOL/POD/container evidence stays separate from shipper charge document review.",
+  },
+];
+
 const cards: QueueCard[] = [
   {
     title: "DVA/card statement workflow",
@@ -79,6 +106,12 @@ const cards: QueueCard[] = [
     href: "/internal/shipping-control",
     description: "Supervisor spine for importer shipment batches, package receipt truth, allocation status, shipper invoice lane, draft COS lane, master shipment lane and Sage readiness placeholders.",
     proof: "Shipping control read-only v1",
+  },
+  {
+    title: "Shipper invoice / receipt review",
+    href: "/internal/shipping-control/shipper-documents",
+    description: "Supervisor lane for uploaded shipper charge documents. Accept current document to lock the money source before apportionment.",
+    proof: "One active charge document per batch",
   },
   {
     title: "Evidence / OCR queue",
@@ -200,6 +233,39 @@ export default async function InternalPage() {
               >
                 <div className="flex items-center gap-2">
                   <span className="inline-flex h-8 min-w-8 items-center justify-center rounded-full bg-white px-2 text-xs font-extrabold text-sky-700 ring-1 ring-sky-200">
+                    {step.step}
+                  </span>
+                  <h3 className="font-semibold text-slate-950">{step.title}</h3>
+                </div>
+                <p className="mt-2 text-xs leading-5 text-slate-600">{step.description}</p>
+              </Link>
+            ))}
+          </div>
+        </section>
+
+        <section className="rounded-3xl border border-emerald-200 bg-white p-5 shadow-sm">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-[0.22em] text-emerald-600">Start here for shipper-side testing</p>
+              <h2 className="mt-2 text-2xl font-semibold tracking-tight">Shipping control workflow</h2>
+              <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
+                Use these links after logging in as staff/supervisor. This avoids manual URL copying when testing uploaded shipper charge documents and acceptance locks.
+              </p>
+            </div>
+            <Link href="/internal/shipping-control/shipper-documents" className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-emerald-800">
+              Review shipper docs →
+            </Link>
+          </div>
+
+          <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            {shippingFlowSteps.map((step) => (
+              <Link
+                key={`${step.step}-${step.href}-${step.title}`}
+                href={step.href}
+                className="rounded-2xl border border-slate-200 bg-slate-50 p-4 transition hover:border-emerald-300 hover:bg-emerald-50"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="inline-flex h-8 min-w-8 items-center justify-center rounded-full bg-white px-2 text-xs font-extrabold text-emerald-700 ring-1 ring-emerald-200">
                     {step.step}
                   </span>
                   <h3 className="font-semibold text-slate-950">{step.title}</h3>
