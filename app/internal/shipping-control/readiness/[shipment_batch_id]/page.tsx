@@ -59,6 +59,30 @@ function shortDate(value: string | null | undefined) {
   return value.includes("T") ? value.slice(0, 10) : value;
 }
 
+function routeLabel(value: string | null | undefined) {
+  if (value === "include_shipping_in_main_sales_invoice_release") return "Main invoice";
+  if (value === "supplementary_shipping_recharge_invoice") return "Supplementary invoice";
+  if (value === "supplementary_shipping_recharge_invoice_review_required") return "Supplementary review";
+  if (value === "sales_invoice_route_not_resolved") return "Route unresolved";
+  return friendly(value);
+}
+
+function invoiceStateLabel(value: string | null | undefined) {
+  if (value === "no_main_sales_invoice_found") return "No main sales invoice found";
+  if (value === "main_sales_invoice_exists") return "Main sales invoice exists";
+  if (value === "main_sales_invoice_exists_status_unknown") return "Main invoice exists — status unknown";
+  if (value === "sales_invoice_exists_type_unknown") return "Sales invoice exists — type unknown";
+  if (value === "sales_invoice_table_not_available") return "Sales invoice table unavailable";
+  return friendly(value);
+}
+
+function readinessLabel(value: string | null | undefined) {
+  if (value === "ready_for_ap_and_customer_recharge_payload_preview") return "Ready";
+  if (!value) return "—";
+  if (value.startsWith("blocked_")) return "Blocked";
+  return friendly(value);
+}
+
 function statusClass(status: string | null | undefined) {
   if (!status) return "bg-slate-100 text-slate-700";
   if (status.startsWith("ready_") || ["accepted_current", "approved", "include_shipping_in_main_sales_invoice_release", "supplementary_shipping_recharge_invoice"].includes(status)) {
@@ -98,6 +122,7 @@ export default async function ShippingReadinessPreviewPage({ params }: { params:
   const totalAdjustedGoods = rows.reduce((sum, row) => sum + n(row.adjusted_goods_basis_gbp), 0);
   const itemQty = rows.reduce((sum, row) => sum + n(row.qty_allocated), 0);
   const customerRoutes = Array.from(new Set(rows.map((row) => row.customer_recharge_route).filter(Boolean))) as string[];
+  const primaryCustomerRoute = customerRoutes[0] ?? null;
   const apReady = rows.length > 0 && blockers.length === 0;
 
   return (
@@ -142,6 +167,23 @@ export default async function ShippingReadinessPreviewPage({ params }: { params:
               </section>
             ) : null}
 
+            <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+              <h2 className="text-xl font-semibold">Posting route summary</h2>
+              <p className="mt-2 text-sm leading-6 text-slate-600">This is only the resolver result. It confirms what the later posting/release lane should prepare.</p>
+              <div className="mt-4 grid gap-3 lg:grid-cols-2">
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">AP</p>
+                  <p className="mt-1 text-lg font-semibold">Purchase invoice to {first.shipper_name ?? "shipper"}</p>
+                  <p className="mt-1 text-sm text-slate-600">{first.shipping_document_ref ?? "No ref"} · {money(first.shipping_document_total, currency)}</p>
+                </div>
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Customer recharge</p>
+                  <p className="mt-1 text-lg font-semibold">{routeLabel(primaryCustomerRoute)}</p>
+                  <p className="mt-1 text-sm text-slate-600">{money(totalShippingAllocated, currency)} shipping recharge on {money(totalAdjustedGoods, "GBP")} adjusted goods basis</p>
+                </div>
+              </div>
+            </section>
+
             <section className="grid gap-4 lg:grid-cols-2">
               <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
                 <h2 className="text-xl font-semibold">AP side</h2>
@@ -162,7 +204,7 @@ export default async function ShippingReadinessPreviewPage({ params }: { params:
                 <div className="mt-4 grid gap-3 sm:grid-cols-2">
                   <div className="rounded-2xl bg-slate-50 p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Adjusted goods basis</p><p className="mt-1 font-semibold">{money(totalAdjustedGoods, "GBP")}</p></div>
                   <div className="rounded-2xl bg-slate-50 p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Shipping recharge</p><p className="mt-1 font-semibold">{money(totalShippingAllocated, currency)}</p></div>
-                  <div className="rounded-2xl bg-slate-50 p-3 sm:col-span-2"><p className="text-xs uppercase tracking-wide text-slate-500">Route</p><div className="mt-2 flex flex-wrap gap-2">{customerRoutes.length ? customerRoutes.map((route) => <span key={route} className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(route)}`}>{friendly(route)}</span>) : <span className="text-sm font-semibold">—</span>}</div></div>
+                  <div className="rounded-2xl bg-slate-50 p-3 sm:col-span-2"><p className="text-xs uppercase tracking-wide text-slate-500">Route</p><div className="mt-2 flex flex-wrap gap-2">{customerRoutes.length ? customerRoutes.map((route) => <span key={route} className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(route)}`}>{routeLabel(route)}</span>) : <span className="text-sm font-semibold">—</span>}</div></div>
                 </div>
               </div>
             </section>
@@ -170,15 +212,44 @@ export default async function ShippingReadinessPreviewPage({ params }: { params:
             <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
               <h2 className="text-xl font-semibold">Line-level payload preview</h2>
               <p className="mt-2 text-sm leading-6 text-slate-600">This is the controlled source that later feeds Sage/AP and customer recharge payloads. COS/export evidence stays separate.</p>
-              <div className="mt-4 overflow-x-auto rounded-2xl border border-slate-200">
+
+              <div className="mt-4 grid gap-3 md:hidden">
+                {rows.map((row, index) => (
+                  <article key={`${row.order_id}-${row.tracking_submission_id}-${row.supplier_invoice_line_id}-${index}-card`} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Order / package</p>
+                        <p className="mt-1 font-semibold">{row.order_ref ?? row.order_id ?? "—"}</p>
+                        <p className="text-sm text-slate-500">{row.tracking_ref ?? row.tracking_submission_id ?? "—"}</p>
+                      </div>
+                      <span className={`shrink-0 rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.readiness_status)}`}>{readinessLabel(row.readiness_status)}</span>
+                    </div>
+                    <p className="mt-3 text-sm text-slate-700">{row.item_description ?? "—"}</p>
+                    <div className="mt-4 grid grid-cols-3 gap-2 text-sm">
+                      <div className="rounded-xl bg-white p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Qty</p><p className="mt-1 font-semibold">{qty(row.qty_allocated)}</p></div>
+                      <div className="rounded-xl bg-white p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Basis</p><p className="mt-1 font-semibold">{money(row.adjusted_goods_basis_gbp, "GBP")}</p></div>
+                      <div className="rounded-xl bg-white p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Shipping</p><p className="mt-1 font-semibold">{money(row.allocated_shipping_amount, currency)}</p></div>
+                    </div>
+                    <div className="mt-3 rounded-xl bg-white p-3 text-sm">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Customer route</p>
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.customer_recharge_route)}`}>{routeLabel(row.customer_recharge_route)}</span>
+                        <span className="text-xs text-slate-500">{invoiceStateLabel(row.sales_invoice_state)}</span>
+                      </div>
+                    </div>
+                  </article>
+                ))}
+              </div>
+
+              <div className="mt-4 hidden overflow-x-auto rounded-2xl border border-slate-200 md:block">
                 <table className="min-w-full divide-y divide-slate-200 text-sm">
                   <thead className="bg-slate-100 text-xs uppercase tracking-wide text-slate-500">
                     <tr>
                       <th className="px-3 py-2 text-left">Order / package</th>
                       <th className="px-3 py-2 text-left">Item</th>
                       <th className="px-3 py-2 text-right">Qty</th>
-                      <th className="px-3 py-2 text-right">Adjusted goods basis</th>
-                      <th className="px-3 py-2 text-right">Shipping recharge</th>
+                      <th className="px-3 py-2 text-right">Adjusted basis</th>
+                      <th className="px-3 py-2 text-right">Shipping</th>
                       <th className="px-3 py-2 text-left">Customer route</th>
                       <th className="px-3 py-2 text-left">Status</th>
                     </tr>
@@ -191,8 +262,8 @@ export default async function ShippingReadinessPreviewPage({ params }: { params:
                         <td className="px-3 py-3 text-right align-top">{qty(row.qty_allocated)}</td>
                         <td className="px-3 py-3 text-right align-top">{money(row.adjusted_goods_basis_gbp, "GBP")}</td>
                         <td className="px-3 py-3 text-right align-top font-semibold">{money(row.allocated_shipping_amount, currency)}</td>
-                        <td className="px-3 py-3 align-top"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.customer_recharge_route)}`}>{friendly(row.customer_recharge_route)}</span><p className="mt-1 text-xs text-slate-500">{friendly(row.sales_invoice_state)}</p></td>
-                        <td className="px-3 py-3 align-top"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.readiness_status)}`}>{friendly(row.readiness_status)}</span></td>
+                        <td className="px-3 py-3 align-top"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.customer_recharge_route)}`}>{routeLabel(row.customer_recharge_route)}</span><p className="mt-1 text-xs text-slate-500">{invoiceStateLabel(row.sales_invoice_state)}</p></td>
+                        <td className="px-3 py-3 align-top"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.readiness_status)}`}>{readinessLabel(row.readiness_status)}</span></td>
                       </tr>
                     ))}
                   </tbody>
