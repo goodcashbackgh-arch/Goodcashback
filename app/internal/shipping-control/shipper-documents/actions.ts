@@ -53,3 +53,34 @@ export async function reviewShippingDocumentAction(formData: FormData) {
   revalidatePath(`/internal/shipping-control/shipper-documents/${shippingDocumentId}`);
   redirect(`/internal/shipping-control/shipper-documents/${shippingDocumentId}?success=${encodeURIComponent("Shipping document review updated")}`);
 }
+
+export async function reviewShippingDocumentResubmissionRequestAction(formData: FormData) {
+  const supabase = await createClient();
+  const shippingDocumentId = readString(formData, "shipping_document_id");
+  const decision = readString(formData, "resubmission_decision");
+  const reviewNote = readString(formData, "resubmission_review_note") || null;
+
+  if (!shippingDocumentId) {
+    redirect("/internal/shipping-control/shipper-documents?error=Missing%20shipping%20document.");
+  }
+
+  if (!["approve_replacement", "decline_request"].includes(decision)) {
+    redirect(`/internal/shipping-control/shipper-documents/${shippingDocumentId}?error=Choose%20a%20valid%20resubmission%20decision.`);
+  }
+
+  const { error } = await (supabase as any).rpc("internal_review_shipping_document_resubmission_request_v1", {
+    p_shipping_document_id: shippingDocumentId,
+    p_decision: decision,
+    p_review_note: reviewNote,
+  });
+
+  if (error) {
+    redirect(`/internal/shipping-control/shipper-documents/${shippingDocumentId}?error=${encodeURIComponent(error.message)}`);
+  }
+
+  revalidatePath("/internal/shipping-control");
+  revalidatePath("/internal/shipping-control/shipper-documents");
+  revalidatePath(`/internal/shipping-control/shipper-documents/${shippingDocumentId}`);
+  revalidatePath("/shipper/shipping-documents/new");
+  redirect(`/internal/shipping-control/shipper-documents/${shippingDocumentId}?success=${encodeURIComponent(decision === "approve_replacement" ? "Replacement upload approved" : "Replacement request declined")}`);
+}
