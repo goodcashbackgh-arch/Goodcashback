@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import ExceptionStatusGuard from "./ExceptionStatusGuard";
+import ExceptionTimelinePolishEnhancer from "./ExceptionTimelinePolishEnhancer";
 import RefundResubmissionNoteEnhancer from "./RefundResubmissionNoteEnhancer";
 import ReturnEvidenceReviewEnhancer from "./ReturnEvidenceReviewEnhancer";
 import ReturnEvidenceSupervisorDetailsEnhancer from "./ReturnEvidenceSupervisorDetailsEnhancer";
@@ -11,6 +12,7 @@ export default function InternalExceptionReviewLayout({ children }: { children: 
       <RefundResubmissionNoteEnhancer />
       <ReturnEvidenceReviewEnhancer />
       <ReturnEvidenceSupervisorDetailsEnhancer />
+      <ExceptionTimelinePolishEnhancer />
       <ExceptionStatusGuard />
     </>
   );
