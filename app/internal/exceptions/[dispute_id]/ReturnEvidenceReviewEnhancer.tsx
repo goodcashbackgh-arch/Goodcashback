@@ -14,6 +14,29 @@ function reviewState(sectionText: string) {
   return "reviewed";
 }
 
+function statusLabelForState(state: string) {
+  if (state === "accepted") return "Supervisor review accepted";
+  if (state === "hold") return "Supervisor review held";
+  if (state === "rejected") return "Supervisor review rejected";
+  return "Supervisor reviewed";
+}
+
+function nextStepTextForState(state: string) {
+  if (state === "accepted") return "Supervisor accepted return/collection evidence. Next: wait for operator refund / credit note evidence.";
+  return "Return/collection evidence has been reviewed. If it was held or rejected, the operator should submit corrected/additional return evidence as a new row.";
+}
+
+function rewriteSubmittedStatusBadge(section: HTMLElement, state: string) {
+  const nodes = Array.from(section.querySelectorAll<HTMLElement>("p,span,div"));
+  const badge = nodes.find((node) => normalise(node.textContent ?? "") === "return/collection evidence submitted");
+  if (!badge) return;
+
+  badge.textContent = statusLabelForState(state);
+  if (state === "accepted") {
+    badge.className = "rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-sm font-semibold text-emerald-900";
+  }
+}
+
 function rewriteExistingReviewNotice(section: HTMLElement, state: string) {
   const notices = Array.from(section.querySelectorAll<HTMLElement>("p,div"));
   const existing = notices.find((node) =>
@@ -25,9 +48,7 @@ function rewriteExistingReviewNotice(section: HTMLElement, state: string) {
   existing.className = state === "accepted"
     ? "rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900"
     : "rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900";
-  existing.textContent = state === "accepted"
-    ? "Return/collection evidence accepted. Next: wait for operator refund / credit note evidence."
-    : "Return/collection evidence has been reviewed. If it was held or rejected, the operator should submit corrected/additional return evidence as a new row.";
+  existing.textContent = nextStepTextForState(state);
   return true;
 }
 
@@ -55,6 +76,7 @@ function run() {
     const state = reviewState(sectionText);
     form.style.display = "none";
     removeOldLockedNotice(section);
+    rewriteSubmittedStatusBadge(section, state);
 
     const rewroteExistingNotice = rewriteExistingReviewNotice(section, state);
     if (rewroteExistingNotice) continue;
@@ -65,9 +87,7 @@ function run() {
       notice.className = state === "accepted"
         ? "rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900"
         : "rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900";
-      notice.textContent = state === "accepted"
-        ? "Return/collection evidence accepted. Next: wait for operator refund / credit note evidence."
-        : "Return/collection evidence has been reviewed. If it was held or rejected, the operator should submit corrected/additional return evidence as a new row.";
+      notice.textContent = nextStepTextForState(state);
       form.insertAdjacentElement("beforebegin", notice);
     }
   }
