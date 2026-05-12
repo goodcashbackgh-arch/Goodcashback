@@ -177,7 +177,7 @@ export default async function InternalCustomerHoldsPage({
 
           {rows.length === 0 ? <p className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">No customer hold requests match this view.</p> : null}
 
-          <div className="mt-5 grid gap-4">
+          <div className="mt-5 grid gap-3">
             {rows.map((row) => {
               const orderContext = orderContextById.get(row.order_id);
               const screenshots = screenshotsByOrderId.get(row.order_id) ?? [];
@@ -185,64 +185,47 @@ export default async function InternalCustomerHoldsPage({
               return (
               <article key={row.hold_request_id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                  <div>
+                  <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
                       <h3 className="text-lg font-semibold">{row.order_ref ?? row.order_id}</h3>
                       <span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.status)}`}>{friendly(row.status)}</span>
                       <span className="rounded-full bg-white px-2 py-1 text-xs font-semibold text-slate-700">{friendly(row.requested_scope)} hold</span>
                     </div>
                     <p className="mt-1 text-sm text-slate-600">{row.importer_name ?? "Importer"} · {row.retailer_name ?? "Retailer"}</p>
-                    <p className="mt-3 text-sm leading-6 text-slate-800">{row.reason}</p>
-                    {row.customer_contact_label ? <p className="mt-2 text-xs text-slate-500">Customer label: {row.customer_contact_label}</p> : null}
+                    <p className="mt-2 text-sm leading-6 text-slate-800">{row.reason}</p>
                   </div>
                   <div className="grid gap-2 text-sm sm:grid-cols-3 lg:min-w-[520px]">
-                    <div className="rounded-xl bg-white p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Tracking</p><p className="mt-1 font-semibold">{row.tracking_ref ?? "—"}</p></div>
-                    <div className="rounded-xl bg-white p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Line</p><p className="mt-1 font-semibold">{row.line_description ?? "—"}</p></div>
-                    <div className="rounded-xl bg-white p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Line value</p><p className="mt-1 font-semibold">{row.supplier_invoice_line_id ? `${row.line_qty ?? "—"} · ${money(row.line_amount_inc_vat_gbp)}` : "—"}</p></div>
+                    <div className="rounded-xl bg-white px-3 py-2"><p className="text-xs uppercase tracking-wide text-slate-500">Tracking</p><p className="mt-1 font-semibold">{row.tracking_ref ?? "—"}</p></div>
+                    <div className="rounded-xl bg-white px-3 py-2"><p className="text-xs uppercase tracking-wide text-slate-500">Line</p><p className="mt-1 font-semibold truncate">{row.line_description ?? "—"}</p></div>
+                    <div className="rounded-xl bg-white px-3 py-2"><p className="text-xs uppercase tracking-wide text-slate-500">Line value</p><p className="mt-1 font-semibold">{row.supplier_invoice_line_id ? `${row.line_qty ?? "—"} · ${money(row.line_amount_inc_vat_gbp)}` : "—"}</p></div>
                   </div>
                 </div>
 
-                <div className="mt-4 grid gap-3 rounded-2xl border border-slate-200 bg-white p-3 text-sm md:grid-cols-3">
-                  <div>
-                    <p className="text-xs uppercase tracking-wide text-slate-500">Declared order qty</p>
-                    <p className="mt-1 font-semibold text-slate-950">{orderContext?.total_qty_declared ?? "—"}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs uppercase tracking-wide text-slate-500">Declared goods value</p>
-                    <p className="mt-1 font-semibold text-slate-950">{money(orderContext?.order_total_gbp_declared)}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs uppercase tracking-wide text-slate-500">Original screenshots</p>
-                    <p className="mt-1 font-semibold text-slate-950">{screenshots.length}</p>
-                  </div>
+                <div className="mt-3 grid gap-2 rounded-2xl border border-slate-200 bg-white p-3 text-sm md:grid-cols-4">
+                  <div><span className="text-xs uppercase tracking-wide text-slate-500">Qty</span><p className="font-semibold text-slate-950">{orderContext?.total_qty_declared ?? "—"}</p></div>
+                  <div><span className="text-xs uppercase tracking-wide text-slate-500">Goods value</span><p className="font-semibold text-slate-950">{money(orderContext?.order_total_gbp_declared)}</p></div>
+                  <div><span className="text-xs uppercase tracking-wide text-slate-500">Screenshots</span><p className="font-semibold text-slate-950">{screenshots.length}</p></div>
+                  <div><span className="text-xs uppercase tracking-wide text-slate-500">Evidence</span><p><Link href={`/importer/orders/${row.order_id}/operations`} className="font-semibold text-sky-700">Open operations</Link></p></div>
                 </div>
 
-                <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <p className="text-sm font-semibold text-slate-950">Original order screenshots</p>
-                    <Link href={`/importer/orders/${row.order_id}/operations`} className="text-xs font-semibold text-sky-700">Open operations</Link>
-                  </div>
+                <details className="mt-3 rounded-2xl border border-slate-200 bg-white p-3 text-sm">
+                  <summary className="cursor-pointer font-semibold text-slate-900">View evidence links</summary>
                   {screenshots.length === 0 ? (
-                    <p className="mt-3 rounded-xl bg-slate-50 p-3 text-sm text-slate-600">No order screenshots are visible here. Open order operations to verify whether evidence exists or whether storage/RLS is blocking staff visibility.</p>
+                    <p className="mt-3 rounded-xl bg-slate-50 p-3 text-slate-600">No order screenshots are visible here. Open order operations to verify whether evidence exists or whether storage/RLS is blocking staff visibility.</p>
                   ) : (
-                    <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    <div className="mt-3 flex flex-wrap gap-2">
                       {screenshots.map((shot, index) => (
-                        <a key={`${shot.screenshot_url ?? index}-${index}`} href={shot.screenshot_url ?? "#"} target="_blank" rel="noreferrer" className="group rounded-xl border border-slate-200 bg-slate-50 p-2 hover:bg-white">
-                          {shot.screenshot_url ? (
-                            <img src={shot.screenshot_url} alt={shot.note ?? `Order screenshot ${index + 1}`} className="h-40 w-full rounded-lg object-cover object-top" />
-                          ) : (
-                            <div className="flex h-40 items-center justify-center rounded-lg bg-slate-100 text-sm text-slate-500">No preview</div>
-                          )}
-                          <p className="mt-2 text-xs font-semibold text-sky-700 group-hover:underline">View screenshot {shot.display_order ?? index + 1}</p>
+                        <a key={`${shot.screenshot_url ?? index}-${index}`} href={shot.screenshot_url ?? "#"} target="_blank" rel="noreferrer" className="rounded-full border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-sky-700 hover:bg-white hover:underline">
+                          Open screenshot {shot.display_order ?? index + 1}
                         </a>
                       ))}
                     </div>
                   )}
-                </div>
+                </details>
 
-                {row.supervisor_review_note ? <p className="mt-4 rounded-xl border border-slate-200 bg-white p-3 text-sm text-slate-700"><span className="font-semibold">Review note:</span> {row.supervisor_review_note}</p> : null}
+                {row.supervisor_review_note ? <p className="mt-3 rounded-xl border border-slate-200 bg-white p-3 text-sm text-slate-700"><span className="font-semibold">Review note:</span> {row.supervisor_review_note}</p> : null}
 
-                <form action={reviewCustomerHoldAction} className="mt-4 grid gap-3 rounded-2xl border border-slate-200 bg-white p-3 md:grid-cols-[180px_1fr_auto]">
+                <form action={reviewCustomerHoldAction} className="mt-3 grid gap-3 rounded-2xl border border-slate-200 bg-white p-3 md:grid-cols-[180px_1fr_auto]">
                   <input type="hidden" name="hold_request_id" value={row.hold_request_id} />
                   <select name="decision" className="rounded-xl border border-slate-300 px-3 py-2 text-sm" defaultValue="">
                     <option value="" disabled>Decision</option>
