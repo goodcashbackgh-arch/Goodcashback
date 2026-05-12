@@ -15,15 +15,15 @@ function reviewState(sectionText: string) {
 }
 
 function statusLabelForState(state: string) {
-  if (state === "accepted") return "Supervisor review accepted";
-  if (state === "hold") return "Supervisor review held";
-  if (state === "rejected") return "Supervisor review rejected";
-  return "Supervisor reviewed";
+  if (state === "accepted") return "Operator return evidence accepted";
+  if (state === "hold") return "Operator return evidence held";
+  if (state === "rejected") return "Operator return evidence rejected";
+  return "Operator return evidence reviewed";
 }
 
 function nextStepTextForState(state: string) {
-  if (state === "accepted") return "Supervisor accepted return/collection evidence. Next: wait for operator refund / credit note evidence.";
-  return "Return/collection evidence has been reviewed. If it was held or rejected, the operator should submit corrected/additional return evidence as a new row.";
+  if (state === "accepted") return "Supervisor accepted the operator’s return/collection instructions. Shipper physical collection proof is reviewed separately. Next: wait for operator refund / credit note evidence.";
+  return "Operator return/collection evidence has been reviewed. If it was held or rejected, the operator should submit corrected/additional return evidence as a new row.";
 }
 
 function rewriteSubmittedStatusBadge(section: HTMLElement, state: string) {
