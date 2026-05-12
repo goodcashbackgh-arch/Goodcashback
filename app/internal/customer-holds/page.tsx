@@ -190,7 +190,7 @@ export default async function InternalCustomerHoldsPage({
             <div>
               <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Customer pre-shipment holds</h1>
               <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
-                Review customer hold requests before shipment. Approved holds block shipment/customer invoice/Sage readiness until resolved or converted into the existing refund/replacement/no-charge exception path.
+                Review customer hold requests before shipment. Approved holds stay active until narrowed or closed through the existing exception, return, refund, or shipment-control flow.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700">
@@ -229,7 +229,7 @@ export default async function InternalCustomerHoldsPage({
           <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
             <div>
               <h2 className="text-xl font-semibold">Hold worklist</h2>
-              <p className="mt-2 text-sm leading-6 text-slate-600">Approve only where shipment or final invoice release genuinely needs to be stopped. Use resolve when the hold has been cleared or converted into the existing exception path.</p>
+              <p className="mt-2 text-sm leading-6 text-slate-600">New requests can be approved or rejected here. Approved holds should not be manually superseded from this card; narrowing happens through the customer review link when more detail becomes available.</p>
             </div>
             <Link href={includeClosed ? "/internal/customer-holds" : "/internal/customer-holds?include_closed=true"} className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">
               {includeClosed ? "Hide closed" : "Show closed"}
@@ -302,18 +302,25 @@ export default async function InternalCustomerHoldsPage({
 
                 {row.supervisor_review_note ? <p className="mt-3 rounded-xl border border-slate-200 bg-white p-3 text-sm text-slate-700"><span className="font-semibold">Review note:</span> {row.supervisor_review_note}</p> : null}
 
-                <form action={reviewCustomerHoldAction} className="mt-3 grid gap-3 rounded-2xl border border-slate-200 bg-white p-3 md:grid-cols-[180px_1fr_auto]">
-                  <input type="hidden" name="hold_request_id" value={row.hold_request_id} />
-                  <select name="decision" className="rounded-xl border border-slate-300 px-3 py-2 text-sm" defaultValue="">
-                    <option value="" disabled>Decision</option>
-                    <option value="approve">Approve hold</option>
-                    <option value="reject">Reject hold</option>
-                    <option value="resolve">Resolve / cleared</option>
-                    <option value="supersede">Supersede</option>
-                  </select>
-                  <input name="review_note" className="rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Review note / instruction" />
-                  <button className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">Save</button>
-                </form>
+                {row.status === "requested" ? (
+                  <form action={reviewCustomerHoldAction} className="mt-3 grid gap-3 rounded-2xl border border-slate-200 bg-white p-3 md:grid-cols-[180px_1fr_auto]">
+                    <input type="hidden" name="hold_request_id" value={row.hold_request_id} />
+                    <select name="decision" className="rounded-xl border border-slate-300 px-3 py-2 text-sm" defaultValue="">
+                      <option value="" disabled>Decision</option>
+                      <option value="approve">Approve hold</option>
+                      <option value="reject">Reject hold</option>
+                    </select>
+                    <input name="review_note" className="rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Approval/rejection note" />
+                    <button className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">Save</button>
+                  </form>
+                ) : row.status === "supervisor_approved" ? (
+                  <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+                    <p className="font-semibold">Approved hold is active — no supervisor decision is needed here.</p>
+                    <p className="mt-1 leading-6">Do not manually supersede or clear this card. If more detail is available, the customer/operator should narrow the hold from the customer review link. Final closure should happen through the existing exception, return, refund, or shipment-control flow.</p>
+                  </div>
+                ) : (
+                  <p className="mt-3 rounded-2xl border border-slate-200 bg-white p-3 text-sm text-slate-600">This hold is {friendly(row.status).toLowerCase()}. No supervisor decision action is available on this card.</p>
+                )}
 
                 <div className="mt-3 flex flex-wrap gap-3 text-xs font-semibold text-sky-700">
                   <Link href={`/internal/reconciliation/${row.order_id}`}>Internal reconciliation</Link>
