@@ -183,8 +183,11 @@ export default async function ShipperPage({
             <Link href="/shipper/package-receipts" className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">
               3. Package receipt actions
             </Link>
+            <Link href="/shipper/return-tasks" className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-900 hover:bg-amber-100">
+              4. Return tasks
+            </Link>
             <Link href="/shipper/shipping-documents/new" className="rounded-xl border border-sky-300 bg-sky-50 px-4 py-2 text-sm font-semibold text-sky-900 hover:bg-sky-100">
-              4. Upload shipping charge doc
+              5. Upload shipping charge doc
             </Link>
           </div>
           <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm leading-6 text-slate-700">
