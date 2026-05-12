@@ -19,6 +19,7 @@ type HoldRow = {
 };
 
 type ReturnActionRow = {
+  return_tracking_submission_id?: string | null;
   order_id: string;
   tracking_ref: string | null;
   task_status: string | null;
@@ -53,6 +54,11 @@ function returnActionMatchesHold(action: ReturnActionRow, hold: HoldRow) {
   return !hold.supplier_invoice_line_id && !hold.tracking_ref;
 }
 
+function returnActionHref(action: ReturnActionRow | undefined, status: string) {
+  const base = `/shipper/return-actions?source=customer_hold&status=${status}`;
+  return action?.return_tracking_submission_id ? `${base}#return-action-${action.return_tracking_submission_id}` : base;
+}
+
 function nextStateForHoldGroup(holds: HoldRow[], returnActions: ReturnActionRow[]) {
   const matchingActions = returnActions.filter((action) => holds.some((hold) => returnActionMatchesHold(action, hold)));
   if (matchingActions.length === 0) {
@@ -64,29 +70,32 @@ function nextStateForHoldGroup(holds: HoldRow[], returnActions: ReturnActionRow[
     };
   }
 
-  if (matchingActions.some((action) => action.task_status === "ready_to_action" || action.task_status === "held_query")) {
+  const readyAction = matchingActions.find((action) => action.task_status === "ready_to_action" || action.task_status === "held_query");
+  if (readyAction) {
     return {
       label: "Return action ready — open return action",
       className: "bg-sky-100 text-sky-900 border-sky-200",
-      href: "/shipper/return-actions?source=customer_hold&status=ready_to_action",
+      href: returnActionHref(readyAction, readyAction.task_status === "held_query" ? "held_query" : "ready_to_action"),
       cta: "Open return action",
     };
   }
 
-  if (matchingActions.some((action) => action.task_status === "submitted_for_review")) {
+  const submittedAction = matchingActions.find((action) => action.task_status === "submitted_for_review");
+  if (submittedAction) {
     return {
       label: "Return proof submitted — awaiting supervisor review",
       className: "bg-sky-100 text-sky-900 border-sky-200",
-      href: "/shipper/return-actions?source=customer_hold&status=submitted_for_review",
+      href: returnActionHref(submittedAction, "submitted_for_review"),
       cta: "View submitted proof",
     };
   }
 
-  if (matchingActions.every((action) => action.task_status === "accepted")) {
+  const acceptedAction = matchingActions.find((action) => action.task_status === "accepted");
+  if (acceptedAction && matchingActions.every((action) => action.task_status === "accepted")) {
     return {
       label: "Return accepted — physical return loop closed",
       className: "bg-emerald-100 text-emerald-900 border-emerald-200",
-      href: "/shipper/return-actions?source=customer_hold&status=accepted",
+      href: returnActionHref(acceptedAction, "accepted"),
       cta: "View closed action",
     };
   }
@@ -94,7 +103,7 @@ function nextStateForHoldGroup(holds: HoldRow[], returnActions: ReturnActionRow[
   return {
     label: "Return action in progress",
     className: "bg-slate-100 text-slate-800 border-slate-200",
-    href: "/shipper/return-actions?source=customer_hold&status=all",
+    href: returnActionHref(matchingActions[0], "all"),
     cta: "View return actions",
   };
 }
