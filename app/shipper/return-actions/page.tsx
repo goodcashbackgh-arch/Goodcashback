@@ -151,7 +151,7 @@ export default async function ShipperReturnActionsPage({
   };
 
   return (
-    <main className="min-h-screen bg-slate-50 px-4 py-6 text-slate-950 sm:px-6 sm:py-8">
+    <main className="min-h-screen scroll-smooth bg-slate-50 px-4 py-6 text-slate-950 sm:px-6 sm:py-8">
       <div className="mx-auto max-w-7xl space-y-6">
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
           <div className="flex flex-wrap gap-3 text-sm font-semibold text-sky-700">
@@ -214,7 +214,7 @@ export default async function ShipperReturnActionsPage({
               const canSubmit = task.task_status === "ready_to_action" || task.task_status === "held_query";
               const isCustomerHold = taskIsCustomerHoldReturn(task, holdRows);
               return (
-                <article key={task.return_tracking_submission_id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <article id={`return-action-${task.return_tracking_submission_id}`} key={task.return_tracking_submission_id} className="scroll-mt-6 rounded-2xl border border-slate-200 bg-slate-50 p-4">
                   <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
