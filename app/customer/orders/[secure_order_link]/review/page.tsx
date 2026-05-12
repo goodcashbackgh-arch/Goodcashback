@@ -15,7 +15,7 @@ type LineRow = {
   invoice_ref?: string | null;
   description?: string | null;
   size?: string | null;
-  retailer_sku?: string | null;
+  retailer_sku?: unknown;
   qty?: number | string | null;
   amount_inc_vat_gbp?: number | string | null;
   eligible_for_invoice_yn?: string | null;
@@ -68,6 +68,27 @@ function statusClass(status: string | null | undefined) {
   return "bg-slate-100 text-slate-700";
 }
 
+function LineCard({ line, mode = "selectable" }: { line: LineRow; mode?: "selectable" | "held" }) {
+  const size = safeText(line.size);
+  const sku = safeText(line.retailer_sku);
+  const isHeld = mode === "held";
+
+  return (
+    <label className={`flex gap-3 rounded-2xl border p-4 ${isHeld ? "border-emerald-200 bg-emerald-50 text-emerald-950" : "cursor-pointer border-slate-200 bg-slate-50 hover:bg-white"}`}>
+      {isHeld ? (
+        <span className="mt-1 rounded-full bg-emerald-100 px-2 py-1 text-xs font-semibold text-emerald-800">Already held</span>
+      ) : (
+        <input type="checkbox" name="supplier_invoice_line_ids" value={line.id} className="mt-1" />
+      )}
+      <span className="flex-1 text-sm">
+        <span className="block font-semibold">{line.description ?? "Item line"}</span>
+        <span className="mt-1 block text-slate-600">Invoice {line.invoice_ref ?? "—"} · Qty {line.qty ?? "—"} · {money(line.amount_inc_vat_gbp)}</span>
+        {size || sku ? <span className="mt-1 block text-xs text-slate-500">{size ? `Size ${size}` : ""} {sku ? `· SKU ${sku}` : ""}</span> : null}
+      </span>
+    </label>
+  );
+}
+
 export default async function CustomerOrderReviewPage({
   params,
   searchParams,
@@ -103,6 +124,13 @@ export default async function CustomerOrderReviewPage({
   const hasLines = lineRows.length > 0;
   const hasTracking = trackingRows.length > 0;
   const activeHolds = holdRows.filter((hold) => ["requested", "supervisor_approved"].includes(String(hold.status ?? "")));
+  const activeHeldLineIds = new Set(
+    activeHolds
+      .filter((hold) => hold.requested_scope === "line" && hold.supplier_invoice_line_id)
+      .map((hold) => String(hold.supplier_invoice_line_id))
+  );
+  const heldLineRows = lineRows.filter((line) => activeHeldLineIds.has(line.id));
+  const availableLineRows = lineRows.filter((line) => !activeHeldLineIds.has(line.id));
   const broadHoldToNarrow = activeHolds.find((hold) => {
     if (hold.requested_scope === "order" && (hasTracking || hasLines)) return true;
     if (hold.requested_scope === "tracking" && hasLines) return true;
@@ -124,7 +152,7 @@ export default async function CustomerOrderReviewPage({
             <div><p className="text-xs uppercase tracking-wide text-slate-500">Order</p><p className="mt-1 font-semibold">{order.order_ref ?? order.id ?? "—"}</p></div>
             <div><p className="text-xs uppercase tracking-wide text-slate-500">Retailer</p><p className="mt-1 font-semibold">{order.retailer_name ?? "—"}</p></div>
             <div><p className="text-xs uppercase tracking-wide text-slate-500">Tracking refs</p><p className="mt-1 font-semibold">{trackingRows.length}</p></div>
-            <div><p className="text-xs uppercase tracking-wide text-slate-500">Item lines</p><p className="mt-1 font-semibold">{lineRows.length}</p></div>
+            <div><p className="text-xs uppercase tracking-wide text-slate-500">Item lines</p><p className="mt-1 font-semibold">{lineRows.length} total · {heldLineRows.length} held · {availableLineRows.length} available</p></div>
           </div>
           {query.success ? <p className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">{query.success}</p> : null}
           {query.error ? <p className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-900">{query.error}</p> : null}
@@ -145,23 +173,20 @@ export default async function CustomerOrderReviewPage({
               {hasLines ? (
                 <div className="space-y-3">
                   <p className="text-sm font-semibold text-amber-950">Select every item line to keep on hold</p>
-                  <p className="text-xs leading-5 text-amber-900">You can select one or multiple lines. Each selected line becomes its own line-level hold, and clean unselected lines can continue.</p>
-                  <div className="grid gap-3">
-                    {lineRows.map((line) => {
-                      const size = safeText(line.size);
-                      const sku = safeText(line.retailer_sku);
-                      return (
-                        <label key={line.id} className="flex cursor-pointer gap-3 rounded-2xl border border-amber-200 bg-white p-4 hover:bg-amber-50">
-                          <input type="checkbox" name="supplier_invoice_line_ids" value={line.id} className="mt-1" />
-                          <span className="flex-1 text-sm">
-                            <span className="block font-semibold">{line.description ?? "Item line"}</span>
-                            <span className="mt-1 block text-slate-600">Invoice {line.invoice_ref ?? "—"} · Qty {line.qty ?? "—"} · {money(line.amount_inc_vat_gbp)}</span>
-                            {size || sku ? <span className="mt-1 block text-xs text-slate-500">{size ? `Size ${size}` : ""} {sku ? `· SKU ${sku}` : ""}</span> : null}
-                          </span>
-                        </label>
-                      );
-                    })}
-                  </div>
+                  <p className="text-xs leading-5 text-amber-900">You can select one or multiple available lines. Already-held lines are locked below so they are not submitted twice.</p>
+                  {availableLineRows.length > 0 ? (
+                    <div className="grid gap-3">
+                      {availableLineRows.map((line) => <LineCard key={line.id} line={line} />)}
+                    </div>
+                  ) : (
+                    <p className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">All available item lines already have active holds.</p>
+                  )}
+                  {heldLineRows.length > 0 ? (
+                    <div className="mt-4 space-y-2">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-emerald-800">Already held</p>
+                      {heldLineRows.map((line) => <LineCard key={`held-${line.id}`} line={line} mode="held" />)}
+                    </div>
+                  ) : null}
                 </div>
               ) : hasTracking ? (
                 <div>
@@ -175,14 +200,18 @@ export default async function CustomerOrderReviewPage({
                 </div>
               ) : null}
 
-              <label className="block text-sm font-semibold text-amber-950">
-                Updated note, optional
-                <textarea name="reason" rows={3} className="mt-2 w-full rounded-xl border border-amber-300 px-3 py-2 text-sm font-normal" placeholder={broadHoldToNarrow.reason ?? "Keep the same reason or add a clearer note."} />
-              </label>
+              {availableLineRows.length > 0 || !hasLines ? (
+                <>
+                  <label className="block text-sm font-semibold text-amber-950">
+                    Updated note, optional
+                    <textarea name="reason" rows={3} className="mt-2 w-full rounded-xl border border-amber-300 px-3 py-2 text-sm font-normal" placeholder={broadHoldToNarrow.reason ?? "Keep the same reason or add a clearer note."} />
+                  </label>
 
-              <button className="rounded-xl bg-amber-900 px-5 py-3 text-sm font-semibold text-white hover:bg-amber-800">
-                Narrow active hold
-              </button>
+                  <button className="rounded-xl bg-amber-900 px-5 py-3 text-sm font-semibold text-white hover:bg-amber-800">
+                    Narrow active hold
+                  </button>
+                </>
+              ) : null}
             </form>
           </section>
         ) : null}
@@ -227,33 +256,34 @@ export default async function CustomerOrderReviewPage({
               {hasLines ? (
                 <div className="space-y-3">
                   <p className="text-sm font-semibold">Select item(s) to hold</p>
-                  <div className="grid gap-3">
-                    {lineRows.map((line) => {
-                      const size = safeText(line.size);
-                      const sku = safeText(line.retailer_sku);
-                      return (
-                        <label key={line.id} className="flex cursor-pointer gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 hover:bg-white">
-                          <input type="checkbox" name="supplier_invoice_line_ids" value={line.id} className="mt-1" />
-                          <span className="flex-1 text-sm">
-                            <span className="block font-semibold">{line.description ?? "Item line"}</span>
-                            <span className="mt-1 block text-slate-600">Invoice {line.invoice_ref ?? "—"} · Qty {line.qty ?? "—"} · {money(line.amount_inc_vat_gbp)}</span>
-                            {size || sku ? <span className="mt-1 block text-xs text-slate-500">{size ? `Size ${size}` : ""} {sku ? `· SKU ${sku}` : ""}</span> : null}
-                          </span>
-                        </label>
-                      );
-                    })}
-                  </div>
+                  {availableLineRows.length > 0 ? (
+                    <div className="grid gap-3">
+                      {availableLineRows.map((line) => <LineCard key={line.id} line={line} />)}
+                    </div>
+                  ) : (
+                    <p className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">All item lines already have active holds.</p>
+                  )}
+                  {heldLineRows.length > 0 ? (
+                    <div className="mt-4 space-y-2">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-emerald-800">Already held</p>
+                      {heldLineRows.map((line) => <LineCard key={`held-${line.id}`} line={line} mode="held" />)}
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
 
-              <label className="block text-sm font-semibold">
-                Reason for hold
-                <textarea name="reason" required rows={4} className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm font-normal" placeholder="Tell us what should not be shipped or included in the final invoice." />
-              </label>
+              {availableLineRows.length > 0 || !hasLines ? (
+                <>
+                  <label className="block text-sm font-semibold">
+                    Reason for hold
+                    <textarea name="reason" required rows={4} className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm font-normal" placeholder="Tell us what should not be shipped or included in the final invoice." />
+                  </label>
 
-              <button className="rounded-xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-800">
-                Submit hold request
-              </button>
+                  <button className="rounded-xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-800">
+                    Submit hold request
+                  </button>
+                </>
+              ) : null}
             </form>
           </section>
         ) : null}
