@@ -64,6 +64,12 @@ const shippingFlowSteps: FlowStep[] = [
   },
   {
     step: "4",
+    title: "Sage mapping control",
+    href: "/internal/sage-mapping",
+    description: "Confirm tenant-specific Sage tax-rate and ledger/account ids before any posting adapter is enabled.",
+  },
+  {
+    step: "5",
     title: "Ready for Sage queue",
     href: "/internal/sage-ready",
     description: "One filtered queue for customer sales drafts and shipper/AP purchase invoice intents before Sage posting.",
@@ -120,6 +126,12 @@ const cards: QueueCard[] = [
     proof: "Internal sales invoice draft gate",
   },
   {
+    title: "Sage mapping control",
+    href: "/internal/sage-mapping",
+    description: "Tenant-specific Sage tax-rate and ledger/account mapping control. Required before posting adapter work.",
+    proof: "Pre-posting mapping gate",
+  },
+  {
     title: "Ready for Sage queue",
     href: "/internal/sage-ready",
     description: "One filtered accounting queue for customer sales drafts and shipper/AP purchase invoice intents before external Sage posting.",
@@ -170,7 +182,7 @@ const cards: QueueCard[] = [
   {
     title: "Accounting / VAT",
     href: "/internal/accounting-vat",
-    description: "Sage queue, released sales invoices, VAT prepayment timing, Box 1 breach and Box 6 reporting.",
+    description: "VAT reporting, released sales invoice reporting, prepayment timing, Box 1 breach and Box 6 reporting. Sage queue now sits under Ready for Sage.",
     proof: "Day 6/8 regression passed",
   },
   {
@@ -212,7 +224,7 @@ export default async function InternalPage() {
                 Staff control dashboard
               </h1>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-                Use DVA/card workflow for statement work, Shipping control centre for package/shipment work, and Ready for Sage for the combined pre-posting accounting queue.
+                Use DVA/card workflow for statement work, Shipping control centre for package/shipment work, Sage mapping for tenant accounting IDs, and Ready for Sage for the combined pre-posting accounting queue.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700">
@@ -261,7 +273,7 @@ export default async function InternalPage() {
               <p className="text-xs font-bold uppercase tracking-[0.22em] text-emerald-600">Start here for shipper-side testing</p>
               <h2 className="mt-2 text-2xl font-semibold tracking-tight">Shipping and Sage readiness workflow</h2>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-                Use these links after logging in as staff/supervisor. The flow moves from shipping truth to customer invoice draft creation, then into one Ready for Sage queue.
+                Use these links after logging in as staff/supervisor. The flow moves from shipping truth to customer invoice draft creation, Sage mapping, then one Ready for Sage queue.
               </p>
             </div>
             <Link href="/internal/sage-ready" className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-emerald-800">
@@ -269,7 +281,7 @@ export default async function InternalPage() {
             </Link>
           </div>
 
-          <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
             {shippingFlowSteps.map((step) => (
               <Link
                 key={`${step.step}-${step.href}-${step.title}`}
