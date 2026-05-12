@@ -205,13 +205,13 @@ export default async function InternalCustomerHoldsPage({
                   <div><span className="text-xs uppercase tracking-wide text-slate-500">Qty</span><p className="font-semibold text-slate-950">{orderContext?.total_qty_declared ?? "—"}</p></div>
                   <div><span className="text-xs uppercase tracking-wide text-slate-500">Goods value</span><p className="font-semibold text-slate-950">{money(orderContext?.order_total_gbp_declared)}</p></div>
                   <div><span className="text-xs uppercase tracking-wide text-slate-500">Screenshots</span><p className="font-semibold text-slate-950">{screenshots.length}</p></div>
-                  <div><span className="text-xs uppercase tracking-wide text-slate-500">Evidence</span><p><Link href={`/importer/orders/${row.order_id}/operations`} className="font-semibold text-sky-700">Open operations</Link></p></div>
+                  <div><span className="text-xs uppercase tracking-wide text-slate-500">Evidence</span><p><Link href={`/internal/reconciliation/${row.order_id}`} className="font-semibold text-sky-700">Internal review</Link></p></div>
                 </div>
 
                 <details className="mt-3 rounded-2xl border border-slate-200 bg-white p-3 text-sm">
                   <summary className="cursor-pointer font-semibold text-slate-900">View evidence links</summary>
                   {screenshots.length === 0 ? (
-                    <p className="mt-3 rounded-xl bg-slate-50 p-3 text-slate-600">No order screenshots are visible here. Open order operations to verify whether evidence exists or whether storage/RLS is blocking staff visibility.</p>
+                    <p className="mt-3 rounded-xl bg-slate-50 p-3 text-slate-600">No order screenshots are visible here. Open internal review to verify whether evidence exists or whether storage/RLS is blocking staff visibility.</p>
                   ) : (
                     <div className="mt-3 flex flex-wrap gap-2">
                       {screenshots.map((shot, index) => (
@@ -239,8 +239,7 @@ export default async function InternalCustomerHoldsPage({
                 </form>
 
                 <div className="mt-3 flex flex-wrap gap-3 text-xs font-semibold text-sky-700">
-                  <Link href={`/importer/orders/${row.order_id}/operations`}>Operator order operations</Link>
-                  <Link href={`/importer/reconciliation/${row.order_id}`}>Operator reconciliation</Link>
+                  <Link href={`/internal/reconciliation/${row.order_id}`}>Internal reconciliation</Link>
                   <Link href={`/internal/status-control/pre-sage-financial-readiness`}>Pre-Sage readiness</Link>
                 </div>
               </article>
