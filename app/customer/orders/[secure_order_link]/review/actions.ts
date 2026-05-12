@@ -38,7 +38,7 @@ export async function submitCustomerHoldRequestAction(formData: FormData) {
       redirect(`/customer/orders/${secureToken}/review?error=${encodeURIComponent(error.message)}`);
     }
 
-    redirect(`/customer/orders/${secureToken}/review?success=${encodeURIComponent(`${supplierInvoiceLineIds.length} line hold request(s) submitted`)}`);
+    redirect(`/customer/orders/${secureToken}/review?success=${encodeURIComponent(`${supplierInvoiceLineIds.length} line hold request(s) submitted for supervisor approval`)}`);
   }
 
   if (requestedScope === "line" && !supplierInvoiceLineId) {
@@ -58,7 +58,7 @@ export async function submitCustomerHoldRequestAction(formData: FormData) {
     redirect(`/customer/orders/${secureToken}/review?error=${encodeURIComponent(error.message)}`);
   }
 
-  redirect(`/customer/orders/${secureToken}/review?success=Hold+request+submitted`);
+  redirect(`/customer/orders/${secureToken}/review?success=Hold+request+submitted+for+supervisor+approval`);
 }
 
 export async function narrowCustomerHoldRequestAction(formData: FormData) {
@@ -87,7 +87,7 @@ export async function narrowCustomerHoldRequestAction(formData: FormData) {
       redirect(`/customer/orders/${secureToken}/review?error=${encodeURIComponent(error.message)}`);
     }
 
-    redirect(`/customer/orders/${secureToken}/review?success=${encodeURIComponent(`Hold narrowed to ${supplierInvoiceLineIds.length} item line(s)`)}`);
+    redirect(`/customer/orders/${secureToken}/review?success=${encodeURIComponent(`Narrowed selection submitted for supervisor approval: ${supplierInvoiceLineIds.length} item line(s)`)}`);
   }
 
   if (requestedScope === "line" && !supplierInvoiceLineId) {
@@ -107,5 +107,5 @@ export async function narrowCustomerHoldRequestAction(formData: FormData) {
     redirect(`/customer/orders/${secureToken}/review?error=${encodeURIComponent(error.message)}`);
   }
 
-  redirect(`/customer/orders/${secureToken}/review?success=Hold+narrowed+to+available+detail`);
+  redirect(`/customer/orders/${secureToken}/review?success=Narrowed+selection+submitted+for+supervisor+approval`);
 }
