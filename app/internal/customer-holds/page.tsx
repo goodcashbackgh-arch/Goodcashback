@@ -105,6 +105,16 @@ function groupLines(rows: LineContext[]) {
   return grouped;
 }
 
+function groupHoldsByOrder(rows: HoldRow[]) {
+  const grouped = new Map<string, HoldRow[]>();
+  rows.forEach((row) => {
+    const existing = grouped.get(row.order_id) ?? [];
+    existing.push(row);
+    grouped.set(row.order_id, existing);
+  });
+  return Array.from(grouped.entries()).map(([orderId, holds]) => ({ orderId, holds }));
+}
+
 export default async function InternalCustomerHoldsPage({
   searchParams,
 }: {
@@ -171,6 +181,7 @@ export default async function InternalCustomerHoldsPage({
   const screenshotsByOrderId = groupScreenshots((screenshotRows ?? []) as OrderScreenshot[]);
   const trackingByOrderId = groupTracking((trackingContextRows ?? []) as TrackingContext[]);
   const linesByOrderId = groupLines(usableLineRows);
+  const orderGroups = groupHoldsByOrder(rows);
 
   const openRows = rows.filter((row) => ["requested", "supervisor_approved"].includes(String(row.status ?? "")));
   const approvedRows = rows.filter((row) => row.status === "supervisor_approved");
@@ -190,7 +201,7 @@ export default async function InternalCustomerHoldsPage({
             <div>
               <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Customer pre-shipment holds</h1>
               <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
-                Review customer hold requests before shipment. Approved holds stay active until narrowed or closed through the existing exception, return, refund, or shipment-control flow.
+                Review customer hold requests before shipment. This worklist is grouped by order so repeated line holds do not create duplicate oversized cards.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700">
@@ -229,7 +240,7 @@ export default async function InternalCustomerHoldsPage({
           <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
             <div>
               <h2 className="text-xl font-semibold">Hold worklist</h2>
-              <p className="mt-2 text-sm leading-6 text-slate-600">New requests can be approved or rejected here. Approved holds should not be manually superseded from this card; narrowing happens through the customer review link when more detail becomes available.</p>
+              <p className="mt-2 text-sm leading-6 text-slate-600">Approve/reject only new requests. Approved holds stay active until the existing exception, refund, return, or shipment-control flow closes them.</p>
             </div>
             <Link href={includeClosed ? "/internal/customer-holds" : "/internal/customer-holds?include_closed=true"} className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">
               {includeClosed ? "Hide closed" : "Show closed"}
@@ -238,95 +249,132 @@ export default async function InternalCustomerHoldsPage({
 
           {rows.length === 0 ? <p className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">No customer hold requests match this view.</p> : null}
 
-          <div className="mt-5 grid gap-3">
-            {rows.map((row) => {
-              const orderContext = orderContextById.get(row.order_id);
-              const screenshots = screenshotsByOrderId.get(row.order_id) ?? [];
-              const trackingRows = trackingByOrderId.get(row.order_id) ?? [];
-              const lineRows = linesByOrderId.get(row.order_id) ?? [];
-              const narrowingNeeded = ["requested", "supervisor_approved"].includes(String(row.status ?? "")) && (
+          <div className="mt-5 grid gap-4">
+            {orderGroups.map(({ orderId, holds }) => {
+              const first = holds[0];
+              const orderContext = orderContextById.get(orderId);
+              const screenshots = screenshotsByOrderId.get(orderId) ?? [];
+              const trackingRows = trackingByOrderId.get(orderId) ?? [];
+              const lineRows = linesByOrderId.get(orderId) ?? [];
+              const activeGroupRows = holds.filter((row) => ["requested", "supervisor_approved"].includes(String(row.status ?? "")));
+              const requestedGroupRows = holds.filter((row) => row.status === "requested");
+              const approvedGroupRows = holds.filter((row) => row.status === "supervisor_approved");
+              const lineHoldRows = holds.filter((row) => row.requested_scope === "line");
+              const broadHoldRows = holds.filter((row) => row.requested_scope !== "line");
+              const narrowingNeeded = activeGroupRows.some((row) =>
                 (row.requested_scope === "order" && (trackingRows.length > 0 || lineRows.length > 0)) ||
                 (row.requested_scope === "tracking" && lineRows.length > 0)
               );
 
               return (
-              <article key={row.hold_request_id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <h3 className="text-lg font-semibold">{row.order_ref ?? row.order_id}</h3>
-                      <span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.status)}`}>{friendly(row.status)}</span>
-                      <span className="rounded-full bg-white px-2 py-1 text-xs font-semibold text-slate-700">{friendly(row.requested_scope)} hold</span>
-                      {narrowingNeeded ? <span className="rounded-full bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-900">Narrowing needed</span> : null}
+                <article key={orderId} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3 className="text-lg font-semibold">{first?.order_ref ?? orderId}</h3>
+                        <span className="rounded-full bg-slate-900 px-2 py-1 text-xs font-semibold text-white">{activeGroupRows.length} active</span>
+                        {requestedGroupRows.length > 0 ? <span className="rounded-full bg-sky-100 px-2 py-1 text-xs font-semibold text-sky-900">{requestedGroupRows.length} requested</span> : null}
+                        {approvedGroupRows.length > 0 ? <span className="rounded-full bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-900">{approvedGroupRows.length} approved</span> : null}
+                        {narrowingNeeded ? <span className="rounded-full bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-900">Narrowing needed</span> : null}
+                      </div>
+                      <p className="mt-1 text-sm text-slate-600">{first?.importer_name ?? "Importer"} · {first?.retailer_name ?? "Retailer"}</p>
                     </div>
-                    <p className="mt-1 text-sm text-slate-600">{row.importer_name ?? "Importer"} · {row.retailer_name ?? "Retailer"}</p>
-                    <p className="mt-2 text-sm leading-6 text-slate-800">{row.reason}</p>
+                    <div className="grid gap-2 text-sm sm:grid-cols-4 lg:min-w-[640px]">
+                      <div className="rounded-xl bg-white px-3 py-2"><p className="text-xs uppercase tracking-wide text-slate-500">Order qty</p><p className="mt-1 font-semibold">{orderContext?.total_qty_declared ?? "—"}</p></div>
+                      <div className="rounded-xl bg-white px-3 py-2"><p className="text-xs uppercase tracking-wide text-slate-500">Goods value</p><p className="mt-1 font-semibold">{money(orderContext?.order_total_gbp_declared)}</p></div>
+                      <div className="rounded-xl bg-white px-3 py-2"><p className="text-xs uppercase tracking-wide text-slate-500">Available lines</p><p className="mt-1 font-semibold">{lineRows.length}</p></div>
+                      <div className="rounded-xl bg-white px-3 py-2"><p className="text-xs uppercase tracking-wide text-slate-500">Screenshots</p><p className="mt-1 font-semibold">{screenshots.length}</p></div>
+                    </div>
                   </div>
-                  <div className="grid gap-2 text-sm sm:grid-cols-3 lg:min-w-[520px]">
-                    <div className="rounded-xl bg-white px-3 py-2"><p className="text-xs uppercase tracking-wide text-slate-500">Tracking</p><p className="mt-1 font-semibold">{row.tracking_ref ?? "—"}</p></div>
-                    <div className="rounded-xl bg-white px-3 py-2"><p className="text-xs uppercase tracking-wide text-slate-500">Line</p><p className="mt-1 font-semibold truncate">{row.line_description ?? "—"}</p></div>
-                    <div className="rounded-xl bg-white px-3 py-2"><p className="text-xs uppercase tracking-wide text-slate-500">Line value</p><p className="mt-1 font-semibold">{row.supplier_invoice_line_id ? `${row.line_qty ?? "—"} · ${money(row.line_amount_inc_vat_gbp)}` : "—"}</p></div>
-                  </div>
-                </div>
 
-                {narrowingNeeded ? (
-                  <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
-                    <p className="font-semibold">This broad hold now needs narrowing.</p>
-                    <p className="mt-1 leading-6">
-                      Available now: {trackingRows.length} tracking/package ref(s), {lineRows.length} invoice/OCR line(s). Ask the customer/operator to narrow this {friendly(row.requested_scope).toLowerCase()} hold to the available {lineRows.length > 0 ? "item line" : "tracking/package"} so clean goods can continue.
-                    </p>
-                  </div>
-                ) : null}
+                  {narrowingNeeded ? (
+                    <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+                      <p className="font-semibold">A broad hold now needs narrowing.</p>
+                      <p className="mt-1 leading-6">Available now: {trackingRows.length} tracking/package ref(s), {lineRows.length} invoice/OCR line(s). Ask the customer/operator to narrow to exact line(s) so clean goods can continue.</p>
+                    </div>
+                  ) : null}
 
-                <div className="mt-3 grid gap-2 rounded-2xl border border-slate-200 bg-white p-3 text-sm md:grid-cols-4">
-                  <div><span className="text-xs uppercase tracking-wide text-slate-500">Qty</span><p className="font-semibold text-slate-950">{orderContext?.total_qty_declared ?? "—"}</p></div>
-                  <div><span className="text-xs uppercase tracking-wide text-slate-500">Goods value</span><p className="font-semibold text-slate-950">{money(orderContext?.order_total_gbp_declared)}</p></div>
-                  <div><span className="text-xs uppercase tracking-wide text-slate-500">Screenshots</span><p className="font-semibold text-slate-950">{screenshots.length}</p></div>
-                  <div><span className="text-xs uppercase tracking-wide text-slate-500">Evidence</span><p><Link href={`/internal/reconciliation/${row.order_id}`} className="font-semibold text-sky-700">Internal review</Link></p></div>
-                </div>
+                  {lineHoldRows.length > 0 ? (
+                    <div className="mt-3 rounded-2xl border border-slate-200 bg-white p-3">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Held item lines</p>
+                      <div className="mt-2 grid gap-2">
+                        {lineHoldRows.map((row) => (
+                          <div key={row.hold_request_id} className="rounded-xl bg-slate-50 p-3 text-sm">
+                            <div className="flex flex-wrap items-start justify-between gap-2">
+                              <div className="min-w-0 flex-1">
+                                <p className="font-semibold text-slate-950">{row.line_description ?? "Item line"}</p>
+                                <p className="mt-1 text-slate-600">Qty {row.line_qty ?? "—"} · {money(row.line_amount_inc_vat_gbp)} · Tracking {row.tracking_ref ?? "—"}</p>
+                                <p className="mt-1 text-slate-700">{row.reason}</p>
+                              </div>
+                              <span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.status)}`}>{friendly(row.status)}</span>
+                            </div>
+                            {row.status === "requested" ? (
+                              <form action={reviewCustomerHoldAction} className="mt-3 grid gap-2 md:grid-cols-[150px_1fr_auto]">
+                                <input type="hidden" name="hold_request_id" value={row.hold_request_id} />
+                                <select name="decision" className="rounded-xl border border-slate-300 px-3 py-2 text-sm" defaultValue="">
+                                  <option value="" disabled>Decision</option>
+                                  <option value="approve">Approve</option>
+                                  <option value="reject">Reject</option>
+                                </select>
+                                <input name="review_note" className="rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Review note" />
+                                <button className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">Save</button>
+                              </form>
+                            ) : null}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
 
-                <details className="mt-3 rounded-2xl border border-slate-200 bg-white p-3 text-sm">
-                  <summary className="cursor-pointer font-semibold text-slate-900">View evidence links</summary>
-                  {screenshots.length === 0 ? (
-                    <p className="mt-3 rounded-xl bg-slate-50 p-3 text-slate-600">No order screenshots are visible here. Open internal review to verify whether evidence exists or whether storage/RLS is blocking staff visibility.</p>
-                  ) : (
+                  {broadHoldRows.length > 0 ? (
+                    <details className="mt-3 rounded-2xl border border-slate-200 bg-white p-3 text-sm">
+                      <summary className="cursor-pointer font-semibold text-slate-900">Broad/order/tracking holds</summary>
+                      <div className="mt-3 grid gap-2">
+                        {broadHoldRows.map((row) => (
+                          <div key={row.hold_request_id} className="rounded-xl bg-slate-50 p-3">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-semibold">{friendly(row.requested_scope)} hold</span>
+                              <span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.status)}`}>{friendly(row.status)}</span>
+                            </div>
+                            <p className="mt-1 text-slate-700">{row.reason}</p>
+                            {row.supervisor_review_note ? <p className="mt-1 text-slate-600">Review note: {row.supervisor_review_note}</p> : null}
+                            {row.status === "requested" ? (
+                              <form action={reviewCustomerHoldAction} className="mt-3 grid gap-2 md:grid-cols-[150px_1fr_auto]">
+                                <input type="hidden" name="hold_request_id" value={row.hold_request_id} />
+                                <select name="decision" className="rounded-xl border border-slate-300 px-3 py-2 text-sm" defaultValue="">
+                                  <option value="" disabled>Decision</option>
+                                  <option value="approve">Approve</option>
+                                  <option value="reject">Reject</option>
+                                </select>
+                                <input name="review_note" className="rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Review note" />
+                                <button className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">Save</button>
+                              </form>
+                            ) : null}
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  ) : null}
+
+                  <details className="mt-3 rounded-2xl border border-slate-200 bg-white p-3 text-sm">
+                    <summary className="cursor-pointer font-semibold text-slate-900">Evidence and links</summary>
                     <div className="mt-3 flex flex-wrap gap-2">
+                      <Link href={`/internal/reconciliation/${orderId}`} className="rounded-full border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-sky-700 hover:bg-white">Internal reconciliation</Link>
+                      <Link href={`/internal/status-control/pre-sage-financial-readiness`} className="rounded-full border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-sky-700 hover:bg-white">Pre-Sage readiness</Link>
                       {screenshots.map((shot, index) => (
                         <a key={`${shot.screenshot_url ?? index}-${index}`} href={shot.screenshot_url ?? "#"} target="_blank" rel="noreferrer" className="rounded-full border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-sky-700 hover:bg-white hover:underline">
-                          Open screenshot {shot.display_order ?? index + 1}
+                          Screenshot {shot.display_order ?? index + 1}
                         </a>
                       ))}
                     </div>
-                  )}
-                </details>
+                  </details>
 
-                {row.supervisor_review_note ? <p className="mt-3 rounded-xl border border-slate-200 bg-white p-3 text-sm text-slate-700"><span className="font-semibold">Review note:</span> {row.supervisor_review_note}</p> : null}
-
-                {row.status === "requested" ? (
-                  <form action={reviewCustomerHoldAction} className="mt-3 grid gap-3 rounded-2xl border border-slate-200 bg-white p-3 md:grid-cols-[180px_1fr_auto]">
-                    <input type="hidden" name="hold_request_id" value={row.hold_request_id} />
-                    <select name="decision" className="rounded-xl border border-slate-300 px-3 py-2 text-sm" defaultValue="">
-                      <option value="" disabled>Decision</option>
-                      <option value="approve">Approve hold</option>
-                      <option value="reject">Reject hold</option>
-                    </select>
-                    <input name="review_note" className="rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Approval/rejection note" />
-                    <button className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">Save</button>
-                  </form>
-                ) : row.status === "supervisor_approved" ? (
-                  <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
-                    <p className="font-semibold">Approved hold is active — no supervisor decision is needed here.</p>
-                    <p className="mt-1 leading-6">Do not manually supersede or clear this card. If more detail is available, the customer/operator should narrow the hold from the customer review link. Final closure should happen through the existing exception, return, refund, or shipment-control flow.</p>
-                  </div>
-                ) : (
-                  <p className="mt-3 rounded-2xl border border-slate-200 bg-white p-3 text-sm text-slate-600">This hold is {friendly(row.status).toLowerCase()}. No supervisor decision action is available on this card.</p>
-                )}
-
-                <div className="mt-3 flex flex-wrap gap-3 text-xs font-semibold text-sky-700">
-                  <Link href={`/internal/reconciliation/${row.order_id}`}>Internal reconciliation</Link>
-                  <Link href={`/internal/status-control/pre-sage-financial-readiness`}>Pre-Sage readiness</Link>
-                </div>
-              </article>
+                  {approvedGroupRows.length > 0 ? (
+                    <p className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+                      <span className="font-semibold">Approved hold active.</span> No extra supervisor action is needed here unless a new request is submitted. Closure should happen through exception, return, refund, or shipment-control flow.
+                    </p>
+                  ) : null}
+                </article>
               );
             })}
           </div>
