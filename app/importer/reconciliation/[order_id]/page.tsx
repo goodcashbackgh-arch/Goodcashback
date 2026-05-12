@@ -138,7 +138,7 @@ export default async function ImporterReconciliationOrderPage({
   .from("supplier_invoices")
   .select("id, order_id, invoice_ref, invoice_pdf_url, uploaded_at, ocr_extracted_at, review_status")
   .eq("order_id", orderId)
-  .not("review_status", "in", "(rejected_resubmit_required,duplicate_blocked,superseded)")
+  .or("review_status.is.null,review_status.not.in.(rejected_resubmit_required,duplicate_blocked,superseded)")
   .order("uploaded_at", { ascending: false })
   .limit(1)
   .maybeSingle();
