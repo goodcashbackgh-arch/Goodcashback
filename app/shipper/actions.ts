@@ -60,6 +60,24 @@ async function uploadShippingDocument(params: {
   return data.publicUrl || objectPath;
 }
 
+async function uploadReturnTaskProof(params: {
+  supabase: Awaited<ReturnType<typeof createClient>>;
+  returnTrackingSubmissionId: string;
+  file: File;
+}) {
+  const objectPath = `shipper-return-proofs/${params.returnTrackingSubmissionId}/${Date.now()}.${safeExt(params.file.name)}`;
+  const { error } = await params.supabase.storage
+    .from(EVIDENCE_BUCKET)
+    .upload(objectPath, params.file, { upsert: false });
+
+  if (error) {
+    throw new Error(`Return proof upload failed. Ensure bucket '${EVIDENCE_BUCKET}' exists and is writable. ${error.message}`);
+  }
+
+  const { data } = params.supabase.storage.from(EVIDENCE_BUCKET).getPublicUrl(objectPath);
+  return data.publicUrl || objectPath;
+}
+
 export async function recordPackageReceiptAction(formData: FormData) {
   const supabase = await createClient();
   const trackingSubmissionId = readString(formData, "tracking_submission_id");
@@ -103,6 +121,52 @@ export async function recordPackageReceiptAction(formData: FormData) {
   revalidatePath("/shipper");
   revalidatePath("/shipper/package-receipts");
   redirect("/shipper?success=Package%20receipt%20recorded.");
+}
+
+export async function submitReturnTaskConfirmationAction(formData: FormData) {
+  const supabase = await createClient();
+  const returnTrackingSubmissionId = readString(formData, "return_tracking_submission_id");
+  const outcome = readString(formData, "outcome");
+  const proofUrlInput = readString(formData, "proof_url");
+  const note = readString(formData, "note");
+  const proofFile = formData.get("proof_file");
+
+  if (!returnTrackingSubmissionId) {
+    redirect("/shipper/return-tasks?error=Missing%20return%20task.");
+  }
+
+  if (!["collected", "handed_to_courier", "returned_to_retailer", "unable_to_return", "query"].includes(outcome)) {
+    redirect("/shipper/return-tasks?error=Choose%20a%20valid%20return%20outcome.");
+  }
+
+  let proofFileUrl = "";
+  if (proofFile instanceof File && proofFile.size > 0) {
+    try {
+      proofFileUrl = await uploadReturnTaskProof({
+        supabase,
+        returnTrackingSubmissionId,
+        file: proofFile,
+      });
+    } catch (error) {
+      redirect(`/shipper/return-tasks?error=${encodeURIComponent(error instanceof Error ? error.message : "Return proof upload failed")}`);
+    }
+  }
+
+  const { error } = await (supabase as any).rpc("shipper_submit_return_task_confirmation_v1", {
+    p_return_tracking_submission_id: returnTrackingSubmissionId,
+    p_outcome: outcome,
+    p_proof_file_url: proofFileUrl || null,
+    p_proof_url: proofUrlInput || null,
+    p_note: note || null,
+  });
+
+  if (error) {
+    redirect(`/shipper/return-tasks?error=${encodeURIComponent(error.message)}`);
+  }
+
+  revalidatePath("/shipper/return-tasks");
+  revalidatePath("/internal/shipper-return-tasks");
+  redirect("/shipper/return-tasks?success=Return%20confirmation%20submitted%20for%20supervisor%20review.");
 }
 
 export async function submitShippingDocumentAction(formData: FormData) {
