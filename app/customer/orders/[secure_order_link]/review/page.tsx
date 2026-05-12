@@ -56,6 +56,10 @@ function friendly(value: string | null | undefined) {
   return value.replaceAll("_", " ").replace(/^./, (first) => first.toUpperCase());
 }
 
+function safeText(value: unknown) {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
 function statusClass(status: string | null | undefined) {
   if (status === "supervisor_approved") return "bg-amber-100 text-amber-900";
   if (status === "requested") return "bg-sky-100 text-sky-900";
@@ -131,7 +135,7 @@ export default async function CustomerOrderReviewPage({
             <p className="text-sm font-semibold uppercase tracking-wide text-amber-800">Action needed</p>
             <h2 className="mt-2 text-xl font-semibold text-amber-950">More detail is now available for your hold</h2>
             <p className="mt-2 text-sm leading-6 text-amber-900">
-              Your existing {friendly(broadHoldToNarrow.requested_scope).toLowerCase()} hold is still active. Please narrow it to the available {hasLines ? "item line" : "tracking/package"} so clean parts of the order can continue.
+              Your existing {friendly(broadHoldToNarrow.requested_scope).toLowerCase()} hold is still active. Please narrow it to the available {hasLines ? "item line(s)" : "tracking/package"} so clean parts of the order can continue.
             </p>
             <form action={narrowCustomerHoldRequestAction} className="mt-5 space-y-5">
               <input type="hidden" name="secure_token" value={secureToken} />
@@ -140,18 +144,23 @@ export default async function CustomerOrderReviewPage({
 
               {hasLines ? (
                 <div className="space-y-3">
-                  <p className="text-sm font-semibold text-amber-950">Select the exact item to keep on hold</p>
+                  <p className="text-sm font-semibold text-amber-950">Select every item line to keep on hold</p>
+                  <p className="text-xs leading-5 text-amber-900">You can select one or multiple lines. Each selected line becomes its own line-level hold, and clean unselected lines can continue.</p>
                   <div className="grid gap-3">
-                    {lineRows.map((line) => (
-                      <label key={line.id} className="flex cursor-pointer gap-3 rounded-2xl border border-amber-200 bg-white p-4 hover:bg-amber-50">
-                        <input type="radio" name="supplier_invoice_line_id" value={line.id} required className="mt-1" />
-                        <span className="flex-1 text-sm">
-                          <span className="block font-semibold">{line.description ?? "Item line"}</span>
-                          <span className="mt-1 block text-slate-600">Invoice {line.invoice_ref ?? "—"} · Qty {line.qty ?? "—"} · {money(line.amount_inc_vat_gbp)}</span>
-                          {line.size || line.retailer_sku ? <span className="mt-1 block text-xs text-slate-500">{line.size ? `Size ${line.size}` : ""} {line.retailer_sku ? `· SKU ${line.retailer_sku}` : ""}</span> : null}
-                        </span>
-                      </label>
-                    ))}
+                    {lineRows.map((line) => {
+                      const size = safeText(line.size);
+                      const sku = safeText(line.retailer_sku);
+                      return (
+                        <label key={line.id} className="flex cursor-pointer gap-3 rounded-2xl border border-amber-200 bg-white p-4 hover:bg-amber-50">
+                          <input type="checkbox" name="supplier_invoice_line_ids" value={line.id} className="mt-1" />
+                          <span className="flex-1 text-sm">
+                            <span className="block font-semibold">{line.description ?? "Item line"}</span>
+                            <span className="mt-1 block text-slate-600">Invoice {line.invoice_ref ?? "—"} · Qty {line.qty ?? "—"} · {money(line.amount_inc_vat_gbp)}</span>
+                            {size || sku ? <span className="mt-1 block text-xs text-slate-500">{size ? `Size ${size}` : ""} {sku ? `· SKU ${sku}` : ""}</span> : null}
+                          </span>
+                        </label>
+                      );
+                    })}
                   </div>
                 </div>
               ) : hasTracking ? (
@@ -182,7 +191,7 @@ export default async function CustomerOrderReviewPage({
           <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
             <h2 className="text-xl font-semibold">Request a hold</h2>
             <p className="mt-2 text-sm leading-6 text-slate-600">
-              If item lines are visible, select the exact item. If item lines are not available yet, request a temporary package or whole-order hold and the team will narrow it later.
+              If item lines are visible, select the exact item(s). If item lines are not available yet, request a temporary package or whole-order hold and the team will narrow it later.
             </p>
             <form action={submitCustomerHoldRequestAction} className="mt-5 space-y-5">
               <input type="hidden" name="secure_token" value={secureToken} />
@@ -217,18 +226,22 @@ export default async function CustomerOrderReviewPage({
 
               {hasLines ? (
                 <div className="space-y-3">
-                  <p className="text-sm font-semibold">Select item to hold</p>
+                  <p className="text-sm font-semibold">Select item(s) to hold</p>
                   <div className="grid gap-3">
-                    {lineRows.map((line) => (
-                      <label key={line.id} className="flex cursor-pointer gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 hover:bg-white">
-                        <input type="radio" name="supplier_invoice_line_id" value={line.id} required className="mt-1" />
-                        <span className="flex-1 text-sm">
-                          <span className="block font-semibold">{line.description ?? "Item line"}</span>
-                          <span className="mt-1 block text-slate-600">Invoice {line.invoice_ref ?? "—"} · Qty {line.qty ?? "—"} · {money(line.amount_inc_vat_gbp)}</span>
-                          {line.size || line.retailer_sku ? <span className="mt-1 block text-xs text-slate-500">{line.size ? `Size ${line.size}` : ""} {line.retailer_sku ? `· SKU ${line.retailer_sku}` : ""}</span> : null}
-                        </span>
-                      </label>
-                    ))}
+                    {lineRows.map((line) => {
+                      const size = safeText(line.size);
+                      const sku = safeText(line.retailer_sku);
+                      return (
+                        <label key={line.id} className="flex cursor-pointer gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 hover:bg-white">
+                          <input type="checkbox" name="supplier_invoice_line_ids" value={line.id} className="mt-1" />
+                          <span className="flex-1 text-sm">
+                            <span className="block font-semibold">{line.description ?? "Item line"}</span>
+                            <span className="mt-1 block text-slate-600">Invoice {line.invoice_ref ?? "—"} · Qty {line.qty ?? "—"} · {money(line.amount_inc_vat_gbp)}</span>
+                            {size || sku ? <span className="mt-1 block text-xs text-slate-500">{size ? `Size ${size}` : ""} {sku ? `· SKU ${sku}` : ""}</span> : null}
+                          </span>
+                        </label>
+                      );
+                    })}
                   </div>
                 </div>
               ) : null}
