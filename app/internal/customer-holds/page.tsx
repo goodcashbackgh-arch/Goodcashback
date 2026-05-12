@@ -24,9 +24,23 @@ type HoldRow = {
   reviewed_at: string | null;
 };
 
-function money(value: number | string | null | undefined) {
+type OrderContext = {
+  id: string;
+  total_qty_declared: number | string | null;
+  order_total_gbp_declared: number | string | null;
+  quote_total_ghs?: number | string | null;
+};
+
+type OrderScreenshot = {
+  order_id: string;
+  screenshot_url: string | null;
+  display_order: number | null;
+  note: string | null;
+};
+
+function money(value: number | string | null | undefined, currency = "GBP") {
   const parsed = Number(value ?? 0);
-  return new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" }).format(Number.isFinite(parsed) ? parsed : 0);
+  return new Intl.NumberFormat("en-GB", { style: "currency", currency }).format(Number.isFinite(parsed) ? parsed : 0);
 }
 
 function friendly(value: string | null | undefined) {
@@ -40,6 +54,16 @@ function statusClass(status: string | null | undefined) {
   if (status === "rejected") return "bg-rose-100 text-rose-900";
   if (["resolved", "converted_to_exception", "superseded"].includes(String(status ?? ""))) return "bg-emerald-100 text-emerald-900";
   return "bg-slate-100 text-slate-700";
+}
+
+function groupScreenshots(rows: OrderScreenshot[]) {
+  const grouped = new Map<string, OrderScreenshot[]>();
+  rows.forEach((row) => {
+    const existing = grouped.get(row.order_id) ?? [];
+    existing.push(row);
+    grouped.set(row.order_id, existing);
+  });
+  return grouped;
 }
 
 export default async function InternalCustomerHoldsPage({
@@ -67,6 +91,26 @@ export default async function InternalCustomerHoldsPage({
   });
 
   const rows = (data ?? []) as HoldRow[];
+  const orderIds = Array.from(new Set(rows.map((row) => row.order_id).filter(Boolean)));
+
+  const { data: orderContextRows } = orderIds.length > 0
+    ? await supabase
+        .from("orders")
+        .select("id,total_qty_declared,order_total_gbp_declared,quote_total_ghs")
+        .in("id", orderIds)
+    : { data: [] as OrderContext[] };
+
+  const { data: screenshotRows } = orderIds.length > 0
+    ? await supabase
+        .from("order_screenshots")
+        .select("order_id,screenshot_url,display_order,note")
+        .in("order_id", orderIds)
+        .order("display_order", { ascending: true })
+    : { data: [] as OrderScreenshot[] };
+
+  const orderContextById = new Map((orderContextRows ?? []).map((order) => [order.id, order as OrderContext]));
+  const screenshotsByOrderId = groupScreenshots((screenshotRows ?? []) as OrderScreenshot[]);
+
   const openRows = rows.filter((row) => ["requested", "supervisor_approved"].includes(String(row.status ?? "")));
   const approvedRows = rows.filter((row) => row.status === "supervisor_approved");
   const requestedRows = rows.filter((row) => row.status === "requested");
@@ -134,7 +178,11 @@ export default async function InternalCustomerHoldsPage({
           {rows.length === 0 ? <p className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">No customer hold requests match this view.</p> : null}
 
           <div className="mt-5 grid gap-4">
-            {rows.map((row) => (
+            {rows.map((row) => {
+              const orderContext = orderContextById.get(row.order_id);
+              const screenshots = screenshotsByOrderId.get(row.order_id) ?? [];
+
+              return (
               <article key={row.hold_request_id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                   <div>
@@ -152,6 +200,44 @@ export default async function InternalCustomerHoldsPage({
                     <div className="rounded-xl bg-white p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Line</p><p className="mt-1 font-semibold">{row.line_description ?? "—"}</p></div>
                     <div className="rounded-xl bg-white p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Line value</p><p className="mt-1 font-semibold">{row.supplier_invoice_line_id ? `${row.line_qty ?? "—"} · ${money(row.line_amount_inc_vat_gbp)}` : "—"}</p></div>
                   </div>
+                </div>
+
+                <div className="mt-4 grid gap-3 rounded-2xl border border-slate-200 bg-white p-3 text-sm md:grid-cols-3">
+                  <div>
+                    <p className="text-xs uppercase tracking-wide text-slate-500">Declared order qty</p>
+                    <p className="mt-1 font-semibold text-slate-950">{orderContext?.total_qty_declared ?? "—"}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-wide text-slate-500">Declared goods value</p>
+                    <p className="mt-1 font-semibold text-slate-950">{money(orderContext?.order_total_gbp_declared)}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-wide text-slate-500">Original screenshots</p>
+                    <p className="mt-1 font-semibold text-slate-950">{screenshots.length}</p>
+                  </div>
+                </div>
+
+                <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-sm font-semibold text-slate-950">Original order screenshots</p>
+                    <Link href={`/importer/orders/${row.order_id}/operations`} className="text-xs font-semibold text-sky-700">Open operations</Link>
+                  </div>
+                  {screenshots.length === 0 ? (
+                    <p className="mt-3 rounded-xl bg-slate-50 p-3 text-sm text-slate-600">No order screenshots are visible here. Open order operations to verify whether evidence exists or whether storage/RLS is blocking staff visibility.</p>
+                  ) : (
+                    <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                      {screenshots.map((shot, index) => (
+                        <a key={`${shot.screenshot_url ?? index}-${index}`} href={shot.screenshot_url ?? "#"} target="_blank" rel="noreferrer" className="group rounded-xl border border-slate-200 bg-slate-50 p-2 hover:bg-white">
+                          {shot.screenshot_url ? (
+                            <img src={shot.screenshot_url} alt={shot.note ?? `Order screenshot ${index + 1}`} className="h-40 w-full rounded-lg object-cover object-top" />
+                          ) : (
+                            <div className="flex h-40 items-center justify-center rounded-lg bg-slate-100 text-sm text-slate-500">No preview</div>
+                          )}
+                          <p className="mt-2 text-xs font-semibold text-sky-700 group-hover:underline">View screenshot {shot.display_order ?? index + 1}</p>
+                        </a>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 {row.supervisor_review_note ? <p className="mt-4 rounded-xl border border-slate-200 bg-white p-3 text-sm text-slate-700"><span className="font-semibold">Review note:</span> {row.supervisor_review_note}</p> : null}
@@ -175,7 +261,8 @@ export default async function InternalCustomerHoldsPage({
                   <Link href={`/internal/status-control/pre-sage-financial-readiness`}>Pre-Sage readiness</Link>
                 </div>
               </article>
-            ))}
+              );
+            })}
           </div>
         </section>
       </div>
