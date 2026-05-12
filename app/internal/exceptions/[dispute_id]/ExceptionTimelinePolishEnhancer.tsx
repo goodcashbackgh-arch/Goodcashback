@@ -24,12 +24,18 @@ function rewriteRefundEvidenceLabels() {
 }
 
 function addShipperProofReviewCta() {
+  const existingCtas = Array.from(document.querySelectorAll<HTMLElement>("[data-shipper-proof-review-cta]"));
+  if (existingCtas.length > 0) {
+    existingCtas.slice(1).forEach((node) => node.remove());
+    return;
+  }
+
   const headings = Array.from(document.querySelectorAll<HTMLElement>("h1,h2,h3"));
   const heading = headings.find((node) => normalise(node.textContent ?? "").includes("supervisor review of return tracking and uploads"));
   if (!heading) return;
 
   const section = heading.closest("section") as HTMLElement | null;
-  if (!section || section.querySelector("[data-shipper-proof-review-cta]")) return;
+  if (!section) return;
 
   const text = normalise(section.innerText ?? "");
   if (!text.includes("shipper physical collection proof is reviewed separately") && !text.includes("latest shipper confirmation")) return;
