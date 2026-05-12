@@ -3,11 +3,16 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 
 type HoldRow = {
+  hold_request_id?: string | null;
   order_id: string;
   order_ref: string | null;
   tracking_submission_id: string | null;
   tracking_ref: string | null;
   supplier_invoice_line_id: string | null;
+  line_description?: string | null;
+  line_qty?: number | string | null;
+  line_amount_inc_vat_gbp?: number | string | null;
+  reason?: string | null;
   hold_scope: string | null;
   hold_status: string | null;
   set_aside_instruction: string | null;
@@ -16,6 +21,21 @@ type HoldRow = {
 function friendly(value: string | null | undefined) {
   if (!value) return "—";
   return value.replaceAll("_", " ").replace(/^./, (first) => first.toUpperCase());
+}
+
+function money(value: number | string | null | undefined) {
+  const parsed = Number(value ?? 0);
+  return new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" }).format(Number.isFinite(parsed) ? parsed : 0);
+}
+
+function groupByOrder(rows: HoldRow[]) {
+  const grouped = new Map<string, HoldRow[]>();
+  rows.forEach((row) => {
+    const existing = grouped.get(row.order_id) ?? [];
+    existing.push(row);
+    grouped.set(row.order_id, existing);
+  });
+  return Array.from(grouped.entries()).map(([orderId, holds]) => ({ orderId, holds }));
 }
 
 export default async function ShipperCustomerHoldsPage() {
@@ -32,8 +52,18 @@ export default async function ShipperCustomerHoldsPage() {
 
   if (!shipperUser) redirect("/auth/check");
 
-  const { data, error } = await (supabase as any).rpc("shipper_customer_hold_set_aside_v1");
+  let { data, error } = await (supabase as any).rpc("shipper_customer_hold_set_aside_v2");
+  let usingFallback = false;
+
+  if (error) {
+    const fallback = await (supabase as any).rpc("shipper_customer_hold_set_aside_v1");
+    data = fallback.data;
+    error = fallback.error;
+    usingFallback = true;
+  }
+
   const rows = (data ?? []) as HoldRow[];
+  const orderGroups = groupByOrder(rows);
   const shipper = Array.isArray((shipperUser as any).shippers) ? (shipperUser as any).shippers[0] : (shipperUser as any).shippers;
 
   return (
@@ -48,10 +78,11 @@ export default async function ShipperCustomerHoldsPage() {
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Goodcashback Shipper</p>
           <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">Customer hold / set-aside instructions</h1>
           <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
-            This page only shows operational set-aside instructions approved by supervisor. It does not show customer commercial details, supplier invoice controls, VAT, Sage, or DVA/card information.
+            This page only shows operational set-aside instructions approved by supervisor. It does not show supplier invoice controls, VAT, Sage, or DVA/card information.
           </p>
           <p className="mt-3 text-sm text-slate-600">Welcome: <span className="font-semibold text-slate-900">{shipperUser.full_name}</span> · {shipper?.name ?? "Shipper"}</p>
           {error ? <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">Customer hold set-aside queue unavailable: {error.message}. Apply the latest migration before testing this page.</p> : null}
+          {usingFallback && !error ? <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">Showing fallback hold data. Apply the detailed shipper hold migration to see item descriptions, qty, and values.</p> : null}
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
@@ -61,7 +92,7 @@ export default async function ShipperCustomerHoldsPage() {
               <p className="mt-2 text-sm leading-6 text-slate-600">Do not ship packages/items shown here until supervisor clears the hold or gives updated instruction.</p>
             </div>
             <div className={`rounded-2xl px-4 py-3 text-sm font-semibold ${rows.length > 0 ? "bg-amber-100 text-amber-900" : "bg-emerald-100 text-emerald-900"}`}>
-              {rows.length} active hold(s)
+              {rows.length} active hold(s) · {orderGroups.length} order(s)
             </div>
           </div>
 
@@ -69,22 +100,51 @@ export default async function ShipperCustomerHoldsPage() {
             <p className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">No active customer hold instructions for your shipper account.</p>
           ) : (
             <div className="mt-5 grid gap-4">
-              {rows.map((row) => (
-                <article key={`${row.order_id}-${row.tracking_submission_id ?? "order"}-${row.supplier_invoice_line_id ?? "line"}`} className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
-                  <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                    <div>
-                      <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">Set aside / do not ship</p>
-                      <h3 className="mt-1 text-lg font-semibold text-amber-950">{row.order_ref ?? row.order_id}</h3>
-                      <p className="mt-2 text-sm leading-6 text-amber-900">{row.set_aside_instruction ?? "CUSTOMER HOLD — SET ASIDE"}</p>
+              {orderGroups.map(({ orderId, holds }) => {
+                const first = holds[0];
+                const lineHolds = holds.filter((row) => row.hold_scope === "line");
+                const trackingRefs = Array.from(new Set(holds.map((row) => row.tracking_ref).filter(Boolean)));
+                const hasOrderHold = holds.some((row) => row.hold_scope === "order");
+                const hasTrackingHold = holds.some((row) => row.hold_scope === "tracking");
+
+                return (
+                  <article key={orderId} className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                    <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">Set aside / do not ship</p>
+                        <h3 className="mt-1 text-lg font-semibold text-amber-950">{first?.order_ref ?? orderId}</h3>
+                        <p className="mt-2 text-sm leading-6 text-amber-900">
+                          {hasOrderHold
+                            ? "Order-level customer hold: watch for any package for this order. Do not consolidate or add to shipment until supervisor clears."
+                            : hasTrackingHold
+                              ? "Package/tracking hold: set aside the listed package. Do not add to shipment until supervisor clears."
+                              : "Item-line hold: set aside the affected item(s) if identifiable. Clean unheld items may continue only if supervisor/process allows."}
+                        </p>
+                      </div>
+                      <div className="grid gap-2 text-sm sm:grid-cols-3 lg:min-w-[560px]">
+                        <div className="rounded-xl bg-white p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Active holds</p><p className="mt-1 font-semibold">{holds.length}</p></div>
+                        <div className="rounded-xl bg-white p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Scope</p><p className="mt-1 font-semibold">{hasOrderHold ? "Order" : hasTrackingHold ? "Tracking/package" : "Line"}</p></div>
+                        <div className="rounded-xl bg-white p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Tracking/package</p><p className="mt-1 font-semibold">{trackingRefs.length > 0 ? trackingRefs.join(", ") : "Order-level / not specified"}</p></div>
+                      </div>
                     </div>
-                    <div className="grid gap-2 text-sm sm:grid-cols-3 lg:min-w-[560px]">
-                      <div className="rounded-xl bg-white p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Scope</p><p className="mt-1 font-semibold">{friendly(row.hold_scope)}</p></div>
-                      <div className="rounded-xl bg-white p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Tracking/package</p><p className="mt-1 font-semibold">{row.tracking_ref ?? "Order-level hold"}</p></div>
-                      <div className="rounded-xl bg-white p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Status</p><p className="mt-1 font-semibold">{friendly(row.hold_status)}</p></div>
-                    </div>
-                  </div>
-                </article>
-              ))}
+
+                    {lineHolds.length > 0 ? (
+                      <div className="mt-4 rounded-2xl border border-amber-200 bg-white p-3">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Held item lines</p>
+                        <div className="mt-2 grid gap-2">
+                          {lineHolds.map((row, index) => (
+                            <div key={row.hold_request_id ?? `${row.order_id}-${row.supplier_invoice_line_id ?? index}`} className="rounded-xl bg-amber-50 p-3 text-sm">
+                              <p className="font-semibold text-amber-950">{row.line_description ?? "Item line"}</p>
+                              <p className="mt-1 text-amber-900">Qty {row.line_qty ?? "—"} · {money(row.line_amount_inc_vat_gbp)} · Tracking {row.tracking_ref ?? "—"}</p>
+                              {row.reason ? <p className="mt-1 text-amber-900">Reason: {row.reason}</p> : null}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                  </article>
+                );
+              })}
             </div>
           )}
         </section>
