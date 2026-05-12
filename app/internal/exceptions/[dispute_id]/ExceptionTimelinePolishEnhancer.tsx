@@ -23,6 +23,37 @@ function rewriteRefundEvidenceLabels() {
   }
 }
 
+function addShipperProofReviewCta() {
+  const headings = Array.from(document.querySelectorAll<HTMLElement>("h1,h2,h3"));
+  const heading = headings.find((node) => normalise(node.textContent ?? "").includes("supervisor review of return tracking and uploads"));
+  if (!heading) return;
+
+  const section = heading.closest("section") as HTMLElement | null;
+  if (!section || section.querySelector("[data-shipper-proof-review-cta]")) return;
+
+  const text = normalise(section.innerText ?? "");
+  if (!text.includes("shipper physical collection proof is reviewed separately") && !text.includes("latest shipper confirmation")) return;
+
+  const cta = document.createElement("div");
+  cta.setAttribute("data-shipper-proof-review-cta", "true");
+  cta.className = "mt-4 rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-950";
+  cta.innerHTML = `
+    <p class="font-semibold">Shipper proof review is separate.</p>
+    <p class="mt-1">Use the shipper return proof review queue to accept, hold, or reject the shipper’s physical collection confirmation.</p>
+    <a href="/internal/shipper-return-tasks" class="mt-3 inline-flex rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white">Open shipper proof review queue</a>
+  `;
+
+  const refundSection = Array.from(document.querySelectorAll<HTMLElement>("section")).find((candidate) =>
+    normalise(candidate.innerText ?? "").includes("structured refund document / credit note control"),
+  );
+
+  if (refundSection) {
+    refundSection.insertAdjacentElement("beforebegin", cta);
+  } else {
+    section.appendChild(cta);
+  }
+}
+
 function cleanConversationLog() {
   const headings = Array.from(document.querySelectorAll<HTMLElement>("h1,h2,h3"));
   const heading = headings.find((node) => normalise(node.textContent ?? "") === "conversation log");
@@ -44,7 +75,7 @@ function cleanConversationLog() {
 
       card.className = "rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900";
       card.innerHTML = `
-        <p class="font-semibold">Supervisor reviewed return/collection evidence</p>
+        <p class="font-semibold">Supervisor reviewed operator return/collection evidence</p>
         <p class="mt-1">Decision: ${accepted ? "Accepted" : held ? "Held / resubmission requested" : rejected ? "Rejected" : "Reviewed"}</p>
         <p class="mt-1 text-xs text-emerald-800">${dateMatch?.[0] ?? ""}</p>
       `;
@@ -72,6 +103,7 @@ function cleanConversationLog() {
 
 function run() {
   rewriteRefundEvidenceLabels();
+  addShipperProofReviewCta();
   cleanConversationLog();
 }
 
