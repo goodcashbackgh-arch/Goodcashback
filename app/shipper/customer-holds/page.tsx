@@ -18,6 +18,13 @@ type HoldRow = {
   set_aside_instruction: string | null;
 };
 
+type ReturnActionRow = {
+  order_id: string;
+  tracking_ref: string | null;
+  task_status: string | null;
+  affected_lines?: Array<{ supplier_invoice_line_id?: string | null }> | null;
+};
+
 function friendly(value: string | null | undefined) {
   if (!value) return "—";
   return value.replaceAll("_", " ").replace(/^./, (first) => first.toUpperCase());
@@ -36,6 +43,60 @@ function groupByOrder(rows: HoldRow[]) {
     grouped.set(row.order_id, existing);
   });
   return Array.from(grouped.entries()).map(([orderId, holds]) => ({ orderId, holds }));
+}
+
+function returnActionMatchesHold(action: ReturnActionRow, hold: HoldRow) {
+  if (action.order_id !== hold.order_id) return false;
+  const affectedLineIds = new Set((action.affected_lines ?? []).map((line) => line.supplier_invoice_line_id).filter(Boolean) as string[]);
+  if (hold.supplier_invoice_line_id && affectedLineIds.has(hold.supplier_invoice_line_id)) return true;
+  if (hold.tracking_ref && action.tracking_ref === hold.tracking_ref) return true;
+  return !hold.supplier_invoice_line_id && !hold.tracking_ref;
+}
+
+function nextStateForHoldGroup(holds: HoldRow[], returnActions: ReturnActionRow[]) {
+  const matchingActions = returnActions.filter((action) => holds.some((hold) => returnActionMatchesHold(action, hold)));
+  if (matchingActions.length === 0) {
+    return {
+      label: "Set aside only — waiting for operator return instructions",
+      className: "bg-amber-100 text-amber-900 border-amber-200",
+      href: null,
+      cta: null,
+    };
+  }
+
+  if (matchingActions.some((action) => action.task_status === "ready_to_action" || action.task_status === "held_query")) {
+    return {
+      label: "Return action ready — open return action",
+      className: "bg-sky-100 text-sky-900 border-sky-200",
+      href: "/shipper/return-actions?source=customer_hold&status=ready_to_action",
+      cta: "Open return action",
+    };
+  }
+
+  if (matchingActions.some((action) => action.task_status === "submitted_for_review")) {
+    return {
+      label: "Return proof submitted — awaiting supervisor review",
+      className: "bg-sky-100 text-sky-900 border-sky-200",
+      href: "/shipper/return-actions?source=customer_hold&status=submitted_for_review",
+      cta: "View submitted proof",
+    };
+  }
+
+  if (matchingActions.every((action) => action.task_status === "accepted")) {
+    return {
+      label: "Return accepted — physical return loop closed",
+      className: "bg-emerald-100 text-emerald-900 border-emerald-200",
+      href: "/shipper/return-actions?source=customer_hold&status=accepted",
+      cta: "View closed action",
+    };
+  }
+
+  return {
+    label: "Return action in progress",
+    className: "bg-slate-100 text-slate-800 border-slate-200",
+    href: "/shipper/return-actions?source=customer_hold&status=all",
+    cta: "View return actions",
+  };
 }
 
 export default async function ShipperCustomerHoldsPage() {
@@ -62,6 +123,8 @@ export default async function ShipperCustomerHoldsPage() {
     usingFallback = true;
   }
 
+  const { data: returnActionData, error: returnActionError } = await (supabase as any).rpc("shipper_return_tasks_v1");
+  const returnActions = (returnActionData ?? []) as ReturnActionRow[];
   const rows = (data ?? []) as HoldRow[];
   const orderGroups = groupByOrder(rows);
   const shipper = Array.isArray((shipperUser as any).shippers) ? (shipperUser as any).shippers[0] : (shipperUser as any).shippers;
@@ -74,14 +137,16 @@ export default async function ShipperCustomerHoldsPage() {
             <Link href="/shipper">← Package receipt dashboard</Link>
             <Link href="/shipper/shipments">Shipment batches</Link>
             <Link href="/shipper/package-receipts">Package receipt actions</Link>
+            <Link href="/shipper/return-actions">Return actions</Link>
           </div>
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Goodcashback Shipper</p>
           <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">Customer hold / set-aside instructions</h1>
           <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
-            This page only shows operational set-aside instructions approved by supervisor. It does not show supplier invoice controls, VAT, Sage, or DVA/card information.
+            This page shows approved set-aside instructions and the next state. It does not show supplier invoice controls, VAT, Sage, or DVA/card information.
           </p>
           <p className="mt-3 text-sm text-slate-600">Welcome: <span className="font-semibold text-slate-900">{shipperUser.full_name}</span> · {shipper?.name ?? "Shipper"}</p>
           {error ? <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">Customer hold set-aside queue unavailable: {error.message}. Apply the latest migration before testing this page.</p> : null}
+          {returnActionError ? <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">Return actions state unavailable: {returnActionError.message}. Apply the latest return-action migration before testing next-state links.</p> : null}
           {usingFallback && !error ? <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">Showing fallback hold data. Apply the detailed shipper hold migration to see item descriptions, qty, and values.</p> : null}
         </section>
 
@@ -89,7 +154,7 @@ export default async function ShipperCustomerHoldsPage() {
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
             <div>
               <h2 className="text-xl font-semibold">Set-aside worklist</h2>
-              <p className="mt-2 text-sm leading-6 text-slate-600">Do not ship packages/items shown here until supervisor clears the hold or gives updated instruction.</p>
+              <p className="mt-2 text-sm leading-6 text-slate-600">Do not ship packages/items shown here. Use the next-state card to continue when operator return instructions are ready.</p>
             </div>
             <div className={`rounded-2xl px-4 py-3 text-sm font-semibold ${rows.length > 0 ? "bg-amber-100 text-amber-900" : "bg-emerald-100 text-emerald-900"}`}>
               {rows.length} active hold(s) · {orderGroups.length} order(s)
@@ -106,6 +171,7 @@ export default async function ShipperCustomerHoldsPage() {
                 const trackingRefs = Array.from(new Set(holds.map((row) => row.tracking_ref).filter(Boolean)));
                 const hasOrderHold = holds.some((row) => row.hold_scope === "order");
                 const hasTrackingHold = holds.some((row) => row.hold_scope === "tracking");
+                const nextState = nextStateForHoldGroup(holds, returnActions);
 
                 return (
                   <article key={orderId} className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
@@ -125,6 +191,17 @@ export default async function ShipperCustomerHoldsPage() {
                         <div className="rounded-xl bg-white p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Active holds</p><p className="mt-1 font-semibold">{holds.length}</p></div>
                         <div className="rounded-xl bg-white p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Scope</p><p className="mt-1 font-semibold">{hasOrderHold ? "Order" : hasTrackingHold ? "Tracking/package" : "Line"}</p></div>
                         <div className="rounded-xl bg-white p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Tracking/package</p><p className="mt-1 font-semibold">{trackingRefs.length > 0 ? trackingRefs.join(", ") : "Order-level / not specified"}</p></div>
+                      </div>
+                    </div>
+
+                    <div className={`mt-4 rounded-2xl border p-3 text-sm font-semibold ${nextState.className}`}>
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <span>{nextState.label}</span>
+                        {nextState.href && nextState.cta ? (
+                          <Link href={nextState.href} className="w-fit rounded-xl bg-white px-3 py-2 text-xs font-semibold text-slate-900 hover:bg-slate-50">
+                            {nextState.cta}
+                          </Link>
+                        ) : null}
                       </div>
                     </div>
 
