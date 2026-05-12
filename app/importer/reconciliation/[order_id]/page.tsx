@@ -135,12 +135,13 @@ export default async function ImporterReconciliationOrderPage({
   if (importerAccessError || !importerAccess) redirect("/importer");
 
   const { data: invoice, error: invoiceError } = await supabase
-    .from("supplier_invoices")
-    .select("id, order_id, invoice_ref, invoice_pdf_url, uploaded_at, ocr_extracted_at")
-    .eq("order_id", orderId)
-    .order("uploaded_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  .from("supplier_invoices")
+  .select("id, order_id, invoice_ref, invoice_pdf_url, uploaded_at, ocr_extracted_at, review_status")
+  .eq("order_id", orderId)
+  .not("review_status", "in", "(rejected_resubmit_required,duplicate_blocked,superseded)")
+  .order("uploaded_at", { ascending: false })
+  .limit(1)
+  .maybeSingle();
 
   const { data: screenshots, error: screenshotsError } = await supabase
     .from("order_screenshots")
