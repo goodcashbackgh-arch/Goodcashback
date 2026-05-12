@@ -172,6 +172,55 @@ function detailRows(body: string | null) {
   return (body ?? "").split("\n").map((line) => line.trim()).filter(Boolean);
 }
 
+function splitDetailLine(line: string) {
+  const colonIndex = line.indexOf(":");
+  if (colonIndex < 0) return { label: "", value: line.trim() };
+  return {
+    label: line.slice(0, colonIndex).trim(),
+    value: line.slice(colonIndex + 1).trim(),
+  };
+}
+
+function normaliseExternalHref(value: string) {
+  if (!value) return "";
+  if (/^https?:\/\//i.test(value)) return value;
+  if (/^www\./i.test(value)) return `https://${value}`;
+  return value;
+}
+
+function linkLabelForDetail(label: string) {
+  switch (label) {
+    case "Retailer instructions file":
+      return "Open retailer instructions";
+    case "Return label file":
+      return "Open return label";
+    case "Tracking / evidence link":
+      return "Open tracking/evidence URL";
+    case "Return proof file":
+      return "Open operator return proof";
+    default:
+      return null;
+  }
+}
+
+function isProvidedLinkValue(value: string) {
+  const normalised = value.trim().toLowerCase();
+  return Boolean(value.trim()) && normalised !== "not provided" && normalised !== "—";
+}
+
+function returnCollectionLinks(body: string | null) {
+  return detailRows(body)
+    .map(splitDetailLine)
+    .map((row) => ({ ...row, linkLabel: linkLabelForDetail(row.label) }))
+    .filter((row) => row.linkLabel && isProvidedLinkValue(row.value)) as Array<{ label: string; value: string; linkLabel: string }>;
+}
+
+function returnCollectionSummaryRows(body: string | null) {
+  return detailRows(body)
+    .map(splitDetailLine)
+    .filter((row) => !linkLabelForDetail(row.label));
+}
+
 function hasApprovedResubmission(row: RefundDocumentHistoryRow) {
   return row.supervisor_review_status === "rejected" || String(row.notes ?? "").toLowerCase().includes("supervisor resubmission request:");
 }
@@ -191,18 +240,52 @@ function ReturnHistory({ rows }: { rows: HistoryRow[] }) {
         <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">No return/collection submissions yet.</div>
       ) : (
         <div className="mt-4 divide-y divide-slate-200 overflow-hidden rounded-2xl border border-slate-200">
-          {rows.map((row) => (
-            <details key={row.id} className="group bg-white open:bg-slate-50">
-              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm hover:bg-slate-50">
-                <span className="font-semibold text-slate-900">{compactHistoryLine(row)}</span>
-                <span className="shrink-0 rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600 group-open:bg-sky-100 group-open:text-sky-700">View details</span>
-              </summary>
-              <div className="space-y-2 border-t border-slate-200 px-4 py-4 text-sm text-slate-700">
-                {detailRows(row.body).map((line, index) => <p key={`${row.id}-${index}`} className="break-words">{line}</p>)}
-                <p className="pt-2 text-xs text-slate-500">Submitted: {row.created_at ?? "—"}</p>
-              </div>
-            </details>
-          ))}
+          {rows.map((row) => {
+            const links = returnCollectionLinks(row.body);
+            const summaryRows = returnCollectionSummaryRows(row.body);
+
+            return (
+              <details key={row.id} className="group bg-white open:bg-slate-50">
+                <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm hover:bg-slate-50">
+                  <span className="font-semibold text-slate-900">{compactHistoryLine(row)}</span>
+                  <span className="shrink-0 rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600 group-open:bg-sky-100 group-open:text-sky-700">View details</span>
+                </summary>
+                <div className="space-y-3 border-t border-slate-200 px-4 py-4 text-sm text-slate-700">
+                  {summaryRows.length > 0 ? (
+                    <div className="grid gap-2 md:grid-cols-2">
+                      {summaryRows.map((item, index) => (
+                        <div key={`${row.id}-summary-${index}`} className="rounded-xl border border-slate-200 bg-white p-3">
+                          {item.label ? <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{item.label}</p> : null}
+                          <p className="mt-1 break-words font-medium text-slate-900">{item.value || "—"}</p>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  {links.length > 0 ? (
+                    <div className="rounded-2xl border border-slate-200 bg-white p-3">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Files and links</p>
+                      <div className="mt-3 grid gap-2 md:grid-cols-2">
+                        {links.map((link) => (
+                          <a
+                            key={`${row.id}-${link.label}`}
+                            href={normaliseExternalHref(link.value)}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-semibold text-sky-700 hover:bg-sky-100 hover:underline"
+                          >
+                            {link.linkLabel}
+                          </a>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  <p className="pt-2 text-xs text-slate-500">Submitted: {row.created_at ?? "—"}</p>
+                </div>
+              </details>
+            );
+          })}
         </div>
       )}
     </div>
