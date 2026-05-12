@@ -38,6 +38,18 @@ type OrderScreenshot = {
   note: string | null;
 };
 
+type TrackingContext = {
+  order_id: string;
+  id: string;
+  tracking_ref: string | null;
+};
+
+type LineContext = {
+  id: string;
+  supplier_invoice_id: string;
+  supplier_invoices?: { order_id?: string | null; review_status?: string | null } | { order_id?: string | null; review_status?: string | null }[] | null;
+};
+
 function money(value: number | string | null | undefined, currency = "GBP") {
   const parsed = Number(value ?? 0);
   return new Intl.NumberFormat("en-GB", { style: "currency", currency }).format(Number.isFinite(parsed) ? parsed : 0);
@@ -62,6 +74,33 @@ function groupScreenshots(rows: OrderScreenshot[]) {
     const existing = grouped.get(row.order_id) ?? [];
     existing.push(row);
     grouped.set(row.order_id, existing);
+  });
+  return grouped;
+}
+
+function groupTracking(rows: TrackingContext[]) {
+  const grouped = new Map<string, TrackingContext[]>();
+  rows.forEach((row) => {
+    const existing = grouped.get(row.order_id) ?? [];
+    existing.push(row);
+    grouped.set(row.order_id, existing);
+  });
+  return grouped;
+}
+
+function getInvoiceOrderId(line: LineContext) {
+  const invoice = Array.isArray(line.supplier_invoices) ? line.supplier_invoices[0] : line.supplier_invoices;
+  return invoice?.order_id ?? null;
+}
+
+function groupLines(rows: LineContext[]) {
+  const grouped = new Map<string, LineContext[]>();
+  rows.forEach((row) => {
+    const orderId = getInvoiceOrderId(row);
+    if (!orderId) return;
+    const existing = grouped.get(orderId) ?? [];
+    existing.push(row);
+    grouped.set(orderId, existing);
   });
   return grouped;
 }
@@ -108,8 +147,30 @@ export default async function InternalCustomerHoldsPage({
         .order("display_order", { ascending: true })
     : { data: [] as OrderScreenshot[] };
 
+  const { data: trackingContextRows } = orderIds.length > 0
+    ? await supabase
+        .from("order_tracking_submissions")
+        .select("id,order_id,tracking_ref")
+        .in("order_id", orderIds)
+        .is("superseded_at", null)
+    : { data: [] as TrackingContext[] };
+
+  const { data: lineContextRows } = orderIds.length > 0
+    ? await supabase
+        .from("supplier_invoice_lines")
+        .select("id,supplier_invoice_id,supplier_invoices!inner(order_id,review_status)")
+        .in("supplier_invoices.order_id", orderIds)
+    : { data: [] as LineContext[] };
+
+  const usableLineRows = ((lineContextRows ?? []) as LineContext[]).filter((line) => {
+    const invoice = Array.isArray(line.supplier_invoices) ? line.supplier_invoices[0] : line.supplier_invoices;
+    return !["rejected_resubmit_required", "duplicate_blocked", "superseded"].includes(String(invoice?.review_status ?? ""));
+  });
+
   const orderContextById = new Map((orderContextRows ?? []).map((order) => [order.id, order as OrderContext]));
   const screenshotsByOrderId = groupScreenshots((screenshotRows ?? []) as OrderScreenshot[]);
+  const trackingByOrderId = groupTracking((trackingContextRows ?? []) as TrackingContext[]);
+  const linesByOrderId = groupLines(usableLineRows);
 
   const openRows = rows.filter((row) => ["requested", "supervisor_approved"].includes(String(row.status ?? "")));
   const approvedRows = rows.filter((row) => row.status === "supervisor_approved");
@@ -181,6 +242,12 @@ export default async function InternalCustomerHoldsPage({
             {rows.map((row) => {
               const orderContext = orderContextById.get(row.order_id);
               const screenshots = screenshotsByOrderId.get(row.order_id) ?? [];
+              const trackingRows = trackingByOrderId.get(row.order_id) ?? [];
+              const lineRows = linesByOrderId.get(row.order_id) ?? [];
+              const narrowingNeeded = ["requested", "supervisor_approved"].includes(String(row.status ?? "")) && (
+                (row.requested_scope === "order" && (trackingRows.length > 0 || lineRows.length > 0)) ||
+                (row.requested_scope === "tracking" && lineRows.length > 0)
+              );
 
               return (
               <article key={row.hold_request_id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
@@ -190,6 +257,7 @@ export default async function InternalCustomerHoldsPage({
                       <h3 className="text-lg font-semibold">{row.order_ref ?? row.order_id}</h3>
                       <span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.status)}`}>{friendly(row.status)}</span>
                       <span className="rounded-full bg-white px-2 py-1 text-xs font-semibold text-slate-700">{friendly(row.requested_scope)} hold</span>
+                      {narrowingNeeded ? <span className="rounded-full bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-900">Narrowing needed</span> : null}
                     </div>
                     <p className="mt-1 text-sm text-slate-600">{row.importer_name ?? "Importer"} · {row.retailer_name ?? "Retailer"}</p>
                     <p className="mt-2 text-sm leading-6 text-slate-800">{row.reason}</p>
@@ -200,6 +268,15 @@ export default async function InternalCustomerHoldsPage({
                     <div className="rounded-xl bg-white px-3 py-2"><p className="text-xs uppercase tracking-wide text-slate-500">Line value</p><p className="mt-1 font-semibold">{row.supplier_invoice_line_id ? `${row.line_qty ?? "—"} · ${money(row.line_amount_inc_vat_gbp)}` : "—"}</p></div>
                   </div>
                 </div>
+
+                {narrowingNeeded ? (
+                  <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+                    <p className="font-semibold">This broad hold now needs narrowing.</p>
+                    <p className="mt-1 leading-6">
+                      Available now: {trackingRows.length} tracking/package ref(s), {lineRows.length} invoice/OCR line(s). Ask the customer/operator to narrow this {friendly(row.requested_scope).toLowerCase()} hold to the available {lineRows.length > 0 ? "item line" : "tracking/package"} so clean goods can continue.
+                    </p>
+                  </div>
+                ) : null}
 
                 <div className="mt-3 grid gap-2 rounded-2xl border border-slate-200 bg-white p-3 text-sm md:grid-cols-4">
                   <div><span className="text-xs uppercase tracking-wide text-slate-500">Qty</span><p className="font-semibold text-slate-950">{orderContext?.total_qty_declared ?? "—"}</p></div>
