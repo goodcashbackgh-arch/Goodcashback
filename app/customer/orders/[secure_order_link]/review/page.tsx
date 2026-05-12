@@ -57,7 +57,10 @@ function friendly(value: string | null | undefined) {
 }
 
 function safeText(value: unknown) {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.toLowerCase() === "[object object]") return null;
+  return trimmed;
 }
 
 function statusClass(status: string | null | undefined) {
@@ -76,14 +79,14 @@ function LineCard({ line, mode = "selectable" }: { line: LineRow; mode?: "select
   return (
     <label className={`flex gap-3 rounded-2xl border p-4 ${isHeld ? "border-emerald-200 bg-emerald-50 text-emerald-950" : "cursor-pointer border-slate-200 bg-slate-50 hover:bg-white"}`}>
       {isHeld ? (
-        <span className="mt-1 rounded-full bg-emerald-100 px-2 py-1 text-xs font-semibold text-emerald-800">Already held</span>
+        <span className="mt-1 h-fit rounded-full bg-emerald-100 px-2 py-1 text-xs font-semibold text-emerald-800">Held</span>
       ) : (
-        <input type="checkbox" name="supplier_invoice_line_ids" value={line.id} className="mt-1" />
+        <input type="checkbox" name="supplier_invoice_line_ids" value={line.id} className="mt-1 h-5 w-5 rounded border-slate-300 text-slate-900" />
       )}
-      <span className="flex-1 text-sm">
-        <span className="block font-semibold">{line.description ?? "Item line"}</span>
-        <span className="mt-1 block text-slate-600">Invoice {line.invoice_ref ?? "—"} · Qty {line.qty ?? "—"} · {money(line.amount_inc_vat_gbp)}</span>
-        {size || sku ? <span className="mt-1 block text-xs text-slate-500">{size ? `Size ${size}` : ""} {sku ? `· SKU ${sku}` : ""}</span> : null}
+      <span className="min-w-0 flex-1 text-sm">
+        <span className="block font-semibold leading-5">{line.description ?? "Item line"}</span>
+        <span className="mt-1 block text-slate-600">Qty {line.qty ?? "—"} · {money(line.amount_inc_vat_gbp)}</span>
+        <span className="mt-1 block text-xs text-slate-500">Invoice {line.invoice_ref ?? "—"}{size ? ` · Size ${size}` : ""}{sku ? ` · SKU ${sku}` : ""}</span>
       </span>
     </label>
   );
