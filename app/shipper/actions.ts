@@ -23,6 +23,13 @@ function safeExt(fileName: string) {
   return (ext ?? "bin").toLowerCase().replace(/[^a-z0-9]/g, "") || "bin";
 }
 
+function returnActionsRedirect(params: { message: string; type: "success" | "error"; status?: string; returnTrackingSubmissionId?: string }) {
+  const query = new URLSearchParams();
+  if (params.status) query.set("status", params.status);
+  query.set(params.type, params.message);
+  return `/shipper/return-actions?${query.toString()}${params.returnTrackingSubmissionId ? `#return-action-${params.returnTrackingSubmissionId}` : ""}`;
+}
+
 async function uploadReceiptEvidence(params: {
   supabase: Awaited<ReturnType<typeof createClient>>;
   trackingSubmissionId: string;
@@ -132,11 +139,11 @@ export async function submitReturnTaskConfirmationAction(formData: FormData) {
   const proofFile = formData.get("proof_file");
 
   if (!returnTrackingSubmissionId) {
-    redirect("/shipper/return-tasks?error=Missing%20return%20task.");
+    redirect(returnActionsRedirect({ type: "error", message: "Missing return task." }));
   }
 
   if (!["collected", "handed_to_courier", "returned_to_retailer", "unable_to_return", "query"].includes(outcome)) {
-    redirect("/shipper/return-tasks?error=Choose%20a%20valid%20return%20outcome.");
+    redirect(returnActionsRedirect({ type: "error", message: "Choose a valid return outcome.", returnTrackingSubmissionId }));
   }
 
   let proofFileUrl = "";
@@ -148,7 +155,11 @@ export async function submitReturnTaskConfirmationAction(formData: FormData) {
         file: proofFile,
       });
     } catch (error) {
-      redirect(`/shipper/return-tasks?error=${encodeURIComponent(error instanceof Error ? error.message : "Return proof upload failed")}`);
+      redirect(returnActionsRedirect({
+        type: "error",
+        message: error instanceof Error ? error.message : "Return proof upload failed",
+        returnTrackingSubmissionId,
+      }));
     }
   }
 
@@ -161,12 +172,22 @@ export async function submitReturnTaskConfirmationAction(formData: FormData) {
   });
 
   if (error) {
-    redirect(`/shipper/return-tasks?error=${encodeURIComponent(error.message)}`);
+    redirect(returnActionsRedirect({
+      type: "error",
+      message: error.message,
+      returnTrackingSubmissionId,
+    }));
   }
 
+  revalidatePath("/shipper/return-actions");
   revalidatePath("/shipper/return-tasks");
   revalidatePath("/internal/shipper-return-tasks");
-  redirect("/shipper/return-tasks?success=Return%20confirmation%20submitted%20for%20supervisor%20review.");
+  redirect(returnActionsRedirect({
+    type: "success",
+    status: "submitted_for_review",
+    message: "Return confirmation submitted for supervisor review.",
+    returnTrackingSubmissionId,
+  }));
 }
 
 export async function submitShippingDocumentAction(formData: FormData) {
