@@ -98,7 +98,6 @@ export default async function CustomerOrderReviewPage({
   const holdRows = payload.holds ?? [];
   const hasLines = lineRows.length > 0;
   const hasTracking = trackingRows.length > 0;
-  const defaultScope = hasLines ? "line" : hasTracking ? "tracking" : "order";
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-6 text-slate-950 sm:px-6 sm:py-8">
@@ -126,6 +125,7 @@ export default async function CustomerOrderReviewPage({
           </p>
           <form action={submitCustomerHoldRequestAction} className="mt-5 space-y-5">
             <input type="hidden" name="secure_token" value={secureToken} />
+            <input type="hidden" name="customer_contact_label" value="" />
 
             {hasLines ? (
               <input type="hidden" name="requested_scope" value="line" />
@@ -171,11 +171,6 @@ export default async function CustomerOrderReviewPage({
                 </div>
               </div>
             ) : null}
-
-            <label className="block text-sm font-semibold">
-              Your name / WhatsApp label, optional
-              <input name="customer_contact_label" className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm font-normal" placeholder="e.g. Ama - WhatsApp ending 1234" />
-            </label>
 
             <label className="block text-sm font-semibold">
               Reason for hold
