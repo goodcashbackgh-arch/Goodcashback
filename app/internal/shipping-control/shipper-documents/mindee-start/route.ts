@@ -58,7 +58,7 @@ function getShippingModelId() {
 }
 
 function getShippingWebhookId() {
-  return process.env.MINDEE_SHIPPING_DOCUMENT_WEBHOOK_ID?.trim() || process.env.MINDEE_INVOICE_WEBHOOK_ID?.trim() || "";
+  return process.env.MINDEE_SHIPPING_DOCUMENT_WEBHOOK_ID?.trim() || "";
 }
 
 function mindeeWebhookIdsFormValue(webhookId: string) {
@@ -210,7 +210,7 @@ export async function POST(request: Request) {
   const webhookId = getShippingWebhookId();
   if (!webhookId) {
     return redirectBack(request, {
-      error: "MINDEE_SHIPPING_DOCUMENT_WEBHOOK_ID or MINDEE_INVOICE_WEBHOOK_ID is not configured. Configure the webhook first so OCR completes automatically without a fetch button.",
+      error: "MINDEE_SHIPPING_DOCUMENT_WEBHOOK_ID is not configured. Create a Mindee webhook endpoint for /api/mindee/shipping-webhook and store that endpoint ID here.",
     });
   }
 
