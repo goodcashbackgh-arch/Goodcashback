@@ -87,6 +87,10 @@ function firstDateFrom(record: Record<string, unknown>, keys: string[]) {
   return null;
 }
 
+function hasInferenceResult(raw: unknown) {
+  return Boolean(getByPath(raw, ["inference", "result", "fields"]) || getByPath(raw, ["result", "fields"]));
+}
+
 function extractMindeeJobId(raw: unknown) {
   if (!raw || typeof raw !== "object") return null;
   const obj = raw as Record<string, unknown>;
@@ -123,9 +127,21 @@ function normalizeV2InvoiceLine(line: unknown, lineOrder: number) {
   if (!line || typeof line !== "object") return null;
   const outer = line as Record<string, unknown>;
   const row = outer.fields && typeof outer.fields === "object" ? outer.fields as Record<string, unknown> : outer;
-  const description = stringValue(row.description) ?? stringValue(row.name) ?? stringValue(row.label) ?? stringValue(row.product_name) ?? stringValue(row.product_code) ?? `OCR line ${lineOrder}`;
+  const description =
+    stringValue(row.description) ??
+    stringValue(row.name) ??
+    stringValue(row.label) ??
+    stringValue(row.product_name) ??
+    stringValue(row.product_code) ??
+    `OCR line ${lineOrder}`;
   const qty = Math.max(0, Math.round(numberValue(row.quantity) ?? numberValue(row.qty) ?? 1));
-  const amount = numberValue(row.total_amount) ?? numberValue(row.total_price) ?? numberValue(row.amount) ?? numberValue(row.line_total) ?? null;
+  const amount =
+    numberValue(row.total_amount) ??
+    numberValue(row.total_price) ??
+    numberValue(row.amount) ??
+    numberValue(row.line_total) ??
+    numberValue(row.unit_price) ??
+    null;
   if (!description || amount === null || amount < 0) return null;
   return { description, quantity: qty, amount_gbp: amount };
 }
@@ -187,12 +203,6 @@ export async function POST(request: Request) {
     });
   }
 
-  const secret = process.env.MINDEE_SHIPPING_WEBHOOK_SECRET?.trim() || process.env.MINDEE_WEBHOOK_SECRET?.trim();
-  if (secret) {
-    const supplied = request.headers.get("x-goodcashback-webhook-secret")?.trim();
-    if (supplied !== secret) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-  }
-
   const raw = await request.json().catch(() => null);
   if (!raw || typeof raw !== "object") return NextResponse.json({ error: "invalid json" }, { status: 400 });
 
@@ -210,7 +220,18 @@ export async function POST(request: Request) {
     .maybeSingle();
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  if (!shippingDoc) return NextResponse.json({ error: "no matching shipping document found for Mindee webhook" }, { status: 404 });
+  if (!shippingDoc) return NextResponse.json({ error: "no matching shipping document found for Mindee webhook", job_id: jobId, inference_id: inferenceId }, { status: 404 });
+
+  if (!hasInferenceResult(raw)) {
+    return NextResponse.json({
+      ok: true,
+      processed: false,
+      reason: "Webhook payload did not contain inference.result.fields yet.",
+      shipping_document_id: shippingDoc.id,
+      job_id: jobId,
+      inference_id: inferenceId,
+    });
+  }
 
   const parsed = parseMindeeV2InvoiceResult(raw);
   const { data: saveData, error: saveError } = await (supabaseAdmin as any).rpc("internal_save_shipping_mindee_ocr_result_v1", {
@@ -231,5 +252,11 @@ export async function POST(request: Request) {
 
   if (saveError) return NextResponse.json({ error: saveError.message }, { status: 500 });
   const row = Array.isArray(saveData) ? saveData[0] : null;
-  return NextResponse.json({ ok: true, shipping_document_id: shippingDoc.id, ocr_match_status: row?.ocr_match_status ?? null });
+  return NextResponse.json({
+    ok: true,
+    processed: true,
+    shipping_document_id: shippingDoc.id,
+    ocr_match_status: row?.ocr_match_status ?? null,
+    inserted_line_count: row?.inserted_line_count ?? parsed.lines.length,
+  });
 }
