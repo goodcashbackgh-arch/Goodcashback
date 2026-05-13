@@ -171,12 +171,21 @@ export default async function InternalShippingDocumentsPage({ searchParams }: { 
           </div>
 
           {ocrEligibleRows.length > 0 ? (
-            <form method="post" action="/internal/shipping-control/shipper-documents/mindee-start" className="mt-4 rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-950">
-              {ocrEligibleRows.map((row) => <input key={row.shipping_document_id} type="hidden" name="shipping_document_id" value={row.shipping_document_id} />)}
+            <div className="mt-4 rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-950">
               <p className="font-semibold">Bulk OCR available</p>
-              <p className="mt-1">This sends every currently filtered not-started document to OCR. Results return automatically by webhook.</p>
-              <button className="mt-3 rounded-xl bg-sky-700 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-800">Send all filtered not-started to OCR ({ocrEligibleRows.length})</button>
-            </form>
+              <p className="mt-1">First run the no-credit preflight. Only send to Mindee after preflight passes.</p>
+              <div className="mt-3 flex flex-wrap gap-3">
+                <form method="post" action="/internal/shipping-control/shipper-documents/mindee-start">
+                  <input type="hidden" name="dry_run" value="1" />
+                  {ocrEligibleRows.map((row) => <input key={row.shipping_document_id} type="hidden" name="shipping_document_id" value={row.shipping_document_id} />)}
+                  <button className="rounded-xl border border-sky-300 bg-white px-4 py-2 text-sm font-semibold text-sky-900 hover:bg-sky-100">Preflight all filtered — no Mindee credit ({ocrEligibleRows.length})</button>
+                </form>
+                <form method="post" action="/internal/shipping-control/shipper-documents/mindee-start">
+                  {ocrEligibleRows.map((row) => <input key={row.shipping_document_id} type="hidden" name="shipping_document_id" value={row.shipping_document_id} />)}
+                  <button className="rounded-xl bg-sky-700 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-800">Send all filtered to Mindee OCR ({ocrEligibleRows.length})</button>
+                </form>
+              </div>
+            </div>
           ) : null}
 
           {rows.length === 0 ? (
@@ -184,8 +193,9 @@ export default async function InternalShippingDocumentsPage({ searchParams }: { 
           ) : (
             <form method="post" action="/internal/shipping-control/shipper-documents/mindee-start" className="mt-5">
               <div className="mb-3 flex flex-wrap items-center gap-3">
-                <button className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">Send selected to OCR</button>
-                <p className="text-xs text-slate-500">Only not-started rows can be selected. Failed OCR should be corrected manually unless there was a technical reason to retry.</p>
+                <button name="dry_run" value="1" className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">Preflight selected — no Mindee credit</button>
+                <button className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">Send selected to Mindee OCR</button>
+                <p className="text-xs text-slate-500">Only not-started rows can be selected. Preflight checks eligibility and file access without calling Mindee.</p>
               </div>
               <div className="overflow-x-auto rounded-2xl border border-slate-200">
                 <table className="min-w-full divide-y divide-slate-200 text-sm">
