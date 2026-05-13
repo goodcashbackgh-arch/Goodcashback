@@ -363,6 +363,11 @@ export default async function ImporterPage() {
                         <Link className={needsInvoiceResubmission ? "font-semibold text-rose-700 underline" : "text-sky-700 underline"} href={`${operationsHref}#invoice`}>{needsInvoiceResubmission ? "Upload corrected invoice" : "Upload invoice"}</Link>
                         <Link className="text-sky-700 underline" href={`${operationsHref}#tracking`}>Add tracking</Link>
                         {hasInvoice ? <Link className="text-sky-700 underline" href={`/importer/reconciliation/${order.id}`}>Reconcile</Link> : null}
+                        {hasInvoice && hasTracking ? (
+                          <Link className="font-semibold text-emerald-700 underline" href={`/importer/delivery-allocation/${order.id}`}>Assign tracking to items</Link>
+                        ) : hasInvoice ? (
+                          <span className="text-xs text-slate-400">Assign items after tracking</span>
+                        ) : null}
                       </div>
                     </td>
                   </tr>
