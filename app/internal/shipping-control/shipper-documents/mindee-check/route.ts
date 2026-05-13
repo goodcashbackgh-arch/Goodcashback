@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/utils/supabase/server";
 
+const MINDEE_V2_API_BASE = "https://api-v2.mindee.net/v2";
+
 function redirectBack(request: Request, params: Record<string, string>) {
   const fallback = new URL("/internal/shipping-control/shipper-documents", new URL(request.url).origin);
   const referer = request.headers.get("referer");
@@ -128,6 +130,19 @@ function extractMindeeInferenceId(raw: unknown) {
   return recordValue(inference?.id ?? job?.inference_id ?? obj.inference_id ?? obj.id);
 }
 
+function parseMindeeDetail(raw: unknown) {
+  if (!raw || typeof raw !== "object") return "";
+  const obj = raw as Record<string, unknown>;
+  const detail = obj.detail ?? obj.title ?? obj.message ?? obj.error ?? obj.errors;
+  if (detail === undefined || detail === null) return "";
+  return typeof detail === "string" ? detail.slice(0, 700) : JSON.stringify(detail).slice(0, 700);
+}
+
+function isCompleteStatus(status: string | null) {
+  const normal = (status ?? "").toLowerCase();
+  return ["completed", "complete", "processed", "done", "success", "succeeded"].includes(normal);
+}
+
 function extractPagesConsumed(raw: unknown) {
   const candidates = [
     getByPath(raw, ["inference", "file", "page_count"]),
@@ -147,9 +162,20 @@ function normalizeV2InvoiceLine(line: unknown, lineOrder: number) {
   if (!line || typeof line !== "object") return null;
   const outer = line as Record<string, unknown>;
   const row = outer.fields && typeof outer.fields === "object" ? outer.fields as Record<string, unknown> : outer;
-  const description = stringValue(row.description) ?? stringValue(row.name) ?? stringValue(row.label) ?? stringValue(row.product_name) ?? stringValue(row.product_code) ?? `OCR line ${lineOrder}`;
+  const description =
+    stringValue(row.description) ??
+    stringValue(row.name) ??
+    stringValue(row.label) ??
+    stringValue(row.product_name) ??
+    stringValue(row.product_code) ??
+    `OCR line ${lineOrder}`;
   const qty = Math.max(0, Math.round(numberValue(row.quantity) ?? numberValue(row.qty) ?? 1));
-  const amount = numberValue(row.total_amount) ?? numberValue(row.total_price) ?? numberValue(row.amount) ?? numberValue(row.line_total) ?? null;
+  const amount =
+    numberValue(row.total_amount) ??
+    numberValue(row.total_price) ??
+    numberValue(row.amount) ??
+    numberValue(row.line_total) ??
+    null;
   if (!description || amount === null || amount < 0) return null;
   return { description, quantity: qty, amount_gbp: amount };
 }
@@ -192,7 +218,8 @@ function getMindeeKey() {
   return process.env.MINDEE_V2_API_KEY?.trim() || process.env.MINDEE_API_KEY?.trim() || "";
 }
 
-async function fetchMindeeUrl(url: string, apiKey: string) {
+async function fetchMindeeApi(pathOrUrl: string, apiKey: string) {
+  const url = /^https?:\/\//i.test(pathOrUrl) ? pathOrUrl : `${MINDEE_V2_API_BASE}${pathOrUrl}`;
   const response = await fetch(url, {
     method: "GET",
     headers: { Accept: "application/json", Authorization: apiKey },
@@ -206,7 +233,7 @@ async function fetchMindeeUrl(url: string, apiKey: string) {
 export async function POST(request: Request) {
   const formData = await request.formData();
   const shippingDocumentId = cleanText(formData.get("shipping_document_id"));
-  if (!shippingDocumentId) return redirectBack(request, { error: "Select one shipping document to check." });
+  if (!shippingDocumentId) return redirectBack(request, { error: "Select one shipping document to fetch/save." });
 
   const apiKey = getMindeeKey();
   if (!apiKey) return redirectBack(request, { error: "MINDEE_V2_API_KEY is not configured." });
@@ -223,64 +250,104 @@ export async function POST(request: Request) {
     .maybeSingle();
 
   if (!staff || !["admin", "supervisor"].includes(String(staff.role_type))) {
-    return redirectBack(request, { error: "Only admin/supervisor staff can check shipper document OCR." });
+    return redirectBack(request, { error: "Only admin/supervisor staff can fetch shipper document OCR." });
   }
 
   const { data: contextData, error: contextError } = await (supabase as any).rpc("internal_shipping_mindee_polling_context_v1", {
     p_shipping_document_id: shippingDocumentId,
   });
   if (contextError) return redirectBack(request, { error: contextError.message });
+
   const doc = Array.isArray(contextData) ? contextData[0] : null;
   if (!doc) return redirectBack(request, { error: "Active shipping document not found." });
   if (doc.review_status === "accepted_current" || doc.review_status === "superseded") {
     return redirectBack(request, { error: "Accepted/superseded shipping document is locked." });
   }
-  if (!doc.mindee_job_id && !doc.mindee_inference_id) return redirectBack(request, { error: "No Mindee job/inference id found for this document." });
 
-  const firstUrl = cleanText(doc.result_url) || cleanText(doc.polling_url);
-  if (!firstUrl) {
-    return redirectBack(request, { error: "No stored Mindee polling_url/result_url found. Do not resend; inspect ocr_raw_json for this document." });
+  let jobId = cleanText(doc.mindee_job_id);
+  let inferenceId = cleanText(doc.mindee_inference_id);
+
+  if (!jobId && !inferenceId) {
+    return redirectBack(request, { error: "This document has no Mindee job/inference id to fetch. Do not send again unless you intend to consume another page." });
   }
 
-  const first = await fetchMindeeUrl(firstUrl, apiKey);
-  if (first.response.status === 404) {
-    return redirectBack(request, { success: "Mindee says the result is not ready yet (404). Not resent." });
+  if (!inferenceId && jobId) {
+    const jobFetch = await fetchMindeeApi(`/jobs/${encodeURIComponent(jobId)}`, apiKey);
+    const status = cleanText(jobField(jobFetch.raw, "status"));
+    const nextInferenceId = extractMindeeInferenceId(jobFetch.raw);
+    const resultUrl = stringValue(jobField(jobFetch.raw, "result_url"));
+
+    if (!jobFetch.response.ok) {
+      if (jobFetch.response.status === 404) {
+        return redirectBack(request, { success: `Mindee job ${jobId} is not ready or is not available yet (404). No new page was sent.` });
+      }
+      return redirectBack(request, { error: `Mindee job fetch failed (${jobFetch.response.status}). ${parseMindeeDetail(jobFetch.raw) || "No detail returned."}` });
+    }
+
+    if (nextInferenceId) inferenceId = nextInferenceId;
+
+    if (!inferenceId && resultUrl) {
+      const resultFetch = await fetchMindeeApi(resultUrl, apiKey);
+      if (!resultFetch.response.ok) {
+        return redirectBack(request, { error: `Mindee result fetch failed (${resultFetch.response.status}). ${parseMindeeDetail(resultFetch.raw) || "No detail returned."}` });
+      }
+      const parsed = parseMindeeV2InvoiceResult(resultFetch.raw);
+      const { data: saveData, error: saveError } = await (supabase as any).rpc("internal_staff_save_shipping_mindee_ocr_result_v1", {
+        p_shipping_document_id: doc.shipping_document_id,
+        p_model_id: doc.mindee_model_id,
+        p_http_status: 200,
+        p_mindee_job_id: extractMindeeJobId(resultFetch.raw) ?? jobId,
+        p_mindee_inference_id: extractMindeeInferenceId(resultFetch.raw),
+        p_raw_json: resultFetch.raw,
+        p_ocr_shipper_name: parsed.ocrShipperName,
+        p_ocr_reference_text: parsed.ocrReferenceText,
+        p_ocr_document_ref: parsed.ocrDocumentRef,
+        p_ocr_document_date: parsed.ocrDocumentDate,
+        p_ocr_total_amount: parsed.ocrTotalAmount,
+        p_pages_consumed: extractPagesConsumed(resultFetch.raw),
+        p_lines: parsed.lines,
+      });
+      if (saveError) return redirectBack(request, { error: saveError.message });
+      const row = Array.isArray(saveData) ? saveData[0] : null;
+      return redirectBack(request, { success: `Mindee OCR result saved. Inserted ${row?.inserted_line_count ?? parsed.lines.length} OCR line(s). Match status: ${row?.ocr_match_status ?? "needs review"}.` });
+    }
+
+    if (!inferenceId) {
+      const stillProcessing = !isCompleteStatus(status);
+      return redirectBack(request, { success: `Mindee job ${jobId} is still ${status || (stillProcessing ? "processing" : "waiting for inference id")}. No new page was sent.` });
+    }
   }
-  if (!first.response.ok) return redirectBack(request, { error: `Mindee check failed (${first.response.status}).` });
 
-  const status = cleanText(jobField(first.raw, "status")).toLowerCase();
-  const liveResultUrl = stringValue(jobField(first.raw, "result_url")) ?? stringValue(getByPath(first.raw, ["inference", "result_url"]));
-  const errorMessage = stringValue(getByPath(first.raw, ["job", "error", "message"])) ?? stringValue(jobField(first.raw, "error"));
-
-  if (["processing", "queued", "created"].includes(status)) {
-    return redirectBack(request, { success: `Mindee job is still ${status}. Not resent.` });
-  }
-  if (["failed", "failure", "error"].includes(status)) {
-    return redirectBack(request, { error: `Mindee job failed: ${errorMessage ?? "No detail returned."}` });
+  if (!inferenceId) {
+    return redirectBack(request, { success: `Mindee job ${jobId || "—"} has no inference id yet. Wait briefly, then fetch/save again. No new page was sent.` });
   }
 
-  const resultRaw = liveResultUrl && liveResultUrl !== firstUrl ? (await fetchMindeeUrl(liveResultUrl, apiKey)).raw : first.raw;
-  const parsed = parseMindeeV2InvoiceResult(resultRaw);
-  const jobId = extractMindeeJobId(resultRaw) ?? doc.mindee_job_id;
-  const inferenceId = extractMindeeInferenceId(resultRaw) ?? doc.mindee_inference_id;
+  const inferenceFetch = await fetchMindeeApi(`/inferences/${encodeURIComponent(inferenceId)}`, apiKey);
+  if (!inferenceFetch.response.ok) {
+    if (inferenceFetch.response.status === 404) {
+      return redirectBack(request, { success: `Mindee inference ${inferenceId} is not ready yet (404). No new page was sent.` });
+    }
+    return redirectBack(request, { error: `Mindee inference fetch failed (${inferenceFetch.response.status}). ${parseMindeeDetail(inferenceFetch.raw) || "No detail returned."}` });
+  }
 
+  const parsed = parseMindeeV2InvoiceResult(inferenceFetch.raw);
   const { data: saveData, error: saveError } = await (supabase as any).rpc("internal_staff_save_shipping_mindee_ocr_result_v1", {
     p_shipping_document_id: doc.shipping_document_id,
     p_model_id: doc.mindee_model_id,
     p_http_status: 200,
-    p_mindee_job_id: jobId,
-    p_mindee_inference_id: inferenceId,
-    p_raw_json: resultRaw,
+    p_mindee_job_id: extractMindeeJobId(inferenceFetch.raw) ?? jobId,
+    p_mindee_inference_id: extractMindeeInferenceId(inferenceFetch.raw) ?? inferenceId,
+    p_raw_json: inferenceFetch.raw,
     p_ocr_shipper_name: parsed.ocrShipperName,
     p_ocr_reference_text: parsed.ocrReferenceText,
     p_ocr_document_ref: parsed.ocrDocumentRef,
     p_ocr_document_date: parsed.ocrDocumentDate,
     p_ocr_total_amount: parsed.ocrTotalAmount,
-    p_pages_consumed: extractPagesConsumed(resultRaw),
+    p_pages_consumed: extractPagesConsumed(inferenceFetch.raw),
     p_lines: parsed.lines,
   });
 
   if (saveError) return redirectBack(request, { error: saveError.message });
   const row = Array.isArray(saveData) ? saveData[0] : null;
-  return redirectBack(request, { success: `Mindee result saved. Match status: ${row?.ocr_match_status ?? "needs review"}.` });
+  return redirectBack(request, { success: `Mindee OCR result saved. Inserted ${row?.inserted_line_count ?? parsed.lines.length} OCR line(s). Match status: ${row?.ocr_match_status ?? "needs review"}.` });
 }
