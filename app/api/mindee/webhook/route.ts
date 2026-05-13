@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/utils/supabase/server";
+import { supabaseAdmin } from "@/lib/supabase/admin";
 
 function recordValue(value: unknown) {
   if (value === undefined || value === null || value === "") return null;
@@ -175,6 +176,78 @@ function parseMindeeV2InvoiceResult(raw: unknown) {
   return { ocrInvoiceRef, ocrRetailerName, ocrInvoiceDate, ocrInvoiceTotal, lines, flags };
 }
 
+function parseShippingReferenceText(raw: unknown, fields: Record<string, unknown>, fallbackInvoiceRef: string | null) {
+  const referenceParts = [
+    fallbackInvoiceRef,
+    firstStringFrom(fields, ["purchase_order", "po_number", "order_number", "booking_ref", "tracking_number", "reference", "document_number"]),
+    stringValue(getByPath(raw, ["inference", "result", "raw_text"])),
+    stringValue(getByPath(raw, ["inference", "raw_text"])),
+  ].filter(Boolean);
+  return referenceParts.join(" ").trim() || null;
+}
+
+function parseShippingMindeeResult(raw: unknown) {
+  const fields = firstRecordCandidate(raw, [
+    ["inference", "result", "fields"],
+    ["inference", "result", "prediction"],
+    ["inference", "result"],
+    ["result", "fields"],
+    ["result"],
+    ["document", "inference", "prediction"],
+  ]);
+  const parsed = parseMindeeV2InvoiceResult(raw);
+  const lines = parsed.lines.map((line: any) => ({
+    description: line.description,
+    quantity: line.qty,
+    amount_gbp: line.amount_inc_vat_gbp,
+  }));
+  return {
+    ocrShippertName: parsed.ocrRetailerName,
+    ocrReferenceText: parseShippingReferenceText(raw, fields, parsed.ocrInvoiceRef),
+    ocrDocumentRef: parsed.ocrInvoiceRef,
+    ocrDocumentDate: parsed.ocrInvoiceDate,
+    ocrTotalAmount: parsed.ocrInvoiceTotal,
+    lines,
+  };
+}
+
+async function trySaveShippingDocumentResult(raw: unknown, jobId: string | null, inferenceId: string | null) {
+  const filters = [jobId ? `mindee_job_id.eq.${jobId}` : "", inferenceId ? `mindee_inference_id.eq.${inferenceId}` : ""].filter(Boolean).join(",");
+  if (!filters) return null;
+
+  const { data: shippingDoc, error } = await supabaseAdmin
+    .from("shipping_documents")
+    .select("id, mindee_model_id")
+    .or(filters)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) return { handled: true, response: NextResponse.json({ error: error.message }, { status: 500 }) };
+  if (!shippingDoc) return null;
+
+  const parsed = parseShippingMindeeResult(raw);
+  const { data: saveData, error: saveError } = await (supabaseAdmin as any).rpc("internal_save_shipping_mindee_ocr_result_v1", {
+    p_shipping_document_id: shippingDoc.id,
+    p_model_id: shippingDoc.mindee_model_id,
+    p_http_status: 200,
+    p_mindee_job_id: jobId,
+    p_mindee_inference_id: inferenceId,
+    p_raw_json: raw,
+    p_ocr_shipper_name: parsed.ocrShippertName,
+    p_ocr_reference_text: parsed.ocrReferenceText,
+    p_ocr_document_ref: parsed.ocrDocumentRef,
+    p_ocr_document_date: parsed.ocrDocumentDate,
+    p_ocr_total_amount: parsed.ocrTotalAmount,
+    p_pages_consumed: extractPagesConsumed(raw),
+    p_lines: parsed.lines,
+  });
+
+  if (saveError) return { handled: true, response: NextResponse.json({ error: saveError.message }, { status: 500 }) };
+  const row = Array.isArray(saveData) ? saveData[0] : null;
+  return { handled: true, response: NextResponse.json({ ok: true, shipping_document_id: shippingDoc.id, ocr_match_status: row?.ocr_match_status ?? null }) };
+}
+
 export async function POST(request: Request) {
   const secret = process.env.MINDEE_WEBHOOK_SECRET?.trim();
   if (secret) {
@@ -189,6 +262,9 @@ export async function POST(request: Request) {
   const inferenceId = extractMindeeInferenceId(raw);
   if (!jobId && !inferenceId) return NextResponse.json({ error: "missing job/inference id" }, { status: 400 });
 
+  const shippingResult = await trySaveShippingDocumentResult(raw, jobId, inferenceId);
+  if (shippingResult?.handled) return shippingResult.response;
+
   const supabase = await createClient();
   const { data: invoice, error: invoiceError } = await supabase
     .from("supplier_invoices")
@@ -199,7 +275,7 @@ export async function POST(request: Request) {
     .maybeSingle();
 
   if (invoiceError) return NextResponse.json({ error: invoiceError.message }, { status: 500 });
-  if (!invoice) return NextResponse.json({ error: "supplier invoice not found for Mindee webhook" }, { status: 404 });
+  if (!invoice) return NextResponse.json({ error: "no matching supplier invoice or shipping document found for Mindee webhook" }, { status: 404 });
 
   const parsed = parseMindeeV2InvoiceResult(raw);
   const { error: saveError } = await supabase.rpc("staff_save_mindee_invoice_ocr_result", {
