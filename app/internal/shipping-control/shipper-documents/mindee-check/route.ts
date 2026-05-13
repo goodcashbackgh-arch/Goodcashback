@@ -59,18 +59,6 @@ function getByPath(root: unknown, path: string[]) {
   return current ?? null;
 }
 
-function jobRecord(raw: unknown) {
-  if (!raw || typeof raw !== "object") return {} as Record<string, unknown>;
-  const root = raw as Record<string, unknown>;
-  if (root.job && typeof root.job === "object" && !Array.isArray(root.job)) return root.job as Record<string, unknown>;
-  return root;
-}
-
-function jobField(raw: unknown, key: string) {
-  const job = jobRecord(raw);
-  return job[key] ?? (raw && typeof raw === "object" ? (raw as Record<string, unknown>)[key] : null) ?? null;
-}
-
 function firstRecordCandidate(root: unknown, paths: string[][]) {
   for (const path of paths) {
     const candidate = getByPath(root, path);
@@ -111,6 +99,18 @@ function firstDateFrom(record: Record<string, unknown>, keys: string[]) {
   return null;
 }
 
+function jobRecord(raw: unknown) {
+  if (!raw || typeof raw !== "object") return {} as Record<string, unknown>;
+  const root = raw as Record<string, unknown>;
+  if (root.job && typeof root.job === "object" && !Array.isArray(root.job)) return root.job as Record<string, unknown>;
+  return root;
+}
+
+function jobField(raw: unknown, key: string) {
+  const job = jobRecord(raw);
+  return job[key] ?? (raw && typeof raw === "object" ? (raw as Record<string, unknown>)[key] : null) ?? null;
+}
+
 function extractMindeeJobId(raw: unknown) {
   if (!raw || typeof raw !== "object") return null;
   const obj = raw as Record<string, unknown>;
@@ -147,23 +147,11 @@ function normalizeV2InvoiceLine(line: unknown, lineOrder: number) {
   if (!line || typeof line !== "object") return null;
   const outer = line as Record<string, unknown>;
   const row = outer.fields && typeof outer.fields === "object" ? outer.fields as Record<string, unknown> : outer;
-  const description =
-    stringValue(row.description) ??
-    stringValue(row.name) ??
-    stringValue(row.label) ??
-    stringValue(row.product_name) ??
-    stringValue(row.product_code) ??
-    `OCR line ${lineOrder}`;
+  const description = stringValue(row.description) ?? stringValue(row.name) ?? stringValue(row.label) ?? stringValue(row.product_name) ?? stringValue(row.product_code) ?? `OCR line ${lineOrder}`;
   const qty = Math.max(0, Math.round(numberValue(row.quantity) ?? numberValue(row.qty) ?? 1));
-  const amount =
-    numberValue(row.total_amount) ??
-    numberValue(row.total_price) ??
-    numberValue(row.amount) ??
-    numberValue(row.line_total) ??
-    null;
-  const sku = stringValue(row.product_code) ?? stringValue(row.sku) ?? stringValue(row.reference);
+  const amount = numberValue(row.total_amount) ?? numberValue(row.total_price) ?? numberValue(row.amount) ?? numberValue(row.line_total) ?? null;
   if (!description || amount === null || amount < 0) return null;
-  return { retailer_sku: sku, description, qty, amount_inc_vat_gbp: amount };
+  return { description, quantity: qty, amount_gbp: amount };
 }
 
 function parseMindeeV2InvoiceResult(raw: unknown) {
@@ -175,10 +163,10 @@ function parseMindeeV2InvoiceResult(raw: unknown) {
     ["result"],
     ["document", "inference", "prediction"],
   ]);
-  const ocrInvoiceRef = firstStringFrom(fields, ["invoice_number", "invoice_ref", "invoice_id", "reference", "document_number"]);
-  const ocrRetailerName = firstStringFrom(fields, ["supplier_name", "supplier", "vendor_name", "seller_name", "company_name"]);
-  const ocrInvoiceDate = firstDateFrom(fields, ["invoice_date", "date", "issued_date", "document_date"]);
-  const ocrInvoiceTotal = firstNumberFrom(fields, ["total_amount", "total", "total_incl", "total_inc_vat", "amount_due", "grand_total"]);
+  const ocrDocumentRef = firstStringFrom(fields, ["invoice_number", "invoice_ref", "invoice_id", "reference", "document_number"]);
+  const ocrShipperName = firstStringFrom(fields, ["supplier_name", "supplier", "vendor_name", "seller_name", "company_name"]);
+  const ocrDocumentDate = firstDateFrom(fields, ["invoice_date", "date", "issued_date", "document_date"]);
+  const ocrTotalAmount = firstNumberFrom(fields, ["total_amount", "total", "total_incl", "total_inc_vat", "amount_due", "grand_total"]);
   const lineItems = firstArrayCandidate(raw, [
     ["inference", "result", "fields", "line_items", "items"],
     ["inference", "result", "fields", "items", "items"],
@@ -191,57 +179,25 @@ function parseMindeeV2InvoiceResult(raw: unknown) {
     ["document", "inference", "prediction", "line_items"],
   ]);
   const lines = lineItems.map((line, index) => normalizeV2InvoiceLine(line, index + 1)).filter(Boolean);
-  return { fields, ocrInvoiceRef, ocrRetailerName, ocrInvoiceDate, ocrInvoiceTotal, lines };
-}
-
-function parseShippingReferenceText(raw: unknown, fields: Record<string, unknown>, fallbackInvoiceRef: string | null) {
-  const referenceParts = [
-    fallbackInvoiceRef,
+  const referenceText = [
+    ocrDocumentRef,
     firstStringFrom(fields, ["purchase_order", "po_number", "order_number", "booking_ref", "tracking_number", "reference", "document_number"]),
     stringValue(getByPath(raw, ["inference", "result", "raw_text"])),
     stringValue(getByPath(raw, ["inference", "raw_text"])),
-  ].filter(Boolean);
-  return referenceParts.join(" ").trim() || null;
-}
-
-function parseShippingMindeeResult(raw: unknown) {
-  const parsed = parseMindeeV2InvoiceResult(raw);
-  const lines = parsed.lines.map((line: any) => ({
-    description: line.description,
-    quantity: line.qty,
-    amount_gbp: line.amount_inc_vat_gbp,
-  }));
-  return {
-    ocrShipperName: parsed.ocrRetailerName,
-    ocrReferenceText: parseShippingReferenceText(raw, parsed.fields, parsed.ocrInvoiceRef),
-    ocrDocumentRef: parsed.ocrInvoiceRef,
-    ocrDocumentDate: parsed.ocrInvoiceDate,
-    ocrTotalAmount: parsed.ocrInvoiceTotal,
-    lines,
-  };
+  ].filter(Boolean).join(" ").trim() || null;
+  return { ocrShipperName, ocrReferenceText: referenceText, ocrDocumentRef, ocrDocumentDate, ocrTotalAmount, lines };
 }
 
 function getMindeeKey() {
   return process.env.MINDEE_V2_API_KEY?.trim() || process.env.MINDEE_API_KEY?.trim() || "";
 }
 
-async function fetchMindeeJob(jobId: string, apiKey: string) {
-  const response = await fetch(`https://api-v2.mindee.net/v2/jobs/${jobId}`, {
+async function fetchMindeeUrl(url: string, apiKey: string) {
+  const response = await fetch(url, {
     method: "GET",
     headers: { Accept: "application/json", Authorization: apiKey },
     cache: "no-store",
-  });
-  const raw = await response.json().catch(() => null);
-  return { response, raw };
-}
-
-async function fetchMindeeResultFromJob(jobRaw: unknown, apiKey: string) {
-  const resultUrl = stringValue(jobField(jobRaw, "result_url")) ?? stringValue(getByPath(jobRaw, ["inference", "result_url"]));
-  if (!resultUrl) return null;
-  const response = await fetch(resultUrl, {
-    method: "GET",
-    headers: { Accept: "application/json", Authorization: apiKey },
-    cache: "no-store",
+    redirect: "follow",
   });
   const raw = await response.json().catch(() => null);
   return { response, raw };
@@ -270,26 +226,32 @@ export async function POST(request: Request) {
     return redirectBack(request, { error: "Only admin/supervisor staff can check shipper document OCR." });
   }
 
-  const { data: detailData, error: detailError } = await (supabase as any).rpc("internal_shipping_document_detail_v1", {
+  const { data: contextData, error: contextError } = await (supabase as any).rpc("internal_shipping_mindee_polling_context_v1", {
     p_shipping_document_id: shippingDocumentId,
   });
-
-  if (detailError) return redirectBack(request, { error: detailError.message });
-  const doc = Array.isArray(detailData) ? detailData[0] : null;
+  if (contextError) return redirectBack(request, { error: contextError.message });
+  const doc = Array.isArray(contextData) ? contextData[0] : null;
   if (!doc) return redirectBack(request, { error: "Active shipping document not found." });
   if (doc.review_status === "accepted_current" || doc.review_status === "superseded") {
     return redirectBack(request, { error: "Accepted/superseded shipping document is locked." });
   }
-  if (!doc.mindee_job_id) return redirectBack(request, { error: "No Mindee job id found for this document." });
+  if (!doc.mindee_job_id && !doc.mindee_inference_id) return redirectBack(request, { error: "No Mindee job/inference id found for this document." });
 
-  const job = await fetchMindeeJob(doc.mindee_job_id, apiKey);
-  if (!job.response.ok) {
-    return redirectBack(request, { error: `Mindee job check failed (${job.response.status}).` });
+  const firstUrl = cleanText(doc.result_url) || cleanText(doc.polling_url);
+  if (!firstUrl) {
+    return redirectBack(request, { error: "No stored Mindee polling_url/result_url found. Do not resend; inspect ocr_raw_json for this document." });
   }
 
-  const status = cleanText(jobField(job.raw, "status")).toLowerCase();
-  const resultUrl = stringValue(jobField(job.raw, "result_url"));
-  const errorMessage = stringValue(getByPath(job.raw, ["job", "error", "message"])) ?? stringValue(jobField(job.raw, "error"));
+  const first = await fetchMindeeUrl(firstUrl, apiKey);
+  if (first.response.status === 404) {
+    return redirectBack(request, { success: "Mindee says the result is not ready yet (404). Not resent." });
+  }
+  if (!first.response.ok) return redirectBack(request, { error: `Mindee check failed (${first.response.status}).` });
+
+  const status = cleanText(jobField(first.raw, "status")).toLowerCase();
+  const liveResultUrl = stringValue(jobField(first.raw, "result_url")) ?? stringValue(getByPath(first.raw, ["inference", "result_url"]));
+  const errorMessage = stringValue(getByPath(first.raw, ["job", "error", "message"])) ?? stringValue(jobField(first.raw, "error"));
+
   if (["processing", "queued", "created"].includes(status)) {
     return redirectBack(request, { success: `Mindee job is still ${status}. Not resent.` });
   }
@@ -297,30 +259,24 @@ export async function POST(request: Request) {
     return redirectBack(request, { error: `Mindee job failed: ${errorMessage ?? "No detail returned."}` });
   }
 
-  const result = await fetchMindeeResultFromJob(job.raw, apiKey);
-  if (!result) {
-    return redirectBack(request, { success: `Mindee job status is ${status || "unknown"}${resultUrl ? " with result_url unreadable" : " with no result_url"}. Not resent.` });
-  }
-  if (!result.response.ok) {
-    return redirectBack(request, { error: `Mindee result fetch failed (${result.response.status}).` });
-  }
+  const resultRaw = liveResultUrl && liveResultUrl !== firstUrl ? (await fetchMindeeUrl(liveResultUrl, apiKey)).raw : first.raw;
+  const parsed = parseMindeeV2InvoiceResult(resultRaw);
+  const jobId = extractMindeeJobId(resultRaw) ?? doc.mindee_job_id;
+  const inferenceId = extractMindeeInferenceId(resultRaw) ?? doc.mindee_inference_id;
 
-  const parsed = parseShippingMindeeResult(result.raw);
-  const jobId = extractMindeeJobId(result.raw) ?? doc.mindee_job_id;
-  const inferenceId = extractMindeeInferenceId(result.raw) ?? doc.mindee_inference_id;
   const { data: saveData, error: saveError } = await (supabase as any).rpc("internal_staff_save_shipping_mindee_ocr_result_v1", {
     p_shipping_document_id: doc.shipping_document_id,
     p_model_id: doc.mindee_model_id,
     p_http_status: 200,
     p_mindee_job_id: jobId,
     p_mindee_inference_id: inferenceId,
-    p_raw_json: result.raw,
+    p_raw_json: resultRaw,
     p_ocr_shipper_name: parsed.ocrShipperName,
     p_ocr_reference_text: parsed.ocrReferenceText,
     p_ocr_document_ref: parsed.ocrDocumentRef,
     p_ocr_document_date: parsed.ocrDocumentDate,
     p_ocr_total_amount: parsed.ocrTotalAmount,
-    p_pages_consumed: extractPagesConsumed(result.raw),
+    p_pages_consumed: extractPagesConsumed(resultRaw),
     p_lines: parsed.lines,
   });
 
