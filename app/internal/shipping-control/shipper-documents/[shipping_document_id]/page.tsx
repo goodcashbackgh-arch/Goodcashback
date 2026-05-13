@@ -29,6 +29,23 @@ type DetailRow = {
   extracted_total_amount: number | string | null;
   package_count: number | string | null;
   item_qty: number | string | null;
+  ocr_match_status?: string | null;
+  ocr_match_summary_json?: Record<string, unknown> | null;
+  ocr_shipper_name?: string | null;
+  ocr_reference_text?: string | null;
+  ocr_document_ref?: string | null;
+  ocr_document_date?: string | null;
+  ocr_total_amount?: number | string | null;
+  mindee_job_id?: string | null;
+  mindee_inference_id?: string | null;
+  mindee_error_message?: string | null;
+};
+
+type OcrLineRow = {
+  line_order: number;
+  description: string | null;
+  quantity: number | string | null;
+  amount_gbp: number | string | null;
 };
 
 type ResubmissionRequestRow = {
@@ -60,9 +77,10 @@ function friendly(value: string | null | undefined) {
 }
 
 function statusClass(status: string | null | undefined) {
-  if (!status || ["uploaded_pending_ocr", "ocr_pending", "needs_supervisor_review", "not_started"].includes(status)) return "bg-amber-100 text-amber-800";
-  if (["accepted_current", "resubmission_approved"].includes(status)) return "bg-emerald-100 text-emerald-800";
-  if (["rejected_resubmit_required"].includes(status)) return "bg-rose-100 text-rose-800";
+  if (!status || ["uploaded_pending_ocr", "ocr_pending", "needs_supervisor_review", "not_started", "queued", "processing"].includes(status)) return "bg-amber-100 text-amber-800";
+  if (["accepted_current", "resubmission_approved", "matched"].includes(status)) return "bg-emerald-100 text-emerald-800";
+  if (["rejected_resubmit_required", "mismatch", "failed"].includes(status)) return "bg-rose-100 text-rose-800";
+  if (["needs_review"].includes(status)) return "bg-sky-100 text-sky-800";
   if (["superseded"].includes(status)) return "bg-slate-200 text-slate-700";
   return "bg-slate-100 text-slate-700";
 }
@@ -73,6 +91,20 @@ function normalizeLink(value: string | null | undefined) {
   if (/^[a-z][a-z0-9+.-]*:/i.test(raw)) return raw;
   if (raw.startsWith("//")) return `https:${raw}`;
   return `https://${raw}`;
+}
+
+function matchValue(summary: Record<string, unknown> | null | undefined, key: string) {
+  const value = summary?.[key];
+  if (value === true) return "Yes";
+  if (value === false) return "No";
+  if (value === null || value === undefined || value === "") return "—";
+  return String(value);
+}
+
+function matchTone(value: string) {
+  if (value === "Yes") return "border-emerald-200 bg-emerald-50 text-emerald-900";
+  if (value === "No") return "border-rose-200 bg-rose-50 text-rose-900";
+  return "border-slate-200 bg-slate-50 text-slate-700";
 }
 
 export default async function ShippingDocumentReviewDetailPage({ params, searchParams }: { params: Promise<{ shipping_document_id: string }>; searchParams?: Promise<{ success?: string; error?: string }> }) {
@@ -98,9 +130,17 @@ export default async function ShippingDocumentReviewDetailPage({ params, searchP
   const rows = (data ?? []) as DetailRow[];
   const doc = rows[0] ?? null;
 
+  let ocrLines: OcrLineRow[] = [];
+  let ocrLinesError: string | null = null;
   let resubmissionRequests: ResubmissionRequestRow[] = [];
   let resubmissionError: string | null = null;
   if (doc) {
+    const { data: lineData, error: lineError } = await (supabase as any).rpc("internal_shipping_document_ocr_lines_v1", {
+      p_shipping_document_id: shippingDocumentId,
+    });
+    ocrLines = (lineData ?? []) as OcrLineRow[];
+    ocrLinesError = lineError?.message ?? null;
+
     const { data: requestData, error: requestError } = await (supabase as any).rpc("internal_shipping_document_resubmission_requests_v1", {
       p_shipping_document_id: shippingDocumentId,
     });
@@ -114,6 +154,11 @@ export default async function ShippingDocumentReviewDetailPage({ params, searchP
   const isSuperseded = doc?.review_status === "superseded";
   const hasOpenResubmissionRequest = resubmissionRequests.length > 0;
   const disableProcessing = isAccepted || replacementApproved || isSuperseded;
+  const canStartOcr = doc && !disableProcessing && !["queued", "processing", "completed", "failed"].includes(doc.ocr_status ?? "");
+  const matchSummary = doc?.ocr_match_summary_json ?? null;
+  const shipperMatch = matchValue(matchSummary, "shipper_match");
+  const bookingMatch = matchValue(matchSummary, "booking_ref_match");
+  const amountMatch = matchValue(matchSummary, "amount_match");
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-6 text-slate-950 sm:px-6 sm:py-8">
@@ -127,13 +172,14 @@ export default async function ShippingDocumentReviewDetailPage({ params, searchP
           <div className="mt-2 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
             <div>
               <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Review shipper document</h1>
-              <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">Process shipper invoice/receipt intake only. Acceptance locks shipper replacement and moves this toward shipping apportionment/Sage readiness later.</p>
+              <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">OCR pre-fills the existing extracted fields. Supervisor still reviews, corrects if needed, then accepts/rejects. No apportionment, Sage or VAT action happens here.</p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700"><div className="font-medium text-slate-950">{staff.full_name}</div><div>{staff.role_type}</div></div>
           </div>
           {qp.success ? <p className="mt-4 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">{qp.success}</p> : null}
           {qp.error ? <p className="mt-4 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-900">{qp.error}</p> : null}
           {error ? <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">{error.message}</p> : null}
+          {ocrLinesError ? <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">OCR lines unavailable: {ocrLinesError}. Run the latest OCR migration before testing lines.</p> : null}
           {resubmissionError ? <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">Resubmission request view unavailable: {resubmissionError}. Run the latest migration before testing unlock approval.</p> : null}
           {!doc && !error ? <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">Shipping document not found.</p> : null}
         </section>
@@ -152,7 +198,7 @@ export default async function ShippingDocumentReviewDetailPage({ params, searchP
               <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Booking ref</p><p className="mt-1 text-xl font-semibold">{doc.booking_ref ?? doc.shipment_batch_id}</p></div>
               <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Importer</p><p className="mt-1 text-xl font-semibold">{doc.importer_name ?? "—"}</p></div>
               <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Shipper</p><p className="mt-1 text-xl font-semibold">{doc.shipper_name ?? "—"}</p></div>
-              <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Packages / qty</p><p className="mt-1 text-xl font-semibold">{n(doc.package_count)} / {n(doc.item_qty)}</p></div>
+              <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Submitted amount</p><p className="mt-1 text-xl font-semibold">{money(doc.total_amount, "GBP")}</p></div>
               <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Status</p><span className={`mt-1 inline-block rounded-full px-2 py-1 text-xs font-semibold ${statusClass(doc.review_status)}`}>{friendly(doc.review_status)}</span></div>
             </section>
 
@@ -169,9 +215,9 @@ export default async function ShippingDocumentReviewDetailPage({ params, searchP
                 <h2 className="text-xl font-semibold">Uploaded document</h2>
                 <div className="mt-4 grid gap-3 text-sm md:grid-cols-2">
                   <div className="rounded-2xl bg-slate-50 p-3"><span className="text-slate-500">Type</span><p className="font-semibold">{friendly(doc.document_kind)}</p></div>
-                  <div className="rounded-2xl bg-slate-50 p-3"><span className="text-slate-500">Ref</span><p className="font-semibold">{doc.document_ref ?? "—"}</p></div>
-                  <div className="rounded-2xl bg-slate-50 p-3"><span className="text-slate-500">Date</span><p className="font-semibold">{shortDate(doc.document_date)}</p></div>
-                  <div className="rounded-2xl bg-slate-50 p-3"><span className="text-slate-500">Amount</span><p className="font-semibold">{money(doc.total_amount, doc.currency_code ?? "GBP")}</p></div>
+                  <div className="rounded-2xl bg-slate-50 p-3"><span className="text-slate-500">Submitted ref</span><p className="font-semibold">{doc.document_ref ?? "—"}</p></div>
+                  <div className="rounded-2xl bg-slate-50 p-3"><span className="text-slate-500">Submitted date</span><p className="font-semibold">{shortDate(doc.document_date)}</p></div>
+                  <div className="rounded-2xl bg-slate-50 p-3"><span className="text-slate-500">Submitted amount</span><p className="font-semibold">{money(doc.total_amount, doc.currency_code ?? "GBP")}</p></div>
                   <div className="rounded-2xl bg-slate-50 p-3"><span className="text-slate-500">OCR</span><p className="font-semibold">{friendly(doc.ocr_status)}</p></div>
                   <div className="rounded-2xl bg-slate-50 p-3"><span className="text-slate-500">Version</span><p className="font-semibold">v{doc.version_no ?? 1}</p></div>
                 </div>
@@ -181,20 +227,74 @@ export default async function ShippingDocumentReviewDetailPage({ params, searchP
               </article>
 
               <article className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h2 className="text-xl font-semibold">OCR match result</h2>
+                    <p className="mt-2 text-sm leading-6 text-slate-600">Green checks mean OCR agrees with the selected shipment context. Red/amber means supervisor must review and correct before accepting.</p>
+                  </div>
+                  <span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(doc.ocr_match_status ?? doc.ocr_status)}`}>{friendly(doc.ocr_match_status ?? doc.ocr_status)}</span>
+                </div>
+
+                {canStartOcr ? (
+                  <form method="post" action="/internal/shipping-control/shipper-documents/mindee-start" className="mt-4 rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-950">
+                    <input type="hidden" name="shipping_document_id" value={doc.shipping_document_id} />
+                    <p className="font-semibold">OCR not started</p>
+                    <p className="mt-1">Send this document to Mindee. The result will return automatically by webhook; there is no fetch step.</p>
+                    <button className="mt-3 rounded-xl bg-sky-700 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-800">Send to OCR</button>
+                  </form>
+                ) : null}
+
+                {doc.ocr_status === "queued" || doc.ocr_status === "processing" ? (
+                  <p className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">OCR is processing. This page will show extracted fields once the Mindee webhook returns the result.</p>
+                ) : null}
+
+                {doc.mindee_error_message ? <p className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-900">{doc.mindee_error_message}</p> : null}
+
+                <div className="mt-4 grid gap-3 md:grid-cols-3">
+                  <div className={`rounded-2xl border p-3 text-sm ${matchTone(shipperMatch)}`}><p className="text-xs uppercase tracking-wide">Shipper match</p><p className="mt-1 text-lg font-semibold">{shipperMatch}</p><p className="mt-1 text-xs">OCR: {doc.ocr_shipper_name ?? "—"}</p></div>
+                  <div className={`rounded-2xl border p-3 text-sm ${matchTone(bookingMatch)}`}><p className="text-xs uppercase tracking-wide">Booking ref match</p><p className="mt-1 text-lg font-semibold">{bookingMatch}</p><p className="mt-1 text-xs">Expected: {doc.booking_ref ?? "—"}</p></div>
+                  <div className={`rounded-2xl border p-3 text-sm ${matchTone(amountMatch)}`}><p className="text-xs uppercase tracking-wide">Amount match</p><p className="mt-1 text-lg font-semibold">{amountMatch}</p><p className="mt-1 text-xs">OCR: {money(doc.ocr_total_amount, "GBP")}</p></div>
+                </div>
+
+                <div className="mt-4 grid gap-3 text-sm md:grid-cols-2">
+                  <div className="rounded-2xl bg-slate-50 p-3"><span className="text-slate-500">OCR ref</span><p className="font-semibold">{doc.ocr_document_ref ?? "—"}</p></div>
+                  <div className="rounded-2xl bg-slate-50 p-3"><span className="text-slate-500">OCR date</span><p className="font-semibold">{shortDate(doc.ocr_document_date)}</p></div>
+                  <div className="rounded-2xl bg-slate-50 p-3"><span className="text-slate-500">OCR total</span><p className="font-semibold">{money(doc.ocr_total_amount, "GBP")}</p></div>
+                  <div className="rounded-2xl bg-slate-50 p-3"><span className="text-slate-500">OCR lines</span><p className="font-semibold">{ocrLines.length}</p></div>
+                </div>
+              </article>
+            </section>
+
+            <section className="grid gap-6 lg:grid-cols-[1fr_1.1fr]">
+              <article className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+                <h2 className="text-xl font-semibold">OCR lines</h2>
+                <p className="mt-2 text-sm text-slate-600">Used for review evidence only. AP coding/posting remains later.</p>
+                {ocrLines.length === 0 ? <p className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">No OCR lines captured yet.</p> : null}
+                <div className="mt-4 space-y-2">
+                  {ocrLines.map((line) => (
+                    <div key={`${line.line_order}-${line.description}`} className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm">
+                      <p className="font-semibold">{line.line_order}. {line.description ?? "OCR line"}</p>
+                      <p className="mt-1 text-slate-600">Qty: {line.quantity ?? "—"} · Amount: {money(line.amount_gbp, "GBP")}</p>
+                    </div>
+                  ))}
+                </div>
+              </article>
+
+              <article className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
                 <h2 className="text-xl font-semibold">Supervisor processing</h2>
-                <p className="mt-2 text-sm leading-6 text-slate-600">Use OCR/manual extracted fields for document control only. Shipping apportionment and Sage posting happen later.</p>
+                <p className="mt-2 text-sm leading-6 text-slate-600">Use OCR pre-filled/manual extracted fields for document control only. Shipping apportionment and Sage posting happen later.</p>
                 <form action={reviewShippingDocumentAction} className="mt-4 grid gap-3 md:grid-cols-2">
                   <input type="hidden" name="shipping_document_id" value={doc.shipping_document_id} />
 
                   <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm md:col-span-2">
                     <p className="font-semibold text-slate-950">Decision guide</p>
-                    <p className="mt-1 text-slate-600"><strong>Queue OCR</strong> means extraction/review is still pending. <strong>Accept current document</strong> means this document is confirmed as the shipment money source and replacement is locked.</p>
+                    <p className="mt-1 text-slate-600"><strong>Manual review / no OCR</strong> keeps the existing manual path. <strong>Accept current document</strong> confirms this document as the shipment money source and locks replacement.</p>
                   </div>
 
-                  <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-slate-500">Extracted ref</span><input name="extracted_document_ref" defaultValue={doc.extracted_document_ref ?? doc.document_ref ?? ""} className="w-full rounded-xl border border-slate-300 px-3 py-2" disabled={disableProcessing} /></label>
-                  <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-slate-500">Extracted date</span><input name="extracted_document_date" type="date" defaultValue={doc.extracted_document_date ?? doc.document_date ?? ""} className="w-full rounded-xl border border-slate-300 px-3 py-2" disabled={disableProcessing} /></label>
+                  <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-slate-500">Extracted ref</span><input name="extracted_document_ref" defaultValue={doc.extracted_document_ref ?? doc.ocr_document_ref ?? doc.document_ref ?? ""} className="w-full rounded-xl border border-slate-300 px-3 py-2" disabled={disableProcessing} /></label>
+                  <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-slate-500">Extracted date</span><input name="extracted_document_date" type="date" defaultValue={doc.extracted_document_date ?? doc.ocr_document_date ?? doc.document_date ?? ""} className="w-full rounded-xl border border-slate-300 px-3 py-2" disabled={disableProcessing} /></label>
                   <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-slate-500">Currency</span><input name="extracted_currency_code" defaultValue={doc.extracted_currency_code ?? doc.currency_code ?? "GBP"} maxLength={3} className="w-full rounded-xl border border-slate-300 px-3 py-2 uppercase" disabled={disableProcessing} /></label>
-                  <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-slate-500">Extracted total</span><input name="extracted_total_amount" type="number" step="0.01" min="0" defaultValue={String(doc.extracted_total_amount ?? doc.total_amount ?? "")} className="w-full rounded-xl border border-slate-300 px-3 py-2" disabled={disableProcessing} /></label>
+                  <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-slate-500">Extracted total</span><input name="extracted_total_amount" type="number" step="0.01" min="0" defaultValue={String(doc.extracted_total_amount ?? doc.ocr_total_amount ?? doc.total_amount ?? "")} className="w-full rounded-xl border border-slate-300 px-3 py-2" disabled={disableProcessing} /></label>
                   <label className="space-y-1 text-sm md:col-span-2"><span className="text-xs uppercase tracking-wide text-slate-500">Review note</span><textarea name="review_note" rows={3} defaultValue={doc.review_note ?? ""} className="w-full rounded-xl border border-slate-300 px-3 py-2" placeholder="Required if rejecting/resubmission is needed" disabled={disableProcessing} /></label>
 
                   <div className="md:col-span-2">
@@ -205,8 +305,7 @@ export default async function ShippingDocumentReviewDetailPage({ params, searchP
                     ) : isAccepted ? (
                       <p className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-900">Accepted and locked. Shipper can no longer silently replace this document.</p>
                     ) : (
-                      <div className="grid gap-2 sm:grid-cols-2">
-                        <button type="submit" name="decision" value="mark_ocr_queued" className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">Queue OCR</button>
+                      <div className="grid gap-2 sm:grid-cols-3">
                         <button type="submit" name="decision" value="mark_ocr_not_applicable" className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">Manual review / no OCR</button>
                         <button type="submit" name="decision" value="accept_current" className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-800">Accept current document</button>
                         <button type="submit" name="decision" value="reject_resubmit_required" className="rounded-xl bg-rose-700 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-800">Reject / request resubmission</button>
