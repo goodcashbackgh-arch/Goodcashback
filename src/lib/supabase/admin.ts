@@ -6,10 +6,14 @@ function getSupabaseAdminClient() {
   if (cachedAdminClient) return cachedAdminClient
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY
 
-  if (!supabaseUrl || !key) {
-    throw new Error('Supabase client is not configured on the server.')
+  if (!supabaseUrl) {
+    throw new Error('NEXT_PUBLIC_SUPABASE_URL is not configured on the server.')
+  }
+
+  if (!key) {
+    throw new Error('SUPABASE_SERVICE_ROLE_KEY is required for server admin operations. Refusing to fall back to anon key.')
   }
 
   cachedAdminClient = createClient(supabaseUrl, key, {
