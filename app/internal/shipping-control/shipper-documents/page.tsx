@@ -24,6 +24,16 @@ type DocumentRow = {
   item_qty: number | string | null;
   open_message_count: number | string | null;
   next_action: string | null;
+  ocr_match_status?: string | null;
+  ocr_match_summary_json?: Record<string, unknown> | null;
+  ocr_shipper_name?: string | null;
+  ocr_reference_text?: string | null;
+  ocr_document_ref?: string | null;
+  ocr_document_date?: string | null;
+  ocr_total_amount?: number | string | null;
+  mindee_job_id?: string | null;
+  mindee_inference_id?: string | null;
+  mindee_error_message?: string | null;
 };
 
 function n(value: number | string | null | undefined) {
@@ -47,17 +57,30 @@ function friendly(value: string | null | undefined) {
 }
 
 function statusClass(status: string | null | undefined) {
-  if (!status || ["uploaded_pending_ocr", "ocr_pending", "not_started"].includes(status)) return "bg-amber-100 text-amber-800";
-  if (["accepted_current", "accepted_locked"].includes(status)) return "bg-emerald-100 text-emerald-800";
-  if (["rejected_resubmit_required", "awaiting_shipper_resubmission"].includes(status)) return "bg-rose-100 text-rose-800";
+  if (!status || ["uploaded_pending_ocr", "ocr_pending", "not_started", "ocr_processing", "processing", "queued"].includes(status)) return "bg-amber-100 text-amber-800";
+  if (["accepted_current", "accepted_locked", "matched", "ocr_ready_matched"].includes(status)) return "bg-emerald-100 text-emerald-800";
+  if (["rejected_resubmit_required", "awaiting_shipper_resubmission", "mismatch", "failed"].includes(status)) return "bg-rose-100 text-rose-800";
+  if (["needs_review", "ocr_ready_needs_review", "needs_supervisor_review"].includes(status)) return "bg-sky-100 text-sky-800";
   return "bg-slate-100 text-slate-700";
 }
 
 function matches(row: DocumentRow, status: string, search: string) {
-  if (status && status !== "all" && row.review_status !== status && row.next_action !== status) return false;
+  if (status && status !== "all" && row.review_status !== status && row.next_action !== status && row.ocr_match_status !== status && row.ocr_status !== status) return false;
   if (!search) return true;
-  const haystack = [row.booking_ref, row.shipper_name, row.importer_name, row.document_kind, row.document_ref, row.shipping_document_id].join(" ").toLowerCase();
+  const haystack = [row.booking_ref, row.shipper_name, row.importer_name, row.document_kind, row.document_ref, row.ocr_document_ref, row.shipping_document_id].join(" ").toLowerCase();
   return haystack.includes(search);
+}
+
+function canStartOcr(row: DocumentRow) {
+  return !["accepted_current", "superseded", "rejected_resubmit_required"].includes(row.review_status ?? "") && ["not_started", "uploaded_pending_ocr", null, undefined].includes(row.ocr_status as any);
+}
+
+function matchValue(summary: Record<string, unknown> | null | undefined, key: string) {
+  const value = summary?.[key];
+  if (value === true) return "Yes";
+  if (value === false) return "No";
+  if (value === null || value === undefined || value === "") return "—";
+  return String(value);
 }
 
 export default async function InternalShippingDocumentsPage({ searchParams }: { searchParams?: Promise<{ status?: string; q?: string; success?: string; error?: string }> }) {
@@ -81,6 +104,10 @@ export default async function InternalShippingDocumentsPage({ searchParams }: { 
   const { data, error } = await (supabase as any).rpc("internal_shipping_document_worklist_v1");
   const allRows = (data ?? []) as DocumentRow[];
   const rows = allRows.filter((row) => matches(row, selectedStatus, search));
+  const ocrEligibleRows = rows.filter(canStartOcr);
+  const processingRows = allRows.filter((row) => ["queued", "processing"].includes(row.ocr_status ?? ""));
+  const matchedRows = allRows.filter((row) => row.ocr_match_status === "matched");
+  const mismatchRows = allRows.filter((row) => ["mismatch", "needs_review"].includes(row.ocr_match_status ?? ""));
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-6 text-slate-950 sm:px-6 sm:py-8">
@@ -94,7 +121,7 @@ export default async function InternalShippingDocumentsPage({ searchParams }: { 
           <div className="mt-2 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
             <div>
               <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Shipper invoice / receipt review</h1>
-              <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">Supervisor review lane for shipping invoices, receipts and supporting charge documents. This does not apportion shipping, post Sage, create COS/BOL/POD or clear VAT.</p>
+              <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">Bulk OCR and supervisor review for shipper invoices/receipts. OCR pre-fills the existing review fields only; apportionment, Sage and VAT remain later lanes.</p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700">
               <div className="font-medium text-slate-950">{staff.full_name}</div>
@@ -108,24 +135,27 @@ export default async function InternalShippingDocumentsPage({ searchParams }: { 
 
         <section className="grid gap-4 md:grid-cols-4">
           <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Active docs</p><p className="mt-1 text-2xl font-semibold">{allRows.length}</p></div>
-          <div className="rounded-3xl border border-amber-200 bg-amber-50 p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Needs review</p><p className="mt-1 text-2xl font-semibold">{allRows.filter((row) => !["accepted_current", "rejected_resubmit_required"].includes(row.review_status ?? "")).length}</p></div>
-          <div className="rounded-3xl border border-emerald-200 bg-emerald-50 p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Accepted</p><p className="mt-1 text-2xl font-semibold">{allRows.filter((row) => row.review_status === "accepted_current").length}</p></div>
-          <div className="rounded-3xl border border-rose-200 bg-rose-50 p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Resubmission</p><p className="mt-1 text-2xl font-semibold">{allRows.filter((row) => row.review_status === "rejected_resubmit_required" || n(row.open_message_count) > 0).length}</p></div>
+          <div className="rounded-3xl border border-amber-200 bg-amber-50 p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">OCR processing</p><p className="mt-1 text-2xl font-semibold">{processingRows.length}</p></div>
+          <div className="rounded-3xl border border-emerald-200 bg-emerald-50 p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">OCR matched</p><p className="mt-1 text-2xl font-semibold">{matchedRows.length}</p></div>
+          <div className="rounded-3xl border border-rose-200 bg-rose-50 p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Mismatch/review</p><p className="mt-1 text-2xl font-semibold">{mismatchRows.length}</p></div>
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
             <div>
               <h2 className="text-xl font-semibold">Document worklist</h2>
-              <p className="mt-2 text-sm leading-6 text-slate-600">Process the uploaded document before shipping apportionment or Sage readiness.</p>
+              <p className="mt-2 text-sm leading-6 text-slate-600">Select rows for OCR. When Mindee returns the result, the row changes to matched or needs review automatically through the webhook.</p>
             </div>
             <form action="/internal/shipping-control/shipper-documents" className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3 sm:grid-cols-[1fr_1fr_auto]">
               <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Status
                 <select name="status" defaultValue={selectedStatus} className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-950">
                   <option value="all">All</option>
                   <option value="uploaded_pending_ocr">Uploaded pending OCR</option>
-                  <option value="ocr_pending">OCR pending</option>
-                  <option value="needs_supervisor_review">Needs supervisor review</option>
+                  <option value="queued">OCR queued</option>
+                  <option value="processing">OCR processing</option>
+                  <option value="matched">OCR matched</option>
+                  <option value="needs_review">OCR needs review</option>
+                  <option value="mismatch">OCR mismatch</option>
                   <option value="accepted_current">Accepted current</option>
                   <option value="rejected_resubmit_required">Rejected / resubmit required</option>
                 </select>
@@ -140,37 +170,61 @@ export default async function InternalShippingDocumentsPage({ searchParams }: { 
             </form>
           </div>
 
+          {ocrEligibleRows.length > 0 ? (
+            <form method="post" action="/internal/shipping-control/shipper-documents/mindee-start" className="mt-4 rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-950">
+              {ocrEligibleRows.map((row) => <input key={row.shipping_document_id} type="hidden" name="shipping_document_id" value={row.shipping_document_id} />)}
+              <p className="font-semibold">Bulk OCR available</p>
+              <p className="mt-1">This sends every currently filtered not-started document to OCR. Results return automatically by webhook.</p>
+              <button className="mt-3 rounded-xl bg-sky-700 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-800">Send all filtered not-started to OCR ({ocrEligibleRows.length})</button>
+            </form>
+          ) : null}
+
           {rows.length === 0 ? (
             <p className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">No shipping documents match the filters.</p>
           ) : (
-            <div className="mt-5 overflow-x-auto rounded-2xl border border-slate-200">
-              <table className="min-w-full divide-y divide-slate-200 text-sm">
-                <thead className="bg-slate-100 text-xs uppercase tracking-wide text-slate-500">
-                  <tr>
-                    <th className="px-3 py-2 text-left">Document</th>
-                    <th className="px-3 py-2 text-left">Shipment</th>
-                    <th className="px-3 py-2 text-left">Parties</th>
-                    <th className="px-3 py-2 text-right">Amount</th>
-                    <th className="px-3 py-2 text-left">Status</th>
-                    <th className="px-3 py-2 text-left">Next action</th>
-                    <th className="px-3 py-2 text-left">Links</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 bg-white">
-                  {rows.map((row) => (
-                    <tr key={row.shipping_document_id}>
-                      <td className="px-3 py-3 align-top"><p className="font-semibold">{friendly(row.document_kind)}</p><p className="text-xs text-slate-500">Ref: {row.document_ref ?? "—"} · {shortDate(row.document_date)}</p><p className="text-xs text-slate-500">v{row.version_no ?? 1} · uploaded {shortDate(row.created_at)}</p></td>
-                      <td className="px-3 py-3 align-top"><p className="font-semibold">{row.booking_ref ?? row.shipment_batch_id}</p><p className="text-xs text-slate-500">{n(row.package_count)} package(s) · {n(row.item_qty)} unit(s)</p></td>
-                      <td className="px-3 py-3 align-top"><p className="font-semibold">{row.importer_name ?? "Importer"}</p><p className="text-xs text-slate-600">{row.shipper_name ?? "Shipper"}</p></td>
-                      <td className="px-3 py-3 text-right align-top"><p className="font-semibold">{money(row.total_amount, row.currency_code ?? "GBP")}</p><p className="text-xs text-slate-500">{row.currency_code ?? "GBP"}</p></td>
-                      <td className="px-3 py-3 align-top"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.review_status)}`}>{friendly(row.review_status)}</span><p className="mt-2 text-xs text-slate-500">OCR: {friendly(row.ocr_status)}</p></td>
-                      <td className="px-3 py-3 align-top"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.next_action)}`}>{friendly(row.next_action)}</span>{n(row.open_message_count) > 0 ? <p className="mt-2 text-xs font-semibold text-rose-700">{n(row.open_message_count)} open message(s)</p> : null}</td>
-                      <td className="px-3 py-3 align-top"><div className="flex flex-col gap-2"><Link href={`/internal/shipping-control/shipper-documents/${row.shipping_document_id}`} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50">Review document</Link>{row.review_status === "accepted_current" ? <Link href={`/internal/shipping-control/apportionment/${row.shipping_document_id}`} className="rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-900 hover:bg-emerald-100">Review apportionment</Link> : null}</div></td>
+            <form method="post" action="/internal/shipping-control/shipper-documents/mindee-start" className="mt-5">
+              <div className="mb-3 flex flex-wrap items-center gap-3">
+                <button className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">Send selected to OCR</button>
+                <p className="text-xs text-slate-500">Only not-started rows can be selected. Failed OCR should be corrected manually unless there was a technical reason to retry.</p>
+              </div>
+              <div className="overflow-x-auto rounded-2xl border border-slate-200">
+                <table className="min-w-full divide-y divide-slate-200 text-sm">
+                  <thead className="bg-slate-100 text-xs uppercase tracking-wide text-slate-500">
+                    <tr>
+                      <th className="px-3 py-2 text-left">OCR</th>
+                      <th className="px-3 py-2 text-left">Document</th>
+                      <th className="px-3 py-2 text-left">Shipment</th>
+                      <th className="px-3 py-2 text-left">Parties</th>
+                      <th className="px-3 py-2 text-right">Amount</th>
+                      <th className="px-3 py-2 text-left">Match</th>
+                      <th className="px-3 py-2 text-left">Next action</th>
+                      <th className="px-3 py-2 text-left">Links</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 bg-white">
+                    {rows.map((row) => {
+                      const eligible = canStartOcr(row);
+                      const summary = row.ocr_match_summary_json ?? null;
+                      return (
+                        <tr key={row.shipping_document_id}>
+                          <td className="px-3 py-3 align-top">
+                            {eligible ? <input type="checkbox" name="shipping_document_id" value={row.shipping_document_id} className="h-5 w-5 rounded border-slate-300" /> : <span className="text-xs text-slate-400">—</span>}
+                            <p className="mt-2 text-xs text-slate-500">{friendly(row.ocr_status)}</p>
+                          </td>
+                          <td className="px-3 py-3 align-top"><p className="font-semibold">{friendly(row.document_kind)}</p><p className="text-xs text-slate-500">Submitted ref: {row.document_ref ?? "—"} · {shortDate(row.document_date)}</p><p className="text-xs text-slate-500">OCR ref: {row.ocr_document_ref ?? "—"} · {shortDate(row.ocr_document_date)}</p><p className="text-xs text-slate-500">v{row.version_no ?? 1} · uploaded {shortDate(row.created_at)}</p></td>
+                          <td className="px-3 py-3 align-top"><p className="font-semibold">{row.booking_ref ?? row.shipment_batch_id}</p><p className="text-xs text-slate-500">{n(row.package_count)} package(s) · {n(row.item_qty)} unit(s)</p></td>
+                          <td className="px-3 py-3 align-top"><p className="font-semibold">{row.importer_name ?? "Importer"}</p><p className="text-xs text-slate-600">Expected shipper: {row.shipper_name ?? "—"}</p><p className="text-xs text-slate-600">OCR shipper: {row.ocr_shipper_name ?? "—"}</p></td>
+                          <td className="px-3 py-3 text-right align-top"><p className="font-semibold">{money(row.total_amount, row.currency_code ?? "GBP")}</p><p className="text-xs text-slate-500">OCR: {money(row.ocr_total_amount, "GBP")}</p></td>
+                          <td className="px-3 py-3 align-top"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.ocr_match_status)}`}>{friendly(row.ocr_match_status ?? row.ocr_status)}</span><div className="mt-2 space-y-1 text-xs text-slate-600"><p>Shipper: {matchValue(summary, "shipper_match")}</p><p>Booking: {matchValue(summary, "booking_ref_match")}</p><p>Amount: {matchValue(summary, "amount_match")}</p></div>{row.mindee_error_message ? <p className="mt-2 rounded-lg bg-rose-50 p-2 text-xs text-rose-700">{row.mindee_error_message}</p> : null}</td>
+                          <td className="px-3 py-3 align-top"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.next_action)}`}>{friendly(row.next_action)}</span>{n(row.open_message_count) > 0 ? <p className="mt-2 text-xs font-semibold text-rose-700">{n(row.open_message_count)} open message(s)</p> : null}</td>
+                          <td className="px-3 py-3 align-top"><div className="flex flex-col gap-2"><Link href={`/internal/shipping-control/shipper-documents/${row.shipping_document_id}`} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50">Review document</Link>{row.review_status === "accepted_current" ? <Link href={`/internal/shipping-control/apportionment/${row.shipping_document_id}`} className="rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-900 hover:bg-emerald-100">Review apportionment</Link> : null}</div></td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </form>
           )}
         </section>
       </div>
