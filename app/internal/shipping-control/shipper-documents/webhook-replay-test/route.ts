@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/utils/supabase/server";
-import { supabaseAdmin } from "@/lib/supabase/admin";
 
 function cleanText(value: unknown) {
   return String(value ?? "").trim();
@@ -29,36 +28,30 @@ export async function GET(request: Request) {
     return NextResponse.json({ ok: false, error: "admin/supervisor staff required" }, { status: 403 });
   }
 
-  const { data: doc, error: docError } = await supabaseAdmin
-    .from("shipping_documents")
-    .select("id, document_ref, ocr_status, review_status, mindee_job_id, mindee_inference_id, ocr_raw_json")
-    .eq("id", shippingDocumentId)
-    .eq("active", true)
-    .maybeSingle();
+  const { data: beforeData, error: beforeError } = await (supabase as any).rpc("internal_shipping_mindee_replay_context_v1", {
+    p_shipping_document_id: shippingDocumentId,
+  });
 
-  if (docError) return NextResponse.json({ ok: false, error: docError.message }, { status: 500 });
-  if (!doc) return NextResponse.json({ ok: false, error: "active shipping document not found" }, { status: 404 });
-  if (!doc.ocr_raw_json) {
+  if (beforeError) return NextResponse.json({ ok: false, error: beforeError.message }, { status: 500 });
+
+  const before = Array.isArray(beforeData) ? beforeData[0] : null;
+  if (!before) return NextResponse.json({ ok: false, error: "active shipping document not found" }, { status: 404 });
+  if (!before.ocr_raw_json) {
     return NextResponse.json({
       ok: false,
       error: "shipping document has no saved ocr_raw_json to replay",
       shipping_document_id: shippingDocumentId,
-      document_ref: doc.document_ref,
-      ocr_status: doc.ocr_status,
+      document_ref: before.document_ref,
+      ocr_status: before.ocr_status,
     }, { status: 400 });
   }
-
-  const { count: beforeLineCount } = await supabaseAdmin
-    .from("shipping_document_ocr_lines")
-    .select("id", { count: "exact", head: true })
-    .eq("shipping_document_id", shippingDocumentId);
 
   const origin = new URL(request.url).origin;
   const target = `${origin}/api/mindee/shipping-webhook`;
   const response = await fetch(target, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify(doc.ocr_raw_json),
+    body: JSON.stringify(before.ocr_raw_json),
     cache: "no-store",
   });
 
@@ -66,34 +59,33 @@ export async function GET(request: Request) {
     non_json_body: await response.text().catch(() => null),
   }));
 
-  const { data: afterDoc } = await supabaseAdmin
-    .from("shipping_documents")
-    .select("id, document_ref, ocr_status, review_status, ocr_match_status, ocr_document_ref, ocr_document_date, ocr_total_amount, ocr_shipper_name")
-    .eq("id", shippingDocumentId)
-    .maybeSingle();
+  const { data: afterData, error: afterError } = await (supabase as any).rpc("internal_shipping_mindee_replay_context_v1", {
+    p_shipping_document_id: shippingDocumentId,
+  });
 
-  const { count: afterLineCount } = await supabaseAdmin
-    .from("shipping_document_ocr_lines")
-    .select("id", { count: "exact", head: true })
-    .eq("shipping_document_id", shippingDocumentId);
+  const after = Array.isArray(afterData) ? afterData[0] : null;
 
   return NextResponse.json({
-    ok: response.ok,
+    ok: response.ok && !afterError,
     route: "shipping_ocr_webhook_replay_test",
-    note: "No Mindee call and no OCR credit used. This replays the saved raw OCR JSON through the real shipping webhook POST route.",
+    note: "No Mindee call and no OCR credit used. This replays the saved raw OCR JSON through the real shipping webhook POST route using staff-secured context only.",
     target,
     webhook_http_status: response.status,
     webhook_response: body,
     before: {
-      shipping_document_id: shippingDocumentId,
-      document_ref: doc.document_ref,
-      ocr_status: doc.ocr_status,
-      review_status: doc.review_status,
-      line_count: beforeLineCount ?? 0,
+      shipping_document_id: before.shipping_document_id,
+      document_ref: before.document_ref,
+      ocr_status: before.ocr_status,
+      review_status: before.review_status,
+      line_count: before.line_count ?? 0,
     },
-    after: {
-      ...afterDoc,
-      line_count: afterLineCount ?? 0,
-    },
-  }, { status: response.ok ? 200 : 500 });
+    after_error: afterError?.message ?? null,
+    after: after ? {
+      shipping_document_id: after.shipping_document_id,
+      document_ref: after.document_ref,
+      ocr_status: after.ocr_status,
+      review_status: after.review_status,
+      line_count: after.line_count ?? 0,
+    } : null,
+  }, { status: response.ok && !afterError ? 200 : 500 });
 }
