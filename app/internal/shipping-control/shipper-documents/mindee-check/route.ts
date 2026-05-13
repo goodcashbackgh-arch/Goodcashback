@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/utils/supabase/server";
-import { supabaseAdmin } from "@/lib/supabase/admin";
 
 function redirectBack(request: Request, params: Record<string, string>) {
   const fallback = new URL("/internal/shipping-control/shipper-documents", new URL(request.url).origin);
@@ -259,14 +258,12 @@ export async function POST(request: Request) {
     return redirectBack(request, { error: "Only admin/supervisor staff can check shipper document OCR." });
   }
 
-  const { data: doc, error: docError } = await supabaseAdmin
-    .from("shipping_documents")
-    .select("id, mindee_model_id, mindee_job_id, mindee_inference_id, review_status")
-    .eq("id", shippingDocumentId)
-    .eq("active", true)
-    .maybeSingle();
+  const { data: detailData, error: detailError } = await (supabase as any).rpc("internal_shipping_document_detail_v1", {
+    p_shipping_document_id: shippingDocumentId,
+  });
 
-  if (docError) return redirectBack(request, { error: docError.message });
+  if (detailError) return redirectBack(request, { error: detailError.message });
+  const doc = Array.isArray(detailData) ? detailData[0] : null;
   if (!doc) return redirectBack(request, { error: "Active shipping document not found." });
   if (doc.review_status === "accepted_current" || doc.review_status === "superseded") {
     return redirectBack(request, { error: "Accepted/superseded shipping document is locked." });
@@ -281,17 +278,14 @@ export async function POST(request: Request) {
   const status = cleanText(getByPath(job.raw, ["job", "status"])).toLowerCase();
   const errorMessage = stringValue(getByPath(job.raw, ["job", "error", "message"])) ?? stringValue(getByPath(job.raw, ["job", "error"]));
   if (["processing", "queued", "created"].includes(status)) {
-    await supabaseAdmin.from("shipping_documents").update({ ocr_raw_json: job.raw as any, updated_at: new Date().toISOString() }).eq("id", doc.id);
     return redirectBack(request, { success: `Mindee job is still ${status}. Not resent.` });
   }
   if (["failed", "failure", "error"].includes(status)) {
-    await supabaseAdmin.from("shipping_documents").update({ ocr_status: "failed", review_status: "needs_supervisor_review", mindee_error_message: errorMessage ?? "Mindee job failed.", ocr_raw_json: job.raw as any, updated_at: new Date().toISOString() }).eq("id", doc.id);
     return redirectBack(request, { error: `Mindee job failed: ${errorMessage ?? "No detail returned."}` });
   }
 
   const result = await fetchMindeeResultFromJob(job.raw, apiKey);
   if (!result) {
-    await supabaseAdmin.from("shipping_documents").update({ ocr_raw_json: job.raw as any, updated_at: new Date().toISOString() }).eq("id", doc.id);
     return redirectBack(request, { success: `Mindee job status is ${status || "unknown"}, but no result_url is available yet. Not resent.` });
   }
   if (!result.response.ok) {
@@ -301,8 +295,8 @@ export async function POST(request: Request) {
   const parsed = parseShippingMindeeResult(result.raw);
   const jobId = extractMindeeJobId(result.raw) ?? doc.mindee_job_id;
   const inferenceId = extractMindeeInferenceId(result.raw) ?? doc.mindee_inference_id;
-  const { data: saveData, error: saveError } = await (supabaseAdmin as any).rpc("internal_save_shipping_mindee_ocr_result_v1", {
-    p_shipping_document_id: doc.id,
+  const { data: saveData, error: saveError } = await (supabase as any).rpc("internal_staff_save_shipping_mindee_ocr_result_v1", {
+    p_shipping_document_id: doc.shipping_document_id,
     p_model_id: doc.mindee_model_id,
     p_http_status: 200,
     p_mindee_job_id: jobId,
