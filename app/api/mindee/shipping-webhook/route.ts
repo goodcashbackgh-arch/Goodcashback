@@ -164,7 +164,29 @@ function parseMindeeV2InvoiceResult(raw: unknown) {
   return { ocrShipperName, ocrReferenceText: referenceText, ocrDocumentRef, ocrDocumentDate, ocrTotalAmount, lines };
 }
 
+export async function GET() {
+  return NextResponse.json({
+    ok: true,
+    route: "mindee_shipping_webhook",
+    method: "GET",
+    message: "Shipping Mindee webhook endpoint is reachable. Real Mindee results must be POSTed here.",
+    timestamp: new Date().toISOString(),
+  });
+}
+
 export async function POST(request: Request) {
+  const url = new URL(request.url);
+  if (url.searchParams.get("ping") === "1") {
+    return NextResponse.json({
+      ok: true,
+      route: "mindee_shipping_webhook",
+      method: "POST",
+      ping: true,
+      message: "Shipping Mindee webhook POST ping received. No OCR result was processed.",
+      timestamp: new Date().toISOString(),
+    });
+  }
+
   const secret = process.env.MINDEE_SHIPPING_WEBHOOK_SECRET?.trim() || process.env.MINDEE_WEBHOOK_SECRET?.trim();
   if (secret) {
     const supplied = request.headers.get("x-goodcashback-webhook-secret")?.trim();
