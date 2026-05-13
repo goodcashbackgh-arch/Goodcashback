@@ -61,6 +61,50 @@ function getShippingWebhookId() {
   return process.env.MINDEE_SHIPPING_DOCUMENT_WEBHOOK_ID?.trim() || process.env.MINDEE_INVOICE_WEBHOOK_ID?.trim() || "";
 }
 
+function mindeeWebhookIdsFormValue(webhookId: string) {
+  return `[${webhookId}]`;
+}
+
+async function preflightOneDocument({
+  supabase,
+  shippingDocumentId,
+}: {
+  supabase: Awaited<ReturnType<typeof createClient>>;
+  shippingDocumentId: string;
+}) {
+  const { data, error } = await (supabase as any).rpc("internal_shipping_document_detail_v1", {
+    p_shipping_document_id: shippingDocumentId,
+  });
+  if (error) return { ok: false, message: error.message };
+
+  const row = Array.isArray(data) ? data[0] : null;
+  if (!row) return { ok: false, message: "Shipping document not found." };
+
+  const reviewStatus = cleanText(row.review_status);
+  const ocrStatus = cleanText(row.ocr_status);
+  if (["accepted_current", "superseded", "rejected_resubmit_required"].includes(reviewStatus)) {
+    return { ok: false, message: `Document is ${reviewStatus}; OCR must not run against locked/rejected documents.` };
+  }
+  if (["queued", "processing", "completed", "failed"].includes(ocrStatus)) {
+    return { ok: false, message: `OCR status is ${ocrStatus}; normal start is blocked.` };
+  }
+
+  const fileUrl = cleanText(row.file_url);
+  if (!fileUrl || !isHttpUrl(fileUrl)) return { ok: false, message: "Document has no real uploaded file URL." };
+
+  const fileResponse = await fetch(fileUrl, { method: "GET", cache: "no-store" });
+  if (!fileResponse.ok) return { ok: false, message: `Uploaded file is not fetchable (${fileResponse.status}).` };
+
+  const contentType = fileResponse.headers.get("content-type") || "unknown";
+  const bytes = await fileResponse.arrayBuffer().then((buffer) => buffer.byteLength).catch(() => 0);
+  if (bytes <= 0) return { ok: false, message: "Uploaded file fetched but appears empty." };
+
+  return {
+    ok: true,
+    message: `Preflight OK for ${cleanText(row.booking_ref) || shippingDocumentId}: file fetchable, status eligible, ${contentType}, ${bytes} bytes. Mindee was not called.`,
+  };
+}
+
 async function enqueueOneDocument({
   request,
   supabase,
@@ -110,7 +154,7 @@ async function enqueueOneDocument({
 
   const mindeeFormData = new FormData();
   mindeeFormData.set("model_id", modelId);
-  mindeeFormData.append("webhook_ids", webhookId);
+  mindeeFormData.set("webhook_ids", mindeeWebhookIdsFormValue(webhookId));
   mindeeFormData.set("file", new Blob([fileBuffer], { type: contentType }), filename);
 
   const headers = new Headers();
@@ -151,6 +195,7 @@ export async function POST(request: Request) {
     .getAll("shipping_document_id")
     .map((value) => cleanText(value))
     .filter(Boolean);
+  const dryRun = cleanText(formData.get("dry_run")) === "1";
 
   if (ids.length === 0) return redirectBack(request, { error: "Select at least one shipping document for OCR." });
 
@@ -163,7 +208,7 @@ export async function POST(request: Request) {
   const webhookId = getShippingWebhookId();
   if (!webhookId) {
     return redirectBack(request, {
-      error: "MINDEE_SHIPPING_DOCUMENT_WEBHOOK_ID is not configured. Configure the webhook first so OCR completes automatically without a fetch button.",
+      error: "MINDEE_SHIPPING_DOCUMENT_WEBHOOK_ID or MINDEE_INVOICE_WEBHOOK_ID is not configured. Configure the webhook first so OCR completes automatically without a fetch button.",
     });
   }
 
@@ -182,6 +227,19 @@ export async function POST(request: Request) {
 
   if (!staff || !["admin", "supervisor"].includes(String(staff.role_type))) {
     return redirectBack(request, { error: "Only admin/supervisor staff can start shipper document OCR." });
+  }
+
+  if (dryRun) {
+    let okCount = 0;
+    const failures: string[] = [];
+    for (const id of ids) {
+      const result = await preflightOneDocument({ supabase, shippingDocumentId: id });
+      if (result.ok) okCount += 1;
+      else failures.push(result.message);
+    }
+    if (okCount === 0) return redirectBack(request, { error: failures[0] || "Preflight failed. Mindee was not called." });
+    const suffix = failures.length > 0 ? ` ${failures.length} failed: ${failures[0]}` : "";
+    return redirectBack(request, { success: `Preflight passed for ${okCount} document(s). Mindee was not called.${suffix}` });
   }
 
   let queued = 0;
