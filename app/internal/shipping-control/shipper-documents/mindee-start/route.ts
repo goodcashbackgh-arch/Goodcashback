@@ -62,7 +62,9 @@ function getShippingWebhookId() {
 }
 
 function mindeeWebhookIdsFormValue(webhookId: string) {
-  return `[${webhookId}]`;
+  // Mindee V2 accepts this multipart field either as a list of UUIDs or as a comma-separated UUID string.
+  // In FormData, use the comma-separated string form. For one webhook, that is the raw UUID.
+  return webhookId.trim();
 }
 
 async function preflightOneDocument({
