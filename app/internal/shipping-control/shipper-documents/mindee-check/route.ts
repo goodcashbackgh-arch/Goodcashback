@@ -59,6 +59,18 @@ function getByPath(root: unknown, path: string[]) {
   return current ?? null;
 }
 
+function jobRecord(raw: unknown) {
+  if (!raw || typeof raw !== "object") return {} as Record<string, unknown>;
+  const root = raw as Record<string, unknown>;
+  if (root.job && typeof root.job === "object" && !Array.isArray(root.job)) return root.job as Record<string, unknown>;
+  return root;
+}
+
+function jobField(raw: unknown, key: string) {
+  const job = jobRecord(raw);
+  return job[key] ?? (raw && typeof raw === "object" ? (raw as Record<string, unknown>)[key] : null) ?? null;
+}
+
 function firstRecordCandidate(root: unknown, paths: string[][]) {
   for (const path of paths) {
     const candidate = getByPath(root, path);
@@ -105,7 +117,7 @@ function extractMindeeJobId(raw: unknown) {
   const inference = obj.inference && typeof obj.inference === "object" ? obj.inference as Record<string, unknown> : null;
   const job = obj.job && typeof obj.job === "object" ? obj.job as Record<string, unknown> : null;
   const inferenceJob = inference?.job && typeof inference.job === "object" ? inference.job as Record<string, unknown> : null;
-  return recordValue(job?.id ?? inferenceJob?.id ?? obj.job_id);
+  return recordValue(job?.id ?? inferenceJob?.id ?? obj.job_id ?? obj.id);
 }
 
 function extractMindeeInferenceId(raw: unknown) {
@@ -224,7 +236,7 @@ async function fetchMindeeJob(jobId: string, apiKey: string) {
 }
 
 async function fetchMindeeResultFromJob(jobRaw: unknown, apiKey: string) {
-  const resultUrl = stringValue(getByPath(jobRaw, ["job", "result_url"]));
+  const resultUrl = stringValue(jobField(jobRaw, "result_url")) ?? stringValue(getByPath(jobRaw, ["inference", "result_url"]));
   if (!resultUrl) return null;
   const response = await fetch(resultUrl, {
     method: "GET",
@@ -275,8 +287,9 @@ export async function POST(request: Request) {
     return redirectBack(request, { error: `Mindee job check failed (${job.response.status}).` });
   }
 
-  const status = cleanText(getByPath(job.raw, ["job", "status"])).toLowerCase();
-  const errorMessage = stringValue(getByPath(job.raw, ["job", "error", "message"])) ?? stringValue(getByPath(job.raw, ["job", "error"]));
+  const status = cleanText(jobField(job.raw, "status")).toLowerCase();
+  const resultUrl = stringValue(jobField(job.raw, "result_url"));
+  const errorMessage = stringValue(getByPath(job.raw, ["job", "error", "message"])) ?? stringValue(jobField(job.raw, "error"));
   if (["processing", "queued", "created"].includes(status)) {
     return redirectBack(request, { success: `Mindee job is still ${status}. Not resent.` });
   }
@@ -286,7 +299,7 @@ export async function POST(request: Request) {
 
   const result = await fetchMindeeResultFromJob(job.raw, apiKey);
   if (!result) {
-    return redirectBack(request, { success: `Mindee job status is ${status || "unknown"}, but no result_url is available yet. Not resent.` });
+    return redirectBack(request, { success: `Mindee job status is ${status || "unknown"}${resultUrl ? " with result_url unreadable" : " with no result_url"}. Not resent.` });
   }
   if (!result.response.ok) {
     return redirectBack(request, { error: `Mindee result fetch failed (${result.response.status}).` });
