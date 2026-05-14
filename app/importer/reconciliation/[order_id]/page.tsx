@@ -12,6 +12,7 @@ import {
   rescindExceptionCaseAction,
   updateSupplierInvoiceLineAction,
 } from "./actions";
+import { resolveSupplierInvoiceLineNonPhysicalAction } from "./nonPhysicalActions";
 
 type SupplierInvoiceLine = {
   id: string;
@@ -26,6 +27,15 @@ type SupplierInvoiceLine = {
   qty_confirmed: number | null;
   amount_confirmed: number | null;
   eligible_for_invoice_yn: string;
+};
+
+type SupplierInvoiceLineResolution = {
+  supplier_invoice_line_id: string;
+  financial_type: string;
+  amount_gbp: number | null;
+  qty_reported: number | null;
+  notes: string | null;
+  resolved_at: string | null;
 };
 
 type OrderScreenshot = {
@@ -89,6 +99,17 @@ function lineFitsRemainingBaseline({
   return lineQty <= remainingQty && lineAmount <= remainingAmount + 0.01;
 }
 
+function suggestedFinancialType(description: string, amount: number) {
+  const text = description.toLowerCase();
+  if (text.includes("delivery") || text.includes("shipping") || text.includes("postage") || text.includes("carriage")) {
+    return Math.abs(amount) < 0.01 ? "zero_value_delivery" : "delivery";
+  }
+  if (text.includes("discount") || text.includes("promo") || text.includes("voucher") || text.includes("coupon")) return "discount";
+  if (text.includes("fee") || text.includes("charge")) return "fee";
+  if (text.includes("rounding")) return "rounding";
+  return "other_non_physical";
+}
+
 export default async function ImporterReconciliationOrderPage({
   params,
   searchParams,
@@ -135,13 +156,13 @@ export default async function ImporterReconciliationOrderPage({
   if (importerAccessError || !importerAccess) redirect("/importer");
 
   const { data: invoice, error: invoiceError } = await supabase
-  .from("supplier_invoices")
-  .select("id, order_id, invoice_ref, invoice_pdf_url, uploaded_at, ocr_extracted_at, review_status")
-  .eq("order_id", orderId)
-  .or("review_status.is.null,review_status.not.in.(rejected_resubmit_required,duplicate_blocked,superseded)")
-  .order("uploaded_at", { ascending: false })
-  .limit(1)
-  .maybeSingle();
+    .from("supplier_invoices")
+    .select("id, order_id, invoice_ref, invoice_pdf_url, uploaded_at, ocr_extracted_at, review_status")
+    .eq("order_id", orderId)
+    .or("review_status.is.null,review_status.not.in.(rejected_resubmit_required,duplicate_blocked,superseded)")
+    .order("uploaded_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
 
   const { data: screenshots, error: screenshotsError } = await supabase
     .from("order_screenshots")
@@ -176,6 +197,20 @@ export default async function ImporterReconciliationOrderPage({
 
   const invoiceLines = (lines ?? []) as SupplierInvoiceLine[];
   const invoiceLineIds = invoiceLines.map((line) => line.id);
+
+  const { data: nonPhysicalResolutions } = invoiceLineIds.length > 0
+    ? await supabase
+        .from("supplier_invoice_line_resolutions")
+        .select("supplier_invoice_line_id, financial_type, amount_gbp, qty_reported, notes, resolved_at")
+        .in("supplier_invoice_line_id", invoiceLineIds)
+        .eq("active", true)
+    : { data: [] as SupplierInvoiceLineResolution[] };
+
+  const nonPhysicalResolutionByLineId = new Map<string, SupplierInvoiceLineResolution>();
+  for (const resolution of (nonPhysicalResolutions ?? []) as SupplierInvoiceLineResolution[]) {
+    nonPhysicalResolutionByLineId.set(resolution.supplier_invoice_line_id, resolution);
+  }
+
   const { data: openDisputeLinks, error: openDisputeLinksError } = invoiceLineIds.length > 0
     ? await supabase
         .from("dispute_lines")
@@ -200,20 +235,22 @@ export default async function ImporterReconciliationOrderPage({
   const allocatedQty = invoiceLines.reduce((sum, line) => {
     const progressed = isProgressed(line);
     const exceptionLinked = openDisputeByLineId.has(line.id);
-    if (!progressed && !exceptionLinked) return sum;
+    const nonPhysicalResolved = nonPhysicalResolutionByLineId.has(line.id);
+    if (!progressed && !exceptionLinked && !nonPhysicalResolved) return sum;
     return sum + Number(line.qty ?? 0);
   }, 0);
   const allocatedAmount = invoiceLines.reduce((sum, line) => {
     const progressed = isProgressed(line);
     const exceptionLinked = openDisputeByLineId.has(line.id);
-    if (!progressed && !exceptionLinked) return sum;
+    const nonPhysicalResolved = nonPhysicalResolutionByLineId.has(line.id);
+    if (!progressed && !exceptionLinked && !nonPhysicalResolved) return sum;
     return sum + Number(line.amount_inc_vat_gbp ?? 0);
   }, 0);
   const remainingQtyCapacity = Math.max(0, declaredQty - allocatedQty);
   const remainingAmountCapacity = Math.max(0, declaredAmount - allocatedAmount);
 
   const selectableLines = invoiceLines.filter((line) => {
-    if (isProgressed(line) || openDisputeByLineId.has(line.id)) return false;
+    if (isProgressed(line) || openDisputeByLineId.has(line.id) || nonPhysicalResolutionByLineId.has(line.id)) return false;
     return lineFitsRemainingBaseline({
       lineQty: Number(line.qty ?? 0),
       lineAmount: Number(line.amount_inc_vat_gbp ?? 0),
@@ -221,7 +258,7 @@ export default async function ImporterReconciliationOrderPage({
       remainingAmount: remainingAmountCapacity,
     });
   });
-  const exceptionSelectableLines = invoiceLines.filter((line) => !isProgressed(line) && !openDisputeByLineId.has(line.id));
+  const exceptionSelectableLines = invoiceLines.filter((line) => !isProgressed(line) && !openDisputeByLineId.has(line.id) && !nonPhysicalResolutionByLineId.has(line.id));
   const orderScreenshots = (screenshots ?? []) as OrderScreenshot[];
   const existingExceptionCases = (exceptionCases ?? []) as ExistingExceptionCase[];
   const lineCountByDispute = (exceptionCaseLineTotals ?? []).reduce<Record<string, number>>((acc, row) => {
@@ -273,7 +310,7 @@ export default async function ImporterReconciliationOrderPage({
             <div className={`rounded-2xl border p-4 ${amountMatched ? "border-emerald-200 bg-emerald-50" : "border-amber-200 bg-amber-50"}`}><p className="text-xs uppercase tracking-wide text-slate-500">Value variance</p><p className="mt-1 text-2xl font-semibold">{signedGbp(amountVariance)}</p></div>
           </div>
           <p className="mt-4 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm leading-6 text-slate-700">
-            A matched qty/value set means the original parent order baseline is accounted for. The parent order still cannot fully clear until progressed lines, child exceptions, funding, shipment evidence, POD, and final accounting/VAT release gates are complete.
+            A matched qty/value set means the original parent order baseline is accounted for. Non-physical rows can be parked without becoming shipper/package allocation tasks.
           </p>
         </section>
 
@@ -349,7 +386,7 @@ export default async function ImporterReconciliationOrderPage({
 
             <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
               <h2 className="text-xl font-semibold">Create exception case</h2>
-              <p className="mt-2 text-sm text-slate-600">Select unresolved lines and branch them into a grouped refund or replacement exception case.</p>
+              <p className="mt-2 text-sm text-slate-600">Select unresolved physical lines and branch them into a grouped refund or replacement exception case. Normal delivery, discount, fee, or other non-physical rows should be parked below instead.</p>
               {openDisputeLinksError ? (
                 <p className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">Failed to load exception-link state for invoice lines.</p>
               ) : exceptionSelectableLines.length > 0 ? (
@@ -370,7 +407,7 @@ export default async function ImporterReconciliationOrderPage({
                   </div>
                 </form>
               ) : (
-                <p className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">No unresolved lines are available for exception case creation.</p>
+                <p className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">No unresolved physical lines are available for exception case creation.</p>
               )}
             </section>
 
@@ -412,7 +449,7 @@ export default async function ImporterReconciliationOrderPage({
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <h2 className="text-xl font-semibold">Supplier invoice lines</h2>
-                  <p className="mt-1 text-sm text-slate-600">Progressed status updates only the clean invoiceable subset. It does not complete the order.</p>
+                  <p className="mt-1 text-sm text-slate-600">Progress physical goods only. Delivery, discount, fee, and zero-value informational rows should be parked as non-physical financial lines.</p>
                 </div>
               </div>
 
@@ -420,8 +457,8 @@ export default async function ImporterReconciliationOrderPage({
                 <div className="mt-4 space-y-4">
                   {selectableLines.length > 0 ? (
                     <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
-                      <p className="text-sm font-semibold text-emerald-900">Select clean lines to progress in bulk.</p>
-                      <p className="mt-1 text-xs text-emerald-800">Only unresolved lines still within remaining parent baseline capacity are selectable. Progressed and exception-linked lines remain visible but disabled.</p>
+                      <p className="text-sm font-semibold text-emerald-900">Select clean physical lines to progress in bulk.</p>
+                      <p className="mt-1 text-xs text-emerald-800">Only unresolved physical lines still within remaining parent baseline capacity are selectable. Progressed, exception-linked, and parked non-physical lines remain visible but disabled.</p>
                       <BulkLineSelectionControls selectableCount={selectableLines.length} />
                       <form id="bulk-progress-form" action={bulkMarkSupplierInvoiceLinesProgressedAction} className="mt-3">
                         <input type="hidden" name="order_id" value={orderId} />
@@ -429,7 +466,7 @@ export default async function ImporterReconciliationOrderPage({
                       </form>
                     </div>
                   ) : (
-                    <p className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-medium text-emerald-800">All visible lines are already progressed.</p>
+                    <p className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-medium text-emerald-800">No physical lines are currently selectable for progression.</p>
                   )}
 
                   <div className="space-y-4">
@@ -437,10 +474,12 @@ export default async function ImporterReconciliationOrderPage({
                       const progressed = isProgressed(line);
                       const openDispute = openDisputeByLineId.get(line.id);
                       const exceptionLinked = Boolean(openDispute);
+                      const nonPhysicalResolution = nonPhysicalResolutionByLineId.get(line.id);
+                      const nonPhysicalResolved = Boolean(nonPhysicalResolution);
                       const canDelete = line.line_source === "manually_added";
                       const isOcrLine = line.line_source === "ocr_extracted";
-                      const lineLocked = exceptionLinked;
-                      const unresolvedNonException = !progressed && !exceptionLinked;
+                      const lineLocked = exceptionLinked || nonPhysicalResolved;
+                      const unresolvedNonException = !progressed && !exceptionLinked && !nonPhysicalResolved;
                       const progressableWithinRemainingBaseline = unresolvedNonException
                         ? lineFitsRemainingBaseline({
                             lineQty: Number(line.qty ?? 0),
@@ -450,10 +489,12 @@ export default async function ImporterReconciliationOrderPage({
                           })
                         : false;
                       const blockedByExcessMismatch = unresolvedNonException && !progressableWithinRemainingBaseline;
-                      const statusText = exceptionLinked
-                        ? openDispute?.remedy === "replacement"
-                          ? "In replacement exception case"
-                          : "In refund exception case"
+                      const statusText = nonPhysicalResolved
+                        ? `Parked as ${nonPhysicalResolution?.financial_type ?? "non-physical"}`
+                        : exceptionLinked
+                          ? openDispute?.remedy === "replacement"
+                            ? "In replacement exception case"
+                            : "In refund exception case"
                         : blockedByExcessMismatch
                           ? "Excess/mismatch — resolve through exception path"
                         : progressed
@@ -461,9 +502,9 @@ export default async function ImporterReconciliationOrderPage({
                           : "Unresolved";
 
                       return (
-                        <article key={line.id} className={`rounded-2xl border p-4 ${exceptionLinked ? "border-amber-300 bg-amber-50/70" : progressed ? "border-emerald-300 bg-emerald-50/60" : "border-slate-200 bg-white"}`}>
+                        <article key={line.id} className={`rounded-2xl border p-4 ${nonPhysicalResolved ? "border-sky-300 bg-sky-50/70" : exceptionLinked ? "border-amber-300 bg-amber-50/70" : progressed ? "border-emerald-300 bg-emerald-50/60" : "border-slate-200 bg-white"}`}>
                           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                            {exceptionLinked ? (
+                            {exceptionLinked || nonPhysicalResolved ? (
                               <p className="text-sm font-semibold text-slate-900">Line {line.line_order} · {line.line_source}</p>
                             ) : (
                               <label className={`flex items-center gap-3 text-sm font-semibold ${progressed ? "text-slate-500" : "text-slate-900"}`}>
@@ -471,11 +512,11 @@ export default async function ImporterReconciliationOrderPage({
                                 <span>Line {line.line_order} · {line.line_source}</span>
                               </label>
                             )}
-                            <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${exceptionLinked || blockedByExcessMismatch ? "bg-amber-100 text-amber-900" : progressed ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>{statusText}</span>
+                            <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${nonPhysicalResolved ? "bg-sky-100 text-sky-900" : exceptionLinked || blockedByExcessMismatch ? "bg-amber-100 text-amber-900" : progressed ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>{statusText}</span>
                           </div>
 
                           <div className="grid gap-3 md:grid-cols-12">
-                            <label className="space-y-1 text-sm md:col-span-6"><span className="text-xs uppercase tracking-wide text-slate-500">description</span><input form={`update-line-${line.id}`} name="description" defaultValue={line.description} required readOnly={isOcrLine || lineLocked} title={isOcrLine ? "OCR description is source evidence and cannot be changed." : lineLocked ? "Exception-linked lines are locked." : undefined} className={`w-full rounded-xl border border-slate-300 px-3 py-2 ${isOcrLine || lineLocked ? "bg-slate-100 text-slate-600" : ""}`} />{isOcrLine ? <span className="text-xs text-slate-500">OCR source description is preserved for audit.</span> : null}</label>
+                            <label className="space-y-1 text-sm md:col-span-6"><span className="text-xs uppercase tracking-wide text-slate-500">description</span><input form={`update-line-${line.id}`} name="description" defaultValue={line.description} required readOnly={isOcrLine || lineLocked} title={isOcrLine ? "OCR description is source evidence and cannot be changed." : lineLocked ? "Resolved or exception-linked lines are locked." : undefined} className={`w-full rounded-xl border border-slate-300 px-3 py-2 ${isOcrLine || lineLocked ? "bg-slate-100 text-slate-600" : ""}`} />{isOcrLine ? <span className="text-xs text-slate-500">OCR source description is preserved for audit.</span> : null}</label>
                             <label className="space-y-1 text-sm md:col-span-2"><span className="text-xs uppercase tracking-wide text-slate-500">qty</span><input form={`update-line-${line.id}`} name="qty" defaultValue={line.qty} required type="number" step="1" min="0" readOnly={lineLocked} className={`w-full rounded-xl border border-slate-300 px-3 py-2 ${lineLocked ? "bg-slate-100 text-slate-600" : ""}`} /></label>
                             <label className="space-y-1 text-sm md:col-span-2"><span className="text-xs uppercase tracking-wide text-slate-500">size</span><input form={`update-line-${line.id}`} name="size" defaultValue={line.size ?? ""} readOnly={lineLocked} className={`w-full rounded-xl border border-slate-300 px-3 py-2 ${lineLocked ? "bg-slate-100 text-slate-600" : ""}`} /></label>
                             <label className="space-y-1 text-sm md:col-span-2"><span className="text-xs uppercase tracking-wide text-slate-500">retailer_sku</span><input form={`update-line-${line.id}`} name="retailer_sku" defaultValue={line.retailer_sku ?? ""} readOnly={lineLocked} className={`w-full rounded-xl border border-slate-300 px-3 py-2 ${lineLocked ? "bg-slate-100 text-slate-600" : ""}`} /></label>
@@ -484,8 +525,8 @@ export default async function ImporterReconciliationOrderPage({
                           </div>
 
                           <div className="mt-3 flex flex-wrap items-center gap-3">
-                            {!exceptionLinked && !blockedByExcessMismatch ? <button form={`update-line-${line.id}`} type="submit" className="rounded-xl bg-sky-600 px-3 py-2 text-sm font-semibold text-white hover:bg-sky-500">Save line</button> : null}
-                            {!progressed && !exceptionLinked && !blockedByExcessMismatch ? (
+                            {!exceptionLinked && !nonPhysicalResolved && !blockedByExcessMismatch ? <button form={`update-line-${line.id}`} type="submit" className="rounded-xl bg-sky-600 px-3 py-2 text-sm font-semibold text-white hover:bg-sky-500">Save line</button> : null}
+                            {!progressed && !exceptionLinked && !nonPhysicalResolved && !blockedByExcessMismatch ? (
                               <form action={markSupplierInvoiceLineProgressedAction}>
                                 <input type="hidden" name="order_id" value={orderId} />
                                 <input type="hidden" name="line_id" value={line.id} />
@@ -493,14 +534,32 @@ export default async function ImporterReconciliationOrderPage({
                               </form>
                             ) : blockedByExcessMismatch ? (
                               <span className="text-xs font-medium text-amber-800">Excess/mismatch — resolve through exception path</span>
-                            ) : progressed ? <span className="text-xs font-medium text-emerald-700">Included in progressed subset.</span> : null}
-                            {canDelete && !exceptionLinked ? (
+                            ) : progressed ? <span className="text-xs font-medium text-emerald-700">Included in progressed physical subset.</span> : null}
+                            {!progressed && !exceptionLinked && !nonPhysicalResolved ? (
+                              <form action={resolveSupplierInvoiceLineNonPhysicalAction} className="flex flex-wrap items-center gap-2 rounded-xl border border-sky-200 bg-sky-50 px-3 py-2">
+                                <input type="hidden" name="order_id" value={orderId} />
+                                <input type="hidden" name="line_id" value={line.id} />
+                                <select name="financial_type" defaultValue={suggestedFinancialType(line.description, Number(line.amount_inc_vat_gbp ?? 0))} className="rounded-lg border border-sky-200 bg-white px-2 py-1 text-xs">
+                                  <option value="zero_value_delivery">zero-value delivery</option>
+                                  <option value="delivery">delivery</option>
+                                  <option value="discount">discount</option>
+                                  <option value="fee">fee</option>
+                                  <option value="rounding">rounding</option>
+                                  <option value="other_non_physical">other non-physical</option>
+                                </select>
+                                <input name="notes" className="w-44 rounded-lg border border-sky-200 px-2 py-1 text-xs" placeholder="Optional note" />
+                                <button type="submit" className="rounded-lg bg-sky-700 px-2 py-1 text-xs font-semibold text-white hover:bg-sky-600">Park non-physical</button>
+                              </form>
+                            ) : nonPhysicalResolved ? (
+                              <span className="text-xs font-medium text-sky-800">Closed financially only. Not sent to tracking/shipper.</span>
+                            ) : null}
+                            {canDelete && !exceptionLinked && !nonPhysicalResolved ? (
                               <form action={deleteManualSupplierInvoiceLineAction}>
                                 <input type="hidden" name="order_id" value={orderId} />
                                 <input type="hidden" name="line_id" value={line.id} />
                                 <button type="submit" className="rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-800 hover:bg-rose-100">Delete manual line</button>
                               </form>
-                            ) : !exceptionLinked ? <span className="text-xs text-slate-500">OCR lines cannot be deleted.</span> : null}
+                            ) : !exceptionLinked && !nonPhysicalResolved ? <span className="text-xs text-slate-500">OCR lines cannot be deleted.</span> : null}
                             <span className="text-xs text-slate-500">qty_confirmed: {formatValue(line.qty_confirmed)} · amount_confirmed: {formatValue(line.amount_confirmed)}</span>
                           </div>
                         </article>
