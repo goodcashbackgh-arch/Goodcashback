@@ -48,7 +48,20 @@ export default async function Page({ params }: { params: Promise<{ order_id: str
         .order("line_order", { ascending: true })
     : { data: [] };
 
-  const candidates = (lines ?? []).filter((line) => !isDone(line.eligible_for_invoice_yn));
+  const lineIds = (lines ?? []).map((line) => line.id);
+  const { data: nonPhysicalRows } = invoice?.id && lineIds.length > 0
+    ? await supabase
+        .from("supplier_invoice_line_resolutions")
+        .select("supplier_invoice_line_id")
+        .eq("supplier_invoice_id", invoice.id)
+        .eq("resolution_type", "non_physical_financial")
+        .eq("active", true)
+        .in("supplier_invoice_line_id", lineIds)
+    : { data: [] as Array<{ supplier_invoice_line_id: string }> };
+
+  const nonPhysicalLineIds = new Set((nonPhysicalRows ?? []).map((row) => row.supplier_invoice_line_id));
+  const candidates = (lines ?? []).filter((line) => !isDone(line.eligible_for_invoice_yn) && !nonPhysicalLineIds.has(line.id));
+  const parkedCount = (lines ?? []).filter((line) => nonPhysicalLineIds.has(line.id)).length;
 
   return (
     <main className="min-h-screen bg-slate-50 px-6 py-8 text-slate-950">
@@ -63,11 +76,12 @@ export default async function Page({ params }: { params: Promise<{ order_id: str
 
         <section className="rounded-3xl border border-amber-200 bg-amber-50 p-6 shadow-sm">
           <h2 className="text-xl font-semibold">Confirm clean invoice lines</h2>
-          <p className="mt-2 text-sm text-amber-900">Use this only after checking the invoice against order evidence. Confirmed lines return to the normal accounting coding grid. This does not approve the invoice.</p>
+          <p className="mt-2 text-sm text-amber-900">Use this only after checking physical goods lines against order evidence. Parked delivery, discount, fee, and other non-physical rows are excluded so they cannot be accidentally confirmed as shipper-trackable goods.</p>
 
           {!invoice ? <p className="mt-4 rounded-xl bg-white p-4 text-sm">No supplier invoice found.</p> : null}
           {invoice?.is_current_for_order ? <p className="mt-4 rounded-xl bg-white p-4 text-sm">This invoice is already current.</p> : null}
-          {invoice && !invoice.is_current_for_order && candidates.length === 0 ? <p className="mt-4 rounded-xl bg-white p-4 text-sm">No unconfirmed lines remain.</p> : null}
+          {parkedCount > 0 ? <p className="mt-4 rounded-xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-900">{parkedCount} parked non-physical line(s) excluded from staff confirmation.</p> : null}
+          {invoice && !invoice.is_current_for_order && candidates.length === 0 ? <p className="mt-4 rounded-xl bg-white p-4 text-sm">No unconfirmed physical lines remain.</p> : null}
 
           {invoice && !invoice.is_current_for_order && candidates.length > 0 ? (
             <form action={supervisorProgressSupplierInvoiceLinesAction} className="mt-5 space-y-4">
