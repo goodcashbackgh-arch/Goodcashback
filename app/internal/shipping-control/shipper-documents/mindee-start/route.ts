@@ -57,6 +57,10 @@ function getShippingModelId() {
   return process.env.MINDEE_SHIPPING_DOCUMENT_MODEL_ID?.trim() || process.env.MINDEE_INVOICE_MODEL_ID?.trim() || "";
 }
 
+function getShippingWebhookId() {
+  return process.env.MINDEE_SHIPPING_DOCUMENT_WEBHOOK_ID?.trim() || "";
+}
+
 async function preflightOneDocument({
   supabase,
   shippingDocumentId,
@@ -102,11 +106,13 @@ async function enqueueOneDocument({
   shippingDocumentId,
   modelId,
   apiKey,
+  webhookId,
 }: {
   supabase: Awaited<ReturnType<typeof createClient>>;
   shippingDocumentId: string;
   modelId: string;
   apiKey: string;
+  webhookId: string;
 }) {
   const { data: startData, error: startError } = await (supabase as any).rpc("internal_start_mindee_shipping_document_ocr_v1", {
     p_shipping_document_id: shippingDocumentId,
@@ -141,6 +147,7 @@ async function enqueueOneDocument({
 
   const mindeeFormData = new FormData();
   mindeeFormData.append("model_id", modelId);
+  mindeeFormData.append("webhook_ids", webhookId);
   mindeeFormData.append("file", fileBlob, filename);
 
   const headers = new Headers();
@@ -174,7 +181,7 @@ async function enqueueOneDocument({
     return { ok: false, message: `Mindee enqueue failed (${mindeeResponse.status}). ${parseMindeeDetail(raw) || "No detail returned."}` };
   }
 
-  return { ok: true, message: `Queued ${jobId ?? "—"}. Inference ${inferenceId ?? "pending"}.` };
+  return { ok: true, message: `Queued ${jobId ?? "—"}. Inference ${inferenceId ?? "pending"}. Mindee shipping document webhook id attached.` };
 }
 
 export async function POST(request: Request) {
@@ -192,6 +199,9 @@ export async function POST(request: Request) {
 
   const modelId = getShippingModelId();
   if (!modelId) return redirectBack(request, { error: "MINDEE_SHIPPING_DOCUMENT_MODEL_ID or MINDEE_INVOICE_MODEL_ID is not configured." });
+
+  const webhookId = getShippingWebhookId();
+  if (!webhookId && !dryRun) return redirectBack(request, { error: "MINDEE_SHIPPING_DOCUMENT_WEBHOOK_ID is not configured." });
 
   const supabase = await createClient();
   const {
@@ -227,7 +237,7 @@ export async function POST(request: Request) {
   const failures: string[] = [];
 
   for (const id of ids) {
-    const result = await enqueueOneDocument({ supabase, shippingDocumentId: id, modelId, apiKey });
+    const result = await enqueueOneDocument({ supabase, shippingDocumentId: id, modelId, apiKey, webhookId });
     if (result.ok) queued += 1;
     else failures.push(result.message);
   }
@@ -237,5 +247,5 @@ export async function POST(request: Request) {
   }
 
   const suffix = failures.length > 0 ? ` ${failures.length} failed: ${failures[0]}` : "";
-  return redirectBack(request, { success: `Queued ${queued} shipping document(s) for OCR. Use Check Mindee result to fetch/save OCR lines. No webhook is required for this manual path.${suffix}` });
+  return redirectBack(request, { success: `Queued ${queued} shipping document(s) for OCR. Mindee shipping document webhook id attached. Cron route remains available manually; Check Mindee result remains emergency fallback.${suffix}` });
 }
