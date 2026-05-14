@@ -126,9 +126,25 @@ export async function assertInvoiceReadyForCurrentApproval(
       .map((row: any) => String(row.supplier_invoice_line_id)),
   );
 
-  const unbranchedCount = unsettledLineIds.filter((lineId: string) => !safelyBranchedLineIds.has(lineId)).length;
+  const { data: nonPhysicalResolutions, error: resolutionError } = await supabase
+    .from("supplier_invoice_line_resolutions")
+    .select("supplier_invoice_line_id")
+    .eq("supplier_invoice_id", supplierInvoiceId)
+    .eq("resolution_type", "non_physical_financial")
+    .eq("active", true)
+    .in("supplier_invoice_line_id", unsettledLineIds);
+
+  if (resolutionError) return resolutionError.message;
+
+  const nonPhysicalResolvedLineIds = new Set(
+    (nonPhysicalResolutions ?? []).map((row: any) => String(row.supplier_invoice_line_id)),
+  );
+
+  const unbranchedCount = unsettledLineIds.filter(
+    (lineId: string) => !safelyBranchedLineIds.has(lineId) && !nonPhysicalResolvedLineIds.has(lineId),
+  ).length;
   if (unbranchedCount > 0) {
-    return `Cannot approve current invoice yet. ${unbranchedCount} invoice line(s) are not progressed and not branched into refund/replacement exception handling.`;
+    return `Cannot approve current invoice yet. ${unbranchedCount} invoice line(s) are not progressed, not branched into refund/replacement exception handling, and not parked as non-physical financial lines.`;
   }
 
   return null;
