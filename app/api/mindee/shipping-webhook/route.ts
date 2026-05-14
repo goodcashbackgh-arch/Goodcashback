@@ -180,6 +180,15 @@ function parseMindeeV2InvoiceResult(raw: unknown) {
   return { ocrShipperName, ocrReferenceText: referenceText, ocrDocumentRef, ocrDocumentDate, ocrTotalAmount, lines };
 }
 
+function errorPayload(error: unknown) {
+  return {
+    ok: false,
+    route: "mindee_shipping_webhook",
+    error: error instanceof Error ? error.message : String(error),
+    error_name: error instanceof Error ? error.name : typeof error,
+  };
+}
+
 export async function GET() {
   return NextResponse.json({
     ok: true,
@@ -190,7 +199,7 @@ export async function GET() {
   });
 }
 
-export async function POST(request: Request) {
+async function handlePost(request: Request) {
   const url = new URL(request.url);
   if (url.searchParams.get("ping") === "1") {
     return NextResponse.json({
@@ -259,4 +268,12 @@ export async function POST(request: Request) {
     ocr_match_status: row?.ocr_match_status ?? null,
     inserted_line_count: row?.inserted_line_count ?? parsed.lines.length,
   });
+}
+
+export async function POST(request: Request) {
+  try {
+    return await handlePost(request);
+  } catch (error) {
+    return NextResponse.json(errorPayload(error), { status: 500 });
+  }
 }
