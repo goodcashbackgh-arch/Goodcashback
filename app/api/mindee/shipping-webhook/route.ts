@@ -1,41 +1,16 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
+type ParsedLine = {
+  description: string;
+  quantity: number;
+  amount_gbp: number;
+};
+
 function recordValue(value: unknown) {
   if (value === undefined || value === null || value === "") return null;
+  if (typeof value === "object") return null;
   return String(value).trim() || null;
-}
-
-function fieldValue(field: unknown) {
-  if (!field || typeof field !== "object") return null;
-  const value = (field as { value?: unknown }).value;
-  if (value === undefined || value === null || value === "") return null;
-  return value;
-}
-
-function plainOrFieldValue(value: unknown) {
-  const nested = fieldValue(value);
-  if (nested !== null) return nested;
-  if (value === undefined || value === null || value === "") return null;
-  return value;
-}
-
-function stringValue(value: unknown) {
-  const resolved = plainOrFieldValue(value);
-  return resolved === null ? null : String(resolved).trim() || null;
-}
-
-function numberValue(value: unknown) {
-  const resolved = plainOrFieldValue(value);
-  if (resolved === null) return null;
-  const n = Number(resolved);
-  return Number.isFinite(n) ? Math.round(n * 100) / 100 : null;
-}
-
-function dateValue(value: unknown) {
-  const resolved = stringValue(value);
-  if (!resolved) return null;
-  return /^\d{4}-\d{2}-\d{2}$/.test(resolved) ? resolved : null;
 }
 
 function getByPath(root: unknown, path: string[]) {
@@ -45,6 +20,52 @@ function getByPath(root: unknown, path: string[]) {
     current = (current as Record<string, unknown>)[key];
   }
   return current ?? null;
+}
+
+function primitiveValue(value: unknown): string | number | boolean | null {
+  if (value === undefined || value === null || value === "") return null;
+  if (["string", "number", "boolean"].includes(typeof value)) return value as string | number | boolean;
+  return null;
+}
+
+function fieldPrimitive(field: unknown): string | number | boolean | null {
+  const direct = primitiveValue(field);
+  if (direct !== null) return direct;
+
+  if (!field || typeof field !== "object") return null;
+  const obj = field as Record<string, unknown>;
+
+  const value = primitiveValue(obj.value);
+  if (value !== null) return value;
+
+  const items = obj.items;
+  if (Array.isArray(items)) {
+    for (const item of items) {
+      const itemValue = fieldPrimitive(item);
+      if (itemValue !== null) return itemValue;
+    }
+  }
+
+  return null;
+}
+
+function stringValue(value: unknown) {
+  const resolved = fieldPrimitive(value);
+  if (resolved === null) return null;
+  return String(resolved).trim() || null;
+}
+
+function numberValue(value: unknown) {
+  const resolved = fieldPrimitive(value);
+  if (resolved === null) return null;
+  const n = Number(resolved);
+  return Number.isFinite(n) ? Math.round(n * 100) / 100 : null;
+}
+
+function dateValue(value: unknown) {
+  const resolved = stringValue(value);
+  if (!resolved) return null;
+  return /^\d{4}-\d{2}-\d{2}$/.test(resolved) ? resolved : null;
 }
 
 function firstRecordCandidate(root: unknown, paths: string[][]) {
@@ -123,7 +144,7 @@ function extractPagesConsumed(raw: unknown) {
   return null;
 }
 
-function normalizeV2InvoiceLine(line: unknown, lineOrder: number) {
+function normalizeV2InvoiceLine(line: unknown, lineOrder: number): ParsedLine | null {
   if (!line || typeof line !== "object") return null;
   const outer = line as Record<string, unknown>;
   const row = outer.fields && typeof outer.fields === "object" ? outer.fields as Record<string, unknown> : outer;
@@ -155,10 +176,20 @@ function parseMindeeV2InvoiceResult(raw: unknown) {
     ["result"],
     ["document", "inference", "prediction"],
   ]);
-  const ocrDocumentRef = firstStringFrom(fields, ["invoice_number", "invoice_ref", "invoice_id", "reference", "document_number"]);
+
+  const ocrDocumentRef = firstStringFrom(fields, [
+    "invoice_number",
+    "invoice_ref",
+    "invoice_id",
+    "reference_numbers",
+    "reference",
+    "document_number",
+    "po_number",
+  ]);
   const ocrShipperName = firstStringFrom(fields, ["supplier_name", "supplier", "vendor_name", "seller_name", "company_name"]);
   const ocrDocumentDate = firstDateFrom(fields, ["invoice_date", "date", "issued_date", "document_date"]);
   const ocrTotalAmount = firstNumberFrom(fields, ["total_amount", "total", "total_incl", "total_inc_vat", "amount_due", "grand_total"]);
+
   const lineItems = firstArrayCandidate(raw, [
     ["inference", "result", "fields", "line_items", "items"],
     ["inference", "result", "fields", "items", "items"],
@@ -170,14 +201,23 @@ function parseMindeeV2InvoiceResult(raw: unknown) {
     ["result", "fields", "line_items"],
     ["document", "inference", "prediction", "line_items"],
   ]);
-  const lines = lineItems.map((line, index) => normalizeV2InvoiceLine(line, index + 1)).filter(Boolean);
-  const referenceText = [
+  const lines = lineItems.map((line, index) => normalizeV2InvoiceLine(line, index + 1)).filter((line): line is ParsedLine => Boolean(line));
+
+  const referenceParts = [
     ocrDocumentRef,
-    firstStringFrom(fields, ["purchase_order", "po_number", "order_number", "booking_ref", "tracking_number", "reference", "document_number"]),
+    firstStringFrom(fields, ["purchase_order", "order_number", "booking_ref", "tracking_number"]),
     stringValue(getByPath(raw, ["inference", "result", "raw_text"])),
     stringValue(getByPath(raw, ["inference", "raw_text"])),
-  ].filter(Boolean).join(" ").trim() || null;
-  return { ocrShipperName, ocrReferenceText: referenceText, ocrDocumentRef, ocrDocumentDate, ocrTotalAmount, lines };
+  ].filter((part): part is string => Boolean(part));
+
+  return {
+    ocrShipperName,
+    ocrReferenceText: Array.from(new Set(referenceParts)).join(" ") || null,
+    ocrDocumentRef,
+    ocrDocumentDate,
+    ocrTotalAmount,
+    lines,
+  };
 }
 
 function errorPayload(error: unknown) {
