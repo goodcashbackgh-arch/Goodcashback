@@ -199,7 +199,9 @@ export default async function InternalReconciliationPage({
     nonPhysicalByLineId.set(row.supplier_invoice_line_id, row);
   }
 
-  const progressedProductLines = invoiceLines.filter((line) => isProgressed(line.eligible_for_invoice_yn));
+  const codableSupplierLines = invoiceLines.filter(
+    (line) => isProgressed(line.eligible_for_invoice_yn) || nonPhysicalByLineId.has(line.id),
+  );
 
   const { data: codingRows } = lineIds.length
     ? await supabase
@@ -298,13 +300,13 @@ export default async function InternalReconciliationPage({
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h2 className="text-xl font-semibold">Supplier invoice accounting grid</h2>
-              <p className="mt-2 text-sm text-slate-600">Save all is atomic for progressed product lines. Parked non-physical rows are visible for audit and should be coded through manual adjustment rows only when they have a financial value.</p>
+              <p className="mt-2 text-sm text-slate-600">Save all is atomic: supplier invoice net, VAT and gross must reconcile. Progressed product lines and parked non-physical financial invoice lines are codable here, but only physical product lines feed tracking/shipper flows.</p>
             </div>
             {invoice ? (
               <form id="save-all-coding" action={saveAllSupplierLineAccountingCodesAction}>
                 <input type="hidden" name="order_id" value={orderId} />
                 <input type="hidden" name="supplier_invoice_id" value={invoice.id} />
-                <button disabled={progressedProductLines.length === 0} className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white disabled:bg-slate-400">Save product coding lines</button>
+                <button disabled={codableSupplierLines.length === 0} className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white disabled:bg-slate-400">Save all coding lines</button>
               </form>
             ) : null}
           </div>
@@ -314,7 +316,7 @@ export default async function InternalReconciliationPage({
               <label className="text-xs font-semibold uppercase text-slate-500">Default nominal/GL<input data-bulk-nominal className="mt-1 w-full rounded-lg border px-2 py-2 text-sm normal-case text-slate-900" placeholder="e.g. 5000" /></label>
               <label className="text-xs font-semibold uppercase text-slate-500">Default Sage ledger id<input data-bulk-sage-ledger className="mt-1 w-full rounded-lg border px-2 py-2 text-sm normal-case text-slate-900" placeholder="from Sage sync later" /></label>
               <label className="text-xs font-semibold uppercase text-slate-500">Default VAT class<select data-bulk-vat-rate defaultValue="20" className="mt-1 w-full rounded-lg border px-2 py-2 text-sm normal-case text-slate-900"><option value="20">20% standard</option><option value="5">5% reduced</option><option value="0">0%</option></select></label>
-              <div className="flex items-end"><button type="button" data-apply-bulk-defaults className="w-full rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white">Apply to product lines</button></div>
+              <div className="flex items-end"><button type="button" data-apply-bulk-defaults className="w-full rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white">Apply to all codable lines</button></div>
             </div>
           </div>
 
@@ -345,33 +347,33 @@ export default async function InternalReconciliationPage({
                   const preview = splitGross(gross, rate);
                   const progressed = isProgressed(line.eligible_for_invoice_yn);
                   const nonPhysicalResolution = nonPhysicalByLineId.get(line.id);
-                  const nonPhysicalParked = Boolean(nonPhysicalResolution);
-                  const productCodable = progressed;
-                  const saveForm = productCodable ? "save-all-coding" : undefined;
-                  const rowStatus = nonPhysicalParked ? `parked financial: ${nonPhysicalResolution?.financial_type ?? "non-physical"}` : progressed ? "progressed" : "blocked";
+                  const nonPhysicalCodable = Boolean(nonPhysicalResolution);
+                  const codable = progressed || nonPhysicalCodable;
+                  const saveForm = codable ? "save-all-coding" : undefined;
+                  const rowStatus = nonPhysicalCodable ? `financial: ${nonPhysicalResolution?.financial_type ?? "non-physical"}` : progressed ? "progressed" : "blocked";
                   return (
-                    <tr key={line.id} data-accounting-row={productCodable ? true : undefined} data-gross={productCodable ? moneyInput(gross) : undefined} className={`border-b align-top ${nonPhysicalParked ? "bg-sky-50" : ""}`}>
-                      <td className="p-2">{line.line_order}<br /><span className={nonPhysicalParked ? "text-sky-700" : "text-slate-400"}>{rowStatus}</span>{productCodable ? <input form="save-all-coding" type="hidden" name="line_ids" value={line.id} /> : null}</td>
-                      <td className="p-2"><input form={saveForm} name={`description_override_${line.id}`} defaultValue={coding?.posting_description ?? line.description} disabled={!productCodable} className="w-72 rounded-lg border px-2 py-1 disabled:bg-slate-100" /></td>
-                      <td className="p-2"><input form={saveForm} name={`sku_override_${line.id}`} defaultValue={coding?.posting_sku ?? line.retailer_sku ?? ""} disabled={!productCodable} className="w-28 rounded-lg border px-2 py-1 disabled:bg-slate-100" /></td>
-                      <td className="p-2"><input form={saveForm} name={`size_override_${line.id}`} defaultValue={coding?.posting_size ?? line.size ?? ""} disabled={!productCodable} className="w-20 rounded-lg border px-2 py-1 disabled:bg-slate-100" /></td>
+                    <tr key={line.id} data-accounting-row={codable ? true : undefined} data-gross={codable ? moneyInput(gross) : undefined} className={`border-b align-top ${nonPhysicalCodable ? "bg-sky-50" : ""}`}>
+                      <td className="p-2">{line.line_order}<br /><span className={nonPhysicalCodable ? "text-sky-700" : "text-slate-400"}>{rowStatus}</span>{codable ? <input form="save-all-coding" type="hidden" name="line_ids" value={line.id} /> : null}</td>
+                      <td className="p-2"><input form={saveForm} name={`description_override_${line.id}`} defaultValue={coding?.posting_description ?? line.description} disabled={!codable} className="w-72 rounded-lg border px-2 py-1 disabled:bg-slate-100" /></td>
+                      <td className="p-2"><input form={saveForm} name={`sku_override_${line.id}`} defaultValue={coding?.posting_sku ?? line.retailer_sku ?? ""} disabled={!codable} className="w-28 rounded-lg border px-2 py-1 disabled:bg-slate-100" /></td>
+                      <td className="p-2"><input form={saveForm} name={`size_override_${line.id}`} defaultValue={coding?.posting_size ?? line.size ?? ""} disabled={!codable} className="w-20 rounded-lg border px-2 py-1 disabled:bg-slate-100" /></td>
                       <td className="p-2">{line.qty ?? 0}</td>
-                      <td className="p-2"><input data-nominal={productCodable ? true : undefined} form={saveForm} name={`nominal_code_${line.id}`} defaultValue={coding?.nominal_code ?? ""} disabled={!productCodable} className="w-24 rounded-lg border px-2 py-1 disabled:bg-slate-100" placeholder="5000" /></td>
-                      <td className="p-2"><input data-sage-ledger={productCodable ? true : undefined} form={saveForm} name={`sage_ledger_account_id_${line.id}`} defaultValue={coding?.sage_ledger_account_id ?? ""} disabled={!productCodable} className="w-36 rounded-lg border px-2 py-1 disabled:bg-slate-100" /></td>
+                      <td className="p-2"><input data-nominal={codable ? true : undefined} form={saveForm} name={`nominal_code_${line.id}`} defaultValue={coding?.nominal_code ?? ""} disabled={!codable} className="w-24 rounded-lg border px-2 py-1 disabled:bg-slate-100" placeholder="5000" /></td>
+                      <td className="p-2"><input data-sage-ledger={codable ? true : undefined} form={saveForm} name={`sage_ledger_account_id_${line.id}`} defaultValue={coding?.sage_ledger_account_id ?? ""} disabled={!codable} className="w-36 rounded-lg border px-2 py-1 disabled:bg-slate-100" /></td>
                       <td className="p-2">
-                        <select form={saveForm} name={`vat_rate_percent_${line.id}`} data-vat-rate={productCodable ? true : undefined} defaultValue={String(rate)} disabled={!productCodable} className="w-32 rounded-lg border px-2 py-1 disabled:bg-slate-100">
+                        <select form={saveForm} name={`vat_rate_percent_${line.id}`} data-vat-rate={codable ? true : undefined} defaultValue={String(rate)} disabled={!codable} className="w-32 rounded-lg border px-2 py-1 disabled:bg-slate-100">
                           <option value="20">20% std</option>
                           <option value="5">5% reduced</option>
                           <option value="0">0%</option>
                         </select>
-                        {productCodable ? <input data-tax-label form={saveForm} type="hidden" name={`tax_rate_label_${line.id}`} value={taxLabel(rate)} /> : null}
-                        {productCodable ? <input data-tax-id form={saveForm} type="hidden" name={`tax_rate_id_${line.id}`} value={taxId(rate)} /> : null}
+                        {codable ? <input data-tax-label form={saveForm} type="hidden" name={`tax_rate_label_${line.id}`} value={taxLabel(rate)} /> : null}
+                        {codable ? <input data-tax-id form={saveForm} type="hidden" name={`tax_rate_id_${line.id}`} value={taxId(rate)} /> : null}
                       </td>
-                      <td className="p-2"><input form={saveForm} data-net={productCodable ? true : undefined} name={`net_amount_gbp_${line.id}`} type="number" step="0.01" defaultValue={moneyInput(coding?.net_amount_gbp ?? preview.net)} disabled={!productCodable} className="w-24 rounded-lg border px-2 py-1 disabled:bg-slate-100" /></td>
-                      <td className="p-2"><input form={saveForm} data-vat={productCodable ? true : undefined} name={`vat_amount_gbp_${line.id}`} type="number" step="0.01" defaultValue={moneyInput(coding?.vat_amount_gbp ?? preview.vat)} disabled={!productCodable} className="w-24 rounded-lg border px-2 py-1 disabled:bg-slate-100" /></td>
+                      <td className="p-2"><input form={saveForm} data-net={codable ? true : undefined} name={`net_amount_gbp_${line.id}`} type="number" step="0.01" defaultValue={moneyInput(coding?.net_amount_gbp ?? preview.net)} disabled={!codable} className="w-24 rounded-lg border px-2 py-1 disabled:bg-slate-100" /></td>
+                      <td className="p-2"><input form={saveForm} data-vat={codable ? true : undefined} name={`vat_amount_gbp_${line.id}`} type="number" step="0.01" defaultValue={moneyInput(coding?.vat_amount_gbp ?? preview.vat)} disabled={!codable} className="w-24 rounded-lg border px-2 py-1 disabled:bg-slate-100" /></td>
                       <td className="p-2 font-semibold">{gbp(gross)}</td>
-                      <td className="p-2"><input form={saveForm} type="checkbox" name={`admin_review_required_yn_${line.id}`} defaultChecked={Boolean(coding?.admin_review_required_yn)} disabled={!productCodable} /> <input form={saveForm} name={`review_reason_${line.id}`} defaultValue={coding?.review_reason ?? ""} disabled={!productCodable} className="mt-1 w-32 rounded-lg border px-2 py-1 disabled:bg-slate-100" placeholder="reason" /></td>
-                      <td className="p-2">{coding?.coded_yn ? "coded" : nonPhysicalParked ? "parked/audit" : productCodable ? "not coded" : "blocked"}</td>
+                      <td className="p-2"><input form={saveForm} type="checkbox" name={`admin_review_required_yn_${line.id}`} defaultChecked={Boolean(coding?.admin_review_required_yn)} disabled={!codable} /> <input form={saveForm} name={`review_reason_${line.id}`} defaultValue={coding?.review_reason ?? ""} disabled={!codable} className="mt-1 w-32 rounded-lg border px-2 py-1 disabled:bg-slate-100" placeholder="reason" /></td>
+                      <td className="p-2">{coding?.coded_yn ? "coded" : codable ? "not coded" : "blocked"}</td>
                     </tr>
                   );
                 })}
@@ -391,7 +393,7 @@ export default async function InternalReconciliationPage({
                   <td className="p-2 font-semibold">{gbp(codedNet)}</td>
                   <td className="p-2 font-semibold">{gbp(codedVat)}</td>
                   <td className="p-2 font-semibold">{gbp(codedGross)}</td>
-                  <td className="p-2" colSpan={2}>Includes product coding and manual adjustment lines</td>
+                  <td className="p-2" colSpan={2}>Includes coded product and coded non-physical supplier invoice lines</td>
                 </tr>
                 <tr className={vatStatusOk ? "bg-emerald-900" : "bg-amber-900"}>
                   <td className="p-2 font-semibold" colSpan={8}>Variance</td>
