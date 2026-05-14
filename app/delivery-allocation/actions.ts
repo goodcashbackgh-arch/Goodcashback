@@ -125,6 +125,20 @@ async function calculateAllocationValues(params: {
   if (lineError || !line) return { ok: false as const, error: lineError?.message ?? "Invoice line not found for this order." };
   if (!isProgressedFlag(line.eligible_for_invoice_yn)) return { ok: false as const, error: "Only progressed lines can be allocated to tracking refs." };
 
+  const { data: nonPhysicalResolution, error: nonPhysicalError } = await db
+    .from("supplier_invoice_line_resolutions")
+    .select("id")
+    .eq("supplier_invoice_line_id", params.lineId)
+    .eq("resolution_type", "non_physical_financial")
+    .eq("active", true)
+    .limit(1)
+    .maybeSingle();
+
+  if (nonPhysicalError) return { ok: false as const, error: nonPhysicalError.message };
+  if (nonPhysicalResolution) {
+    return { ok: false as const, error: "Non-physical financial lines cannot be allocated to tracking refs." };
+  }
+
   const lineQty = Number(line.qty_confirmed ?? line.qty ?? 0);
   const lineAmount = money(line.amount_confirmed ?? line.amount_inc_vat_gbp);
   if (lineQty <= 0 || lineAmount < 0) return { ok: false as const, error: "Line quantity/value is not valid for allocation." };
