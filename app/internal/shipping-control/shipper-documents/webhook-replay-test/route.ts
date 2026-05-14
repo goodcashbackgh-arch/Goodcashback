@@ -13,6 +13,11 @@ export async function GET(request: Request) {
     return NextResponse.json({ ok: false, error: "shipping_document_id is required" }, { status: 400 });
   }
 
+  const webhookToken = process.env.MINDEE_SHIPPING_WEBHOOK_TOKEN?.trim();
+  if (!webhookToken) {
+    return NextResponse.json({ ok: false, error: "MINDEE_SHIPPING_WEBHOOK_TOKEN is required for the replay test." }, { status: 500 });
+  }
+
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ ok: false, error: "not authenticated" }, { status: 401 });
@@ -47,7 +52,7 @@ export async function GET(request: Request) {
   }
 
   const origin = new URL(request.url).origin;
-  const target = `${origin}/api/mindee/shipping-webhook`;
+  const target = `${origin}/api/mindee/shipping-webhook?token=${encodeURIComponent(webhookToken)}`;
   const response = await fetch(target, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
@@ -68,8 +73,8 @@ export async function GET(request: Request) {
   return NextResponse.json({
     ok: response.ok && !afterError,
     route: "shipping_ocr_webhook_replay_test",
-    note: "No Mindee call and no OCR credit used. This replays the saved raw OCR JSON through the real shipping webhook POST route using staff-secured context only.",
-    target,
+    note: "No Mindee call and no OCR credit used. This replays the saved raw OCR JSON through the real token-protected shipping webhook POST route using staff-secured context only.",
+    target: `${origin}/api/mindee/shipping-webhook?token=***`,
     webhook_http_status: response.status,
     webhook_response: body,
     before: {
