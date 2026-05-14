@@ -189,6 +189,26 @@ function errorPayload(error: unknown) {
   };
 }
 
+function requireWebhookToken(url: URL) {
+  const expected = process.env.MINDEE_SHIPPING_WEBHOOK_TOKEN?.trim();
+  if (!expected) {
+    return NextResponse.json({
+      ok: false,
+      route: "mindee_shipping_webhook",
+      error: "MINDEE_SHIPPING_WEBHOOK_TOKEN is required for real shipping OCR webhook POSTs.",
+    }, { status: 500 });
+  }
+  const received = url.searchParams.get("token")?.trim() || "";
+  if (received !== expected) {
+    return NextResponse.json({
+      ok: false,
+      route: "mindee_shipping_webhook",
+      error: "Invalid or missing shipping webhook token.",
+    }, { status: 401 });
+  }
+  return null;
+}
+
 export async function GET() {
   return NextResponse.json({
     ok: true,
@@ -211,6 +231,9 @@ async function handlePost(request: Request) {
       timestamp: new Date().toISOString(),
     });
   }
+
+  const tokenFailure = requireWebhookToken(url);
+  if (tokenFailure) return tokenFailure;
 
   const raw = await request.json().catch(() => null);
   if (!raw || typeof raw !== "object") return NextResponse.json({ error: "invalid json" }, { status: 400 });
