@@ -155,7 +155,7 @@ export async function saveAllSupplierLineAccountingCodesAction(formData: FormDat
   const lineIds = formData.getAll("line_ids").map((value) => asString(value)).filter(Boolean);
 
   if (!orderId || !invoiceId) redirect(`/internal/reconciliation/${orderId || ""}?error=Missing+invoice+or+order+id`);
-  if (lineIds.length === 0) redirect(`/internal/reconciliation/${orderId}?error=No+progressed+lines+to+save`);
+  if (lineIds.length === 0) redirect(`/internal/reconciliation/${orderId}?error=No+codable+lines+to+save`);
 
   const lines = lineIds.map((lineId) => ({
     supplier_invoice_line_id: lineId,
@@ -173,7 +173,7 @@ export async function saveAllSupplierLineAccountingCodesAction(formData: FormDat
     review_reason: asString(formData.get(`review_reason_${lineId}`)),
   }));
 
-  const { error } = await supabase.rpc("staff_bulk_save_supplier_invoice_line_accounting_codes", {
+  const { error } = await supabase.rpc("staff_bulk_save_supplier_invoice_line_accounting_codes_v2", {
     p_supplier_invoice_id: invoiceId,
     p_lines: lines,
   });
@@ -181,7 +181,7 @@ export async function saveAllSupplierLineAccountingCodesAction(formData: FormDat
   if (error) redirect(`/internal/reconciliation/${orderId}?error=${encodeURIComponent(error.message)}`);
   revalidatePath(`/internal/reconciliation/${orderId}`);
   revalidatePath("/internal/supplier-draft-ready");
-  redirect(`/internal/reconciliation/${orderId}?success=All+coding+lines+saved+and+balanced`);
+  redirect(`/internal/reconciliation/${orderId}?success=All+codable+supplier+invoice+lines+saved+and+balanced`);
 }
 
 export async function saveSupplierLineAccountingCodeAction(formData: FormData) {
@@ -260,9 +260,10 @@ export async function deleteSupplierAccountingAdjustmentLineAction(formData: For
 
   if (!orderId || !adjustmentLineId) redirect(`/internal/reconciliation/${orderId || ""}?error=Missing+adjustment+line+id`);
 
-  const { error } = await supabase.rpc("staff_delete_supplier_invoice_accounting_adjustment_line", {
-    p_adjustment_line_id: adjustmentLineId,
-  });
+  const { error } = await supabase
+    .from("supplier_invoice_accounting_adjustment_lines")
+    .delete()
+    .eq("id", adjustmentLineId);
 
   if (error) redirect(`/internal/reconciliation/${orderId}?error=${encodeURIComponent(error.message)}`);
   revalidatePath(`/internal/reconciliation/${orderId}`);
