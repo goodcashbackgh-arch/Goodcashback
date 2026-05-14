@@ -19,6 +19,15 @@ type Line = {
   eligible_for_invoice_yn: string | null;
 };
 
+type NonPhysicalResolution = {
+  supplier_invoice_line_id: string;
+  financial_type: string;
+  amount_gbp: number | null;
+  qty_reported: number | null;
+  notes: string | null;
+  resolved_at: string | null;
+};
+
 type AccountingCode = {
   supplier_invoice_line_id: string;
   posting_description: string | null;
@@ -173,8 +182,24 @@ export default async function InternalReconciliationPage({
     : { data: [] as Line[] };
 
   const invoiceLines = (lines ?? []) as Line[];
-  const progressedLines = invoiceLines.filter((line) => isProgressed(line.eligible_for_invoice_yn));
   const lineIds = invoiceLines.map((line) => line.id);
+
+  const { data: nonPhysicalRows } = invoice?.id && lineIds.length
+    ? await supabase
+        .from("supplier_invoice_line_resolutions")
+        .select("supplier_invoice_line_id, financial_type, amount_gbp, qty_reported, notes, resolved_at")
+        .eq("supplier_invoice_id", invoice.id)
+        .eq("resolution_type", "non_physical_financial")
+        .eq("active", true)
+        .in("supplier_invoice_line_id", lineIds)
+    : { data: [] as NonPhysicalResolution[] };
+
+  const nonPhysicalByLineId = new Map<string, NonPhysicalResolution>();
+  for (const row of (nonPhysicalRows ?? []) as NonPhysicalResolution[]) {
+    nonPhysicalByLineId.set(row.supplier_invoice_line_id, row);
+  }
+
+  const codableLines = invoiceLines.filter((line) => isProgressed(line.eligible_for_invoice_yn) || nonPhysicalByLineId.has(line.id));
 
   const { data: codingRows } = lineIds.length
     ? await supabase
@@ -273,13 +298,13 @@ export default async function InternalReconciliationPage({
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h2 className="text-xl font-semibold">Supplier invoice accounting grid</h2>
-              <p className="mt-2 text-sm text-slate-600">Save all is atomic: invoice net, VAT and gross must reconcile individually.</p>
+              <p className="mt-2 text-sm text-slate-600">Save all is atomic: invoice net, VAT and gross must reconcile individually. Progressed product lines and parked non-physical financial lines are codable.</p>
             </div>
             {invoice ? (
               <form id="save-all-coding" action={saveAllSupplierLineAccountingCodesAction}>
                 <input type="hidden" name="order_id" value={orderId} />
                 <input type="hidden" name="supplier_invoice_id" value={invoice.id} />
-                <button disabled={progressedLines.length === 0} className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white disabled:bg-slate-400">Save all coding lines</button>
+                <button disabled={codableLines.length === 0} className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white disabled:bg-slate-400">Save all coding lines</button>
               </form>
             ) : null}
           </div>
@@ -319,18 +344,22 @@ export default async function InternalReconciliationPage({
                   const rate = coding?.vat_rate_percent ?? 20;
                   const preview = splitGross(gross, rate);
                   const progressed = isProgressed(line.eligible_for_invoice_yn);
-                  const saveForm = progressed ? "save-all-coding" : undefined;
+                  const nonPhysicalResolution = nonPhysicalByLineId.get(line.id);
+                  const nonPhysicalCodable = Boolean(nonPhysicalResolution);
+                  const codable = progressed || nonPhysicalCodable;
+                  const saveForm = codable ? "save-all-coding" : undefined;
+                  const rowStatus = nonPhysicalCodable ? `financial: ${nonPhysicalResolution?.financial_type ?? "non-physical"}` : progressed ? "progressed" : "blocked";
                   return (
                     <tr key={line.id} data-accounting-row data-gross={moneyInput(gross)} className="border-b align-top">
-                      <td className="p-2">{line.line_order}<br /><span className="text-slate-400">{progressed ? "progressed" : "blocked"}</span>{progressed ? <input form="save-all-coding" type="hidden" name="line_ids" value={line.id} /> : null}</td>
-                      <td className="p-2"><input form={saveForm} name={`description_override_${line.id}`} defaultValue={coding?.posting_description ?? line.description} disabled={!progressed} className="w-72 rounded-lg border px-2 py-1 disabled:bg-slate-100" /></td>
-                      <td className="p-2"><input form={saveForm} name={`sku_override_${line.id}`} defaultValue={coding?.posting_sku ?? line.retailer_sku ?? ""} disabled={!progressed} className="w-28 rounded-lg border px-2 py-1 disabled:bg-slate-100" /></td>
-                      <td className="p-2"><input form={saveForm} name={`size_override_${line.id}`} defaultValue={coding?.posting_size ?? line.size ?? ""} disabled={!progressed} className="w-20 rounded-lg border px-2 py-1 disabled:bg-slate-100" /></td>
+                      <td className="p-2">{line.line_order}<br /><span className={nonPhysicalCodable ? "text-sky-600" : "text-slate-400"}>{rowStatus}</span>{codable ? <input form="save-all-coding" type="hidden" name="line_ids" value={line.id} /> : null}</td>
+                      <td className="p-2"><input form={saveForm} name={`description_override_${line.id}`} defaultValue={coding?.posting_description ?? line.description} disabled={!codable} className="w-72 rounded-lg border px-2 py-1 disabled:bg-slate-100" /></td>
+                      <td className="p-2"><input form={saveForm} name={`sku_override_${line.id}`} defaultValue={coding?.posting_sku ?? line.retailer_sku ?? ""} disabled={!codable} className="w-28 rounded-lg border px-2 py-1 disabled:bg-slate-100" /></td>
+                      <td className="p-2"><input form={saveForm} name={`size_override_${line.id}`} defaultValue={coding?.posting_size ?? line.size ?? ""} disabled={!codable} className="w-20 rounded-lg border px-2 py-1 disabled:bg-slate-100" /></td>
                       <td className="p-2">{line.qty ?? 0}</td>
-                      <td className="p-2"><input data-nominal form={saveForm} name={`nominal_code_${line.id}`} defaultValue={coding?.nominal_code ?? ""} disabled={!progressed} className="w-24 rounded-lg border px-2 py-1 disabled:bg-slate-100" placeholder="5000" /></td>
-                      <td className="p-2"><input data-sage-ledger form={saveForm} name={`sage_ledger_account_id_${line.id}`} defaultValue={coding?.sage_ledger_account_id ?? ""} disabled={!progressed} className="w-36 rounded-lg border px-2 py-1 disabled:bg-slate-100" /></td>
+                      <td className="p-2"><input data-nominal form={saveForm} name={`nominal_code_${line.id}`} defaultValue={coding?.nominal_code ?? ""} disabled={!codable} className="w-24 rounded-lg border px-2 py-1 disabled:bg-slate-100" placeholder="5000" /></td>
+                      <td className="p-2"><input data-sage-ledger form={saveForm} name={`sage_ledger_account_id_${line.id}`} defaultValue={coding?.sage_ledger_account_id ?? ""} disabled={!codable} className="w-36 rounded-lg border px-2 py-1 disabled:bg-slate-100" /></td>
                       <td className="p-2">
-                        <select form={saveForm} name={`vat_rate_percent_${line.id}`} data-vat-rate defaultValue={String(rate)} disabled={!progressed} className="w-32 rounded-lg border px-2 py-1 disabled:bg-slate-100">
+                        <select form={saveForm} name={`vat_rate_percent_${line.id}`} data-vat-rate defaultValue={String(rate)} disabled={!codable} className="w-32 rounded-lg border px-2 py-1 disabled:bg-slate-100">
                           <option value="20">20% std</option>
                           <option value="5">5% reduced</option>
                           <option value="0">0%</option>
@@ -338,11 +367,11 @@ export default async function InternalReconciliationPage({
                         <input data-tax-label form={saveForm} type="hidden" name={`tax_rate_label_${line.id}`} value={taxLabel(rate)} />
                         <input data-tax-id form={saveForm} type="hidden" name={`tax_rate_id_${line.id}`} value={taxId(rate)} />
                       </td>
-                      <td className="p-2"><input form={saveForm} data-net name={`net_amount_gbp_${line.id}`} type="number" step="0.01" defaultValue={moneyInput(coding?.net_amount_gbp ?? preview.net)} disabled={!progressed} className="w-24 rounded-lg border px-2 py-1 disabled:bg-slate-100" /></td>
-                      <td className="p-2"><input form={saveForm} data-vat name={`vat_amount_gbp_${line.id}`} type="number" step="0.01" defaultValue={moneyInput(coding?.vat_amount_gbp ?? preview.vat)} disabled={!progressed} className="w-24 rounded-lg border px-2 py-1 disabled:bg-slate-100" /></td>
+                      <td className="p-2"><input form={saveForm} data-net name={`net_amount_gbp_${line.id}`} type="number" step="0.01" defaultValue={moneyInput(coding?.net_amount_gbp ?? preview.net)} disabled={!codable} className="w-24 rounded-lg border px-2 py-1 disabled:bg-slate-100" /></td>
+                      <td className="p-2"><input form={saveForm} data-vat name={`vat_amount_gbp_${line.id}`} type="number" step="0.01" defaultValue={moneyInput(coding?.vat_amount_gbp ?? preview.vat)} disabled={!codable} className="w-24 rounded-lg border px-2 py-1 disabled:bg-slate-100" /></td>
                       <td className="p-2 font-semibold">{gbp(gross)}</td>
-                      <td className="p-2"><input form={saveForm} type="checkbox" name={`admin_review_required_yn_${line.id}`} defaultChecked={Boolean(coding?.admin_review_required_yn)} disabled={!progressed} /> <input form={saveForm} name={`review_reason_${line.id}`} defaultValue={coding?.review_reason ?? ""} disabled={!progressed} className="mt-1 w-32 rounded-lg border px-2 py-1 disabled:bg-slate-100" placeholder="reason" /></td>
-                      <td className="p-2">{coding?.coded_yn ? "coded" : progressed ? "not coded" : "blocked"}</td>
+                      <td className="p-2"><input form={saveForm} type="checkbox" name={`admin_review_required_yn_${line.id}`} defaultChecked={Boolean(coding?.admin_review_required_yn)} disabled={!codable} /> <input form={saveForm} name={`review_reason_${line.id}`} defaultValue={coding?.review_reason ?? ""} disabled={!codable} className="mt-1 w-32 rounded-lg border px-2 py-1 disabled:bg-slate-100" placeholder="reason" /></td>
+                      <td className="p-2">{coding?.coded_yn ? "coded" : codable ? "not coded" : "blocked"}</td>
                     </tr>
                   );
                 })}
