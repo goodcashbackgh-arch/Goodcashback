@@ -4,50 +4,50 @@ const flowLinks = [
   {
     href: "/internal/dva-statement-import",
     step: "1",
-    label: "Upload / import",
-    hint: "Create, parse, commit or void statement batches",
+    label: "Statement import",
+    hint: "Upload, stage, commit or void statement batches",
   },
   {
     href: "/internal/dva-statement-import/mindee-control",
     step: "2",
-    label: "PDF OCR",
-    hint: "Run statement OCR where needed",
-  },
-  {
-    href: "/internal/dva-reconciliation/workspace",
-    step: "3",
-    label: "Match workspace",
-    hint: "Match bank/card lines to invoices and exceptions",
-  },
-  {
-    href: "/internal/dva-reconciliation/allocations",
-    step: "4",
-    label: "Active allocations",
-    hint: "Review or reverse active allocations",
-  },
-  {
-    href: "/internal/dva-reconciliation/review-pack",
-    step: "5",
-    label: "Review pack",
-    hint: "Grouped read-only accounting control pack",
-  },
-  {
-    href: "/internal/dva-reconciliation/exception-actions",
-    step: "6",
-    label: "Exception actions",
-    hint: "Route refund/replacement outcomes to supervisor review",
+    label: "PDF OCR control",
+    hint: "Run, fetch and parse statement OCR",
   },
   {
     href: "/internal/dva-reconciliation",
-    step: "7",
+    step: "3",
     label: "Control hub",
-    hint: "Summary, suggestions and residual controls",
+    hint: "See what needs funding, matching, review or exception action",
+  },
+  {
+    href: "/internal/dva-reconciliation/workspace",
+    step: "4",
+    label: "Matching workspace",
+    hint: "Allocate supplier, refund, FX/card, fee and hold items",
   },
   {
     href: "/internal/funding",
-    step: "Funding",
+    step: "5",
     label: "Importer funding",
-    hint: "Separate importer money received flow",
+    hint: "Apply customer/importer IN money to orders or credit",
+  },
+  {
+    href: "/internal/dva-reconciliation/allocations",
+    step: "6",
+    label: "Allocations & reversals",
+    hint: "Review or reverse active allocation records",
+  },
+  {
+    href: "/internal/dva-reconciliation/review-pack",
+    step: "7",
+    label: "Review pack",
+    hint: "Prove statement lines are explained before Sage readiness",
+  },
+  {
+    href: "/internal/dva-reconciliation/exception-actions",
+    step: "8",
+    label: "Exception actions",
+    hint: "Route refund/replacement outcomes to supervisor review",
   },
 ];
 
@@ -58,7 +58,7 @@ export default function DvaSupervisorFlowNav() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-sky-600">Supervisor DVA/card flow</p>
-            <p className="mt-1 text-xs text-slate-500">Import → OCR/commit → match → review/reverse → accounting review pack → exception actions → control summary. Funding is separate.</p>
+            <p className="mt-1 text-xs text-slate-500">Import statement truth → OCR/commit → control hub → match or fund → review/reverse → review pack → exception actions → pre-Sage readiness.</p>
           </div>
           <Link href="/internal" className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50">
             Internal home
