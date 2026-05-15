@@ -72,6 +72,10 @@ function cleanText(value: unknown) {
   return String(value ?? "").trim();
 }
 
+function round2(value: number) {
+  return Math.round(value * 100) / 100;
+}
+
 function normaliseMerchant(value: string | null) {
   const raw = cleanText(value).toLowerCase();
   if (!raw) return null;
@@ -306,8 +310,12 @@ function withFx(
       _goodcashback_fx_lookup: {
         source: "gbp_statement",
         requested_date: requestedDate,
-        applied_rate: 1,
-        applied_card_markup_pct: 0,
+        base_statement_rate: 1,
+        settlement_markup_pct: 0,
+        statement_total_gbp: amount,
+        supplier_equivalent_rate: 1,
+        supplier_equivalent_gbp: amount,
+        fx_card_markup_residual_gbp: 0,
       },
     };
     return { ...row, rawJson, fxRate: 1, gbpAmount: amount, cardMarkupPctApplied: 0 };
@@ -318,6 +326,13 @@ function withFx(
   const matchedMarkup = matched ? Number(matched.rate.settlement_card_markup_pct ?? 0) : Number(batch.default_card_markup_pct ?? 0);
   const manualRate = manualFxRate && manualFxRate > 0 ? manualFxRate : null;
   const fxRate = matchedRate ?? manualRate;
+  const appliedMarkupPct = matchedRate ? matchedMarkup : Number(batch.default_card_markup_pct ?? 0);
+  const supplierEquivalentRate = fxRate && fxRate > 0 ? fxRate * (1 + appliedMarkupPct / 100) : null;
+  const statementTotalGbp = amount !== null && fxRate && fxRate > 0 ? round2(amount / fxRate) : null;
+  const supplierEquivalentGbp = amount !== null && supplierEquivalentRate && supplierEquivalentRate > 0 ? round2(amount / supplierEquivalentRate) : null;
+  const fxCardMarkupResidualGbp = statementTotalGbp !== null && supplierEquivalentGbp !== null
+    ? round2(statementTotalGbp - supplierEquivalentGbp)
+    : null;
   const source = matched?.source ?? (manualRate ? "manual_override" : "missing_fx_rate");
   const warningNote = source === "latest_prior"
     ? `FX warning: used latest prior settlement rate from ${matched?.rate.rate_date} for transaction date ${requestedDate}.`
@@ -332,22 +347,23 @@ function withFx(
       source,
       requested_date: requestedDate,
       applied_rate_date: matched?.rate.rate_date ?? null,
-      applied_rate: fxRate,
-      applied_card_markup_pct: matchedRate ? matchedMarkup : Number(batch.default_card_markup_pct ?? 0),
+      base_statement_rate: fxRate,
+      settlement_markup_pct: appliedMarkupPct,
+      statement_total_gbp: statementTotalGbp,
+      supplier_equivalent_rate: supplierEquivalentRate,
+      supplier_equivalent_gbp: supplierEquivalentGbp,
+      fx_card_markup_residual_gbp: fxCardMarkupResidualGbp,
+      interpretation: "amount_gbp_equivalent is the full statement GBP total using the base settlement rate. Settlement markup is preserved as the FX/card residual control amount, not deducted from the statement total.",
       manual_fx_rate_supplied: manualRate,
     },
   };
-
-  const gbpAmount = amount !== null && fxRate && fxRate > 0
-    ? Math.round((amount / fxRate) * 100) / 100
-    : null;
 
   return {
     ...row,
     rawJson,
     fxRate,
-    gbpAmount,
-    cardMarkupPctApplied: matchedRate ? matchedMarkup : Number(batch.default_card_markup_pct ?? 0),
+    gbpAmount: statementTotalGbp,
+    cardMarkupPctApplied: appliedMarkupPct,
   };
 }
 
@@ -355,7 +371,7 @@ function validation(row: FxResolvedRow) {
   if (!row.statementDate) return { code: "missing_date", message: "Statement date could not be parsed." };
   if (!row.direction) return { code: "unknown_direction", message: "Statement direction could not be classified as IN or OUT." };
   if (row.amountLocal === null || row.amountLocal <= 0) return { code: "invalid_amount", message: "Transaction amount could not be parsed." };
-  if (!row.fxRate || row.fxRate <= 0 || row.gbpAmount === null || row.gbpAmount <= 0) return { code: "missing_fx_rate", message: "GBP equivalent could not be calculated. Add a daily settlement FX rate for the transaction date or provide a manual extraction FX rate." };
+  if (!row.fxRate || row.fxRate <= 0 || row.gbpAmount === null || row.gbpAmount <= 0) return { code: "missing_fx_rate", message: "GBP equivalent could not be calculated. Add a daily base settlement FX rate for the transaction date or provide a manual extraction FX rate." };
   return { code: row.errorCode ?? null, message: row.errorMessage ?? null };
 }
 
