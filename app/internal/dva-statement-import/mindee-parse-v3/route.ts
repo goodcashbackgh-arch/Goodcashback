@@ -16,6 +16,12 @@ type Batch = {
   mindee_statement_raw_json: unknown;
 };
 
+type FxRateRow = {
+  rate_date: string;
+  settlement_rate: number | string | null;
+  settlement_card_markup_pct: number | string | null;
+};
+
 type Direction = "in" | "out" | null;
 
 type DraftRow = {
@@ -36,6 +42,18 @@ type DraftRow = {
   confidence: "high" | "medium" | "low";
   errorCode: string | null;
   errorMessage: string | null;
+};
+
+type FxResolution = {
+  source: "gbp_statement" | "exact_date" | "latest_prior" | "manual_base_rate_override" | "missing_fx_rate";
+  requestedDate: string | null;
+  appliedRateDate: string | null;
+  baseFxRate: number | null;
+  dailyMarkupPct: number;
+  batchMarkupOverridePct: number;
+  appliedMarkupPct: number;
+  markupSource: "not_applicable" | "daily_fx_rate" | "batch_override" | "manual_override" | "none";
+  warningNote: string | null;
 };
 
 const BALANCE_TOLERANCE = 0.02;
@@ -408,27 +426,98 @@ function draftFromMindeeItem(item: unknown, batch: Batch, headerStatementDate: s
   };
 }
 
-function addFxResidualAudit(row: DraftRow, baseFxRate: number, cardMarkupPct: number) {
+function toPositiveNumber(value: unknown) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function findFxRateForDate(rates: FxRateRow[], requestedDate: string | null) {
+  if (!requestedDate) return null;
+  const exact = rates.find((rate) => rate.rate_date === requestedDate && toPositiveNumber(rate.settlement_rate));
+  if (exact) return { rate: exact, source: "exact_date" as const };
+  const prior = rates.find((rate) => rate.rate_date <= requestedDate && toPositiveNumber(rate.settlement_rate));
+  return prior ? { rate: prior, source: "latest_prior" as const } : null;
+}
+
+function resolveFxForRow(row: DraftRow, localCcy: string, manualFxRate: number | null, batchMarkupOverridePct: number, fxRates: FxRateRow[]): FxResolution {
+  const requestedDate = row.transactionDate || row.statementDate;
+
+  if (localCcy === "GBP") {
+    return {
+      source: "gbp_statement",
+      requestedDate,
+      appliedRateDate: null,
+      baseFxRate: 1,
+      dailyMarkupPct: 0,
+      batchMarkupOverridePct: 0,
+      appliedMarkupPct: 0,
+      markupSource: "not_applicable",
+      warningNote: null,
+    };
+  }
+
+  const matched = findFxRateForDate(fxRates, requestedDate);
+  const matchedRate = matched ? toPositiveNumber(matched.rate.settlement_rate) : null;
+  const dailyMarkupPct = matched ? Number(matched.rate.settlement_card_markup_pct ?? 0) : 0;
+  const baseFxRate = matchedRate ?? manualFxRate;
+  const appliedMarkupPct = batchMarkupOverridePct > 0 ? batchMarkupOverridePct : dailyMarkupPct;
+  const markupSource = batchMarkupOverridePct > 0
+    ? "batch_override"
+    : matchedRate
+      ? "daily_fx_rate"
+      : manualFxRate
+        ? "manual_override"
+        : "none";
+  const source = matched?.source ?? (manualFxRate ? "manual_base_rate_override" : "missing_fx_rate");
+  const warningNote = source === "latest_prior"
+    ? `FX warning: used latest prior settlement/base rate from ${matched?.rate.rate_date} for transaction date ${requestedDate}.`
+    : source === "manual_base_rate_override"
+      ? "FX warning: used manual base FX rate because no exact or prior daily settlement/base rate was found."
+      : null;
+
+  return {
+    source,
+    requestedDate,
+    appliedRateDate: matched?.rate.rate_date ?? null,
+    baseFxRate,
+    dailyMarkupPct,
+    batchMarkupOverridePct,
+    appliedMarkupPct,
+    markupSource,
+    warningNote,
+  };
+}
+
+function addFxResidualAudit(row: DraftRow, fx: FxResolution) {
   const amount = row.amountLocal;
-  const statementTotalGbp = amount === null ? null : round2(amount / baseFxRate);
-  const supplierEquivalentRate = baseFxRate * (1 + cardMarkupPct / 100);
-  const supplierEquivalentGbp = amount === null ? null : round2(amount / supplierEquivalentRate);
+  const statementTotalGbp = amount !== null && fx.baseFxRate ? round2(amount / fx.baseFxRate) : null;
+  const supplierEquivalentRate = fx.baseFxRate ? fx.baseFxRate * (1 + fx.appliedMarkupPct / 100) : null;
+  const supplierEquivalentGbp = amount !== null && supplierEquivalentRate ? round2(amount / supplierEquivalentRate) : null;
   const fxCardMarkupResidualGbp = statementTotalGbp !== null && supplierEquivalentGbp !== null
     ? round2(statementTotalGbp - supplierEquivalentGbp)
     : null;
+  const existingBalanceCheck = getObject(row.rawJson._goodcashback_balance_check) ?? {};
 
   return {
     ...row.rawJson,
+    _goodcashback_balance_check: {
+      ...existingBalanceCheck,
+      correction_note: [cleanText(existingBalanceCheck.correction_note), fx.warningNote].filter(Boolean).join(" ") || null,
+    },
     _goodcashback_fx_lookup: {
-      source: "manual_base_fx_rate",
-      requested_date: row.transactionDate || row.statementDate,
-      base_statement_rate: baseFxRate,
-      settlement_markup_pct: cardMarkupPct,
+      source: fx.source,
+      requested_date: fx.requestedDate,
+      applied_rate_date: fx.appliedRateDate,
+      base_statement_rate: fx.baseFxRate,
+      daily_settlement_markup_pct: fx.dailyMarkupPct,
+      batch_markup_override_pct: fx.batchMarkupOverridePct > 0 ? fx.batchMarkupOverridePct : null,
+      settlement_markup_pct: fx.appliedMarkupPct,
+      settlement_markup_source: fx.markupSource,
       statement_total_gbp: statementTotalGbp,
       supplier_equivalent_rate: supplierEquivalentRate,
       supplier_equivalent_gbp: supplierEquivalentGbp,
       fx_card_markup_residual_gbp: fxCardMarkupResidualGbp,
-      interpretation: "amount_gbp_equivalent is the full statement GBP total using the base settlement rate. Settlement markup is preserved as the FX/card residual control amount, not deducted from the statement total.",
+      interpretation: "amount_gbp_equivalent is the full statement GBP total using the base settlement rate. Settlement markup is preserved as the FX/card residual control amount, not deducted from the statement total. A positive batch settlement markup override replaces daily markups for all rows in the batch.",
     },
   };
 }
@@ -465,12 +554,12 @@ export async function POST(request: Request) {
 
   const localCcy = cleanText(batch.local_ccy).toUpperCase() || "GBP";
   const manualFxRaw = cleanText(formData.get("manual_fx_rate"));
-  const manualFxRate = localCcy === "GBP" && !manualFxRaw ? 1 : Number(manualFxRaw);
-  if (!Number.isFinite(manualFxRate) || manualFxRate <= 0) {
-    return redirectToImport(request, { import_error: `Base FX rate is required before parsing ${localCcy} statement rows.`, batch_id: importBatchId });
+  const manualFxRate = manualFxRaw ? Number(manualFxRaw) : localCcy === "GBP" ? 1 : null;
+  if (manualFxRaw && (!manualFxRate || !Number.isFinite(manualFxRate) || manualFxRate <= 0)) {
+    return redirectToImport(request, { import_error: "Manual base FX override must be greater than zero when supplied.", batch_id: importBatchId });
   }
 
-  const cardMarkupPct = Number(batch.default_card_markup_pct ?? 0);
+  const batchMarkupOverridePct = Number(batch.default_card_markup_pct ?? 0);
   const transactions = extractTransactions(batch.mindee_statement_raw_json);
   if (transactions.length === 0) {
     return redirectToImport(request, { import_error: "Mindee raw JSON did not contain list_of_transactions items.", batch_id: importBatchId });
@@ -480,14 +569,57 @@ export async function POST(request: Request) {
     ?? parseDate(headerField(batch.mindee_statement_raw_json, "statement_period_end_date"))
     ?? batch.statement_period_to;
   let previousBalance = numberValue(headerField(batch.mindee_statement_raw_json, "beginning_balance"));
+  const draftedRows: DraftRow[] = [];
+
+  for (const transaction of transactions) {
+    const row = draftFromMindeeItem(transaction, batch, statementDate, previousBalance);
+    draftedRows.push(row);
+    if (row.balanceAfter !== null) previousBalance = row.balanceAfter;
+  }
+
+  let fxRates: FxRateRow[] = [];
+  if (localCcy !== "GBP") {
+    const requestedDates = draftedRows
+      .map((row) => row.transactionDate || row.statementDate)
+      .filter((value): value is string => Boolean(value));
+    const maxRequestedDate = requestedDates.sort().at(-1) ?? batch.statement_period_to;
+    const { data: importer, error: importerError } = await supabase
+      .from("importers")
+      .select("country_id")
+      .eq("id", batch.importer_id)
+      .maybeSingle();
+
+    if (importerError) return redirectToImport(request, { import_error: importerError.message, batch_id: importBatchId });
+
+    const countryId = cleanText(importer?.country_id);
+    if (countryId) {
+      const { data: rateRows, error: rateError } = await supabase
+        .from("fx_rates")
+        .select("rate_date, settlement_rate, settlement_card_markup_pct")
+        .eq("country_id", countryId)
+        .lte("rate_date", maxRequestedDate)
+        .order("rate_date", { ascending: false })
+        .limit(500);
+
+      if (rateError) return redirectToImport(request, { import_error: rateError.message, batch_id: importBatchId });
+      fxRates = (rateRows ?? []) as FxRateRow[];
+    }
+  }
 
   let staged = 0;
   let errors = 0;
-  for (let i = 0; i < transactions.length; i += 1) {
-    const row = draftFromMindeeItem(transactions[i], batch, statementDate, previousBalance);
-    const amountGbp = row.amountLocal === null ? null : round2(row.amountLocal / manualFxRate);
-    const auditedRawJson = addFxResidualAudit(row, manualFxRate, cardMarkupPct);
+  for (let i = 0; i < draftedRows.length; i += 1) {
+    const row = draftedRows[i];
+    const fx = resolveFxForRow(row, localCcy, manualFxRate, batchMarkupOverridePct, fxRates);
+    const amountGbp = row.amountLocal !== null && fx.baseFxRate ? round2(row.amountLocal / fx.baseFxRate) : null;
+    const fxErrorCode = amountGbp === null ? "missing_fx_rate" : null;
+    const fxErrorMessage = amountGbp === null
+      ? "GBP equivalent could not be calculated. Add a daily settlement/base FX rate for this transaction date or provide a manual base FX override."
+      : null;
+    const auditedRawJson = addFxResidualAudit(row, fx);
     const rowHash = fingerprint(batch, row);
+    const errorCode = row.errorCode ?? fxErrorCode;
+    const errorMessage = row.errorMessage ?? fxErrorMessage;
 
     const { error: stageError } = await supabase.rpc("staff_stage_dva_statement_import_row", {
       p_import_batch_id: importBatchId,
@@ -502,8 +634,8 @@ export async function POST(request: Request) {
       p_amount_local_ccy: row.amountLocal,
       p_balance_after_local_ccy: row.balanceAfter,
       p_local_ccy: localCcy,
-      p_fx_rate_applied: manualFxRate,
-      p_card_markup_pct_applied: cardMarkupPct,
+      p_fx_rate_applied: fx.baseFxRate,
+      p_card_markup_pct_applied: fx.appliedMarkupPct,
       p_amount_gbp_equivalent: amountGbp,
       p_card_last4: row.cardLast4,
       p_merchant_raw: row.merchantRaw,
@@ -512,15 +644,14 @@ export async function POST(request: Request) {
       p_auth_or_settlement_ref: row.authOrSettlementRef,
       p_transaction_family_ref: row.transactionFamilyRef,
       p_parser_confidence: row.confidence,
-      p_error_code: row.errorCode,
-      p_error_message: row.errorMessage,
+      p_error_code: errorCode,
+      p_error_message: errorMessage,
       p_statement_line_fingerprint_hash: rowHash,
     });
 
     if (stageError) return redirectToImport(request, { import_error: stageError.message, batch_id: importBatchId });
-    if (row.errorCode) errors += 1;
+    if (errorCode) errors += 1;
     staged += 1;
-    if (row.balanceAfter !== null) previousBalance = row.balanceAfter;
   }
 
   return redirectToImport(request, {
