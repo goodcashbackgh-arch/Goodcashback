@@ -217,7 +217,7 @@ export default async function DvaStatementImportDetailPage({
             </div>
             {canOpenMatchingWorkbench ? (
               <Link className="rounded-2xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white" href="/internal/dva-reconciliation">
-                Open matching workbench →
+                Open DVA/card control hub →
               </Link>
             ) : null}
           </div>
@@ -235,7 +235,7 @@ export default async function DvaStatementImportDetailPage({
             ) : (
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm leading-6 text-slate-600">
                 {canOpenMatchingWorkbench
-                  ? "This batch already has committed statement lines. Continue in the matching workbench."
+                  ? "This batch already has committed statement lines. Continue in the DVA/card control hub."
                   : "Commit is disabled until the batch has clean rows, no parse errors, and no previous commit."}
               </div>
             )}
