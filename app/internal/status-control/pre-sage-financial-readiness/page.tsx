@@ -325,6 +325,16 @@ function sageLaneReadiness(rows: SageReadyRow[], lane: "customer_sales" | "shipp
   };
 }
 
+function deferredLaneReadiness(lane: LaneReadiness, upstreamReady: boolean): LaneReadiness {
+  if (upstreamReady) return lane;
+
+  if (lane.rowCount === 0) {
+    return { ...lane, label: "not reached yet", blockers: [], warnings: [] };
+  }
+
+  return { ...lane, label: `${lane.label} downstream`, blockers: [], warnings: [] };
+}
+
 function statusTone(ready: boolean, warnings: string[]) {
   if (ready && warnings.length === 0) return "border-emerald-200 bg-emerald-50 text-emerald-800";
   if (ready) return "border-sky-200 bg-sky-50 text-sky-800";
@@ -411,36 +421,47 @@ export default async function PreSageFinancialReadinessPage({
     const invoice = invoiceReadiness(invoices);
     const dva = dvaReadiness(order, disputes, statementRows, allocationRows);
     const exception = exceptionReadiness(disputes, linesByDisputeId, messagesByDisputeId, allocationRows);
+    const upstreamBlockers = [
+      ...(funding.gap > 0 ? [`Funding gap remains: ${gbp(funding.gap)}`] : []),
+      ...invoice.blockers,
+      ...dva.blockers,
+      ...exception.blockers,
+    ];
+    const upstreamReady = upstreamBlockers.length === 0 && funding.gap <= 0 && invoice.ready && dva.ready && exception.ready;
     const orderSageRows = sageReadyRows.filter((row) => sageRowMatchesOrder(row, order));
-    const customerSales = sageLaneReadiness(
+    const rawCustomerSales = sageLaneReadiness(
       orderSageRows,
       "customer_sales",
       "Customer sales / AR row is not yet in the Ready for Sage queue",
       "/internal/shipping-control/customer-invoice-release",
     );
-    const shipperAp = sageLaneReadiness(
+    const rawShipperAp = sageLaneReadiness(
       orderSageRows,
       "shipper_ap",
       "Shipper AP row is not yet in the Ready for Sage queue",
       "/internal/shipping-control",
     );
+    const customerSales = deferredLaneReadiness(rawCustomerSales, upstreamReady);
+    const shipperAp = deferredLaneReadiness(rawShipperAp, upstreamReady);
     const blockers = [
-      ...(funding.gap > 0 ? [`Funding gap remains: ${gbp(funding.gap)}`] : []),
-      ...invoice.blockers,
-      ...dva.blockers,
-      ...exception.blockers,
-      ...customerSales.blockers,
-      ...shipperAp.blockers,
+      ...upstreamBlockers,
+      ...(upstreamReady ? rawCustomerSales.blockers : []),
+      ...(upstreamReady ? rawShipperAp.blockers : []),
     ];
-    const warnings = [...dva.warnings, ...exception.warnings, ...customerSales.warnings, ...shipperAp.warnings];
-    const ready = blockers.length === 0 && invoice.ready && dva.ready && exception.ready && customerSales.ready && shipperAp.ready;
+    const warnings = [
+      ...dva.warnings,
+      ...exception.warnings,
+      ...(upstreamReady ? rawCustomerSales.warnings : []),
+      ...(upstreamReady ? rawShipperAp.warnings : []),
+    ];
+    const ready = upstreamReady && rawCustomerSales.ready && rawShipperAp.ready;
     const fixActions = uniqueFixActions([
       ...(funding.gap > 0 ? [{ owner: "Supervisor", label: "Match/apply importer funding", href: "/internal/funding" }] : []),
       ...(invoice.blockers.length > 0 ? [{ owner: invoices.length === 0 ? "Operator" : "Supervisor", label: invoices.length === 0 ? "Upload supplier invoice" : "Resolve supplier invoice approval", href: invoices.length === 0 ? `/importer/orders/${order.id}/operations#invoice` : "/internal/invoice-review" }] : []),
       ...(dva.blockers.length > 0 ? [{ owner: "Supervisor", label: "Balance DVA/card allocation", href: "/internal/dva-reconciliation/workspace" }] : []),
       ...(exception.blockers.length > 0 ? [{ owner: "Supervisor", label: "Resolve exception outcome", href: "/internal/dva-reconciliation/exception-actions" }] : []),
-      ...(customerSales.blockers.length > 0 ? [{ owner: "Supervisor", label: "Release customer sales draft", href: customerSales.href }] : []),
-      ...(shipperAp.blockers.length > 0 ? [{ owner: "Supervisor", label: "Complete shipping AP readiness", href: shipperAp.href }] : []),
+      ...(upstreamReady && rawCustomerSales.blockers.length > 0 ? [{ owner: "Supervisor", label: "Release customer sales draft", href: rawCustomerSales.href }] : []),
+      ...(upstreamReady && rawShipperAp.blockers.length > 0 ? [{ owner: "Supervisor", label: "Complete shipping AP readiness", href: rawShipperAp.href }] : []),
       ...(blockers.length === 0 && warnings.length > 0 ? [{ owner: "Supervisor", label: "Review warnings before Sage preview", href: "/internal/dva-reconciliation/review-pack" }] : []),
     ] as FixAction[]);
 
