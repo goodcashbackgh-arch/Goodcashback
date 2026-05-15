@@ -312,6 +312,7 @@ function withFx(
         requested_date: requestedDate,
         base_statement_rate: 1,
         settlement_markup_pct: 0,
+        settlement_markup_source: "not_applicable",
         statement_total_gbp: amount,
         supplier_equivalent_rate: 1,
         supplier_equivalent_gbp: amount,
@@ -323,21 +324,27 @@ function withFx(
 
   const matched = findFxRateForDate(fxRates, requestedDate);
   const matchedRate = matched ? toPositiveNumber(matched.rate.settlement_rate) : null;
-  const matchedMarkup = matched ? Number(matched.rate.settlement_card_markup_pct ?? 0) : Number(batch.default_card_markup_pct ?? 0);
+  const dailyMarkupPct = matched ? Number(matched.rate.settlement_card_markup_pct ?? 0) : 0;
+  const batchMarkupOverridePct = Number(batch.default_card_markup_pct ?? 0);
   const manualRate = manualFxRate && manualFxRate > 0 ? manualFxRate : null;
   const fxRate = matchedRate ?? manualRate;
-  const appliedMarkupPct = matchedRate ? matchedMarkup : Number(batch.default_card_markup_pct ?? 0);
+  const appliedMarkupPct = batchMarkupOverridePct > 0 ? batchMarkupOverridePct : dailyMarkupPct;
+  const markupSource = batchMarkupOverridePct > 0
+    ? "batch_override"
+    : matchedRate
+      ? "daily_fx_rate"
+      : "none";
   const supplierEquivalentRate = fxRate && fxRate > 0 ? fxRate * (1 + appliedMarkupPct / 100) : null;
   const statementTotalGbp = amount !== null && fxRate && fxRate > 0 ? round2(amount / fxRate) : null;
   const supplierEquivalentGbp = amount !== null && supplierEquivalentRate && supplierEquivalentRate > 0 ? round2(amount / supplierEquivalentRate) : null;
   const fxCardMarkupResidualGbp = statementTotalGbp !== null && supplierEquivalentGbp !== null
     ? round2(statementTotalGbp - supplierEquivalentGbp)
     : null;
-  const source = matched?.source ?? (manualRate ? "manual_override" : "missing_fx_rate");
+  const source = matched?.source ?? (manualRate ? "manual_base_rate_override" : "missing_fx_rate");
   const warningNote = source === "latest_prior"
-    ? `FX warning: used latest prior settlement rate from ${matched?.rate.rate_date} for transaction date ${requestedDate}.`
-    : source === "manual_override"
-      ? "FX warning: used manual extraction FX rate because no exact or prior daily settlement rate was found."
+    ? `FX warning: used latest prior settlement/base rate from ${matched?.rate.rate_date} for transaction date ${requestedDate}.`
+    : source === "manual_base_rate_override"
+      ? "FX warning: used manual base FX rate because no exact or prior daily settlement/base rate was found."
       : null;
 
   const rawJson = {
@@ -348,12 +355,15 @@ function withFx(
       requested_date: requestedDate,
       applied_rate_date: matched?.rate.rate_date ?? null,
       base_statement_rate: fxRate,
+      daily_settlement_markup_pct: dailyMarkupPct,
+      batch_markup_override_pct: batchMarkupOverridePct > 0 ? batchMarkupOverridePct : null,
       settlement_markup_pct: appliedMarkupPct,
+      settlement_markup_source: markupSource,
       statement_total_gbp: statementTotalGbp,
       supplier_equivalent_rate: supplierEquivalentRate,
       supplier_equivalent_gbp: supplierEquivalentGbp,
       fx_card_markup_residual_gbp: fxCardMarkupResidualGbp,
-      interpretation: "amount_gbp_equivalent is the full statement GBP total using the base settlement rate. Settlement markup is preserved as the FX/card residual control amount, not deducted from the statement total.",
+      interpretation: "amount_gbp_equivalent is the full statement GBP total using the base settlement rate. Settlement markup is preserved as the FX/card residual control amount, not deducted from the statement total. A positive batch settlement markup override replaces daily markups for all rows in the batch.",
       manual_fx_rate_supplied: manualRate,
     },
   };
