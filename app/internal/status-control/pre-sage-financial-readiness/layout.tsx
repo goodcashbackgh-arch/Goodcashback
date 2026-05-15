@@ -1,5 +1,4 @@
 import type { ReactNode } from "react";
-import OrderFinancialControlSummary from "./OrderFinancialControlSummary";
 
 export default function PreSageFinancialReadinessLayout({ children }: { children: ReactNode }) {
   return (
@@ -12,7 +11,6 @@ export default function PreSageFinancialReadinessLayout({ children }: { children
           </p>
         </div>
       </div>
-      <OrderFinancialControlSummary />
       {children}
     </>
   );
