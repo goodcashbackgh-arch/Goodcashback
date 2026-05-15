@@ -213,6 +213,49 @@ export async function commitDvaStatementImportBatchAction(formData: FormData) {
   });
 }
 
+export async function resetDvaStatementImportBatchAction(formData: FormData) {
+  const supabase = await createClient();
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  const importBatchId = readString(formData, "import_batch_id");
+  const resetReason = readString(formData, "reset_reason") || "Reset staged rows before commit.";
+
+  if (!importBatchId) {
+    redirectWithResult({ import_error: "Missing statement import batch id." });
+  }
+
+  if (!user) {
+    redirectToBatchWithResult(importBatchId, { reset_error: "Please sign in again before resetting statement rows." });
+  }
+
+  const { data: resetResult, error: resetError } = await supabase.rpc("staff_reset_dva_statement_import_batch", {
+    p_import_batch_id: importBatchId,
+    p_reset_reason: resetReason,
+  });
+
+  if (resetError) {
+    redirectToBatchWithResult(importBatchId, { reset_error: resetError.message });
+  }
+
+  revalidatePath("/internal/dva-statement-import");
+  revalidatePath(`/internal/dva-statement-import/${importBatchId}`);
+  revalidatePath("/internal/dva-statement-import/mindee-control");
+
+  const deletedRows =
+    typeof resetResult === "object" &&
+    resetResult !== null &&
+    "deleted_rows" in resetResult
+      ? String((resetResult as { deleted_rows?: unknown }).deleted_rows)
+      : "0";
+
+  redirectToBatchWithResult(importBatchId, {
+    reset_success: `Reset ${deletedRows} staged row(s). You can parse/stage again after fixing FX or parser inputs.`,
+  });
+}
+
 export async function voidDvaStatementImportBatchAction(formData: FormData) {
   const supabase = await createClient();
 
@@ -258,21 +301,8 @@ export async function voidDvaStatementImportBatchAction(formData: FormData) {
       : "0";
 
   redirectWithResult({
-    import_success: `Statement import voided. ${linkedLines} linked statement line(s) removed from active matching.`,
+    import_success: `Voided import batch. ${linkedLines} linked statement line(s) were marked inactive.`,
     batch_id: importBatchId,
-  });
-}
-
-export async function createStageCommitSmokeImportAction(formData: FormData) {
-  const importerId = "";
-
-  try {
-    await resolveImporterId(await createClient(), formData);
-  } catch {
-    // Intentionally ignored. The smoke-test path is disabled in production UI flow.
-  }
-
-  redirectWithResult({
-    import_error: `Temporary smoke-test import is disabled. Use the real statement upload flow${importerId ? ` for importer ${importerId}` : ""}.`,
+    batch_status: "audit",
   });
 }
