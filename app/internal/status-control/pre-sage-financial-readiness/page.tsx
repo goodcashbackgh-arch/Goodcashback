@@ -80,6 +80,40 @@ type StatementSummaryRow = {
   exception_or_hold_allocated_gbp: number | string | null;
 };
 
+type SageReadyRow = {
+  queue_row_id: string;
+  document_lane: string | null;
+  document_type: string | null;
+  order_id: string | null;
+  order_ref: string | null;
+  shipment_batch_id: string | null;
+  booking_ref: string | null;
+  counterparty_name: string | null;
+  amount_gbp: number | string | null;
+  sage_status: string | null;
+  sage_invoice_id: string | null;
+  sage_posted_at: string | null;
+  readiness_status: string | null;
+  blocker: string | null;
+  reference_text: string | null;
+  detail_href: string | null;
+};
+
+type LaneReadiness = {
+  label: string;
+  ready: boolean;
+  blockers: string[];
+  warnings: string[];
+  rowCount: number;
+  href: string;
+};
+
+type FixAction = {
+  owner: string;
+  label: string;
+  href: string;
+};
+
 const gbpFormatter = new Intl.NumberFormat("en-GB", {
   style: "currency",
   currency: "GBP",
@@ -244,6 +278,53 @@ function dvaReadiness(order: OrderRow, disputes: DisputeRow[], statementRows: St
   return { label: blockers.length === 0 ? "explained enough" : "blocked", ready: blockers.length === 0, blockers, warnings, allocationCount: orderAllocations.length };
 }
 
+function rowRefs(row: SageReadyRow) {
+  return text(row.order_ref)
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function sageRowMatchesOrder(row: SageReadyRow, order: OrderRow) {
+  const orderRef = text(order.order_ref);
+  if (row.order_id && row.order_id === order.id) return true;
+  if (!orderRef) return false;
+  return rowRefs(row).includes(orderRef) || text(row.reference_text) === orderRef;
+}
+
+function sageLaneReadiness(rows: SageReadyRow[], lane: "customer_sales" | "shipper_ap", missingBlocker: string, href: string): LaneReadiness {
+  const laneRows = rows.filter((row) => row.document_lane === lane);
+  if (laneRows.length === 0) {
+    return { label: "not in queue", ready: false, blockers: [missingBlocker], warnings: [], rowCount: 0, href };
+  }
+
+  const blockers: string[] = [];
+  const warnings: string[] = [];
+  let hasReadyRow = false;
+
+  for (const row of laneRows) {
+    const readiness = text(row.readiness_status);
+    const sageStatus = text(row.sage_status);
+    const hasSageConfirmation = sageStatus === "posted" && Boolean(row.sage_invoice_id || row.sage_posted_at);
+    const isReady = readiness.startsWith("ready") || readiness === "sage_confirmation_recorded" || hasSageConfirmation;
+    const isLegacyPostedOnly = readiness === "internally_marked_posted_no_sage_confirmation" || (sageStatus === "posted" && !row.sage_invoice_id && !row.sage_posted_at);
+
+    if (isReady) hasReadyRow = true;
+    if (readiness.startsWith("blocked")) blockers.push(`${pretty(row.document_type)} blocked: ${pretty(row.blocker || readiness)}`);
+    if (isLegacyPostedOnly) blockers.push(`${pretty(row.document_type)} has internal posted flag only, with no Sage confirmation`);
+    if (!isReady && !readiness.startsWith("blocked") && !isLegacyPostedOnly) warnings.push(`${pretty(row.document_type)} status: ${pretty(readiness || sageStatus)}`);
+  }
+
+  return {
+    label: blockers.length > 0 ? "blocked" : hasReadyRow ? "ready" : "review",
+    ready: hasReadyRow && blockers.length === 0,
+    blockers,
+    warnings,
+    rowCount: laneRows.length,
+    href,
+  };
+}
+
 function statusTone(ready: boolean, warnings: string[]) {
   if (ready && warnings.length === 0) return "border-emerald-200 bg-emerald-50 text-emerald-800";
   if (ready) return "border-sky-200 bg-sky-50 text-sky-800";
@@ -252,6 +333,16 @@ function statusTone(ready: boolean, warnings: string[]) {
 
 function readinessPill(label: string, ready: boolean, warnings: string[]) {
   return <span className={`rounded-full border px-3 py-1 text-xs font-bold ${statusTone(ready, warnings)}`}>{label}</span>;
+}
+
+function uniqueFixActions(actions: FixAction[]) {
+  const seen = new Set<string>();
+  return actions.filter((action) => {
+    const key = `${action.owner}|${action.label}|${action.href}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 export default async function PreSageFinancialReadinessPage({
@@ -285,7 +376,7 @@ export default async function PreSageFinancialReadinessPage({
   const orders = (orderData ?? []) as unknown as OrderRow[];
   const orderIds = new Set(orders.map((order) => order.id));
 
-  const [invoiceResult, disputeResult, disputeLineResult, messageResult, allocationResult, statementResult, fundingResult] = await Promise.all([
+  const [invoiceResult, disputeResult, disputeLineResult, messageResult, allocationResult, statementResult, fundingResult, sageReadyResult] = await Promise.all([
     supabase.from("supplier_invoices").select("id, order_id, invoice_ref, review_status, blocked_from_sage_yn, ocr_invoice_total_gbp, reconciliation_gbp_total").limit(1000),
     supabase.from("disputes").select("id, order_id, desired_outcome, status, amount_impact_gbp, refund_approved_at, replacement_child_order_id, resolved_at, raised_at").limit(1000),
     supabase.from("dispute_lines").select("dispute_id, conversation_status, resolved_at").limit(2000),
@@ -293,6 +384,7 @@ export default async function PreSageFinancialReadinessPage({
     supabase.from("dva_statement_line_allocation_detail_vw").select("importer_id, order_ref, dispute_id, allocation_type, allocation_status, allocated_gbp_amount").limit(2000),
     supabase.from("dva_statement_line_allocation_summary_vw").select("importer_id, match_status, confirmed_balanced_yn, confirmed_unallocated_gbp, supplier_invoice_allocated_gbp, retailer_refund_allocated_gbp, fx_card_or_fee_allocated_gbp, exception_or_hold_allocated_gbp").limit(2000),
     supabase.from("order_funding_position_vw").select("*").limit(1000),
+    (supabase as any).rpc("internal_ready_for_sage_queue_v2"),
   ]);
 
   const invoicesByOrderId = groupBy(((invoiceResult.data ?? []) as unknown as SupplierInvoiceRow[]).filter((invoice) => !invoice.order_id || orderIds.has(invoice.order_id)), (invoice) => invoice.order_id ?? "");
@@ -301,6 +393,10 @@ export default async function PreSageFinancialReadinessPage({
   const messagesByDisputeId = groupBy((messageResult.data ?? []) as unknown as MessageRow[], (message) => message.dispute_id ?? "");
   const allocationRows = ((allocationResult.data ?? []) as unknown as AllocationRow[]).filter((allocation) => !importerId || allocation.importer_id === importerId);
   const statementRows = ((statementResult.data ?? []) as unknown as StatementSummaryRow[]).filter((row) => !importerId || row.importer_id === importerId);
+  const sageReadyRows = ((sageReadyResult.data ?? []) as SageReadyRow[]).filter((row) => {
+    if (!importerId) return true;
+    return orders.some((order) => order.importer_id === importerId && sageRowMatchesOrder(row, order));
+  });
   const fundingRows = (fundingResult.data ?? []) as Row[];
   const fundingByOrderId = new Map<string, Row>();
   for (const row of fundingRows) {
@@ -315,21 +411,48 @@ export default async function PreSageFinancialReadinessPage({
     const invoice = invoiceReadiness(invoices);
     const dva = dvaReadiness(order, disputes, statementRows, allocationRows);
     const exception = exceptionReadiness(disputes, linesByDisputeId, messagesByDisputeId, allocationRows);
+    const orderSageRows = sageReadyRows.filter((row) => sageRowMatchesOrder(row, order));
+    const customerSales = sageLaneReadiness(
+      orderSageRows,
+      "customer_sales",
+      "Customer sales / AR row is not yet in the Ready for Sage queue",
+      "/internal/shipping-control/customer-invoice-release",
+    );
+    const shipperAp = sageLaneReadiness(
+      orderSageRows,
+      "shipper_ap",
+      "Shipper AP row is not yet in the Ready for Sage queue",
+      "/internal/shipping-control",
+    );
     const blockers = [
       ...(funding.gap > 0 ? [`Funding gap remains: ${gbp(funding.gap)}`] : []),
       ...invoice.blockers,
       ...dva.blockers,
       ...exception.blockers,
+      ...customerSales.blockers,
+      ...shipperAp.blockers,
     ];
-    const warnings = [...dva.warnings, ...exception.warnings];
-    const ready = blockers.length === 0 && invoice.ready && dva.ready && exception.ready;
-    return { order, retailer: order.retailer_id ? retailersById.get(order.retailer_id) : undefined, funding, invoice, dva, exception, blockers, warnings, ready };
+    const warnings = [...dva.warnings, ...exception.warnings, ...customerSales.warnings, ...shipperAp.warnings];
+    const ready = blockers.length === 0 && invoice.ready && dva.ready && exception.ready && customerSales.ready && shipperAp.ready;
+    const fixActions = uniqueFixActions([
+      ...(funding.gap > 0 ? [{ owner: "Supervisor", label: "Match/apply importer funding", href: "/internal/funding" }] : []),
+      ...(invoice.blockers.length > 0 ? [{ owner: invoices.length === 0 ? "Operator" : "Supervisor", label: invoices.length === 0 ? "Upload supplier invoice" : "Resolve supplier invoice approval", href: invoices.length === 0 ? `/importer/orders/${order.id}/operations#invoice` : "/internal/invoice-review" }] : []),
+      ...(dva.blockers.length > 0 ? [{ owner: "Supervisor", label: "Balance DVA/card allocation", href: "/internal/dva-reconciliation/workspace" }] : []),
+      ...(exception.blockers.length > 0 ? [{ owner: "Supervisor", label: "Resolve exception outcome", href: "/internal/dva-reconciliation/exception-actions" }] : []),
+      ...(customerSales.blockers.length > 0 ? [{ owner: "Supervisor", label: "Release customer sales draft", href: customerSales.href }] : []),
+      ...(shipperAp.blockers.length > 0 ? [{ owner: "Supervisor", label: "Complete shipping AP readiness", href: shipperAp.href }] : []),
+      ...(blockers.length === 0 && warnings.length > 0 ? [{ owner: "Supervisor", label: "Review warnings before Sage preview", href: "/internal/dva-reconciliation/review-pack" }] : []),
+    ] as FixAction[]);
+
+    return { order, retailer: order.retailer_id ? retailersById.get(order.retailer_id) : undefined, funding, invoice, dva, exception, customerSales, shipperAp, blockers, warnings, ready, fixActions };
   });
 
   const visibleCards = onlyBlocked ? cards.filter((card) => !card.ready || card.warnings.length > 0) : cards;
   const readyCount = cards.filter((card) => card.ready && card.warnings.length === 0).length;
   const warningReadyCount = cards.filter((card) => card.ready && card.warnings.length > 0).length;
   const blockedCount = cards.filter((card) => !card.ready).length;
+  const customerSalesReadyCount = cards.filter((card) => card.customerSales.ready).length;
+  const shipperApReadyCount = cards.filter((card) => card.shipperAp.ready).length;
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-6 text-slate-950 sm:px-6 lg:px-8">
@@ -337,21 +460,25 @@ export default async function PreSageFinancialReadinessPage({
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
           <Link href="/internal/status-control" className="text-sm font-semibold text-sky-600">← Back to status control</Link>
           <p className="mt-5 text-xs font-bold uppercase tracking-[0.25em] text-sky-600">Pre-Sage financial readiness</p>
-          <h1 className="mt-2 text-3xl font-bold tracking-tight sm:text-4xl">Funding / DVA / exception control review</h1>
+          <h1 className="mt-2 text-3xl font-bold tracking-tight sm:text-4xl">All roads to Sage readiness control pack</h1>
           <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-600 sm:text-base">
-            Read-only blocker view before Sage payload preview. It does not replace the DVA workspace, review pack or exception actions. It pulls their signals together to answer whether funding, statement allocations and refund/replacement outcomes are financially controlled enough for Sage preview.
+            Read-only blocker view before Sage payload preview. It does not replace the DVA workspace, review pack, shipping control, customer invoice release or exception actions. It pulls their signals together to show funding, supplier AP, refund IN, DVA/card residuals, customer sales/AR, shipper AP, owner and fix link.
           </p>
           <div className="mt-4 flex flex-wrap gap-2">
             <Link href="/internal/dva-reconciliation/workspace" className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700">DVA workspace</Link>
             <Link href="/internal/dva-reconciliation/review-pack" className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700">DVA review pack</Link>
             <Link href="/internal/dva-reconciliation/exception-actions" className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700">Exception actions</Link>
+            <Link href="/internal/shipping-control" className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700">Shipping control</Link>
+            <Link href="/internal/sage-ready" className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700">Ready for Sage queue</Link>
           </div>
         </section>
 
-        <section className="grid gap-3 sm:grid-cols-3">
+        <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
           <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4"><p className="text-xs font-bold uppercase tracking-wide text-emerald-700">Clean ready</p><p className="mt-2 text-2xl font-extrabold text-emerald-950">{readyCount}</p></div>
           <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4"><p className="text-xs font-bold uppercase tracking-wide text-sky-700">Ready with warnings</p><p className="mt-2 text-2xl font-extrabold text-sky-950">{warningReadyCount}</p></div>
           <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4"><p className="text-xs font-bold uppercase tracking-wide text-amber-700">Blocked</p><p className="mt-2 text-2xl font-extrabold text-amber-950">{blockedCount}</p></div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Customer sales ready</p><p className="mt-2 text-2xl font-extrabold text-slate-950">{customerSalesReadyCount}</p></div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Shipper AP ready</p><p className="mt-2 text-2xl font-extrabold text-slate-950">{shipperApReadyCount}</p></div>
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -376,6 +503,7 @@ export default async function PreSageFinancialReadinessPage({
         {allocationResult.error ? <section className="rounded-3xl border border-rose-200 bg-rose-50 p-5 text-sm font-semibold text-rose-800">DVA allocation detail: {allocationResult.error.message}</section> : null}
         {statementResult.error ? <section className="rounded-3xl border border-rose-200 bg-rose-50 p-5 text-sm font-semibold text-rose-800">DVA statement summary: {statementResult.error.message}</section> : null}
         {fundingResult.error ? <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm font-semibold text-amber-900">Funding position unavailable: {fundingResult.error.message}</section> : null}
+        {sageReadyResult.error ? <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm font-semibold text-amber-900">Ready for Sage queue unavailable: {sageReadyResult.error.message}</section> : null}
 
         <section className="rounded-3xl border border-slate-200 bg-white shadow-sm">
           <div className="border-b border-slate-100 px-4 py-3 text-sm font-semibold text-slate-700">Showing {visibleCards.length} order readiness card(s) for {importerLabel(selectedImporter)}</div>
@@ -394,12 +522,27 @@ export default async function PreSageFinancialReadinessPage({
                       {readinessPill(card.ready ? "Ready for Sage preview" : "Blocked before Sage preview", card.ready, card.warnings)}
                     </div>
 
-                    <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                    <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
                       <div className="rounded-xl bg-slate-50 p-3 ring-1 ring-slate-200"><p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Funding</p><p className="mt-1 font-extrabold text-slate-950">{card.funding.label}</p><p className="mt-1 text-xs text-slate-500">Funded {gbp(card.funding.funded)} / Required {gbp(card.funding.required)} / Gap {gbp(card.funding.gap)}</p></div>
                       <div className="rounded-xl bg-slate-50 p-3 ring-1 ring-slate-200"><p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Supplier invoice</p><p className="mt-1 font-extrabold text-slate-950">{card.invoice.label}</p></div>
                       <div className="rounded-xl bg-slate-50 p-3 ring-1 ring-slate-200"><p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">DVA/card</p><p className="mt-1 font-extrabold text-slate-950">{card.dva.label}</p><p className="mt-1 text-xs text-slate-500">Allocations: {card.dva.allocationCount}</p></div>
                       <div className="rounded-xl bg-slate-50 p-3 ring-1 ring-slate-200"><p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Exceptions</p><p className="mt-1 font-extrabold text-slate-950">{card.exception.label}</p></div>
+                      <div className="rounded-xl bg-slate-50 p-3 ring-1 ring-slate-200"><p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Customer sales / AR</p><p className="mt-1 font-extrabold text-slate-950">{card.customerSales.label}</p><p className="mt-1 text-xs text-slate-500">Rows: {card.customerSales.rowCount}</p></div>
+                      <div className="rounded-xl bg-slate-50 p-3 ring-1 ring-slate-200"><p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Shipper AP</p><p className="mt-1 font-extrabold text-slate-950">{card.shipperAp.label}</p><p className="mt-1 text-xs text-slate-500">Rows: {card.shipperAp.rowCount}</p></div>
                     </div>
+
+                    {card.fixActions.length > 0 ? (
+                      <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-800">
+                        <p className="font-bold">Next owner / fix link</p>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {card.fixActions.map((action) => (
+                            <Link key={`${action.owner}-${action.label}-${action.href}`} href={action.href} className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100">
+                              {action.owner}: {action.label}
+                            </Link>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
 
                     {card.blockers.length > 0 ? (
                       <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
