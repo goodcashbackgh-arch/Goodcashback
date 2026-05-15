@@ -408,6 +408,31 @@ function draftFromMindeeItem(item: unknown, batch: Batch, headerStatementDate: s
   };
 }
 
+function addFxResidualAudit(row: DraftRow, baseFxRate: number, cardMarkupPct: number) {
+  const amount = row.amountLocal;
+  const statementTotalGbp = amount === null ? null : round2(amount / baseFxRate);
+  const supplierEquivalentRate = baseFxRate * (1 + cardMarkupPct / 100);
+  const supplierEquivalentGbp = amount === null ? null : round2(amount / supplierEquivalentRate);
+  const fxCardMarkupResidualGbp = statementTotalGbp !== null && supplierEquivalentGbp !== null
+    ? round2(statementTotalGbp - supplierEquivalentGbp)
+    : null;
+
+  return {
+    ...row.rawJson,
+    _goodcashback_fx_lookup: {
+      source: "manual_base_fx_rate",
+      requested_date: row.transactionDate || row.statementDate,
+      base_statement_rate: baseFxRate,
+      settlement_markup_pct: cardMarkupPct,
+      statement_total_gbp: statementTotalGbp,
+      supplier_equivalent_rate: supplierEquivalentRate,
+      supplier_equivalent_gbp: supplierEquivalentGbp,
+      fx_card_markup_residual_gbp: fxCardMarkupResidualGbp,
+      interpretation: "amount_gbp_equivalent is the full statement GBP total using the base settlement rate. Settlement markup is preserved as the FX/card residual control amount, not deducted from the statement total.",
+    },
+  };
+}
+
 export async function POST(request: Request) {
   const formData = await request.formData();
   const importBatchId = cleanText(formData.get("import_batch_id"));
@@ -442,9 +467,10 @@ export async function POST(request: Request) {
   const manualFxRaw = cleanText(formData.get("manual_fx_rate"));
   const manualFxRate = localCcy === "GBP" && !manualFxRaw ? 1 : Number(manualFxRaw);
   if (!Number.isFinite(manualFxRate) || manualFxRate <= 0) {
-    return redirectToImport(request, { import_error: `FX rate is required before parsing ${localCcy} statement rows.`, batch_id: importBatchId });
+    return redirectToImport(request, { import_error: `Base FX rate is required before parsing ${localCcy} statement rows.`, batch_id: importBatchId });
   }
 
+  const cardMarkupPct = Number(batch.default_card_markup_pct ?? 0);
   const transactions = extractTransactions(batch.mindee_statement_raw_json);
   if (transactions.length === 0) {
     return redirectToImport(request, { import_error: "Mindee raw JSON did not contain list_of_transactions items.", batch_id: importBatchId });
@@ -460,6 +486,7 @@ export async function POST(request: Request) {
   for (let i = 0; i < transactions.length; i += 1) {
     const row = draftFromMindeeItem(transactions[i], batch, statementDate, previousBalance);
     const amountGbp = row.amountLocal === null ? null : round2(row.amountLocal / manualFxRate);
+    const auditedRawJson = addFxResidualAudit(row, manualFxRate, cardMarkupPct);
     const rowHash = fingerprint(batch, row);
 
     const { error: stageError } = await supabase.rpc("staff_stage_dva_statement_import_row", {
@@ -467,7 +494,7 @@ export async function POST(request: Request) {
       p_source_row_number: i + 1,
       p_source_page_number: null,
       p_raw_text: row.rawText,
-      p_raw_json: row.rawJson,
+      p_raw_json: auditedRawJson,
       p_statement_date: row.statementDate,
       p_transaction_date: row.transactionDate,
       p_direction: row.direction,
@@ -476,7 +503,7 @@ export async function POST(request: Request) {
       p_balance_after_local_ccy: row.balanceAfter,
       p_local_ccy: localCcy,
       p_fx_rate_applied: manualFxRate,
-      p_card_markup_pct_applied: Number(batch.default_card_markup_pct ?? 0),
+      p_card_markup_pct_applied: cardMarkupPct,
       p_amount_gbp_equivalent: amountGbp,
       p_card_last4: row.cardLast4,
       p_merchant_raw: row.merchantRaw,
