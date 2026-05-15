@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
-import { commitDvaStatementImportBatchAction } from "../actions";
+import { commitDvaStatementImportBatchAction, resetDvaStatementImportBatchAction } from "../actions";
 import StatementBalanceCheckCard from "../StatementBalanceCheckCard";
 
 type Row = Record<string, unknown>;
@@ -141,6 +141,8 @@ export default async function DvaStatementImportDetailPage({
   const rowFrom = (rowPage - 1) * ROW_PAGE_SIZE;
   const commitSuccess = text(currentSearchParams.commit_success);
   const commitError = text(currentSearchParams.commit_error);
+  const resetSuccess = text(currentSearchParams.reset_success);
+  const resetError = text(currentSearchParams.reset_error);
 
   const supabase = await createClient();
   const [batchResult, rowsResult] = await Promise.all([
@@ -166,6 +168,7 @@ export default async function DvaStatementImportDetailPage({
   const cleanCount = num(batch.clean_count);
   const errorCount = num(batch.error_count);
   const canCommit = cleanCount > 0 && committedCount === 0 && errorCount === 0 && !["committed", "voided", "failed"].includes(batchStatus);
+  const canReset = rowCount > 0 && committedCount === 0 && !["committed", "voided", "failed"].includes(batchStatus);
   const canOpenMatchingWorkbench = batchStatus === "committed" || committedCount > 0 || Boolean(commitSuccess);
 
   return (
@@ -195,9 +198,9 @@ export default async function DvaStatementImportDetailPage({
           <p className="mt-4 break-all text-xs text-slate-500">Batch ID: {batchId}</p>
         </section>
 
-        {(commitSuccess || commitError) ? (
-          <section className={`rounded-3xl border p-5 text-sm font-semibold leading-6 ${commitSuccess ? "border-emerald-200 bg-emerald-50 text-emerald-900" : "border-rose-200 bg-rose-50 text-rose-900"}`}>
-            {commitSuccess || commitError}
+        {(commitSuccess || commitError || resetSuccess || resetError) ? (
+          <section className={`rounded-3xl border p-5 text-sm font-semibold leading-6 ${(commitSuccess || resetSuccess) ? "border-emerald-200 bg-emerald-50 text-emerald-900" : "border-rose-200 bg-rose-50 text-rose-900"}`}>
+            {commitSuccess || commitError || resetSuccess || resetError}
           </section>
         ) : null}
 
@@ -219,22 +222,36 @@ export default async function DvaStatementImportDetailPage({
             ) : null}
           </div>
 
-          {canCommit ? (
-            <form action={commitDvaStatementImportBatchAction} className="mt-5 rounded-2xl border border-sky-200 bg-sky-50 p-4">
-              <input type="hidden" name="import_batch_id" value={batchId} />
-              <label className="block text-sm font-semibold text-sky-950">Commit note</label>
-              <input className="mt-2 w-full rounded-xl border border-sky-200 bg-white px-3 py-2 text-sm" name="notes" defaultValue="Reviewed balance chain and staged rows; commit clean statement lines." />
-              <button className="mt-3 rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white" type="submit">
-                Commit clean rows
-              </button>
-            </form>
-          ) : (
-            <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm leading-6 text-slate-600">
-              {canOpenMatchingWorkbench
-                ? "This batch already has committed statement lines. Continue in the matching workbench."
-                : "Commit is disabled until the batch has clean rows, no parse errors, and no previous commit."}
-            </div>
-          )}
+          <div className="mt-5 grid gap-4 lg:grid-cols-2">
+            {canCommit ? (
+              <form action={commitDvaStatementImportBatchAction} className="rounded-2xl border border-sky-200 bg-sky-50 p-4">
+                <input type="hidden" name="import_batch_id" value={batchId} />
+                <label className="block text-sm font-semibold text-sky-950">Commit note</label>
+                <input className="mt-2 w-full rounded-xl border border-sky-200 bg-white px-3 py-2 text-sm" name="notes" defaultValue="Reviewed balance chain and staged rows; commit clean statement lines." />
+                <button className="mt-3 rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white" type="submit">
+                  Commit clean rows
+                </button>
+              </form>
+            ) : (
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm leading-6 text-slate-600">
+                {canOpenMatchingWorkbench
+                  ? "This batch already has committed statement lines. Continue in the matching workbench."
+                  : "Commit is disabled until the batch has clean rows, no parse errors, and no previous commit."}
+              </div>
+            )}
+
+            {canReset ? (
+              <form action={resetDvaStatementImportBatchAction} className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                <input type="hidden" name="import_batch_id" value={batchId} />
+                <label className="block text-sm font-semibold text-amber-950">Reset staged rows before commit</label>
+                <input className="mt-2 w-full rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm" name="reset_reason" defaultValue="Fix FX rates and re-parse before commit." />
+                <p className="mt-2 text-xs leading-5 text-amber-900">Pre-commit only. Keeps the uploaded PDF and Mindee OCR result, but deletes staged rows so this batch can be parsed again.</p>
+                <button className="mt-3 rounded-xl bg-amber-600 px-4 py-2 text-sm font-semibold text-white" type="submit">
+                  Reset staged rows
+                </button>
+              </form>
+            ) : null}
+          </div>
         </section>
 
         <section id="staged-statement-rows" className="scroll-mt-6 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
