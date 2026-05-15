@@ -491,11 +491,23 @@ function resolveFxForRow(row: DraftRow, localCcy: string, manualFxRate: number |
 function addFxResidualAudit(row: DraftRow, fx: FxResolution) {
   const amount = row.amountLocal;
   const statementTotalGbp = amount !== null && fx.baseFxRate ? round2(amount / fx.baseFxRate) : null;
-  const supplierEquivalentRate = fx.baseFxRate ? fx.baseFxRate * (1 + fx.appliedMarkupPct / 100) : null;
-  const supplierEquivalentGbp = amount !== null && supplierEquivalentRate ? round2(amount / supplierEquivalentRate) : null;
-  const fxCardMarkupResidualGbp = statementTotalGbp !== null && supplierEquivalentGbp !== null
-    ? round2(statementTotalGbp - supplierEquivalentGbp)
-    : null;
+
+  const supplierEquivalentMultiplier = Math.max(0, 1 - fx.appliedMarkupPct / 100);
+
+  const supplierEquivalentRate =
+    fx.baseFxRate && supplierEquivalentMultiplier > 0
+      ? fx.baseFxRate / supplierEquivalentMultiplier
+      : null;
+
+  const supplierEquivalentGbp =
+    statementTotalGbp !== null
+      ? round2(statementTotalGbp * supplierEquivalentMultiplier)
+      : null;
+
+  const fxCardMarkupResidualGbp =
+    statementTotalGbp !== null && supplierEquivalentGbp !== null
+      ? round2(statementTotalGbp - supplierEquivalentGbp)
+      : null;
   const existingBalanceCheck = getObject(row.rawJson._goodcashback_balance_check) ?? {};
 
   return {
@@ -517,7 +529,8 @@ function addFxResidualAudit(row: DraftRow, fx: FxResolution) {
       supplier_equivalent_rate: supplierEquivalentRate,
       supplier_equivalent_gbp: supplierEquivalentGbp,
       fx_card_markup_residual_gbp: fxCardMarkupResidualGbp,
-      interpretation: "amount_gbp_equivalent is the full statement GBP total using the base settlement rate. Settlement markup is preserved as the FX/card residual control amount, not deducted from the statement total. A positive batch settlement markup override replaces daily markups for all rows in the batch.",
+      supplier_equivalent_multiplier: supplierEquivalentMultiplier,
+      interpretation: interpretation: "amount_gbp_equivalent is the full statement GBP total using the base settlement rate. Settlement markup is treated as a percentage of the statement GBP value: supplier_equivalent_gbp = statement_total_gbp * (1 - markup_pct / 100). A positive batch settlement markup override replaces daily markups for all rows in the batch.",
     },
   };
 }
