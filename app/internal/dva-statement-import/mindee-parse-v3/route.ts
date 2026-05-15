@@ -530,7 +530,7 @@ function addFxResidualAudit(row: DraftRow, fx: FxResolution) {
       supplier_equivalent_gbp: supplierEquivalentGbp,
       fx_card_markup_residual_gbp: fxCardMarkupResidualGbp,
       supplier_equivalent_multiplier: supplierEquivalentMultiplier,
-      interpretation: interpretation: "amount_gbp_equivalent is the full statement GBP total using the base settlement rate. Settlement markup is treated as a percentage of the statement GBP value: supplier_equivalent_gbp = statement_total_gbp * (1 - markup_pct / 100). A positive batch settlement markup override replaces daily markups for all rows in the batch.",
+      interpretation: "amount_gbp_equivalent is the full statement GBP total using the base settlement rate. Settlement markup is treated as a percentage of the statement GBP value: supplier_equivalent_gbp = statement_total_gbp * (1 - markup_pct / 100). A positive batch settlement markup override replaces daily markups for all rows in the batch.",
     },
   };
 }
