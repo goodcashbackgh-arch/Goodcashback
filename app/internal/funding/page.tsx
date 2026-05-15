@@ -7,105 +7,30 @@ import {
 
 type DataRow = Record<string, unknown>;
 
-type PanelResult = {
-  title: string;
-  description: string;
-  source: string;
-  role: string;
-  rows: DataRow[];
-  error: string | null;
+type FundingCandidate = {
+  dvaStatementLineId: string;
+  orderId: string;
+  orderRef: string;
+  matchSuggestionId: string;
+  amountGbp: number;
+  gap: number | null;
+  alreadyReconciled: boolean;
+  canReconcile: boolean;
+  reviewReason: string;
 };
 
-const panels = [
-  {
-    title: "DVA review worklist",
-    description: "Primary staff worklist for inbound customer/importer funding lines that can be matched to orders.",
-    source: "day2_dva_review_worklist_vw",
-    role: "Funding match source",
-  },
-  {
-    title: "Order funding positions",
-    description: "Orders with funding gaps, funded totals, credit application status, and funded-at signals.",
-    source: "order_funding_position_vw",
-    role: "Order funding source",
-  },
-  {
-    title: "Importer credit balances",
-    description: "Available importer credit that can be applied to order funding gaps.",
-    source: "importer_balance_vw",
-    role: "Credit source",
-  },
-  {
-    title: "Recent DVA lines",
-    description: "Raw DVA statement lines. Diagnostic only; normal matching should use the DVA review worklist.",
-    source: "dva_statement_lines",
-    role: "Diagnostic only",
-  },
-  {
-    title: "Recent funding events",
-    description: "Immutable funding events created by DVA reconciliation, importer credit, or adjustments.",
-    source: "order_funding_events",
-    role: "Audit trail",
-  },
-] as const;
-
-const preferredBySource: Record<string, string[]> = {
-  day2_dva_review_worklist_vw: [
-    "importer_name",
-    "company_name",
-    "trading_name",
-    "order_ref",
-    "payment_auth_id",
-    "auth_id_ref",
-    "reference_raw",
-    "match_status",
-    "amount_gbp_equivalent",
-    "reconciled_gbp_amount",
-    "created_at",
-    "reconciled_at",
-  ],
-  order_funding_position_vw: [
-    "order_ref",
-    "payment_auth_id",
-    "status",
-    "order_total_gbp_declared",
-    "funded_total_gbp",
-    "gap_remaining_gbp",
-    "available_credit_gbp",
-    "threshold_met_yn",
-    "already_funded_yn",
-    "funded_at",
-    "created_at",
-  ],
-  importer_balance_vw: [
-    "importer_id",
-    "available_credit_gbp",
-    "pending_refund_gbp",
-    "active_order_funding_gbp",
-    "payout_in_progress_gbp",
-    "last_refreshed_at",
-  ],
-  dva_statement_lines: [
-    "statement_date",
-    "reference_raw",
-    "auth_id_ref",
-    "direction",
-    "amount_local_ccy",
-    "local_ccy",
-    "amount_gbp_equivalent",
-    "match_status",
-    "created_at",
-  ],
-  order_funding_events: [
-    "order_ref",
-    "event_type",
-    "amount_gbp",
-    "resulting_funded_total_gbp",
-    "source_table",
-    "source_entity_id",
-    "notes",
-    "created_at",
-  ],
+type CreditCandidate = {
+  importerId: string;
+  orderId: string;
+  orderRef: string;
+  paymentAuthId: string;
+  status: string;
+  gap: number;
+  availableCredit: number;
+  maxApplyAmount: number;
+  alreadyFunded: boolean;
+  canApply: boolean;
+  reviewReason: string;
 };
 
 const gbpFormatter = new Intl.NumberFormat("en-GB", {
@@ -114,19 +39,8 @@ const gbpFormatter = new Intl.NumberFormat("en-GB", {
   minimumFractionDigits: 2,
 });
 
-function formatValue(value: unknown) {
-  if (value === null || value === undefined) return "—";
-  if (typeof value === "boolean") return value ? "Yes" : "No";
-  if (typeof value === "number") return value.toLocaleString("en-GB");
-  if (typeof value === "string") {
-    if (value.length > 90) return `${value.slice(0, 87)}...`;
-    return value;
-  }
-  return JSON.stringify(value);
-}
-
 function asNumber(value: unknown) {
-  if (typeof value === "number") return value;
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
   if (typeof value === "string" && value.trim() !== "") {
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : 0;
@@ -148,28 +62,45 @@ function gbp(value: unknown) {
   return gbpFormatter.format(asNumber(value));
 }
 
+function formatValue(value: unknown) {
+  if (value === null || value === undefined) return "—";
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  if (typeof value === "number") return value.toLocaleString("en-GB");
+  if (typeof value === "string") return value.length > 90 ? `${value.slice(0, 87)}...` : value;
+  return JSON.stringify(value);
+}
+
 function allColumns(rows: DataRow[]) {
   return Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
 }
 
-function visibleColumns(source: string, rows: DataRow[]) {
-  const present = new Set(allColumns(rows));
-  const preferred = preferredBySource[source] ?? [];
-  const selected = preferred.filter((key) => present.has(key));
-
-  if (selected.length > 0) return selected.slice(0, 10);
-  return Object.keys(rows[0] ?? {}).slice(0, 10);
+async function readRows(source: string, limit = 10) {
+  const supabase = await createClient();
+  const { data, error } = await supabase.from(source).select("*").limit(limit);
+  return { rows: (data ?? []) as DataRow[], error: error?.message ?? null };
 }
 
-async function readPanel(source: string): Promise<Omit<PanelResult, "title" | "description" | "role">> {
-  const supabase = await createClient();
-  const { data, error } = await supabase.from(source).select("*").limit(10);
+function fundingReviewReason(args: {
+  orderId: string;
+  amountGbp: number;
+  gap: number | null;
+  alreadyReconciled: boolean;
+}) {
+  if (args.alreadyReconciled) return "Already reconciled. It belongs in audit, not the action queue.";
+  if (!args.orderId) return "No suggested order. Do not show a funding form until an order match is identified.";
+  if (args.amountGbp <= 0) return "No positive inbound amount to apply.";
+  if (args.gap === null) return "Order funding gap is unavailable from the funding position view.";
+  if (args.gap <= 0) return "Suggested order has no remaining funding gap.";
+  return "Ready to apply as funding.";
+}
 
-  return {
-    source,
-    rows: (data ?? []) as DataRow[],
-    error: error?.message ?? null,
-  };
+function creditReviewReason(candidate: Omit<CreditCandidate, "canApply" | "reviewReason">) {
+  if (candidate.alreadyFunded) return "Order has no remaining funding gap.";
+  if (!candidate.importerId || !candidate.orderId) return "Missing importer or order id.";
+  if (candidate.availableCredit <= 0) return "No available importer credit.";
+  if (candidate.gap <= 0) return "No funding gap.";
+  if (candidate.maxApplyAmount <= 0) return "Nothing available to apply.";
+  return "Ready to apply importer credit.";
 }
 
 function SummaryCard({
@@ -211,121 +142,109 @@ function RouteCard({ title, body, href, cta }: { title: string; body: string; hr
   );
 }
 
-function CreditCandidateCard({ candidate }: { candidate: {
-  importerId: string;
-  orderId: string;
-  orderRef: string;
-  paymentAuthId: string;
-  status: string;
-  gap: number;
-  availableCredit: number;
-  maxApplyAmount: number;
-  alreadyFunded: boolean;
-  canApply: boolean;
-} }) {
+function DvaFundingActionCard({ candidate }: { candidate: FundingCandidate }) {
+  const showOverfunding = candidate.gap !== null && candidate.amountGbp > candidate.gap;
+
   return (
-    <article className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+    <article className="rounded-2xl border border-emerald-200 bg-white p-4 shadow-sm">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="text-xs font-bold uppercase tracking-wide text-amber-600">Importer credit → order gap</p>
-          <h3 className="mt-2 text-lg font-semibold">{candidate.orderRef || "No order ref"}</h3>
-          <p className="mt-1 text-xs text-slate-500">Auth: {candidate.paymentAuthId || "—"} · Status: {candidate.status || "—"}</p>
+          <p className="text-xs font-bold uppercase tracking-wide text-emerald-600">Ready: customer/importer IN → order funding</p>
+          <h3 className="mt-2 text-lg font-semibold">{candidate.orderRef || candidate.orderId}</h3>
+          <p className="mt-1 break-all text-xs text-slate-500">DVA line: {candidate.dvaStatementLineId}</p>
         </div>
-        <span className={`rounded-full px-3 py-1 text-xs font-semibold ${candidate.canApply ? "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200" : "bg-slate-100 text-slate-600 ring-1 ring-slate-200"}`}>
-          {candidate.canApply ? "credit available" : "no action"}
-        </span>
+        <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-200">ready to fund</span>
       </div>
 
       <div className="mt-4 grid gap-3 sm:grid-cols-3">
-        <SummaryCard title="Funding gap" value={gbp(candidate.gap)} hint="Remaining order funding gap." tone={candidate.gap > 0 ? "amber" : "emerald"} />
-        <SummaryCard title="Available credit" value={gbp(candidate.availableCredit)} hint="Importer credit available to apply." tone={candidate.availableCredit > 0 ? "sky" : "slate"} />
-        <SummaryCard title="Max apply" value={gbp(candidate.maxApplyAmount)} hint="Capped at lower of gap and credit." tone={candidate.maxApplyAmount > 0 ? "emerald" : "slate"} />
+        <SummaryCard title="Statement IN" value={gbp(candidate.amountGbp)} hint="GBP value from committed DVA/card line." tone="emerald" />
+        <SummaryCard title="Order gap" value={candidate.gap === null ? "—" : gbp(candidate.gap)} hint="Remaining order funding gap." tone="amber" />
+        <SummaryCard title="Suggested action" value="Fund" hint="Uses staff_reconcile_dva_line_to_order." tone="sky" />
       </div>
 
-      <form action={applyImporterCreditAction} className="mt-4 flex flex-wrap items-center gap-2">
-        <input type="hidden" name="importer_id" value={candidate.importerId} />
+      <form action={reconcileDvaLineToOrderAction} className="mt-4 flex flex-wrap items-center gap-2">
+        <input type="hidden" name="dva_statement_line_id" value={candidate.dvaStatementLineId} />
         <input type="hidden" name="order_id" value={candidate.orderId} />
-        <input
-          name="amount_gbp"
-          type="number"
-          step="0.01"
-          min="0.01"
-          max={candidate.maxApplyAmount > 0 ? candidate.maxApplyAmount : undefined}
-          defaultValue={candidate.maxApplyAmount > 0 ? candidate.maxApplyAmount.toFixed(2) : ""}
-          disabled={!candidate.canApply}
-          className="w-32 rounded-xl border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-100"
-        />
-        <button type="submit" disabled={!candidate.canApply} className="rounded-xl bg-amber-600 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">
-          Apply credit
-        </button>
-        {!candidate.canApply ? (
-          <p className="text-xs text-slate-500">
-            {candidate.alreadyFunded ? "No funding gap." : candidate.availableCredit <= 0 ? "No available credit." : "Cannot apply credit."}
-          </p>
+        <input type="hidden" name="match_suggestion_id" value={candidate.matchSuggestionId} />
+        <input type="hidden" name="gap_remaining_gbp" value={candidate.gap ?? ""} />
+        <input name="reconciled_gbp_amount" type="number" step="0.01" min="0.01" defaultValue={candidate.amountGbp.toFixed(2)} className="w-32 rounded-xl border border-slate-300 px-3 py-2 text-sm" />
+        {showOverfunding ? (
+          <label className="inline-flex items-center gap-2 text-xs text-slate-700">
+            <input type="checkbox" name="confirm_overfunding" value="yes" />
+            Allow overfunding because inbound amount exceeds gap
+          </label>
         ) : null}
+        <input name="notes" type="text" placeholder="Notes (optional)" className="w-48 rounded-xl border border-slate-300 px-3 py-2 text-sm" />
+        <button type="submit" className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white">Apply as funding</button>
       </form>
     </article>
   );
 }
 
-function DvaFundingCandidateCard({ candidate }: { candidate: {
-  dvaStatementLineId: string;
-  orderId: string;
-  orderRef: string;
-  matchSuggestionId: string;
-  amountGbp: number;
-  gap: number | null;
-  canReconcile: boolean;
-  alreadyReconciled: boolean;
-} }) {
+function DvaFundingReviewCard({ candidate }: { candidate: FundingCandidate }) {
   return (
-    <article className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+    <article className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="text-xs font-bold uppercase tracking-wide text-emerald-600">Customer/importer IN → order funding</p>
+          <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Inbound line needs review</p>
           <h3 className="mt-2 text-lg font-semibold">{candidate.orderRef || candidate.orderId || "No suggested order"}</h3>
           <p className="mt-1 break-all text-xs text-slate-500">DVA line: {candidate.dvaStatementLineId}</p>
         </div>
-        <span className={`rounded-full px-3 py-1 text-xs font-semibold ${candidate.canReconcile ? "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200" : "bg-slate-100 text-slate-600 ring-1 ring-slate-200"}`}>
-          {candidate.alreadyReconciled ? "already reconciled" : candidate.canReconcile ? "ready to fund" : "needs review"}
-        </span>
+        <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700 ring-1 ring-amber-200">not actionable here</span>
+      </div>
+      <div className="mt-4 grid gap-3 sm:grid-cols-3">
+        <SummaryCard title="Statement IN" value={gbp(candidate.amountGbp)} hint="Inbound line amount." tone="emerald" />
+        <SummaryCard title="Order gap" value={candidate.gap === null ? "—" : gbp(candidate.gap)} hint="Only actionable when a suggested order and positive gap exist." tone="slate" />
+        <SummaryCard title="Reason" value="Review" hint={candidate.reviewReason} tone="amber" />
+      </div>
+      <p className="mt-3 text-xs leading-5 text-slate-600">No funding form is shown for this row because applying it would be unsafe without a valid suggested order and gap.</p>
+    </article>
+  );
+}
+
+function CreditActionCard({ candidate }: { candidate: CreditCandidate }) {
+  return (
+    <article className="rounded-2xl border border-amber-200 bg-white p-4 shadow-sm">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-xs font-bold uppercase tracking-wide text-amber-600">Ready: importer credit → order gap</p>
+          <h3 className="mt-2 text-lg font-semibold">{candidate.orderRef || "No order ref"}</h3>
+          <p className="mt-1 text-xs text-slate-500">Auth: {candidate.paymentAuthId || "—"} · Status: {candidate.status || "—"}</p>
+        </div>
+        <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700 ring-1 ring-amber-200">credit available</span>
       </div>
 
       <div className="mt-4 grid gap-3 sm:grid-cols-3">
-        <SummaryCard title="Statement IN" value={gbp(candidate.amountGbp)} hint="GBP value from committed DVA/card line." tone="emerald" />
-        <SummaryCard title="Order gap" value={candidate.gap === null ? "—" : gbp(candidate.gap)} hint="Remaining funding gap from order funding view." tone={candidate.gap && candidate.gap > 0 ? "amber" : "slate"} />
-        <SummaryCard title="Suggested action" value={candidate.alreadyReconciled ? "Done" : candidate.canReconcile ? "Fund" : "Review"} hint="Uses staff_reconcile_dva_line_to_order." tone={candidate.canReconcile ? "sky" : "slate"} />
+        <SummaryCard title="Funding gap" value={gbp(candidate.gap)} hint="Remaining order funding gap." tone="amber" />
+        <SummaryCard title="Available credit" value={gbp(candidate.availableCredit)} hint="Importer credit available." tone="sky" />
+        <SummaryCard title="Max apply" value={gbp(candidate.maxApplyAmount)} hint="Capped at lower of gap and credit." tone="emerald" />
       </div>
 
-      {candidate.alreadyReconciled ? (
-        <p className="mt-4 rounded-xl bg-slate-50 px-3 py-2 text-xs text-slate-600 ring-1 ring-slate-200">Already reconciled — no action available.</p>
-      ) : (
-        <form action={reconcileDvaLineToOrderAction} className="mt-4 flex flex-wrap items-center gap-2">
-          <input type="hidden" name="dva_statement_line_id" value={candidate.dvaStatementLineId} />
-          <input type="hidden" name="order_id" value={candidate.orderId} />
-          <input type="hidden" name="match_suggestion_id" value={candidate.matchSuggestionId} />
-          <input type="hidden" name="gap_remaining_gbp" value={candidate.gap ?? ""} />
-          <input
-            name="reconciled_gbp_amount"
-            type="number"
-            step="0.01"
-            min="0.01"
-            defaultValue={candidate.amountGbp.toFixed(2)}
-            disabled={!candidate.canReconcile}
-            className="w-32 rounded-xl border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-100"
-          />
-          <label className="inline-flex items-center gap-2 text-xs text-slate-700">
-            <input type="checkbox" name="confirm_overfunding" value="yes" disabled={!candidate.canReconcile} />
-            Allow overfunding if amount exceeds gap
-          </label>
-          <input name="notes" type="text" placeholder="Notes (optional)" disabled={!candidate.canReconcile} className="w-48 rounded-xl border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-100" />
-          <button type="submit" disabled={!candidate.canReconcile} className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">
-            Apply as funding
-          </button>
-          {!candidate.canReconcile ? <p className="text-xs text-slate-500">Missing suggested order, positive amount, or funding gap.</p> : null}
-        </form>
-      )}
+      <form action={applyImporterCreditAction} className="mt-4 flex flex-wrap items-center gap-2">
+        <input type="hidden" name="importer_id" value={candidate.importerId} />
+        <input type="hidden" name="order_id" value={candidate.orderId} />
+        <input name="amount_gbp" type="number" step="0.01" min="0.01" max={candidate.maxApplyAmount} defaultValue={candidate.maxApplyAmount.toFixed(2)} className="w-32 rounded-xl border border-slate-300 px-3 py-2 text-sm" />
+        <button type="submit" className="rounded-xl bg-amber-600 px-4 py-2 text-sm font-semibold text-white">Apply credit</button>
+      </form>
     </article>
+  );
+}
+
+function ReviewList({ title, rows }: { title: string; rows: Array<FundingCandidate | CreditCandidate> }) {
+  if (rows.length === 0) return null;
+
+  return (
+    <details className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+      <summary className="cursor-pointer text-sm font-semibold text-slate-900">{title} · {rows.length}</summary>
+      <div className="mt-3 grid gap-2">
+        {rows.map((row, index) => (
+          <div key={`${title}-${index}`} className="rounded-xl bg-white p-3 text-xs leading-5 text-slate-600 ring-1 ring-slate-200">
+            <p className="font-semibold text-slate-900">{"dvaStatementLineId" in row ? row.orderRef || row.orderId || "No suggested order" : row.orderRef || "No order ref"}</p>
+            <p>{row.reviewReason}</p>
+          </div>
+        ))}
+      </div>
+    </details>
   );
 }
 
@@ -341,28 +260,55 @@ export default async function InternalFundingPage({
 }) {
   const params = searchParams ? await searchParams : {};
 
-  const results = await Promise.all(
-    panels.map(async (panel) => ({
-      ...panel,
-      ...(await readPanel(panel.source)),
-    }))
-  );
+  const [worklistResult, fundingPositionResult, creditBalanceResult, recentLinesResult, fundingEventsResult] = await Promise.all([
+    readRows("day2_dva_review_worklist_vw", 50),
+    readRows("order_funding_position_vw", 50),
+    readRows("importer_balance_vw", 50),
+    readRows("dva_statement_lines", 10),
+    readRows("order_funding_events", 10),
+  ]);
 
-  const fundingPosition = results.find((panel) => panel.source === "order_funding_position_vw");
-  const fundingPositionColumns = fundingPosition ? allColumns(fundingPosition.rows) : [];
+  const fundingRows = fundingPositionResult.rows;
+  const creditRows = creditBalanceResult.rows;
+  const worklistRows = worklistResult.rows;
+  const recentEvents = fundingEventsResult.rows;
+  const fundingPositionColumns = allColumns(fundingRows);
   const missingUsefulFundingColumns = ["order_total_gbp_declared", "gap_remaining_gbp", "requires_admin_review_yn", "funded_at"].filter((column) => !fundingPositionColumns.includes(column));
-  const creditBalance = results.find((panel) => panel.source === "importer_balance_vw");
-  const creditByImporter = new Map((creditBalance?.rows ?? []).map((row) => [asString(row.importer_id), asNumber(row.available_credit_gbp)]));
 
-  const creditCandidates = (fundingPosition?.rows ?? []).map((row) => {
+  const gapByOrder = new Map(fundingRows.map((row) => [asString(row.order_id), asNumber(row.gap_remaining_gbp)]));
+  const creditByImporter = new Map(creditRows.map((row) => [asString(row.importer_id), asNumber(row.available_credit_gbp)]));
+
+  const fundingCandidates: FundingCandidate[] = worklistRows
+    .map((row) => {
+      const dvaStatementLineId = asString(row.dva_statement_line_id);
+      const orderId = asString(row.suggested_order_id);
+      const amountGbp = asNumber(row.amount_gbp_equivalent);
+      const gap = gapByOrder.get(orderId);
+      const alreadyReconciled = Boolean(asString(row.reconciliation_id)) || asString(row.match_status) === "reconciled";
+      const reviewReason = fundingReviewReason({ orderId, amountGbp, gap: typeof gap === "number" ? gap : null, alreadyReconciled });
+
+      return {
+        dvaStatementLineId,
+        orderId,
+        orderRef: asString(row.suggested_order_ref),
+        matchSuggestionId: asString(row.match_suggestion_id),
+        amountGbp,
+        gap: typeof gap === "number" ? gap : null,
+        alreadyReconciled,
+        canReconcile: Boolean(dvaStatementLineId && orderId && amountGbp > 0 && typeof gap === "number" && gap > 0 && !alreadyReconciled),
+        reviewReason,
+      };
+    })
+    .filter((candidate) => candidate.dvaStatementLineId);
+
+  const creditCandidates: CreditCandidate[] = fundingRows.map((row) => {
     const importerId = asString(row.importer_id);
     const orderId = asString(row.order_id);
     const gap = asNumber(row.gap_remaining_gbp);
     const availableCredit = creditByImporter.get(importerId) ?? 0;
     const maxApplyAmount = Math.min(gap, availableCredit);
     const alreadyFunded = asBoolean(row.already_funded_yn) || gap <= 0;
-
-    return {
+    const base = {
       importerId,
       orderId,
       orderRef: asString(row.order_ref),
@@ -372,40 +318,25 @@ export default async function InternalFundingPage({
       availableCredit,
       maxApplyAmount,
       alreadyFunded,
+    };
+    const reviewReason = creditReviewReason(base);
+
+    return {
+      ...base,
       canApply: Boolean(importerId && orderId && maxApplyAmount > 0 && !alreadyFunded),
+      reviewReason,
     };
   });
 
-  const gapByOrder = new Map((fundingPosition?.rows ?? []).map((row) => [asString(row.order_id), asNumber(row.gap_remaining_gbp)]));
-  const dvaWorklist = results.find((panel) => panel.source === "day2_dva_review_worklist_vw");
-  const dvaReconcileCandidates = (dvaWorklist?.rows ?? [])
-    .map((row) => {
-      const dvaStatementLineId = asString(row.dva_statement_line_id);
-      const orderId = asString(row.suggested_order_id);
-      const matchSuggestionId = asString(row.match_suggestion_id);
-      const suggestedOrderRef = asString(row.suggested_order_ref);
-      const amountGbp = asNumber(row.amount_gbp_equivalent);
-      const gap = gapByOrder.get(orderId);
-      const alreadyReconciled = Boolean(asString(row.reconciliation_id)) || asString(row.match_status) === "reconciled";
+  const readyFundingCandidates = fundingCandidates.filter((candidate) => candidate.canReconcile);
+  const fundingNeedsReview = fundingCandidates.filter((candidate) => !candidate.canReconcile && !candidate.alreadyReconciled);
+  const reconciledFundingAudit = fundingCandidates.filter((candidate) => candidate.alreadyReconciled);
+  const readyCreditCandidates = creditCandidates.filter((candidate) => candidate.canApply);
+  const creditNeedsReview = creditCandidates.filter((candidate) => !candidate.canApply && !candidate.alreadyFunded);
 
-      return {
-        dvaStatementLineId,
-        orderId,
-        orderRef: suggestedOrderRef,
-        matchSuggestionId,
-        amountGbp,
-        gap: typeof gap === "number" ? gap : null,
-        canReconcile: Boolean(dvaStatementLineId && orderId && amountGbp > 0 && typeof gap === "number" && !alreadyReconciled),
-        alreadyReconciled,
-      };
-    })
-    .filter((candidate) => candidate.dvaStatementLineId);
-
-  const openFundingGap = creditCandidates.reduce((sum, candidate) => sum + Math.max(0, candidate.gap), 0);
-  const availableCredit = (creditBalance?.rows ?? []).reduce((sum, row) => sum + asNumber(row.available_credit_gbp), 0);
-  const actionableCreditCount = creditCandidates.filter((candidate) => candidate.canApply).length;
-  const actionableDvaCount = dvaReconcileCandidates.filter((candidate) => candidate.canReconcile).length;
-  const recentEvents = results.find((panel) => panel.source === "order_funding_events")?.rows ?? [];
+  const openFundingGap = fundingRows.reduce((sum, row) => sum + Math.max(0, asNumber(row.gap_remaining_gbp)), 0);
+  const availableCredit = creditRows.reduce((sum, row) => sum + asNumber(row.available_credit_gbp), 0);
+  const needsReviewCount = fundingNeedsReview.length + creditNeedsReview.length;
 
   return (
     <main className="min-h-screen bg-slate-50 px-6 py-8 text-slate-950">
@@ -416,21 +347,17 @@ export default async function InternalFundingPage({
               <Link href="/internal/dva-reconciliation" className="text-sm font-semibold text-sky-600">← Back to DVA/card control hub</Link>
               <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-emerald-600">Importer funding control</p>
               <h1 className="mt-2 text-3xl font-semibold tracking-tight">Apply customer/importer IN money to orders or credit</h1>
-              <p className="mt-3 max-w-5xl text-sm leading-6 text-slate-600">
-                Use this page only for customer/importer inbound funding and importer credit. Supplier purchases, retailer refunds, FX/card residuals, bank fees and exception holds stay in the DVA/card matching workspace.
-              </p>
+              <p className="mt-3 max-w-5xl text-sm leading-6 text-slate-600">Use this page only for customer/importer inbound funding and importer credit. Supplier purchases, retailer refunds, FX/card residuals, bank fees and exception holds stay in the DVA/card matching workspace.</p>
             </div>
-            <Link href="/internal/dva-reconciliation/workspace" className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">
-              Open matching workspace →
-            </Link>
+            <Link href="/internal/dva-reconciliation/workspace" className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">Open matching workspace →</Link>
           </div>
         </section>
 
         <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
           <SummaryCard title="Open funding gaps" value={gbp(openFundingGap)} hint="Visible order funding gaps from order_funding_position_vw." tone={openFundingGap > 0 ? "amber" : "emerald"} />
           <SummaryCard title="Available credit" value={gbp(availableCredit)} hint="Importer credit available from importer_balance_vw." tone={availableCredit > 0 ? "sky" : "slate"} />
-          <SummaryCard title="DVA funding candidates" value={String(actionableDvaCount)} hint="Inbound lines ready to apply through staff_reconcile_dva_line_to_order." tone={actionableDvaCount > 0 ? "emerald" : "slate"} />
-          <SummaryCard title="Credit candidates" value={String(actionableCreditCount)} hint="Orders where importer credit can be applied to a gap." tone={actionableCreditCount > 0 ? "violet" : "slate"} />
+          <SummaryCard title="Ready funding candidates" value={String(readyFundingCandidates.length)} hint="Inbound lines with suggested order and positive gap." tone={readyFundingCandidates.length > 0 ? "emerald" : "slate"} />
+          <SummaryCard title="Needs review" value={String(needsReviewCount)} hint="Rows hidden from action forms because a safe match/gap is missing." tone={needsReviewCount > 0 ? "amber" : "slate"} />
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -444,45 +371,43 @@ export default async function InternalFundingPage({
           </div>
         </section>
 
-        {(params.credit_success || params.credit_error || params.dva_success || params.dva_error) && (
-          <section className={`rounded-3xl border p-5 text-sm leading-6 ${params.credit_success || params.dva_success ? "border-emerald-200 bg-emerald-50 text-emerald-900" : "border-red-200 bg-red-50 text-red-900"}`}>
-            {params.credit_success ?? params.dva_success ?? params.credit_error ?? params.dva_error}
-          </section>
-        )}
+        {(params.credit_success || params.credit_error || params.dva_success || params.dva_error) ? (
+          <section className={`rounded-3xl border p-5 text-sm leading-6 ${params.credit_success || params.dva_success ? "border-emerald-200 bg-emerald-50 text-emerald-900" : "border-red-200 bg-red-50 text-red-900"}`}>{params.credit_success ?? params.dva_success ?? params.credit_error ?? params.dva_error}</section>
+        ) : null}
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <h2 className="text-xl font-semibold">1. Apply inbound statement money to order funding</h2>
-              <p className="mt-1 max-w-4xl text-sm leading-6 text-slate-600">
-                This uses the staff wrapper RPC <code className="rounded bg-slate-100 px-1 py-0.5">staff_reconcile_dva_line_to_order</code>. It creates/updates funding events and order funding state. It does not create supplier/refund/fee allocations.
-              </p>
+              <h2 className="text-xl font-semibold">1. Ready inbound statement money</h2>
+              <p className="mt-1 max-w-4xl text-sm leading-6 text-slate-600">Only rows with a suggested order, positive inbound amount, and positive order gap appear here. No suggested order means no funding form.</p>
             </div>
-            <span className="rounded-full bg-emerald-50 px-3 py-1 text-sm font-semibold text-emerald-700 ring-1 ring-emerald-200">Customer/importer IN only</span>
+            <span className="rounded-full bg-emerald-50 px-3 py-1 text-sm font-semibold text-emerald-700 ring-1 ring-emerald-200">Safe action queue</span>
           </div>
-
           <div className="mt-5 grid gap-4">
-            {dvaReconcileCandidates.length === 0 ? (
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">No DVA worklist rows are currently available for order funding reconciliation.</div>
-            ) : dvaReconcileCandidates.map((candidate) => <DvaFundingCandidateCard key={candidate.dvaStatementLineId} candidate={candidate} />)}
+            {readyFundingCandidates.length === 0 ? <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">No inbound statement rows are currently safe to apply as order funding.</div> : readyFundingCandidates.map((candidate) => <DvaFundingActionCard key={candidate.dvaStatementLineId} candidate={candidate} />)}
           </div>
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <h2 className="text-xl font-semibold">2. Apply importer credit to order funding gap</h2>
-              <p className="mt-1 max-w-4xl text-sm leading-6 text-slate-600">
-                This uses the confirmed importer-credit RPC. It does not reconcile DVA/card statement lines and does not explain supplier/refund/fee movements.
-              </p>
+              <h2 className="text-xl font-semibold">2. Ready importer credit</h2>
+              <p className="mt-1 max-w-4xl text-sm leading-6 text-slate-600">Only orders with a real funding gap and available importer credit appear here.</p>
             </div>
             <span className="rounded-full bg-amber-50 px-3 py-1 text-sm font-semibold text-amber-700 ring-1 ring-amber-200">Credit only</span>
           </div>
-
           <div className="mt-5 grid gap-4">
-            {creditCandidates.length === 0 ? (
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">No funding rows available for credit application.</div>
-            ) : creditCandidates.map((candidate) => <CreditCandidateCard key={candidate.orderId || candidate.orderRef} candidate={candidate} />)}
+            {readyCreditCandidates.length === 0 ? <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">No importer credit rows are currently safe to apply.</div> : readyCreditCandidates.map((candidate) => <CreditActionCard key={candidate.orderId || candidate.orderRef} candidate={candidate} />)}
+          </div>
+        </section>
+
+        <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+          <h2 className="text-xl font-semibold">Rows excluded from action forms</h2>
+          <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">These are deliberately not actionable on this page. They need a match, gap, or audit review first.</p>
+          <div className="mt-5 grid gap-3">
+            <ReviewList title="Inbound lines needing suggested order / gap review" rows={fundingNeedsReview} />
+            <ReviewList title="Credit rows not currently applicable" rows={creditNeedsReview} />
+            <ReviewList title="Already reconciled inbound funding audit" rows={reconciledFundingAudit} />
           </div>
         </section>
 
@@ -512,64 +437,43 @@ export default async function InternalFundingPage({
 
         <details className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <summary className="cursor-pointer text-xl font-semibold">Advanced funding diagnostics</summary>
-          <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
-            Diagnostic tables are collapsed by default. Use these only to verify live view columns, raw returned rows, and backend contracts. Do not use them as the normal supervisor workflow.
-          </p>
-
-          {fundingPosition?.error ? (
-            <div className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">Funding position diagnostics unavailable: {fundingPosition.error}</div>
-          ) : (
-            <div className="mt-5 grid gap-4 lg:grid-cols-2">
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                <h3 className="font-semibold">Available order funding columns</h3>
-                <p className="mt-2 text-sm leading-6 text-slate-600">{fundingPositionColumns.length > 0 ? fundingPositionColumns.join(", ") : "No rows returned, so columns cannot be inferred from the UI response yet."}</p>
-              </div>
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                <h3 className="font-semibold">Missing useful action columns</h3>
-                <p className="mt-2 text-sm leading-6 text-slate-600">{missingUsefulFundingColumns.length > 0 ? missingUsefulFundingColumns.join(", ") : "None detected from this response."}</p>
-              </div>
+          <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">Diagnostic tables are collapsed by default. Use these only to verify live view columns, raw returned rows, and backend contracts.</p>
+          <div className="mt-5 grid gap-4 lg:grid-cols-2">
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <h3 className="font-semibold">Available order funding columns</h3>
+              <p className="mt-2 text-sm leading-6 text-slate-600">{fundingPositionColumns.length > 0 ? fundingPositionColumns.join(", ") : "No rows returned, so columns cannot be inferred from the UI response yet."}</p>
             </div>
-          )}
-
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <h3 className="font-semibold">Missing useful action columns</h3>
+              <p className="mt-2 text-sm leading-6 text-slate-600">{missingUsefulFundingColumns.length > 0 ? missingUsefulFundingColumns.join(", ") : "None detected from this response."}</p>
+            </div>
+          </div>
           <div className="mt-5 grid gap-5">
-            {results.map((panel) => {
-              const columns = visibleColumns(panel.source, panel.rows);
-              const available = allColumns(panel.rows);
-
+            {[
+              ["DVA review worklist", "day2_dva_review_worklist_vw", worklistRows, worklistResult.error],
+              ["Order funding positions", "order_funding_position_vw", fundingRows, fundingPositionResult.error],
+              ["Importer credit balances", "importer_balance_vw", creditRows, creditBalanceResult.error],
+              ["Recent DVA lines", "dva_statement_lines", recentLinesResult.rows, recentLinesResult.error],
+              ["Recent funding events", "order_funding_events", recentEvents, fundingEventsResult.error],
+            ].map(([title, source, rows, error]) => {
+              const tableRows = rows as DataRow[];
+              const columns = allColumns(tableRows).slice(0, 10);
               return (
-                <section key={panel.source} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                  <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                <section key={String(source)} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
-                      <h3 className="font-semibold">{panel.title}</h3>
-                      <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-600">{panel.description}</p>
-                      <div className="mt-2 flex flex-wrap gap-2 text-xs text-slate-500"><span>Source: {panel.source}</span><span>•</span><span>{panel.role}</span></div>
+                      <h3 className="font-semibold">{String(title)}</h3>
+                      <p className="mt-1 text-xs text-slate-500">Source: {String(source)}</p>
                     </div>
-                    <span className="rounded-full bg-sky-50 px-3 py-1 text-sm font-semibold text-sky-600">{panel.error ? "Unavailable" : `${panel.rows.length} rows`}</span>
+                    <span className="rounded-full bg-sky-50 px-3 py-1 text-sm font-semibold text-sky-600">{error ? "Unavailable" : `${tableRows.length} rows`}</span>
                   </div>
-
-                  {panel.error ? (
-                    <div className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-900">Could not read this source yet: {panel.error}</div>
-                  ) : panel.rows.length === 0 ? (
-                    <div className="mt-5 rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-600">No rows returned. This can be correct if there is no current work in this queue.</div>
-                  ) : (
-                    <>
-                      <div className="mt-5 overflow-x-auto rounded-2xl border border-slate-200 bg-white">
-                        <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
-                          <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
-                            <tr>{columns.map((column) => <th key={column} className="px-4 py-3 font-semibold">{column.replaceAll("_", " ")}</th>)}</tr>
-                          </thead>
-                          <tbody className="divide-y divide-slate-100 bg-white">
-                            {panel.rows.map((row, index) => (
-                              <tr key={`${panel.source}-${index}`}>{columns.map((column) => <td key={column} className="max-w-xs px-4 py-3 align-top text-slate-700">{formatValue(row[column])}</td>)}</tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                      <details className="mt-4 rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-600">
-                        <summary className="cursor-pointer font-semibold text-slate-900">Show available columns for {panel.source}</summary>
-                        <p className="mt-3 leading-6">{available.join(", ")}</p>
-                      </details>
-                    </>
+                  {error ? <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">Could not read this source: {String(error)}</div> : tableRows.length === 0 ? <div className="mt-4 rounded-xl border border-slate-200 bg-white p-3 text-sm text-slate-600">No rows returned.</div> : (
+                    <div className="mt-4 overflow-x-auto rounded-xl border border-slate-200 bg-white">
+                      <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
+                        <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500"><tr>{columns.map((column) => <th key={column} className="px-4 py-3 font-semibold">{column.replaceAll("_", " ")}</th>)}</tr></thead>
+                        <tbody className="divide-y divide-slate-100 bg-white">{tableRows.map((row, index) => <tr key={`${String(source)}-${index}`}>{columns.map((column) => <td key={column} className="max-w-xs px-4 py-3 align-top text-slate-700">{formatValue(row[column])}</td>)}</tr>)}</tbody>
+                      </table>
+                    </div>
                   )}
                 </section>
               );
