@@ -81,7 +81,7 @@ BEGIN
     COALESCE(p_settlement_card_markup_pct, 0),
     v_staff_id
   )
-  ON CONFLICT (country_id, rate_date)
+  ON CONFLICT ON CONSTRAINT fx_rates_country_id_rate_date_key
   DO UPDATE SET
     quote_rate = EXCLUDED.quote_rate,
     quote_card_markup_pct = EXCLUDED.quote_card_markup_pct,
