@@ -114,7 +114,6 @@ export default async function DvaStatementMindeeControlPage({
             const canFetch = Boolean(jobId) && !voided;
             const canParse = ocrStatus === "completed" && rowCount === 0 && !voided;
             const localCcy = (text(batch.local_ccy) || "GBP").toUpperCase();
-            const requiresFxRate = localCcy !== "GBP";
             return (
               <article key={text(batch.id)} className={`rounded-3xl border bg-white p-5 shadow-sm ${voided ? "border-rose-200 opacity-80" : "border-slate-200"}`}>
                 <div className="flex flex-wrap items-start justify-between gap-3">
@@ -165,19 +164,17 @@ export default async function DvaStatementMindeeControlPage({
                     <form action="/internal/dva-statement-import/mindee-parse-v3" method="post" className="flex flex-wrap items-end gap-3 rounded-2xl border border-emerald-100 bg-emerald-50 p-3">
                       <input type="hidden" name="import_batch_id" value={text(batch.id)} />
                       <div>
-                        <label className="block text-xs font-semibold uppercase tracking-wide text-emerald-900">FX rate</label>
+                        <label className="block text-xs font-semibold uppercase tracking-wide text-emerald-900">Manual base FX override</label>
                         <input
-                          className="mt-1 w-36 rounded-xl border border-emerald-200 bg-white px-3 py-2 text-sm"
+                          className="mt-1 w-40 rounded-xl border border-emerald-200 bg-white px-3 py-2 text-sm"
                           name="manual_fx_rate"
                           type="number"
                           min="0.000001"
                           step="0.000001"
-                          placeholder={requiresFxRate ? "Required" : "1"}
-                          defaultValue={requiresFxRate ? undefined : "1"}
-                          required={requiresFxRate}
+                          placeholder="Only if daily FX missing"
                         />
-                        <p className="mt-1 text-xs font-medium text-emerald-900">
-                          {requiresFxRate ? `Required for ${localCcy}. Balance-aware parser validates direction from running balances.` : "GBP statements default to 1."}
+                        <p className="mt-1 max-w-xs text-xs font-medium text-emerald-900">
+                          Optional. Leave blank to use daily FX by transaction date from /internal/fx-rates. Enter only to override missing daily base rates.
                         </p>
                       </div>
                       <button className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white" type="submit">Parse/stage Mindee rows</button>
