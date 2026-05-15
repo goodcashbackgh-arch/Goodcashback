@@ -15,6 +15,9 @@ function redirectWithFxResult(params: Record<string, string>): never {
 }
 
 function positiveNumber(raw: string, fieldName: string) {
+  if (!raw) {
+    throw new Error(`${fieldName} is required.`);
+  }
   const value = Number(raw);
   if (!Number.isFinite(value) || value <= 0) {
     throw new Error(`${fieldName} must be greater than zero.`);
@@ -22,8 +25,10 @@ function positiveNumber(raw: string, fieldName: string) {
   return value;
 }
 
-function nonNegativeNumber(raw: string, fieldName: string) {
-  if (!raw) return 0;
+function requiredNonNegativeNumber(raw: string, fieldName: string) {
+  if (!raw) {
+    throw new Error(`${fieldName} is required. Enter 0 if none applies.`);
+  }
   const value = Number(raw);
   if (!Number.isFinite(value) || value < 0) {
     throw new Error(`${fieldName} cannot be negative.`);
@@ -79,9 +84,9 @@ export async function upsertFxRateAction(formData: FormData) {
 
   try {
     quoteRate = positiveNumber(quoteRateRaw, "Quote rate");
-    quoteMarkup = nonNegativeNumber(quoteMarkupRaw, "Quote card markup");
-    settlementRate = settlementRateRaw ? positiveNumber(settlementRateRaw, "Settlement rate") : quoteRate;
-    settlementMarkup = nonNegativeNumber(settlementMarkupRaw, "Settlement card markup");
+    quoteMarkup = requiredNonNegativeNumber(quoteMarkupRaw, "Quote card markup");
+    settlementRate = positiveNumber(settlementRateRaw, "Settlement/base rate");
+    settlementMarkup = requiredNonNegativeNumber(settlementMarkupRaw, "Settlement card markup");
   } catch (error) {
     redirectWithFxResult({ fx_error: error instanceof Error ? error.message : "Invalid FX input." });
   }
