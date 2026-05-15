@@ -21,3 +21,41 @@ body {
 * {
   box-sizing: border-box;
 }
+
+aside.fixed.inset-x-0.bottom-0.z-40 {
+  padding: 0.45rem 0.75rem !important;
+}
+
+aside.fixed.inset-x-0.bottom-0.z-40 > div {
+  display: grid !important;
+  grid-template-columns: minmax(220px, 0.85fr) minmax(260px, 1fr) auto;
+  align-items: center !important;
+  gap: 0.5rem !important;
+  font-size: 0.75rem !important;
+}
+
+aside.fixed.inset-x-0.bottom-0.z-40 > div > div:first-child {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.1rem 0.6rem !important;
+  line-height: 1.15 !important;
+}
+
+aside.fixed.inset-x-0.bottom-0.z-40 p {
+  margin: 0 !important;
+  line-height: 1.15 !important;
+}
+
+aside.fixed.inset-x-0.bottom-0.z-40 button,
+aside.fixed.inset-x-0.bottom-0.z-40 select,
+aside.fixed.inset-x-0.bottom-0.z-40 input {
+  min-height: 2rem !important;
+  padding-top: 0.35rem !important;
+  padding-bottom: 0.35rem !important;
+}
+
+@media (max-width: 900px) {
+  aside.fixed.inset-x-0.bottom-0.z-40 > div {
+    grid-template-columns: 1fr !important;
+  }
+}
