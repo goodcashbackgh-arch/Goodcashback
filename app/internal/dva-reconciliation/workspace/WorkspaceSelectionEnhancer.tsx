@@ -399,53 +399,46 @@ export default function WorkspaceSelectionEnhancer() {
         ? `Residual available for FX/card/fee classification: ${gbp(selectedStatementAvailable)}.`
         : "Select one supplier invoice, refund, replacement, or exception target."
       : selectedTarget.targetType === "exception" && canConfirmOperationalAllocation
-        ? `Ready to confirm ${operationalType.replaceAll("_", " ")} allocation of ${gbp(operationalAllocationAmount)}.`
+        ? `Ready: ${operationalType.replaceAll("_", " ")} ${gbp(operationalAllocationAmount)}.`
         : selectedTarget.targetType === "exception"
-          ? "This exception target needs matching direction: OUT→replacement/exception, IN→refund."
+          ? "Exception target needs matching direction."
           : selectedStatement.direction !== "out"
             ? "Supplier invoice allocation requires an OUT statement line."
             : selectedTarget.targetType !== "invoice"
-              ? "Select a supplier invoice or supported exception target."
+              ? "Select supplier invoice or supported exception target."
               : selectedTarget.direction !== "out"
-                ? "Supplier invoice target must be an OUT/charge target."
+                ? "Supplier invoice target must be OUT/charge."
                 : canConfirmSupplierInvoice
-                  ? `Ready to confirm supplier allocation of ${gbp(supplierInvoiceAllocationAmount)}.`
-                  : "No remaining amount is available on the selected statement line or target.";
+                  ? `Ready: supplier ${gbp(supplierInvoiceAllocationAmount)}.`
+                  : "No remaining amount available.";
 
   return (
-    <aside className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200 bg-white/95 px-4 py-3 shadow-2xl backdrop-blur">
-      <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 text-sm">
-        <div>
-          <p className="font-semibold text-slate-950">
-            Bank selected: {statements.size} · gross {gbp(statementAbsTotal)} · net {gbp(statementSignedTotal)}
-          </p>
-          <p className="text-slate-600">
-            Operational selected: {targets.size} · gross {gbp(targetAbsTotal)} · net {gbp(targetSignedTotal)}
-          </p>
-          {selectedStatement ? (
-            <p className="text-xs text-slate-500">
-              Selected bank remaining: {gbp(selectedStatementAvailable)} · already allocated: {gbp(selectedStatementAlreadyAllocated)}
-            </p>
-          ) : null}
+    <aside className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200 bg-white/95 px-3 py-1 shadow-2xl backdrop-blur">
+      <div className="mx-auto grid max-w-7xl grid-cols-[minmax(260px,1fr)_auto] items-center gap-2 text-xs">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-slate-700">
+            <span className="font-semibold text-slate-950">Bank {statements.size}: {gbp(statementAbsTotal)} · net {gbp(statementSignedTotal)}</span>
+            <span>Ops {targets.size}: {gbp(targetAbsTotal)} · net {gbp(targetSignedTotal)}</span>
+            <span className="font-semibold text-slate-950">Net gap {gbp(netDifference)}</span>
+            <span className="text-slate-500">Gross gap {gbp(absoluteDifference)}</span>
+            {selectedStatement ? <span className="text-slate-500">Bank remaining {gbp(selectedStatementAvailable)}</span> : null}
+          </div>
+          <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5">
+            <span className={messageClass(statusMessage.tone)}>{statusMessage.text}</span>
+            <span className="truncate text-xs text-slate-500">{disabledReason}</span>
+          </div>
         </div>
 
-        <div className="grid max-w-xl gap-1 text-right">
-          <p className="font-semibold text-slate-950">Net position gap: {gbp(netDifference)}</p>
-          <p className="text-xs text-slate-500">Absolute/gross gap: {gbp(absoluteDifference)}</p>
-          <p className={messageClass(statusMessage.tone)}>{statusMessage.text}</p>
-          <p className="text-xs text-slate-500">{disabledReason}</p>
-        </div>
-
-        <div className="flex flex-wrap justify-end gap-2">
+        <div className="flex items-center justify-end gap-1 overflow-x-auto whitespace-nowrap">
           <button
-            className="rounded-xl bg-slate-100 px-4 py-2 font-semibold text-slate-700"
+            className="rounded-lg bg-slate-100 px-2.5 py-1.5 font-semibold text-slate-700"
             type="button"
             onClick={() => {
               setStatements(new Map());
               setTargets(new Map());
             }}
           >
-            Clear selections
+            Clear
           </button>
 
           <FxResidualAllocationForm
@@ -465,13 +458,13 @@ export default function WorkspaceSelectionEnhancer() {
             <button
               className={
                 canConfirmOperationalAllocation
-                  ? "rounded-xl bg-sky-700 px-4 py-2 font-semibold text-white shadow-sm hover:bg-sky-800"
-                  : "rounded-xl bg-slate-200 px-4 py-2 font-semibold text-slate-500"
+                  ? "rounded-lg bg-sky-700 px-2.5 py-1.5 font-semibold text-white shadow-sm hover:bg-sky-800"
+                  : "rounded-lg bg-slate-200 px-2.5 py-1.5 font-semibold text-slate-500"
               }
               type="submit"
               disabled={!canConfirmOperationalAllocation}
             >
-              Confirm operational allocation
+              Confirm ops
             </button>
           </form>
 
@@ -484,13 +477,13 @@ export default function WorkspaceSelectionEnhancer() {
             <button
               className={
                 canConfirmSupplierInvoice
-                  ? "rounded-xl bg-slate-950 px-4 py-2 font-semibold text-white shadow-sm hover:bg-slate-800"
-                  : "rounded-xl bg-slate-200 px-4 py-2 font-semibold text-slate-500"
+                  ? "rounded-lg bg-slate-950 px-2.5 py-1.5 font-semibold text-white shadow-sm hover:bg-slate-800"
+                  : "rounded-lg bg-slate-200 px-2.5 py-1.5 font-semibold text-slate-500"
               }
               type="submit"
               disabled={!canConfirmSupplierInvoice}
             >
-              Confirm supplier allocation
+              Confirm supplier
             </button>
           </form>
         </div>
