@@ -199,7 +199,7 @@ export default async function DvaStatementImportPage({
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold">Upload statement file</h2>
           <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-            Upload creates the batch. PDF OCR and row review happen after the batch exists. Daily FX is controlled on the FX rates page; the batch markup below is a fallback only.
+            Upload creates the batch. PDF OCR and row review happen after the batch exists. Daily FX is controlled on the FX rates page. A positive batch settlement markup override replaces daily settlement-card markups for every parsed row in this batch.
           </p>
           <form action={createRealStatementImportBatchAction} className="mt-5 grid gap-4 md:grid-cols-4">
             <div>
@@ -233,9 +233,9 @@ export default async function DvaStatementImportPage({
               <input className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm uppercase" name="local_ccy" defaultValue="GHS" maxLength={3} required />
             </div>
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Fallback card markup %</label>
+              <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Batch settlement markup override %</label>
               <input className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" name="default_card_markup_pct" type="number" min="0" step="0.001" defaultValue="0" />
-              <p className="mt-1 text-xs leading-5 text-slate-500">Used only when no daily settlement-card markup is available for a parsed transaction date.</p>
+              <p className="mt-1 text-xs leading-5 text-slate-500">Optional. Leave 0 to use daily settlement-card markup by transaction date. Enter a positive value only to override all daily markups in this batch.</p>
             </div>
             <div className="md:col-span-2">
               <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Statement file</label>
@@ -243,7 +243,7 @@ export default async function DvaStatementImportPage({
             </div>
             <div className="md:col-span-2">
               <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">FX source context</label>
-              <input className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" name="fx_source_context" placeholder="e.g. BOG base settlement rate; card spread tracked separately" />
+              <input className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" name="fx_source_context" placeholder="e.g. BOG base settlement rate; daily card spread used unless batch override supplied" />
             </div>
             <div className="md:col-span-2">
               <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Notes</label>
@@ -305,8 +305,8 @@ export default async function DvaStatementImportPage({
                     <form action={`/internal/dva-statement-import/extract`} method="post" className="flex flex-wrap items-end gap-2 rounded-xl border border-slate-200 bg-slate-50 p-2">
                       <input type="hidden" name="import_batch_id" value={text(batch.id)} />
                       <label className="grid gap-1 text-xs font-semibold text-slate-500">
-                        Manual base FX fallback
-                        <input className="w-40 rounded-lg border border-slate-200 px-2 py-1 text-sm" name="manual_fx_rate" type="number" min="0" step="0.000001" placeholder="e.g. 14.10" />
+                        Manual base FX override
+                        <input className="w-40 rounded-lg border border-slate-200 px-2 py-1 text-sm" name="manual_fx_rate" type="number" min="0" step="0.000001" placeholder="Only if daily rate missing" />
                       </label>
                       <button className="rounded-lg bg-sky-600 px-3 py-2 text-sm font-semibold text-white" type="submit">Extract rows</button>
                     </form>
