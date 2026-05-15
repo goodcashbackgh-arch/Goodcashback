@@ -97,7 +97,7 @@ export default async function FxRatesPage({ searchParams }: { searchParams?: Sea
           <p className="mt-6 text-sm font-bold uppercase tracking-[0.25em] text-sky-600">FX control</p>
           <h1 className="mt-2 text-3xl font-bold tracking-tight">Daily FX rates</h1>
           <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-600">
-            Maintain daily quote and settlement rates used by customer quotes and DVA/card statement extraction. This page reads the existing fx_rates table and saves through a staff-only RPC, not direct table writes.
+            Maintain the daily quote and settlement controls used by customer quotes and DVA/card statement extraction. All four daily fields are required; enter 0 for markup where no spread applies. This page reads the existing fx_rates table and saves through a staff-only RPC, not direct table writes.
           </p>
           <div className="mt-4 flex flex-wrap gap-2">
             <Link href="/internal/dva-statement-import" className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700">Statement import</Link>
@@ -113,7 +113,7 @@ export default async function FxRatesPage({ searchParams }: { searchParams?: Sea
         <section className="grid gap-4 lg:grid-cols-[1fr_1.2fr]">
           <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
             <h2 className="text-xl font-bold">Add or update one day</h2>
-            <p className="mt-2 text-sm leading-6 text-slate-600">One country/date can have only one FX rate. Saving the same country/date updates the existing row.</p>
+            <p className="mt-2 text-sm leading-6 text-slate-600">One country/date can have only one FX rate. Saving the same country/date updates the existing row. Markups are explicit controls: enter 0 if none applies.</p>
             <form action={upsertFxRateAction} className="mt-5 grid gap-4">
               <input type="hidden" name="from" value={from} />
               <input type="hidden" name="to" value={to} />
@@ -133,20 +133,24 @@ export default async function FxRatesPage({ searchParams }: { searchParams?: Sea
                 <label className="grid gap-1 text-sm font-semibold text-slate-700">
                   Quote rate
                   <input name="quote_rate" type="number" step="0.000001" min="0.000001" className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" required />
+                  <span className="text-xs font-normal text-slate-500">Base quote rate before quote markup.</span>
                 </label>
                 <label className="grid gap-1 text-sm font-semibold text-slate-700">
                   Quote card markup %
-                  <input name="quote_card_markup_pct" type="number" step="0.0001" min="0" defaultValue="0" className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" />
+                  <input name="quote_card_markup_pct" type="number" step="0.0001" min="0" defaultValue="0" className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" required />
+                  <span className="text-xs font-normal text-slate-500">Required. Enter 0 if no quote spread applies.</span>
                 </label>
               </div>
               <div className="grid gap-4 sm:grid-cols-2">
                 <label className="grid gap-1 text-sm font-semibold text-slate-700">
-                  Settlement rate
-                  <input name="settlement_rate" type="number" step="0.000001" min="0.000001" className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" placeholder="Defaults to quote rate" />
+                  Settlement/base rate
+                  <input name="settlement_rate" type="number" step="0.000001" min="0.000001" className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" required />
+                  <span className="text-xs font-normal text-slate-500">Used for statement GBP total: local amount ÷ settlement/base rate.</span>
                 </label>
                 <label className="grid gap-1 text-sm font-semibold text-slate-700">
                   Settlement card markup %
-                  <input name="settlement_card_markup_pct" type="number" step="0.0001" min="0" defaultValue="0" className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" />
+                  <input name="settlement_card_markup_pct" type="number" step="0.0001" min="0" defaultValue="0" className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" required />
+                  <span className="text-xs font-normal text-slate-500">Required. Used to calculate the FX/card residual audit split. Enter 0 if none applies.</span>
                 </label>
               </div>
               <button type="submit" className="rounded-xl bg-slate-950 px-4 py-3 text-sm font-bold text-white">Save FX rate</button>
@@ -195,7 +199,7 @@ export default async function FxRatesPage({ searchParams }: { searchParams?: Sea
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <h2 className="text-xl font-bold">Latest rates</h2>
-              <p className="mt-2 text-sm leading-6 text-slate-600">Most recent rates for the selected country. Statement extraction uses settlement rate first.</p>
+              <p className="mt-2 text-sm leading-6 text-slate-600">Statement GBP total uses the settlement/base rate. Settlement markup is retained for the FX/card residual audit split.</p>
             </div>
             <span className="rounded-full bg-slate-100 px-3 py-1 text-sm font-semibold text-slate-700 ring-1 ring-slate-200">{rates.length} row(s)</span>
           </div>
@@ -206,7 +210,7 @@ export default async function FxRatesPage({ searchParams }: { searchParams?: Sea
                   <th className="px-3 py-2">Date</th>
                   <th className="px-3 py-2">Quote rate</th>
                   <th className="px-3 py-2">Quote markup %</th>
-                  <th className="px-3 py-2">Settlement rate</th>
+                  <th className="px-3 py-2">Settlement/base rate</th>
                   <th className="px-3 py-2">Settlement markup %</th>
                   <th className="px-3 py-2">Entered by</th>
                 </tr>
