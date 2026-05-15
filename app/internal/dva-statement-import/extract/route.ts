@@ -17,6 +17,12 @@ type Batch = {
   status: string;
 };
 
+type FxRateRow = {
+  rate_date: string;
+  settlement_rate: number | string | null;
+  settlement_card_markup_pct: number | string | null;
+};
+
 type DraftRow = {
   rawText: string;
   rawJson?: Record<string, unknown>;
@@ -35,6 +41,12 @@ type DraftRow = {
   confidence: "high" | "medium" | "low";
   errorCode?: string | null;
   errorMessage?: string | null;
+};
+
+type FxResolvedRow = DraftRow & {
+  fxRate: number | null;
+  gbpAmount: number | null;
+  cardMarkupPctApplied: number;
 };
 
 function importPageUrl(request: Request, params: Record<string, string>) {
@@ -265,26 +277,97 @@ function parseTextBlocks(raw: string): DraftRow[] {
   });
 }
 
-function withFx(row: DraftRow, batch: Batch, manualFxRate: number | null): DraftRow & { fxRate: number | null; gbpAmount: number | null } {
-  const localCcy = cleanText(batch.local_ccy).toUpperCase();
-  const fxRate = localCcy === "GBP" ? 1 : manualFxRate;
-  const amount = row.amountLocal;
-  const gbpAmount = amount !== null && fxRate && fxRate > 0
-    ? Math.round((localCcy === "GBP" ? amount : amount / fxRate) * 100) / 100
-    : null;
-  return { ...row, fxRate, gbpAmount };
+function toPositiveNumber(value: unknown) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
-function validation(row: ReturnType<typeof withFx>) {
+function findFxRateForDate(rates: FxRateRow[], requestedDate: string | null) {
+  if (!requestedDate) return null;
+  const exact = rates.find((rate) => rate.rate_date === requestedDate && toPositiveNumber(rate.settlement_rate));
+  if (exact) return { rate: exact, source: "exact_date" as const };
+  const prior = rates.find((rate) => rate.rate_date <= requestedDate && toPositiveNumber(rate.settlement_rate));
+  return prior ? { rate: prior, source: "latest_prior" as const } : null;
+}
+
+function withFx(
+  row: DraftRow,
+  batch: Batch,
+  manualFxRate: number | null,
+  fxRates: FxRateRow[],
+): FxResolvedRow {
+  const localCcy = cleanText(batch.local_ccy).toUpperCase();
+  const amount = row.amountLocal;
+  const requestedDate = row.transactionDate || row.statementDate;
+
+  if (localCcy === "GBP") {
+    const rawJson = {
+      ...(row.rawJson ?? {}),
+      _goodcashback_fx_lookup: {
+        source: "gbp_statement",
+        requested_date: requestedDate,
+        applied_rate: 1,
+        applied_card_markup_pct: 0,
+      },
+    };
+    return { ...row, rawJson, fxRate: 1, gbpAmount: amount, cardMarkupPctApplied: 0 };
+  }
+
+  const matched = findFxRateForDate(fxRates, requestedDate);
+  const matchedRate = matched ? toPositiveNumber(matched.rate.settlement_rate) : null;
+  const matchedMarkup = matched ? Number(matched.rate.settlement_card_markup_pct ?? 0) : Number(batch.default_card_markup_pct ?? 0);
+  const manualRate = manualFxRate && manualFxRate > 0 ? manualFxRate : null;
+  const fxRate = matchedRate ?? manualRate;
+  const source = matched?.source ?? (manualRate ? "manual_override" : "missing_fx_rate");
+  const warningNote = source === "latest_prior"
+    ? `FX warning: used latest prior settlement rate from ${matched?.rate.rate_date} for transaction date ${requestedDate}.`
+    : source === "manual_override"
+      ? "FX warning: used manual extraction FX rate because no exact or prior daily settlement rate was found."
+      : null;
+
+  const rawJson = {
+    ...(row.rawJson ?? {}),
+    ...(warningNote ? { _goodcashback_balance_check: { correction_note: warningNote } } : {}),
+    _goodcashback_fx_lookup: {
+      source,
+      requested_date: requestedDate,
+      applied_rate_date: matched?.rate.rate_date ?? null,
+      applied_rate: fxRate,
+      applied_card_markup_pct: matchedRate ? matchedMarkup : Number(batch.default_card_markup_pct ?? 0),
+      manual_fx_rate_supplied: manualRate,
+    },
+  };
+
+  const gbpAmount = amount !== null && fxRate && fxRate > 0
+    ? Math.round((amount / fxRate) * 100) / 100
+    : null;
+
+  return {
+    ...row,
+    rawJson,
+    fxRate,
+    gbpAmount,
+    cardMarkupPctApplied: matchedRate ? matchedMarkup : Number(batch.default_card_markup_pct ?? 0),
+  };
+}
+
+function validation(row: FxResolvedRow) {
   if (!row.statementDate) return { code: "missing_date", message: "Statement date could not be parsed." };
   if (!row.direction) return { code: "unknown_direction", message: "Statement direction could not be classified as IN or OUT." };
   if (row.amountLocal === null || row.amountLocal <= 0) return { code: "invalid_amount", message: "Transaction amount could not be parsed." };
-  if (!row.fxRate || row.fxRate <= 0 || row.gbpAmount === null || row.gbpAmount <= 0) return { code: "missing_fx_rate", message: "GBP equivalent could not be calculated. Provide a valid extraction FX rate for non-GBP statements." };
+  if (!row.fxRate || row.fxRate <= 0 || row.gbpAmount === null || row.gbpAmount <= 0) return { code: "missing_fx_rate", message: "GBP equivalent could not be calculated. Add a daily settlement FX rate for the transaction date or provide a manual extraction FX rate." };
   return { code: row.errorCode ?? null, message: row.errorMessage ?? null };
 }
 
-async function stageRow(supabase: Awaited<ReturnType<typeof createClient>>, batch: Batch, row: DraftRow, rowNumber: number, manualFxRate: number | null) {
-  const fxRow = withFx(row, batch, manualFxRate);
+async function stageRow(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  batch: Batch,
+  row: DraftRow,
+  rowNumber: number,
+  manualFxRate: number | null,
+  fxRates: FxRateRow[],
+) {
+  const fxRow = withFx(row, batch, manualFxRate, fxRates);
   const check = validation(fxRow);
   const { error } = await supabase.rpc("staff_stage_dva_statement_import_row", {
     p_import_batch_id: batch.id,
@@ -300,7 +383,7 @@ async function stageRow(supabase: Awaited<ReturnType<typeof createClient>>, batc
     p_balance_after_local_ccy: fxRow.balanceAfter,
     p_local_ccy: batch.local_ccy,
     p_fx_rate_applied: fxRow.fxRate,
-    p_card_markup_pct_applied: Number(batch.default_card_markup_pct ?? 0),
+    p_card_markup_pct_applied: fxRow.cardMarkupPctApplied,
     p_amount_gbp_equivalent: fxRow.gbpAmount,
     p_card_last4: fxRow.cardLast4,
     p_merchant_raw: fxRow.merchantRaw,
@@ -335,7 +418,7 @@ async function stageUnsupportedRow(supabase: Awaited<ReturnType<typeof createCli
     confidence: "low",
     errorCode: "parser_not_ready",
     errorMessage: message,
-  }, 1, null);
+  }, 1, null, []);
 }
 
 export async function POST(request: Request) {
@@ -384,8 +467,37 @@ export async function POST(request: Request) {
       return redirectToImportPage(request, { import_success: "Extraction ran but no usable rows were found; row-level error staged.", batch_id: batchId });
     }
 
+    let fxRates: FxRateRow[] = [];
+    if (cleanText(typedBatch.local_ccy).toUpperCase() !== "GBP") {
+      const requestedDates = drafts
+        .map((draft) => draft.transactionDate || draft.statementDate)
+        .filter((value): value is string => Boolean(value));
+      const maxRequestedDate = requestedDates.sort().at(-1) ?? typedBatch.statement_period_to;
+      const { data: importer, error: importerError } = await supabase
+        .from("importers")
+        .select("country_id")
+        .eq("id", typedBatch.importer_id)
+        .maybeSingle();
+
+      if (importerError) throw new Error(importerError.message);
+
+      const countryId = cleanText(importer?.country_id);
+      if (countryId) {
+        const { data: rateRows, error: rateError } = await supabase
+          .from("fx_rates")
+          .select("rate_date, settlement_rate, settlement_card_markup_pct")
+          .eq("country_id", countryId)
+          .lte("rate_date", maxRequestedDate)
+          .order("rate_date", { ascending: false })
+          .limit(500);
+
+        if (rateError) throw new Error(rateError.message);
+        fxRates = (rateRows ?? []) as FxRateRow[];
+      }
+    }
+
     for (let index = 0; index < drafts.length; index += 1) {
-      await stageRow(supabase, typedBatch, drafts[index], index + 1, manualFxRate);
+      await stageRow(supabase, typedBatch, drafts[index], index + 1, manualFxRate, fxRates);
     }
 
     return redirectToImportPage(request, { import_success: `Extracted and staged ${drafts.length} row(s). Review clean/errors/duplicates before commit.`, batch_id: batchId });
