@@ -103,8 +103,8 @@ function statusFilter(row: Row) {
 
 function actionMessage(row: Row) {
   if (bool(row.confirmed_balanced_yn)) return "Balanced — no further action.";
-  if (text(row.direction) === "out") return "No supplier invoice suggestion yet.";
-  if (text(row.direction) === "in") return "Funding route — use funding page/action.";
+  if (text(row.direction) === "out") return "Use the matching workspace or unmatched OUT triage.";
+  if (text(row.direction) === "in") return "Funding route — use Importer Funding Control.";
   return "No action here.";
 }
 
@@ -182,6 +182,37 @@ function SummaryMetric({
       <p className="mt-2 text-2xl font-semibold">{value}</p>
       <p className="mt-1 text-xs leading-5 opacity-75">{hint}</p>
     </div>
+  );
+}
+
+function RouteCard({
+  title,
+  body,
+  href,
+  cta,
+  tone = "slate",
+}: {
+  title: string;
+  body: string;
+  href: string;
+  cta: string;
+  tone?: "slate" | "sky" | "emerald" | "amber" | "rose" | "violet";
+}) {
+  const toneClass = {
+    slate: "border-slate-200 bg-slate-50 text-slate-950",
+    sky: "border-sky-200 bg-sky-50 text-sky-950",
+    emerald: "border-emerald-200 bg-emerald-50 text-emerald-950",
+    amber: "border-amber-200 bg-amber-50 text-amber-950",
+    rose: "border-rose-200 bg-rose-50 text-rose-950",
+    violet: "border-violet-200 bg-violet-50 text-violet-950",
+  }[tone];
+
+  return (
+    <Link href={href} className={`rounded-2xl border p-4 transition hover:bg-white ${toneClass}`}>
+      <h3 className="text-sm font-bold">{title}</h3>
+      <p className="mt-2 text-xs leading-5 opacity-75">{body}</p>
+      <p className="mt-3 text-xs font-extrabold uppercase tracking-wide">{cta} →</p>
+    </Link>
   );
 }
 
@@ -396,11 +427,30 @@ export default async function DvaReconciliationWorkbenchPage({
       <div className="mx-auto max-w-7xl space-y-6">
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <Link href="/internal" className="text-sm font-semibold text-sky-600">← Back to internal dashboard</Link>
-          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">DVA/card reconciliation</p>
-          <h1 className="mt-2 text-3xl font-semibold tracking-tight">Importer financial control hub</h1>
+          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">DVA/card control hub</p>
+          <h1 className="mt-2 text-3xl font-semibold tracking-tight">Route committed statement lines to the right control path</h1>
           <p className="mt-3 max-w-5xl text-sm leading-6 text-slate-600">
-            This page consumes existing order, invoice, OCR, progressed-line, exception, funding and credit-ledger work. It shows IN and OUT together for control visibility, but funding actions and supplier/refund/fee allocations remain separate governed actions.
+            This is the traffic-control page after statement rows are committed. It shows which lines need importer funding, supplier/refund/fee/hold matching, allocation reversal, review-pack sign-off, or exception action. It does not replace the governed funding, matching, allocation or Sage-readiness actions.
           </p>
+        </section>
+
+        <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-sm font-medium uppercase tracking-[0.18em] text-sky-500">Where to act</p>
+              <h2 className="mt-2 text-xl font-semibold">Choose the route based on the statement line</h2>
+              <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
+                IN customer/importer money uses the funding path. Supplier purchases, refunds, FX/card differences, bank fees and holds use the matching/allocation path. Review pack is the confidence checkpoint before pre-Sage readiness.
+              </p>
+            </div>
+          </div>
+          <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+            <RouteCard title="Customer/importer IN" body="Apply received money to order funding gaps or importer credit." href="/internal/funding" cta="Open funding control" tone="emerald" />
+            <RouteCard title="Supplier / refund / fee / hold" body="Match statement lines to supplier invoices, refund exceptions, FX/card residuals, bank fees or holds." href="/internal/dva-reconciliation/workspace" cta="Open workspace" tone="sky" />
+            <RouteCard title="Unmatched OUT" body="Investigate OUT lines before treating them as residuals or holds." href="/internal/dva-reconciliation/unmatched" cta="Open triage" tone="amber" />
+            <RouteCard title="Active allocations" body="Review or reverse confirmed allocation rows without voiding statement batches." href="/internal/dva-reconciliation/allocations" cta="Open reversals" tone="violet" />
+            <RouteCard title="Review pack" body="Prove each statement line is balanced, held or blocked before Sage readiness." href="/internal/dva-reconciliation/review-pack" cta="Open review pack" tone="slate" />
+          </div>
         </section>
 
         {(allocationSuccess || allocationError) ? (
@@ -434,7 +484,7 @@ export default async function DvaReconciliationWorkbenchPage({
 
             <div className="flex flex-wrap gap-2">
               {[
-                ["needs", "Needs allocation", statusCounts.needs],
+                ["needs", "Needs route/action", statusCounts.needs],
                 ["draft", "Part allocated / held", statusCounts.draft],
                 ["balanced", "Balanced / completed", statusCounts.balanced],
                 ["all", "All", statusCounts.all],
@@ -460,8 +510,8 @@ export default async function DvaReconciliationWorkbenchPage({
                 Use this summary to catch the £500-in / £450-spent / £50-open-position problem. It is a control view, not a replacement for funding or supplier-allocation RPCs.
               </p>
             </div>
-            <Link className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white" href="/internal/funding">
-              Open funding queue →
+            <Link className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white" href="/internal/funding">
+              Open Importer Funding Control →
             </Link>
           </div>
 
@@ -480,14 +530,19 @@ export default async function DvaReconciliationWorkbenchPage({
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <h2 className="text-xl font-semibold">Allocation lines</h2>
+              <h2 className="text-xl font-semibold">Statement-line control queue</h2>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-                Showing {filteredRows.length} line(s). Default view is Needs allocation so supervisors are not buried in completed lines.
+                Showing {filteredRows.length} line(s). Default view is Needs route/action so supervisors are not buried in completed lines.
               </p>
             </div>
-            <Link className="rounded-xl bg-amber-500 px-4 py-2 text-sm font-semibold text-white" href="/internal/dva-reconciliation/unmatched">
-              Open unmatched actions →
-            </Link>
+            <div className="flex flex-wrap gap-2">
+              <Link className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white" href="/internal/dva-reconciliation/workspace">
+                Open matching workspace →
+              </Link>
+              <Link className="rounded-xl bg-amber-500 px-4 py-2 text-sm font-semibold text-white" href="/internal/dva-reconciliation/unmatched">
+                Open unmatched OUT triage →
+              </Link>
+            </div>
           </div>
 
           <div className="mt-5 overflow-x-auto rounded-2xl border border-slate-200">
@@ -528,7 +583,7 @@ export default async function DvaReconciliationWorkbenchPage({
                       </td>
                       <td className="px-4 py-4">
                         <span className={`rounded-full px-3 py-1 text-xs font-semibold ring-1 ${statusClass(line)}`}>{statusLabel(line)}</span>
-                        <p className="mt-2 text-xs text-slate-600">Use allocation workflow</p>
+                        <p className="mt-2 text-xs text-slate-600">Use routed control path</p>
                         <p className="text-xs text-slate-600">Match: {text(line.match_status) || "—"}</p>
                         <p className="text-xs text-slate-600">Suggested: {text(suggestion?.suggested_match_type) || "none"}{text(suggestion?.confidence) ? ` · ${text(suggestion?.confidence)}` : ""}</p>
                         <p className="text-xs text-slate-600">Variance: {gbp(suggestion?.variance_gbp)} · {num(suggestion?.variance_days)} days</p>
@@ -574,7 +629,7 @@ export default async function DvaReconciliationWorkbenchPage({
                         <p className="text-xs text-slate-600">Balanced: {bool(line.confirmed_balanced_yn) ? "Yes" : "No"}</p>
                         <p className="mt-2 text-xs italic text-slate-600">{actionMessage(line)}</p>
                         {text(line.direction) === "in" && !bool(line.confirmed_balanced_yn) ? (
-                          <Link className="mt-3 inline-block rounded-xl bg-emerald-600 px-3 py-2 text-xs font-semibold text-white" href="/internal/funding">Open funding queue</Link>
+                          <Link className="mt-3 inline-block rounded-xl bg-emerald-600 px-3 py-2 text-xs font-semibold text-white" href="/internal/funding">Open Importer Funding Control</Link>
                         ) : null}
                         {text(line.direction) === "out" && lineSuggestions.length === 0 && !bool(line.confirmed_balanced_yn) ? (
                           <form action={generateSupplierInvoiceSuggestionsAction} className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3">
