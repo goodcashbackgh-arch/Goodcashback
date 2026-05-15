@@ -14,6 +14,10 @@ function money2(value: number) {
   return Math.round(value * 100) / 100;
 }
 
+function todayIso() {
+  return new Date().toISOString().slice(0, 10);
+}
+
 export async function createOrderAction(formData: FormData) {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -43,14 +47,16 @@ export async function createOrderAction(formData: FormData) {
   if (!Number.isInteger(totalQty) || totalQty <= 0) redirect("/importer/orders/new?error=Total+qty+declared+must+be+a+positive+integer.");
   if (!Number.isFinite(totalAmount) || totalAmount <= 0) redirect("/importer/orders/new?error=Order+total+GBP+declared+must+be+greater+than+0.");
 
+  const quoteDate = todayIso();
   const { data: fxRate } = await supabase
     .from("fx_rates")
-    .select("quote_rate, quote_card_markup_pct")
+    .select("quote_rate, quote_card_markup_pct, rate_date")
     .eq("country_id", importer.country_id)
+    .lte("rate_date", quoteDate)
     .order("rate_date", { ascending: false })
     .limit(1)
     .maybeSingle();
-  if (!fxRate?.quote_rate) redirect("/importer/orders/new?error=No+FX+rate+configured+for+importer+country.");
+  if (!fxRate?.quote_rate) redirect("/importer/orders/new?error=No+dated+FX+rate+configured+for+importer+country.");
 
   const quoteRate = Number(fxRate.quote_rate);
   const quoteCardMarkupPct = Number(fxRate.quote_card_markup_pct ?? 0);
