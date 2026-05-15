@@ -199,7 +199,7 @@ export default async function DvaStatementImportPage({
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold">Upload statement file</h2>
           <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-            Upload creates the batch. PDF OCR and row review happen after the batch exists.
+            Upload creates the batch. PDF OCR and row review happen after the batch exists. Daily FX is controlled on the FX rates page; the batch markup below is a fallback only.
           </p>
           <form action={createRealStatementImportBatchAction} className="mt-5 grid gap-4 md:grid-cols-4">
             <div>
@@ -233,8 +233,9 @@ export default async function DvaStatementImportPage({
               <input className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm uppercase" name="local_ccy" defaultValue="GHS" maxLength={3} required />
             </div>
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Default card markup %</label>
+              <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Fallback card markup %</label>
               <input className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" name="default_card_markup_pct" type="number" min="0" step="0.001" defaultValue="0" />
+              <p className="mt-1 text-xs leading-5 text-slate-500">Used only when no daily settlement-card markup is available for a parsed transaction date.</p>
             </div>
             <div className="md:col-span-2">
               <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Statement file</label>
@@ -242,7 +243,7 @@ export default async function DvaStatementImportPage({
             </div>
             <div className="md:col-span-2">
               <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">FX source context</label>
-              <input className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" name="fx_source_context" placeholder="e.g. Bank of Ghana daily settlement rate" />
+              <input className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" name="fx_source_context" placeholder="e.g. BOG base settlement rate; card spread tracked separately" />
             </div>
             <div className="md:col-span-2">
               <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Notes</label>
@@ -258,97 +259,72 @@ export default async function DvaStatementImportPage({
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
               <h2 className="text-xl font-semibold">Statement batches</h2>
-              <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-                Active queue hides voided audit batches by default. Use audit-only when you need to inspect void history.
-              </p>
+              <p className="mt-1 text-sm text-slate-600">Active batches exclude voided imports by default. Use Audit to see voided batches.</p>
             </div>
-            <div className="flex flex-wrap gap-2">
-              {BATCH_STATUS_FILTERS.map((status) => (
-                <Link
-                  key={status}
-                  href={batchStatusHref(params, status)}
-                  className={`rounded-full px-3 py-2 text-xs font-bold uppercase tracking-wide ring-1 ${selectedBatchStatus === status ? "bg-slate-950 text-white ring-slate-950" : "bg-white text-slate-600 ring-slate-200"}`}
-                >
-                  {status === "active" ? "Active" : status === "audit" ? "Voided / audit" : "All"}
-                </Link>
-              ))}
+            <div className="flex flex-wrap gap-2 text-sm">
+              {BATCH_STATUS_FILTERS.map((status) => {
+                const selected = selectedBatchStatus === status;
+                return (
+                  <Link
+                    key={status}
+                    href={batchStatusHref(params, status)}
+                    className={`rounded-full px-3 py-1 font-semibold ring-1 ${selected ? "bg-slate-950 text-white ring-slate-950" : "bg-white text-slate-700 ring-slate-200"}`}
+                  >
+                    {status === "active" ? "Active" : status === "audit" ? "Audit / voided" : "All"}
+                  </Link>
+                );
+              })}
             </div>
           </div>
-          <div className="mt-4 grid gap-3">
+          <div className="mt-5 grid gap-3">
             {batches.length === 0 ? (
-              <p className="text-sm text-slate-500">No statement batches in this filter.</p>
+              <div className="rounded-2xl border border-dashed border-slate-300 p-6 text-center text-sm text-slate-500">No statement batches found for this filter.</div>
             ) : batches.map((batch) => {
-              const id = text(batch.id);
-              const status = text(batch.status) || "unknown";
               const voided = isVoidedBatch(batch);
-              const detailHref = `/internal/dva-statement-import/${id}`;
-              const mindeeHref = `/internal/dva-statement-import/mindee-control?batch_id=${id}`;
-              const canVoid = status === "committed" && !voided;
-
               return (
-                <article key={id} className={`rounded-2xl border p-4 ${voided ? "border-rose-200 bg-rose-50/30" : "border-slate-200"}`}>
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div className="min-w-0 flex-1">
-                      <h3 className="break-words font-semibold [overflow-wrap:anywhere]">{text(batch.original_filename) || id}</h3>
-                      <p className="mt-1 break-words text-sm text-slate-600 [overflow-wrap:anywhere]">
-                        {text(batch.statement_period_from)} → {text(batch.statement_period_to)} · {text(batch.source_bank)} · {text(batch.local_ccy)} · {text(batch.detected_file_type)} · {text(batch.parser_route)}
-                      </p>
-                    </div>
-                    <span className={`rounded-full px-3 py-1 text-sm font-semibold ring-1 ${statusClass(voided ? "voided" : status)}`}>{voided ? "voided" : status}</span>
+              <article key={text(batch.id)} className={`rounded-2xl border p-4 shadow-sm ${voided ? "border-slate-200 bg-slate-50 opacity-80" : "border-slate-200 bg-white"}`}>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <h3 className="break-words text-lg font-semibold [overflow-wrap:anywhere]">{text(batch.original_filename) || text(batch.id)}</h3>
+                    <p className="mt-1 text-sm text-slate-600">{text(batch.source_bank).toUpperCase()} · {text(batch.local_ccy)} · {text(batch.statement_period_from)} → {text(batch.statement_period_to)}</p>
+                    {voided ? <p className="mt-2 text-xs font-semibold text-rose-700">Voided: {text(batch.void_reason) || "No reason captured"}</p> : null}
                   </div>
-
-                  <div className="mt-4 grid gap-3 text-sm text-slate-700 sm:grid-cols-5">
-                    <p>Rows: <span className="font-semibold text-slate-950">{num(batch.row_count)}</span></p>
-                    <p>Clean: <span className="font-semibold text-slate-950">{num(batch.clean_count)}</span></p>
-                    <p>Errors: <span className="font-semibold text-slate-950">{num(batch.error_count)}</span></p>
-                    <p>Duplicates: <span className="font-semibold text-slate-950">{num(batch.duplicate_count)}</span></p>
-                    <p>Committed: <span className="font-semibold text-slate-950">{num(batch.committed_count)}</span></p>
-                  </div>
-
-                  {text(batch.void_reason) ? (
-                    <p className="mt-3 rounded-2xl bg-rose-50 p-3 text-sm font-semibold text-rose-800 ring-1 ring-rose-200">Void reason: {text(batch.void_reason)}</p>
-                  ) : null}
-
-                  <div className="mt-4 flex flex-wrap items-center gap-3">
-                    {voided ? (
-                      <span className="rounded-xl bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-500 ring-1 ring-slate-200">Voided audit-only — operational buttons disabled</span>
-                    ) : (
-                      <>
-                        <Link className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white" href={detailHref}>Open detail / reconcile</Link>
-                        <Link className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-sky-700 ring-1 ring-sky-200" href={mindeeHref}>PDF OCR control</Link>
-                      </>
-                    )}
-                    <p className="text-sm text-slate-600">{nextAction(batch)}</p>
-                  </div>
-
-                  {canVoid ? (
-                    <form action={voidDvaStatementImportBatchAction} className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-3">
-                      <input type="hidden" name="import_batch_id" value={id} />
-                      <label className="block text-xs font-semibold uppercase tracking-wide text-rose-700">Void import reason</label>
-                      <div className="mt-2 flex flex-col gap-2 sm:flex-row">
-                        <input
-                          className="min-w-0 flex-1 rounded-xl border border-rose-200 bg-white px-3 py-2 text-sm text-slate-950"
-                          name="void_reason"
-                          placeholder="Required. Example: uploaded wrong bank statement."
-                          minLength={8}
-                          required
-                        />
-                        <button className="rounded-xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-700" type="submit">
-                          Void import
-                        </button>
-                      </div>
-                      <p className="mt-2 text-xs font-medium text-rose-700">
-                        This removes unallocated lines from active matching. If any line has confirmed/held allocations, the database will block it until those allocations are reversed first.
-                      </p>
+                  <span className={`rounded-full px-3 py-1 text-sm font-semibold ring-1 ${statusClass(text(batch.status))}`}>{text(batch.status)}</span>
+                </div>
+                <div className="mt-4 grid gap-2 text-sm text-slate-700 sm:grid-cols-5">
+                  <p>Rows: <span className="font-semibold">{num(batch.row_count)}</span></p>
+                  <p>Clean: <span className="font-semibold text-emerald-700">{num(batch.clean_count)}</span></p>
+                  <p>Errors: <span className="font-semibold text-rose-700">{num(batch.error_count)}</span></p>
+                  <p>Duplicates: <span className="font-semibold text-slate-700">{num(batch.duplicate_count)}</span></p>
+                  <p>Committed: <span className="font-semibold text-sky-700">{num(batch.committed_count)}</span></p>
+                </div>
+                <p className="mt-3 text-sm font-medium text-slate-600">Next: {nextAction(batch)}</p>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <Link className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white" href={`/internal/dva-statement-import/${text(batch.id)}`}>Open detail</Link>
+                  {!voided && text(batch.status) !== "committed" ? (
+                    <form action={`/internal/dva-statement-import/extract`} method="post" className="flex flex-wrap items-end gap-2 rounded-xl border border-slate-200 bg-slate-50 p-2">
+                      <input type="hidden" name="import_batch_id" value={text(batch.id)} />
+                      <label className="grid gap-1 text-xs font-semibold text-slate-500">
+                        Manual base FX fallback
+                        <input className="w-40 rounded-lg border border-slate-200 px-2 py-1 text-sm" name="manual_fx_rate" type="number" min="0" step="0.000001" placeholder="e.g. 14.10" />
+                      </label>
+                      <button className="rounded-lg bg-sky-600 px-3 py-2 text-sm font-semibold text-white" type="submit">Extract rows</button>
                     </form>
                   ) : null}
-
-                  <p className="mt-3 break-words text-xs text-slate-500 [overflow-wrap:anywhere]">Batch ID: {id}</p>
-                </article>
-              );
-            })}
+                  {!voided && text(batch.status) === "committed" ? (
+                    <form action={voidDvaStatementImportBatchAction} className="flex flex-wrap items-end gap-2 rounded-xl border border-rose-200 bg-rose-50 p-2">
+                      <input type="hidden" name="import_batch_id" value={text(batch.id)} />
+                      <label className="grid gap-1 text-xs font-semibold text-rose-700">
+                        Void reason
+                        <input className="w-56 rounded-lg border border-rose-200 px-2 py-1 text-sm" name="void_reason" placeholder="Wrong file / duplicate / bad FX" required />
+                      </label>
+                      <button className="rounded-lg bg-rose-600 px-3 py-2 text-sm font-semibold text-white" type="submit">Void import</button>
+                    </form>
+                  ) : null}
+                </div>
+              </article>
+            );})}
           </div>
-
           <PaginationControls baseParams={params} pageKey="batch_page" currentPage={batchPage} totalCount={batchCount} pageSize={BATCH_PAGE_SIZE} />
         </section>
       </div>
