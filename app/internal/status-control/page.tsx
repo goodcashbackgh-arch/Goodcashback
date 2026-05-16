@@ -447,7 +447,9 @@ export default async function StatusControlPage({
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div>
                         <p className="text-lg font-bold text-slate-950">{card.order.order_ref || card.order.id}</p>
-                        <p className="mt-1 text-sm text-slate-600">{card.retailer?.name || "No retailer"} · Raw order status {pretty(card.order.status)} · Type {pretty(card.order.order_type)}</p>
+                        <p className="mt-1 text-sm text-slate-600">
+                          {card.retailer?.name || "No retailer"} · Operational status {pretty(card.headline)} · Raw DB status {pretty(card.order.status)} · Type {pretty(card.order.order_type)}
+                        </p>
                       </div>
                       <span className={`rounded-full px-3 py-1 text-xs font-bold ring-1 ${card.warnings.length > 0 ? "bg-amber-50 text-amber-800 ring-amber-200" : "bg-emerald-50 text-emerald-800 ring-emerald-200"}`}>
                         {pretty(card.headline)}
