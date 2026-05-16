@@ -253,19 +253,21 @@ function dvaLane(order: OrderRow, statementRows: StatementSummaryRow[], allocati
   return "statement_missing_or_not_importer_scoped";
 }
 
-function deriveHeadline(invoiceStatus: string, exceptionStatus: string, dvaStatus: string, warnings: string[]) {
-  if (warnings.length > 0) return "status_integrity_review";
+function deriveHeadline(invoiceStatus: string, exceptionStatus: string, dvaStatus: string, integrityWarnings: string[], auditWarnings: string[]) {
+  if (integrityWarnings.length > 0) return "status_integrity_review";
   if (exceptionStatus === "open") return "commercial_exception_open";
   if (exceptionStatus === "awaiting_refund_credit") return "commercial_exception_awaiting_refund_credit";
   if (dvaStatus === "refund_match_needed") return "refund_statement_match_needed";
   if (invoiceStatus === "invoice_missing") return "awaiting_invoice_or_tracking";
   if (invoiceStatus === "review_needed") return "invoice_reconciliation";
+  if (invoiceStatus === "supplier_invoice_ready" && auditWarnings.length > 0) return "ready_with_audit_warning";
   if (invoiceStatus === "supplier_invoice_ready") return "accounting_review_candidate";
   return "order_status_unclassified";
 }
 
 function nextActionFor(headline: string) {
   if (headline === "status_integrity_review") return { role: "supervisor", label: "Review status mismatch before further processing" };
+  if (headline === "ready_with_audit_warning") return { role: "supervisor", label: "Review audit warning before final Sage/VAT sign-off" };
   if (headline === "commercial_exception_open") return { role: "operator/supervisor", label: "Progress retailer exception evidence and supervisor outcome gates" };
   if (headline === "commercial_exception_awaiting_refund_credit") return { role: "supervisor", label: "Match refund credit / DVA IN line" };
   if (headline === "refund_statement_match_needed") return { role: "supervisor", label: "Match accepted refund to DVA/card IN line" };
@@ -337,21 +339,20 @@ export default async function StatusControlPage({
     const invoices = invoicesByOrderId.get(order.id) ?? [];
     const disputes = disputesByOrderId.get(order.id) ?? [];
     const activeSupplierAllocations = activeSupplierAllocationsForOrder(order, disputes, allocationRows);
-    const warnings = [
-      ...inactiveSupplierInvoiceWarnings(invoices, activeSupplierAllocations),
-      ...disputes.flatMap((dispute) =>
-        disputeWarnings(
-          dispute,
-          linesByDisputeId.get(dispute.id) ?? [],
-          messagesByDisputeId.get(dispute.id) ?? [],
-          dispute.replacement_child_order_id ? childOrderIds.has(dispute.replacement_child_order_id) : true,
-        ),
+    const auditWarnings = inactiveSupplierInvoiceWarnings(invoices, activeSupplierAllocations);
+    const integrityWarnings = disputes.flatMap((dispute) =>
+      disputeWarnings(
+        dispute,
+        linesByDisputeId.get(dispute.id) ?? [],
+        messagesByDisputeId.get(dispute.id) ?? [],
+        dispute.replacement_child_order_id ? childOrderIds.has(dispute.replacement_child_order_id) : true,
       ),
-    ];
+    );
+    const warnings = [...auditWarnings, ...integrityWarnings];
     const invoiceStatus = invoiceLane(invoices, activeSupplierAllocations);
     const exceptionStatus = exceptionLane(disputes);
     const dvaStatus = dvaLane(order, statementRows, allocationRows, disputes);
-    const headline = deriveHeadline(invoiceStatus, exceptionStatus, dvaStatus, warnings);
+    const headline = deriveHeadline(invoiceStatus, exceptionStatus, dvaStatus, integrityWarnings, auditWarnings);
     const next = nextActionFor(headline);
     return {
       order,
@@ -363,6 +364,8 @@ export default async function StatusControlPage({
       dvaStatus,
       headline,
       next,
+      auditWarnings,
+      integrityWarnings,
       warnings,
     };
   });
@@ -392,7 +395,7 @@ export default async function StatusControlPage({
             <p className="mt-2 text-2xl font-extrabold text-slate-950">{cards.length}</p>
           </div>
           <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
-            <p className="text-xs font-bold uppercase tracking-wide text-amber-700">Integrity warnings</p>
+            <p className="text-xs font-bold uppercase tracking-wide text-amber-700">Warnings</p>
             <p className="mt-2 text-2xl font-extrabold text-amber-950">{warningCount}</p>
           </div>
           <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4">
@@ -458,7 +461,7 @@ export default async function StatusControlPage({
                       {lanePill("Export evidence", "not_built_yet")}
                       {lanePill("Shipper discrepancy", "not_built_yet")}
                       {lanePill("Shipping/delivery", "not_built_yet")}
-                      {lanePill("Accounting/VAT", card.warnings.length > 0 ? "blocked_by_status_warnings" : "not_ready_or_unchecked")}
+                      {lanePill("Accounting/VAT", card.integrityWarnings.length > 0 ? "blocked_by_status_warnings" : card.auditWarnings.length > 0 ? "audit_warning_before_final_signoff" : "not_ready_or_unchecked")}
                       {lanePill("Next owner", card.next.role)}
                     </div>
 
@@ -467,11 +470,22 @@ export default async function StatusControlPage({
                       <p className="mt-1">{card.next.label}</p>
                     </div>
 
-                    {card.warnings.length > 0 ? (
+                    {card.integrityWarnings.length > 0 ? (
                       <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
                         <p className="font-bold">Status integrity warnings</p>
                         <ul className="mt-2 list-disc space-y-1 pl-5">
-                          {card.warnings.map((warning) => (
+                          {card.integrityWarnings.map((warning) => (
+                            <li key={warning}>{warning}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+
+                    {card.auditWarnings.length > 0 ? (
+                      <div className="mt-4 rounded-xl border border-sky-200 bg-sky-50 p-3 text-sm text-sky-900">
+                        <p className="font-bold">Audit warnings</p>
+                        <ul className="mt-2 list-disc space-y-1 pl-5">
+                          {card.auditWarnings.map((warning) => (
                             <li key={warning}>{warning}</li>
                           ))}
                         </ul>
