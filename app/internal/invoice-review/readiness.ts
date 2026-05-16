@@ -30,6 +30,10 @@ function exceptionRemedyForRow(row: any) {
   return String(row.intended_remedy ?? dispute?.desired_outcome ?? "").trim().toLowerCase();
 }
 
+function hasPostingAccount(row: any) {
+  return String(row?.nominal_code ?? "").trim().length > 0 || String(row?.sage_ledger_account_id ?? "").trim().length > 0;
+}
+
 export async function assertInvoiceReadyForCurrentApproval(
   supabase: SupabaseLike,
   supplierInvoiceId: string,
@@ -176,6 +180,30 @@ export async function assertSupplierInvoiceAccountingCodingReady(
   }
 
   if (!totals.all_progressed_lines_coded_yn) return "All progressed lines must be accounting coded before approval.";
+
+  const { data: missingLinePostingAccounts, error: missingLinePostingAccountsError } = await supabase
+    .from("supplier_invoice_line_accounting_coding_vw")
+    .select("supplier_invoice_line_id, source_description, nominal_code, sage_ledger_account_id")
+    .eq("supplier_invoice_id", supplierInvoiceId);
+
+  if (missingLinePostingAccountsError) return missingLinePostingAccountsError.message;
+
+  const lineMissingPostingAccountCount = (missingLinePostingAccounts ?? []).filter((row: any) => !hasPostingAccount(row)).length;
+  if (lineMissingPostingAccountCount > 0) {
+    return `Cannot approve current invoice yet. ${lineMissingPostingAccountCount} coded supplier line(s) are missing both nominal code and Sage ledger account id.`;
+  }
+
+  const { data: missingAdjustmentPostingAccounts, error: missingAdjustmentPostingAccountsError } = await supabase
+    .from("supplier_invoice_accounting_adjustment_lines")
+    .select("id, description, nominal_code, sage_ledger_account_id")
+    .eq("supplier_invoice_id", supplierInvoiceId);
+
+  if (missingAdjustmentPostingAccountsError) return missingAdjustmentPostingAccountsError.message;
+
+  const adjustmentMissingPostingAccountCount = (missingAdjustmentPostingAccounts ?? []).filter((row: any) => !hasPostingAccount(row)).length;
+  if (adjustmentMissingPostingAccountCount > 0) {
+    return `Cannot approve current invoice yet. ${adjustmentMissingPostingAccountCount} supplier adjustment line(s) are missing both nominal code and Sage ledger account id.`;
+  }
 
   if (!isPositiveNumber(totals.total_coded_gross_gbp)) {
     return "Cannot approve current invoice yet. Coded gross total is zero or missing.";
