@@ -595,7 +595,9 @@ export default async function PreSageFinancialReadinessPage({
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div>
                         <p className="text-lg font-bold text-slate-950">{card.order.order_ref || card.order.id}</p>
-                        <p className="mt-1 text-sm text-slate-600">{card.retailer?.name || "No retailer"} · Raw order status {pretty(card.order.status)} · Type {pretty(card.order.order_type)}</p>
+                        <p className="mt-1 text-sm text-slate-600">
+                          {card.retailer?.name || "No retailer"} · Operational status {card.ready ? (card.warnings.length > 0 ? "ready with audit warning" : "ready for Sage preview") : "blocked before Sage preview"} · Raw DB status {pretty(card.order.status)} · Type {pretty(card.order.order_type)}
+                        </p>
                       </div>
                       {readinessPill(card.ready ? "Ready for Sage preview" : "Blocked before Sage preview", card.ready, card.warnings)}
                     </div>
