@@ -98,6 +98,40 @@ function statusClass(status: string | null | undefined) {
   return "bg-amber-100 text-amber-800";
 }
 
+function customerInvoiceStatus(rows: ReadinessRow[], primaryCustomerRoute: string | null) {
+  if (!rows.length) return { label: "No customer route", className: "border-slate-200 bg-slate-50", detail: "No readiness rows found" };
+
+  const hasMainRoute = primaryCustomerRoute === "include_shipping_in_main_sales_invoice_release";
+  const hasGoodsBasis = rows.some((row) => n(row.adjusted_goods_basis_gbp) > 0 && n(row.qty_allocated) > 0 && row.order_id && row.supplier_invoice_line_id);
+  const states = new Set(rows.map((row) => row.sales_invoice_state).filter(Boolean));
+
+  if (hasMainRoute && hasGoodsBasis && states.has("main_sales_invoice_posted")) {
+    return { label: "Main invoice posted", className: "border-emerald-200 bg-emerald-50", detail: "Customer sales document already posted" };
+  }
+
+  if (hasMainRoute && hasGoodsBasis && states.has("main_sales_invoice_draft_exists")) {
+    return { label: "Main draft exists", className: "border-sky-200 bg-sky-50", detail: "Review Ready for Sage queue" };
+  }
+
+  if (hasMainRoute && hasGoodsBasis) {
+    return { label: "Ready for main draft", className: "border-emerald-200 bg-emerald-50", detail: "Goods can go to customer invoice release" };
+  }
+
+  if (primaryCustomerRoute === "supplementary_shipping_recharge_invoice") {
+    return { label: "Supplementary route", className: "border-amber-200 bg-amber-50", detail: "Shipping recharge waits for AP/apportionment" };
+  }
+
+  return { label: "Customer route check", className: "border-amber-200 bg-amber-50", detail: "Inspect customer invoice preview" };
+}
+
+function lineCustomerReady(row: ReadinessRow) {
+  return row.customer_recharge_route === "include_shipping_in_main_sales_invoice_release" &&
+    n(row.adjusted_goods_basis_gbp) > 0 &&
+    n(row.qty_allocated) > 0 &&
+    Boolean(row.order_id) &&
+    Boolean(row.supplier_invoice_line_id);
+}
+
 export default async function ShippingReadinessPreviewPage({ params }: { params: Promise<{ shipment_batch_id: string }> }) {
   const { shipment_batch_id: shipmentBatchId } = await params;
   const supabase = await createClient();
@@ -128,6 +162,7 @@ export default async function ShippingReadinessPreviewPage({ params }: { params:
   const customerRoutes = Array.from(new Set(rows.map((row) => row.customer_recharge_route).filter(Boolean))) as string[];
   const primaryCustomerRoute = customerRoutes[0] ?? null;
   const apReady = rows.length > 0 && blockers.length === 0;
+  const customerStatus = customerInvoiceStatus(rows, primaryCustomerRoute);
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-6 text-slate-950 sm:px-6 sm:py-8">
@@ -142,9 +177,9 @@ export default async function ShippingReadinessPreviewPage({ params }: { params:
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Goodcashback Internal</p>
           <div className="mt-2 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
             <div>
-              <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Shipping AP / recharge readiness preview</h1>
+              <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Shipping AP & customer route preview</h1>
               <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
-                Read-only resolver showing what the accepted shipper charge would feed next: Sage AP purchase invoice for the shipper, and customer/importer shipping recharge as main-sales-invoice line or supplementary invoice. This does not post to Sage, create COS/BOL/POD, or clear VAT.
+                Split view for the shipment batch. Customer main goods invoicing can be ready while shipper AP and later supplementary shipping recharge are still blocked. This page does not post to Sage, create COS/BOL/POD, or clear VAT.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700"><div className="font-medium text-slate-950">{staff.full_name}</div><div>{staff.role_type}</div></div>
@@ -155,17 +190,19 @@ export default async function ShippingReadinessPreviewPage({ params }: { params:
 
         {first ? (
           <>
-            <section className="grid gap-4 md:grid-cols-5">
+            <section className="grid gap-4 md:grid-cols-3 xl:grid-cols-6">
               <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Booking ref</p><p className="mt-1 text-xl font-semibold">{first.booking_ref ?? shipmentBatchId}</p></div>
               <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Importer</p><p className="mt-1 text-xl font-semibold">{first.importer_name ?? "—"}</p></div>
               <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Shipper</p><p className="mt-1 text-xl font-semibold">{first.shipper_name ?? "—"}</p></div>
               <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Item qty</p><p className="mt-1 text-xl font-semibold">{qty(itemQty)}</p></div>
-              <div className={`rounded-3xl border p-4 shadow-sm ${apReady ? "border-emerald-200 bg-emerald-50" : "border-rose-200 bg-rose-50"}`}><p className="text-xs uppercase tracking-wide text-slate-500">Readiness</p><p className="mt-1 text-xl font-semibold">{apReady ? "Ready" : "Blocked"}</p></div>
+              <div className={`rounded-3xl border p-4 shadow-sm ${customerStatus.className}`}><p className="text-xs uppercase tracking-wide text-slate-500">Customer invoice</p><p className="mt-1 text-xl font-semibold">{customerStatus.label}</p><p className="mt-1 text-xs text-slate-600">{customerStatus.detail}</p></div>
+              <div className={`rounded-3xl border p-4 shadow-sm ${apReady ? "border-emerald-200 bg-emerald-50" : "border-rose-200 bg-rose-50"}`}><p className="text-xs uppercase tracking-wide text-slate-500">Shipper AP / shipping</p><p className="mt-1 text-xl font-semibold">{apReady ? "Ready" : "Blocked"}</p><p className="mt-1 text-xs text-slate-600">{apReady ? "AP/recharge payload can be reviewed" : "Does not block main goods invoice"}</p></div>
             </section>
 
             {blockers.length > 0 ? (
               <section className="rounded-3xl border border-rose-300 bg-rose-50 p-5 text-sm text-rose-900 shadow-sm">
-                <h2 className="text-lg font-semibold">Blocked before payload preview</h2>
+                <h2 className="text-lg font-semibold">Shipper AP / supplementary shipping blocked</h2>
+                <p className="mt-1 text-sm leading-6 text-rose-800">These blockers affect shipper AP and later shipping recharge. They do not stop a ready main goods customer invoice draft.</p>
                 <ul className="mt-2 list-disc space-y-1 pl-5">
                   {blockers.map((blocker) => <li key={blocker}>{friendly(blocker)}</li>)}
                 </ul>
@@ -173,18 +210,19 @@ export default async function ShippingReadinessPreviewPage({ params }: { params:
             ) : null}
 
             <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-              <h2 className="text-xl font-semibold">Posting route summary</h2>
-              <p className="mt-2 text-sm leading-6 text-slate-600">This is only the resolver result. It confirms what the later posting/release lane should prepare.</p>
+              <h2 className="text-xl font-semibold">Route summary</h2>
+              <p className="mt-2 text-sm leading-6 text-slate-600">This separates customer main invoice readiness from shipper AP/supplementary shipping readiness.</p>
               <div className="mt-4 grid gap-3 lg:grid-cols-2">
-                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">AP</p>
+                <div className={`rounded-2xl border p-4 ${apReady ? "border-emerald-200 bg-emerald-50" : "border-rose-200 bg-rose-50"}`}>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Shipper AP / shipping recharge</p>
                   <p className="mt-1 text-lg font-semibold">Purchase invoice to {first.shipper_name ?? "shipper"}</p>
                   <p className="mt-1 text-sm text-slate-600">{first.shipping_document_ref ?? "No ref"} · {money(first.shipping_document_total, currency)}</p>
+                  <p className="mt-2 text-xs font-semibold text-slate-600">{apReady ? "Ready for AP/recharge payload review" : "Blocked until shipper invoice/receipt and apportionment are ready"}</p>
                 </div>
-                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Customer recharge</p>
+                <div className={`rounded-2xl border p-4 ${customerStatus.className}`}>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Customer main invoice route</p>
                   <p className="mt-1 text-lg font-semibold">{routeLabel(primaryCustomerRoute)}</p>
-                  <p className="mt-1 text-sm text-slate-600">{money(totalShippingAllocated, currency)} shipping recharge on {money(totalAdjustedGoods, "GBP")} adjusted goods basis</p>
+                  <p className="mt-1 text-sm text-slate-600">{money(totalAdjustedGoods, "GBP")} goods basis · {money(totalShippingAllocated, currency)} current shipping recharge</p>
                   <Link href={`/internal/shipping-control/customer-invoice/${shipmentBatchId}`} className="mt-3 inline-block rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">Open customer invoice preview</Link>
                 </div>
               </div>
@@ -193,7 +231,7 @@ export default async function ShippingReadinessPreviewPage({ params }: { params:
             <section className="grid gap-4 lg:grid-cols-2">
               <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
                 <h2 className="text-xl font-semibold">AP side</h2>
-                <p className="mt-2 text-sm leading-6 text-slate-600">Future Sage document route for the accepted shipper invoice/receipt.</p>
+                <p className="mt-2 text-sm leading-6 text-slate-600">Future Sage document route for the accepted shipper invoice/receipt. This is separate from the main customer goods invoice.</p>
                 <div className="mt-4 grid gap-3 sm:grid-cols-2">
                   <div className="rounded-2xl bg-slate-50 p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Document route</p><p className="mt-1 font-semibold">Sage AP / purchase invoice</p></div>
                   <div className="rounded-2xl bg-slate-50 p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Payable to</p><p className="mt-1 font-semibold">{first.shipper_name ?? "Shipper"}</p></div>
@@ -206,7 +244,7 @@ export default async function ShippingReadinessPreviewPage({ params }: { params:
 
               <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
                 <h2 className="text-xl font-semibold">Customer/importer side</h2>
-                <p className="mt-2 text-sm leading-6 text-slate-600">Resolver decides whether shipping recharge belongs to the main sales invoice release or a supplementary shipping invoice.</p>
+                <p className="mt-2 text-sm leading-6 text-slate-600">Shows whether the customer-facing invoice route is main goods invoice now or supplementary shipping invoice later.</p>
                 <div className="mt-4 grid gap-3 sm:grid-cols-2">
                   <div className="rounded-2xl bg-slate-50 p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Adjusted goods basis</p><p className="mt-1 font-semibold">{money(totalAdjustedGoods, "GBP")}</p></div>
                   <div className="rounded-2xl bg-slate-50 p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Shipping recharge</p><p className="mt-1 font-semibold">{money(totalShippingAllocated, currency)}</p></div>
@@ -216,35 +254,41 @@ export default async function ShippingReadinessPreviewPage({ params }: { params:
             </section>
 
             <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-              <h2 className="text-xl font-semibold">Line-level payload preview</h2>
-              <p className="mt-2 text-sm leading-6 text-slate-600">This is the controlled source that later feeds Sage/AP and customer recharge payloads. COS/export evidence stays separate.</p>
+              <h2 className="text-xl font-semibold">Line-level route preview</h2>
+              <p className="mt-2 text-sm leading-6 text-slate-600">Each row shows customer invoice readiness separately from AP/shipping readiness. COS/export evidence stays separate.</p>
 
               <div className="mt-4 grid gap-3 md:hidden">
-                {rows.map((row, index) => (
-                  <article key={`${row.order_id}-${row.tracking_submission_id}-${row.supplier_invoice_line_id}-${index}-card`} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Order / package</p>
-                        <p className="mt-1 font-semibold">{row.order_ref ?? row.order_id ?? "—"}</p>
-                        <p className="text-sm text-slate-500">{row.tracking_ref ?? row.tracking_submission_id ?? "—"}</p>
+                {rows.map((row, index) => {
+                  const customerReady = lineCustomerReady(row);
+                  return (
+                    <article key={`${row.order_id}-${row.tracking_submission_id}-${row.supplier_invoice_line_id}-${index}-card`} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Order / package</p>
+                          <p className="mt-1 font-semibold">{row.order_ref ?? row.order_id ?? "—"}</p>
+                          <p className="text-sm text-slate-500">{row.tracking_ref ?? row.tracking_submission_id ?? "—"}</p>
+                        </div>
+                        <div className="flex shrink-0 flex-col items-end gap-1">
+                          <span className={`rounded-full px-2 py-1 text-xs font-semibold ${customerReady ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>{customerReady ? "Customer ready" : "Customer check"}</span>
+                          <span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.readiness_status)}`}>AP: {readinessLabel(row.readiness_status)}</span>
+                        </div>
                       </div>
-                      <span className={`shrink-0 rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.readiness_status)}`}>{readinessLabel(row.readiness_status)}</span>
-                    </div>
-                    <p className="mt-3 text-sm text-slate-700">{row.item_description ?? "—"}</p>
-                    <div className="mt-4 grid grid-cols-3 gap-2 text-sm">
-                      <div className="rounded-xl bg-white p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Qty</p><p className="mt-1 font-semibold">{qty(row.qty_allocated)}</p></div>
-                      <div className="rounded-xl bg-white p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Basis</p><p className="mt-1 font-semibold">{money(row.adjusted_goods_basis_gbp, "GBP")}</p></div>
-                      <div className="rounded-xl bg-white p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Shipping</p><p className="mt-1 font-semibold">{money(row.allocated_shipping_amount, currency)}</p></div>
-                    </div>
-                    <div className="mt-3 rounded-xl bg-white p-3 text-sm">
-                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Customer route</p>
-                      <div className="mt-2 flex flex-wrap items-center gap-2">
-                        <span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.customer_recharge_route)}`}>{routeLabel(row.customer_recharge_route)}</span>
-                        <span className="text-xs text-slate-500">{invoiceStateLabel(row.sales_invoice_state)}</span>
+                      <p className="mt-3 text-sm text-slate-700">{row.item_description ?? "—"}</p>
+                      <div className="mt-4 grid grid-cols-3 gap-2 text-sm">
+                        <div className="rounded-xl bg-white p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Qty</p><p className="mt-1 font-semibold">{qty(row.qty_allocated)}</p></div>
+                        <div className="rounded-xl bg-white p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Basis</p><p className="mt-1 font-semibold">{money(row.adjusted_goods_basis_gbp, "GBP")}</p></div>
+                        <div className="rounded-xl bg-white p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Shipping</p><p className="mt-1 font-semibold">{money(row.allocated_shipping_amount, currency)}</p></div>
                       </div>
-                    </div>
-                  </article>
-                ))}
+                      <div className="mt-3 rounded-xl bg-white p-3 text-sm">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Customer route</p>
+                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                          <span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.customer_recharge_route)}`}>{routeLabel(row.customer_recharge_route)}</span>
+                          <span className="text-xs text-slate-500">{invoiceStateLabel(row.sales_invoice_state)}</span>
+                        </div>
+                      </div>
+                    </article>
+                  );
+                })}
               </div>
 
               <div className="mt-4 hidden overflow-x-auto rounded-2xl border border-slate-200 md:block">
@@ -257,21 +301,24 @@ export default async function ShippingReadinessPreviewPage({ params }: { params:
                       <th className="px-3 py-2 text-right">Adjusted basis</th>
                       <th className="px-3 py-2 text-right">Shipping</th>
                       <th className="px-3 py-2 text-left">Customer route</th>
-                      <th className="px-3 py-2 text-left">Status</th>
+                      <th className="px-3 py-2 text-left">Split status</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 bg-white">
-                    {rows.map((row, index) => (
-                      <tr key={`${row.order_id}-${row.tracking_submission_id}-${row.supplier_invoice_line_id}-${index}`}>
-                        <td className="px-3 py-3 align-top"><p className="font-semibold">{row.order_ref ?? row.order_id ?? "—"}</p><p className="text-xs text-slate-500">{row.tracking_ref ?? row.tracking_submission_id ?? "—"}</p></td>
-                        <td className="px-3 py-3 align-top">{row.item_description ?? "—"}</td>
-                        <td className="px-3 py-3 text-right align-top">{qty(row.qty_allocated)}</td>
-                        <td className="px-3 py-3 text-right align-top">{money(row.adjusted_goods_basis_gbp, "GBP")}</td>
-                        <td className="px-3 py-3 text-right align-top font-semibold">{money(row.allocated_shipping_amount, currency)}</td>
-                        <td className="px-3 py-3 align-top"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.customer_recharge_route)}`}>{routeLabel(row.customer_recharge_route)}</span><p className="mt-1 text-xs text-slate-500">{invoiceStateLabel(row.sales_invoice_state)}</p></td>
-                        <td className="px-3 py-3 align-top"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.readiness_status)}`}>{readinessLabel(row.readiness_status)}</span></td>
-                      </tr>
-                    ))}
+                    {rows.map((row, index) => {
+                      const customerReady = lineCustomerReady(row);
+                      return (
+                        <tr key={`${row.order_id}-${row.tracking_submission_id}-${row.supplier_invoice_line_id}-${index}`}>
+                          <td className="px-3 py-3 align-top"><p className="font-semibold">{row.order_ref ?? row.order_id ?? "—"}</p><p className="text-xs text-slate-500">{row.tracking_ref ?? row.tracking_submission_id ?? "—"}</p></td>
+                          <td className="px-3 py-3 align-top">{row.item_description ?? "—"}</td>
+                          <td className="px-3 py-3 text-right align-top">{qty(row.qty_allocated)}</td>
+                          <td className="px-3 py-3 text-right align-top">{money(row.adjusted_goods_basis_gbp, "GBP")}</td>
+                          <td className="px-3 py-3 text-right align-top font-semibold">{money(row.allocated_shipping_amount, currency)}</td>
+                          <td className="px-3 py-3 align-top"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.customer_recharge_route)}`}>{routeLabel(row.customer_recharge_route)}</span><p className="mt-1 text-xs text-slate-500">{invoiceStateLabel(row.sales_invoice_state)}</p></td>
+                          <td className="px-3 py-3 align-top"><div className="flex flex-col gap-2"><span className={`w-fit rounded-full px-2 py-1 text-xs font-semibold ${customerReady ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>Customer: {customerReady ? "Ready" : "Check"}</span><span className={`w-fit rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.readiness_status)}`}>AP: {readinessLabel(row.readiness_status)}</span></div></td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -279,7 +326,7 @@ export default async function ShippingReadinessPreviewPage({ params }: { params:
 
             <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-900">
               <h2 className="font-semibold">Control rule</h2>
-              <p className="mt-2">This page only resolves the next accounting route. It does not post to Sage. AP invoice posting, customer sales invoice/supplementary invoice creation, draft COS review, master shipment grouping and final export evidence clearance remain separate controlled steps.</p>
+              <p className="mt-2">This page only resolves the next accounting route. Main customer goods invoice release, shipper AP invoice posting, supplementary shipping recharge, draft COS review, master shipment grouping and final export evidence clearance remain separate controlled steps.</p>
             </section>
           </>
         ) : null}
