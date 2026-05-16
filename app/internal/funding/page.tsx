@@ -17,6 +17,9 @@ type FundingCandidate = {
   alreadyReconciled: boolean;
   canReconcile: boolean;
   reviewReason: string;
+  matchSource: "existing_suggestion" | "inferred" | "none";
+  matchScore: number;
+  matchReasons: string[];
 };
 
 type CreditCandidate = {
@@ -49,7 +52,7 @@ function asNumber(value: unknown) {
 }
 
 function asString(value: unknown) {
-  return typeof value === "string" ? value : "";
+  return typeof value === "string" ? value.trim() : "";
 }
 
 function asBoolean(value: unknown) {
@@ -80,14 +83,124 @@ async function readRows(source: string, limit = 10) {
   return { rows: (data ?? []) as DataRow[], error: error?.message ?? null };
 }
 
+function normalise(value: unknown) {
+  return asString(value).toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function normaliseMoney(value: number) {
+  return Math.round(value * 100) / 100;
+}
+
+function inboundLineText(row: DataRow) {
+  return [
+    row.reference_raw,
+    row.auth_id_ref,
+    row.payment_auth_id,
+    row.bank_reference,
+    row.transaction_family_ref,
+    row.merchant_raw,
+    row.retailer_name_ref,
+    row.notes,
+  ]
+    .map((value) => asString(value))
+    .filter(Boolean)
+    .join(" ");
+}
+
+function inferFundingOrder(row: DataRow, fundingRows: DataRow[]) {
+  const explicitOrderId = asString(row.suggested_order_id);
+  if (explicitOrderId) {
+    const explicitOrder = fundingRows.find((fundingRow) => asString(fundingRow.order_id) === explicitOrderId);
+    return {
+      order: explicitOrder,
+      orderId: explicitOrderId,
+      orderRef: asString(row.suggested_order_ref) || asString(explicitOrder?.order_ref),
+      matchSuggestionId: asString(row.match_suggestion_id),
+      source: "existing_suggestion" as const,
+      score: 100,
+      reasons: ["Existing order suggestion from review worklist"],
+    };
+  }
+
+  const textBlob = normalise(inboundLineText(row));
+  const importerId = asString(row.importer_id);
+  const amount = normaliseMoney(asNumber(row.amount_gbp_equivalent));
+  const candidates = fundingRows
+    .filter((fundingRow) => asNumber(fundingRow.gap_remaining_gbp) > 0)
+    .map((fundingRow) => {
+      let score = 0;
+      const reasons: string[] = [];
+      const orderRef = asString(fundingRow.order_ref);
+      const orderRefNorm = normalise(orderRef);
+      const paymentAuthId = asString(fundingRow.payment_auth_id);
+      const paymentAuthNorm = normalise(paymentAuthId);
+      const fundingImporterId = asString(fundingRow.importer_id);
+      const gap = normaliseMoney(asNumber(fundingRow.gap_remaining_gbp));
+      const orderTotal = normaliseMoney(asNumber(fundingRow.order_total_gbp_declared));
+
+      if (importerId && fundingImporterId && importerId === fundingImporterId) {
+        score += 10;
+        reasons.push("same importer");
+      }
+
+      if (paymentAuthNorm && textBlob.includes(paymentAuthNorm)) {
+        score += 80;
+        reasons.push("payment/auth reference found in bank text");
+      }
+
+      if (orderRefNorm && textBlob.includes(orderRefNorm)) {
+        score += 90;
+        reasons.push("order reference found in bank text");
+      }
+
+      if (amount > 0 && gap > 0 && Math.abs(amount - gap) <= 0.02) {
+        score += 15;
+        reasons.push("amount equals current order funding gap");
+      } else if (amount > 0 && orderTotal > 0 && Math.abs(amount - orderTotal) <= 0.02) {
+        score += 10;
+        reasons.push("amount equals declared order total");
+      }
+
+      return { fundingRow, score, reasons };
+    })
+    .filter((candidate) => candidate.score >= 80)
+    .sort((a, b) => b.score - a.score);
+
+  const best = candidates[0];
+  if (!best) {
+    return {
+      order: undefined,
+      orderId: "",
+      orderRef: "",
+      matchSuggestionId: "",
+      source: "none" as const,
+      score: 0,
+      reasons: [] as string[],
+    };
+  }
+
+  return {
+    order: best.fundingRow,
+    orderId: asString(best.fundingRow.order_id),
+    orderRef: asString(best.fundingRow.order_ref),
+    matchSuggestionId: "",
+    source: "inferred" as const,
+    score: best.score,
+    reasons: best.reasons,
+  };
+}
+
 function fundingReviewReason(args: {
   orderId: string;
   amountGbp: number;
   gap: number | null;
   alreadyReconciled: boolean;
+  matchSource: FundingCandidate["matchSource"];
+  matchScore: number;
 }) {
   if (args.alreadyReconciled) return "Already reconciled. It belongs in audit, not the action queue.";
-  if (!args.orderId) return "No suggested order. Do not show a funding form until an order match is identified.";
+  if (!args.orderId) return "No strong order match yet. Needs order ref/payment auth evidence before funding.";
+  if (args.matchSource === "inferred" && args.matchScore < 80) return "Inferred match is below the safe action threshold.";
   if (args.amountGbp <= 0) return "No positive inbound amount to apply.";
   if (args.gap === null) return "Order funding gap is unavailable from the funding position view.";
   if (args.gap <= 0) return "Suggested order has no remaining funding gap.";
@@ -156,10 +269,11 @@ function DvaFundingActionCard({ candidate }: { candidate: FundingCandidate }) {
         <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-200">ready to fund</span>
       </div>
 
-      <div className="mt-4 grid gap-3 sm:grid-cols-3">
+      <div className="mt-4 grid gap-3 sm:grid-cols-4">
         <SummaryCard title="Statement IN" value={gbp(candidate.amountGbp)} hint="GBP value from committed DVA/card line." tone="emerald" />
         <SummaryCard title="Order gap" value={candidate.gap === null ? "—" : gbp(candidate.gap)} hint="Remaining order funding gap." tone="amber" />
-        <SummaryCard title="Suggested action" value="Fund" hint="Uses staff_reconcile_dva_line_to_order." tone="sky" />
+        <SummaryCard title="Match source" value={candidate.matchSource === "inferred" ? "Inferred" : "Suggested"} hint={`Score ${candidate.matchScore}. ${candidate.matchReasons.join("; ") || "Worklist suggestion."}`} tone="sky" />
+        <SummaryCard title="Suggested action" value="Fund" hint="Uses staff_reconcile_dva_line_to_order." tone="violet" />
       </div>
 
       <form action={reconcileDvaLineToOrderAction} className="mt-4 flex flex-wrap items-center gap-2">
@@ -174,30 +288,9 @@ function DvaFundingActionCard({ candidate }: { candidate: FundingCandidate }) {
             Allow overfunding because inbound amount exceeds gap
           </label>
         ) : null}
-        <input name="notes" type="text" placeholder="Notes (optional)" className="w-48 rounded-xl border border-slate-300 px-3 py-2 text-sm" />
+        <input name="notes" type="text" placeholder="Notes (optional)" className="w-48 rounded-xl border border-slate-300 px-3 py-2 text-sm" defaultValue={candidate.matchSource === "inferred" ? `UI inferred funding match: ${candidate.matchReasons.join("; ")}` : ""} />
         <button type="submit" className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white">Apply as funding</button>
       </form>
-    </article>
-  );
-}
-
-function DvaFundingReviewCard({ candidate }: { candidate: FundingCandidate }) {
-  return (
-    <article className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Inbound line needs review</p>
-          <h3 className="mt-2 text-lg font-semibold">{candidate.orderRef || candidate.orderId || "No suggested order"}</h3>
-          <p className="mt-1 break-all text-xs text-slate-500">DVA line: {candidate.dvaStatementLineId}</p>
-        </div>
-        <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700 ring-1 ring-amber-200">not actionable here</span>
-      </div>
-      <div className="mt-4 grid gap-3 sm:grid-cols-3">
-        <SummaryCard title="Statement IN" value={gbp(candidate.amountGbp)} hint="Inbound line amount." tone="emerald" />
-        <SummaryCard title="Order gap" value={candidate.gap === null ? "—" : gbp(candidate.gap)} hint="Only actionable when a suggested order and positive gap exist." tone="slate" />
-        <SummaryCard title="Reason" value="Review" hint={candidate.reviewReason} tone="amber" />
-      </div>
-      <p className="mt-3 text-xs leading-5 text-slate-600">No funding form is shown for this row because applying it would be unsafe without a valid suggested order and gap.</p>
     </article>
   );
 }
@@ -239,8 +332,9 @@ function ReviewList({ title, rows }: { title: string; rows: Array<FundingCandida
       <div className="mt-3 grid gap-2">
         {rows.map((row, index) => (
           <div key={`${title}-${index}`} className="rounded-xl bg-white p-3 text-xs leading-5 text-slate-600 ring-1 ring-slate-200">
-            <p className="font-semibold text-slate-900">{"dvaStatementLineId" in row ? row.orderRef || row.orderId || "No suggested order" : row.orderRef || "No order ref"}</p>
+            <p className="font-semibold text-slate-900">{"dvaStatementLineId" in row ? row.orderRef || row.orderId || "No strong order match" : row.orderRef || "No order ref"}</p>
             <p>{row.reviewReason}</p>
+            {"matchReasons" in row && row.matchReasons.length > 0 ? <p className="mt-1">Signals: {row.matchReasons.join("; ")}</p> : null}
           </div>
         ))}
       </div>
@@ -261,8 +355,8 @@ export default async function InternalFundingPage({
   const params = searchParams ? await searchParams : {};
 
   const [worklistResult, fundingPositionResult, creditBalanceResult, recentLinesResult, fundingEventsResult] = await Promise.all([
-    readRows("day2_dva_review_worklist_vw", 50),
-    readRows("order_funding_position_vw", 50),
+    readRows("day2_dva_review_worklist_vw", 75),
+    readRows("order_funding_position_vw", 200),
     readRows("importer_balance_vw", 50),
     readRows("dva_statement_lines", 10),
     readRows("order_funding_events", 10),
@@ -280,23 +374,34 @@ export default async function InternalFundingPage({
 
   const fundingCandidates: FundingCandidate[] = worklistRows
     .map((row) => {
+      const inferred = inferFundingOrder(row, fundingRows);
       const dvaStatementLineId = asString(row.dva_statement_line_id);
-      const orderId = asString(row.suggested_order_id);
       const amountGbp = asNumber(row.amount_gbp_equivalent);
-      const gap = gapByOrder.get(orderId);
-      const alreadyReconciled = Boolean(asString(row.reconciliation_id)) || asString(row.match_status) === "reconciled";
-      const reviewReason = fundingReviewReason({ orderId, amountGbp, gap: typeof gap === "number" ? gap : null, alreadyReconciled });
+      const gap = inferred.orderId ? gapByOrder.get(inferred.orderId) : undefined;
+      const alreadyReconciled = Boolean(asString(row.reconciliation_id)) || asString(row.match_status) === "reconciled" || asString(row.match_status) === "confirmed";
+      const resolvedGap = typeof gap === "number" ? gap : null;
+      const reviewReason = fundingReviewReason({
+        orderId: inferred.orderId,
+        amountGbp,
+        gap: resolvedGap,
+        alreadyReconciled,
+        matchSource: inferred.source,
+        matchScore: inferred.score,
+      });
 
       return {
         dvaStatementLineId,
-        orderId,
-        orderRef: asString(row.suggested_order_ref),
-        matchSuggestionId: asString(row.match_suggestion_id),
+        orderId: inferred.orderId,
+        orderRef: inferred.orderRef,
+        matchSuggestionId: inferred.matchSuggestionId,
         amountGbp,
-        gap: typeof gap === "number" ? gap : null,
+        gap: resolvedGap,
         alreadyReconciled,
-        canReconcile: Boolean(dvaStatementLineId && orderId && amountGbp > 0 && typeof gap === "number" && gap > 0 && !alreadyReconciled),
+        canReconcile: Boolean(dvaStatementLineId && inferred.orderId && amountGbp > 0 && resolvedGap !== null && resolvedGap > 0 && !alreadyReconciled && inferred.score >= 80),
         reviewReason,
+        matchSource: inferred.source,
+        matchScore: inferred.score,
+        matchReasons: inferred.reasons,
       };
     })
     .filter((candidate) => candidate.dvaStatementLineId);
@@ -356,7 +461,7 @@ export default async function InternalFundingPage({
         <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
           <SummaryCard title="Open funding gaps" value={gbp(openFundingGap)} hint="Visible order funding gaps from order_funding_position_vw." tone={openFundingGap > 0 ? "amber" : "emerald"} />
           <SummaryCard title="Available credit" value={gbp(availableCredit)} hint="Importer credit available from importer_balance_vw." tone={availableCredit > 0 ? "sky" : "slate"} />
-          <SummaryCard title="Ready funding candidates" value={String(readyFundingCandidates.length)} hint="Inbound lines with suggested order and positive gap." tone={readyFundingCandidates.length > 0 ? "emerald" : "slate"} />
+          <SummaryCard title="Ready funding candidates" value={String(readyFundingCandidates.length)} hint="Inbound lines with strong ref/order evidence and positive gap." tone={readyFundingCandidates.length > 0 ? "emerald" : "slate"} />
           <SummaryCard title="Needs review" value={String(needsReviewCount)} hint="Rows hidden from action forms because a safe match/gap is missing." tone={needsReviewCount > 0 ? "amber" : "slate"} />
         </section>
 
@@ -379,7 +484,7 @@ export default async function InternalFundingPage({
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <h2 className="text-xl font-semibold">1. Ready inbound statement money</h2>
-              <p className="mt-1 max-w-4xl text-sm leading-6 text-slate-600">Only rows with a suggested order, positive inbound amount, and positive order gap appear here. No suggested order means no funding form.</p>
+              <p className="mt-1 max-w-4xl text-sm leading-6 text-slate-600">Only rows with strong order evidence, positive inbound amount, and positive order gap appear here. Amount-only matches stay in review.</p>
             </div>
             <span className="rounded-full bg-emerald-50 px-3 py-1 text-sm font-semibold text-emerald-700 ring-1 ring-emerald-200">Safe action queue</span>
           </div>
@@ -403,9 +508,9 @@ export default async function InternalFundingPage({
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold">Rows excluded from action forms</h2>
-          <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">These are deliberately not actionable on this page. They need a match, gap, or audit review first.</p>
+          <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">These are deliberately not actionable on this page. They need a stronger reference match, gap, or audit review first.</p>
           <div className="mt-5 grid gap-3">
-            <ReviewList title="Inbound lines needing suggested order / gap review" rows={fundingNeedsReview} />
+            <ReviewList title="Inbound lines needing stronger order evidence / gap review" rows={fundingNeedsReview} />
             <ReviewList title="Credit rows not currently applicable" rows={creditNeedsReview} />
             <ReviewList title="Already reconciled inbound funding audit" rows={reconciledFundingAudit} />
           </div>
