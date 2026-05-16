@@ -318,7 +318,7 @@ export default async function DvaMatchingWorkspacePage({
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">DVA/card matching workspace</p>
           <h1 className="mt-2 text-3xl font-semibold tracking-tight">Two-pane importer matching cockpit</h1>
           <p className="mt-3 max-w-5xl text-sm leading-6 text-slate-600">
-            Read-only workspace for fast supervisor review. Pick a statement line on the left, filter operational truth on the right, then confirm allocations after the selection logic is proven.
+            Supervisor allocation workspace for committed DVA/card statement lines. Pick a statement line on the left and the operational target on the right, then use the controlled action bar to allocate supplier purchases, retailer refunds, exception holds, FX/card residuals, or bank fees. Customer/importer IN funding stays in Importer Funding Control.
           </p>
           <form action="/internal/dva-reconciliation/workspace" className="mt-5 flex flex-wrap items-end gap-3">
             <div className="min-w-64 flex-1">
@@ -350,7 +350,7 @@ export default async function DvaMatchingWorkspacePage({
         {selectedLineSuggestions.length > 0 ? (
           <section className="rounded-3xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-950">
             <p className="font-semibold">Automation signal for selected statement line</p>
-            <p className="mt-1">{selectedLineSuggestions.length} suggestion(s) exist. Use the filters to verify before confirming allocation in the next build.</p>
+            <p className="mt-1">{selectedLineSuggestions.length} suggestion(s) exist. Use the filters to verify before confirming allocation through the controlled action bar.</p>
           </section>
         ) : null}
 
