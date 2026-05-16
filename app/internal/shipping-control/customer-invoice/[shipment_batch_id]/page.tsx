@@ -70,8 +70,8 @@ function invoiceStateLabel(value: string | null | undefined) {
 
 function readinessLabel(value: string | null | undefined) {
   if (!value) return "—";
-  if (value.startsWith("ready_")) return "Ready";
-  if (value.startsWith("blocked")) return "Blocked";
+  if (value.startsWith("ready_")) return "Draft ready";
+  if (value.startsWith("blocked")) return "Draft blocked";
   return friendly(value);
 }
 
@@ -120,7 +120,7 @@ export default async function ShippingCustomerInvoiceReadinessPage({ params }: {
             <div>
               <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Customer invoice readiness preview</h1>
               <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
-                Read-only preview of what the later customer invoice creation lane should prepare. It does not mean a Sage invoice has already been posted. The customer payload is an export sale charge; the adjusted goods/shipping split is shown only as a sanity check.
+                Read-only preview of what the later customer invoice creation lane should prepare. This is draft readiness, not Sage posting readiness. Sage mapping is checked separately in the Ready for Sage queue. The customer payload is an export sale charge; the adjusted goods/shipping split is shown only as a sanity check.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700"><div className="font-medium text-slate-950">{staff.full_name}</div><div>{staff.role_type}</div></div>
@@ -136,7 +136,7 @@ export default async function ShippingCustomerInvoiceReadinessPage({ params }: {
               <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Importer</p><p className="mt-1 text-xl font-semibold">{first.importer_name ?? "—"}</p></div>
               <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Customer action</p><p className="mt-1 text-xl font-semibold">{invoiceTypeLabel(first.proposed_invoice_type)}</p></div>
               <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">VAT code</p><p className="mt-1 text-xl font-semibold">{first.vat_code ?? "T0"}</p></div>
-              <div className={`rounded-3xl border p-4 shadow-sm ${ready ? "border-emerald-200 bg-emerald-50" : "border-rose-200 bg-rose-50"}`}><p className="text-xs uppercase tracking-wide text-slate-500">Readiness</p><p className="mt-1 text-xl font-semibold">{ready ? "Ready" : "Blocked"}</p></div>
+              <div className={`rounded-3xl border p-4 shadow-sm ${ready ? "border-emerald-200 bg-emerald-50" : "border-rose-200 bg-rose-50"}`}><p className="text-xs uppercase tracking-wide text-slate-500">Draft readiness</p><p className="mt-1 text-xl font-semibold">{ready ? "Draft ready" : "Draft blocked"}</p><p className="mt-1 text-xs text-slate-500">Sage mapping is checked in Ready for Sage.</p></div>
             </section>
 
             {blockers.length > 0 ? (
