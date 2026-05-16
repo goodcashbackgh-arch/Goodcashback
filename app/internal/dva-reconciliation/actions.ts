@@ -180,9 +180,9 @@ export async function allocateStatementLineToFxCardOrFeeAction(formData: FormDat
     }, path);
   }
 
-  if (allocationType === "fx_card_difference" && numeric(summaryRow.confirmed_allocated_gbp) <= 0) {
+  if (numeric(summaryRow.confirmed_allocated_gbp) <= 0) {
     redirectWithAllocationResult({
-      allocation_error: "FX/card residual allocation is only allowed after a supplier invoice, refund, exception, or hold allocation already exists. Use bank fee for standalone bank/card charges.",
+      allocation_error: "Residual allocation is only allowed after a supplier invoice, refund, exception, or hold allocation already exists.",
     }, path);
   }
 
