@@ -31,9 +31,19 @@ type ShippingControlRow = {
   next_action: string | null;
 };
 
+type CustomerInvoiceReleaseRow = {
+  shipment_batch_id: string;
+  readiness_status: string | null;
+  proposed_amount_gbp: number | string | null;
+};
+
 function n(value: number | string | null | undefined) {
   const parsed = Number(value ?? 0);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function money(value: number | string | null | undefined) {
+  return new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" }).format(n(value));
 }
 
 function qty(value: number | string | null | undefined) {
@@ -115,7 +125,15 @@ export default async function InternalShippingControlPage({ searchParams }: { se
   if (!staff) redirect("/auth/check");
 
   const { data, error } = await (supabase as any).rpc("internal_shipping_control_v1");
+  const { data: customerInvoiceReleaseData, error: customerInvoiceReleaseError } = await (supabase as any).rpc("internal_customer_invoice_release_queue_v1");
+
   const allRows = ((data ?? []) as ShippingControlRow[]);
+  const customerInvoiceReleaseRows = ((customerInvoiceReleaseData ?? []) as CustomerInvoiceReleaseRow[]);
+  const customerInvoiceReadyRows = customerInvoiceReleaseRows.filter((row) => row.readiness_status === "ready_to_create_draft");
+  const customerInvoiceDraftRows = customerInvoiceReleaseRows.filter((row) => row.readiness_status === "draft_exists");
+  const customerInvoiceBlockedRows = customerInvoiceReleaseRows.filter((row) => row.readiness_status === "blocked");
+  const customerInvoiceReadyAmount = customerInvoiceReadyRows.reduce((sum, row) => sum + n(row.proposed_amount_gbp), 0);
+
   const rows = allRows.filter((row) => {
     const matchesStatus = matchesFilter(row, selectedStatus);
     if (!matchesStatus) return false;
@@ -129,12 +147,6 @@ export default async function InternalShippingControlPage({ searchParams }: { se
   const receiptIssues = allRows.filter((row) => row.receipt_status_summary === "receipt_issue").length;
   const readyForNext = allRows.filter((row) => row.next_action === "ready_for_sage_ap_readiness_review").length;
   const missingShipperInvoice = allRows.filter((row) => row.shipper_invoice_status === "not_started").length;
-  const invoiceReleaseCandidates = allRows.filter((row) =>
-    row.allocation_status_summary === "contents_allocated" &&
-    row.receipt_status_summary === "received_clean" &&
-    row.shipper_invoice_status === "accepted_current" &&
-    row.sage_readiness_status === "shipping_apportionment_approved"
-  ).length;
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-6 text-slate-950 sm:px-6 sm:py-8">
@@ -150,6 +162,7 @@ export default async function InternalShippingControlPage({ searchParams }: { se
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700"><div className="font-medium text-slate-950">{staff.full_name}</div><div>{staff.role_type}</div></div>
           </div>
           {error ? <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">Shipping control read model unavailable: {error.message}. Run the latest Supabase migration before testing this page.</p> : null}
+          {customerInvoiceReleaseError ? <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">Customer invoice release metrics unavailable: {customerInvoiceReleaseError.message}</p> : null}
         </section>
 
         <section className="grid gap-4 md:grid-cols-5">
@@ -164,9 +177,14 @@ export default async function InternalShippingControlPage({ searchParams }: { se
           <Link href="/internal/shipping-control/customer-invoice-release" className="rounded-3xl border border-emerald-200 bg-emerald-50 p-5 shadow-sm hover:bg-emerald-100">
             <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Focused action queue</p>
             <h2 className="mt-2 text-xl font-semibold text-emerald-950">Customer invoice release queue</h2>
-            <p className="mt-2 text-sm leading-6 text-emerald-900">Review all stable customer invoice intents in one place before bulk draft creation is enabled.</p>
-            <p className="mt-3 text-2xl font-semibold text-emerald-950">{invoiceReleaseCandidates}</p>
-            <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">candidate shipment batches</p>
+            <p className="mt-2 text-sm leading-6 text-emerald-900">Review stable customer invoice intents, select ready rows, and create controlled draft records.</p>
+            <p className="mt-3 text-2xl font-semibold text-emerald-950">{customerInvoiceReleaseRows.length}</p>
+            <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">customer invoice intents</p>
+            <div className="mt-4 grid gap-2 text-sm text-emerald-950 sm:grid-cols-3">
+              <div className="rounded-2xl bg-white/70 p-3"><p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Ready</p><p className="mt-1 font-bold">{customerInvoiceReadyRows.length}</p><p className="text-xs text-emerald-800">{money(customerInvoiceReadyAmount)}</p></div>
+              <div className="rounded-2xl bg-white/70 p-3"><p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Draft exists</p><p className="mt-1 font-bold">{customerInvoiceDraftRows.length}</p></div>
+              <div className="rounded-2xl bg-white/70 p-3"><p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Blocked</p><p className="mt-1 font-bold">{customerInvoiceBlockedRows.length}</p></div>
+            </div>
           </Link>
           <Link href="/internal/shipping-control/shipper-documents" className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm hover:bg-slate-50">
             <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Focused action queue</p>
