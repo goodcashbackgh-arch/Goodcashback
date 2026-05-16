@@ -32,6 +32,7 @@ type SupplierInvoiceRow = {
   review_status: string | null;
   mindee_ocr_status?: string | null;
   mindee_statement_ocr_status?: string | null;
+  blocked_from_sage_yn?: boolean | string | null;
   ocr_invoice_total_gbp: number | string | null;
   reconciliation_gbp_total: number | string | null;
 };
@@ -61,12 +62,17 @@ type MessageRow = {
 };
 
 type AllocationRow = {
+  allocation_id: string | null;
   importer_id: string | null;
+  supplier_invoice_id: string | null;
+  supplier_invoice_ref: string | null;
+  order_id: string | null;
   order_ref: string | null;
   dispute_id: string | null;
   allocation_type: string | null;
   allocation_status: string | null;
   allocated_gbp_amount: number | string | null;
+  reversed_yn: boolean | string | null;
 };
 
 type StatementSummaryRow = {
@@ -90,6 +96,7 @@ const gbpFormatter = new Intl.NumberFormat("en-GB", {
 const TERMINAL_EXCEPTION_STATUSES = new Set(["awaiting_refund_credit", "refunded", "replaced", "closed", "resolved"]);
 const FINALISH_EXCEPTION_STATUSES = new Set(["approved_refund", "awaiting_refund_credit", "refunded", "approved_replacement", "replaced", "closed", "resolved"]);
 const EVIDENCE_READY_LINE_STATUSES = new Set(["retailer_response_received", "resolved_refund", "resolved_replacement", "resolved"]);
+const BLOCKING_SUPPLIER_INVOICE_STATUSES = new Set(["needs_action", "pending_review", "duplicate_blocked", "rejected_resubmit_required"]);
 
 function text(value: unknown) {
   if (Array.isArray(value)) return text(value[0]);
@@ -140,6 +147,24 @@ function groupBy<T>(rows: T[], keyFn: (row: T) => string) {
   return grouped;
 }
 
+function nonReversedAllocations(allocations: AllocationRow[]) {
+  return allocations.filter((allocation) => text(allocation.allocation_status) !== "reversed" && !bool(allocation.reversed_yn));
+}
+
+function confirmedAllocations(allocations: AllocationRow[]) {
+  return nonReversedAllocations(allocations).filter((allocation) => text(allocation.allocation_status) === "confirmed");
+}
+
+function allocationMatchesOrderOrDispute(allocation: AllocationRow, order: OrderRow, disputes: DisputeRow[]) {
+  return allocation.order_id === order.id || allocation.order_ref === order.order_ref || disputes.some((dispute) => dispute.id === allocation.dispute_id);
+}
+
+function activeSupplierAllocationsForOrder(order: OrderRow, disputes: DisputeRow[], allocationRows: AllocationRow[]) {
+  return confirmedAllocations(allocationRows).filter((allocation) => {
+    return allocationMatchesOrderOrDispute(allocation, order, disputes) && text(allocation.allocation_type) === "supplier_invoice" && Boolean(text(allocation.supplier_invoice_id));
+  });
+}
+
 function lineEvidenceReady(lines: DisputeLineRow[]) {
   return lines.length > 0 && lines.every((line) => EVIDENCE_READY_LINE_STATUSES.has(text(line.conversation_status)) || Boolean(line.resolved_at));
 }
@@ -180,21 +205,46 @@ function exceptionLane(disputes: DisputeRow[]) {
   return "complete_or_terminal";
 }
 
-function invoiceLane(invoices: SupplierInvoiceRow[]) {
+function invoiceLane(invoices: SupplierInvoiceRow[], activeSupplierAllocations: AllocationRow[]) {
   if (invoices.length === 0) return "invoice_missing";
-  if (invoices.some((invoice) => ["needs_action", "pending_review", "duplicate_blocked", "rejected_resubmit_required"].includes(text(invoice.review_status)))) return "review_needed";
+
+  const activeSupplierInvoiceIds = new Set(activeSupplierAllocations.map((allocation) => text(allocation.supplier_invoice_id)).filter(Boolean));
+  const activeInvoices = invoices.filter((invoice) => activeSupplierInvoiceIds.has(invoice.id));
+
+  if (activeSupplierAllocations.length > 0) {
+    if (activeInvoices.length === 0) return "review_needed";
+    if (activeInvoices.some((invoice) => bool(invoice.blocked_from_sage_yn) || BLOCKING_SUPPLIER_INVOICE_STATUSES.has(text(invoice.review_status)))) return "review_needed";
+    if (activeInvoices.some((invoice) => text(invoice.review_status) === "approved_current")) return "supplier_invoice_ready";
+    return "invoice_uploaded";
+  }
+
+  if (invoices.some((invoice) => bool(invoice.blocked_from_sage_yn) || BLOCKING_SUPPLIER_INVOICE_STATUSES.has(text(invoice.review_status)))) return "review_needed";
   if (invoices.some((invoice) => text(invoice.review_status) === "approved_current")) return "supplier_invoice_ready";
   return "invoice_uploaded";
 }
 
-function dvaLane(importerId: string | null, statementRows: StatementSummaryRow[], allocationRows: AllocationRow[], orderRef: string | null, disputes: DisputeRow[]) {
-  const importerStatementRows = statementRows.filter((row) => !importerId || row.importer_id === importerId);
-  const orderAllocations = allocationRows.filter((allocation) => allocation.order_ref === orderRef || disputes.some((dispute) => dispute.id === allocation.dispute_id));
+function inactiveSupplierInvoiceWarnings(invoices: SupplierInvoiceRow[], activeSupplierAllocations: AllocationRow[]) {
+  const activeSupplierInvoiceIds = new Set(activeSupplierAllocations.map((allocation) => text(allocation.supplier_invoice_id)).filter(Boolean));
+  if (activeSupplierInvoiceIds.size === 0) return [];
+
+  return invoices
+    .filter((invoice) => {
+      if (activeSupplierInvoiceIds.has(invoice.id)) return false;
+      const status = text(invoice.review_status);
+      return bool(invoice.blocked_from_sage_yn) || BLOCKING_SUPPLIER_INVOICE_STATUSES.has(status);
+    })
+    .map((invoice) => `Inactive/superseded invoice ${invoice.invoice_ref || invoice.id} is ${pretty(invoice.review_status)} and ignored by the active invoice lane because it is not linked to a confirmed supplier OUT allocation.`);
+}
+
+function dvaLane(order: OrderRow, statementRows: StatementSummaryRow[], allocationRows: AllocationRow[], disputes: DisputeRow[]) {
+  const importerStatementRows = statementRows.filter((row) => !order.importer_id || row.importer_id === order.importer_id);
+  const orderAllocations = nonReversedAllocations(allocationRows).filter((allocation) => allocationMatchesOrderOrDispute(allocation, order, disputes));
+  const orderConfirmedAllocations = confirmedAllocations(orderAllocations);
   const openAmount = importerStatementRows.reduce((sum, row) => sum + num(row.confirmed_unallocated_gbp), 0);
   const hasBalanced = importerStatementRows.some((row) => bool(row.confirmed_balanced_yn));
-  const hasAllocations = orderAllocations.length > 0;
+  const hasAllocations = orderConfirmedAllocations.length > 0;
   const hasRefundException = disputes.some((dispute) => text(dispute.desired_outcome) === "refund" && ["approved_refund", "awaiting_refund_credit"].includes(text(dispute.status)));
-  const hasRefundAllocation = orderAllocations.some((allocation) => text(allocation.allocation_type) === "retailer_refund");
+  const hasRefundAllocation = orderConfirmedAllocations.some((allocation) => text(allocation.allocation_type) === "retailer_refund");
 
   if (hasRefundException && !hasRefundAllocation) return "refund_match_needed";
   if (hasAllocations && hasBalanced) return "balanced_or_part_explained";
@@ -268,11 +318,11 @@ export default async function StatusControlPage({
   const childOrderIds = new Set(orders.filter((order) => order.parent_order_id).map((order) => order.id));
 
   const [invoiceResult, disputeResult, disputeLineResult, messageResult, allocationResult, statementResult] = await Promise.all([
-    supabase.from("supplier_invoices").select("id, order_id, invoice_ref, review_status, ocr_invoice_total_gbp, reconciliation_gbp_total").limit(1000),
+    supabase.from("supplier_invoices").select("id, order_id, invoice_ref, review_status, blocked_from_sage_yn, ocr_invoice_total_gbp, reconciliation_gbp_total").limit(1000),
     supabase.from("disputes").select("id, order_id, desired_outcome, status, amount_impact_gbp, refund_approved_at, replacement_child_order_id, resolved_at, raised_at").limit(1000),
     supabase.from("dispute_lines").select("dispute_id, conversation_status, resolved_at").limit(2000),
     supabase.from("dispute_messages").select("dispute_id, message_type, counterparty").limit(2000),
-    supabase.from("dva_statement_line_allocation_detail_vw").select("importer_id, order_ref, dispute_id, allocation_type, allocation_status, allocated_gbp_amount").limit(2000),
+    supabase.from("dva_statement_line_allocation_detail_vw").select("allocation_id, importer_id, supplier_invoice_id, supplier_invoice_ref, order_id, order_ref, dispute_id, allocation_type, allocation_status, allocated_gbp_amount, reversed_yn").limit(2000),
     supabase.from("dva_statement_line_allocation_summary_vw").select("importer_id, direction, match_status, confirmed_balanced_yn, confirmed_unallocated_gbp, supplier_invoice_allocated_gbp, retailer_refund_allocated_gbp, fx_card_or_fee_allocated_gbp, exception_or_hold_allocated_gbp").limit(2000),
   ]);
 
@@ -286,17 +336,21 @@ export default async function StatusControlPage({
   const cards = orders.map((order) => {
     const invoices = invoicesByOrderId.get(order.id) ?? [];
     const disputes = disputesByOrderId.get(order.id) ?? [];
-    const warnings = disputes.flatMap((dispute) =>
-      disputeWarnings(
-        dispute,
-        linesByDisputeId.get(dispute.id) ?? [],
-        messagesByDisputeId.get(dispute.id) ?? [],
-        dispute.replacement_child_order_id ? childOrderIds.has(dispute.replacement_child_order_id) : true,
+    const activeSupplierAllocations = activeSupplierAllocationsForOrder(order, disputes, allocationRows);
+    const warnings = [
+      ...inactiveSupplierInvoiceWarnings(invoices, activeSupplierAllocations),
+      ...disputes.flatMap((dispute) =>
+        disputeWarnings(
+          dispute,
+          linesByDisputeId.get(dispute.id) ?? [],
+          messagesByDisputeId.get(dispute.id) ?? [],
+          dispute.replacement_child_order_id ? childOrderIds.has(dispute.replacement_child_order_id) : true,
+        ),
       ),
-    );
-    const invoiceStatus = invoiceLane(invoices);
+    ];
+    const invoiceStatus = invoiceLane(invoices, activeSupplierAllocations);
     const exceptionStatus = exceptionLane(disputes);
-    const dvaStatus = dvaLane(order.importer_id, statementRows, allocationRows, order.order_ref, disputes);
+    const dvaStatus = dvaLane(order, statementRows, allocationRows, disputes);
     const headline = deriveHeadline(invoiceStatus, exceptionStatus, dvaStatus, warnings);
     const next = nextActionFor(headline);
     return {
