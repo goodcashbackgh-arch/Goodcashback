@@ -37,6 +37,14 @@ type CustomerInvoiceReleaseRow = {
   proposed_amount_gbp: number | string | null;
 };
 
+type ShipperDocumentWorklistRow = {
+  shipping_document_id: string;
+  ocr_status: string | null;
+  review_status: string | null;
+  next_action: string | null;
+  ocr_match_status?: string | null;
+};
+
 function n(value: number | string | null | undefined) {
   const parsed = Number(value ?? 0);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -126,6 +134,7 @@ export default async function InternalShippingControlPage({ searchParams }: { se
 
   const { data, error } = await (supabase as any).rpc("internal_shipping_control_v1");
   const { data: customerInvoiceReleaseData, error: customerInvoiceReleaseError } = await (supabase as any).rpc("internal_customer_invoice_release_queue_v1");
+  const { data: shipperDocumentData, error: shipperDocumentError } = await (supabase as any).rpc("internal_shipping_document_worklist_v1");
 
   const allRows = ((data ?? []) as ShippingControlRow[]);
   const customerInvoiceReleaseRows = ((customerInvoiceReleaseData ?? []) as CustomerInvoiceReleaseRow[]);
@@ -133,6 +142,15 @@ export default async function InternalShippingControlPage({ searchParams }: { se
   const customerInvoiceDraftRows = customerInvoiceReleaseRows.filter((row) => row.readiness_status === "draft_exists");
   const customerInvoiceBlockedRows = customerInvoiceReleaseRows.filter((row) => row.readiness_status === "blocked");
   const customerInvoiceReadyAmount = customerInvoiceReadyRows.reduce((sum, row) => sum + n(row.proposed_amount_gbp), 0);
+
+  const shipperDocumentRows = ((shipperDocumentData ?? []) as ShipperDocumentWorklistRow[]);
+  const shipperDocumentProcessingRows = shipperDocumentRows.filter((row) => ["queued", "processing"].includes(row.ocr_status ?? ""));
+  const shipperDocumentNeedsReviewRows = shipperDocumentRows.filter((row) =>
+    ["needs_supervisor_review", "needs_review"].includes(row.review_status ?? "") ||
+    ["mismatch", "needs_review", "ocr_ready_needs_review"].includes(row.ocr_match_status ?? "") ||
+    row.next_action === "needs_supervisor_review"
+  );
+  const shipperDocumentAcceptedRows = shipperDocumentRows.filter((row) => row.review_status === "accepted_current");
 
   const rows = allRows.filter((row) => {
     const matchesStatus = matchesFilter(row, selectedStatus);
@@ -163,6 +181,7 @@ export default async function InternalShippingControlPage({ searchParams }: { se
           </div>
           {error ? <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">Shipping control read model unavailable: {error.message}. Run the latest Supabase migration before testing this page.</p> : null}
           {customerInvoiceReleaseError ? <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">Customer invoice release metrics unavailable: {customerInvoiceReleaseError.message}</p> : null}
+          {shipperDocumentError ? <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">Shipper document metrics unavailable: {shipperDocumentError.message}</p> : null}
         </section>
 
         <section className="grid gap-4 md:grid-cols-5">
@@ -190,6 +209,13 @@ export default async function InternalShippingControlPage({ searchParams }: { se
             <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Focused action queue</p>
             <h2 className="mt-2 text-xl font-semibold">Shipper document review</h2>
             <p className="mt-2 text-sm leading-6 text-slate-600">Accept, reject or request resubmission for shipper invoice/receipt documents.</p>
+            <p className="mt-3 text-2xl font-semibold text-slate-950">{shipperDocumentRows.length}</p>
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">active submitted docs</p>
+            <div className="mt-4 grid gap-2 text-sm text-slate-950 sm:grid-cols-3">
+              <div className="rounded-2xl bg-slate-50 p-3"><p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Needs review</p><p className="mt-1 font-bold">{shipperDocumentNeedsReviewRows.length}</p></div>
+              <div className="rounded-2xl bg-slate-50 p-3"><p className="text-xs font-semibold uppercase tracking-wide text-slate-500">OCR processing</p><p className="mt-1 font-bold">{shipperDocumentProcessingRows.length}</p></div>
+              <div className="rounded-2xl bg-slate-50 p-3"><p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Accepted</p><p className="mt-1 font-bold">{shipperDocumentAcceptedRows.length}</p></div>
+            </div>
           </Link>
           <div className="rounded-3xl border border-dashed border-slate-300 bg-slate-50 p-5 text-slate-500">
             <p className="text-xs font-semibold uppercase tracking-wide">Later action queue</p>
