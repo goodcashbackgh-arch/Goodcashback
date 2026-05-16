@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 import { createCustomerInvoiceDrafts } from "./actions";
+import SelectionControls from "./SelectionControls";
 
 type Row = {
   shipment_batch_id: string;
@@ -79,6 +80,7 @@ export default async function CustomerInvoiceReleaseQueuePage({ searchParams }: 
   const blockedRows = rows.filter((row) => row.readiness_status === "blocked");
   const draftRows = rows.filter((row) => row.readiness_status === "draft_exists");
   const totalAmount = readyRows.reduce((sum, row) => sum + n(row.proposed_amount_gbp), 0);
+  const releaseFormId = "customer-invoice-release-selection-form";
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-6 text-slate-950 sm:px-6 sm:py-8">
@@ -93,7 +95,7 @@ export default async function CustomerInvoiceReleaseQueuePage({ searchParams }: 
             <div>
               <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Customer invoice release queue</h1>
               <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
-                Focused supervisor queue for stable customer invoice intents. Create draft records only for ready rows. This does not post to Sage, clear VAT, generate COS/BOL/POD, or close export evidence.
+                Focused supervisor queue for stable customer invoice intents. Select ready rows and create controlled draft records. This does not post to Sage, clear VAT, generate COS/BOL/POD, or close export evidence.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700">
@@ -118,15 +120,48 @@ export default async function CustomerInvoiceReleaseQueuePage({ searchParams }: 
           <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
             <div>
               <h2 className="text-xl font-semibold">Ready and blocked invoice intents</h2>
-              <p className="mt-2 text-sm leading-6 text-slate-600">Use Preview to inspect a booking. Use the bulk action when the ready set looks right.</p>
+              <p className="mt-2 text-sm leading-6 text-slate-600">Use Preview to inspect a booking. Select only the ready rows you want to convert to draft records.</p>
             </div>
-            <form action={createCustomerInvoiceDrafts}>
-              {readyRows.map((row) => <input key={row.shipment_batch_id} type="hidden" name="shipment_batch_id" value={row.shipment_batch_id} />)}
-              <button disabled={readyRows.length === 0 || Boolean(error)} className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:border disabled:border-dashed disabled:border-slate-300 disabled:bg-slate-100 disabled:text-slate-500">
-                Create drafts for all ready ({readyRows.length})
-              </button>
-            </form>
+            <div className="flex flex-col gap-2 sm:items-end">
+              <SelectionControls formId={releaseFormId} disabled={readyRows.length === 0 || Boolean(error)} />
+              <form id={releaseFormId} action={createCustomerInvoiceDrafts}>
+                <button disabled={readyRows.length === 0 || Boolean(error)} className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:border disabled:border-dashed disabled:border-slate-300 disabled:bg-slate-100 disabled:text-slate-500">
+                  Create drafts for selected ready rows
+                </button>
+              </form>
+            </div>
           </div>
+
+          {readyRows.length > 0 ? (
+            <div className="mt-5 rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h3 className="text-sm font-bold text-emerald-950">Select ready rows to process</h3>
+                  <p className="mt-1 text-xs leading-5 text-emerald-900">Rows are selected by default to preserve the previous bulk behaviour. Unselect anything you do not want to draft now.</p>
+                </div>
+                <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">{readyRows.length} ready · {money(totalAmount)}</p>
+              </div>
+              <div className="mt-3 grid gap-2 lg:grid-cols-2">
+                {readyRows.map((row) => (
+                  <label key={`select-${row.shipment_batch_id}`} className="flex cursor-pointer items-start gap-3 rounded-xl border border-emerald-200 bg-white p-3 text-sm text-slate-800 hover:bg-emerald-50">
+                    <input
+                      type="checkbox"
+                      form={releaseFormId}
+                      name="shipment_batch_id"
+                      value={row.shipment_batch_id}
+                      defaultChecked
+                      data-release-checkbox="true"
+                      className="mt-1 h-4 w-4 rounded border-slate-300 text-emerald-700"
+                    />
+                    <span className="min-w-0">
+                      <span className="block font-semibold text-slate-950">{row.booking_ref ?? row.shipment_batch_id}</span>
+                      <span className="block text-xs text-slate-600">{row.order_refs ?? row.first_order_ref ?? "—"} · {money(row.proposed_amount_gbp)}</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          ) : null}
 
           {rows.length === 0 ? <p className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">No customer invoice intents found yet.</p> : null}
 
@@ -151,6 +186,7 @@ export default async function CustomerInvoiceReleaseQueuePage({ searchParams }: 
                 {n(row.blocker_count) > 0 ? <p className="mt-3 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">{(row.blockers ?? []).map(friendly).join(", ")}</p> : null}
                 <div className="mt-4 flex flex-wrap gap-2">
                   <Link href={`/internal/shipping-control/customer-invoice/${row.shipment_batch_id}`} className="rounded-xl border border-sky-300 bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-900">Preview intent</Link>
+                  <Link href={`/internal/shipping-control/readiness/${row.shipment_batch_id}`} className="rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-900">Readiness route</Link>
                   <Link href={`/internal/shipping-control/${row.shipment_batch_id}`} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800">Batch detail</Link>
                 </div>
               </article>
@@ -181,7 +217,7 @@ export default async function CustomerInvoiceReleaseQueuePage({ searchParams }: 
                     <td className="px-3 py-3 text-right align-top">{n(row.ready_line_count)} / {n(row.line_count)}</td>
                     <td className="px-3 py-3 align-top"><p>{friendly(row.sales_invoice_state)}</p>{n(row.blocker_count) > 0 ? <p className="mt-1 text-xs text-rose-700">{(row.blockers ?? []).map(friendly).join(", ")}</p> : null}</td>
                     <td className="px-3 py-3 align-top"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.readiness_status)}`}>{actionLabel(row.readiness_status)}</span></td>
-                    <td className="px-3 py-3 align-top"><div className="flex flex-col gap-2"><Link href={`/internal/shipping-control/customer-invoice/${row.shipment_batch_id}`} className="rounded-xl border border-sky-300 bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-900">Preview intent</Link><Link href={`/internal/shipping-control/${row.shipment_batch_id}`} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800">Batch detail</Link></div></td>
+                    <td className="px-3 py-3 align-top"><div className="flex flex-col gap-2"><Link href={`/internal/shipping-control/customer-invoice/${row.shipment_batch_id}`} className="rounded-xl border border-sky-300 bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-900">Preview intent</Link><Link href={`/internal/shipping-control/readiness/${row.shipment_batch_id}`} className="rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-900">Readiness route</Link><Link href={`/internal/shipping-control/${row.shipment_batch_id}`} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800">Batch detail</Link></div></td>
                   </tr>
                 ))}
               </tbody>
