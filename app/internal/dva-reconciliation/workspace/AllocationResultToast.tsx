@@ -10,14 +10,18 @@ export default function AllocationResultToast() {
     const error = params.get("allocation_error");
     const success = params.get("allocation_success");
 
+    if (!error && !success) return;
+
     if (error) {
       setMessage({ tone: "error", text: error });
-      return;
-    }
-
-    if (success) {
+    } else if (success) {
       setMessage({ tone: "success", text: success });
     }
+
+    const url = new URL(window.location.href);
+    url.searchParams.delete("allocation_error");
+    url.searchParams.delete("allocation_success");
+    window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
   }, []);
 
   if (!message) return null;
