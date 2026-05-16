@@ -61,12 +61,17 @@ type MessageRow = {
 };
 
 type AllocationRow = {
+  allocation_id: string | null;
   importer_id: string | null;
+  supplier_invoice_id: string | null;
+  supplier_invoice_ref: string | null;
+  order_id: string | null;
   order_ref: string | null;
   dispute_id: string | null;
   allocation_type: string | null;
   allocation_status: string | null;
   allocated_gbp_amount: number | string | null;
+  reversed_yn: boolean | string | null;
 };
 
 type StatementSummaryRow = {
@@ -123,6 +128,7 @@ const gbpFormatter = new Intl.NumberFormat("en-GB", {
 const TERMINAL_EXCEPTION_STATUSES = new Set(["replaced", "awaiting_refund_credit", "refunded", "closed", "resolved"]);
 const FINALISH_EXCEPTION_STATUSES = new Set(["approved_refund", "awaiting_refund_credit", "refunded", "approved_replacement", "replaced", "closed", "resolved"]);
 const EVIDENCE_READY_LINE_STATUSES = new Set(["retailer_response_received", "resolved_refund", "resolved_replacement", "resolved", "closed_no_action"]);
+const BLOCKING_SUPPLIER_INVOICE_STATUSES = new Set(["needs_action", "pending_review", "duplicate_blocked", "rejected_resubmit_required"]);
 
 function text(value: unknown) {
   if (Array.isArray(value)) return text(value[0]);
@@ -185,6 +191,14 @@ function amountFromFundingRow(row?: Row) {
   return { funded, required, gap, label };
 }
 
+function nonReversedAllocations(allocations: AllocationRow[]) {
+  return allocations.filter((allocation) => text(allocation.allocation_status) !== "reversed" && !bool(allocation.reversed_yn));
+}
+
+function confirmedAllocations(allocations: AllocationRow[]) {
+  return nonReversedAllocations(allocations).filter((allocation) => text(allocation.allocation_status) === "confirmed");
+}
+
 function lineEvidenceReady(lines: DisputeLineRow[]) {
   const activeLines = lines.filter((line) => !line.resolved_at);
   return activeLines.length > 0 && activeLines.every((line) => EVIDENCE_READY_LINE_STATUSES.has(text(line.conversation_status)));
@@ -194,22 +208,49 @@ function hasRetailerReply(messages: MessageRow[]) {
   return messages.some((message) => text(message.message_type) === "retailer_reply" || text(message.counterparty) === "retailer");
 }
 
-function invoiceReadiness(invoices: SupplierInvoiceRow[]) {
-  if (invoices.length === 0) return { label: "missing", ready: false, blockers: ["No supplier invoice found"] };
+function invoiceReadiness(invoices: SupplierInvoiceRow[], activeSupplierAllocations: AllocationRow[]) {
+  if (invoices.length === 0) return { label: "missing", ready: false, blockers: ["No supplier invoice found"], warnings: [] };
 
   const blockers: string[] = [];
-  for (const invoice of invoices) {
+  const warnings: string[] = [];
+  const activeSupplierInvoiceIds = new Set(activeSupplierAllocations.map((allocation) => text(allocation.supplier_invoice_id)).filter(Boolean));
+  const activeInvoices = invoices.filter((invoice) => activeSupplierInvoiceIds.has(invoice.id));
+
+  if (activeSupplierAllocations.length === 0) {
+    blockers.push("No confirmed supplier OUT allocation linked to a supplier invoice");
+  }
+
+  if (activeSupplierInvoiceIds.size > 0 && activeInvoices.length === 0) {
+    blockers.push("Confirmed supplier OUT allocation points to a supplier invoice that is not visible on this order");
+  }
+
+  for (const invoice of activeInvoices) {
     const status = text(invoice.review_status);
-    if (bool(invoice.blocked_from_sage_yn)) blockers.push(`Invoice ${invoice.invoice_ref || invoice.id} is blocked from Sage`);
-    if (["needs_action", "pending_review", "duplicate_blocked", "rejected_resubmit_required"].includes(status)) {
-      blockers.push(`Invoice ${invoice.invoice_ref || invoice.id} needs review: ${pretty(status)}`);
+    if (bool(invoice.blocked_from_sage_yn)) blockers.push(`Active invoice ${invoice.invoice_ref || invoice.id} is blocked from Sage`);
+    if (BLOCKING_SUPPLIER_INVOICE_STATUSES.has(status)) {
+      blockers.push(`Active invoice ${invoice.invoice_ref || invoice.id} needs review: ${pretty(status)}`);
     }
   }
 
-  const hasApprovedCurrent = invoices.some((invoice) => text(invoice.review_status) === "approved_current");
-  if (!hasApprovedCurrent) blockers.push("No approved-current supplier invoice found");
+  const hasApprovedCurrent = activeInvoices.some((invoice) => text(invoice.review_status) === "approved_current" && !bool(invoice.blocked_from_sage_yn));
+  if (!hasApprovedCurrent) blockers.push("No approved-current active supplier invoice found");
 
-  return { label: hasApprovedCurrent && blockers.length === 0 ? "approved current" : "not ready", ready: hasApprovedCurrent && blockers.length === 0, blockers };
+  const inactiveProblemInvoices = invoices.filter((invoice) => {
+    if (activeSupplierInvoiceIds.has(invoice.id)) return false;
+    const status = text(invoice.review_status);
+    return bool(invoice.blocked_from_sage_yn) || BLOCKING_SUPPLIER_INVOICE_STATUSES.has(status);
+  });
+
+  for (const invoice of inactiveProblemInvoices) {
+    warnings.push(`Inactive/superseded invoice ${invoice.invoice_ref || invoice.id} is ${pretty(invoice.review_status)} and is ignored because it is not linked to a confirmed supplier OUT allocation`);
+  }
+
+  return {
+    label: hasApprovedCurrent && blockers.length === 0 ? "approved current" : "not ready",
+    ready: hasApprovedCurrent && blockers.length === 0,
+    blockers,
+    warnings,
+  };
 }
 
 function exceptionReadiness(
@@ -220,6 +261,8 @@ function exceptionReadiness(
 ) {
   const blockers: string[] = [];
   const warnings: string[] = [];
+  const activeAllocations = nonReversedAllocations(allocations);
+  const activeConfirmedAllocations = confirmedAllocations(allocations);
 
   for (const dispute of disputes) {
     const status = text(dispute.status);
@@ -228,9 +271,10 @@ function exceptionReadiness(
     const messages = messagesByDisputeId.get(dispute.id) ?? [];
     const evidenceReady = lineEvidenceReady(lines);
     const retailerReply = hasRetailerReply(messages);
-    const disputeAllocations = allocations.filter((allocation) => allocation.dispute_id === dispute.id);
-    const hasRefundAllocation = disputeAllocations.some((allocation) => text(allocation.allocation_type) === "retailer_refund");
-    const hasSupplierChargeAllocation = disputeAllocations.some((allocation) => text(allocation.allocation_type) === "supplier_invoice");
+    const disputeAllocations = activeAllocations.filter((allocation) => allocation.dispute_id === dispute.id);
+    const disputeConfirmedAllocations = activeConfirmedAllocations.filter((allocation) => allocation.dispute_id === dispute.id);
+    const hasRefundAllocation = disputeConfirmedAllocations.some((allocation) => text(allocation.allocation_type) === "retailer_refund");
+    const hasSupplierChargeAllocation = disputeConfirmedAllocations.some((allocation) => text(allocation.allocation_type) === "supplier_invoice");
     const hasExceptionHold = disputeAllocations.some((allocation) => ["exception_hold", "unmatched_hold"].includes(text(allocation.allocation_type)));
 
     if (!TERMINAL_EXCEPTION_STATUSES.has(status) && !dispute.resolved_at) {
@@ -258,19 +302,30 @@ function exceptionReadiness(
   return { label: blockers.length === 0 ? "controlled" : "blocked", ready: blockers.length === 0, blockers, warnings };
 }
 
+function allocationMatchesOrderOrDispute(allocation: AllocationRow, order: OrderRow, disputes: DisputeRow[]) {
+  return allocation.order_id === order.id || allocation.order_ref === order.order_ref || disputes.some((dispute) => dispute.id === allocation.dispute_id);
+}
+
+function activeSupplierAllocationsForOrder(order: OrderRow, disputes: DisputeRow[], allocationRows: AllocationRow[]) {
+  return confirmedAllocations(allocationRows).filter((allocation) => {
+    return allocationMatchesOrderOrDispute(allocation, order, disputes) && text(allocation.allocation_type) === "supplier_invoice" && Boolean(text(allocation.supplier_invoice_id));
+  });
+}
+
 function dvaReadiness(order: OrderRow, disputes: DisputeRow[], statementRows: StatementSummaryRow[], allocationRows: AllocationRow[]) {
   const blockers: string[] = [];
   const warnings: string[] = [];
-  const orderAllocations = allocationRows.filter((allocation) => allocation.order_ref === order.order_ref || disputes.some((dispute) => dispute.id === allocation.dispute_id));
-  const hasSupplierAllocation = orderAllocations.some((allocation) => text(allocation.allocation_type) === "supplier_invoice");
+  const orderAllocations = nonReversedAllocations(allocationRows).filter((allocation) => allocationMatchesOrderOrDispute(allocation, order, disputes));
+  const orderConfirmedAllocations = confirmedAllocations(orderAllocations);
+  const hasSupplierAllocation = orderConfirmedAllocations.some((allocation) => text(allocation.allocation_type) === "supplier_invoice");
   const hasRefundNeeded = disputes.some((dispute) => text(dispute.desired_outcome) === "refund" && ["approved_refund", "awaiting_refund_credit"].includes(text(dispute.status)));
-  const hasRefundAllocation = orderAllocations.some((allocation) => text(allocation.allocation_type) === "retailer_refund");
+  const hasRefundAllocation = orderConfirmedAllocations.some((allocation) => text(allocation.allocation_type) === "retailer_refund");
   const hasHold = orderAllocations.some((allocation) => ["exception_hold", "unmatched_hold"].includes(text(allocation.allocation_type)));
   const importerRows = statementRows.filter((row) => row.importer_id === order.importer_id);
   const importerOpen = importerRows.reduce((sum, row) => sum + num(row.confirmed_unallocated_gbp), 0);
 
-  if (!hasSupplierAllocation) blockers.push("No supplier OUT charge allocation found for this order/invoice");
-  if (hasRefundNeeded && !hasRefundAllocation) blockers.push("Refund accepted/awaiting credit but no refund IN allocation found");
+  if (!hasSupplierAllocation) blockers.push("No confirmed supplier OUT charge allocation found for this order/invoice");
+  if (hasRefundNeeded && !hasRefundAllocation) blockers.push("Refund accepted/awaiting credit but no confirmed refund IN allocation found");
   if (hasHold) warnings.push("Order/dispute has an exception/unmatched hold allocation that needs supervisor review");
   if (importerRows.length === 0) warnings.push("No committed DVA/card statement lines found for this importer in summary view");
   if (importerOpen > 0) warnings.push(`Importer-level warning: ${gbp(importerOpen)} open/unallocated statement value across visible statement lines`);
@@ -391,7 +446,7 @@ export default async function PreSageFinancialReadinessPage({
     supabase.from("disputes").select("id, order_id, desired_outcome, status, amount_impact_gbp, refund_approved_at, replacement_child_order_id, resolved_at, raised_at").limit(1000),
     supabase.from("dispute_lines").select("dispute_id, conversation_status, resolved_at").limit(2000),
     supabase.from("dispute_messages").select("dispute_id, message_type, counterparty").limit(2000),
-    supabase.from("dva_statement_line_allocation_detail_vw").select("importer_id, order_ref, dispute_id, allocation_type, allocation_status, allocated_gbp_amount").limit(2000),
+    supabase.from("dva_statement_line_allocation_detail_vw").select("allocation_id, importer_id, supplier_invoice_id, supplier_invoice_ref, order_id, order_ref, dispute_id, allocation_type, allocation_status, allocated_gbp_amount, reversed_yn").limit(2000),
     supabase.from("dva_statement_line_allocation_summary_vw").select("importer_id, match_status, confirmed_balanced_yn, confirmed_unallocated_gbp, supplier_invoice_allocated_gbp, retailer_refund_allocated_gbp, fx_card_or_fee_allocated_gbp, exception_or_hold_allocated_gbp").limit(2000),
     supabase.from("order_funding_position_vw").select("*").limit(1000),
     (supabase as any).rpc("internal_ready_for_sage_queue_v2"),
@@ -418,7 +473,8 @@ export default async function PreSageFinancialReadinessPage({
     const invoices = invoicesByOrderId.get(order.id) ?? [];
     const disputes = disputesByOrderId.get(order.id) ?? [];
     const funding = amountFromFundingRow(fundingByOrderId.get(order.id));
-    const invoice = invoiceReadiness(invoices);
+    const activeSupplierAllocations = activeSupplierAllocationsForOrder(order, disputes, allocationRows);
+    const invoice = invoiceReadiness(invoices, activeSupplierAllocations);
     const dva = dvaReadiness(order, disputes, statementRows, allocationRows);
     const exception = exceptionReadiness(disputes, linesByDisputeId, messagesByDisputeId, allocationRows);
     const upstreamBlockers = [
@@ -449,6 +505,7 @@ export default async function PreSageFinancialReadinessPage({
       ...(upstreamReady ? rawShipperAp.blockers : []),
     ];
     const warnings = [
+      ...invoice.warnings,
       ...dva.warnings,
       ...exception.warnings,
       ...(upstreamReady ? rawCustomerSales.warnings : []),
