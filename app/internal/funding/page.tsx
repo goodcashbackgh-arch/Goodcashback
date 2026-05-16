@@ -213,7 +213,7 @@ function creditReviewReason(candidate: Omit<CreditCandidate, "canApply" | "revie
   return "Ready to apply importer credit.";
 }
 
-function SummaryCard({
+function CompactMetric({
   title,
   value,
   hint,
@@ -222,22 +222,21 @@ function SummaryCard({
   title: string;
   value: string;
   hint: string;
-  tone?: "slate" | "emerald" | "sky" | "amber" | "rose" | "violet";
+  tone?: "slate" | "emerald" | "sky" | "amber" | "violet";
 }) {
   const toneClass = {
     slate: "bg-slate-50 text-slate-950 ring-slate-200",
     emerald: "bg-emerald-50 text-emerald-950 ring-emerald-200",
     sky: "bg-sky-50 text-sky-950 ring-sky-200",
     amber: "bg-amber-50 text-amber-950 ring-amber-200",
-    rose: "bg-rose-50 text-rose-950 ring-rose-200",
     violet: "bg-violet-50 text-violet-950 ring-violet-200",
   }[tone];
 
   return (
-    <div className={`rounded-2xl p-4 ring-1 ${toneClass}`}>
-      <p className="text-xs font-bold uppercase tracking-wide opacity-70">{title}</p>
-      <p className="mt-2 text-2xl font-semibold">{value}</p>
-      <p className="mt-1 text-xs leading-5 opacity-75">{hint}</p>
+    <div className={`rounded-2xl p-3 ring-1 ${toneClass}`}>
+      <p className="text-[11px] font-bold uppercase tracking-wide opacity-70">{title}</p>
+      <p className="mt-1 text-xl font-semibold">{value}</p>
+      <p className="mt-1 text-[11px] leading-4 opacity-75">{hint}</p>
     </div>
   );
 }
@@ -260,33 +259,33 @@ function DvaFundingActionCard({ candidate }: { candidate: FundingCandidate }) {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="text-xs font-bold uppercase tracking-wide text-emerald-600">Ready: customer/importer IN → order funding</p>
-          <h3 className="mt-2 text-lg font-semibold">{candidate.orderRef || candidate.orderId}</h3>
+          <h3 className="mt-1 text-lg font-semibold">{candidate.orderRef || candidate.orderId}</h3>
           <p className="mt-1 break-all text-xs text-slate-500">DVA line: {candidate.dvaStatementLineId}</p>
         </div>
         <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-200">ready to fund</span>
       </div>
 
-      <div className="mt-4 grid gap-3 sm:grid-cols-4">
-        <SummaryCard title="Statement IN" value={gbp(candidate.amountGbp)} hint="GBP value from committed DVA/card line." tone="emerald" />
-        <SummaryCard title="Order gap" value={candidate.gap === null ? "—" : gbp(candidate.gap)} hint="Remaining order funding gap." tone="amber" />
-        <SummaryCard title="Match source" value={candidate.matchSource === "inferred" ? "Inferred" : "Suggested"} hint={`Score ${candidate.matchScore}. ${candidate.matchReasons.join("; ") || "Worklist suggestion."}`} tone="sky" />
-        <SummaryCard title="Suggested action" value="Fund" hint="Uses staff_reconcile_dva_line_to_order." tone="violet" />
+      <div className="mt-3 grid gap-2 md:grid-cols-4">
+        <CompactMetric title="Statement IN" value={gbp(candidate.amountGbp)} hint="Committed DVA/card value." tone="emerald" />
+        <CompactMetric title="Order gap" value={candidate.gap === null ? "—" : gbp(candidate.gap)} hint="Remaining funding gap." tone="amber" />
+        <CompactMetric title="Match" value={candidate.matchSource === "inferred" ? "Inferred" : "Suggested"} hint={`Score ${candidate.matchScore}. ${candidate.matchReasons.join("; ") || "Worklist suggestion."}`} tone="sky" />
+        <CompactMetric title="Action" value="Fund" hint="Order funding RPC only." tone="violet" />
       </div>
 
-      <form action={reconcileDvaLineToOrderAction} className="mt-4 flex flex-wrap items-center gap-2">
+      <form action={reconcileDvaLineToOrderAction} className="mt-3 flex flex-wrap items-center gap-2">
         <input type="hidden" name="dva_statement_line_id" value={candidate.dvaStatementLineId} />
         <input type="hidden" name="order_id" value={candidate.orderId} />
         <input type="hidden" name="match_suggestion_id" value={candidate.matchSuggestionId} />
         <input type="hidden" name="gap_remaining_gbp" value={candidate.gap ?? ""} />
-        <input name="reconciled_gbp_amount" type="number" step="0.01" min="0.01" defaultValue={candidate.amountGbp.toFixed(2)} className="w-32 rounded-xl border border-slate-300 px-3 py-2 text-sm" />
+        <input name="reconciled_gbp_amount" type="number" step="0.01" min="0.01" defaultValue={candidate.amountGbp.toFixed(2)} className="w-28 rounded-xl border border-slate-300 px-3 py-2 text-sm" />
         {showOverfunding ? (
           <label className="inline-flex items-center gap-2 text-xs text-slate-700">
             <input type="checkbox" name="confirm_overfunding" value="yes" />
-            Allow overfunding because inbound amount exceeds gap
+            Allow overfunding
           </label>
         ) : null}
-        <input name="notes" type="text" placeholder="Notes (optional)" className="w-48 rounded-xl border border-slate-300 px-3 py-2 text-sm" defaultValue={candidate.matchSource === "inferred" ? `UI inferred funding match: ${candidate.matchReasons.join("; ")}` : ""} />
-        <button type="submit" className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white">Apply as funding</button>
+        <input name="notes" type="text" placeholder="Notes" className="w-56 rounded-xl border border-slate-300 px-3 py-2 text-sm" defaultValue={candidate.matchSource === "inferred" ? `UI inferred funding match: ${candidate.matchReasons.join("; ")}` : ""} />
+        <button type="submit" className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white">Apply funding</button>
       </form>
     </article>
   );
@@ -298,22 +297,22 @@ function CreditActionCard({ candidate }: { candidate: CreditCandidate }) {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="text-xs font-bold uppercase tracking-wide text-amber-600">Ready: importer credit → order gap</p>
-          <h3 className="mt-2 text-lg font-semibold">{candidate.orderRef || "No order ref"}</h3>
+          <h3 className="mt-1 text-lg font-semibold">{candidate.orderRef || "No order ref"}</h3>
           <p className="mt-1 text-xs text-slate-500">Auth: {candidate.paymentAuthId || "—"} · Status: {candidate.status || "—"}</p>
         </div>
         <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700 ring-1 ring-amber-200">credit available</span>
       </div>
 
-      <div className="mt-4 grid gap-3 sm:grid-cols-3">
-        <SummaryCard title="Funding gap" value={gbp(candidate.gap)} hint="Remaining order funding gap." tone="amber" />
-        <SummaryCard title="Available credit" value={gbp(candidate.availableCredit)} hint="Importer credit available." tone="sky" />
-        <SummaryCard title="Max apply" value={gbp(candidate.maxApplyAmount)} hint="Capped at lower of gap and credit." tone="emerald" />
+      <div className="mt-3 grid gap-2 md:grid-cols-3">
+        <CompactMetric title="Funding gap" value={gbp(candidate.gap)} hint="Remaining order gap." tone="amber" />
+        <CompactMetric title="Available credit" value={gbp(candidate.availableCredit)} hint="Importer credit pool." tone="sky" />
+        <CompactMetric title="Max apply" value={gbp(candidate.maxApplyAmount)} hint="Lower of gap and credit." tone="emerald" />
       </div>
 
-      <form action={applyImporterCreditAction} className="mt-4 flex flex-wrap items-center gap-2">
+      <form action={applyImporterCreditAction} className="mt-3 flex flex-wrap items-center gap-2">
         <input type="hidden" name="importer_id" value={candidate.importerId} />
         <input type="hidden" name="order_id" value={candidate.orderId} />
-        <input name="amount_gbp" type="number" step="0.01" min="0.01" max={candidate.maxApplyAmount} defaultValue={candidate.maxApplyAmount.toFixed(2)} className="w-32 rounded-xl border border-slate-300 px-3 py-2 text-sm" />
+        <input name="amount_gbp" type="number" step="0.01" min="0.01" max={candidate.maxApplyAmount} defaultValue={candidate.maxApplyAmount.toFixed(2)} className="w-28 rounded-xl border border-slate-300 px-3 py-2 text-sm" />
         <button type="submit" className="rounded-xl bg-amber-600 px-4 py-2 text-sm font-semibold text-white">Apply credit</button>
       </form>
     </article>
@@ -340,7 +339,6 @@ function ReviewSummary({
     acc[row.reviewReason] = (acc[row.reviewReason] ?? 0) + 1;
     return acc;
   }, {});
-  const samples = rows.slice(0, 5);
 
   return (
     <details className={`rounded-2xl border p-4 ${toneClass}`}>
@@ -348,24 +346,12 @@ function ReviewSummary({
       <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
         {Object.entries(reasonCounts).map(([reason, count]) => (
           <div key={reason} className="rounded-xl bg-white/70 p-3 text-xs ring-1 ring-white/60">
-            <p className="font-bold text-slate-950">{count}</p>
+            <p className="text-lg font-bold text-slate-950">{count}</p>
             <p className="mt-1 leading-5">{reason}</p>
           </div>
         ))}
       </div>
-      <div className="mt-4 rounded-xl bg-white/70 p-3 text-xs leading-5 ring-1 ring-white/60">
-        <p className="font-bold text-slate-950">Sample rows only</p>
-        <div className="mt-2 grid gap-2">
-          {samples.map((row, index) => (
-            <div key={`${title}-${index}`} className="rounded-lg bg-white p-2 ring-1 ring-slate-200">
-              <p className="font-semibold text-slate-900">{"dvaStatementLineId" in row ? row.orderRef || row.orderId || "No strong order match" : row.orderRef || "No order ref"}</p>
-              <p className="text-slate-600">{row.reviewReason}</p>
-              {"matchReasons" in row && row.matchReasons.length > 0 ? <p className="text-slate-500">Signals: {row.matchReasons.join("; ")}</p> : null}
-            </div>
-          ))}
-        </div>
-        {rows.length > samples.length ? <p className="mt-2 text-slate-500">Showing {samples.length} of {rows.length}. Full raw detail remains in Advanced diagnostics.</p> : null}
-      </div>
+      <p className="mt-3 text-xs leading-5 opacity-75">Row-level evidence stays in Advanced diagnostics so this page does not become a second spreadsheet.</p>
     </details>
   );
 }
@@ -519,10 +505,10 @@ export default async function InternalFundingPage({
         </section>
 
         <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-          <SummaryCard title="Open funding gaps" value={gbp(openFundingGap)} hint="Visible order funding gaps from order_funding_position_vw." tone={openFundingGap > 0 ? "amber" : "emerald"} />
-          <SummaryCard title="Available credit" value={gbp(availableCredit)} hint="Importer credit available from importer_balance_vw." tone={availableCredit > 0 ? "sky" : "slate"} />
-          <SummaryCard title="Ready funding candidates" value={String(readyFundingCandidates.length)} hint="Inbound lines with strong ref/order evidence and positive gap." tone={readyFundingCandidates.length > 0 ? "emerald" : "slate"} />
-          <SummaryCard title="Needs review" value={String(needsReviewCount)} hint="Rows not exposed as action forms because a safe match/gap is missing." tone={needsReviewCount > 0 ? "amber" : "slate"} />
+          <CompactMetric title="Open funding gaps" value={gbp(openFundingGap)} hint="Visible order funding gaps." tone={openFundingGap > 0 ? "amber" : "emerald"} />
+          <CompactMetric title="Available credit" value={gbp(availableCredit)} hint="Importer credit pool." tone={availableCredit > 0 ? "sky" : "slate"} />
+          <CompactMetric title="Ready funding" value={String(readyFundingCandidates.length)} hint="Strong evidence + positive gap." tone={readyFundingCandidates.length > 0 ? "emerald" : "slate"} />
+          <CompactMetric title="Needs review" value={String(needsReviewCount)} hint="Blocked from action forms." tone={needsReviewCount > 0 ? "amber" : "slate"} />
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -568,10 +554,10 @@ export default async function InternalFundingPage({
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold">Non-actionable rows summary</h2>
-          <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">This is a control summary, not a work queue. Expand only when investigating why rows were blocked from forms.</p>
+          <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">This is a control summary, not a work queue. Expand only to see blocking reasons.</p>
           <div className="mt-5 grid gap-3">
-            <ReviewSummary title="Inbound lines needing stronger order evidence / gap review" rows={fundingNeedsReview} tone="amber" />
-            <ReviewSummary title="Credit rows not currently applicable" rows={creditNeedsReview} tone="sky" />
+            <ReviewSummary title="Inbound lines blocked from funding forms" rows={fundingNeedsReview} tone="amber" />
+            <ReviewSummary title="Credit rows blocked from credit forms" rows={creditNeedsReview} tone="sky" />
             <ReviewSummary title="Already reconciled inbound funding audit" rows={reconciledFundingAudit} />
           </div>
         </section>
