@@ -283,14 +283,14 @@ export default async function DvaStatementImportPage({
               const voided = isVoidedBatch(batch);
               const hasRows = num(batch.row_count) > 0;
               return (
-              <article key={text(batch.id)} className={`rounded-2xl border p-4 shadow-sm ${voided ? "border-slate-200 bg-slate-50 opacity-80" : "border-slate-200 bg-white"}`}>
+              <article key={text(batch.id)} className={`max-w-full overflow-hidden rounded-2xl border p-4 shadow-sm ${voided ? "border-slate-200 bg-slate-50 opacity-80" : "border-slate-200 bg-white"}`}>
                 <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div className="min-w-0">
+                  <div className="min-w-0 flex-1">
                     <h3 className="break-words text-lg font-semibold [overflow-wrap:anywhere]">{text(batch.original_filename) || text(batch.id)}</h3>
-                    <p className="mt-1 text-sm text-slate-600">{text(batch.source_bank).toUpperCase()} · {text(batch.local_ccy)} · {text(batch.statement_period_from)} → {text(batch.statement_period_to)}</p>
-                    {voided ? <p className="mt-2 text-xs font-semibold text-rose-700">Voided: {text(batch.void_reason) || "No reason captured"}</p> : null}
+                    <p className="mt-1 break-words text-sm text-slate-600">{text(batch.source_bank).toUpperCase()} · {text(batch.local_ccy)} · {text(batch.statement_period_from)} → {text(batch.statement_period_to)}</p>
+                    {voided ? <p className="mt-2 break-words text-xs font-semibold text-rose-700">Voided: {text(batch.void_reason) || "No reason captured"}</p> : null}
                   </div>
-                  <span className={`rounded-full px-3 py-1 text-sm font-semibold ring-1 ${statusClass(text(batch.status))}`}>{text(batch.status)}</span>
+                  <span className={`shrink-0 rounded-full px-3 py-1 text-sm font-semibold ring-1 ${statusClass(text(batch.status))}`}>{text(batch.status)}</span>
                 </div>
                 <div className="mt-4 grid gap-2 text-sm text-slate-700 sm:grid-cols-5">
                   <p>Rows: <span className="font-semibold">{num(batch.row_count)}</span></p>
@@ -300,29 +300,29 @@ export default async function DvaStatementImportPage({
                   <p>Committed: <span className="font-semibold text-sky-700">{num(batch.committed_count)}</span></p>
                 </div>
                 <p className="mt-3 text-sm font-medium text-slate-600">Next: {nextAction(batch)}</p>
-                <div className="mt-4 flex flex-wrap gap-2">
-                  <Link className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white" href={`/internal/dva-statement-import/${text(batch.id)}`}>Open detail</Link>
+                <div className="mt-4 grid max-w-full gap-2 sm:flex sm:flex-wrap">
+                  <Link className="w-full rounded-xl bg-slate-950 px-4 py-2 text-center text-sm font-semibold text-white sm:w-auto" href={`/internal/dva-statement-import/${text(batch.id)}`}>Open detail</Link>
                   {!voided && !hasRows && text(batch.status) !== "committed" ? (
-                    <form action={`/internal/dva-statement-import/extract`} method="post" className="flex flex-wrap items-end gap-2 rounded-xl border border-slate-200 bg-slate-50 p-2">
+                    <form action={`/internal/dva-statement-import/extract`} method="post" className="grid w-full max-w-full gap-2 rounded-xl border border-slate-200 bg-slate-50 p-2 sm:w-auto sm:grid-cols-[minmax(0,10rem)_auto] sm:items-end">
                       <input type="hidden" name="import_batch_id" value={text(batch.id)} />
-                      <label className="grid gap-1 text-xs font-semibold text-slate-500">
+                      <label className="grid min-w-0 gap-1 text-xs font-semibold text-slate-500">
                         Manual base FX override
-                        <input className="w-40 rounded-lg border border-slate-200 px-2 py-1 text-sm" name="manual_fx_rate" type="number" min="0" step="0.000001" placeholder="Only if daily rate missing" />
+                        <input className="w-full min-w-0 rounded-lg border border-slate-200 px-2 py-1 text-sm" name="manual_fx_rate" type="number" min="0" step="0.000001" placeholder="Only if daily rate missing" />
                       </label>
-                      <button className="rounded-lg bg-sky-600 px-3 py-2 text-sm font-semibold text-white" type="submit">Extract rows</button>
+                      <button className="w-full rounded-lg bg-sky-600 px-3 py-2 text-sm font-semibold text-white sm:w-auto" type="submit">Extract rows</button>
                     </form>
                   ) : null}
                   {!voided && hasRows && text(batch.status) !== "committed" ? (
-                    <span className="rounded-xl bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-600 ring-1 ring-slate-200">Rows already staged — open detail to review/commit.</span>
+                    <span className="w-full break-words rounded-xl bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-600 ring-1 ring-slate-200">Rows already staged — open detail to review/commit.</span>
                   ) : null}
                   {!voided && text(batch.status) === "committed" ? (
-                    <form action={voidDvaStatementImportBatchAction} className="flex flex-wrap items-end gap-2 rounded-xl border border-rose-200 bg-rose-50 p-2">
+                    <form action={voidDvaStatementImportBatchAction} className="grid w-full max-w-full gap-2 rounded-xl border border-rose-200 bg-rose-50 p-2 sm:w-auto sm:grid-cols-[minmax(0,14rem)_auto] sm:items-end">
                       <input type="hidden" name="import_batch_id" value={text(batch.id)} />
-                      <label className="grid gap-1 text-xs font-semibold text-rose-700">
+                      <label className="grid min-w-0 gap-1 text-xs font-semibold text-rose-700">
                         Void reason
-                        <input className="w-56 rounded-lg border border-rose-200 px-2 py-1 text-sm" name="void_reason" placeholder="Wrong file / duplicate / bad FX" required />
+                        <input className="w-full min-w-0 rounded-lg border border-rose-200 px-2 py-1 text-sm" name="void_reason" placeholder="Wrong file / duplicate / bad FX" required />
                       </label>
-                      <button className="rounded-lg bg-rose-600 px-3 py-2 text-sm font-semibold text-white" type="submit">Void import</button>
+                      <button className="w-full rounded-lg bg-rose-600 px-3 py-2 text-sm font-semibold text-white sm:w-auto" type="submit">Void import</button>
                     </form>
                   ) : null}
                 </div>
