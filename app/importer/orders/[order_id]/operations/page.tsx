@@ -14,7 +14,7 @@ type TrackingRow = {
   tracking_screenshot_url?: string | null;
 };
 type InvoiceRow = { id: string; invoice_ref: string; review_status: string | null; review_notes: string | null; uploaded_at: string | null };
-type InvoiceLineTotalRow = { supplier_invoice_id: string; qty: number; amount_inc_vat_gbp: number };
+type InvoiceLineTotalRow = { supplier_invoice_id: string; qty: number; amount_inc_vat_gbp: number; eligible_for_invoice_yn?: string | null };
 type InvoiceSummaryRow = { supplier_invoice_id: string; invoice_total_gbp: number };
 type AdjustmentRow = { id: string; supplier_invoice_id: string | null; adjustment_type: string; amount_gbp: number; approval_status: string; requires_supervisor_approval: boolean | null };
 type ReviewFlagRow = { id: string; supplier_invoice_id: string; flag_type: string; message: string; status: string; created_at: string };
@@ -87,6 +87,26 @@ function fundingStatusClass(status: string | null | undefined, thresholdMet: boo
   return "bg-slate-100 text-slate-700";
 }
 
+function isProgressed(value: string | null | undefined) {
+  return ["y", "yes", "true", "1"].includes((value ?? "").trim().toLowerCase());
+}
+
+function operationalStatusLabel(args: {
+  thresholdMet: boolean;
+  orderHasResubmissionRequired: boolean;
+  invoiceRows: InvoiceRow[];
+  invoiceLineRows: InvoiceLineTotalRow[];
+  finalTrackingExists: boolean;
+}) {
+  if (args.orderHasResubmissionRequired) return "Invoice resubmission required";
+  if (!args.thresholdMet) return "Funding required";
+  if (args.invoiceRows.length === 0) return "Awaiting supplier invoice";
+  if (args.invoiceLineRows.length > 0 && args.invoiceLineRows.every((line) => isProgressed(line.eligible_for_invoice_yn))) {
+    return args.finalTrackingExists ? "Importer reconciliation complete" : "Invoice reconciled; tracking open";
+  }
+  return "Invoice reconciliation open";
+}
+
 export default async function OrderOperationsPage({params,searchParams}:{params: Promise<{order_id:string}>, searchParams: Promise<{success?:string;order_ref?:string;auth_ref?:string;error?:string}>}) {
   const {order_id:orderId} = await params;
   const qp = await searchParams;
@@ -104,7 +124,7 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
     supabase.from("supplier_invoices").select("id, invoice_ref, review_status, review_notes, uploaded_at").eq("order_id",orderId).order("uploaded_at", { ascending: false }),
     supabase.from("couriers").select("id, name").order("name"),
     supabase.from("order_value_adjustments").select("id, supplier_invoice_id, adjustment_type, amount_gbp, approval_status, requires_supervisor_approval").eq("order_id",orderId).order("created_at", { ascending: false }),
-    supabase.from("supplier_invoice_lines").select("supplier_invoice_id, qty, amount_inc_vat_gbp, supplier_invoices!inner(order_id)").eq("supplier_invoices.order_id", orderId),
+    supabase.from("supplier_invoice_lines").select("supplier_invoice_id, qty, amount_inc_vat_gbp, eligible_for_invoice_yn, supplier_invoices!inner(order_id)").eq("supplier_invoices.order_id", orderId),
     supabase.from("supplier_invoice_financial_summary").select("supplier_invoice_id, invoice_total_gbp, supplier_invoices!inner(order_id)").eq("supplier_invoices.order_id", orderId),
     supabase.from("supplier_invoice_review_flags").select("id, supplier_invoice_id, flag_type, message, status, created_at").eq("order_id", orderId).order("created_at", { ascending: false }),
   ]);
@@ -116,6 +136,7 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
   const orderRetailerName = order.retailers?.name ?? "—";
   const adjustmentRows = (adjustments ?? []) as AdjustmentRow[];
   const invoiceRows = (invoices ?? []) as InvoiceRow[];
+  const invoiceLineRows = (invoiceLines ?? []) as InvoiceLineTotalRow[];
   const liveInvoiceIds = new Set(invoiceRows.filter((invoice) => invoice.review_status !== "rejected_resubmit_required" && invoice.review_status !== "superseded" && invoice.review_status !== "duplicate_blocked").map((invoice) => invoice.id));
   const activeAdjustmentRows = adjustmentRows.filter((a) => a.approval_status !== "rejected" && (!a.supplier_invoice_id || liveInvoiceIds.has(a.supplier_invoice_id)));
   const rejectedInvoices = invoiceRows.filter((invoice) => invoice.review_status === "rejected_resubmit_required");
@@ -129,9 +150,10 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
   const orderGoodsBaseline = Number(order.order_total_gbp_declared ?? 0);
   const fundingStatus = funding?.status as string | null | undefined;
   const thresholdMet = Boolean(funding?.threshold_met_yn);
+  const operationalStatus = operationalStatusLabel({ thresholdMet, orderHasResubmissionRequired, invoiceRows, invoiceLineRows, finalTrackingExists });
 
   const lineTotalsByInvoice = new Map<string, { qty: number; amount: number }>();
-  for (const line of (invoiceLines ?? []) as InvoiceLineTotalRow[]) {
+  for (const line of invoiceLineRows) {
     const current = lineTotalsByInvoice.get(line.supplier_invoice_id) ?? { qty: 0, amount: 0 };
     current.qty += Number(line.qty ?? 0);
     current.amount += Number(line.amount_inc_vat_gbp ?? 0);
@@ -179,7 +201,7 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
         <div><div className="text-slate-500">Quantity</div><div className="font-medium">{order.total_qty_declared}</div></div>
         <div><div className="text-slate-500">Goods amount</div><div className="font-medium">{money(order.order_total_gbp_declared)}</div></div>
         <div><div className="text-slate-500">Local quote amount</div><div className="font-medium">{localAmount(order.quote_total_ghs, currencyCode)}</div></div>
-        <div><div className="text-slate-500">Status</div><div className="font-medium">{order.status}</div></div>
+        <div><div className="text-slate-500">Status</div><div className="font-medium">{operationalStatus}</div><div className="text-xs text-slate-500">Raw: {friendlyValue(order.status)}</div></div>
       </div>
     </section>
 
