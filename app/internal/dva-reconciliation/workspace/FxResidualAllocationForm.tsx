@@ -51,7 +51,7 @@ export default function FxResidualAllocationForm({
         type="submit"
         disabled={!canAllocate}
       >
-        Add FX/card residual
+        Allocate FX/card or bank fee
       </button>
     </form>
   );
