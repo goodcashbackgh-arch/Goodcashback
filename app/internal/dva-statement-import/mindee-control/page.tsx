@@ -115,13 +115,13 @@ export default async function DvaStatementMindeeControlPage({
             const canParse = ocrStatus === "completed" && rowCount === 0 && !voided;
             const localCcy = (text(batch.local_ccy) || "GBP").toUpperCase();
             return (
-              <article key={text(batch.id)} className={`rounded-3xl border bg-white p-5 shadow-sm ${voided ? "border-rose-200 opacity-80" : "border-slate-200"}`}>
+              <article key={text(batch.id)} className={`max-w-full overflow-hidden rounded-3xl border bg-white p-5 shadow-sm ${voided ? "border-rose-200 opacity-80" : "border-slate-200"}`}>
                 <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
+                  <div className="min-w-0 flex-1">
                     <h2 className="break-words text-lg font-semibold [overflow-wrap:anywhere]">{text(batch.original_filename) || text(batch.id)}</h2>
-                    <p className="mt-1 text-sm text-slate-600">{text(batch.statement_period_from)} → {text(batch.statement_period_to)} · {text(batch.source_bank)} · {localCcy}</p>
+                    <p className="mt-1 break-words text-sm text-slate-600">{text(batch.statement_period_from)} → {text(batch.statement_period_to)} · {text(batch.source_bank)} · {localCcy}</p>
                   </div>
-                  <div className="flex flex-wrap gap-2">
+                  <div className="flex shrink-0 flex-wrap gap-2">
                     <span className={`rounded-full px-3 py-1 text-sm font-semibold ring-1 ${batchStatusClass(text(batch.status))}`}>{text(batch.status) || "unknown"}</span>
                     <span className={`rounded-full px-3 py-1 text-sm font-semibold ring-1 ${statusClass(ocrStatus)}`}>{ocrStatus}</span>
                   </div>
@@ -143,30 +143,30 @@ export default async function DvaStatementMindeeControlPage({
                 ) : null}
                 {text(batch.mindee_statement_error_message) ? <p className="mt-3 text-sm text-rose-700">{text(batch.mindee_statement_error_message)}</p> : null}
 
-                <div className="mt-5 flex flex-wrap gap-3">
+                <div className="mt-5 grid max-w-full gap-3 sm:flex sm:flex-wrap">
                   {canStart ? (
-                    <form action="/internal/dva-statement-import/mindee-start" method="post">
+                    <form action="/internal/dva-statement-import/mindee-start" method="post" className="w-full sm:w-auto">
                       <input type="hidden" name="import_batch_id" value={text(batch.id)} />
-                      <button className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white" type="submit">Start Mindee OCR</button>
+                      <button className="w-full rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white sm:w-auto" type="submit">Start Mindee OCR</button>
                     </form>
                   ) : (
-                    <span className="rounded-xl bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-500 ring-1 ring-slate-200">OCR blocked: {blockedReason(batch, jobId, ocrStatus)}</span>
+                    <span className="w-full break-words rounded-xl bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-500 ring-1 ring-slate-200 sm:w-auto">OCR blocked: {blockedReason(batch, jobId, ocrStatus)}</span>
                   )}
 
                   {canFetch ? (
-                    <form action="/internal/dva-statement-import/mindee-fetch" method="post">
+                    <form action="/internal/dva-statement-import/mindee-fetch" method="post" className="w-full sm:w-auto">
                       <input type="hidden" name="import_batch_id" value={text(batch.id)} />
-                      <button className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white" type="submit">Fetch OCR result</button>
+                      <button className="w-full rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white sm:w-auto" type="submit">Fetch OCR result</button>
                     </form>
                   ) : null}
 
                   {canParse ? (
-                    <form action="/internal/dva-statement-import/mindee-parse-v3" method="post" className="flex flex-wrap items-end gap-3 rounded-2xl border border-emerald-100 bg-emerald-50 p-3">
+                    <form action="/internal/dva-statement-import/mindee-parse-v3" method="post" className="grid w-full max-w-full gap-3 rounded-2xl border border-emerald-100 bg-emerald-50 p-3 sm:w-auto sm:grid-cols-[minmax(0,14rem)_auto] sm:items-end">
                       <input type="hidden" name="import_batch_id" value={text(batch.id)} />
-                      <div>
+                      <div className="min-w-0">
                         <label className="block text-xs font-semibold uppercase tracking-wide text-emerald-900">Manual base FX override</label>
                         <input
-                          className="mt-1 w-40 rounded-xl border border-emerald-200 bg-white px-3 py-2 text-sm"
+                          className="mt-1 w-full min-w-0 rounded-xl border border-emerald-200 bg-white px-3 py-2 text-sm"
                           name="manual_fx_rate"
                           type="number"
                           min="0.000001"
@@ -177,11 +177,11 @@ export default async function DvaStatementMindeeControlPage({
                           Optional. Leave blank to use daily FX by transaction date from /internal/fx-rates. Enter only to override missing daily base rates.
                         </p>
                       </div>
-                      <button className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white" type="submit">Parse/stage Mindee rows</button>
+                      <button className="w-full rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white sm:w-auto" type="submit">Parse/stage Mindee rows</button>
                     </form>
                   ) : null}
 
-                  <Link className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-sky-700 ring-1 ring-sky-200" href="/internal/dva-statement-import">Import page</Link>
+                  <Link className="w-full rounded-xl bg-white px-4 py-2 text-center text-sm font-semibold text-sky-700 ring-1 ring-sky-200 sm:w-auto" href="/internal/dva-statement-import">Import page</Link>
                 </div>
 
                 <p className="mt-4 break-all text-xs text-slate-500">Batch ID: {text(batch.id)}</p>
