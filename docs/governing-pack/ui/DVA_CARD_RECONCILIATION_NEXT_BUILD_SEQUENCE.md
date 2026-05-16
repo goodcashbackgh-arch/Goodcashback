@@ -4,6 +4,83 @@ Status: active build tracker.
 
 Purpose: lock the remaining DVA/card reconciliation sequence so the build does not drift into duplicate pages, duplicate logic, or premature Sage posting.
 
+## Critical build operating protocol
+
+This protocol is mandatory before any code, SQL, RPC, view, migration, Vercel, or workflow change in the DVA/card, funding, exception, Sage-readiness, invoice, refund, or shipment-control paths.
+
+### 1. Verify before changing
+
+Before proposing or applying any change, the builder must verify the current state in this order:
+
+1. Check this governing pack / active build tracker.
+2. Check the current GitHub files that own the relevant flow.
+3. Check live Supabase objects using read-only SQL where the change depends on tables, views, columns, constraints, RLS, functions, RPCs, allocation state, funding state, or Sage-readiness state.
+4. Check current Vercel deployment state before relying on UI behaviour.
+5. Report what is already built, partly built, not built, and not yet verified.
+
+Repo evidence alone is not enough for DB/RPC/view-dependent work.
+
+### 2. Normal conversation is not write approval
+
+User phrases such as “proceed”, “continue”, “check”, “review”, “what next”, or “fix” mean investigate, verify, and propose.
+
+They do not authorize:
+
+- GitHub file updates;
+- SQL migrations;
+- RPC/view/function changes;
+- Vercel environment changes;
+- full-file replacements;
+- refactors;
+- workflow rewrites.
+
+A write action requires explicit approval for the exact file or SQL being changed.
+
+### 3. No regression-risk shortcuts
+
+Every proposed build step must be regression-proof:
+
+- do not duplicate an existing page or workflow;
+- do not create a parallel route if an existing route owns the job;
+- do not change working RPCs/views unless live verification proves the defect;
+- do not widen constraints or alter schema casually;
+- do not replace a whole file when a targeted section change is enough;
+- do not mix unrelated fixes in one patch;
+- do not touch Sage posting until readiness and review-pack controls are proven.
+
+### 4. Required report before any patch
+
+Before a patch, report using this structure:
+
+- Confirmed from governing pack:
+- Confirmed from GitHub:
+- Confirmed from live SQL:
+- Confirmed from Vercel:
+- Already working:
+- Actual gap:
+- Regression risk:
+- Smallest safe patch:
+- Exact files affected:
+- Exact test after deploy:
+- Do not touch:
+
+If live SQL is required but has not been run, the patch must not proceed.
+
+### 5. One change at a time
+
+Each patch must have one purpose, one affected flow, one rollback path, and one exact test.
+
+Example:
+
+- Fix standalone `bank_fee` allocation only.
+- Do not also change supplier allocation, refund allocation, FX formula, review pack, or layout in the same patch.
+
+### 6. Live truth beats assumptions
+
+For anything involving DVA/card allocation, importer funding, import voiding, exception outcome actions, grouped review, or Sage readiness, live Supabase truth beats assumptions from memory or repo reading.
+
+If live DB and GitHub differ, stop and report the mismatch before changing anything.
+
 ## Current boundary
 
 The existing split remains:
