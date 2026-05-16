@@ -55,6 +55,11 @@ function previewMessage(value: string | null | undefined, max = 72) {
   return `${message.slice(0, max - 1)}…`;
 }
 
+function friendlyStatus(value: string | null | undefined) {
+  if (!value) return "In progress";
+  return value.replaceAll("_", " ").replace(/^./, (first) => first.toUpperCase());
+}
+
 function isProgressed(value: string | null | undefined) {
   return ["y", "yes", "true", "1"].includes((value ?? "").trim().toLowerCase());
 }
@@ -83,6 +88,23 @@ function nextAction(
   if (order.lifecycle_status === "evidence_collecting") return "Upload invoice or tracking";
   if (!order.funded_at) return "No importer action required";
   return "In progress";
+}
+
+function importerStatusLabel(
+  order: Pick<DashboardOrderRow, "lifecycle_status" | "funded_at">,
+  hasOpenEvidenceQuery: boolean,
+  needsInvoiceResubmission: boolean,
+  reconciliationSummary?: { unresolvedCount: number; unresolvedNonExceptionCount: number }
+) {
+  if (needsInvoiceResubmission) return "Invoice resubmission required";
+  if (hasOpenEvidenceQuery) return "Evidence query open";
+  if (order.lifecycle_status === "partially_progressed" && reconciliationSummary) {
+    if (reconciliationSummary.unresolvedNonExceptionCount > 0) return "Invoice reconciliation open";
+    if (reconciliationSummary.unresolvedCount > 0) return "Exception branch in progress";
+    return "Importer reconciliation complete";
+  }
+  if (order.lifecycle_status) return friendlyStatus(order.lifecycle_status);
+  return order.funded_at ? "Funded" : "Open";
 }
 
 export default async function ImporterPage() {
@@ -310,6 +332,9 @@ export default async function ImporterPage() {
                 const screenshotCount = screenshotCounts.get(order.id) ?? 0;
                 const openQuerySummary = openEvidenceQueryByOrderId.get(order.id);
                 const hasOpenEvidenceQuery = (openQuerySummary?.count ?? 0) > 0;
+                const reconciliationSummary = reconciliationByOrderId.get(order.id) ?? (hasInvoice ? { unresolvedCount: 0, unresolvedNonExceptionCount: 0 } : undefined);
+                const importerNextAction = nextAction(order, hasOpenEvidenceQuery, needsInvoiceResubmission, reconciliationSummary);
+                const importerStatus = importerStatusLabel(order, hasOpenEvidenceQuery, needsInvoiceResubmission, reconciliationSummary);
                 const operationsHref = `/importer/orders/${order.id}/operations`;
 
                 return (
@@ -344,13 +369,13 @@ export default async function ImporterPage() {
                       )}
                     </td>
                     <td className="p-3">
-                      <div>{order.status}</div>
+                      <div className="font-medium">{importerStatus}</div>
                       <div className="text-xs text-slate-500">
-                        {order.funded_at ? "Funded" : "Open"}
+                        {order.funded_at ? "Funded" : "Open"} · Raw: {friendlyStatus(order.status)}
                       </div>
                     </td>
                     <td className="p-3">
-                      <div className={needsInvoiceResubmission ? "font-semibold text-rose-700" : ""}>{nextAction(order, hasOpenEvidenceQuery, needsInvoiceResubmission, reconciliationByOrderId.get(order.id))}</div>
+                      <div className={needsInvoiceResubmission ? "font-semibold text-rose-700" : ""}>{importerNextAction}</div>
                       {hasOpenEvidenceQuery ? (
                         <Link href="/importer/evidence-queries" className="text-xs font-medium text-sky-600">
                           Answer
