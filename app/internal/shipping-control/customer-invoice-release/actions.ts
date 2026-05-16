@@ -5,7 +5,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 
 export async function createCustomerInvoiceDrafts(formData: FormData) {
-  const rawIds = formData.getAll("shipment_batch_id").map((value) => String(value)).filter(Boolean);
+  const rawIds = Array.from(new Set(formData.getAll("shipment_batch_id").map((value) => String(value)).filter(Boolean)));
   if (rawIds.length === 0) {
     redirect("/internal/shipping-control/customer-invoice-release?result=no_ready_rows_selected");
   }
