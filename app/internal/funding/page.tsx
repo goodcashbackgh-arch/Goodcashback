@@ -112,7 +112,6 @@ function inferFundingOrder(row: DataRow, fundingRows: DataRow[]) {
   if (explicitOrderId) {
     const explicitOrder = fundingRows.find((fundingRow) => asString(fundingRow.order_id) === explicitOrderId);
     return {
-      order: explicitOrder,
       orderId: explicitOrderId,
       orderRef: asString(row.suggested_order_ref) || asString(explicitOrder?.order_ref),
       matchSuggestionId: asString(row.match_suggestion_id),
@@ -169,7 +168,6 @@ function inferFundingOrder(row: DataRow, fundingRows: DataRow[]) {
   const best = candidates[0];
   if (!best) {
     return {
-      order: undefined,
       orderId: "",
       orderRef: "",
       matchSuggestionId: "",
@@ -180,7 +178,6 @@ function inferFundingOrder(row: DataRow, fundingRows: DataRow[]) {
   }
 
   return {
-    order: best.fundingRow,
     orderId: asString(best.fundingRow.order_id),
     orderRef: asString(best.fundingRow.order_ref),
     matchSuggestionId: "",
@@ -198,12 +195,12 @@ function fundingReviewReason(args: {
   matchSource: FundingCandidate["matchSource"];
   matchScore: number;
 }) {
-  if (args.alreadyReconciled) return "Already reconciled. It belongs in audit, not the action queue.";
-  if (!args.orderId) return "No strong order match yet. Needs order ref/payment auth evidence before funding.";
-  if (args.matchSource === "inferred" && args.matchScore < 80) return "Inferred match is below the safe action threshold.";
-  if (args.amountGbp <= 0) return "No positive inbound amount to apply.";
-  if (args.gap === null) return "Order funding gap is unavailable from the funding position view.";
-  if (args.gap <= 0) return "Suggested order has no remaining funding gap.";
+  if (args.alreadyReconciled) return "Already reconciled — audit only.";
+  if (!args.orderId) return "Missing strong order reference/payment-auth match.";
+  if (args.matchSource === "inferred" && args.matchScore < 80) return "Inferred match below safe threshold.";
+  if (args.amountGbp <= 0) return "No positive inbound amount.";
+  if (args.gap === null) return "Order funding gap unavailable.";
+  if (args.gap <= 0) return "Suggested order has no remaining gap.";
   return "Ready to apply as funding.";
 }
 
@@ -323,21 +320,84 @@ function CreditActionCard({ candidate }: { candidate: CreditCandidate }) {
   );
 }
 
-function ReviewList({ title, rows }: { title: string; rows: Array<FundingCandidate | CreditCandidate> }) {
+function ReviewSummary({
+  title,
+  rows,
+  tone = "slate",
+}: {
+  title: string;
+  rows: Array<FundingCandidate | CreditCandidate>;
+  tone?: "slate" | "amber" | "sky";
+}) {
   if (rows.length === 0) return null;
 
+  const toneClass = {
+    slate: "border-slate-200 bg-slate-50 text-slate-700",
+    amber: "border-amber-200 bg-amber-50 text-amber-800",
+    sky: "border-sky-200 bg-sky-50 text-sky-800",
+  }[tone];
+  const reasonCounts = rows.reduce<Record<string, number>>((acc, row) => {
+    acc[row.reviewReason] = (acc[row.reviewReason] ?? 0) + 1;
+    return acc;
+  }, {});
+  const samples = rows.slice(0, 5);
+
   return (
-    <details className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-      <summary className="cursor-pointer text-sm font-semibold text-slate-900">{title} · {rows.length}</summary>
-      <div className="mt-3 grid gap-2">
-        {rows.map((row, index) => (
-          <div key={`${title}-${index}`} className="rounded-xl bg-white p-3 text-xs leading-5 text-slate-600 ring-1 ring-slate-200">
-            <p className="font-semibold text-slate-900">{"dvaStatementLineId" in row ? row.orderRef || row.orderId || "No strong order match" : row.orderRef || "No order ref"}</p>
-            <p>{row.reviewReason}</p>
-            {"matchReasons" in row && row.matchReasons.length > 0 ? <p className="mt-1">Signals: {row.matchReasons.join("; ")}</p> : null}
+    <details className={`rounded-2xl border p-4 ${toneClass}`}>
+      <summary className="cursor-pointer text-sm font-semibold">{title} · {rows.length}</summary>
+      <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+        {Object.entries(reasonCounts).map(([reason, count]) => (
+          <div key={reason} className="rounded-xl bg-white/70 p-3 text-xs ring-1 ring-white/60">
+            <p className="font-bold text-slate-950">{count}</p>
+            <p className="mt-1 leading-5">{reason}</p>
           </div>
         ))}
       </div>
+      <div className="mt-4 rounded-xl bg-white/70 p-3 text-xs leading-5 ring-1 ring-white/60">
+        <p className="font-bold text-slate-950">Sample rows only</p>
+        <div className="mt-2 grid gap-2">
+          {samples.map((row, index) => (
+            <div key={`${title}-${index}`} className="rounded-lg bg-white p-2 ring-1 ring-slate-200">
+              <p className="font-semibold text-slate-900">{"dvaStatementLineId" in row ? row.orderRef || row.orderId || "No strong order match" : row.orderRef || "No order ref"}</p>
+              <p className="text-slate-600">{row.reviewReason}</p>
+              {"matchReasons" in row && row.matchReasons.length > 0 ? <p className="text-slate-500">Signals: {row.matchReasons.join("; ")}</p> : null}
+            </div>
+          ))}
+        </div>
+        {rows.length > samples.length ? <p className="mt-2 text-slate-500">Showing {samples.length} of {rows.length}. Full raw detail remains in Advanced diagnostics.</p> : null}
+      </div>
+    </details>
+  );
+}
+
+function FundingEventAudit({ events }: { events: DataRow[] }) {
+  return (
+    <details className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+      <summary className="cursor-pointer text-xl font-semibold">Funding event audit · {events.length}</summary>
+      <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">Immutable funding events. Collapsed by default because this is audit evidence, not the working queue.</p>
+      {events.length === 0 ? (
+        <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">No recent funding events returned.</div>
+      ) : (
+        <div className="mt-5 grid gap-3">
+          {events.slice(0, 6).map((event, index) => {
+            const orderLabel = asString(event.order_ref) || asString(event.order_id) || "No order reference surfaced";
+            const sourceLabel = asString(event.source_table) || asString(event.source_entity_type) || "No source surfaced";
+            return (
+              <article key={`${asString(event.source_entity_id)}-${index}`} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-bold uppercase tracking-wide text-slate-500">{asString(event.event_type) || "Funding event"}</p>
+                    <h3 className="mt-1 text-lg font-semibold">{gbp(event.amount_gbp)}</h3>
+                    <p className="mt-1 text-xs text-slate-500">Order: {orderLabel} · Source: {sourceLabel}</p>
+                  </div>
+                  <p className="text-xs text-slate-500">Resulting funded total: {event.resulting_funded_total_gbp === null || event.resulting_funded_total_gbp === undefined ? "Not surfaced" : gbp(event.resulting_funded_total_gbp)}</p>
+                </div>
+                {asString(event.notes) ? <p className="mt-2 text-xs leading-5 text-slate-600">{asString(event.notes)}</p> : null}
+              </article>
+            );
+          })}
+        </div>
+      )}
     </details>
   );
 }
@@ -462,7 +522,7 @@ export default async function InternalFundingPage({
           <SummaryCard title="Open funding gaps" value={gbp(openFundingGap)} hint="Visible order funding gaps from order_funding_position_vw." tone={openFundingGap > 0 ? "amber" : "emerald"} />
           <SummaryCard title="Available credit" value={gbp(availableCredit)} hint="Importer credit available from importer_balance_vw." tone={availableCredit > 0 ? "sky" : "slate"} />
           <SummaryCard title="Ready funding candidates" value={String(readyFundingCandidates.length)} hint="Inbound lines with strong ref/order evidence and positive gap." tone={readyFundingCandidates.length > 0 ? "emerald" : "slate"} />
-          <SummaryCard title="Needs review" value={String(needsReviewCount)} hint="Rows hidden from action forms because a safe match/gap is missing." tone={needsReviewCount > 0 ? "amber" : "slate"} />
+          <SummaryCard title="Needs review" value={String(needsReviewCount)} hint="Rows not exposed as action forms because a safe match/gap is missing." tone={needsReviewCount > 0 ? "amber" : "slate"} />
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -507,38 +567,16 @@ export default async function InternalFundingPage({
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-          <h2 className="text-xl font-semibold">Rows excluded from action forms</h2>
-          <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">These are deliberately not actionable on this page. They need a stronger reference match, gap, or audit review first.</p>
+          <h2 className="text-xl font-semibold">Non-actionable rows summary</h2>
+          <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">This is a control summary, not a work queue. Expand only when investigating why rows were blocked from forms.</p>
           <div className="mt-5 grid gap-3">
-            <ReviewList title="Inbound lines needing stronger order evidence / gap review" rows={fundingNeedsReview} />
-            <ReviewList title="Credit rows not currently applicable" rows={creditNeedsReview} />
-            <ReviewList title="Already reconciled inbound funding audit" rows={reconciledFundingAudit} />
+            <ReviewSummary title="Inbound lines needing stronger order evidence / gap review" rows={fundingNeedsReview} tone="amber" />
+            <ReviewSummary title="Credit rows not currently applicable" rows={creditNeedsReview} tone="sky" />
+            <ReviewSummary title="Already reconciled inbound funding audit" rows={reconciledFundingAudit} />
           </div>
         </section>
 
-        <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-          <h2 className="text-xl font-semibold">Recent funding event audit</h2>
-          <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">Immutable funding events created by DVA reconciliation, importer credit or adjustments.</p>
-          {recentEvents.length === 0 ? (
-            <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">No recent funding events returned.</div>
-          ) : (
-            <div className="mt-5 grid gap-3">
-              {recentEvents.slice(0, 6).map((event, index) => (
-                <article key={`${asString(event.source_entity_id)}-${index}`} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      <p className="text-xs font-bold uppercase tracking-wide text-slate-500">{asString(event.event_type) || "Funding event"}</p>
-                      <h3 className="mt-1 text-lg font-semibold">{gbp(event.amount_gbp)}</h3>
-                      <p className="mt-1 text-xs text-slate-500">Order: {asString(event.order_ref) || "—"} · Source: {asString(event.source_table) || "—"}</p>
-                    </div>
-                    <p className="text-xs text-slate-500">Resulting funded total: {event.resulting_funded_total_gbp === null || event.resulting_funded_total_gbp === undefined ? "—" : gbp(event.resulting_funded_total_gbp)}</p>
-                  </div>
-                  {asString(event.notes) ? <p className="mt-2 text-xs leading-5 text-slate-600">{asString(event.notes)}</p> : null}
-                </article>
-              ))}
-            </div>
-          )}
-        </section>
+        <FundingEventAudit events={recentEvents} />
 
         <details className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <summary className="cursor-pointer text-xl font-semibold">Advanced funding diagnostics</summary>
