@@ -258,7 +258,7 @@ function StatusCell({ title, state }: { title: string; state: Lane }) {
       <p className="text-[10px] font-extrabold uppercase tracking-wide opacity-70">{title}</p>
       <p className="mt-2 text-sm font-extrabold">{state.label}</p>
       <p className="mt-1 text-xs leading-5 opacity-90">{state.detail}</p>
-      <Link href={state.href} className="mt-2 inline-block text-xs font-bold underline">Open</Link>
+      <Link href={state.href} className="mt-2 inline-block text-xs font-bold underline">Open action</Link>
     </div>
   );
 }
@@ -374,28 +374,31 @@ export default async function SupervisorCommandCentrePage({ searchParams }: { se
       <div className="mx-auto max-w-7xl space-y-6">
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
           <Link href="/internal" className="text-sm font-semibold text-sky-700">← Internal dashboard</Link>
-          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Supervisor operational cockpit</p>
+          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Operational cockpit</p>
           <div className="mt-2 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
             <div>
-              <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">Order-to-clean-delivery command centre</h1>
-              <p className="mt-2 max-w-5xl text-sm leading-6 text-slate-600">Read-only v4 cockpit for operational truth. It routes funding, DVA/card, supplier goods AP, exceptions, logistics/shipper, customer sales readiness, shipper AP readiness and export/delivery blockers into the correct child task pages. Sage posting controls stay inside Accounting Command Centre only.</p>
+              <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">Supervisor Command Centre</h1>
+              <p className="mt-2 max-w-5xl text-sm leading-6 text-slate-600">Operational source-of-truth from order control to clean delivery and accounting handoff. This read-only v4 cockpit routes funding, DVA/card, supplier invoice, exception, shipper/logistics, customer sales, shipper AP and export/delivery blockers into the correct child task pages.</p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700"><div className="font-medium text-slate-950">{text(staff.full_name)}</div><div>{text(staff.role_type)}</div></div>
           </div>
           <div className="mt-4 grid gap-3 text-sm md:grid-cols-3">
             <div className="rounded-2xl border border-sky-200 bg-sky-50 p-3 text-sky-900"><p className="font-bold">Supervisor owns operational readiness</p><p className="mt-1 text-xs leading-5">Resolve blockers in funding, DVA/card, invoice, exception, shipper, customer and delivery lanes.</p></div>
-            <div className="rounded-2xl border border-violet-200 bg-violet-50 p-3 text-violet-900"><p className="font-bold">Accounting owns Sage posting</p><p className="mt-1 text-xs leading-5">Freeze, revalidation, posting batches and Sage API posting are not available from this page.</p></div>
+            <div className="rounded-2xl border border-violet-200 bg-violet-50 p-3 text-violet-900"><p className="font-bold">No Sage posting happens here</p><p className="mt-1 text-xs leading-5">Accounting status is read-only. Posting, freezing, batching, revalidation and Sage retries belong in Accounting Command Centre.</p></div>
             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-slate-700"><p className="font-bold">Process graph, not straight line</p><p className="mt-1 text-xs leading-5">Customer sales and shipper AP can split where the platform has separate readiness gates.</p></div>
+          </div>
+          <div className="mt-4">
+            <Link href="/internal/accounting-command-centre" className="inline-flex rounded-xl border border-violet-200 bg-violet-50 px-4 py-2 text-sm font-bold text-violet-900">Open Accounting Command Centre — read-only handoff from this cockpit</Link>
           </div>
           {errorMessages.length > 0 ? <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900"><p className="font-bold">Some lanes could not be read</p><ul className="mt-2 list-disc space-y-1 pl-5">{errorMessages.map((message) => <li key={message}>{message}</li>)}</ul></div> : null}
         </section>
 
         <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
-          <FoundationCard title="Sage settings" value={`${configuredMappings}/${mappingRows.length || 4}`} detail={mappingMissing > 0 ? `${mappingMissing} missing mapping(s)` : "Configured for preview; verify before live posting"} tone={mappingMissing > 0 ? "blocked" : "review"} href="/internal/accounting-command-centre" />
-          <FoundationCard title="Accounting handoff" value={`${readySageRows} ready`} detail={`${blockedSageRows} blocked document row(s)`} tone={blockedSageRows > 0 ? "action" : "complete"} href="/internal/accounting-command-centre" />
+          <FoundationCard title="Accounting config" value={`${configuredMappings}/${mappingRows.length || 4}`} detail={mappingMissing > 0 ? `${mappingMissing} missing mapping(s); open Accounting Command Centre` : "Read-only config signal; verify before live posting in Accounting Command Centre"} tone={mappingMissing > 0 ? "blocked" : "review"} href="/internal/accounting-command-centre" />
+          <FoundationCard title="Accounting handoff" value={`${readySageRows} ready`} detail={`${blockedSageRows} blocked document row(s); read-only here`} tone={blockedSageRows > 0 ? "action" : "complete"} href="/internal/accounting-command-centre" />
           <FoundationCard title="DVA/card" value={`${allocationRows.length}`} detail="Visible active/review allocation rows" tone={allocationRows.length > 0 ? "complete" : "review"} href="/internal/dva-reconciliation/workspace" />
-          <FoundationCard title="Shipping" value={`${shippingRows.length}`} detail="Shipment batches in control spine" tone={shippingRows.length > 0 ? "complete" : "muted"} href="/internal/shipping-control" />
-          <FoundationCard title="Customer drafts" value={`${customerReleaseRows.length}`} detail="Customer invoice release queue rows" tone={customerReleaseRows.length > 0 ? "progress" : "muted"} href="/internal/shipping-control/customer-invoice-release" />
+          <FoundationCard title="Shipper/logistics" value={`${shippingRows.length}`} detail="Shipment batches in control spine" tone={shippingRows.length > 0 ? "complete" : "muted"} href="/internal/shipping-control" />
+          <FoundationCard title="Customer sales" value={`${customerReleaseRows.length}`} detail="Customer invoice release queue rows" tone={customerReleaseRows.length > 0 ? "progress" : "muted"} href="/internal/shipping-control/customer-invoice-release" />
           <FoundationCard title="Exceptions" value={`${activeExceptionCount}`} detail="Open unresolved exception rows" tone={activeExceptionCount > 0 ? "blocked" : "complete"} href="/internal/exceptions" />
         </section>
 
@@ -409,14 +412,14 @@ export default async function SupervisorCommandCentrePage({ searchParams }: { se
             return (
               <article key={text(card.order.id)} className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
                 <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h3 className="text-xl font-extrabold tracking-tight">{text(card.order.order_ref) || text(card.order.id)}</h3><span className={`rounded-full px-3 py-1 text-xs font-bold ring-1 ${chipClass(primary.tone)}`}>{primary.owner}</span>{parallelCount > 0 ? <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-700 ring-1 ring-slate-200">+{parallelCount} parallel action{parallelCount === 1 ? "" : "s"}</span> : null}</div><p className="mt-1 text-sm text-slate-600">{text(card.retailer?.name) || "No retailer"} · {text(card.importer?.trading_name) || text(card.importer?.company_name) || "No importer"} · Raw DB status {pretty(card.order.status)} · Type {pretty(card.order.order_type)}</p></div><div className="min-w-[220px] rounded-2xl border border-slate-200 bg-slate-50 p-3"><div className="flex items-center justify-between gap-3 text-xs font-bold uppercase tracking-wide text-slate-500"><span>Progress</span><span>{card.progress.complete}/{card.progress.total}</span></div><div className="mt-2 h-3 overflow-hidden rounded-full bg-slate-200"><div className="h-full rounded-full bg-slate-950" style={{ width: `${card.progress.pct}%` }} /></div><p className="mt-2 text-xs text-slate-600">{card.progress.pct}% of applicable visible gates complete</p></div></div>
-                <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4"><StatusCell title="Customer / importer" state={card.states.customer} /><StatusCell title="Funding" state={card.states.funding} /><StatusCell title="Supplier goods AP" state={card.states.supplier} /><StatusCell title="DVA/card" state={card.states.dva} /><StatusCell title="Exceptions / holds" state={card.states.exceptions} /><StatusCell title="Logistics / shipper" state={card.states.shipping} /><StatusCell title="Customer Sales / AR" state={card.states.customerSales} /><StatusCell title="Shipper AP / freight" state={card.states.shipperAp} /><StatusCell title="Export / delivery" state={card.states.exportDelivery} /></div>
+                <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4"><StatusCell title="Operator/importer tasks" state={card.states.customer} /><StatusCell title="Funding" state={card.states.funding} /><StatusCell title="Supplier invoice" state={card.states.supplier} /><StatusCell title="DVA/card" state={card.states.dva} /><StatusCell title="Exceptions / holds" state={card.states.exceptions} /><StatusCell title="Shipper/logistics" state={card.states.shipping} /><StatusCell title="Customer sales" state={card.states.customerSales} /><StatusCell title="Shipper AP" state={card.states.shipperAp} /><StatusCell title="Export/delivery" state={card.states.exportDelivery} /></div>
                 <div className={`mt-4 rounded-2xl border p-4 ${toneClass(primary.tone)}`}><p className="text-xs font-bold uppercase tracking-wide opacity-70">Next action</p><div className="mt-2 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between"><div><p className="text-lg font-extrabold">{primary.owner}: {primary.label}</p><p className="mt-1 text-sm leading-6 opacity-90">{primary.reason}</p></div><Link href={primary.href} className="w-fit rounded-xl bg-white px-4 py-2 text-sm font-bold text-slate-900 shadow-sm ring-1 ring-slate-200">Open action</Link></div>{parallelCount > 0 ? <div className="mt-3 flex flex-wrap gap-2">{card.actions.slice(1).map((action) => <Link key={`${text(card.order.id)}-${action.label}-${action.href}`} href={action.href} className="rounded-full bg-white/70 px-3 py-1 text-xs font-bold underline ring-1 ring-slate-200">{action.owner}: {action.label}</Link>)}</div> : null}</div>
               </article>
             );
           })}
         </section>
 
-        <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-900"><h2 className="font-bold">v4 control rule</h2><p className="mt-2">This page is the operational map, not the accounting workroom. Existing child task pages remain the controlled places to upload, review, reconcile and approve. Accounting Command Centre is the only place for freeze, revalidation, posting batches and Sage Cloud Accounting API posting. Main goods customer sales can progress independently of shipper AP where split-flow controls allow it.</p></section>
+        <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-900"><h2 className="font-bold">v4 control rule</h2><p className="mt-2">This page is the operational map, not the accounting workroom. Existing child task pages remain the controlled places to upload, review, reconcile and approve. No Sage posting happens here. Accounting status is shown as read-only only. Accounting Command Centre is the only place for freeze, revalidation, posting batches, Sage Cloud Accounting API posting and Sage retries. Main goods customer sales can progress independently of shipper AP where split-flow controls allow it.</p></section>
       </div>
     </main>
   );
