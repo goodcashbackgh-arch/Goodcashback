@@ -21,6 +21,15 @@ type BulkCandidate = {
   excluded_reason?: string | null;
 };
 
+type CreateBatchResult = {
+  batch_id?: string | null;
+  batch_ref?: string | null;
+  included_count?: number | string | null;
+  excluded_count?: number | string | null;
+  total_amount_gbp?: number | string | null;
+  detail_href?: string | null;
+};
+
 function asStringArray(value: FormDataEntryValue[]) {
   return value.map((entry) => String(entry ?? "").trim()).filter(Boolean);
 }
@@ -280,4 +289,30 @@ export async function revalidateMatchingFrozenRowsAction(formData: FormData) {
   revalidatePath("/internal/sage-ready");
 
   redirect(filteredReturnPath(formData, "success", `Revalidated ${snapshotIds.length} matching frozen snapshot(s); ${excludedCount} excluded`));
+}
+
+export async function createPostingBatchFromMatchingRowsAction(formData: FormData) {
+  const supabase = await requireAccountingAdminAccess();
+  const { data, error } = await (supabase as any).rpc("internal_create_sage_posting_batch_from_filter_v1", {
+    p_queue: formText(formData, "bulk_queue", "frozen_ready_to_post"),
+    p_lane: formText(formData, "bulk_lane", "all"),
+    p_posting_gate: formText(formData, "bulk_posting_gate", "ready_to_post"),
+    p_search: formText(formData, "bulk_q", "") || null,
+    p_include_warnings: boolForm(formData, "bulk_include_warnings"),
+    p_notes: "Accounting Command Centre batch creation. No Sage API call. Posting disabled until Sage OAuth and dry-run validation are proven.",
+    p_max_rows: 5000,
+  });
+
+  if (error) {
+    redirect(filteredReturnPath(formData, "error", error.message));
+  }
+
+  const result = ((data ?? []) as CreateBatchResult[])[0];
+  if (!result?.batch_id) {
+    redirect(filteredReturnPath(formData, "error", "Posting batch was not created."));
+  }
+
+  revalidatePath("/internal/accounting-command-centre");
+  revalidatePath(`/internal/accounting-command-centre/batches/${result.batch_id}`);
+  redirect(result.detail_href || `/internal/accounting-command-centre/batches/${result.batch_id}`);
 }
