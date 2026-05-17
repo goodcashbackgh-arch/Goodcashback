@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
+import { freezeSelectedCustomerSalesRowsAction } from "./actions";
 
 type Row = Record<string, unknown>;
 type Tone = "complete" | "progress" | "action" | "blocked" | "review" | "muted";
@@ -91,7 +92,7 @@ function FoundationCard({ title, value, detail, tone, href }: { title: string; v
   return href ? <Link href={href}>{content}</Link> : content;
 }
 
-export default async function AccountingCommandCentrePage({ searchParams }: { searchParams?: Promise<{ q?: string; lane?: string; status?: string }> }) {
+export default async function AccountingCommandCentrePage({ searchParams }: { searchParams?: Promise<{ q?: string; lane?: string; status?: string; success?: string; error?: string }> }) {
   const qp = searchParams ? await searchParams : {};
   const search = (qp.q ?? "").trim().toLowerCase();
   const laneFilter = qp.lane ?? "all";
@@ -160,6 +161,8 @@ export default async function AccountingCommandCentrePage({ searchParams }: { se
     const sourceId = text(row.source_id);
     return !snapshots.some((snapshot) => text(snapshot.source_id) === sourceId && text(snapshot.approval_status) === "approved_frozen" && text(snapshot.sage_posting_status) !== "posted");
   });
+  const customerSalesReadyNotFrozen = liveReadyNotFrozen.filter((row) => text(row.document_lane) === "customer_sales" && text(row.source_table) === "sales_invoices");
+  const otherReadyNotFrozen = liveReadyNotFrozen.filter((row) => !(text(row.document_lane) === "customer_sales" && text(row.source_table) === "sales_invoices"));
 
   const readyToPost = snapshots.filter((row) => text(row.posting_gate_status) === "ready_to_post").length;
   const requiresRevalidation = snapshots.filter((row) => text(row.posting_gate_status) === "requires_revalidation").length;
@@ -189,7 +192,7 @@ export default async function AccountingCommandCentrePage({ searchParams }: { se
             <div>
               <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">Accounting Command Centre</h1>
               <p className="mt-2 max-w-5xl text-sm leading-6 text-slate-600">
-                Read-only accounting cockpit for Sage-bound documents: live payload readiness, frozen snapshots, revalidation status and posting gate. This is the admin view; the supervisor command centre remains the order-to-clean-delivery view.
+                Accounting cockpit for Sage-bound documents: live payload readiness, freeze approval, frozen snapshots, revalidation status and posting gate. This is the admin view; the supervisor command centre remains the order-to-clean-delivery view.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700">
@@ -197,6 +200,8 @@ export default async function AccountingCommandCentrePage({ searchParams }: { se
               <div>{text(staff.role_type)}{accessFromPermissions((staff as Row).permissions_json) ? " · accounting admin testing" : ""}</div>
             </div>
           </div>
+          {qp.success ? <p className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-900">{qp.success}</p> : null}
+          {qp.error ? <p className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900">{qp.error}</p> : null}
           {errors.length > 0 ? (
             <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
               <p className="font-bold">Some accounting lanes could not be read</p>
@@ -210,9 +215,58 @@ export default async function AccountingCommandCentrePage({ searchParams }: { se
           <FoundationCard title="Requires revalidation" value={String(requiresRevalidation)} detail="Frozen but not checked since approval" tone={requiresRevalidation > 0 ? "action" : "complete"} />
           <FoundationCard title="Blocked" value={String(blocked)} detail="Mapping/source/payload changed or failed gate" tone={blocked > 0 ? "blocked" : "complete"} />
           <FoundationCard title="Posted" value={String(posted)} detail="Sage posting confirmed/recorded" tone={posted > 0 ? "complete" : "muted"} />
-          <FoundationCard title="Live ready not frozen" value={String(liveReadyNotFrozen.length)} detail="Needs preview approval/freeze" tone={liveReadyNotFrozen.length > 0 ? "action" : "complete"} href="/internal/sage-ready" />
+          <FoundationCard title="Live ready not frozen" value={String(liveReadyNotFrozen.length)} detail={`${customerSalesReadyNotFrozen.length} customer sales freezeable; ${otherReadyNotFrozen.length} other lane(s)`} tone={liveReadyNotFrozen.length > 0 ? "action" : "complete"} />
           <FoundationCard title="Frozen value" value={gbp(totalFrozenValue)} detail={mappingMissing > 0 ? `${mappingMissing} mapping issue(s)` : "Unposted approved snapshots"} tone={mappingMissing > 0 ? "blocked" : "review"} href="/internal/sage-mapping" />
         </section>
+
+        {liveReadyNotFrozen.length > 0 ? (
+          <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-900">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <h2 className="text-xl font-bold">Live ready rows not frozen yet</h2>
+                <p className="mt-2">Freeze converts a ready live payload into an approved posting snapshot. Customer sales rows are freezeable here now; other lanes are listed but remain blocked from posting until their freeze resolver is added.</p>
+              </div>
+              <Link href="/internal/sage-ready" className="w-fit rounded-xl border border-amber-300 bg-white px-4 py-2 text-sm font-bold text-amber-900">Open live Sage queue</Link>
+            </div>
+
+            <form action={freezeSelectedCustomerSalesRowsAction} className="mt-4 space-y-3">
+              {liveReadyNotFrozen.map((row) => {
+                const isCustomerSales = text(row.document_lane) === "customer_sales" && text(row.source_table) === "sales_invoices";
+                return (
+                  <label key={text(row.queue_row_id) || text(row.source_id)} className={`block rounded-2xl border bg-white p-4 ${isCustomerSales ? "border-amber-300" : "border-slate-200 opacity-80"}`}>
+                    <div className="flex items-start gap-3">
+                      <input
+                        type="checkbox"
+                        name="sales_invoice_id"
+                        value={text(row.source_id)}
+                        defaultChecked={isCustomerSales}
+                        disabled={!isCustomerSales}
+                        className="mt-1 h-5 w-5 rounded border-slate-300"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="font-extrabold text-slate-950">{text(row.order_ref) || text(row.reference_text) || text(row.queue_row_id)}</p>
+                          <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-bold text-slate-700">{pretty(row.document_lane)}</span>
+                          <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-bold text-slate-700">{pretty(row.document_type)}</span>
+                        </div>
+                        <p className="mt-1 text-sm text-slate-700">{text(row.counterparty_name) || "Counterparty"} · {gbp(row.amount_gbp)} · {pretty(row.readiness_status)}</p>
+                        <p className="mt-1 text-xs text-slate-500">Source {text(row.source_table)} · {short(row.source_id, 42)}</p>
+                        {!isCustomerSales ? <p className="mt-2 text-xs font-bold text-amber-800">Visible only: this lane needs its own freeze resolver before posting can be enabled.</p> : null}
+                      </div>
+                    </div>
+                  </label>
+                );
+              })}
+              <button
+                type="submit"
+                disabled={customerSalesReadyNotFrozen.length === 0}
+                className="rounded-xl bg-amber-700 px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-amber-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+              >
+                Freeze selected customer sales rows
+              </button>
+            </form>
+          </section>
+        ) : null}
 
         <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
           <form action="/internal/accounting-command-centre" className="grid gap-3 lg:grid-cols-[1fr_auto_auto_auto] lg:items-end">
@@ -305,16 +359,9 @@ export default async function AccountingCommandCentrePage({ searchParams }: { se
           )}
         </section>
 
-        {liveReadyNotFrozen.length > 0 ? (
-          <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-900">
-            <h2 className="font-bold">Live ready rows not frozen yet</h2>
-            <p className="mt-2">There are {liveReadyNotFrozen.length} document row(s) in the live Sage queue that are ready for preview but do not yet have an approved frozen snapshot. Use the Sage document queue for now; batch freeze UI is the next action layer.</p>
-          </section>
-        ) : null}
-
         <section className="rounded-3xl border border-violet-200 bg-violet-50 p-5 text-sm leading-6 text-violet-900">
           <h2 className="font-bold">Control rule</h2>
-          <p className="mt-2">This page is read-only. It shows frozen payload snapshots and posting gates. It does not call Sage. Posting must only be added after the batch UI, revalidation and idempotency controls are proven.</p>
+          <p className="mt-2">This page freezes ready customer sales payloads into posting snapshots and shows posting gates. It does not call Sage. Shipper AP freeze and actual posting remain separate next controls.</p>
         </section>
       </div>
     </main>
