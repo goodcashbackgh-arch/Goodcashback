@@ -64,15 +64,9 @@ const shippingFlowSteps: FlowStep[] = [
   },
   {
     step: "4",
-    title: "Sage mapping control",
-    href: "/internal/sage-mapping",
-    description: "Confirm tenant-specific Sage tax-rate and ledger/account ids before any posting adapter is enabled.",
-  },
-  {
-    step: "5",
-    title: "Sage document queue",
-    href: "/internal/sage-ready",
-    description: "One filtered queue for customer sales drafts and shipper/AP purchase invoice intents before Sage posting.",
+    title: "Accounting Command Centre",
+    href: "/internal/accounting-command-centre",
+    description: "Single accounting cockpit for live-ready rows, mapping signals, freeze, revalidation, frozen snapshots and posting readiness.",
   },
 ];
 
@@ -80,14 +74,14 @@ const cards: QueueCard[] = [
   {
     title: "Supervisor command centre",
     href: "/internal/supervisor-command-centre",
-    description: "One cockpit row per order covering funding, DVA/card, supplier AP, exceptions, logistics/shipper, customer sales, shipper AP, export/delivery and next action.",
-    proof: "Order-to-clean-delivery cockpit",
+    description: "Official operational cockpit: one grid row per order/order-shipment grouping covering funding, DVA/card, supplier invoice, exceptions, logistics, customer sales, shipper AP, export/delivery and next action.",
+    proof: "Daily cockpit 1 of 2 — operational readiness",
   },
   {
     title: "Accounting command centre",
     href: "/internal/accounting-command-centre",
-    description: "Admin accounting cockpit for Sage-bound documents, frozen posting snapshots, revalidation, posting gates and later batch posting control.",
-    proof: "Payload freeze → revalidation → posting gate",
+    description: "Official accounting/Sage cockpit: live-ready documents, frozen snapshots, revalidation, posting gates, mapping/settings diagnostics and future batch posting control.",
+    proof: "Daily cockpit 2 of 2 — accounting execution readiness",
   },
   {
     title: "DVA/card statement workflow",
@@ -110,7 +104,7 @@ const cards: QueueCard[] = [
   {
     title: "DVA/card control hub",
     href: "/internal/dva-reconciliation",
-    description: "Summary and diagnostic view for statement-line positions, unmatched signals, and importer control totals. Not the main matching page.",
+    description: "Summary and diagnostic view for statement-line positions, unmatched signals, and importer control totals. Not the main matching workspace.",
     proof: "Control summary only",
   },
   {
@@ -122,8 +116,8 @@ const cards: QueueCard[] = [
   {
     title: "Shipping control centre",
     href: "/internal/shipping-control",
-    description: "Supervisor spine for importer shipment batches, package receipt truth, allocation status, shipper invoice lane, draft COS lane, master shipment lane and Sage readiness placeholders.",
-    proof: "Shipping control read-only v1",
+    description: "Supervisor spine for importer shipment batches, package receipt truth, allocation status, shipper invoice lane, customer invoice lane, master shipment lane and accounting-readiness placeholders.",
+    proof: "Shipping control task room",
   },
   {
     title: "Shipper invoice / receipt review",
@@ -138,22 +132,22 @@ const cards: QueueCard[] = [
     proof: "Internal sales invoice draft gate",
   },
   {
-    title: "Sage mapping control",
+    title: "Sage mapping diagnostic",
     href: "/internal/sage-mapping",
-    description: "Tenant-specific Sage tax-rate and ledger/account mapping control. Required before posting adapter work.",
-    proof: "Pre-posting mapping gate",
+    description: "Legacy/drill-down mapping page. Daily accounting users should start from Accounting Command Centre; this page remains for exact mapping edits until the settings tab is fully absorbed.",
+    proof: "Demoted under v4 — not a command centre",
   },
   {
-    title: "Order-level pre-Sage readiness",
+    title: "Pre-Sage readiness diagnostic",
     href: "/internal/status-control/pre-sage-financial-readiness",
-    description: "Final blocker pack showing whether each order has funding, supplier invoice, DVA/card, exceptions, customer sales and shipper/AP gates ready before Sage preview.",
-    proof: "All-roads-to-Sage blocker pack",
+    description: "Legacy blocker pack for order-level diagnosis. Daily users should start from Supervisor Command Centre or Accounting Command Centre, not this page.",
+    proof: "Demoted under v4 — diagnostic only",
   },
   {
-    title: "Sage document queue",
+    title: "Live-ready queue diagnostic",
     href: "/internal/sage-ready",
-    description: "One filtered accounting queue for customer sales drafts and shipper/AP purchase invoice intents before external Sage posting.",
-    proof: "Read-only Sage document queue",
+    description: "Legacy live-ready queue. Its daily function now belongs inside Accounting Command Centre filters; keep this as a support/diagnostic page only.",
+    proof: "Demoted under v4 — use Accounting Command Centre first",
   },
   {
     title: "Evidence / OCR queue",
@@ -170,7 +164,7 @@ const cards: QueueCard[] = [
   {
     title: "Supplier draft ready",
     href: "/internal/supplier-draft-ready",
-    description: "Clean supplier invoices that passed readiness checks and can be bulk approved as current before Sage supplier draft preparation.",
+    description: "Clean supplier invoices that passed readiness checks and can be bulk approved as current before accounting handoff.",
     proof: "Bulk approval lane v1",
   },
   {
@@ -200,7 +194,7 @@ const cards: QueueCard[] = [
   {
     title: "Accounting / VAT",
     href: "/internal/accounting-vat",
-    description: "VAT reporting, released sales invoice reporting, prepayment timing, Box 1 breach and Box 6 reporting. Sage queue now sits under Sage document queue.",
+    description: "VAT reporting, released sales invoice reporting, prepayment timing, Box 1 breach and Box 6 reporting. Sage/accounting cockpit sits under Accounting Command Centre.",
     proof: "Day 6/8 regression passed",
   },
   {
@@ -242,7 +236,7 @@ export default async function InternalPage() {
                 Staff control dashboard
               </h1>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-                Use DVA/card workflow for statement work, Shipping control centre for package/shipment work, Order-level pre-Sage readiness for final blocker checks, Sage mapping for tenant accounting IDs, and Sage document queue for the combined pre-posting accounting queue.
+                v4 operating model: use Supervisor Command Centre for operational readiness and Accounting Command Centre for accounting/Sage execution readiness. Legacy Sage-ready, mapping and pre-Sage readiness pages remain diagnostic drill-downs, not daily command pages.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700">
@@ -250,6 +244,21 @@ export default async function InternalPage() {
               <div>{staff.role_type}</div>
             </div>
           </div>
+        </section>
+
+        <section className="grid gap-4 md:grid-cols-2">
+          <Link href="/internal/supervisor-command-centre" className="rounded-3xl border border-sky-200 bg-sky-50 p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
+            <p className="text-xs font-bold uppercase tracking-[0.22em] text-sky-600">Daily cockpit 1</p>
+            <h2 className="mt-2 text-2xl font-semibold tracking-tight">Supervisor Command Centre</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-600">Operational source of truth from order control to clean delivery and accounting handoff. Start here for blockers, owners and child action routing.</p>
+            <div className="mt-4 text-sm font-bold text-sky-700">Open operational cockpit →</div>
+          </Link>
+          <Link href="/internal/accounting-command-centre" className="rounded-3xl border border-violet-200 bg-violet-50 p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
+            <p className="text-xs font-bold uppercase tracking-[0.22em] text-violet-600">Daily cockpit 2</p>
+            <h2 className="mt-2 text-2xl font-semibold tracking-tight">Accounting Command Centre</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-600">Single accounting/Sage cockpit for live-ready rows, frozen snapshots, revalidation, posting gates, mapping diagnostics and future batch posting.</p>
+            <div className="mt-4 text-sm font-bold text-violet-700">Open accounting cockpit →</div>
+          </Link>
         </section>
 
         <section className="rounded-3xl border border-sky-200 bg-white p-5 shadow-sm">
@@ -289,17 +298,17 @@ export default async function InternalPage() {
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <p className="text-xs font-bold uppercase tracking-[0.22em] text-emerald-600">Start here for shipper-side testing</p>
-              <h2 className="mt-2 text-2xl font-semibold tracking-tight">Shipping and Sage readiness workflow</h2>
+              <h2 className="mt-2 text-2xl font-semibold tracking-tight">Shipping and accounting readiness workflow</h2>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-                Use these links after logging in as staff/supervisor. The flow moves from shipping truth to customer invoice draft creation, Sage mapping, then the Sage document queue.
+                Use these links after logging in as staff/supervisor. The flow moves from shipping truth to customer invoice draft creation, then accounting handoff through the Accounting Command Centre.
               </p>
             </div>
-            <Link href="/internal/sage-ready" className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-emerald-800">
-              Open Sage document queue →
+            <Link href="/internal/accounting-command-centre" className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-emerald-800">
+              Open Accounting Command Centre →
             </Link>
           </div>
 
-          <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+          <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
             {shippingFlowSteps.map((step) => (
               <Link
                 key={`${step.step}-${step.href}-${step.title}`}
@@ -338,10 +347,7 @@ export default async function InternalPage() {
         <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-900">
           <h2 className="font-semibold">Build guardrails</h2>
           <p className="mt-2">
-            Stable progressed subsets may move forward. Open children block final
-            whole-order closure, not stable subset release. VAT is
-            prepayment-first and sales-invoice based. Sage posting remains queued
-            and idempotent. Shipper package batches are movement truth only; shipper invoices, export evidence and Sage readiness stay in separate supervisor lanes.
+            Stable progressed subsets may move forward. Open children block final whole-order closure, not stable subset release. VAT is prepayment-first and sales-invoice based. Sage posting remains queued and idempotent. Shipper package batches are movement truth only; shipper invoices, export evidence and accounting readiness stay in separate supervisor/accounting lanes. The daily model is two command centres plus child task rooms.
           </p>
         </section>
       </div>
