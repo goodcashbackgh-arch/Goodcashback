@@ -88,7 +88,16 @@ function statusTone(status: unknown): Tone {
 }
 
 function Pill({ value }: { value: unknown }) {
-  return <span className={`inline-flex max-w-[240px] whitespace-nowrap rounded-full border px-2 py-1 text-[11px] font-bold ${toneClass(statusTone(value))}`}>{pretty(value)}</span>;
+  return <span className={`inline-flex max-w-[170px] whitespace-nowrap rounded-full border px-2 py-1 text-[10px] font-bold leading-4 ${toneClass(statusTone(value))}`}>{pretty(value)}</span>;
+}
+
+function LabelledPill({ label, value }: { label: string; value: unknown }) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-2 py-1 text-[10px] font-semibold leading-4 text-slate-500">
+      <span>{label}</span>
+      <span className={`rounded-full border px-1.5 py-0.5 font-bold ${toneClass(statusTone(value))}`}>{pretty(value)}</span>
+    </span>
+  );
 }
 
 function SummaryCard({ label, value, detail, tone }: { label: string; value: string; detail: string; tone: Tone }) {
@@ -121,6 +130,20 @@ function SelectableInput({ row }: { row: Row }) {
     return <input type="checkbox" name="shipping_document_id" value={text(row.source_id)} defaultChecked className="h-4 w-4 rounded border-slate-300" />;
   }
   return <span className="text-xs text-slate-400">—</span>;
+}
+
+function ControlStateCluster({ row }: { row: Row }) {
+  return (
+    <div className="flex max-w-[360px] flex-wrap gap-1.5">
+      <LabelledPill label="Map" value={row.mapping_state} />
+      <LabelledPill label="Payload" value={row.payload_state} />
+      <LabelledPill label="Freeze" value={row.freeze_state} />
+      <LabelledPill label="Reval" value={row.revalidation_state} />
+      <LabelledPill label="Gate" value={row.posting_gate} />
+      <LabelledPill label="Sage" value={row.sage_status} />
+      {text(row.blocker) ? <p className="w-full text-[11px] font-semibold leading-4 text-rose-700">{short(row.blocker, 120)}</p> : null}
+    </div>
+  );
 }
 
 export default async function AccountingCommandCentrePage({
@@ -229,7 +252,7 @@ export default async function AccountingCommandCentrePage({
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
-          <form action="/internal/accounting-command-centre" className="grid gap-3 xl:grid-cols-[1fr_auto_auto_auto_auto_auto] xl:items-end">
+          <form action="/internal/accounting-command-centre" className="grid gap-3 lg:grid-cols-[minmax(220px,1fr)_170px_150px_170px_120px_auto] lg:items-end">
             <label className="grid gap-1 text-xs font-bold uppercase tracking-wide text-slate-500">
               Search
               <input name="q" defaultValue={search} placeholder="Order, source, counterparty, batch, idempotency" className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-950" />
@@ -296,22 +319,16 @@ export default async function AccountingCommandCentrePage({
           </div>
 
           <div className="overflow-x-auto rounded-b-3xl">
-            <table className="min-w-[1760px] table-fixed divide-y divide-slate-200 text-xs">
+            <table className="min-w-[1160px] table-fixed divide-y divide-slate-200 text-xs">
               <colgroup>
-                <col className="w-[64px]" />
-                <col className="w-[180px]" />
-                <col className="w-[190px]" />
-                <col className="w-[220px]" />
-                <col className="w-[210px]" />
-                <col className="w-[110px]" />
-                <col className="w-[190px]" />
-                <col className="w-[230px]" />
-                <col className="w-[150px]" />
-                <col className="w-[160px]" />
+                <col className="w-[52px]" />
+                <col className="w-[145px]" />
+                <col className="w-[145px]" />
                 <col className="w-[170px]" />
-                <col className="w-[120px]" />
-                <col className="w-[210px]" />
-                <col className="w-[150px]" />
+                <col className="w-[165px]" />
+                <col className="w-[90px]" />
+                <col className="w-[310px]" />
+                <col className="w-[83px]" />
               </colgroup>
               <thead className="sticky top-0 z-10 bg-slate-100 text-[11px] uppercase tracking-wide text-slate-500">
                 <tr>
@@ -321,35 +338,23 @@ export default async function AccountingCommandCentrePage({
                   <th className="px-2 py-2 text-left">Source / ref</th>
                   <th className="px-2 py-2 text-left">Counterparty</th>
                   <th className="px-2 py-2 text-right">Amount</th>
-                  <th className="px-2 py-2 text-left">Mapping</th>
-                  <th className="px-2 py-2 text-left">Payload</th>
-                  <th className="px-2 py-2 text-left">Freeze</th>
-                  <th className="px-2 py-2 text-left">Revalidation</th>
-                  <th className="px-2 py-2 text-left">Posting gate</th>
-                  <th className="px-2 py-2 text-left">Sage</th>
-                  <th className="px-2 py-2 text-left">Batch / idempotency</th>
-                  <th className="px-2 py-2 text-left">Next action</th>
+                  <th className="px-2 py-2 text-left">Control states</th>
+                  <th className="px-2 py-2 text-left">Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 bg-white">
                 {rows.length === 0 ? (
-                  <tr><td colSpan={14} className="px-3 py-8 text-center text-sm text-slate-500">No accounting rows match this filter.</td></tr>
+                  <tr><td colSpan={8} className="px-3 py-8 text-center text-sm text-slate-500">No accounting rows match this filter.</td></tr>
                 ) : rows.map((row) => (
                   <tr key={text(row.queue_row_id) || text(row.snapshot_id)} className="group align-middle hover:bg-slate-50">
                     <td className="px-2 py-2 align-middle"><SelectableInput row={row} /></td>
                     <td className="px-2 py-2 align-middle"><Pill value={row.work_queue} /></td>
                     <td className="px-2 py-2 align-middle"><p className="truncate font-bold text-slate-950">{pretty(row.document_lane)}</p><p className="mt-0.5 line-clamp-2 text-[11px] leading-4 text-slate-500">{pretty(row.document_type)}</p></td>
-                    <td className="px-2 py-2 align-middle"><p className="truncate font-mono text-[11px] font-bold text-slate-950">{text(row.order_ref) || text(row.reference_text) || short(row.source_id, 26)}</p><p className="mt-0.5 truncate text-[11px] text-slate-500">{text(row.source_table)} · {short(row.source_id, 28)}</p></td>
+                    <td className="px-2 py-2 align-middle"><p className="truncate font-mono text-[11px] font-bold text-slate-950">{text(row.order_ref) || text(row.reference_text) || short(row.source_id, 26)}</p><p className="mt-0.5 truncate text-[11px] text-slate-500">{text(row.source_table)} · {short(row.source_id, 26)}</p></td>
                     <td className="px-2 py-2 align-middle"><p className="truncate font-semibold text-slate-900">{text(row.counterparty_name) || "—"}</p><p className="mt-0.5 truncate text-[11px] text-slate-500">{bookingText(row.booking_ref)}</p></td>
                     <td className="px-2 py-2 text-right align-middle font-bold text-slate-950">{gbp(row.amount_gbp)}<p className="text-[11px] font-normal text-slate-500">{text(row.currency_code) || "GBP"}</p></td>
-                    <td className="px-2 py-2 align-middle"><Pill value={row.mapping_state} /></td>
-                    <td className="px-2 py-2 align-middle"><Pill value={row.payload_state} /></td>
-                    <td className="px-2 py-2 align-middle"><Pill value={row.freeze_state} /></td>
-                    <td className="px-2 py-2 align-middle"><Pill value={row.revalidation_state} /></td>
-                    <td className="px-2 py-2 align-middle"><Pill value={row.posting_gate} />{text(row.blocker) ? <p className="mt-1 line-clamp-2 text-[11px] font-semibold text-rose-700">{short(row.blocker, 120)}</p> : null}</td>
-                    <td className="px-2 py-2 align-middle"><Pill value={row.sage_status} /></td>
-                    <td className="px-2 py-2 align-middle"><p className="truncate font-mono text-[11px] text-slate-700">{short(row.batch_ref, 24)}</p><p className="mt-0.5 truncate font-mono text-[11px] text-slate-500">{short(row.idempotency_key, 24)}</p></td>
-                    <td className="px-2 py-2 align-middle"><Link href={text(row.next_action_href) || "/internal/accounting-command-centre"} className="inline-flex max-w-[130px] rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-[11px] font-bold leading-4 text-slate-800 hover:bg-slate-100">{short(text(row.next_action) || "Open", 28)}</Link></td>
+                    <td className="px-2 py-2 align-middle"><ControlStateCluster row={row} /></td>
+                    <td className="px-2 py-2 align-middle"><Link href={text(row.next_action_href) || "/internal/accounting-command-centre"} className="inline-flex rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-[11px] font-bold leading-4 text-slate-800 hover:bg-slate-100">{short(text(row.next_action) || "Open", 20)}</Link></td>
                   </tr>
                 ))}
               </tbody>
