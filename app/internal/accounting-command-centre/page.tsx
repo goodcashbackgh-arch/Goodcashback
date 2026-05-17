@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 import SageConnectionPanel from "./SageConnectionPanel";
 import {
+  createPostingBatchFromMatchingRowsAction,
   freezeMatchingCustomerSalesRowsAction,
   freezeMatchingShipperApRowsAction,
   freezeSelectedCustomerSalesRowsAction,
@@ -278,7 +279,7 @@ export default async function AccountingCommandCentrePage({
         <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
           <SectionLink title="Live ready" detail="Rows ready to freeze; replaces daily /sage-ready usage" href="/internal/accounting-command-centre?queue=live_ready_not_frozen" tone="action" />
           <SectionLink title="Frozen snapshots" detail="Frozen/revalidation rows; preview is drill-down" href="/internal/accounting-command-centre?queue=frozen_ready_to_post" tone="complete" />
-          <SectionLink title="Posting batches" detail="Not built yet; next v4 phase" href="/internal/accounting-command-centre" tone="muted" />
+          <SectionLink title="Posting batches" detail="Create no-Sage-call batches from ready snapshots" href="/internal/accounting-command-centre?queue=frozen_ready_to_post&posting_gate=ready_to_post" tone="review" />
           <SectionLink title="Sage settings" detail="Connection/settings panel lives above; legacy mapping remains diagnostic" href="/internal/sage-mapping" tone={num(summary.blocked_before_posting) > 0 ? "review" : "muted"} />
           <SectionLink title="Failures/results" detail="Failed and posted filters live here" href="/internal/accounting-command-centre?queue=posting_failed" tone="blocked" />
           <SectionLink title="Corrections/reversals" detail="Not built yet; stays here later" href="/internal/accounting-command-centre" tone="muted" />
@@ -373,6 +374,7 @@ export default async function AccountingCommandCentrePage({
               <button formAction={freezeSelectedShipperApRowsAction} className="rounded-lg bg-amber-700 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-amber-800" type="submit">Freeze visible shipper AP</button>
               <button formAction={freezeMatchingShipperApRowsAction} className="rounded-lg bg-amber-900 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-amber-950" type="submit">Freeze all matching shipper AP</button>
               <button formAction={revalidateMatchingFrozenRowsAction} className="rounded-lg bg-violet-700 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-violet-800" type="submit">Revalidate matching frozen</button>
+              <button formAction={createPostingBatchFromMatchingRowsAction} className="rounded-lg bg-slate-950 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-slate-800" type="submit">Create posting batch — no Sage call</button>
               <Link href="/internal/accounting-command-centre/posting-preview" className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-center text-[11px] font-bold text-slate-800 hover:bg-slate-50">Frozen snapshot drill-down</Link>
             </div>
           </div>
@@ -432,7 +434,7 @@ export default async function AccountingCommandCentrePage({
         <section className="rounded-3xl border border-violet-200 bg-violet-50 p-5 text-sm leading-6 text-violet-900">
           <h2 className="font-bold">v4 control rule</h2>
           <p className="mt-2">This page is the single accounting/Sage cockpit. Frozen snapshot preview, Sage mapping and legacy live-ready routes remain drill-down diagnostics only. Operational exception resolution, shipper receipt approval, DVA investigation and invoice OCR correction stay outside this page. Actual Sage posting is still not built.</p>
-          <p className="mt-2 font-semibold">Bulk mode distinguishes selected visible rows from all matching current filter. Blocked/excluded rows remain out of the action and are reported in the completion message.</p>
+          <p className="mt-2 font-semibold">Bulk mode distinguishes selected visible rows from all matching current filter. Posting batches created here make no Sage call and remain disabled until Sage OAuth and dry-run validation are proven.</p>
         </section>
       </div>
     </main>
