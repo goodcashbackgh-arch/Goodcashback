@@ -7,6 +7,7 @@ import { createClient } from "@/utils/supabase/server";
 type FreezeResult = {
   snapshot_id?: string | null;
   sales_invoice_id?: string | null;
+  shipping_document_id?: string | null;
   freeze_status?: string | null;
   blocker?: string | null;
 };
@@ -21,13 +22,7 @@ function hasAccountingAdminTesting(value: unknown) {
   return permissions.accounting_admin_testing === true || permissions.admin_testing === true;
 }
 
-export async function freezeSelectedCustomerSalesRowsAction(formData: FormData) {
-  const selectedIds = asStringArray(formData.getAll("sales_invoice_id"));
-
-  if (selectedIds.length === 0) {
-    redirect("/internal/accounting-command-centre?error=Select at least one customer sales row to freeze");
-  }
-
+async function requireAccountingAdminAccess() {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
@@ -48,9 +43,21 @@ export async function freezeSelectedCustomerSalesRowsAction(formData: FormData) 
     redirect("/internal/accounting-command-centre?error=Accounting admin access required");
   }
 
+  return supabase;
+}
+
+export async function freezeSelectedCustomerSalesRowsAction(formData: FormData) {
+  const selectedIds = asStringArray(formData.getAll("sales_invoice_id"));
+
+  if (selectedIds.length === 0) {
+    redirect("/internal/accounting-command-centre?error=Select at least one customer sales row to freeze");
+  }
+
+  const supabase = await requireAccountingAdminAccess();
+
   const { data, error } = await (supabase as any).rpc("internal_freeze_customer_sales_sage_batch_v1", {
     p_sales_invoice_ids: selectedIds,
-    p_notes: "Accounting command centre batch freeze",
+    p_notes: "Accounting command centre customer sales freeze",
   });
 
   if (error) {
@@ -77,8 +84,40 @@ export async function freezeSelectedCustomerSalesRowsAction(formData: FormData) 
   revalidatePath("/internal/sage-ready");
 
   const message = blockedCount > 0
-    ? `Frozen ${frozenSnapshotIds.length} row(s); ${blockedCount} row(s) not frozen`
-    : `Frozen and revalidated ${frozenSnapshotIds.length} row(s)`;
+    ? `Customer sales: frozen ${frozenSnapshotIds.length} row(s); ${blockedCount} row(s) not frozen`
+    : `Customer sales: frozen and revalidated ${frozenSnapshotIds.length} row(s)`;
+
+  redirect(`/internal/accounting-command-centre?success=${encodeURIComponent(message)}`);
+}
+
+export async function freezeSelectedShipperApRowsAction(formData: FormData) {
+  const selectedIds = asStringArray(formData.getAll("shipping_document_id"));
+
+  if (selectedIds.length === 0) {
+    redirect("/internal/accounting-command-centre?error=Select at least one shipper AP row to freeze");
+  }
+
+  const supabase = await requireAccountingAdminAccess();
+
+  const { data, error } = await (supabase as any).rpc("internal_freeze_shipper_ap_sage_batch_v1", {
+    p_shipping_document_ids: selectedIds,
+    p_notes: "Accounting command centre shipper AP freeze",
+  });
+
+  if (error) {
+    redirect(`/internal/accounting-command-centre?error=${encodeURIComponent(error.message)}`);
+  }
+
+  const rows = ((data ?? []) as FreezeResult[]);
+  const frozenCount = rows.filter((row) => row.freeze_status === "frozen" && row.snapshot_id).length;
+  const blockedCount = rows.filter((row) => row.freeze_status !== "frozen").length;
+
+  revalidatePath("/internal/accounting-command-centre");
+  revalidatePath("/internal/sage-ready");
+
+  const message = blockedCount > 0
+    ? `Shipper AP: frozen ${frozenCount} row(s); ${blockedCount} row(s) not frozen`
+    : `Shipper AP: frozen and marked ready to post ${frozenCount} row(s)`;
 
   redirect(`/internal/accounting-command-centre?success=${encodeURIComponent(message)}`);
 }
