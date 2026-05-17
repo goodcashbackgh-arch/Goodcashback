@@ -93,6 +93,18 @@ function statusTone(status: unknown): Tone {
   return "muted";
 }
 
+function actionLabel(row: Row) {
+  const raw = text(row.next_action) || "Open";
+  if (/post\s+to\s+sage/i.test(raw)) return "Review ready row";
+  return raw;
+}
+
+function actionTitle(row: Row) {
+  const raw = text(row.next_action) || "Open";
+  if (/post\s+to\s+sage/i.test(raw)) return "Ready for future Sage posting. Live Sage posting is not built yet.";
+  return raw;
+}
+
 function Pill({ value }: { value: unknown }) {
   return <span className={`inline-flex max-w-[130px] truncate rounded-full border px-2 py-0.5 text-[10px] font-bold leading-4 ${toneClass(statusTone(value))}`}>{pretty(value)}</span>;
 }
@@ -398,7 +410,7 @@ export default async function AccountingCommandCentrePage({
                     <td className="px-2 py-2 align-middle"><p className="truncate font-semibold text-slate-900">{text(row.counterparty_name) || "—"}</p><p className="mt-0.5 truncate text-[11px] text-slate-500">{bookingText(row.booking_ref)}</p></td>
                     <td className="px-2 py-2 text-right align-middle font-bold text-slate-950">{gbp(row.amount_gbp)}<p className="text-[11px] font-normal text-slate-500">{text(row.currency_code) || "GBP"}</p></td>
                     <td className="px-2 py-2 align-middle"><ControlStateCluster row={row} /></td>
-                    <td className="px-2 py-2 align-middle"><Link href={text(row.next_action_href) || "/internal/accounting-command-centre"} className="inline-flex max-w-[86px] rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-[11px] font-bold leading-4 text-slate-800 hover:bg-slate-100">{short(text(row.next_action) || "Open", 24)}</Link></td>
+                    <td className="px-2 py-2 align-middle"><Link href={text(row.next_action_href) || "/internal/accounting-command-centre"} title={actionTitle(row)} className="inline-flex max-w-[86px] rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-[11px] font-bold leading-4 text-slate-800 hover:bg-slate-100">{short(actionLabel(row), 24)}</Link></td>
                   </tr>
                 ))}
               </tbody>
