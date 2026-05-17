@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
-import { freezeSelectedCustomerSalesRowsAction } from "./actions";
+import { freezeSelectedCustomerSalesRowsAction, freezeSelectedShipperApRowsAction } from "./actions";
 
 type Row = Record<string, unknown>;
 type Tone = "complete" | "progress" | "action" | "blocked" | "review" | "muted";
@@ -92,6 +92,31 @@ function FoundationCard({ title, value, detail, tone, href }: { title: string; v
   return href ? <Link href={href}>{content}</Link> : content;
 }
 
+function ReadyRowCard({ row, inputName, defaultChecked = true }: { row: Row; inputName: string; defaultChecked?: boolean }) {
+  return (
+    <label className="block rounded-2xl border border-amber-300 bg-white p-4">
+      <div className="flex items-start gap-3">
+        <input
+          type="checkbox"
+          name={inputName}
+          value={text(row.source_id)}
+          defaultChecked={defaultChecked}
+          className="mt-1 h-5 w-5 rounded border-slate-300"
+        />
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="font-extrabold text-slate-950">{text(row.order_ref) || text(row.reference_text) || text(row.queue_row_id)}</p>
+            <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-bold text-slate-700">{pretty(row.document_lane)}</span>
+            <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-bold text-slate-700">{pretty(row.document_type)}</span>
+          </div>
+          <p className="mt-1 text-sm text-slate-700">{text(row.counterparty_name) || "Counterparty"} · {gbp(row.amount_gbp)} · {pretty(row.readiness_status)}</p>
+          <p className="mt-1 text-xs text-slate-500">Source {text(row.source_table)} · {short(row.source_id, 42)}</p>
+        </div>
+      </div>
+    </label>
+  );
+}
+
 export default async function AccountingCommandCentrePage({ searchParams }: { searchParams?: Promise<{ q?: string; lane?: string; status?: string; success?: string; error?: string }> }) {
   const qp = searchParams ? await searchParams : {};
   const search = (qp.q ?? "").trim().toLowerCase();
@@ -162,7 +187,12 @@ export default async function AccountingCommandCentrePage({ searchParams }: { se
     return !snapshots.some((snapshot) => text(snapshot.source_id) === sourceId && text(snapshot.approval_status) === "approved_frozen" && text(snapshot.sage_posting_status) !== "posted");
   });
   const customerSalesReadyNotFrozen = liveReadyNotFrozen.filter((row) => text(row.document_lane) === "customer_sales" && text(row.source_table) === "sales_invoices");
-  const otherReadyNotFrozen = liveReadyNotFrozen.filter((row) => !(text(row.document_lane) === "customer_sales" && text(row.source_table) === "sales_invoices"));
+  const shipperApReadyNotFrozen = liveReadyNotFrozen.filter((row) => text(row.document_lane) === "shipper_ap" && text(row.source_table) === "shipping_documents");
+  const otherReadyNotFrozen = liveReadyNotFrozen.filter((row) => {
+    const isCustomerSales = text(row.document_lane) === "customer_sales" && text(row.source_table) === "sales_invoices";
+    const isShipperAp = text(row.document_lane) === "shipper_ap" && text(row.source_table) === "shipping_documents";
+    return !isCustomerSales && !isShipperAp;
+  });
 
   const readyToPost = snapshots.filter((row) => text(row.posting_gate_status) === "ready_to_post").length;
   const requiresRevalidation = snapshots.filter((row) => text(row.posting_gate_status) === "requires_revalidation").length;
@@ -215,7 +245,7 @@ export default async function AccountingCommandCentrePage({ searchParams }: { se
           <FoundationCard title="Requires revalidation" value={String(requiresRevalidation)} detail="Frozen but not checked since approval" tone={requiresRevalidation > 0 ? "action" : "complete"} />
           <FoundationCard title="Blocked" value={String(blocked)} detail="Mapping/source/payload changed or failed gate" tone={blocked > 0 ? "blocked" : "complete"} />
           <FoundationCard title="Posted" value={String(posted)} detail="Sage posting confirmed/recorded" tone={posted > 0 ? "complete" : "muted"} />
-          <FoundationCard title="Live ready not frozen" value={String(liveReadyNotFrozen.length)} detail={`${customerSalesReadyNotFrozen.length} customer sales freezeable; ${otherReadyNotFrozen.length} other lane(s)`} tone={liveReadyNotFrozen.length > 0 ? "action" : "complete"} />
+          <FoundationCard title="Live ready not frozen" value={String(liveReadyNotFrozen.length)} detail={`${customerSalesReadyNotFrozen.length} customer sales; ${shipperApReadyNotFrozen.length} shipper AP; ${otherReadyNotFrozen.length} other`} tone={liveReadyNotFrozen.length > 0 ? "action" : "complete"} />
           <FoundationCard title="Frozen value" value={gbp(totalFrozenValue)} detail={mappingMissing > 0 ? `${mappingMissing} mapping issue(s)` : "Unposted approved snapshots"} tone={mappingMissing > 0 ? "blocked" : "review"} href="/internal/sage-mapping" />
         </section>
 
@@ -224,47 +254,58 @@ export default async function AccountingCommandCentrePage({ searchParams }: { se
             <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
               <div>
                 <h2 className="text-xl font-bold">Live ready rows not frozen yet</h2>
-                <p className="mt-2">Freeze converts a ready live payload into an approved posting snapshot. Customer sales rows are freezeable here now; other lanes are listed but remain blocked from posting until their freeze resolver is added.</p>
+                <p className="mt-2">Freeze converts a ready live payload into an approved posting snapshot. Customer sales and shipper AP can now be frozen separately; each lane keeps its own accounting control.</p>
               </div>
               <Link href="/internal/sage-ready" className="w-fit rounded-xl border border-amber-300 bg-white px-4 py-2 text-sm font-bold text-amber-900">Open live Sage queue</Link>
             </div>
 
-            <form action={freezeSelectedCustomerSalesRowsAction} className="mt-4 space-y-3">
-              {liveReadyNotFrozen.map((row) => {
-                const isCustomerSales = text(row.document_lane) === "customer_sales" && text(row.source_table) === "sales_invoices";
-                return (
-                  <label key={text(row.queue_row_id) || text(row.source_id)} className={`block rounded-2xl border bg-white p-4 ${isCustomerSales ? "border-amber-300" : "border-slate-200 opacity-80"}`}>
-                    <div className="flex items-start gap-3">
-                      <input
-                        type="checkbox"
-                        name="sales_invoice_id"
-                        value={text(row.source_id)}
-                        defaultChecked={isCustomerSales}
-                        disabled={!isCustomerSales}
-                        className="mt-1 h-5 w-5 rounded border-slate-300"
-                      />
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <p className="font-extrabold text-slate-950">{text(row.order_ref) || text(row.reference_text) || text(row.queue_row_id)}</p>
-                          <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-bold text-slate-700">{pretty(row.document_lane)}</span>
-                          <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-bold text-slate-700">{pretty(row.document_type)}</span>
-                        </div>
-                        <p className="mt-1 text-sm text-slate-700">{text(row.counterparty_name) || "Counterparty"} · {gbp(row.amount_gbp)} · {pretty(row.readiness_status)}</p>
-                        <p className="mt-1 text-xs text-slate-500">Source {text(row.source_table)} · {short(row.source_id, 42)}</p>
-                        {!isCustomerSales ? <p className="mt-2 text-xs font-bold text-amber-800">Visible only: this lane needs its own freeze resolver before posting can be enabled.</p> : null}
-                      </div>
+            <div className="mt-4 grid gap-4 lg:grid-cols-2">
+              {customerSalesReadyNotFrozen.length > 0 ? (
+                <form action={freezeSelectedCustomerSalesRowsAction} className="space-y-3 rounded-2xl border border-amber-300 bg-amber-100/50 p-4">
+                  <div>
+                    <h3 className="font-extrabold">Customer sales freeze</h3>
+                    <p className="mt-1 text-xs font-semibold text-amber-800">Freezes main/supplementary customer sales drafts into approved posting snapshots.</p>
+                  </div>
+                  {customerSalesReadyNotFrozen.map((row) => (
+                    <ReadyRowCard key={text(row.queue_row_id) || text(row.source_id)} row={row} inputName="sales_invoice_id" />
+                  ))}
+                  <button type="submit" className="rounded-xl bg-amber-700 px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-amber-800">
+                    Freeze selected customer sales rows
+                  </button>
+                </form>
+              ) : null}
+
+              {shipperApReadyNotFrozen.length > 0 ? (
+                <form action={freezeSelectedShipperApRowsAction} className="space-y-3 rounded-2xl border border-amber-300 bg-amber-100/50 p-4">
+                  <div>
+                    <h3 className="font-extrabold">Shipper AP freeze</h3>
+                    <p className="mt-1 text-xs font-semibold text-amber-800">Freezes approved shipper AP purchase-invoice intents. It still does not call Sage.</p>
+                  </div>
+                  {shipperApReadyNotFrozen.map((row) => (
+                    <ReadyRowCard key={text(row.queue_row_id) || text(row.source_id)} row={row} inputName="shipping_document_id" />
+                  ))}
+                  <button type="submit" className="rounded-xl bg-amber-700 px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-amber-800">
+                    Freeze selected shipper AP rows
+                  </button>
+                </form>
+              ) : null}
+            </div>
+
+            {otherReadyNotFrozen.length > 0 ? (
+              <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4">
+                <h3 className="font-extrabold">Other live ready rows</h3>
+                <p className="mt-1 text-xs font-semibold text-amber-800">Visible only: these lanes need their own freeze resolver before posting can be enabled.</p>
+                <div className="mt-3 space-y-3">
+                  {otherReadyNotFrozen.map((row) => (
+                    <div key={text(row.queue_row_id) || text(row.source_id)} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                      <p className="font-extrabold text-slate-950">{text(row.order_ref) || text(row.reference_text) || text(row.queue_row_id)}</p>
+                      <p className="mt-1 text-sm text-slate-700">{pretty(row.document_lane)} · {pretty(row.document_type)} · {gbp(row.amount_gbp)}</p>
+                      <p className="mt-1 text-xs text-slate-500">Source {text(row.source_table)} · {short(row.source_id, 42)}</p>
                     </div>
-                  </label>
-                );
-              })}
-              <button
-                type="submit"
-                disabled={customerSalesReadyNotFrozen.length === 0}
-                className="rounded-xl bg-amber-700 px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-amber-800 disabled:cursor-not-allowed disabled:bg-slate-300"
-              >
-                Freeze selected customer sales rows
-              </button>
-            </form>
+                  ))}
+                </div>
+              </div>
+            ) : null}
           </section>
         ) : null}
 
@@ -361,7 +402,7 @@ export default async function AccountingCommandCentrePage({ searchParams }: { se
 
         <section className="rounded-3xl border border-violet-200 bg-violet-50 p-5 text-sm leading-6 text-violet-900">
           <h2 className="font-bold">Control rule</h2>
-          <p className="mt-2">This page freezes ready customer sales payloads into posting snapshots and shows posting gates. It does not call Sage. Shipper AP freeze and actual posting remain separate next controls.</p>
+          <p className="mt-2">This page freezes ready customer sales and shipper AP payloads into posting snapshots and shows posting gates. It does not call Sage. Actual posting remains the next separate control.</p>
         </section>
       </div>
     </main>
