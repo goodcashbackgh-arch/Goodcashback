@@ -192,11 +192,11 @@ function customerSalesLane(salesInvoices: Row[], sageRows: Row[], releaseRows: R
   const releasable = releaseRows.find((row) => text(row.readiness_status) === "ready_to_create_draft");
   const releaseDraft = releaseRows.find((row) => text(row.readiness_status) === "draft_exists");
 
-  if (posted) return lane("Posted / marked", `${pretty(posted.document_type)} · ${gbp(posted.amount_gbp)}`, "complete", text(posted.detail_href) || "/internal/sage-ready");
-  if (blocked) return lane("Payload blocked", text(blocked.blocker) || pretty(blocked.readiness_status), "blocked", text(blocked.detail_href) || "/internal/sage-ready");
-  if (ready && stalePayload) return lane("Preview-ready, stale snapshot", "Queue is mapping-aware; old draft JSON still shows unresolved tax fields", "review", text(ready.detail_href) || "/internal/sage-ready");
-  if (ready) return lane("Payload gate ready", `${pretty(ready.document_type)} · ${gbp(ready.amount_gbp)}`, "complete", text(ready.detail_href) || "/internal/sage-ready");
-  if (draft || releaseDraft) return lane("Draft exists", `${draft ? gbp(draft.amount_gbp) : gbp(releaseDraft?.proposed_amount_gbp)} · needs Sage queue/payload review`, "progress", "/internal/sage-ready");
+  if (posted) return lane("Posted / marked", `${pretty(posted.document_type)} · ${gbp(posted.amount_gbp)}`, "complete", text(posted.detail_href) || "/internal/accounting-command-centre");
+  if (blocked) return lane("Payload blocked", text(blocked.blocker) || pretty(blocked.readiness_status), "blocked", text(blocked.detail_href) || "/internal/accounting-command-centre");
+  if (ready && stalePayload) return lane("Preview-ready, stale snapshot", "Queue is mapping-aware; old draft JSON still shows unresolved tax fields", "review", text(ready.detail_href) || "/internal/accounting-command-centre");
+  if (ready) return lane("Accounting handoff ready", `${pretty(ready.document_type)} · ${gbp(ready.amount_gbp)}`, "complete", text(ready.detail_href) || "/internal/accounting-command-centre");
+  if (draft || releaseDraft) return lane("Draft exists", `${draft ? gbp(draft.amount_gbp) : gbp(releaseDraft?.proposed_amount_gbp)} · needs Accounting Command Centre review`, "progress", "/internal/accounting-command-centre");
   if (releasable) return lane("Draft-ready", `${pretty(releasable.proposed_invoice_type)} · ${gbp(releasable.proposed_amount_gbp)}`, "action", "/internal/shipping-control/customer-invoice-release");
   return lane("Not reached", "No customer sales draft/intention visible yet", "muted", "/internal/shipping-control/customer-invoice-release");
 }
@@ -205,8 +205,8 @@ function shipperApLane(shipping: Row | undefined, sageRows: Row[]) {
   const shipperRows = sageRows.filter((row) => text(row.document_lane) === "shipper_ap");
   const ready = shipperRows.find((row) => text(row.readiness_status).startsWith("ready"));
   const blocked = shipperRows.find((row) => text(row.readiness_status).startsWith("blocked"));
-  if (ready) return lane("AP intent ready", `${text(ready.reference_text) || "Shipper AP"} · ${gbp(ready.amount_gbp)}`, "complete", text(ready.detail_href) || "/internal/sage-ready");
-  if (blocked) return lane("AP blocked", text(blocked.blocker) || pretty(blocked.readiness_status), "blocked", text(blocked.detail_href) || "/internal/sage-ready");
+  if (ready) return lane("AP handoff ready", `${text(ready.reference_text) || "Shipper AP"} · ${gbp(ready.amount_gbp)}`, "complete", text(ready.detail_href) || "/internal/accounting-command-centre");
+  if (blocked) return lane("AP blocked", text(blocked.blocker) || pretty(blocked.readiness_status), "blocked", text(blocked.detail_href) || "/internal/accounting-command-centre");
   if (!shipping) return lane("Not reached", "No shipment batch found", "muted", "/internal/shipping-control");
   const shipperInvoice = text(shipping.shipper_invoice_status);
   const apportionment = text(shipping.sage_readiness_status);
@@ -238,11 +238,11 @@ function nextActions(states: Record<string, Lane>) {
   if (["blocked", "action", "review"].includes(states.supplier.tone)) push(states.supplier.label === "Missing" ? "Operator" : "Supervisor", states.supplier.label === "Missing" ? "Upload supplier invoice" : "Resolve supplier invoice", states.supplier);
   if (["blocked", "review"].includes(states.exceptions.tone)) push("Supervisor", "Resolve exception/hold", states.exceptions);
   if (["blocked", "action", "review"].includes(states.dva.tone)) push("Supervisor", "Review DVA/card allocation", states.dva);
-  if (["blocked", "action", "review"].includes(states.customerSales.tone)) push("Supervisor", states.customerSales.label.includes("Draft-ready") ? "Create customer sales draft" : "Review customer sales payload", states.customerSales);
+  if (["blocked", "action", "review"].includes(states.customerSales.tone)) push("Supervisor", states.customerSales.label.includes("Draft-ready") ? "Create customer sales draft" : "Review customer sales handoff", states.customerSales);
   if (["blocked", "action", "review"].includes(states.shipping.tone)) push("Supervisor/Shipper", "Fix shipping/logistics lane", states.shipping);
   if (["blocked", "action", "review"].includes(states.shipperAp.tone)) push("Supervisor", states.shipperAp.label === "Blocked" ? "Upload/accept shipper document" : "Complete shipper AP readiness", states.shipperAp);
   if (candidates.length === 0 && states.exportDelivery.tone !== "complete") push("Supervisor/Shipper", "Progress export/delivery evidence", states.exportDelivery);
-  if (candidates.length === 0) candidates.push({ owner: "Supervisor", label: "Review for closure/accounting", reason: "No immediate blockers detected in this overview", href: "/internal/status-control/pre-sage-financial-readiness", tone: "complete" });
+  if (candidates.length === 0) candidates.push({ owner: "Accounting", label: "Review accounting handoff", reason: "Operational lanes show no immediate blocker in this overview", href: "/internal/accounting-command-centre", tone: "complete" });
   return candidates;
 }
 
@@ -365,7 +365,7 @@ export default async function SupervisorCommandCentrePage({ searchParams }: { se
     allocationsResult.error ? `DVA allocations: ${allocationsResult.error.message}` : "",
     shippingResult.error ? `Shipping control: ${shippingResult.error.message}` : "",
     customerReleaseResult.error ? `Customer invoice release: ${customerReleaseResult.error.message}` : "",
-    sageQueueResult.error ? `Sage queue: ${sageQueueResult.error.message}` : "",
+    sageQueueResult.error ? `Accounting handoff: ${sageQueueResult.error.message}` : "",
     mappingResult.error ? `Sage mappings: ${mappingResult.error.message}` : "",
   ].filter(Boolean);
 
@@ -374,20 +374,25 @@ export default async function SupervisorCommandCentrePage({ searchParams }: { se
       <div className="mx-auto max-w-7xl space-y-6">
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
           <Link href="/internal" className="text-sm font-semibold text-sky-700">← Internal dashboard</Link>
-          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Goodcashback Internal</p>
+          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Supervisor operational cockpit</p>
           <div className="mt-2 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
             <div>
-              <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">Supervisor Command Centre</h1>
-              <p className="mt-2 max-w-5xl text-sm leading-6 text-slate-600">Read-only cockpit for order-to-clean-delivery control. It brings together funding, DVA/card, supplier goods AP, exceptions, logistics/shipper, customer sales, shipper AP and export/delivery lanes without replacing the focused task pages.</p>
+              <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">Order-to-clean-delivery command centre</h1>
+              <p className="mt-2 max-w-5xl text-sm leading-6 text-slate-600">Read-only v4 cockpit for operational truth. It routes funding, DVA/card, supplier goods AP, exceptions, logistics/shipper, customer sales readiness, shipper AP readiness and export/delivery blockers into the correct child task pages. Sage posting controls stay inside Accounting Command Centre only.</p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700"><div className="font-medium text-slate-950">{text(staff.full_name)}</div><div>{text(staff.role_type)}</div></div>
+          </div>
+          <div className="mt-4 grid gap-3 text-sm md:grid-cols-3">
+            <div className="rounded-2xl border border-sky-200 bg-sky-50 p-3 text-sky-900"><p className="font-bold">Supervisor owns operational readiness</p><p className="mt-1 text-xs leading-5">Resolve blockers in funding, DVA/card, invoice, exception, shipper, customer and delivery lanes.</p></div>
+            <div className="rounded-2xl border border-violet-200 bg-violet-50 p-3 text-violet-900"><p className="font-bold">Accounting owns Sage posting</p><p className="mt-1 text-xs leading-5">Freeze, revalidation, posting batches and Sage API posting are not available from this page.</p></div>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-slate-700"><p className="font-bold">Process graph, not straight line</p><p className="mt-1 text-xs leading-5">Customer sales and shipper AP can split where the platform has separate readiness gates.</p></div>
           </div>
           {errorMessages.length > 0 ? <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900"><p className="font-bold">Some lanes could not be read</p><ul className="mt-2 list-disc space-y-1 pl-5">{errorMessages.map((message) => <li key={message}>{message}</li>)}</ul></div> : null}
         </section>
 
         <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
-          <FoundationCard title="Sage mappings" value={`${configuredMappings}/${mappingRows.length || 4}`} detail={mappingMissing > 0 ? `${mappingMissing} missing mapping(s)` : "Configured for preview; verify before live posting"} tone={mappingMissing > 0 ? "blocked" : "review"} href="/internal/sage-mapping" />
-          <FoundationCard title="Sage queue" value={`${readySageRows} ready`} detail={`${blockedSageRows} blocked document row(s)`} tone={blockedSageRows > 0 ? "action" : "complete"} href="/internal/sage-ready" />
+          <FoundationCard title="Sage settings" value={`${configuredMappings}/${mappingRows.length || 4}`} detail={mappingMissing > 0 ? `${mappingMissing} missing mapping(s)` : "Configured for preview; verify before live posting"} tone={mappingMissing > 0 ? "blocked" : "review"} href="/internal/accounting-command-centre" />
+          <FoundationCard title="Accounting handoff" value={`${readySageRows} ready`} detail={`${blockedSageRows} blocked document row(s)`} tone={blockedSageRows > 0 ? "action" : "complete"} href="/internal/accounting-command-centre" />
           <FoundationCard title="DVA/card" value={`${allocationRows.length}`} detail="Visible active/review allocation rows" tone={allocationRows.length > 0 ? "complete" : "review"} href="/internal/dva-reconciliation/workspace" />
           <FoundationCard title="Shipping" value={`${shippingRows.length}`} detail="Shipment batches in control spine" tone={shippingRows.length > 0 ? "complete" : "muted"} href="/internal/shipping-control" />
           <FoundationCard title="Customer drafts" value={`${customerReleaseRows.length}`} detail="Customer invoice release queue rows" tone={customerReleaseRows.length > 0 ? "progress" : "muted"} href="/internal/shipping-control/customer-invoice-release" />
@@ -397,7 +402,7 @@ export default async function SupervisorCommandCentrePage({ searchParams }: { se
         <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5"><form action="/internal/supervisor-command-centre" className="grid gap-3 md:grid-cols-[1fr_auto_auto] md:items-end"><label className="grid gap-1 text-xs font-bold uppercase tracking-wide text-slate-500">Search orders, importers, retailers, bookings<input name="q" defaultValue={qp.q ?? ""} placeholder="ORD, importer, retailer, booking" className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-950" /></label><label className="flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700"><input type="checkbox" name="only_action" value="true" defaultChecked={onlyAction} />Action rows only</label><div className="flex gap-2"><button type="submit" className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white">Apply</button><Link href="/internal/supervisor-command-centre" className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800">Reset</Link></div></form></section>
 
         <section className="space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-3"><h2 className="text-xl font-semibold">Order cockpit</h2><p className="text-sm text-slate-500">Showing {cards.length} order row(s)</p></div>
+          <div className="flex flex-wrap items-center justify-between gap-3"><h2 className="text-xl font-semibold">Operational process graph</h2><p className="text-sm text-slate-500">Showing {cards.length} order row(s)</p></div>
           {cards.length === 0 ? <div className="rounded-3xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-500 shadow-sm">No order rows match this filter.</div> : cards.map((card) => {
             const primary = card.actions[0];
             const parallelCount = Math.max(card.actions.length - 1, 0);
@@ -411,7 +416,7 @@ export default async function SupervisorCommandCentrePage({ searchParams }: { se
           })}
         </section>
 
-        <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-900"><h2 className="font-bold">Control rule</h2><p className="mt-2">This page is read-only. It is the map, not the workroom. Existing task pages remain the controlled places to upload, review, reconcile, approve and eventually post. Main goods customer sales can progress independently of shipper AP where the split-flow controls allow it.</p></section>
+        <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-900"><h2 className="font-bold">v4 control rule</h2><p className="mt-2">This page is the operational map, not the accounting workroom. Existing child task pages remain the controlled places to upload, review, reconcile and approve. Accounting Command Centre is the only place for freeze, revalidation, posting batches and Sage Cloud Accounting API posting. Main goods customer sales can progress independently of shipper AP where split-flow controls allow it.</p></section>
       </div>
     </main>
   );
