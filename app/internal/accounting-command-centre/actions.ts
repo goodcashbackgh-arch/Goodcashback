@@ -12,8 +12,44 @@ type FreezeResult = {
   blocker?: string | null;
 };
 
+type BulkCandidate = {
+  candidate_kind?: string | null;
+  selection_group?: string | null;
+  source_id?: string | null;
+  snapshot_id?: string | null;
+  amount_gbp?: number | string | null;
+  excluded_reason?: string | null;
+};
+
 function asStringArray(value: FormDataEntryValue[]) {
   return value.map((entry) => String(entry ?? "").trim()).filter(Boolean);
+}
+
+function formText(formData: FormData, key: string, fallback = "") {
+  return String(formData.get(key) ?? fallback).trim();
+}
+
+function boolForm(formData: FormData, key: string) {
+  const raw = formText(formData, key).toLowerCase();
+  return raw === "true" || raw === "on" || raw === "1" || raw === "yes";
+}
+
+function filteredReturnPath(formData: FormData, messageKey: "success" | "error", message: string) {
+  const qp = new URLSearchParams();
+  const queue = formText(formData, "bulk_queue", "actionable");
+  const lane = formText(formData, "bulk_lane", "all");
+  const postingGate = formText(formData, "bulk_posting_gate", "all");
+  const search = formText(formData, "bulk_q", "");
+  const pageSize = formText(formData, "bulk_page_size", "50");
+
+  if (queue) qp.set("queue", queue);
+  if (lane) qp.set("lane", lane);
+  if (postingGate) qp.set("posting_gate", postingGate);
+  if (search) qp.set("q", search);
+  if (pageSize) qp.set("page_size", pageSize);
+  qp.set(messageKey, message);
+
+  return `/internal/accounting-command-centre?${qp.toString()}`;
 }
 
 function hasAccountingAdminTesting(value: unknown) {
@@ -46,22 +82,63 @@ async function requireAccountingAdminAccess() {
   return supabase;
 }
 
+async function revalidateFrozenSnapshots(supabase: Awaited<ReturnType<typeof requireAccountingAdminAccess>>, snapshotIds: string[], formData?: FormData) {
+  if (snapshotIds.length === 0) return;
+
+  const { error: revalidateError } = await (supabase as any).rpc("internal_revalidate_sage_posting_snapshots_v1", {
+    p_snapshot_ids: snapshotIds,
+  });
+
+  if (revalidateError) {
+    const message = `Frozen but revalidation failed: ${revalidateError.message}`;
+    redirect(formData ? filteredReturnPath(formData, "error", message) : `/internal/accounting-command-centre?error=${encodeURIComponent(message)}`);
+  }
+}
+
+async function fetchMatchingCandidates(
+  supabase: Awaited<ReturnType<typeof requireAccountingAdminAccess>>,
+  formData: FormData,
+  candidateKind: "freeze" | "revalidate",
+  selectionGroup: "customer_sales" | "shipper_ap" | "all",
+) {
+  const { data, error } = await (supabase as any).rpc("internal_accounting_command_centre_bulk_candidates_v1", {
+    p_queue: formText(formData, "bulk_queue", "actionable"),
+    p_lane: formText(formData, "bulk_lane", "all"),
+    p_posting_gate: formText(formData, "bulk_posting_gate", "all"),
+    p_search: formText(formData, "bulk_q", "") || null,
+    p_candidate_kind: candidateKind,
+    p_selection_group: selectionGroup,
+    p_include_warnings: boolForm(formData, "bulk_include_warnings"),
+    p_max_rows: 5000,
+  });
+
+  if (error) {
+    redirect(filteredReturnPath(formData, "error", error.message));
+  }
+
+  return ((data ?? []) as BulkCandidate[]);
+}
+
+function includedCandidates(rows: BulkCandidate[]) {
+  return rows.filter((row) => !row.excluded_reason);
+}
+
 export async function freezeSelectedCustomerSalesRowsAction(formData: FormData) {
   const selectedIds = asStringArray(formData.getAll("sales_invoice_id"));
 
   if (selectedIds.length === 0) {
-    redirect("/internal/accounting-command-centre?error=Select at least one customer sales row to freeze");
+    redirect(filteredReturnPath(formData, "error", "Select at least one customer sales row to freeze"));
   }
 
   const supabase = await requireAccountingAdminAccess();
 
   const { data, error } = await (supabase as any).rpc("internal_freeze_customer_sales_sage_batch_v1", {
     p_sales_invoice_ids: selectedIds,
-    p_notes: "Accounting command centre customer sales freeze",
+    p_notes: "Accounting command centre customer sales freeze selected visible rows",
   });
 
   if (error) {
-    redirect(`/internal/accounting-command-centre?error=${encodeURIComponent(error.message)}`);
+    redirect(filteredReturnPath(formData, "error", error.message));
   }
 
   const rows = ((data ?? []) as FreezeResult[]);
@@ -70,42 +147,69 @@ export async function freezeSelectedCustomerSalesRowsAction(formData: FormData) 
     .map((row) => row.snapshot_id as string);
   const blockedCount = rows.filter((row) => row.freeze_status !== "frozen").length;
 
-  if (frozenSnapshotIds.length > 0) {
-    const { error: revalidateError } = await (supabase as any).rpc("internal_revalidate_sage_posting_snapshots_v1", {
-      p_snapshot_ids: frozenSnapshotIds,
-    });
-
-    if (revalidateError) {
-      redirect(`/internal/accounting-command-centre?error=${encodeURIComponent(`Frozen but revalidation failed: ${revalidateError.message}`)}`);
-    }
-  }
+  await revalidateFrozenSnapshots(supabase, frozenSnapshotIds, formData);
 
   revalidatePath("/internal/accounting-command-centre");
   revalidatePath("/internal/sage-ready");
 
   const message = blockedCount > 0
-    ? `Customer sales: frozen ${frozenSnapshotIds.length} row(s); ${blockedCount} row(s) not frozen`
-    : `Customer sales: frozen and revalidated ${frozenSnapshotIds.length} row(s)`;
+    ? `Customer sales selected visible: frozen ${frozenSnapshotIds.length} row(s); ${blockedCount} row(s) not frozen`
+    : `Customer sales selected visible: frozen and revalidated ${frozenSnapshotIds.length} row(s)`;
 
-  redirect(`/internal/accounting-command-centre?success=${encodeURIComponent(message)}`);
+  redirect(filteredReturnPath(formData, "success", message));
+}
+
+export async function freezeMatchingCustomerSalesRowsAction(formData: FormData) {
+  const supabase = await requireAccountingAdminAccess();
+  const candidates = await fetchMatchingCandidates(supabase, formData, "freeze", "customer_sales");
+  const included = includedCandidates(candidates);
+  const selectedIds = included.map((row) => String(row.source_id ?? "")).filter(Boolean);
+  const excludedCount = candidates.length - included.length;
+
+  if (selectedIds.length === 0) {
+    redirect(filteredReturnPath(formData, "error", `No matching freezeable customer sales rows found; ${excludedCount} excluded`));
+  }
+
+  const { data, error } = await (supabase as any).rpc("internal_freeze_customer_sales_sage_batch_v1", {
+    p_sales_invoice_ids: selectedIds,
+    p_notes: "Accounting command centre customer sales freeze all matching filter",
+  });
+
+  if (error) {
+    redirect(filteredReturnPath(formData, "error", error.message));
+  }
+
+  const rows = ((data ?? []) as FreezeResult[]);
+  const frozenSnapshotIds = rows
+    .filter((row) => row.freeze_status === "frozen" && row.snapshot_id)
+    .map((row) => row.snapshot_id as string);
+  const blockedCount = rows.filter((row) => row.freeze_status !== "frozen").length;
+
+  await revalidateFrozenSnapshots(supabase, frozenSnapshotIds, formData);
+
+  revalidatePath("/internal/accounting-command-centre");
+  revalidatePath("/internal/sage-ready");
+
+  const message = `Customer sales all matching: frozen/revalidated ${frozenSnapshotIds.length}; ${blockedCount + excludedCount} excluded or not frozen`;
+  redirect(filteredReturnPath(formData, "success", message));
 }
 
 export async function freezeSelectedShipperApRowsAction(formData: FormData) {
   const selectedIds = asStringArray(formData.getAll("shipping_document_id"));
 
   if (selectedIds.length === 0) {
-    redirect("/internal/accounting-command-centre?error=Select at least one shipper AP row to freeze");
+    redirect(filteredReturnPath(formData, "error", "Select at least one shipper AP row to freeze"));
   }
 
   const supabase = await requireAccountingAdminAccess();
 
   const { data, error } = await (supabase as any).rpc("internal_freeze_shipper_ap_sage_batch_v1", {
     p_shipping_document_ids: selectedIds,
-    p_notes: "Accounting command centre shipper AP freeze",
+    p_notes: "Accounting command centre shipper AP freeze selected visible rows",
   });
 
   if (error) {
-    redirect(`/internal/accounting-command-centre?error=${encodeURIComponent(error.message)}`);
+    redirect(filteredReturnPath(formData, "error", error.message));
   }
 
   const rows = ((data ?? []) as FreezeResult[]);
@@ -116,8 +220,64 @@ export async function freezeSelectedShipperApRowsAction(formData: FormData) {
   revalidatePath("/internal/sage-ready");
 
   const message = blockedCount > 0
-    ? `Shipper AP: frozen ${frozenCount} row(s); ${blockedCount} row(s) not frozen`
-    : `Shipper AP: frozen and marked ready to post ${frozenCount} row(s)`;
+    ? `Shipper AP selected visible: frozen ${frozenCount} row(s); ${blockedCount} row(s) not frozen`
+    : `Shipper AP selected visible: frozen and marked ready to post ${frozenCount} row(s)`;
 
-  redirect(`/internal/accounting-command-centre?success=${encodeURIComponent(message)}`);
+  redirect(filteredReturnPath(formData, "success", message));
+}
+
+export async function freezeMatchingShipperApRowsAction(formData: FormData) {
+  const supabase = await requireAccountingAdminAccess();
+  const candidates = await fetchMatchingCandidates(supabase, formData, "freeze", "shipper_ap");
+  const included = includedCandidates(candidates);
+  const selectedIds = included.map((row) => String(row.source_id ?? "")).filter(Boolean);
+  const excludedCount = candidates.length - included.length;
+
+  if (selectedIds.length === 0) {
+    redirect(filteredReturnPath(formData, "error", `No matching freezeable shipper AP rows found; ${excludedCount} excluded`));
+  }
+
+  const { data, error } = await (supabase as any).rpc("internal_freeze_shipper_ap_sage_batch_v1", {
+    p_shipping_document_ids: selectedIds,
+    p_notes: "Accounting command centre shipper AP freeze all matching filter",
+  });
+
+  if (error) {
+    redirect(filteredReturnPath(formData, "error", error.message));
+  }
+
+  const rows = ((data ?? []) as FreezeResult[]);
+  const frozenCount = rows.filter((row) => row.freeze_status === "frozen" && row.snapshot_id).length;
+  const blockedCount = rows.filter((row) => row.freeze_status !== "frozen").length;
+
+  revalidatePath("/internal/accounting-command-centre");
+  revalidatePath("/internal/sage-ready");
+
+  const message = `Shipper AP all matching: frozen ${frozenCount}; ${blockedCount + excludedCount} excluded or not frozen`;
+  redirect(filteredReturnPath(formData, "success", message));
+}
+
+export async function revalidateMatchingFrozenRowsAction(formData: FormData) {
+  const supabase = await requireAccountingAdminAccess();
+  const candidates = await fetchMatchingCandidates(supabase, formData, "revalidate", "all");
+  const included = includedCandidates(candidates);
+  const snapshotIds = included.map((row) => String(row.snapshot_id ?? "")).filter(Boolean);
+  const excludedCount = candidates.length - included.length;
+
+  if (snapshotIds.length === 0) {
+    redirect(filteredReturnPath(formData, "error", `No matching frozen snapshots to revalidate; ${excludedCount} excluded`));
+  }
+
+  const { error } = await (supabase as any).rpc("internal_revalidate_sage_posting_snapshots_v1", {
+    p_snapshot_ids: snapshotIds,
+  });
+
+  if (error) {
+    redirect(filteredReturnPath(formData, "error", error.message));
+  }
+
+  revalidatePath("/internal/accounting-command-centre");
+  revalidatePath("/internal/sage-ready");
+
+  redirect(filteredReturnPath(formData, "success", `Revalidated ${snapshotIds.length} matching frozen snapshot(s); ${excludedCount} excluded`));
 }
