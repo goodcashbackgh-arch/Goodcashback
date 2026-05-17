@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
+import SageConnectionPanel from "./SageConnectionPanel";
 import {
   freezeMatchingCustomerSalesRowsAction,
   freezeMatchingShipperApRowsAction,
@@ -272,11 +273,13 @@ export default async function AccountingCommandCentrePage({
           {error ? <p className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">Grid RPC unavailable: {error.message}. Run the latest Supabase migration before testing this page.</p> : null}
         </section>
 
+        <SageConnectionPanel />
+
         <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
           <SectionLink title="Live ready" detail="Rows ready to freeze; replaces daily /sage-ready usage" href="/internal/accounting-command-centre?queue=live_ready_not_frozen" tone="action" />
           <SectionLink title="Frozen snapshots" detail="Frozen/revalidation rows; preview is drill-down" href="/internal/accounting-command-centre?queue=frozen_ready_to_post" tone="complete" />
           <SectionLink title="Posting batches" detail="Not built yet; next v4 phase" href="/internal/accounting-command-centre" tone="muted" />
-          <SectionLink title="Sage settings" detail="Mapping/settings diagnostic until connection tab" href="/internal/sage-mapping" tone={num(summary.blocked_before_posting) > 0 ? "review" : "muted"} />
+          <SectionLink title="Sage settings" detail="Connection/settings panel lives above; legacy mapping remains diagnostic" href="/internal/sage-mapping" tone={num(summary.blocked_before_posting) > 0 ? "review" : "muted"} />
           <SectionLink title="Failures/results" detail="Failed and posted filters live here" href="/internal/accounting-command-centre?queue=posting_failed" tone="blocked" />
           <SectionLink title="Corrections/reversals" detail="Not built yet; stays here later" href="/internal/accounting-command-centre" tone="muted" />
         </section>
