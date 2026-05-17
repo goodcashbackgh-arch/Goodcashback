@@ -1,7 +1,13 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
-import { freezeSelectedCustomerSalesRowsAction, freezeSelectedShipperApRowsAction } from "./actions";
+import {
+  freezeMatchingCustomerSalesRowsAction,
+  freezeMatchingShipperApRowsAction,
+  freezeSelectedCustomerSalesRowsAction,
+  freezeSelectedShipperApRowsAction,
+  revalidateMatchingFrozenRowsAction,
+} from "./actions";
 
 type Row = Record<string, unknown>;
 type SearchParamsValue = Record<string, string | string[] | undefined>;
@@ -306,15 +312,28 @@ export default async function AccountingCommandCentrePage({
         </section>
 
         <form className="rounded-3xl border border-slate-200 bg-white shadow-sm" action={freezeSelectedCustomerSalesRowsAction}>
-          <div className="flex flex-col gap-3 border-b border-slate-100 px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
+          <input type="hidden" name="bulk_queue" value={queue} />
+          <input type="hidden" name="bulk_lane" value={lane} />
+          <input type="hidden" name="bulk_posting_gate" value={postingGate} />
+          <input type="hidden" name="bulk_q" value={search} />
+          <input type="hidden" name="bulk_page_size" value={String(pageSize)} />
+
+          <div className="flex flex-col gap-3 border-b border-slate-100 px-4 py-3 lg:flex-row lg:items-start lg:justify-between">
             <div>
               <h2 className="text-xl font-semibold">Accounting workbench grid</h2>
-              <p className="mt-1 text-sm text-slate-500">Showing {rows.length} of {totalCount} matching row(s). Selectable clean visible rows are checked by default.</p>
+              <p className="mt-1 text-sm text-slate-500">Showing {rows.length} of {totalCount} matching row(s). Use selected visible rows for page-level work, or all matching for high-volume batches.</p>
+              <label className="mt-2 flex w-fit items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700">
+                <input type="checkbox" name="bulk_include_warnings" value="true" />
+                Include warning rows in all-matching actions
+              </label>
             </div>
-            <div className="flex flex-wrap gap-2">
-              <button formAction={freezeSelectedCustomerSalesRowsAction} className="rounded-xl bg-amber-700 px-3 py-2 text-xs font-bold text-white hover:bg-amber-800 sm:text-sm" type="submit">Freeze customer sales</button>
-              <button formAction={freezeSelectedShipperApRowsAction} className="rounded-xl bg-amber-700 px-3 py-2 text-xs font-bold text-white hover:bg-amber-800 sm:text-sm" type="submit">Freeze shipper AP</button>
-              <Link href="/internal/accounting-command-centre/posting-preview" className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-800 hover:bg-slate-50 sm:text-sm">Posting preview index</Link>
+            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+              <button formAction={freezeSelectedCustomerSalesRowsAction} className="rounded-xl bg-amber-700 px-3 py-2 text-xs font-bold text-white hover:bg-amber-800" type="submit">Freeze visible customer sales</button>
+              <button formAction={freezeMatchingCustomerSalesRowsAction} className="rounded-xl bg-amber-900 px-3 py-2 text-xs font-bold text-white hover:bg-amber-950" type="submit">Freeze all matching customer sales</button>
+              <button formAction={freezeSelectedShipperApRowsAction} className="rounded-xl bg-amber-700 px-3 py-2 text-xs font-bold text-white hover:bg-amber-800" type="submit">Freeze visible shipper AP</button>
+              <button formAction={freezeMatchingShipperApRowsAction} className="rounded-xl bg-amber-900 px-3 py-2 text-xs font-bold text-white hover:bg-amber-950" type="submit">Freeze all matching shipper AP</button>
+              <button formAction={revalidateMatchingFrozenRowsAction} className="rounded-xl bg-violet-700 px-3 py-2 text-xs font-bold text-white hover:bg-violet-800" type="submit">Revalidate all matching frozen</button>
+              <Link href="/internal/accounting-command-centre/posting-preview" className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-center text-xs font-bold text-slate-800 hover:bg-slate-50">Posting preview index</Link>
             </div>
           </div>
 
@@ -373,7 +392,7 @@ export default async function AccountingCommandCentrePage({
         <section className="rounded-3xl border border-violet-200 bg-violet-50 p-5 text-sm leading-6 text-violet-900">
           <h2 className="font-bold">Control rule</h2>
           <p className="mt-2">This page is now the operating grid. Frozen snapshot preview pages remain drill-down audit pages. Actual Sage posting is still not built.</p>
-          <p className="mt-2 font-semibold">Next hardening: select visible page / select all matching filter / warning inclusion controls.</p>
+          <p className="mt-2 font-semibold">Bulk mode now distinguishes selected visible rows from all matching current filter. Blocked/excluded rows remain out of the action and are reported in the completion message.</p>
         </section>
       </div>
     </main>
