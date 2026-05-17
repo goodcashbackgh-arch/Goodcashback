@@ -54,6 +54,12 @@ function short(value: unknown, max = 38) {
   return raw.length > max ? `${raw.slice(0, max - 1)}…` : raw;
 }
 
+function bookingText(value: unknown) {
+  const raw = text(value).trim();
+  if (!raw) return "—";
+  return raw.toLowerCase().startsWith("booking ") ? raw : `Booking ${raw}`;
+}
+
 function asObject(value: unknown): Row {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   return value as Row;
@@ -82,7 +88,7 @@ function statusTone(status: unknown): Tone {
 }
 
 function Pill({ value }: { value: unknown }) {
-  return <span className={`inline-flex whitespace-nowrap rounded-full border px-2 py-1 text-[11px] font-bold ${toneClass(statusTone(value))}`}>{pretty(value)}</span>;
+  return <span className={`inline-flex max-w-[240px] whitespace-nowrap rounded-full border px-2 py-1 text-[11px] font-bold ${toneClass(statusTone(value))}`}>{pretty(value)}</span>;
 }
 
 function SummaryCard({ label, value, detail, tone }: { label: string; value: string; detail: string; tone: Tone }) {
@@ -283,51 +289,67 @@ export default async function AccountingCommandCentrePage({
               <p className="mt-1 text-sm text-slate-500">Showing {rows.length} of {totalCount} matching row(s). Selectable clean visible rows are checked by default.</p>
             </div>
             <div className="flex flex-wrap gap-2">
-              <button formAction={freezeSelectedCustomerSalesRowsAction} className="rounded-xl bg-amber-700 px-4 py-2 text-sm font-bold text-white hover:bg-amber-800" type="submit">Freeze selected customer sales</button>
-              <button formAction={freezeSelectedShipperApRowsAction} className="rounded-xl bg-amber-700 px-4 py-2 text-sm font-bold text-white hover:bg-amber-800" type="submit">Freeze selected shipper AP</button>
-              <Link href="/internal/accounting-command-centre/posting-preview" className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-bold text-slate-800 hover:bg-slate-50">Posting preview index</Link>
+              <button formAction={freezeSelectedCustomerSalesRowsAction} className="rounded-xl bg-amber-700 px-3 py-2 text-xs font-bold text-white hover:bg-amber-800 sm:text-sm" type="submit">Freeze customer sales</button>
+              <button formAction={freezeSelectedShipperApRowsAction} className="rounded-xl bg-amber-700 px-3 py-2 text-xs font-bold text-white hover:bg-amber-800 sm:text-sm" type="submit">Freeze shipper AP</button>
+              <Link href="/internal/accounting-command-centre/posting-preview" className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-800 hover:bg-slate-50 sm:text-sm">Posting preview index</Link>
             </div>
           </div>
 
-          <div className="overflow-x-auto">
-            <table className="min-w-[1500px] divide-y divide-slate-200 text-sm">
-              <thead className="bg-slate-100 text-xs uppercase tracking-wide text-slate-500">
+          <div className="overflow-x-auto rounded-b-3xl">
+            <table className="min-w-[1760px] table-fixed divide-y divide-slate-200 text-xs">
+              <colgroup>
+                <col className="w-[64px]" />
+                <col className="w-[180px]" />
+                <col className="w-[190px]" />
+                <col className="w-[220px]" />
+                <col className="w-[210px]" />
+                <col className="w-[110px]" />
+                <col className="w-[190px]" />
+                <col className="w-[230px]" />
+                <col className="w-[150px]" />
+                <col className="w-[160px]" />
+                <col className="w-[170px]" />
+                <col className="w-[120px]" />
+                <col className="w-[210px]" />
+                <col className="w-[150px]" />
+              </colgroup>
+              <thead className="sticky top-0 z-10 bg-slate-100 text-[11px] uppercase tracking-wide text-slate-500">
                 <tr>
-                  <th className="px-3 py-2 text-left">Select</th>
-                  <th className="px-3 py-2 text-left">Queue</th>
-                  <th className="px-3 py-2 text-left">Lane / document</th>
-                  <th className="px-3 py-2 text-left">Source / ref</th>
-                  <th className="px-3 py-2 text-left">Counterparty</th>
-                  <th className="px-3 py-2 text-right">Amount</th>
-                  <th className="px-3 py-2 text-left">Mapping</th>
-                  <th className="px-3 py-2 text-left">Payload</th>
-                  <th className="px-3 py-2 text-left">Freeze</th>
-                  <th className="px-3 py-2 text-left">Revalidation</th>
-                  <th className="px-3 py-2 text-left">Posting gate</th>
-                  <th className="px-3 py-2 text-left">Sage</th>
-                  <th className="px-3 py-2 text-left">Batch / idempotency</th>
-                  <th className="px-3 py-2 text-left">Next action</th>
+                  <th className="px-2 py-2 text-left">Select</th>
+                  <th className="px-2 py-2 text-left">Queue</th>
+                  <th className="px-2 py-2 text-left">Lane / document</th>
+                  <th className="px-2 py-2 text-left">Source / ref</th>
+                  <th className="px-2 py-2 text-left">Counterparty</th>
+                  <th className="px-2 py-2 text-right">Amount</th>
+                  <th className="px-2 py-2 text-left">Mapping</th>
+                  <th className="px-2 py-2 text-left">Payload</th>
+                  <th className="px-2 py-2 text-left">Freeze</th>
+                  <th className="px-2 py-2 text-left">Revalidation</th>
+                  <th className="px-2 py-2 text-left">Posting gate</th>
+                  <th className="px-2 py-2 text-left">Sage</th>
+                  <th className="px-2 py-2 text-left">Batch / idempotency</th>
+                  <th className="px-2 py-2 text-left">Next action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 bg-white">
                 {rows.length === 0 ? (
                   <tr><td colSpan={14} className="px-3 py-8 text-center text-sm text-slate-500">No accounting rows match this filter.</td></tr>
                 ) : rows.map((row) => (
-                  <tr key={text(row.queue_row_id) || text(row.snapshot_id)} className="align-top hover:bg-slate-50">
-                    <td className="px-3 py-3"><SelectableInput row={row} /></td>
-                    <td className="px-3 py-3"><Pill value={row.work_queue} /></td>
-                    <td className="px-3 py-3"><p className="font-bold text-slate-950">{pretty(row.document_lane)}</p><p className="mt-1 text-xs text-slate-500">{pretty(row.document_type)}</p></td>
-                    <td className="px-3 py-3"><p className="font-mono text-xs font-bold text-slate-950">{text(row.order_ref) || text(row.reference_text) || short(row.source_id)}</p><p className="mt-1 text-xs text-slate-500">{text(row.source_table)} · {short(row.source_id)}</p></td>
-                    <td className="px-3 py-3"><p className="font-semibold text-slate-900">{text(row.counterparty_name) || "—"}</p><p className="mt-1 text-xs text-slate-500">Booking {text(row.booking_ref) || "—"}</p></td>
-                    <td className="px-3 py-3 text-right font-bold text-slate-950">{gbp(row.amount_gbp)}<p className="text-xs font-normal text-slate-500">{text(row.currency_code) || "GBP"}</p></td>
-                    <td className="px-3 py-3"><Pill value={row.mapping_state} /></td>
-                    <td className="px-3 py-3"><Pill value={row.payload_state} /></td>
-                    <td className="px-3 py-3"><Pill value={row.freeze_state} /></td>
-                    <td className="px-3 py-3"><Pill value={row.revalidation_state} /></td>
-                    <td className="px-3 py-3"><Pill value={row.posting_gate} />{text(row.blocker) ? <p className="mt-2 max-w-[220px] text-xs font-semibold text-rose-700">{short(row.blocker, 120)}</p> : null}</td>
-                    <td className="px-3 py-3"><Pill value={row.sage_status} /></td>
-                    <td className="px-3 py-3"><p className="font-mono text-xs text-slate-700">{short(row.batch_ref, 28)}</p><p className="mt-1 font-mono text-xs text-slate-500">{short(row.idempotency_key, 28)}</p></td>
-                    <td className="px-3 py-3"><Link href={text(row.next_action_href) || "/internal/accounting-command-centre"} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-800 hover:bg-slate-100">{text(row.next_action) || "Open"}</Link></td>
+                  <tr key={text(row.queue_row_id) || text(row.snapshot_id)} className="group align-middle hover:bg-slate-50">
+                    <td className="px-2 py-2 align-middle"><SelectableInput row={row} /></td>
+                    <td className="px-2 py-2 align-middle"><Pill value={row.work_queue} /></td>
+                    <td className="px-2 py-2 align-middle"><p className="truncate font-bold text-slate-950">{pretty(row.document_lane)}</p><p className="mt-0.5 line-clamp-2 text-[11px] leading-4 text-slate-500">{pretty(row.document_type)}</p></td>
+                    <td className="px-2 py-2 align-middle"><p className="truncate font-mono text-[11px] font-bold text-slate-950">{text(row.order_ref) || text(row.reference_text) || short(row.source_id, 26)}</p><p className="mt-0.5 truncate text-[11px] text-slate-500">{text(row.source_table)} · {short(row.source_id, 28)}</p></td>
+                    <td className="px-2 py-2 align-middle"><p className="truncate font-semibold text-slate-900">{text(row.counterparty_name) || "—"}</p><p className="mt-0.5 truncate text-[11px] text-slate-500">{bookingText(row.booking_ref)}</p></td>
+                    <td className="px-2 py-2 text-right align-middle font-bold text-slate-950">{gbp(row.amount_gbp)}<p className="text-[11px] font-normal text-slate-500">{text(row.currency_code) || "GBP"}</p></td>
+                    <td className="px-2 py-2 align-middle"><Pill value={row.mapping_state} /></td>
+                    <td className="px-2 py-2 align-middle"><Pill value={row.payload_state} /></td>
+                    <td className="px-2 py-2 align-middle"><Pill value={row.freeze_state} /></td>
+                    <td className="px-2 py-2 align-middle"><Pill value={row.revalidation_state} /></td>
+                    <td className="px-2 py-2 align-middle"><Pill value={row.posting_gate} />{text(row.blocker) ? <p className="mt-1 line-clamp-2 text-[11px] font-semibold text-rose-700">{short(row.blocker, 120)}</p> : null}</td>
+                    <td className="px-2 py-2 align-middle"><Pill value={row.sage_status} /></td>
+                    <td className="px-2 py-2 align-middle"><p className="truncate font-mono text-[11px] text-slate-700">{short(row.batch_ref, 24)}</p><p className="mt-0.5 truncate font-mono text-[11px] text-slate-500">{short(row.idempotency_key, 24)}</p></td>
+                    <td className="px-2 py-2 align-middle"><Link href={text(row.next_action_href) || "/internal/accounting-command-centre"} className="inline-flex max-w-[130px] rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-[11px] font-bold leading-4 text-slate-800 hover:bg-slate-100">{short(text(row.next_action) || "Open", 28)}</Link></td>
                   </tr>
                 ))}
               </tbody>
