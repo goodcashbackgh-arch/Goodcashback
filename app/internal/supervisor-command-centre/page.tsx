@@ -97,6 +97,26 @@ function chipClass(tone: Tone) {
   return "bg-slate-100 text-slate-700 ring-slate-200";
 }
 
+function statusWord(state: Lane) {
+  if (state.tone === "complete") {
+    return state.label.toLowerCase().includes("handoff") || state.label.toLowerCase().includes("ready") ? "ready for accounting" : "clean";
+  }
+  if (state.tone === "blocked") return "blocked";
+  if (state.tone === "muted") return "not reached";
+  if (state.detail.toLowerCase().includes("wait")) return "waiting external";
+  if (state.tone === "progress" || state.tone === "action" || state.tone === "review") return "in progress";
+  return "not applicable";
+}
+
+function ageLabel(value: unknown) {
+  const createdAt = Date.parse(text(value));
+  if (!Number.isFinite(createdAt)) return "—";
+  const days = Math.max(0, Math.floor((Date.now() - createdAt) / 86_400_000));
+  if (days === 0) return "today";
+  if (days === 1) return "1d";
+  return `${days}d`;
+}
+
 function orderRefsFromShipping(row: Row) {
   return text(row.order_refs_preview).split(",").map((value) => value.trim()).filter(Boolean);
 }
@@ -252,24 +272,35 @@ function progress(states: Record<string, Lane>) {
   return { complete, total: applicable.length || 1, pct: Math.round((complete / (applicable.length || 1)) * 100) };
 }
 
-function StatusCell({ title, state }: { title: string; state: Lane }) {
+function SummaryCard({ label, value, detail, tone }: { label: string; value: string; detail: string; tone: Tone }) {
   return (
-    <div className={`rounded-2xl border p-3 ${toneClass(state.tone)}`}>
-      <p className="text-[10px] font-extrabold uppercase tracking-wide opacity-70">{title}</p>
-      <p className="mt-2 text-sm font-extrabold">{state.label}</p>
-      <p className="mt-1 text-xs leading-5 opacity-90">{state.detail}</p>
-      <Link href={state.href} className="mt-2 inline-block text-xs font-bold underline">Open action</Link>
+    <div className={`rounded-2xl border p-3 shadow-sm ${toneClass(tone)}`}>
+      <p className="text-[11px] font-bold uppercase tracking-wide opacity-70">{label}</p>
+      <p className="mt-1 text-2xl font-extrabold">{value}</p>
+      <p className="mt-1 text-xs leading-4 opacity-90">{detail}</p>
     </div>
   );
 }
 
-function FoundationCard({ title, value, detail, tone, href }: { title: string; value: string; detail: string; tone: Tone; href: string }) {
+function LanePill({ title, state }: { title: string; state: Lane }) {
   return (
-    <Link href={href} className={`block h-full rounded-3xl border p-4 shadow-sm ${toneClass(tone)}`}>
-      <p className="text-xs font-bold uppercase tracking-wide opacity-70">{title}</p>
-      <p className="mt-2 text-2xl font-extrabold">{value}</p>
-      <p className="mt-1 text-xs leading-5 opacity-90">{detail}</p>
+    <Link href={state.href} title={`${title}: ${state.label} — ${state.detail}`} className="group block rounded-xl border border-slate-200 bg-white px-2 py-1.5 hover:bg-slate-50">
+      <div className="flex items-center justify-between gap-2">
+        <span className="truncate text-[10px] font-bold uppercase tracking-wide text-slate-500">{title}</span>
+        <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ${chipClass(state.tone)}`}>{statusWord(state)}</span>
+      </div>
+      <p className="mt-1 truncate text-[11px] font-bold text-slate-950 group-hover:underline">{state.label}</p>
+      <p className="mt-0.5 truncate text-[11px] text-slate-500">{state.detail}</p>
     </Link>
+  );
+}
+
+function LaneStack({ firstTitle, first, secondTitle, second }: { firstTitle: string; first: Lane; secondTitle: string; second: Lane }) {
+  return (
+    <div className="grid gap-1.5">
+      <LanePill title={firstTitle} state={first} />
+      <LanePill title={secondTitle} state={second} />
+    </div>
   );
 }
 
@@ -356,6 +387,13 @@ export default async function SupervisorCommandCentrePage({ searchParams }: { se
     return card.actions.some((action) => ["blocked", "action", "review"].includes(action.tone));
   });
 
+  const actionRowCount = cards.filter((card) => card.actions.some((action) => ["blocked", "action", "review"].includes(action.tone))).length;
+  const fundingActionCount = cards.filter((card) => ["blocked", "action", "review"].includes(card.states.funding.tone)).length;
+  const supplierActionCount = cards.filter((card) => ["blocked", "action", "review"].includes(card.states.supplier.tone)).length;
+  const dvaActionCount = cards.filter((card) => ["blocked", "action", "review"].includes(card.states.dva.tone)).length;
+  const logisticsActionCount = cards.filter((card) => ["blocked", "action", "review"].includes(card.states.shipping.tone) || ["blocked", "action", "review"].includes(card.states.shipperAp.tone) || ["blocked", "action", "review"].includes(card.states.exportDelivery.tone)).length;
+  const customerSalesActionCount = cards.filter((card) => ["blocked", "action", "review"].includes(card.states.customerSales.tone)).length;
+
   const errorMessages = [
     ordersResult.error ? `Orders: ${ordersResult.error.message}` : "",
     fundingResult.error ? `Funding: ${fundingResult.error.message}` : "",
@@ -371,55 +409,125 @@ export default async function SupervisorCommandCentrePage({ searchParams }: { se
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-6 text-slate-950 sm:px-6 lg:px-8">
-      <div className="mx-auto max-w-7xl space-y-6">
+      <div className="mx-auto max-w-[1600px] space-y-5">
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
           <Link href="/internal" className="text-sm font-semibold text-sky-700">← Internal dashboard</Link>
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Operational cockpit</p>
           <div className="mt-2 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
             <div>
               <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">Supervisor Command Centre</h1>
-              <p className="mt-2 max-w-5xl text-sm leading-6 text-slate-600">Operational source-of-truth from order control to clean delivery and accounting handoff. This read-only v4 cockpit routes funding, DVA/card, supplier invoice, exception, shipper/logistics, customer sales, shipper AP and export/delivery blockers into the correct child task pages.</p>
+              <p className="mt-2 max-w-5xl text-sm leading-6 text-slate-600">Compact v4 workbench for order-to-clean-delivery control. One row = one order or order-shipment grouping. The grid routes blockers to existing child task pages; it does not approve, post, freeze, batch or retry Sage.</p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700"><div className="font-medium text-slate-950">{text(staff.full_name)}</div><div>{text(staff.role_type)}</div></div>
           </div>
-          <div className="mt-4 grid gap-3 text-sm md:grid-cols-3">
-            <div className="rounded-2xl border border-sky-200 bg-sky-50 p-3 text-sky-900"><p className="font-bold">Supervisor owns operational readiness</p><p className="mt-1 text-xs leading-5">Resolve blockers in funding, DVA/card, invoice, exception, shipper, customer and delivery lanes.</p></div>
-            <div className="rounded-2xl border border-violet-200 bg-violet-50 p-3 text-violet-900"><p className="font-bold">No Sage posting happens here</p><p className="mt-1 text-xs leading-5">Accounting status is read-only. Posting, freezing, batching, revalidation and Sage retries belong in Accounting Command Centre.</p></div>
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-slate-700"><p className="font-bold">Process graph, not straight line</p><p className="mt-1 text-xs leading-5">Customer sales and shipper AP can split where the platform has separate readiness gates.</p></div>
-          </div>
-          <div className="mt-4">
-            <Link href="/internal/accounting-command-centre" className="inline-flex rounded-xl border border-violet-200 bg-violet-50 px-4 py-2 text-sm font-bold text-violet-900">Open Accounting Command Centre — read-only handoff from this cockpit</Link>
+          <div className="mt-4 flex flex-wrap gap-2 text-xs font-semibold">
+            <span className="rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-sky-900">Supervisor owns operational readiness</span>
+            <span className="rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-violet-900">No Sage posting happens here</span>
+            <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-slate-700">Accounting status is read-only handoff</span>
+            <Link href="/internal/accounting-command-centre" className="rounded-full border border-violet-200 bg-white px-3 py-1 font-bold text-violet-900 underline">Open Accounting Command Centre — read-only handoff</Link>
           </div>
           {errorMessages.length > 0 ? <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900"><p className="font-bold">Some lanes could not be read</p><ul className="mt-2 list-disc space-y-1 pl-5">{errorMessages.map((message) => <li key={message}>{message}</li>)}</ul></div> : null}
         </section>
 
-        <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
-          <FoundationCard title="Accounting config" value={`${configuredMappings}/${mappingRows.length || 4}`} detail={mappingMissing > 0 ? `${mappingMissing} missing mapping(s); open Accounting Command Centre` : "Read-only config signal; verify before live posting in Accounting Command Centre"} tone={mappingMissing > 0 ? "blocked" : "review"} href="/internal/accounting-command-centre" />
-          <FoundationCard title="Accounting handoff" value={`${readySageRows} ready`} detail={`${blockedSageRows} blocked document row(s); read-only here`} tone={blockedSageRows > 0 ? "action" : "complete"} href="/internal/accounting-command-centre" />
-          <FoundationCard title="DVA/card" value={`${allocationRows.length}`} detail="Visible active/review allocation rows" tone={allocationRows.length > 0 ? "complete" : "review"} href="/internal/dva-reconciliation/workspace" />
-          <FoundationCard title="Shipper/logistics" value={`${shippingRows.length}`} detail="Shipment batches in control spine" tone={shippingRows.length > 0 ? "complete" : "muted"} href="/internal/shipping-control" />
-          <FoundationCard title="Customer sales" value={`${customerReleaseRows.length}`} detail="Customer invoice release queue rows" tone={customerReleaseRows.length > 0 ? "progress" : "muted"} href="/internal/shipping-control/customer-invoice-release" />
-          <FoundationCard title="Exceptions" value={`${activeExceptionCount}`} detail="Open unresolved exception rows" tone={activeExceptionCount > 0 ? "blocked" : "complete"} href="/internal/exceptions" />
+        <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8">
+          <SummaryCard label="Visible rows" value={String(cards.length)} detail="Filtered order rows" tone={cards.length > 0 ? "review" : "muted"} />
+          <SummaryCard label="Action rows" value={String(actionRowCount)} detail="Need owner/action" tone={actionRowCount > 0 ? "action" : "complete"} />
+          <SummaryCard label="Funding" value={String(fundingActionCount)} detail="Gaps/review rows" tone={fundingActionCount > 0 ? "blocked" : "complete"} />
+          <SummaryCard label="Supplier invoice" value={String(supplierActionCount)} detail="Missing/review rows" tone={supplierActionCount > 0 ? "review" : "complete"} />
+          <SummaryCard label="DVA/card" value={String(dvaActionCount)} detail="Allocation review" tone={dvaActionCount > 0 ? "action" : "complete"} />
+          <SummaryCard label="Logistics/AP" value={String(logisticsActionCount)} detail="Shipper/export/AP rows" tone={logisticsActionCount > 0 ? "review" : "complete"} />
+          <SummaryCard label="Customer sales" value={String(customerSalesActionCount)} detail="Draft/handoff rows" tone={customerSalesActionCount > 0 ? "action" : "complete"} />
+          <SummaryCard label="Accounting handoff" value={`${readySageRows} ready`} detail={`${blockedSageRows} blocked; read-only here`} tone={blockedSageRows > 0 ? "action" : "complete"} />
         </section>
 
-        <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5"><form action="/internal/supervisor-command-centre" className="grid gap-3 md:grid-cols-[1fr_auto_auto] md:items-end"><label className="grid gap-1 text-xs font-bold uppercase tracking-wide text-slate-500">Search orders, importers, retailers, bookings<input name="q" defaultValue={qp.q ?? ""} placeholder="ORD, importer, retailer, booking" className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-950" /></label><label className="flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700"><input type="checkbox" name="only_action" value="true" defaultChecked={onlyAction} />Action rows only</label><div className="flex gap-2"><button type="submit" className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white">Apply</button><Link href="/internal/supervisor-command-centre" className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800">Reset</Link></div></form></section>
-
-        <section className="space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-3"><h2 className="text-xl font-semibold">Operational process graph</h2><p className="text-sm text-slate-500">Showing {cards.length} order row(s)</p></div>
-          {cards.length === 0 ? <div className="rounded-3xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-500 shadow-sm">No order rows match this filter.</div> : cards.map((card) => {
-            const primary = card.actions[0];
-            const parallelCount = Math.max(card.actions.length - 1, 0);
-            return (
-              <article key={text(card.order.id)} className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
-                <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h3 className="text-xl font-extrabold tracking-tight">{text(card.order.order_ref) || text(card.order.id)}</h3><span className={`rounded-full px-3 py-1 text-xs font-bold ring-1 ${chipClass(primary.tone)}`}>{primary.owner}</span>{parallelCount > 0 ? <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-700 ring-1 ring-slate-200">+{parallelCount} parallel action{parallelCount === 1 ? "" : "s"}</span> : null}</div><p className="mt-1 text-sm text-slate-600">{text(card.retailer?.name) || "No retailer"} · {text(card.importer?.trading_name) || text(card.importer?.company_name) || "No importer"} · Raw DB status {pretty(card.order.status)} · Type {pretty(card.order.order_type)}</p></div><div className="min-w-[220px] rounded-2xl border border-slate-200 bg-slate-50 p-3"><div className="flex items-center justify-between gap-3 text-xs font-bold uppercase tracking-wide text-slate-500"><span>Progress</span><span>{card.progress.complete}/{card.progress.total}</span></div><div className="mt-2 h-3 overflow-hidden rounded-full bg-slate-200"><div className="h-full rounded-full bg-slate-950" style={{ width: `${card.progress.pct}%` }} /></div><p className="mt-2 text-xs text-slate-600">{card.progress.pct}% of applicable visible gates complete</p></div></div>
-                <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4"><StatusCell title="Operator/importer tasks" state={card.states.customer} /><StatusCell title="Funding" state={card.states.funding} /><StatusCell title="Supplier invoice" state={card.states.supplier} /><StatusCell title="DVA/card" state={card.states.dva} /><StatusCell title="Exceptions / holds" state={card.states.exceptions} /><StatusCell title="Shipper/logistics" state={card.states.shipping} /><StatusCell title="Customer sales" state={card.states.customerSales} /><StatusCell title="Shipper AP" state={card.states.shipperAp} /><StatusCell title="Export/delivery" state={card.states.exportDelivery} /></div>
-                <div className={`mt-4 rounded-2xl border p-4 ${toneClass(primary.tone)}`}><p className="text-xs font-bold uppercase tracking-wide opacity-70">Next action</p><div className="mt-2 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between"><div><p className="text-lg font-extrabold">{primary.owner}: {primary.label}</p><p className="mt-1 text-sm leading-6 opacity-90">{primary.reason}</p></div><Link href={primary.href} className="w-fit rounded-xl bg-white px-4 py-2 text-sm font-bold text-slate-900 shadow-sm ring-1 ring-slate-200">Open action</Link></div>{parallelCount > 0 ? <div className="mt-3 flex flex-wrap gap-2">{card.actions.slice(1).map((action) => <Link key={`${text(card.order.id)}-${action.label}-${action.href}`} href={action.href} className="rounded-full bg-white/70 px-3 py-1 text-xs font-bold underline ring-1 ring-slate-200">{action.owner}: {action.label}</Link>)}</div> : null}</div>
-              </article>
-            );
-          })}
+        <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+          <form action="/internal/supervisor-command-centre" className="grid gap-3 lg:grid-cols-[minmax(260px,1fr)_170px_120px_auto] lg:items-end">
+            <label className="grid gap-1 text-xs font-bold uppercase tracking-wide text-slate-500">
+              Search orders, importers, retailers, bookings
+              <input name="q" defaultValue={qp.q ?? ""} placeholder="ORD, importer, retailer, booking" className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-950" />
+            </label>
+            <label className="flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700"><input type="checkbox" name="only_action" value="true" defaultChecked={onlyAction} />Action rows only</label>
+            <button type="submit" className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white">Apply</button>
+            <Link href="/internal/supervisor-command-centre" className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-center text-sm font-semibold text-slate-800">Reset</Link>
+          </form>
         </section>
 
-        <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-900"><h2 className="font-bold">v4 control rule</h2><p className="mt-2">This page is the operational map, not the accounting workroom. Existing child task pages remain the controlled places to upload, review, reconcile and approve. No Sage posting happens here. Accounting status is shown as read-only only. Accounting Command Centre is the only place for freeze, revalidation, posting batches, Sage Cloud Accounting API posting and Sage retries. Main goods customer sales can progress independently of shipper AP where split-flow controls allow it.</p></section>
+        <section className="rounded-3xl border border-slate-200 bg-white shadow-sm">
+          <div className="flex flex-col gap-2 border-b border-slate-100 px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <h2 className="text-xl font-semibold">Supervisor workbench grid</h2>
+              <p className="mt-1 text-sm text-slate-500">Showing {cards.length} order row(s). Use the right-hand next action to move directly to the correct child task page.</p>
+            </div>
+            <p className="text-xs font-semibold text-slate-500">Read-only operational cockpit · links only · no posting controls</p>
+          </div>
+
+          <div className="overflow-x-auto rounded-b-3xl">
+            <table className="min-w-[1480px] table-fixed divide-y divide-slate-200 text-xs">
+              <colgroup>
+                <col className="w-[210px]" />
+                <col className="w-[210px]" />
+                <col className="w-[120px]" />
+                <col className="w-[235px]" />
+                <col className="w-[235px]" />
+                <col className="w-[235px]" />
+                <col className="w-[235px]" />
+                <col className="w-[200px]" />
+              </colgroup>
+              <thead className="sticky top-0 z-10 bg-slate-100 text-[11px] uppercase tracking-wide text-slate-500">
+                <tr>
+                  <th className="px-3 py-2 text-left">Order ref</th>
+                  <th className="px-3 py-2 text-left">Importer / retailer</th>
+                  <th className="px-3 py-2 text-left">Age / status</th>
+                  <th className="px-3 py-2 text-left">Funding / DVA</th>
+                  <th className="px-3 py-2 text-left">Supplier / exceptions</th>
+                  <th className="px-3 py-2 text-left">Shipper / export</th>
+                  <th className="px-3 py-2 text-left">Customer sales / Shipper AP</th>
+                  <th className="px-3 py-2 text-left">Next owner/action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 bg-white">
+                {cards.length === 0 ? (
+                  <tr><td colSpan={8} className="px-3 py-8 text-center text-sm text-slate-500">No order rows match this filter.</td></tr>
+                ) : cards.map((card) => {
+                  const primary = card.actions[0];
+                  const parallelCount = Math.max(card.actions.length - 1, 0);
+                  const booking = text(card.shipping?.booking_ref) || text(card.shipping?.shipment_batch_id).slice(0, 8) || "—";
+                  return (
+                    <tr key={text(card.order.id)} className="align-top hover:bg-slate-50">
+                      <td className="px-3 py-3">
+                        <p className="truncate text-sm font-extrabold text-slate-950">{text(card.order.order_ref) || text(card.order.id)}</p>
+                        <p className="mt-1 truncate text-[11px] text-slate-500">Type {pretty(card.order.order_type)} · Batch {booking}</p>
+                        <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-200"><div className="h-full rounded-full bg-slate-950" style={{ width: `${card.progress.pct}%` }} /></div>
+                        <p className="mt-1 text-[11px] text-slate-500">{card.progress.complete}/{card.progress.total} gates · {card.progress.pct}%</p>
+                      </td>
+                      <td className="px-3 py-3">
+                        <p className="truncate font-bold text-slate-900">{text(card.importer?.trading_name) || text(card.importer?.company_name) || "No importer"}</p>
+                        <p className="mt-1 truncate text-[11px] text-slate-500">{text(card.retailer?.name) || "No retailer"}</p>
+                      </td>
+                      <td className="px-3 py-3">
+                        <p className="font-bold text-slate-900">{ageLabel(card.order.created_at)}</p>
+                        <p className="mt-1 line-clamp-3 text-[11px] leading-4 text-slate-500">{pretty(card.order.status)}</p>
+                      </td>
+                      <td className="px-3 py-3"><LaneStack firstTitle="Funding" first={card.states.funding} secondTitle="DVA/card" second={card.states.dva} /></td>
+                      <td className="px-3 py-3"><LaneStack firstTitle="Supplier invoice" first={card.states.supplier} secondTitle="Exceptions" second={card.states.exceptions} /></td>
+                      <td className="px-3 py-3"><LaneStack firstTitle="Shipper/logistics" first={card.states.shipping} secondTitle="Export/delivery" second={card.states.exportDelivery} /></td>
+                      <td className="px-3 py-3"><LaneStack firstTitle="Customer sales" first={card.states.customerSales} secondTitle="Shipper AP" second={card.states.shipperAp} /></td>
+                      <td className="px-3 py-3">
+                        <span className={`inline-flex rounded-full px-2 py-1 text-[10px] font-bold ring-1 ${chipClass(primary.tone)}`}>{primary.owner}</span>
+                        <p className="mt-2 line-clamp-2 font-bold leading-4 text-slate-950">{primary.label}</p>
+                        <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-slate-500">{primary.reason}</p>
+                        <Link href={primary.href} className="mt-2 inline-flex rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-[11px] font-bold leading-4 text-slate-800 hover:bg-slate-100">Open action</Link>
+                        {parallelCount > 0 ? <p className="mt-2 text-[11px] font-semibold text-slate-500">+{parallelCount} parallel action{parallelCount === 1 ? "" : "s"}</p> : null}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-900"><h2 className="font-bold">v4 control rule</h2><p className="mt-2">This page is the operational workbench, not the accounting workroom. Existing child task pages remain the controlled places to upload, review, reconcile and approve. No Sage posting happens here. Accounting status is read-only only. Accounting Command Centre is the only place for freeze, revalidation, posting batches, Sage Cloud Accounting API posting and Sage retries.</p></section>
       </div>
     </main>
   );
