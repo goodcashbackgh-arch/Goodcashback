@@ -74,13 +74,12 @@ function Chip({ value }: { value: unknown }) {
   return <span className={`inline-flex max-w-[190px] truncate rounded-full border px-2 py-0.5 text-[10px] font-bold leading-4 ${toneClass(statusTone(value))}`}>{pretty(value)}</span>;
 }
 
-function Kpi({ label, value, detail, tone }: { label: string; value: string; detail?: string; tone: Tone }) {
+function StatPill({ label, value, tone }: { label: string; value: string; tone: Tone }) {
   return (
-    <div className={`min-w-[128px] rounded-xl border px-3 py-2 ${toneClass(tone)}`}>
-      <p className="text-[10px] font-bold uppercase tracking-wide opacity-70">{label}</p>
-      <p className="mt-0.5 truncate text-lg font-extrabold leading-6">{value}</p>
-      {detail ? <p className="mt-0.5 truncate text-[10px] leading-4 opacity-80">{detail}</p> : null}
-    </div>
+    <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] font-bold leading-4 ${toneClass(tone)}`}>
+      <span className="opacity-70">{label}</span>
+      <span>{value}</span>
+    </span>
   );
 }
 
@@ -126,36 +125,31 @@ export default async function PostingBatchDetailPage({ params }: { params: Promi
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-5 text-slate-950 sm:px-6 lg:px-8">
-      <div className="mx-auto max-w-[1500px] space-y-4">
-        <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+      <div className="mx-auto max-w-[1500px] space-y-3">
+        <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
             <div className="min-w-0">
               <Link href="/internal/accounting-command-centre" className="text-sm font-semibold text-sky-700">← Accounting Command Centre</Link>
-              <p className="mt-4 text-xs font-bold uppercase tracking-[0.2em] text-violet-500">Posting batch detail</p>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <p className="text-xs font-bold uppercase tracking-[0.2em] text-violet-500">Posting batch detail</p>
+                <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] font-bold text-amber-900">Posting disabled · no Sage API call</span>
+              </div>
               <h1 className="mt-1 truncate text-3xl font-semibold tracking-tight sm:text-4xl">{text(first.batch_ref) || "Posting batch"}</h1>
-              <p className="mt-2 max-w-5xl text-sm leading-6 text-slate-600">Phase 10 local batch lock. Shows included/excluded rows, values, snapshot IDs, idempotency keys and local payload status. Sage posting remains disabled until OAuth and dry-run are proven.</p>
+              <p className="mt-1 max-w-5xl text-sm leading-5 text-slate-600">Local batch lock only. Rows are ready-to-post frozen snapshots; Sage posting waits for OAuth and dry-run validation.</p>
+              <p className="mt-1 text-xs font-semibold text-slate-500">Batch id {batchId}</p>
             </div>
-            <div className="shrink-0 rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700"><div className="font-medium text-slate-950">{text(staff.full_name)}</div><div>{text(staff.role_type)}</div></div>
-          </div>
-          {error ? <p className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">Batch detail RPC unavailable: {error.message}. Run the Phase 9/10 migration before testing this page.</p> : null}
-          {!error && rows.length === 0 ? <p className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">No batch rows found for this batch id.</p> : null}
-
-          <div className="mt-4 overflow-x-auto pb-1">
-            <div className="flex min-w-max gap-2">
-              <Kpi label="Status" value={pretty(first.status)} detail={`legacy ${pretty(first.batch_status)}`} tone={statusTone(first.status)} />
-              <Kpi label="Lane" value={pretty(first.lane)} detail="document mix" tone="review" />
-              <Kpi label="Included" value={String(summary.included_count ?? includedRows.length)} detail="locked rows" tone={includedRows.length > 0 ? "complete" : "muted"} />
-              <Kpi label="Excluded" value={String(summary.excluded_count ?? excludedRows.length)} detail="skipped rows" tone={excludedRows.length > 0 ? "blocked" : "complete"} />
-              <Kpi label="Value" value={gbp(summary.total_included_value ?? first.total_amount_gbp)} detail="included only" tone="complete" />
-              <Kpi label="Customer" value={String(summary.customer_sales_count ?? 0)} detail="sales rows" tone={num(summary.customer_sales_count) > 0 ? "complete" : "muted"} />
-              <Kpi label="Shipper AP" value={String(summary.shipper_ap_count ?? 0)} detail="AP rows" tone={num(summary.shipper_ap_count) > 0 ? "complete" : "muted"} />
-              <Kpi label="Posting" value="Disabled" detail="OAuth + dry-run first" tone="action" />
+            <div className="flex shrink-0 flex-wrap gap-1.5 xl:max-w-[620px] xl:justify-end">
+              <StatPill label="Status" value={pretty(first.status)} tone={statusTone(first.status)} />
+              <StatPill label="Lane" value={pretty(first.lane)} tone="review" />
+              <StatPill label="Included" value={String(summary.included_count ?? includedRows.length)} tone={includedRows.length > 0 ? "complete" : "muted"} />
+              <StatPill label="Excluded" value={String(summary.excluded_count ?? excludedRows.length)} tone={excludedRows.length > 0 ? "blocked" : "complete"} />
+              <StatPill label="Value" value={gbp(summary.total_included_value ?? first.total_amount_gbp)} tone="complete" />
+              <StatPill label="Customer" value={String(summary.customer_sales_count ?? 0)} tone={num(summary.customer_sales_count) > 0 ? "complete" : "muted"} />
+              <StatPill label="Shipper AP" value={String(summary.shipper_ap_count ?? 0)} tone={num(summary.shipper_ap_count) > 0 ? "complete" : "muted"} />
             </div>
           </div>
-        </section>
-
-        <section className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-900">
-          <p><span className="font-bold">Posting disabled:</span> no Sage API call happens from this page. This is a controlled local lock of ready-to-post frozen snapshots only.</p>
+          {error ? <p className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">Batch detail RPC unavailable: {error.message}. Run the Phase 9/10 migration before testing this page.</p> : null}
+          {!error && rows.length === 0 ? <p className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">No batch rows found for this batch id.</p> : null}
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white shadow-sm">
@@ -164,7 +158,6 @@ export default async function PostingBatchDetailPage({ params }: { params: Promi
               <h2 className="text-xl font-semibold">Batch rows</h2>
               <p className="mt-1 text-sm text-slate-500">Included and excluded rows are retained for audit. Excluded rows are not posted and do not lock a snapshot for posting.</p>
             </div>
-            <p className="text-xs font-semibold text-slate-500">Batch id {batchId}</p>
           </div>
           <div className="overflow-x-auto rounded-b-3xl">
             <table className="min-w-[1240px] table-fixed divide-y divide-slate-200 text-xs">
