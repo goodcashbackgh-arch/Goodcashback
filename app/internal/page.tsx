@@ -84,6 +84,12 @@ const cards: QueueCard[] = [
     proof: "Order-to-clean-delivery cockpit",
   },
   {
+    title: "Accounting command centre",
+    href: "/internal/accounting-command-centre",
+    description: "Admin accounting cockpit for Sage-bound documents, frozen posting snapshots, revalidation, posting gates and later batch posting control.",
+    proof: "Payload freeze → revalidation → posting gate",
+  },
+  {
     title: "DVA/card statement workflow",
     href: "/internal/dva-statement-import",
     description: "Start here for bank/card/DVA statement upload, OCR or parsing, staging, commit, and safe import voiding.",
