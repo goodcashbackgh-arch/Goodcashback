@@ -94,14 +94,14 @@ function statusTone(status: unknown): Tone {
 }
 
 function Pill({ value }: { value: unknown }) {
-  return <span className={`inline-flex max-w-[170px] whitespace-nowrap rounded-full border px-2 py-1 text-[10px] font-bold leading-4 ${toneClass(statusTone(value))}`}>{pretty(value)}</span>;
+  return <span className={`inline-flex max-w-[130px] truncate rounded-full border px-2 py-0.5 text-[10px] font-bold leading-4 ${toneClass(statusTone(value))}`}>{pretty(value)}</span>;
 }
 
-function LabelledPill({ label, value }: { label: string; value: unknown }) {
+function CompactState({ label, value }: { label: string; value: unknown }) {
   return (
-    <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-2 py-1 text-[10px] font-semibold leading-4 text-slate-500">
-      <span>{label}</span>
-      <span className={`rounded-full border px-1.5 py-0.5 font-bold ${toneClass(statusTone(value))}`}>{pretty(value)}</span>
+    <span className={`inline-flex min-w-0 items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] leading-4 ${toneClass(statusTone(value))}`} title={`${label}: ${pretty(value)}`}>
+      <span className="shrink-0 font-bold opacity-70">{label}</span>
+      <span className="truncate font-extrabold">{pretty(value)}</span>
     </span>
   );
 }
@@ -149,14 +149,14 @@ function SelectableInput({ row }: { row: Row }) {
 
 function ControlStateCluster({ row }: { row: Row }) {
   return (
-    <div className="flex max-w-[360px] flex-wrap gap-1.5">
-      <LabelledPill label="Map" value={row.mapping_state} />
-      <LabelledPill label="Payload" value={row.payload_state} />
-      <LabelledPill label="Freeze" value={row.freeze_state} />
-      <LabelledPill label="Reval" value={row.revalidation_state} />
-      <LabelledPill label="Gate" value={row.posting_gate} />
-      <LabelledPill label="Sage" value={row.sage_status} />
-      {text(row.blocker) ? <p className="w-full text-[11px] font-semibold leading-4 text-rose-700">{short(row.blocker, 120)}</p> : null}
+    <div className="grid max-w-[245px] grid-cols-2 gap-1">
+      <CompactState label="Map" value={row.mapping_state} />
+      <CompactState label="Pay" value={row.payload_state} />
+      <CompactState label="Frz" value={row.freeze_state} />
+      <CompactState label="Rev" value={row.revalidation_state} />
+      <CompactState label="Gate" value={row.posting_gate} />
+      <CompactState label="Sage" value={row.sage_status} />
+      {text(row.blocker) ? <p className="col-span-2 truncate text-[11px] font-semibold leading-4 text-rose-700" title={text(row.blocker)}>{short(row.blocker, 90)}</p> : null}
     </div>
   );
 }
@@ -233,11 +233,11 @@ export default async function AccountingCommandCentrePage({
   };
 
   return (
-    <main className="min-h-screen bg-slate-50 px-4 py-6 text-slate-950 sm:px-6 lg:px-8">
-      <div className="mx-auto max-w-[1600px] space-y-5">
+    <main className="min-h-screen bg-slate-50 px-4 py-5 text-slate-950 sm:px-6 lg:px-8">
+      <div className="mx-auto max-w-[1600px] space-y-4">
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
           <Link href="/internal" className="text-sm font-semibold text-sky-700">← Internal dashboard</Link>
-          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-violet-500">Accounting cockpit</p>
+          <p className="mt-5 text-sm font-medium uppercase tracking-[0.2em] text-violet-500">Accounting cockpit</p>
           <div className="mt-2 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
             <div>
               <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">Accounting Command Centre</h1>
@@ -262,11 +262,11 @@ export default async function AccountingCommandCentrePage({
 
         <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
           <SectionLink title="Live ready" detail="Rows ready to freeze; replaces daily /sage-ready usage" href="/internal/accounting-command-centre?queue=live_ready_not_frozen" tone="action" />
-          <SectionLink title="Frozen snapshots" detail="Frozen and revalidation-aware rows; posting preview is drill-down" href="/internal/accounting-command-centre?queue=frozen_ready_to_post" tone="complete" />
-          <SectionLink title="Posting batches" detail="Not built yet; next v4 phase after consolidation" href="/internal/accounting-command-centre" tone="muted" />
-          <SectionLink title="Sage settings" detail="Mapping/settings diagnostic until Sage connection tab is built" href="/internal/sage-mapping" tone={num(summary.blocked_before_posting) > 0 ? "review" : "muted"} />
-          <SectionLink title="Failures/results" detail="Failed and posted filters live inside this cockpit" href="/internal/accounting-command-centre?queue=posting_failed" tone="blocked" />
-          <SectionLink title="Corrections/reversals" detail="Not built yet; stays inside Accounting Command Centre later" href="/internal/accounting-command-centre" tone="muted" />
+          <SectionLink title="Frozen snapshots" detail="Frozen/revalidation rows; preview is drill-down" href="/internal/accounting-command-centre?queue=frozen_ready_to_post" tone="complete" />
+          <SectionLink title="Posting batches" detail="Not built yet; next v4 phase" href="/internal/accounting-command-centre" tone="muted" />
+          <SectionLink title="Sage settings" detail="Mapping/settings diagnostic until connection tab" href="/internal/sage-mapping" tone={num(summary.blocked_before_posting) > 0 ? "review" : "muted"} />
+          <SectionLink title="Failures/results" detail="Failed and posted filters live here" href="/internal/accounting-command-centre?queue=posting_failed" tone="blocked" />
+          <SectionLink title="Corrections/reversals" detail="Not built yet; stays here later" href="/internal/accounting-command-centre" tone="muted" />
         </section>
 
         <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8">
@@ -280,9 +280,9 @@ export default async function AccountingCommandCentrePage({
           <SummaryCard label="Visible selected" value={gbp(selectedValue)} detail={`${selectedCount} visible row(s)`} tone={selectedCount > 0 ? "review" : "muted"} />
         </section>
 
-        <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
-          <form action="/internal/accounting-command-centre" className="grid gap-3 lg:grid-cols-[minmax(220px,1fr)_170px_150px_170px_120px_auto] lg:items-end">
-            <label className="grid gap-1 text-xs font-bold uppercase tracking-wide text-slate-500">
+        <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+          <form action="/internal/accounting-command-centre" className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(220px,1fr)_170px_150px_170px_120px_auto] xl:items-end">
+            <label className="grid gap-1 text-xs font-bold uppercase tracking-wide text-slate-500 md:col-span-2 xl:col-span-1">
               Search
               <input name="q" defaultValue={search} placeholder="Order, source, counterparty, batch, idempotency" className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-950" />
             </label>
@@ -341,42 +341,44 @@ export default async function AccountingCommandCentrePage({
           <input type="hidden" name="bulk_q" value={search} />
           <input type="hidden" name="bulk_page_size" value={String(pageSize)} />
 
-          <div className="flex flex-col gap-3 border-b border-slate-100 px-4 py-3 lg:flex-row lg:items-start lg:justify-between">
-            <div>
-              <h2 className="text-xl font-semibold">Accounting workbench grid</h2>
-              <p className="mt-1 text-sm text-slate-500">Showing {rows.length} of {totalCount} matching row(s). Operate from this grid; legacy readiness pages are drill-down diagnostics only.</p>
-              <label className="mt-2 flex w-fit items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700">
+          <div className="border-b border-slate-100 px-4 py-3">
+            <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <h2 className="text-xl font-semibold">Accounting workbench grid</h2>
+                <p className="mt-1 text-sm text-slate-500">Showing {rows.length} of {totalCount} matching row(s). Operate from this grid; legacy pages are diagnostics.</p>
+              </div>
+              <label className="flex w-fit items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700">
                 <input type="checkbox" name="bulk_include_warnings" value="true" />
-                Include warning rows in all-matching actions
+                Include warnings in all-matching actions
               </label>
             </div>
-            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-              <button formAction={freezeSelectedCustomerSalesRowsAction} className="rounded-xl bg-amber-700 px-3 py-2 text-xs font-bold text-white hover:bg-amber-800" type="submit">Freeze visible customer sales</button>
-              <button formAction={freezeMatchingCustomerSalesRowsAction} className="rounded-xl bg-amber-900 px-3 py-2 text-xs font-bold text-white hover:bg-amber-950" type="submit">Freeze all matching customer sales</button>
-              <button formAction={freezeSelectedShipperApRowsAction} className="rounded-xl bg-amber-700 px-3 py-2 text-xs font-bold text-white hover:bg-amber-800" type="submit">Freeze visible shipper AP</button>
-              <button formAction={freezeMatchingShipperApRowsAction} className="rounded-xl bg-amber-900 px-3 py-2 text-xs font-bold text-white hover:bg-amber-950" type="submit">Freeze all matching shipper AP</button>
-              <button formAction={revalidateMatchingFrozenRowsAction} className="rounded-xl bg-violet-700 px-3 py-2 text-xs font-bold text-white hover:bg-violet-800" type="submit">Revalidate all matching frozen</button>
-              <Link href="/internal/accounting-command-centre/posting-preview" className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-center text-xs font-bold text-slate-800 hover:bg-slate-50">Frozen snapshot drill-down</Link>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button formAction={freezeSelectedCustomerSalesRowsAction} className="rounded-lg bg-amber-700 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-amber-800" type="submit">Freeze visible customer sales</button>
+              <button formAction={freezeMatchingCustomerSalesRowsAction} className="rounded-lg bg-amber-900 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-amber-950" type="submit">Freeze all matching customer sales</button>
+              <button formAction={freezeSelectedShipperApRowsAction} className="rounded-lg bg-amber-700 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-amber-800" type="submit">Freeze visible shipper AP</button>
+              <button formAction={freezeMatchingShipperApRowsAction} className="rounded-lg bg-amber-900 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-amber-950" type="submit">Freeze all matching shipper AP</button>
+              <button formAction={revalidateMatchingFrozenRowsAction} className="rounded-lg bg-violet-700 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-violet-800" type="submit">Revalidate matching frozen</button>
+              <Link href="/internal/accounting-command-centre/posting-preview" className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-center text-[11px] font-bold text-slate-800 hover:bg-slate-50">Frozen snapshot drill-down</Link>
             </div>
           </div>
 
           <div className="overflow-x-auto rounded-b-3xl">
-            <table className="min-w-[1160px] table-fixed divide-y divide-slate-200 text-xs">
+            <table className="min-w-[1040px] table-fixed divide-y divide-slate-200 text-xs">
               <colgroup>
-                <col className="w-[52px]" />
-                <col className="w-[145px]" />
-                <col className="w-[145px]" />
-                <col className="w-[170px]" />
-                <col className="w-[165px]" />
-                <col className="w-[90px]" />
-                <col className="w-[310px]" />
-                <col className="w-[83px]" />
+                <col className="w-[46px]" />
+                <col className="w-[122px]" />
+                <col className="w-[126px]" />
+                <col className="w-[160px]" />
+                <col className="w-[166px]" />
+                <col className="w-[82px]" />
+                <col className="w-[242px]" />
+                <col className="w-[96px]" />
               </colgroup>
               <thead className="sticky top-0 z-10 bg-slate-100 text-[11px] uppercase tracking-wide text-slate-500">
                 <tr>
                   <th className="px-2 py-2 text-left">Select</th>
                   <th className="px-2 py-2 text-left">Queue</th>
-                  <th className="px-2 py-2 text-left">Lane / document</th>
+                  <th className="px-2 py-2 text-left">Lane / doc</th>
                   <th className="px-2 py-2 text-left">Source / ref</th>
                   <th className="px-2 py-2 text-left">Counterparty</th>
                   <th className="px-2 py-2 text-right">Amount</th>
@@ -391,12 +393,12 @@ export default async function AccountingCommandCentrePage({
                   <tr key={text(row.queue_row_id) || text(row.snapshot_id)} className="group align-middle hover:bg-slate-50">
                     <td className="px-2 py-2 align-middle"><SelectableInput row={row} /></td>
                     <td className="px-2 py-2 align-middle"><Pill value={row.work_queue} /></td>
-                    <td className="px-2 py-2 align-middle"><p className="truncate font-bold text-slate-950">{pretty(row.document_lane)}</p><p className="mt-0.5 line-clamp-2 text-[11px] leading-4 text-slate-500">{pretty(row.document_type)}</p></td>
-                    <td className="px-2 py-2 align-middle"><p className="truncate font-mono text-[11px] font-bold text-slate-950">{text(row.order_ref) || text(row.reference_text) || short(row.source_id, 26)}</p><p className="mt-0.5 truncate text-[11px] text-slate-500">{text(row.source_table)} · {short(row.source_id, 26)}</p></td>
+                    <td className="px-2 py-2 align-middle"><p className="truncate font-bold text-slate-950">{pretty(row.document_lane)}</p><p className="mt-0.5 truncate text-[11px] leading-4 text-slate-500">{pretty(row.document_type)}</p></td>
+                    <td className="px-2 py-2 align-middle"><p className="truncate font-mono text-[11px] font-bold text-slate-950">{text(row.order_ref) || text(row.reference_text) || short(row.source_id, 24)}</p><p className="mt-0.5 truncate text-[11px] text-slate-500">{text(row.source_table)} · {short(row.source_id, 22)}</p></td>
                     <td className="px-2 py-2 align-middle"><p className="truncate font-semibold text-slate-900">{text(row.counterparty_name) || "—"}</p><p className="mt-0.5 truncate text-[11px] text-slate-500">{bookingText(row.booking_ref)}</p></td>
                     <td className="px-2 py-2 text-right align-middle font-bold text-slate-950">{gbp(row.amount_gbp)}<p className="text-[11px] font-normal text-slate-500">{text(row.currency_code) || "GBP"}</p></td>
                     <td className="px-2 py-2 align-middle"><ControlStateCluster row={row} /></td>
-                    <td className="px-2 py-2 align-middle"><Link href={text(row.next_action_href) || "/internal/accounting-command-centre"} className="inline-flex rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-[11px] font-bold leading-4 text-slate-800 hover:bg-slate-100">{short(text(row.next_action) || "Open", 20)}</Link></td>
+                    <td className="px-2 py-2 align-middle"><Link href={text(row.next_action_href) || "/internal/accounting-command-centre"} className="inline-flex max-w-[86px] rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-[11px] font-bold leading-4 text-slate-800 hover:bg-slate-100">{short(text(row.next_action) || "Open", 24)}</Link></td>
                   </tr>
                 ))}
               </tbody>
