@@ -116,6 +116,15 @@ function SummaryCard({ label, value, detail, tone }: { label: string; value: str
   );
 }
 
+function SectionLink({ title, detail, href, tone }: { title: string; detail: string; href: string; tone: Tone }) {
+  return (
+    <Link href={href} className={`block rounded-2xl border p-3 text-sm shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${toneClass(tone)}`}>
+      <p className="text-[11px] font-bold uppercase tracking-wide opacity-70">{title}</p>
+      <p className="mt-1 text-xs leading-5 opacity-90">{detail}</p>
+    </Link>
+  );
+}
+
 function pageHref(base: string, params: Record<string, string | number | undefined>) {
   const qp = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
@@ -186,7 +195,7 @@ export default async function AccountingCommandCentrePage({
         <div className="mx-auto max-w-4xl space-y-5">
           <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
             <Link href="/internal" className="text-sm font-semibold text-sky-700">← Internal dashboard</Link>
-            <h1 className="mt-5 text-3xl font-bold tracking-tight">Admin Accounting Command Centre</h1>
+            <h1 className="mt-5 text-3xl font-bold tracking-tight">Accounting Command Centre</h1>
             <p className="mt-3 text-sm leading-6 text-slate-600">This page is admin-accounting controlled. Your current staff role is {pretty(staff.role_type)}.</p>
           </section>
           <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-900">
@@ -228,12 +237,12 @@ export default async function AccountingCommandCentrePage({
       <div className="mx-auto max-w-[1600px] space-y-5">
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
           <Link href="/internal" className="text-sm font-semibold text-sky-700">← Internal dashboard</Link>
-          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-violet-500">Admin Accounting</p>
+          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-violet-500">Accounting cockpit</p>
           <div className="mt-2 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
             <div>
               <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">Accounting Command Centre</h1>
               <p className="mt-2 max-w-5xl text-sm leading-6 text-slate-600">
-                High-volume grid workbench for Sage-bound documents. Grid = operate. Detail pages = inspect/audit. Default view is actionable rows, not all rows.
+                Single v4 accounting/Sage cockpit from approved facts to frozen/revalidated Sage-ready work. Daily accounting work starts here; legacy live-ready, mapping and posting-preview pages are drill-down diagnostics, not separate command centres.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700">
@@ -241,9 +250,23 @@ export default async function AccountingCommandCentrePage({
               <div>{text(staff.role_type)}{accessFromPermissions((staff as Row).permissions_json) ? " · accounting admin testing" : ""}</div>
             </div>
           </div>
+          <div className="mt-4 flex flex-wrap gap-2 text-xs font-semibold">
+            <span className="rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-violet-900">Accounting owns freeze, revalidation and posting readiness</span>
+            <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-slate-700">Operational blockers route back to Supervisor/child pages</span>
+            <span className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-amber-900">Actual Sage posting is still not built</span>
+          </div>
           {firstParam(qp.success) ? <p className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-900">{firstParam(qp.success)}</p> : null}
           {firstParam(qp.error) ? <p className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900">{firstParam(qp.error)}</p> : null}
           {error ? <p className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">Grid RPC unavailable: {error.message}. Run the latest Supabase migration before testing this page.</p> : null}
+        </section>
+
+        <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+          <SectionLink title="Live ready" detail="Rows ready to freeze; replaces daily /sage-ready usage" href="/internal/accounting-command-centre?queue=live_ready_not_frozen" tone="action" />
+          <SectionLink title="Frozen snapshots" detail="Frozen and revalidation-aware rows; posting preview is drill-down" href="/internal/accounting-command-centre?queue=frozen_ready_to_post" tone="complete" />
+          <SectionLink title="Posting batches" detail="Not built yet; next v4 phase after consolidation" href="/internal/accounting-command-centre" tone="muted" />
+          <SectionLink title="Sage settings" detail="Mapping/settings diagnostic until Sage connection tab is built" href="/internal/sage-mapping" tone={num(summary.blocked_before_posting) > 0 ? "review" : "muted"} />
+          <SectionLink title="Failures/results" detail="Failed and posted filters live inside this cockpit" href="/internal/accounting-command-centre?queue=posting_failed" tone="blocked" />
+          <SectionLink title="Corrections/reversals" detail="Not built yet; stays inside Accounting Command Centre later" href="/internal/accounting-command-centre" tone="muted" />
         </section>
 
         <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8">
@@ -321,7 +344,7 @@ export default async function AccountingCommandCentrePage({
           <div className="flex flex-col gap-3 border-b border-slate-100 px-4 py-3 lg:flex-row lg:items-start lg:justify-between">
             <div>
               <h2 className="text-xl font-semibold">Accounting workbench grid</h2>
-              <p className="mt-1 text-sm text-slate-500">Showing {rows.length} of {totalCount} matching row(s). Use selected visible rows for page-level work, or all matching for high-volume batches.</p>
+              <p className="mt-1 text-sm text-slate-500">Showing {rows.length} of {totalCount} matching row(s). Operate from this grid; legacy readiness pages are drill-down diagnostics only.</p>
               <label className="mt-2 flex w-fit items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700">
                 <input type="checkbox" name="bulk_include_warnings" value="true" />
                 Include warning rows in all-matching actions
@@ -333,7 +356,7 @@ export default async function AccountingCommandCentrePage({
               <button formAction={freezeSelectedShipperApRowsAction} className="rounded-xl bg-amber-700 px-3 py-2 text-xs font-bold text-white hover:bg-amber-800" type="submit">Freeze visible shipper AP</button>
               <button formAction={freezeMatchingShipperApRowsAction} className="rounded-xl bg-amber-900 px-3 py-2 text-xs font-bold text-white hover:bg-amber-950" type="submit">Freeze all matching shipper AP</button>
               <button formAction={revalidateMatchingFrozenRowsAction} className="rounded-xl bg-violet-700 px-3 py-2 text-xs font-bold text-white hover:bg-violet-800" type="submit">Revalidate all matching frozen</button>
-              <Link href="/internal/accounting-command-centre/posting-preview" className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-center text-xs font-bold text-slate-800 hover:bg-slate-50">Posting preview index</Link>
+              <Link href="/internal/accounting-command-centre/posting-preview" className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-center text-xs font-bold text-slate-800 hover:bg-slate-50">Frozen snapshot drill-down</Link>
             </div>
           </div>
 
@@ -390,9 +413,9 @@ export default async function AccountingCommandCentrePage({
         </form>
 
         <section className="rounded-3xl border border-violet-200 bg-violet-50 p-5 text-sm leading-6 text-violet-900">
-          <h2 className="font-bold">Control rule</h2>
-          <p className="mt-2">This page is now the operating grid. Frozen snapshot preview pages remain drill-down audit pages. Actual Sage posting is still not built.</p>
-          <p className="mt-2 font-semibold">Bulk mode now distinguishes selected visible rows from all matching current filter. Blocked/excluded rows remain out of the action and are reported in the completion message.</p>
+          <h2 className="font-bold">v4 control rule</h2>
+          <p className="mt-2">This page is the single accounting/Sage cockpit. Frozen snapshot preview, Sage mapping and legacy live-ready routes remain drill-down diagnostics only. Operational exception resolution, shipper receipt approval, DVA investigation and invoice OCR correction stay outside this page. Actual Sage posting is still not built.</p>
+          <p className="mt-2 font-semibold">Bulk mode distinguishes selected visible rows from all matching current filter. Blocked/excluded rows remain out of the action and are reported in the completion message.</p>
         </section>
       </div>
     </main>
