@@ -78,6 +78,12 @@ const shippingFlowSteps: FlowStep[] = [
 
 const cards: QueueCard[] = [
   {
+    title: "Supervisor command centre",
+    href: "/internal/supervisor-command-centre",
+    description: "One cockpit row per order covering funding, DVA/card, supplier AP, exceptions, logistics/shipper, customer sales, shipper AP, export/delivery and next action.",
+    proof: "Order-to-clean-delivery cockpit",
+  },
+  {
     title: "DVA/card statement workflow",
     href: "/internal/dva-statement-import",
     description: "Start here for bank/card/DVA statement upload, OCR or parsing, staging, commit, and safe import voiding.",
