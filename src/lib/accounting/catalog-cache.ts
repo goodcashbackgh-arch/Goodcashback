@@ -164,3 +164,25 @@ export async function getSavedCatalogSnapshot(connectionId: string, businessRowI
   });
   return { categories, cachedAt: (categoryRows as Record<string, unknown>[]).map((row) => text(row.last_seen_at)).sort().reverse()[0] ?? null };
 }
+
+export async function getLatestSavedCatalogSnapshot() {
+  const { data: connection } = await supabaseAdmin
+    .from("sage_connections")
+    .select("id")
+    .in("status", ["connected", "token_expired", "refresh_failed"])
+    .order("updated_at", { ascending: false })
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (!connection?.id) return null;
+  const { data: business } = await supabaseAdmin
+    .from("sage_businesses")
+    .select("id")
+    .eq("connection_id", connection.id)
+    .eq("status", "active")
+    .order("is_primary", { ascending: false })
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  return getSavedCatalogSnapshot(String(connection.id), business?.id ? String(business.id) : null);
+}
