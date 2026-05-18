@@ -79,7 +79,7 @@ const CATALOG_ENDPOINTS = [
   { key: "currencies", label: "Currencies", endpoint: "/currencies?items_per_page=100" },
 ] as const;
 
-function text(value: unknown) {
+function text(value: unknown): string {
   if (typeof value === "string") return value;
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
   if (typeof value === "boolean") return value ? "true" : "false";
@@ -92,7 +92,7 @@ function asObject(value: unknown): Row {
   return value as Row;
 }
 
-function unwrapItem(value: unknown) {
+function unwrapItem(value: unknown): Row {
   const row = asObject(value);
   return asObject(
     row.contact ??
@@ -106,7 +106,7 @@ function unwrapItem(value: unknown) {
   );
 }
 
-function collection(raw: unknown) {
+function collection(raw: unknown): Row[] {
   const root = asObject(raw);
   const candidates = [
     root.$items,
@@ -124,11 +124,11 @@ function collection(raw: unknown) {
   return (array ?? []).map(unwrapItem);
 }
 
-function itemDisplay(row: Row) {
+function itemDisplay(row: Row): string {
   return text(row.displayed_as) || text(row.name) || text(row.reference) || text(row.id) || "—";
 }
 
-function normalizeItems(raw: unknown) {
+function normalizeItems(raw: unknown): SageCatalogItem[] {
   return collection(raw).map((row) => ({
     id: text(row.id ?? row.$uuid),
     display: itemDisplay(row),
@@ -140,7 +140,7 @@ function normalizeItems(raw: unknown) {
   }));
 }
 
-function categoryHints(category: SageCatalogCategory) {
+function categoryHints(category: SageCatalogCategory): SageCatalogItem[] {
   const rows = category.items;
   const lowered = (value: string) => value.toLowerCase();
   if (category.key === "tax_rates") {
@@ -158,11 +158,11 @@ function categoryHints(category: SageCatalogCategory) {
   return [];
 }
 
-export function sageCatalogHints(category: SageCatalogCategory) {
+export function sageCatalogHints(category: SageCatalogCategory): SageCatalogItem[] {
   return categoryHints(category).slice(0, 12);
 }
 
-async function requireAccountingStaffId() {
+async function requireAccountingStaffId(): Promise<string> {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error("Login required.");
@@ -182,7 +182,7 @@ async function requireAccountingStaffId() {
   return String(staff.id);
 }
 
-async function activeBusiness(connectionId: string) {
+async function activeBusiness(connectionId: string): Promise<BusinessRow | null> {
   const primary = await supabaseAdmin
     .from("sage_businesses")
     .select("id, sage_business_id, sage_business_name, business_country_code, business_currency_code, is_primary")
@@ -205,7 +205,13 @@ async function activeBusiness(connectionId: string) {
   return (first.data ?? null) as BusinessRow | null;
 }
 
-async function getSageContext(staffId: string) {
+async function getSageContext(staffId: string): Promise<{
+  config: ReturnType<typeof assertSageOAuthConfigured>;
+  accessToken: string;
+  connection: ConnectionRow;
+  business: BusinessRow | null;
+  refreshed: boolean;
+}> {
   const config = assertSageOAuthConfigured();
   const { data: token, error: tokenError } = await supabaseAdmin
     .from("sage_oauth_tokens")
@@ -324,7 +330,7 @@ async function getCategory(params: {
   baseUrl: string;
   accessToken: string;
   category: typeof CATALOG_ENDPOINTS[number];
-}) {
+}): Promise<SageCatalogCategory> {
   const started = Date.now();
   const { data: requestLog } = await supabaseAdmin.from("sage_api_request_log").insert({
     connection_id: params.connectionId,
