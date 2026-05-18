@@ -4,6 +4,7 @@ export const SAGE_AUTH_STATE_COOKIE = "sage_oauth_state";
 export const SAGE_CONNECTION_COOKIE = "sage_connection_id";
 export const SAGE_ACCESS_TOKEN_MAX_AGE_SECONDS = 300;
 export const SAGE_ACCESS_TOKEN_REFRESH_BUFFER_SECONDS = 60;
+export const SAGE_REFRESH_TOKEN_ROLLING_DAYS = 90;
 
 export type SageTokenResponse = {
   access_token?: string;
@@ -75,6 +76,12 @@ export function tokenExpiresAt(expiresIn: unknown) {
   const seconds = typeof expiresIn === "number" && Number.isFinite(expiresIn) ? expiresIn : Number(expiresIn);
   const safeSeconds = Number.isFinite(seconds) && seconds > 0 ? Math.min(seconds, SAGE_ACCESS_TOKEN_MAX_AGE_SECONDS) : SAGE_ACCESS_TOKEN_MAX_AGE_SECONDS;
   return new Date(Date.now() + safeSeconds * 1000).toISOString();
+}
+
+export function refreshTokenEstimatedExpiresAt(from = new Date()) {
+  const date = from instanceof Date ? new Date(from.getTime()) : new Date(from);
+  date.setUTCDate(date.getUTCDate() + SAGE_REFRESH_TOKEN_ROLLING_DAYS);
+  return date.toISOString();
 }
 
 export function tokenRefreshRequired(expiresAt: string | Date | null | undefined, bufferSeconds = SAGE_ACCESS_TOKEN_REFRESH_BUFFER_SECONDS) {
