@@ -181,6 +181,37 @@ function ControlStateCluster({ row }: { row: Row }) {
   );
 }
 
+function ActionControl({ row }: { row: Row }) {
+  if (
+    text(row.work_queue) === "live_ready_not_frozen" &&
+    text(row.selection_group) === "supplier_goods_ap" &&
+    text(row.source_id)
+  ) {
+    return (
+      <button
+        type="submit"
+        formAction={freezeSelectedSupplierGoodsApRowsAction}
+        name="single_supplier_invoice_id"
+        value={text(row.source_id)}
+        title="Freeze this supplier goods AP row only"
+        className="inline-flex max-w-[86px] rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-left text-[11px] font-bold leading-4 text-slate-800 hover:bg-slate-100"
+      >
+        Freeze supplier goods AP
+      </button>
+    );
+  }
+
+  return (
+    <Link
+      href={text(row.next_action_href) || "/internal/accounting-command-centre"}
+      title={actionTitle(row)}
+      className="inline-flex max-w-[86px] rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-[11px] font-bold leading-4 text-slate-800 hover:bg-slate-100"
+    >
+      {short(actionLabel(row), 24)}
+    </Link>
+  );
+}
+
 export default async function AccountingCommandCentrePage({
   searchParams,
 }: {
@@ -425,7 +456,7 @@ export default async function AccountingCommandCentrePage({
                     <td className="px-2 py-2 align-middle"><p className="truncate font-semibold text-slate-900">{text(row.counterparty_name) || "—"}</p><p className="mt-0.5 truncate text-[11px] text-slate-500">{bookingText(row.booking_ref)}</p></td>
                     <td className="px-2 py-2 text-right align-middle font-bold text-slate-950">{gbp(row.amount_gbp)}<p className="text-[11px] font-normal text-slate-500">{text(row.currency_code) || "GBP"}</p></td>
                     <td className="px-2 py-2 align-middle"><ControlStateCluster row={row} /></td>
-                    <td className="px-2 py-2 align-middle"><Link href={text(row.next_action_href) || "/internal/accounting-command-centre"} title={actionTitle(row)} className="inline-flex max-w-[86px] rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-[11px] font-bold leading-4 text-slate-800 hover:bg-slate-100">{short(actionLabel(row), 24)}</Link></td>
+                    <td className="px-2 py-2 align-middle"><ActionControl row={row} /></td>
                   </tr>
                 ))}
               </tbody>
