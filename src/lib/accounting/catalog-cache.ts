@@ -46,3 +46,33 @@ export async function writeSavedCatalogCategory(input: {
     updated_at: new Date().toISOString(),
   }, { onConflict: "sage_connection_id,sage_business_row_id,category_key" });
 }
+
+export async function writeSavedCatalogItems(input: {
+  staffId: string;
+  connectionId: string;
+  businessRowId: string | null;
+  businessId: string | null;
+  categoryKey: string;
+  items: Array<{ id: string; display: string; reference: string; code: string; type: string; active: string; raw_preview: Record<string, unknown> }>;
+}) {
+  const nowIso = new Date().toISOString();
+  const rows = input.items.filter((item) => item.id).map((item) => ({
+    sage_connection_id: input.connectionId,
+    sage_business_row_id: input.businessRowId,
+    sage_business_id: input.businessId,
+    category_key: input.categoryKey,
+    sage_external_id: item.id,
+    display_name: item.display || item.id,
+    reference_text: item.reference || null,
+    code_text: item.code || null,
+    sage_type: item.type || null,
+    active_status: item.active || null,
+    raw_preview_json: item.raw_preview,
+    last_seen_at: nowIso,
+    last_seen_by_staff_id: input.staffId,
+    updated_at: nowIso,
+  }));
+  if (rows.length > 0) {
+    await supabaseAdmin.from("sage_catalog_cache").upsert(rows, { onConflict: "sage_connection_id,sage_business_row_id,category_key,sage_external_id" });
+  }
+}
