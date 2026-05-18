@@ -76,8 +76,11 @@ const CATALOG_ENDPOINTS = [
   { key: "ledger_accounts", label: "Ledger / nominal accounts", endpoint: "/ledger_accounts?items_per_page=100" },
   { key: "tax_rates", label: "VAT / tax rates", endpoint: "/tax_rates?items_per_page=100" },
   { key: "bank_accounts", label: "Bank accounts", endpoint: "/bank_accounts?items_per_page=100" },
-  { key: "currencies", label: "Currencies", endpoint: "/currencies?items_per_page=100" },
+  { key: "currencies", label: "Currencies (optional; some Sage businesses block this endpoint)", endpoint: "/currencies?items_per_page=100", optional: true },
 ] as const;
+
+const MAX_CATALOG_PAGES = 5;
+const MAX_DISPLAY_ROWS = 80;
 
 function text(value: unknown): string {
   if (typeof value === "string") return value;
@@ -124,6 +127,19 @@ function collection(raw: unknown): Row[] {
   return (array ?? []).map(unwrapItem);
 }
 
+function nextPath(raw: unknown): string | null {
+  const root = asObject(raw);
+  const next = text(root.$next ?? root.next ?? root.next_page ?? root.$next_page);
+  return next || null;
+}
+
+function absoluteSageUrl(baseUrl: string, pathOrUrl: string): string {
+  if (/^https?:\/\//i.test(pathOrUrl)) return pathOrUrl;
+  const base = baseUrl.replace(/\/$/, "");
+  const path = pathOrUrl.startsWith("/") ? pathOrUrl : `/${pathOrUrl}`;
+  return `${base}${path}`;
+}
+
 function itemDisplay(row: Row): string {
   return text(row.displayed_as) || text(row.name) || text(row.reference) || text(row.id) || "—";
 }
@@ -140,6 +156,18 @@ function normalizeItems(raw: unknown): SageCatalogItem[] {
   }));
 }
 
+function dedupeItems(items: SageCatalogItem[]): SageCatalogItem[] {
+  const seen = new Set<string>();
+  const out: SageCatalogItem[] = [];
+  for (const item of items) {
+    const key = item.id || `${item.display}|${item.reference}|${item.code}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(item);
+  }
+  return out;
+}
+
 function categoryHints(category: SageCatalogCategory): SageCatalogItem[] {
   const rows = category.items;
   const lowered = (value: string) => value.toLowerCase();
@@ -147,7 +175,7 @@ function categoryHints(category: SageCatalogCategory): SageCatalogItem[] {
     return rows.filter((row) => /zero|gb_zero|0%|export|exempt|no vat|tax exempt/i.test(`${row.id} ${row.display} ${row.reference} ${row.type}`));
   }
   if (category.key === "ledger_accounts") {
-    return rows.filter((row) => /sales|product|income|4000|purchase|cost|freight|shipping|delivery|expense|5000/i.test(lowered(`${row.display} ${row.reference} ${row.code} ${row.type}`)));
+    return rows.filter((row) => /sales|product|income|4000|purchase|cost|freight|shipping|delivery|expense|5000|5030|5100|4910/i.test(lowered(`${row.display} ${row.reference} ${row.code} ${row.type}`)));
   }
   if (category.key === "bank_accounts") {
     return rows.filter((row) => /bank|cash|current|clearing|1200|2550/i.test(lowered(`${row.display} ${row.reference} ${row.code} ${row.type}`)));
@@ -323,6 +351,56 @@ async function getSageContext(staffId: string): Promise<{
   };
 }
 
+async function fetchPagedCatalog(params: {
+  baseUrl: string;
+  accessToken: string;
+  endpoint: string;
+}): Promise<{
+  ok: boolean;
+  status: number | null;
+  items: SageCatalogItem[];
+  error: string | null;
+  pages: number;
+}> {
+  const items: SageCatalogItem[] = [];
+  let url: string | null = absoluteSageUrl(params.baseUrl, params.endpoint);
+  let status: number | null = null;
+  let error: string | null = null;
+  let pages = 0;
+
+  while (url && pages < MAX_CATALOG_PAGES) {
+    pages += 1;
+    let response: Response;
+    let raw: unknown;
+    try {
+      response = await fetch(url, {
+        method: "GET",
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${params.accessToken}`,
+        },
+        cache: "no-store",
+      });
+      status = response.status;
+      raw = await response.json().catch(async () => ({ non_json_body: await response.text().catch(() => null) }));
+    } catch (fetchError) {
+      error = fetchError instanceof Error ? fetchError.message : "Sage catalog request failed.";
+      return { ok: false, status, items: dedupeItems(items), error, pages };
+    }
+
+    if (!response.ok) {
+      error = JSON.stringify(raw).slice(0, 700);
+      return { ok: false, status, items: dedupeItems(items), error, pages };
+    }
+
+    items.push(...normalizeItems(raw));
+    const next = nextPath(raw);
+    url = next ? absoluteSageUrl(params.baseUrl, next) : null;
+  }
+
+  return { ok: true, status, items: dedupeItems(items), error, pages };
+}
+
 async function getCategory(params: {
   staffId: string;
   connectionId: string;
@@ -339,42 +417,31 @@ async function getCategory(params: {
     request_kind: "test_connection",
     http_method: "GET",
     endpoint_path: params.category.endpoint.split("?")[0],
-    request_payload_redacted: { query: params.category.endpoint.includes("?") ? params.category.endpoint.split("?")[1] : "" },
+    request_payload_redacted: { query: params.category.endpoint.includes("?") ? params.category.endpoint.split("?")[1] : "", max_pages: MAX_CATALOG_PAGES },
     created_by_staff_id: params.staffId,
   }).select("id").single();
 
-  const url = `${params.baseUrl.replace(/\/$/, "")}${params.category.endpoint}`;
-  let response: Response | null = null;
-  let raw: unknown = null;
-  let errorMessage: string | null = null;
+  const result = await fetchPagedCatalog({
+    baseUrl: params.baseUrl,
+    accessToken: params.accessToken,
+    endpoint: params.category.endpoint,
+  });
 
-  try {
-    response = await fetch(url, {
-      method: "GET",
-      headers: {
-        Accept: "application/json",
-        Authorization: `Bearer ${params.accessToken}`,
-      },
-      cache: "no-store",
-    });
-    raw = await response.json().catch(async () => ({ non_json_body: await response?.text().catch(() => null) }));
-    if (!response.ok) errorMessage = JSON.stringify(raw).slice(0, 700);
-  } catch (error) {
-    errorMessage = error instanceof Error ? error.message : "Sage catalog request failed.";
-  }
-
-  const items = response?.ok ? normalizeItems(raw) : [];
+  const optionalFailure = Boolean(params.category.optional && !result.ok);
+  const errorMessage = optionalFailure
+    ? `${result.error || "Endpoint restricted"} — optional for first GBP AR/AP posting; use the connected business currency instead.`
+    : result.error;
 
   if (requestLog?.id) {
     await supabaseAdmin.from("sage_api_response_log").insert({
       request_log_id: requestLog.id,
       connection_id: params.connectionId,
       sage_business_row_id: params.businessRowId,
-      http_status: response?.status ?? null,
-      success_yn: Boolean(response?.ok),
-      response_payload_redacted: { category: params.category.key, count: items.length },
-      error_code: response?.ok ? null : "catalog_discovery_failed",
-      error_message: response?.ok ? null : errorMessage,
+      http_status: result.status,
+      success_yn: result.ok || optionalFailure,
+      response_payload_redacted: { category: params.category.key, count: result.items.length, pages: result.pages, optional_failure: optionalFailure },
+      error_code: result.ok || optionalFailure ? null : "catalog_discovery_failed",
+      error_message: result.ok || optionalFailure ? null : errorMessage,
       duration_ms: Date.now() - started,
     });
   }
@@ -383,11 +450,11 @@ async function getCategory(params: {
     key: params.category.key,
     label: params.category.label,
     endpoint: params.category.endpoint,
-    ok: Boolean(response?.ok),
-    http_status: response?.status ?? null,
-    count: items.length,
-    items: items.slice(0, 60),
-    error: response?.ok ? null : errorMessage,
+    ok: result.ok,
+    http_status: result.status,
+    count: result.items.length,
+    items: result.items.slice(0, MAX_DISPLAY_ROWS),
+    error: errorMessage,
   } satisfies SageCatalogCategory;
 }
 
@@ -418,14 +485,14 @@ export async function discoverSageCatalog(): Promise<SageCatalogDiscovery> {
       ar_requirements: [
         "Sage customer contact id for the importer/customer",
         "Sales income ledger/nominal account id",
-        "VAT/tax rate id for the customer sales invoice line",
-        "Currency and invoice reference/idempotency rule",
+        "VAT/tax rate id for the customer sales invoice line — not the VAT control ledger",
+        `Currency from connected business record${context.business?.business_currency_code ? ` (${context.business.business_currency_code})` : ""}; /currencies is optional`,
         "Later: receipt/bank account id for money allocation",
       ],
       ap_requirements: [
         "Sage supplier contact id for the shipper/AP counterparty",
         "AP expense/COGS/freight ledger/nominal account id",
-        "VAT/tax rate id for AP line treatment",
+        "VAT/tax rate id for AP line treatment — not the VAT control ledger",
         "Supplier invoice reference/idempotency rule",
         "Later: bank/control account id for payment settlement",
       ],
