@@ -92,7 +92,7 @@ function toneClass(tone: Tone) {
 function statusTone(value: unknown): Tone {
   const raw = text(value);
   if (["included", "validated", "posted", "draft", "local_validated_pending_sage_dry_run", "dry_run_validated", "ok", "source_evidence_available", "present"].includes(raw)) return "complete";
-  if (["excluded", "blocked", "failed_retryable", "failed_terminal", "dry_run_failed", "missing_resolved_lines", "missing_net_vat_gross_fields", "net_plus_vat_not_equal_gross", "gross_total_mismatch", "missing_source_evidence_file", "missing"].includes(raw)) return "blocked";
+  if (["excluded", "blocked", "failed_retryable", "failed_terminal", "dry_run_failed", "missing_resolved_lines", "missing_net_vat_gross_fields", "net_plus_vat_not_equal_gross", "gross_total_mismatch", "missing_source_evidence_file", "missing", "missing_sage_line_description"].includes(raw)) return "blocked";
   if (["posting", "posting_disabled_until_sage_connection_tested", "not_dry_run_validated"].includes(raw)) return "action";
   if (["cancelled", "excluded_before_validation", "not_applicable"].includes(raw)) return "review";
   return "muted";
@@ -117,10 +117,36 @@ function EvidenceLink({ url }: { url: unknown }) {
   return <a href={href} target="_blank" rel="noreferrer" className="text-[11px] font-bold text-sky-700 underline">Open source file</a>;
 }
 
+function lineDescription(line: Row) {
+  return firstText(line, [
+    ["description"],
+    ["posting_description"],
+    ["item_description"],
+    ["source_description"],
+    ["name"],
+  ]);
+}
+
+function lineLedgerId(line: Row) {
+  return firstText(line, [["sage_ledger_account_id"], ["resolved_ledger_account_id"]]);
+}
+
+function lineTaxId(line: Row) {
+  return firstText(line, [["sage_tax_rate_id"], ["resolved_tax_rate_id"]]);
+}
+
+function lineQuantity(line: Row) {
+  return text(line.quantity) || text(line.qty) || "1";
+}
+
+function lineAmount(line: Row) {
+  return firstText(line, [["gross_amount_gbp"], ["total_line_amount_gbp"], ["line_total_gbp"], ["amount_gbp"], ["unit_price_gbp"], ["unit_price"]]);
+}
+
 function sageFacts(row: Row) {
   const payload = asObject(row.request_payload_json);
-  const lines = asArray(payload.resolved_lines);
-  const firstLine = asObject(lines[0]);
+  const lines = asArray(payload.resolved_lines).map(asObject);
+  const firstLine = lines[0] ?? {};
   const sourcePayload = asObject(payload.source_payload);
 
   const sourceRef = firstText(payload, [
@@ -171,10 +197,7 @@ function sageFacts(row: Row) {
     ["counterparty_name"],
   ]) || text(row.counterparty_name);
 
-  const ledgerId = firstText(firstLine, [
-    ["sage_ledger_account_id"],
-    ["resolved_ledger_account_id"],
-  ]) || firstText(payload, [["ledger_resolution", "sage_ledger_account_id"]]);
+  const ledgerId = lineLedgerId(firstLine) || firstText(payload, [["ledger_resolution", "sage_ledger_account_id"]]);
 
   const ledgerDisplay = firstText(firstLine, [
     ["sage_ledger_account_display"],
@@ -182,20 +205,20 @@ function sageFacts(row: Row) {
     ["ledger_account_role"],
   ]) || firstText(payload, [["ledger_resolution", "sage_ledger_account_display"], ["ledger_resolution", "ledger_account_role"]]);
 
-  const taxRateId = firstText(firstLine, [
-    ["sage_tax_rate_id"],
-    ["resolved_tax_rate_id"],
-  ]) || firstText(payload, [["tax_resolution", "sage_tax_rate_id"]]);
+  const taxRateId = lineTaxId(firstLine) || firstText(payload, [["tax_resolution", "sage_tax_rate_id"]]);
 
   const taxDisplay = firstText(firstLine, [
     ["sage_tax_rate_display"],
     ["tax_rate_label"],
   ]) || firstText(payload, [["tax_resolution", "sage_tax_rate_display"], ["tax_resolution", "display_vat_code"]]);
 
+  const missingLineDescriptions = lines.filter((line) => !lineDescription(line)).length;
+
   return {
     payload,
     sourcePayload,
     lines,
+    missingLineDescriptions,
     sourceRef,
     sourceDate,
     sourceFile,
@@ -221,6 +244,33 @@ function SourceFactsCell({ row }: { row: Row }) {
   );
 }
 
+function LineFactsBlock({ row }: { row: Row }) {
+  const facts = sageFacts(row);
+  if (facts.lines.length === 0) {
+    return <p className="text-[11px] font-semibold text-rose-700">No resolved lines</p>;
+  }
+
+  return (
+    <div className="mt-1 space-y-1 rounded-lg border border-slate-200 bg-slate-50 p-2">
+      <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Sage line facts</p>
+      {facts.lines.slice(0, 3).map((line, index) => {
+        const description = lineDescription(line);
+        const ledger = lineLedgerId(line);
+        const tax = lineTaxId(line);
+        return (
+          <div key={`${description || "line"}-${index}`} className="border-t border-slate-200 pt-1 first:border-t-0 first:pt-0">
+            <p className={`font-bold ${description ? "text-slate-900" : "text-rose-700"}`}>Desc: {description || "missing"}</p>
+            <p className="text-slate-600">Qty {lineQuantity(line)} · Amount {lineAmount(line) ? gbp(lineAmount(line)) : "—"}</p>
+            <p className={`${ledger ? "text-slate-600" : "text-rose-700"}`}>Ledger {short(ledger, 28) || "missing"}</p>
+            <p className={`${tax ? "text-slate-600" : "text-rose-700"}`}>Tax {short(tax, 28) || "missing"}</p>
+          </div>
+        );
+      })}
+      {facts.lines.length > 3 ? <p className="text-[10px] font-semibold text-slate-500">+ {facts.lines.length - 3} more line(s)</p> : null}
+    </div>
+  );
+}
+
 function SageTargetCell({ row }: { row: Row }) {
   const facts = sageFacts(row);
   return (
@@ -231,7 +281,8 @@ function SageTargetCell({ row }: { row: Row }) {
       {facts.ledgerDisplay ? <p className="text-slate-500">{short(facts.ledgerDisplay, 42)}</p> : null}
       <p className={`font-mono ${facts.taxRateId ? "text-slate-700" : "text-rose-700"}`}>Tax: {short(facts.taxRateId, 28) || "missing"}</p>
       {facts.taxDisplay ? <p className="text-slate-500">{short(facts.taxDisplay, 42)}</p> : null}
-      <p className="text-slate-500">Lines: {facts.lines.length}</p>
+      <p className={facts.missingLineDescriptions > 0 ? "text-rose-700 font-semibold" : "text-slate-500"}>Lines: {facts.lines.length}{facts.missingLineDescriptions > 0 ? ` · ${facts.missingLineDescriptions} missing description` : ""}</p>
+      <LineFactsBlock row={row} />
     </div>
   );
 }
@@ -313,7 +364,7 @@ export default async function PostingBatchDetailPage({
   const supplierVatBlocked = supplierGoodsRows.some((row) => !["ok", "not_applicable", ""].includes(text(row.ap_vat_control_status)) || text(row.source_evidence_status) === "missing_source_evidence_file");
   const targetMissingRows = includedRows.filter((row) => {
     const facts = sageFacts(row);
-    return !facts.contactId || !facts.ledgerId || !facts.taxRateId || facts.lines.length === 0;
+    return !facts.contactId || !facts.ledgerId || !facts.taxRateId || facts.lines.length === 0 || facts.missingLineDescriptions > 0;
   });
 
   return (
@@ -328,7 +379,7 @@ export default async function PostingBatchDetailPage({
                 <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] font-bold text-amber-900">Posting disabled · no Sage object creation</span>
               </div>
               <h1 className="mt-1 truncate text-3xl font-semibold tracking-tight sm:text-4xl">{text(first.batch_ref) || "Posting batch"}</h1>
-              <p className="mt-1 max-w-5xl text-sm leading-5 text-slate-600">Local batch lock plus Phase 11 dry-run validation. All lanes must show source facts and Sage target IDs before adapter work: customer sales, supplier goods AP and shipper AP.</p>
+              <p className="mt-1 max-w-5xl text-sm leading-5 text-slate-600">Local batch lock plus Phase 11 dry-run validation. All lanes must show source facts, Sage target IDs, actual line descriptions and amount controls before adapter work.</p>
               <p className="mt-1 text-xs font-semibold text-slate-500">Batch id {batchId}</p>
               <form action={validateSagePostingBatchPayloadsAction} className="mt-3 flex flex-wrap items-center gap-2">
                 <input type="hidden" name="batch_id" value={batchId} />
@@ -360,7 +411,7 @@ export default async function PostingBatchDetailPage({
           {successMessage ? <p className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-900">{successMessage}</p> : null}
           {errorMessage ? <p className="mt-3 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900">{errorMessage}</p> : null}
           {supplierVatBlocked ? <p className="mt-3 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900">Supplier goods AP is not Sage-ready: VAT split or source evidence is missing/invalid.</p> : null}
-          {targetMissingRows.length > 0 ? <p className="mt-3 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900">Sage target facts are incomplete on {targetMissingRows.length} row(s). Do not build/post the adapter until contact, ledger, tax and line facts are visible.</p> : null}
+          {targetMissingRows.length > 0 ? <p className="mt-3 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900">Sage target facts are incomplete on {targetMissingRows.length} row(s). Do not build/post the adapter until contact, ledger, tax and actual line descriptions are visible.</p> : null}
           {error ? <p className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">Batch detail RPC unavailable: {error.message}. Run the latest batch detail migration before testing this page.</p> : null}
           {!error && rows.length === 0 ? <p className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">No batch rows found for this batch id.</p> : null}
         </section>
@@ -369,7 +420,7 @@ export default async function PostingBatchDetailPage({
           <div className="flex flex-col gap-2 border-b border-slate-100 px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
             <div>
               <h2 className="text-xl font-semibold">Batch rows</h2>
-              <p className="mt-1 text-sm text-slate-500">Each row must show source facts, Sage target IDs and amount controls. If missing, stop before Sage adapter.</p>
+              <p className="mt-1 text-sm text-slate-500">Each row must show source facts, Sage target IDs, actual invoice line descriptions and amount controls. If missing, stop before Sage adapter.</p>
             </div>
           </div>
           <div className="overflow-x-auto rounded-b-3xl">
@@ -393,7 +444,7 @@ export default async function PostingBatchDetailPage({
                   <th className="px-2 py-2 text-left">Lane</th>
                   <th className="px-2 py-2 text-left">Document</th>
                   <th className="px-2 py-2 text-left">Source facts</th>
-                  <th className="px-2 py-2 text-left">Sage target</th>
+                  <th className="px-2 py-2 text-left">Sage target + lines</th>
                   <th className="px-2 py-2 text-right">Amount</th>
                   <th className="px-2 py-2 text-left">Payload validation</th>
                   <th className="px-2 py-2 text-left">AP VAT / evidence</th>
