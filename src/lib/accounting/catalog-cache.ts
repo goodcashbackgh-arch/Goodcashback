@@ -2,6 +2,21 @@ import "server-only";
 
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
+type SavedItem = { id: string; display: string; reference: string; code: string; type: string; active: string; raw_preview: Record<string, unknown> };
+type SavedCategory = { key: string; label: string; endpoint: string; ok: boolean; http_status: number | null; count: number; items: SavedItem[]; error: string | null };
+
+function text(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value === "boolean") return value ? "true" : "false";
+  return "";
+}
+
+function objectValue(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return value as Record<string, unknown>;
+}
+
 export function catalogItemValue(item: { id: string; display: string; reference: string; type: string }) {
   return JSON.stringify({ id: item.id, display: item.display, reference: item.reference, type: item.type });
 }
@@ -53,7 +68,7 @@ export async function writeSavedCatalogItems(input: {
   businessRowId: string | null;
   businessId: string | null;
   categoryKey: string;
-  items: Array<{ id: string; display: string; reference: string; code: string; type: string; active: string; raw_preview: Record<string, unknown> }>;
+  items: SavedItem[];
 }) {
   const nowIso = new Date().toISOString();
   const rows = input.items.filter((item) => item.id).map((item) => ({
@@ -102,4 +117,50 @@ export async function saveCatalogSnapshot(staffId: string, discovery: any) {
       items: category.items ?? [],
     });
   }
+}
+
+export async function getSavedCatalogSnapshot(connectionId: string, businessRowId: string | null) {
+  const categoryBase = supabaseAdmin
+    .from("sage_catalog_category_cache")
+    .select("category_key, category_label, endpoint_path, ok, http_status, row_count, last_error, last_seen_at")
+    .eq("sage_connection_id", connectionId)
+    .order("category_key", { ascending: true });
+  const { data: categoryRows, error } = businessRowId
+    ? await categoryBase.eq("sage_business_row_id", businessRowId)
+    : await categoryBase.is("sage_business_row_id", null);
+  if (error || !categoryRows?.length) return null;
+
+  const itemBase = supabaseAdmin
+    .from("sage_catalog_cache")
+    .select("category_key, sage_external_id, display_name, reference_text, code_text, sage_type, active_status, raw_preview_json")
+    .eq("sage_connection_id", connectionId)
+    .order("display_name", { ascending: true });
+  const { data: itemRows } = businessRowId
+    ? await itemBase.eq("sage_business_row_id", businessRowId)
+    : await itemBase.is("sage_business_row_id", null);
+
+  const items = (itemRows ?? []) as Record<string, unknown>[];
+  const categories = (categoryRows as Record<string, unknown>[]).map((category) => {
+    const key = text(category.category_key);
+    const categoryItems = items.filter((item) => text(item.category_key) === key).slice(0, 100).map((item) => ({
+      id: text(item.sage_external_id),
+      display: text(item.display_name),
+      reference: text(item.reference_text),
+      code: text(item.code_text),
+      type: text(item.sage_type),
+      active: text(item.active_status),
+      raw_preview: objectValue(item.raw_preview_json),
+    }));
+    return {
+      key,
+      label: text(category.category_label),
+      endpoint: text(category.endpoint_path),
+      ok: Boolean(category.ok),
+      http_status: Number(category.http_status) || null,
+      count: Number(category.row_count) || categoryItems.length,
+      items: categoryItems,
+      error: text(category.last_error) || null,
+    } as SavedCategory;
+  });
+  return { categories, cachedAt: (categoryRows as Record<string, unknown>[]).map((row) => text(row.last_seen_at)).sort().reverse()[0] ?? null };
 }
