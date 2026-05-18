@@ -52,8 +52,11 @@ export async function runReadOnlySageApiCheckAction() {
 
 export async function saveSageMappingAction(formData: FormData) {
   const mappingCode = String(formData.get("mapping_code") ?? "").trim();
-  const sageExternalId = String(formData.get("sage_external_id") ?? "").trim();
-  const sageDisplayName = String(formData.get("sage_display_name") ?? "").trim();
+  const picked = parseCatalogItemValue(formData.get("mapping_pick"));
+  const manualSageExternalId = String(formData.get("sage_external_id") ?? "").trim();
+  const manualSageDisplayName = String(formData.get("sage_display_name") ?? "").trim();
+  const sageExternalId = picked?.id || manualSageExternalId;
+  const sageDisplayName = picked?.display || manualSageDisplayName;
   const notes = String(formData.get("notes") ?? "").trim();
 
   if (!mappingCode) {
@@ -66,7 +69,7 @@ export async function saveSageMappingAction(formData: FormData) {
     p_mapping_code: mappingCode,
     p_sage_external_id: sageExternalId,
     p_sage_display_name: sageDisplayName || null,
-    p_notes: notes || null,
+    p_notes: notes || (picked?.id ? "Saved from persisted read-only Sage discovery." : null),
   });
 
   if (error) {
@@ -79,9 +82,13 @@ export async function saveSageMappingAction(formData: FormData) {
 export async function saveSagePartyMappingAction(formData: FormData) {
   const platformPartyType = String(formData.get("platform_party_type") ?? "").trim();
   const platformPartyId = String(formData.get("platform_party_id") ?? "").trim();
-  const sageContactId = String(formData.get("sage_contact_id") ?? "").trim();
-  const sageContactDisplayName = String(formData.get("sage_contact_display_name") ?? "").trim();
-  const sageContactReference = String(formData.get("sage_contact_reference") ?? "").trim();
+  const picked = parseCatalogItemValue(formData.get("party_pick"));
+  const manualSageContactId = String(formData.get("sage_contact_id") ?? "").trim();
+  const manualSageContactDisplayName = String(formData.get("sage_contact_display_name") ?? "").trim();
+  const manualSageContactReference = String(formData.get("sage_contact_reference") ?? "").trim();
+  const sageContactId = picked?.id || manualSageContactId;
+  const sageContactDisplayName = picked?.display || manualSageContactDisplayName;
+  const sageContactReference = picked?.reference || manualSageContactReference;
   const sageContactType = String(formData.get("sage_contact_type") ?? "unknown").trim() || "unknown";
   const notes = String(formData.get("notes") ?? "").trim();
 
@@ -98,7 +105,7 @@ export async function saveSagePartyMappingAction(formData: FormData) {
     p_sage_contact_display_name: sageContactDisplayName || null,
     p_sage_contact_reference: sageContactReference || null,
     p_sage_contact_type: sageContactType,
-    p_notes: notes || null,
+    p_notes: notes || (picked?.id ? "Saved from persisted read-only Sage discovery." : null),
   });
 
   if (error) {
