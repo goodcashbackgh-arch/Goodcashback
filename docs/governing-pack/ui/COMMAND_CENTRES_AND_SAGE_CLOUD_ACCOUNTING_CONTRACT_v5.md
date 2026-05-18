@@ -31,6 +31,8 @@ This is a controlled update, not permission to create page sprawl.
 - OCR/manual invoice extraction matches platform records first; saved Sage mappings supply the Sage ids.
 - Accounting Command Centre must not accept fresh AP invoice uploads as a shortcut to Sage posting.
 - Sage AP document attachment, where supported, may use only approved/current source invoice evidence already linked to the frozen AP snapshot.
+- Supplier/retailer AP gross values are VAT-inclusive unless a source document is explicitly approved as VAT-exclusive.
+- The Sage AP adapter must never treat a VAT-inclusive retailer gross value as a net value and then add VAT again.
 
 ## Two-cockpit model
 
@@ -181,6 +183,43 @@ Required mapping:
 `supplier_goods_ap` and `shipper_ap` are both AP and may share the same server-side Sage adapter function, for example `createSagePurchaseInvoice()`.
 
 But they must remain separate platform lanes and separate posting batches until both are proven independently.
+
+### AP VAT-inclusive amount rule
+
+Retailer/supplier invoices in `supplier_goods_ap` are treated as VAT-inclusive gross invoices unless the approved source document explicitly proves a VAT-exclusive treatment.
+
+The platform must preserve all three values in frozen AP snapshots and Sage payload validation:
+
+- gross amount including VAT;
+- net amount excluding VAT;
+- VAT amount.
+
+The default calculation for UK 20% VAT is:
+
+```text
+net = round(gross / 1.20, 2)
+vat = round(gross - net, 2)
+gross = net + vat
+```
+
+Example:
+
+```text
+Retailer invoice gross: £199.99
+VAT rate: 20%
+Net: £166.66
+VAT: £33.33
+Gross: £199.99
+```
+
+The Sage AP adapter must post the purchase invoice so Sage records the economic invoice as £199.99 gross, not £199.99 net plus extra VAT.
+
+Dry-run validation for `supplier_goods_ap` must fail or block if:
+
+- gross, net and VAT do not reconcile within permitted rounding tolerance;
+- the Sage payload builder cannot clearly represent the purchase invoice as VAT-inclusive or as a net-plus-tax payload that still totals to the approved gross;
+- the AP tax-rate mapping is missing;
+- the frozen payload omits net/VAT/gross fields.
 
 ### AP invoice source evidence and Sage attachment rule
 
@@ -360,6 +399,7 @@ A `supplier_goods_ap` batch detail must show an AP goods payload grid:
 - source supplier invoice id
 - source supplier invoice file/evidence link
 - source supplier invoice approval state
+- VAT-inclusive gross control status
 - Sage attachment state/result where supported
 - payload hash
 - idempotency key
@@ -473,6 +513,7 @@ Add supplier/retailer goods invoices from supplier reconciliation / supplier dra
 - supplier goods AP ledger mapping exists.
 - supplier goods AP tax mapping exists.
 - approved source invoice evidence exists and is linked to the source supplier invoice record.
+- VAT-inclusive gross has been split into reconciled net/VAT/gross amounts for the approved VAT rate.
 
 ### Phase 6 — Lane-specific freeze and revalidation
 
@@ -485,6 +526,7 @@ Frozen snapshots must preserve:
 - Sage contact mapping snapshot
 - Sage GL/tax mapping snapshot
 - payload facts
+- VAT-inclusive control facts where applicable, including net, VAT, gross, VAT rate and rounding tolerance
 - idempotency key
 - mapping configured_at/verified_at values
 
@@ -532,6 +574,8 @@ Dry-run must validate per lane:
 - AP tax rate mapping exists
 - approved/coded supplier invoice source still valid
 - source supplier invoice evidence still available internally
+- gross, net and VAT amounts reconcile within permitted rounding tolerance
+- VAT-inclusive retailer gross is not treated as Sage net input unless the adapter explicitly converts it back to a Sage-safe net/tax payload that totals to the approved gross
 - amounts balance
 - supplier invoice reference/idempotency key valid
 - no duplicate posted idempotency key
@@ -574,6 +618,8 @@ Reason:
 But payload builder and validation must remain lane-specific.
 
 If Sage attachment support is implemented, AP attachment handling may be shared behind the adapter, but it must still receive lane-specific source evidence metadata from the frozen snapshot.
+
+The shared AP adapter must receive explicit net, VAT, gross and VAT-rate inputs. It must not infer VAT treatment only from the line gross field name or from Sage tax-rate mapping.
 
 ### Phase 11 — Failure, retry and correction
 
