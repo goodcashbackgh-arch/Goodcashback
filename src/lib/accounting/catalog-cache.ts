@@ -76,3 +76,30 @@ export async function writeSavedCatalogItems(input: {
     await supabaseAdmin.from("sage_catalog_cache").upsert(rows, { onConflict: "sage_connection_id,sage_business_row_id,category_key,sage_external_id" });
   }
 }
+
+export async function saveCatalogSnapshot(staffId: string, discovery: any) {
+  if (!discovery?.ok || !discovery?.connection?.id) return;
+  for (const category of discovery.categories ?? []) {
+    await writeSavedCatalogCategory({
+      staffId,
+      connectionId: discovery.connection.id,
+      businessRowId: discovery.business?.id ?? null,
+      businessId: discovery.business?.sage_business_id ?? null,
+      categoryKey: category.key,
+      categoryLabel: category.label,
+      endpointPath: category.endpoint,
+      httpStatus: category.http_status,
+      ok: category.ok,
+      rowCount: category.count,
+      lastError: category.error,
+    });
+    await writeSavedCatalogItems({
+      staffId,
+      connectionId: discovery.connection.id,
+      businessRowId: discovery.business?.id ?? null,
+      businessId: discovery.business?.sage_business_id ?? null,
+      categoryKey: category.key,
+      items: category.items ?? [],
+    });
+  }
+}
