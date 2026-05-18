@@ -1,9 +1,11 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
+import { validateSagePostingBatchPayloadsAction } from "../../actions";
 
 type Row = Record<string, unknown>;
 type Tone = "complete" | "action" | "blocked" | "review" | "muted";
+type SearchParams = Record<string, string | string[] | undefined>;
 
 const gbpFormatter = new Intl.NumberFormat("en-GB", {
   style: "currency",
@@ -83,9 +85,18 @@ function StatPill({ label, value, tone }: { label: string; value: string; tone: 
   );
 }
 
-export default async function PostingBatchDetailPage({ params }: { params: Promise<{ batch_id: string }> | { batch_id: string } }) {
+export default async function PostingBatchDetailPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ batch_id: string }> | { batch_id: string };
+  searchParams?: Promise<SearchParams> | SearchParams;
+}) {
   const resolvedParams = await Promise.resolve(params);
+  const resolvedSearchParams = await Promise.resolve(searchParams ?? {});
   const batchId = resolvedParams.batch_id;
+  const successMessage = text(resolvedSearchParams.success);
+  const errorMessage = text(resolvedSearchParams.error);
 
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -122,6 +133,10 @@ export default async function PostingBatchDetailPage({ params }: { params: Promi
   const summary = asObject(first.batch_summary);
   const includedRows = rows.filter((row) => text(row.posting_status) !== "excluded");
   const excludedRows = rows.filter((row) => text(row.posting_status) === "excluded");
+  const dryRunValidRows = rows.filter((row) => text(row.payload_validation_status) === "dry_run_validated");
+  const dryRunFailedRows = rows.filter((row) => text(row.payload_validation_status) === "dry_run_failed");
+  const dryRunPendingRows = includedRows.filter((row) => !["dry_run_validated", "dry_run_failed"].includes(text(row.payload_validation_status)));
+  const canValidatePayloads = !error && includedRows.length > 0;
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-5 text-slate-950 sm:px-6 lg:px-8">
@@ -132,22 +147,38 @@ export default async function PostingBatchDetailPage({ params }: { params: Promi
               <Link href="/internal/accounting-command-centre" className="text-sm font-semibold text-sky-700">← Accounting Command Centre</Link>
               <div className="mt-3 flex flex-wrap items-center gap-2">
                 <p className="text-xs font-bold uppercase tracking-[0.2em] text-violet-500">Posting batch detail</p>
-                <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] font-bold text-amber-900">Posting disabled · no Sage API call</span>
+                <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] font-bold text-amber-900">Posting disabled · no Sage object creation</span>
               </div>
               <h1 className="mt-1 truncate text-3xl font-semibold tracking-tight sm:text-4xl">{text(first.batch_ref) || "Posting batch"}</h1>
-              <p className="mt-1 max-w-5xl text-sm leading-5 text-slate-600">Local batch lock only. Rows are ready-to-post frozen snapshots; Sage posting waits for OAuth and dry-run validation.</p>
+              <p className="mt-1 max-w-5xl text-sm leading-5 text-slate-600">Local batch lock plus Phase 11 dry-run validation. Validation checks the frozen Sage payload and connection/mapping gates without creating a Sage invoice, purchase invoice, payment or credit note.</p>
               <p className="mt-1 text-xs font-semibold text-slate-500">Batch id {batchId}</p>
+              <form action={validateSagePostingBatchPayloadsAction} className="mt-3 flex flex-wrap items-center gap-2">
+                <input type="hidden" name="batch_id" value={batchId} />
+                <button
+                  type="submit"
+                  disabled={!canValidatePayloads}
+                  className="rounded-2xl bg-violet-700 px-4 py-2 text-sm font-bold text-white shadow-sm disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-600"
+                >
+                  Validate Sage payloads — dry run only
+                </button>
+                <span className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-900">No Sage API posting endpoint is called.</span>
+              </form>
             </div>
-            <div className="flex shrink-0 flex-wrap gap-1.5 xl:max-w-[620px] xl:justify-end">
+            <div className="flex shrink-0 flex-wrap gap-1.5 xl:max-w-[760px] xl:justify-end">
               <StatPill label="Status" value={pretty(first.status)} tone={statusTone(first.status)} />
               <StatPill label="Lane" value={pretty(first.lane)} tone="review" />
               <StatPill label="Included" value={String(summary.included_count ?? includedRows.length)} tone={includedRows.length > 0 ? "complete" : "muted"} />
               <StatPill label="Excluded" value={String(summary.excluded_count ?? excludedRows.length)} tone={excludedRows.length > 0 ? "blocked" : "complete"} />
+              <StatPill label="Dry-run OK" value={String(dryRunValidRows.length)} tone={dryRunValidRows.length > 0 ? "complete" : "muted"} />
+              <StatPill label="Dry-run failed" value={String(dryRunFailedRows.length)} tone={dryRunFailedRows.length > 0 ? "blocked" : "complete"} />
+              <StatPill label="Dry-run pending" value={String(dryRunPendingRows.length)} tone={dryRunPendingRows.length > 0 ? "action" : "complete"} />
               <StatPill label="Value" value={gbp(summary.total_included_value ?? first.total_amount_gbp)} tone="complete" />
               <StatPill label="Customer" value={String(summary.customer_sales_count ?? 0)} tone={num(summary.customer_sales_count) > 0 ? "complete" : "muted"} />
               <StatPill label="Shipper AP" value={String(summary.shipper_ap_count ?? 0)} tone={num(summary.shipper_ap_count) > 0 ? "complete" : "muted"} />
             </div>
           </div>
+          {successMessage ? <p className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-900">{successMessage}</p> : null}
+          {errorMessage ? <p className="mt-3 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900">{errorMessage}</p> : null}
           {error ? <p className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">Batch detail RPC unavailable: {error.message}. Run the Phase 9/10 migration before testing this page.</p> : null}
           {!error && rows.length === 0 ? <p className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">No batch rows found for this batch id.</p> : null}
         </section>
@@ -156,7 +187,7 @@ export default async function PostingBatchDetailPage({ params }: { params: Promi
           <div className="flex flex-col gap-2 border-b border-slate-100 px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
             <div>
               <h2 className="text-xl font-semibold">Batch rows</h2>
-              <p className="mt-1 text-sm text-slate-500">Included and excluded rows are retained for audit. Excluded rows are not posted and do not lock a snapshot for posting.</p>
+              <p className="mt-1 text-sm text-slate-500">Included and excluded rows are retained for audit. Phase 11 validates payloads only; actual Sage posting remains a later phase.</p>
             </div>
           </div>
           <div className="overflow-x-auto rounded-b-3xl">
