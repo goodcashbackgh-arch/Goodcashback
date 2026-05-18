@@ -7,6 +7,7 @@ import { createClient } from "@/utils/supabase/server";
 type FreezeResult = {
   snapshot_id?: string | null;
   sales_invoice_id?: string | null;
+  supplier_invoice_id?: string | null;
   shipping_document_id?: string | null;
   freeze_status?: string | null;
   blocker?: string | null;
@@ -35,6 +36,8 @@ type DryRunValidationResult = {
   payload_validation_status?: string | null;
   error_code?: string | null;
 };
+
+type SelectionGroup = "customer_sales" | "supplier_goods_ap" | "shipper_ap" | "all";
 
 function asStringArray(value: FormDataEntryValue[]) {
   return value.map((entry) => String(entry ?? "").trim()).filter(Boolean);
@@ -114,7 +117,7 @@ async function fetchMatchingCandidates(
   supabase: Awaited<ReturnType<typeof requireAccountingAdminAccess>>,
   formData: FormData,
   candidateKind: "freeze" | "revalidate",
-  selectionGroup: "customer_sales" | "shipper_ap" | "all",
+  selectionGroup: SelectionGroup,
 ) {
   const { data, error } = await (supabase as any).rpc("internal_accounting_command_centre_bulk_candidates_v1", {
     p_queue: formText(formData, "bulk_queue", "actionable"),
@@ -138,6 +141,12 @@ function includedCandidates(rows: BulkCandidate[]) {
   return rows.filter((row) => !row.excluded_reason);
 }
 
+function frozenSnapshotIds(rows: FreezeResult[]) {
+  return rows
+    .filter((row) => row.freeze_status === "frozen" && row.snapshot_id)
+    .map((row) => row.snapshot_id as string);
+}
+
 export async function freezeSelectedCustomerSalesRowsAction(formData: FormData) {
   const selectedIds = asStringArray(formData.getAll("sales_invoice_id"));
 
@@ -152,24 +161,20 @@ export async function freezeSelectedCustomerSalesRowsAction(formData: FormData) 
     p_notes: "Accounting command centre customer sales freeze selected visible rows",
   });
 
-  if (error) {
-    redirect(filteredReturnPath(formData, "error", error.message));
-  }
+  if (error) redirect(filteredReturnPath(formData, "error", error.message));
 
   const rows = ((data ?? []) as FreezeResult[]);
-  const frozenSnapshotIds = rows
-    .filter((row) => row.freeze_status === "frozen" && row.snapshot_id)
-    .map((row) => row.snapshot_id as string);
+  const snapshotIds = frozenSnapshotIds(rows);
   const blockedCount = rows.filter((row) => row.freeze_status !== "frozen").length;
 
-  await revalidateFrozenSnapshots(supabase, frozenSnapshotIds, formData);
+  await revalidateFrozenSnapshots(supabase, snapshotIds, formData);
 
   revalidatePath("/internal/accounting-command-centre");
   revalidatePath("/internal/sage-ready");
 
   const message = blockedCount > 0
-    ? `Customer sales selected visible: frozen ${frozenSnapshotIds.length} row(s); ${blockedCount} row(s) not frozen`
-    : `Customer sales selected visible: frozen and revalidated ${frozenSnapshotIds.length} row(s)`;
+    ? `Customer sales selected visible: frozen ${snapshotIds.length} row(s); ${blockedCount} row(s) not frozen`
+    : `Customer sales selected visible: frozen and revalidated ${snapshotIds.length} row(s)`;
 
   redirect(filteredReturnPath(formData, "success", message));
 }
@@ -190,22 +195,77 @@ export async function freezeMatchingCustomerSalesRowsAction(formData: FormData) 
     p_notes: "Accounting command centre customer sales freeze all matching filter",
   });
 
-  if (error) {
-    redirect(filteredReturnPath(formData, "error", error.message));
-  }
+  if (error) redirect(filteredReturnPath(formData, "error", error.message));
 
   const rows = ((data ?? []) as FreezeResult[]);
-  const frozenSnapshotIds = rows
-    .filter((row) => row.freeze_status === "frozen" && row.snapshot_id)
-    .map((row) => row.snapshot_id as string);
+  const snapshotIds = frozenSnapshotIds(rows);
   const blockedCount = rows.filter((row) => row.freeze_status !== "frozen").length;
 
-  await revalidateFrozenSnapshots(supabase, frozenSnapshotIds, formData);
+  await revalidateFrozenSnapshots(supabase, snapshotIds, formData);
 
   revalidatePath("/internal/accounting-command-centre");
   revalidatePath("/internal/sage-ready");
 
-  const message = `Customer sales all matching: frozen/revalidated ${frozenSnapshotIds.length}; ${blockedCount + excludedCount} excluded or not frozen`;
+  const message = `Customer sales all matching: frozen/revalidated ${snapshotIds.length}; ${blockedCount + excludedCount} excluded or not frozen`;
+  redirect(filteredReturnPath(formData, "success", message));
+}
+
+export async function freezeSelectedSupplierGoodsApRowsAction(formData: FormData) {
+  const selectedIds = asStringArray(formData.getAll("supplier_invoice_id"));
+
+  if (selectedIds.length === 0) {
+    redirect(filteredReturnPath(formData, "error", "Select at least one supplier goods AP row to freeze"));
+  }
+
+  const supabase = await requireAccountingAdminAccess();
+
+  const { data, error } = await (supabase as any).rpc("internal_freeze_supplier_goods_ap_sage_batch_v1", {
+    p_supplier_invoice_ids: selectedIds,
+    p_notes: "Accounting command centre supplier goods AP freeze selected visible rows",
+  });
+
+  if (error) redirect(filteredReturnPath(formData, "error", error.message));
+
+  const rows = ((data ?? []) as FreezeResult[]);
+  const frozenCount = rows.filter((row) => row.freeze_status === "frozen" && row.snapshot_id).length;
+  const blockedCount = rows.filter((row) => row.freeze_status !== "frozen").length;
+
+  revalidatePath("/internal/accounting-command-centre");
+  revalidatePath("/internal/sage-ready");
+
+  const message = blockedCount > 0
+    ? `Supplier goods AP selected visible: frozen ${frozenCount} row(s); ${blockedCount} row(s) not frozen`
+    : `Supplier goods AP selected visible: frozen and marked ready to post ${frozenCount} row(s)`;
+
+  redirect(filteredReturnPath(formData, "success", message));
+}
+
+export async function freezeMatchingSupplierGoodsApRowsAction(formData: FormData) {
+  const supabase = await requireAccountingAdminAccess();
+  const candidates = await fetchMatchingCandidates(supabase, formData, "freeze", "supplier_goods_ap");
+  const included = includedCandidates(candidates);
+  const selectedIds = included.map((row) => String(row.source_id ?? "")).filter(Boolean);
+  const excludedCount = candidates.length - included.length;
+
+  if (selectedIds.length === 0) {
+    redirect(filteredReturnPath(formData, "error", `No matching freezeable supplier goods AP rows found; ${excludedCount} excluded`));
+  }
+
+  const { data, error } = await (supabase as any).rpc("internal_freeze_supplier_goods_ap_sage_batch_v1", {
+    p_supplier_invoice_ids: selectedIds,
+    p_notes: "Accounting command centre supplier goods AP freeze all matching filter",
+  });
+
+  if (error) redirect(filteredReturnPath(formData, "error", error.message));
+
+  const rows = ((data ?? []) as FreezeResult[]);
+  const frozenCount = rows.filter((row) => row.freeze_status === "frozen" && row.snapshot_id).length;
+  const blockedCount = rows.filter((row) => row.freeze_status !== "frozen").length;
+
+  revalidatePath("/internal/accounting-command-centre");
+  revalidatePath("/internal/sage-ready");
+
+  const message = `Supplier goods AP all matching: frozen ${frozenCount}; ${blockedCount + excludedCount} excluded or not frozen`;
   redirect(filteredReturnPath(formData, "success", message));
 }
 
@@ -223,9 +283,7 @@ export async function freezeSelectedShipperApRowsAction(formData: FormData) {
     p_notes: "Accounting command centre shipper AP freeze selected visible rows",
   });
 
-  if (error) {
-    redirect(filteredReturnPath(formData, "error", error.message));
-  }
+  if (error) redirect(filteredReturnPath(formData, "error", error.message));
 
   const rows = ((data ?? []) as FreezeResult[]);
   const frozenCount = rows.filter((row) => row.freeze_status === "frozen" && row.snapshot_id).length;
@@ -257,9 +315,7 @@ export async function freezeMatchingShipperApRowsAction(formData: FormData) {
     p_notes: "Accounting command centre shipper AP freeze all matching filter",
   });
 
-  if (error) {
-    redirect(filteredReturnPath(formData, "error", error.message));
-  }
+  if (error) redirect(filteredReturnPath(formData, "error", error.message));
 
   const rows = ((data ?? []) as FreezeResult[]);
   const frozenCount = rows.filter((row) => row.freeze_status === "frozen" && row.snapshot_id).length;
@@ -287,9 +343,7 @@ export async function revalidateMatchingFrozenRowsAction(formData: FormData) {
     p_snapshot_ids: snapshotIds,
   });
 
-  if (error) {
-    redirect(filteredReturnPath(formData, "error", error.message));
-  }
+  if (error) redirect(filteredReturnPath(formData, "error", error.message));
 
   revalidatePath("/internal/accounting-command-centre");
   revalidatePath("/internal/sage-ready");
@@ -309,9 +363,7 @@ export async function createPostingBatchFromMatchingRowsAction(formData: FormDat
     p_max_rows: 5000,
   });
 
-  if (error) {
-    redirect(filteredReturnPath(formData, "error", error.message));
-  }
+  if (error) redirect(filteredReturnPath(formData, "error", error.message));
 
   const result = ((data ?? []) as CreateBatchResult[])[0];
   if (!result?.batch_id) {
