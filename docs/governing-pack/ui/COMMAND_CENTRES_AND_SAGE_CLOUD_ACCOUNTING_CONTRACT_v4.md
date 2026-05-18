@@ -1,6 +1,24 @@
 # Command Centres and Sage Cloud Accounting Contract v4
 
+> [!CAUTION]
+> SUPERSEDED — DO NOT USE FOR CURRENT BUILD DECISIONS.
+>
+> This v4 contract is retained only for historical/audit context.
+> Current Sage command-centre, Sage mapping, posting-lane and Sage Cloud Accounting posting decisions must use:
+>
+> `docs/governing-pack/ui/COMMAND_CENTRES_AND_SAGE_CLOUD_ACCOUNTING_CONTRACT_v5.md`
+>
+> Do not use this v4 file to decide build order, lane model, posting batch design, AP posting scope, or Sage mapping rules.
+
 ## Status
+
+This contract is superseded by `COMMAND_CENTRES_AND_SAGE_CLOUD_ACCOUNTING_CONTRACT_v5.md`.
+
+The archived v4 content below is kept only to preserve decision history.
+
+---
+
+## Archived v4 content
 
 This contract supersedes `COMMAND_CENTRES_AND_SAGE_RESOLVER_CONTRACT_v3.md` for the command-centre model and the route from platform readiness to Sage Cloud Accounting posting.
 
