@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 import SageConnectionPanel from "./SageConnectionPanel";
+import PostingBatchHistoryPanel from "./PostingBatchHistoryPanel";
 import {
   createPostingBatchFromMatchingRowsAction,
   freezeMatchingCustomerSalesRowsAction,
@@ -275,6 +276,7 @@ export default async function AccountingCommandCentrePage({
         </section>
 
         <SageConnectionPanel />
+        <PostingBatchHistoryPanel />
 
         <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
           <SectionLink title="Live ready" detail="Rows ready to freeze; replaces daily /sage-ready usage" href="/internal/accounting-command-centre?queue=live_ready_not_frozen" tone="action" />
