@@ -1,8 +1,15 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
-import { discoverSageCatalog, sageCatalogHints, type SageCatalogCategory } from "@/lib/sage/catalog";
-import { saveSageMappingAction, saveSagePartyMappingAction } from "./actions";
+import { sageCatalogHints, type SageCatalogCategory, type SageCatalogItem } from "@/lib/sage/catalog";
+import { catalogItemValue, getLatestSavedCatalogSnapshot } from "@/lib/accounting/catalog-cache";
+import {
+  bulkSaveSageMappingsAction,
+  bulkSaveSagePartyMappingsAction,
+  runReadOnlySageApiCheckAction,
+  saveSageMappingAction,
+  saveSagePartyMappingAction,
+} from "./actions";
 
 type Row = {
   mapping_code: string;
@@ -42,7 +49,6 @@ type PartyRow = {
 type SearchParams = {
   success?: string;
   error?: string;
-  run?: string;
 };
 
 function friendly(value: string | null | undefined) {
@@ -75,6 +81,19 @@ function discoveryTone(ok: boolean) {
   return ok ? "border-emerald-200 bg-emerald-50 text-emerald-900" : "border-rose-200 bg-rose-50 text-rose-900";
 }
 
+function categoryOptions(categories: SageCatalogCategory[], key: string): SageCatalogItem[] {
+  return categories.find((category) => category.key === key)?.items ?? [];
+}
+
+function mappingCategory(row: Row) {
+  const text = `${row.mapping_code} ${row.display_name} ${row.description} ${row.value_kind}`.toLowerCase();
+  if (text.includes("bank") || text.includes("receipt") || text.includes("payment settlement")) return "bank_accounts";
+  if (row.value_kind === "tax_rate_id") return "tax_rates";
+  if (row.value_kind === "ledger_account_id") return "ledger_accounts";
+  if (row.value_kind === "contact_id") return "contacts";
+  return "ledger_accounts";
+}
+
 function RequirementList({ title, items }: { title: string; items: string[] }) {
   if (items.length === 0) return null;
   return (
@@ -84,6 +103,19 @@ function RequirementList({ title, items }: { title: string; items: string[] }) {
         {items.map((item) => <p key={item} className="rounded-xl bg-slate-50 px-3 py-2">{item}</p>)}
       </div>
     </div>
+  );
+}
+
+function CatalogSelect({ name, items, currentId }: { name: string; items: SageCatalogItem[]; currentId?: string | null }) {
+  return (
+    <select name={name} defaultValue="" className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-950">
+      <option value="">Leave unchanged</option>
+      {items.map((item) => (
+        <option key={`${name}-${item.id}`} value={catalogItemValue(item)}>
+          {item.display || item.id}{item.code ? ` · ${item.code}` : ""}{item.reference ? ` · ${item.reference}` : ""}{currentId === item.id ? " · current" : ""}
+        </option>
+      ))}
+    </select>
   );
 }
 
@@ -144,8 +176,75 @@ function SageCategoryTable({ category }: { category: SageCatalogCategory }) {
           </tbody>
         </table>
       </div>
-      {category.items.length >= 60 ? <p className="mt-2 text-xs font-semibold text-slate-500">Showing first 60 rows only. Use exact Sage search/config later where the list is large.</p> : null}
+      {category.items.length >= 60 ? <p className="mt-2 text-xs font-semibold text-slate-500">Showing cached first 100 rows only. Re-run discovery if Sage setup changed.</p> : null}
     </section>
+  );
+}
+
+function BulkPartyMappingForm({ parties, categories }: { parties: PartyRow[]; categories: SageCatalogCategory[] }) {
+  const contacts = categoryOptions(categories, "contacts");
+  const visible = parties.filter((party) => party.mapping_status !== "configured");
+  if (contacts.length === 0 || visible.length === 0) return null;
+  return (
+    <form action={bulkSaveSagePartyMappingsAction} className="mt-5 rounded-3xl border border-violet-200 bg-violet-50 p-4">
+      <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+        <div>
+          <h3 className="font-semibold text-violet-950">Bulk save party/contact mappings</h3>
+          <p className="mt-1 text-sm text-violet-900">Uses the saved read-only catalogue. Select only rows you are certain about.</p>
+        </div>
+        <button className="rounded-xl bg-violet-700 px-4 py-2 text-sm font-bold text-white hover:bg-violet-800">Bulk save selected parties</button>
+      </div>
+      <div className="mt-4 grid gap-3">
+        {visible.map((party, index) => (
+          <div key={`party-bulk-${party.platform_party_type}-${party.platform_party_id}`} className="grid gap-2 rounded-2xl bg-white p-3 ring-1 ring-violet-100 lg:grid-cols-[1fr_1fr_0.7fr]">
+            <input type="hidden" name="party_index" value={String(index)} />
+            <input type="hidden" name={`platform_party_type_${index}`} value={party.platform_party_type} />
+            <input type="hidden" name={`platform_party_id_${index}`} value={party.platform_party_id} />
+            <input type="hidden" name={`sage_contact_type_${index}`} value={party.recommended_sage_contact_type ?? "unknown"} />
+            <div>
+              <p className="font-semibold text-slate-950">{party.platform_party_display_name ?? party.platform_party_id}</p>
+              <p className="text-xs text-slate-500">{partyLabel(party.platform_party_type)} · recommended {friendly(party.recommended_sage_contact_type)}</p>
+            </div>
+            <CatalogSelect name={`party_pick_${index}`} items={contacts} currentId={party.sage_contact_id} />
+            <p className="text-xs text-slate-500">{party.platform_context_text ?? "—"}</p>
+          </div>
+        ))}
+      </div>
+    </form>
+  );
+}
+
+function BulkLedgerTaxForm({ rows, categories }: { rows: Row[]; categories: SageCatalogCategory[] }) {
+  const visible = rows.filter((row) => row.mapping_status !== "configured");
+  if (visible.length === 0) return null;
+  return (
+    <form action={bulkSaveSageMappingsAction} className="mt-5 rounded-3xl border border-sky-200 bg-sky-50 p-4">
+      <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+        <div>
+          <h3 className="font-semibold text-sky-950">Bulk save GL / tax / bank mappings</h3>
+          <p className="mt-1 text-sm text-sky-900">Uses the saved read-only catalogue. Do not select VAT control ledger rows for tax-rate mappings.</p>
+        </div>
+        <button className="rounded-xl bg-sky-700 px-4 py-2 text-sm font-bold text-white hover:bg-sky-800">Bulk save selected mappings</button>
+      </div>
+      <div className="mt-4 grid gap-3">
+        {visible.map((row, index) => {
+          const key = mappingCategory(row);
+          const options = categoryOptions(categories, key);
+          return (
+            <div key={`mapping-bulk-${row.mapping_code}`} className="grid gap-2 rounded-2xl bg-white p-3 ring-1 ring-sky-100 lg:grid-cols-[1fr_1fr_0.7fr]">
+              <input type="hidden" name="mapping_index" value={String(index)} />
+              <input type="hidden" name={`mapping_code_${index}`} value={row.mapping_code} />
+              <div>
+                <p className="font-semibold text-slate-950">{row.display_name ?? row.mapping_code}</p>
+                <p className="text-xs text-slate-500">{groupLabel(row.mapping_group)} · {friendly(row.value_kind)} · source {key}</p>
+              </div>
+              <CatalogSelect name={`mapping_pick_${index}`} items={options} currentId={row.sage_external_id} />
+              <p className="text-xs text-slate-500">{row.description ?? "—"}</p>
+            </div>
+          );
+        })}
+      </div>
+    </form>
   );
 }
 
@@ -213,7 +312,8 @@ export default async function SageMappingPage({ searchParams }: { searchParams?:
   const missing = rows.filter((row) => row.mapping_status === "missing");
   const partyConfigured = partyRows.filter((row) => row.mapping_status === "configured");
   const partyMissing = partyRows.filter((row) => row.mapping_status === "missing");
-  const discovery = params.run === "1" ? await discoverSageCatalog() : null;
+  const savedDiscovery = await getLatestSavedCatalogSnapshot();
+  const savedCategories = (savedDiscovery?.categories ?? []) as SageCatalogCategory[];
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-6 text-slate-950 sm:px-6 sm:py-8">
@@ -229,7 +329,7 @@ export default async function SageMappingPage({ searchParams }: { searchParams?:
             <div>
               <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Sage mapping control</h1>
               <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
-                Configure Sage contacts, tax rates and ledger/account ids before any posting adapter can run. This page can also run read-only Sage catalogue checks. It does not post invoices, purchase invoices, payments or credit notes.
+                Configure Sage contacts, tax rates and ledger/account ids before any posting adapter can run. The read-only check saves the catalogue locally so mapping does not require repeated Sage API calls.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700">
@@ -254,25 +354,21 @@ export default async function SageMappingPage({ searchParams }: { searchParams?:
           <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
             <div>
               <p className="text-xs font-bold uppercase tracking-[0.2em] text-violet-500">Read-only Sage discovery</p>
-              <h2 className="mt-1 text-xl font-semibold">API check for contacts, AR and AP mapping data</h2>
-              <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">Pulls contacts, ledger accounts, VAT/tax rates, bank accounts and currencies from Sage so admin can confirm the exact ids needed for AR and AP. It is diagnostic only.</p>
+              <h2 className="mt-1 text-xl font-semibold">Saved API catalogue for AR/AP mapping</h2>
+              <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">Run this only when Sage contacts, ledger accounts, tax rates or bank accounts changed. Mapping saves use the persisted catalogue below.</p>
             </div>
-            <Link href="/internal/sage-mapping?run=1" className="rounded-xl bg-violet-700 px-4 py-2 text-sm font-bold text-white hover:bg-violet-800">Run read-only Sage API check</Link>
+            <form action={runReadOnlySageApiCheckAction}><button className="rounded-xl bg-violet-700 px-4 py-2 text-sm font-bold text-white hover:bg-violet-800">Run and save read-only Sage API check</button></form>
           </div>
-          {discovery ? (
+          {savedDiscovery ? (
             <div className="mt-5 space-y-4">
-              <div className={`rounded-2xl border p-4 ${discoveryTone(discovery.ok)}`}>
-                <p className="font-semibold">{discovery.ok ? "Discovery complete" : "Discovery failed"}</p>
-                <p className="mt-1 text-sm leading-6">{discovery.error || "Sage catalogue data was read using the active encrypted connection. No Sage object was created."}</p>
-                <div className="mt-3 flex flex-wrap gap-2 text-xs font-bold">
-                  <span className="rounded-full border bg-white/70 px-3 py-1">{discovery.token_refreshed ? "Token refreshed" : "Token reused"}</span>
-                  <span className="rounded-full border bg-white/70 px-3 py-1">Business: {discovery.business?.sage_business_name ?? "—"}</span>
-                </div>
+              <div className={`rounded-2xl border p-4 ${discoveryTone(true)}`}>
+                <p className="font-semibold">Saved catalogue available</p>
+                <p className="mt-1 text-sm leading-6">Last saved: {savedDiscovery.cachedAt ? savedDiscovery.cachedAt.slice(0, 19).replace("T", " ") : "—"}. No Sage object was created.</p>
               </div>
-              {discovery.ok ? <div className="grid gap-4 lg:grid-cols-2"><RequirementList title="AR posting needs" items={discovery.ar_requirements} /><RequirementList title="AP posting needs" items={discovery.ap_requirements} /></div> : null}
-              {discovery.categories.map((category) => <SageCategoryTable key={category.key} category={category} />)}
+              <div className="grid gap-4 lg:grid-cols-2"><RequirementList title="AR posting needs" items={["Sage customer contact id for importer/customer", "Sales income ledger/nominal account id", "VAT/tax rate id for customer sales invoice lines", "Bank account id later for receipt allocation"]} /><RequirementList title="AP posting needs" items={["Sage supplier contact id for supplier goods AP and shipper AP", "Goods/AP and freight/delivery ledger account ids", "VAT/tax rate id for AP line treatment", "Bank/control account id later for payment settlement"]} /></div>
+              {savedCategories.map((category) => <SageCategoryTable key={category.key} category={category} />)}
             </div>
-          ) : null}
+          ) : <p className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm font-semibold text-amber-900">No saved Sage catalogue yet. Run the read-only API check once, then use the bulk mapping forms without rerunning it.</p>}
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
@@ -282,6 +378,7 @@ export default async function SageMappingPage({ searchParams }: { searchParams?:
             <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-emerald-900">Configured {partyConfigured.length}</span>
             <span className="rounded-full border border-rose-200 bg-rose-50 px-3 py-1 text-rose-900">Missing {partyMissing.length}</span>
           </div>
+          <BulkPartyMappingForm parties={partyRows} categories={savedCategories} />
           <div className="mt-5 grid gap-4">
             {partyRows.length === 0 ? <p className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-600">No party rows returned. Run the party mapping migration.</p> : partyRows.map((party) => <PartyMappingCard key={`${party.platform_party_type}-${party.platform_party_id}`} party={party} />)}
           </div>
@@ -290,6 +387,7 @@ export default async function SageMappingPage({ searchParams }: { searchParams?:
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
           <h2 className="text-xl font-semibold">Required GL / tax / bank mappings</h2>
           <p className="mt-2 text-sm leading-6 text-slate-600">Enter exact Sage ids after checking Sage. Do not confuse VAT/tax rate ids with VAT control ledger accounts.</p>
+          <BulkLedgerTaxForm rows={rows} categories={savedCategories} />
 
           <div className="mt-5 grid gap-4">
             {rows.map((row) => (
@@ -331,7 +429,7 @@ export default async function SageMappingPage({ searchParams }: { searchParams?:
 
         <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-900">
           <h2 className="font-semibold">Control rule</h2>
-          <p className="mt-2">Party/contact mappings and GL/tax mappings are separate. Saving either only removes mapping blockers; it does not post or change invoice status.</p>
+          <p className="mt-2">Party/contact mappings and GL/tax/bank mappings are separate. Saving either only removes mapping blockers; it does not post or change invoice status.</p>
         </section>
       </div>
     </main>
