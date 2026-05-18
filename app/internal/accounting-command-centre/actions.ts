@@ -211,7 +211,8 @@ export async function freezeMatchingCustomerSalesRowsAction(formData: FormData) 
 }
 
 export async function freezeSelectedSupplierGoodsApRowsAction(formData: FormData) {
-  const selectedIds = asStringArray(formData.getAll("supplier_invoice_id"));
+  const singleId = formText(formData, "single_supplier_invoice_id", "");
+  const selectedIds = singleId ? [singleId] : asStringArray(formData.getAll("supplier_invoice_id"));
 
   if (selectedIds.length === 0) {
     redirect(filteredReturnPath(formData, "error", "Select at least one supplier goods AP row to freeze"));
@@ -221,7 +222,9 @@ export async function freezeSelectedSupplierGoodsApRowsAction(formData: FormData
 
   const { data, error } = await (supabase as any).rpc("internal_freeze_supplier_goods_ap_sage_batch_v1", {
     p_supplier_invoice_ids: selectedIds,
-    p_notes: "Accounting command centre supplier goods AP freeze selected visible rows",
+    p_notes: singleId
+      ? "Accounting command centre supplier goods AP freeze single row"
+      : "Accounting command centre supplier goods AP freeze selected visible rows",
   });
 
   if (error) redirect(filteredReturnPath(formData, "error", error.message));
@@ -234,8 +237,8 @@ export async function freezeSelectedSupplierGoodsApRowsAction(formData: FormData
   revalidatePath("/internal/sage-ready");
 
   const message = blockedCount > 0
-    ? `Supplier goods AP selected visible: frozen ${frozenCount} row(s); ${blockedCount} row(s) not frozen`
-    : `Supplier goods AP selected visible: frozen and marked ready to post ${frozenCount} row(s)`;
+    ? `Supplier goods AP ${singleId ? "single row" : "selected visible"}: frozen ${frozenCount} row(s); ${blockedCount} row(s) not frozen`
+    : `Supplier goods AP ${singleId ? "single row" : "selected visible"}: frozen and marked ready to post ${frozenCount} row(s)`;
 
   redirect(filteredReturnPath(formData, "success", message));
 }
