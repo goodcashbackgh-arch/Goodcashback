@@ -65,10 +65,10 @@ function toneClass(tone: Tone) {
 
 function statusTone(value: unknown): Tone {
   const raw = text(value);
-  if (["included", "validated", "posted", "draft", "local_validated_pending_sage_dry_run", "dry_run_validated"].includes(raw)) return "complete";
-  if (["excluded", "blocked", "failed_retryable", "failed_terminal", "dry_run_failed"].includes(raw)) return "blocked";
+  if (["included", "validated", "posted", "draft", "local_validated_pending_sage_dry_run", "dry_run_validated", "ok", "source_evidence_available"].includes(raw)) return "complete";
+  if (["excluded", "blocked", "failed_retryable", "failed_terminal", "dry_run_failed", "missing_resolved_lines", "missing_net_vat_gross_fields", "net_plus_vat_not_equal_gross", "gross_total_mismatch", "missing_source_evidence_file"].includes(raw)) return "blocked";
   if (["posting", "posting_disabled_until_sage_connection_tested", "not_dry_run_validated"].includes(raw)) return "action";
-  if (["cancelled", "excluded_before_validation"].includes(raw)) return "review";
+  if (["cancelled", "excluded_before_validation", "not_applicable"].includes(raw)) return "review";
   return "muted";
 }
 
@@ -82,6 +82,34 @@ function StatPill({ label, value, tone }: { label: string; value: string; tone: 
       <span className="opacity-70">{label}</span>
       <span>{value}</span>
     </span>
+  );
+}
+
+function EvidenceLink({ url }: { url: unknown }) {
+  const href = text(url);
+  if (!href) return <span className="text-[11px] font-semibold text-rose-700">No source file</span>;
+  return <a href={href} target="_blank" rel="noreferrer" className="text-[11px] font-bold text-sky-700 underline">Open source file</a>;
+}
+
+function ApControlCell({ row }: { row: Row }) {
+  if (text(row.document_lane) !== "supplier_goods_ap") {
+    return <span className="text-[11px] text-slate-400">—</span>;
+  }
+
+  return (
+    <div className="space-y-1 text-[11px] leading-4">
+      <div className="grid grid-cols-3 gap-1 font-semibold text-slate-800">
+        <span>Net {gbp(row.ap_net_amount_gbp)}</span>
+        <span>VAT {gbp(row.ap_vat_amount_gbp)}</span>
+        <span>Gross {gbp(row.ap_gross_amount_gbp)}</span>
+      </div>
+      <div className="flex flex-wrap gap-1">
+        <Chip value={row.ap_vat_control_status} />
+        <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 font-bold text-slate-700">VAT {text(row.ap_vat_rate_summary) || "—"}%</span>
+        <Chip value={row.source_evidence_status} />
+      </div>
+      <EvidenceLink url={row.source_invoice_file_url} />
+    </div>
   );
 }
 
@@ -137,10 +165,12 @@ export default async function PostingBatchDetailPage({
   const dryRunFailedRows = rows.filter((row) => text(row.payload_validation_status) === "dry_run_failed");
   const dryRunPendingRows = includedRows.filter((row) => !["dry_run_validated", "dry_run_failed"].includes(text(row.payload_validation_status)));
   const canValidatePayloads = !error && includedRows.length > 0;
+  const supplierGoodsRows = rows.filter((row) => text(row.document_lane) === "supplier_goods_ap" && text(row.posting_status) !== "excluded");
+  const supplierVatBlocked = supplierGoodsRows.some((row) => !["ok", "not_applicable", ""].includes(text(row.ap_vat_control_status)) || text(row.source_evidence_status) === "missing_source_evidence_file");
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-5 text-slate-950 sm:px-6 lg:px-8">
-      <div className="mx-auto max-w-[1500px] space-y-3">
+      <div className="mx-auto max-w-[1700px] space-y-3">
         <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
           <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
             <div className="min-w-0">
@@ -150,7 +180,7 @@ export default async function PostingBatchDetailPage({
                 <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] font-bold text-amber-900">Posting disabled · no Sage object creation</span>
               </div>
               <h1 className="mt-1 truncate text-3xl font-semibold tracking-tight sm:text-4xl">{text(first.batch_ref) || "Posting batch"}</h1>
-              <p className="mt-1 max-w-5xl text-sm leading-5 text-slate-600">Local batch lock plus Phase 11 dry-run validation. Validation checks the frozen Sage payload and connection/mapping gates without creating a Sage invoice, purchase invoice, payment or credit note.</p>
+              <p className="mt-1 max-w-5xl text-sm leading-5 text-slate-600">Local batch lock plus Phase 11 dry-run validation. Supplier goods AP must show net/VAT/gross and source evidence before Sage AP posting is built.</p>
               <p className="mt-1 text-xs font-semibold text-slate-500">Batch id {batchId}</p>
               <form action={validateSagePostingBatchPayloadsAction} className="mt-3 flex flex-wrap items-center gap-2">
                 <input type="hidden" name="batch_id" value={batchId} />
@@ -164,7 +194,7 @@ export default async function PostingBatchDetailPage({
                 <span className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-900">No Sage API posting endpoint is called.</span>
               </form>
             </div>
-            <div className="flex shrink-0 flex-wrap gap-1.5 xl:max-w-[760px] xl:justify-end">
+            <div className="flex shrink-0 flex-wrap gap-1.5 xl:max-w-[840px] xl:justify-end">
               <StatPill label="Status" value={pretty(first.status)} tone={statusTone(first.status)} />
               <StatPill label="Lane" value={pretty(first.lane)} tone="review" />
               <StatPill label="Included" value={String(summary.included_count ?? includedRows.length)} tone={includedRows.length > 0 ? "complete" : "muted"} />
@@ -173,13 +203,17 @@ export default async function PostingBatchDetailPage({
               <StatPill label="Dry-run failed" value={String(dryRunFailedRows.length)} tone={dryRunFailedRows.length > 0 ? "blocked" : "complete"} />
               <StatPill label="Dry-run pending" value={String(dryRunPendingRows.length)} tone={dryRunPendingRows.length > 0 ? "action" : "complete"} />
               <StatPill label="Value" value={gbp(summary.total_included_value ?? first.total_amount_gbp)} tone="complete" />
-              <StatPill label="Customer" value={String(summary.customer_sales_count ?? 0)} tone={num(summary.customer_sales_count) > 0 ? "complete" : "muted"} />
+              <StatPill label="Supplier AP" value={String(summary.supplier_goods_ap_count ?? supplierGoodsRows.length)} tone={supplierGoodsRows.length > 0 ? "complete" : "muted"} />
+              <StatPill label="AP net" value={gbp(summary.supplier_goods_ap_net_total_gbp)} tone={supplierGoodsRows.length > 0 ? "complete" : "muted"} />
+              <StatPill label="AP VAT" value={gbp(summary.supplier_goods_ap_vat_total_gbp)} tone={supplierGoodsRows.length > 0 ? "complete" : "muted"} />
+              <StatPill label="AP gross" value={gbp(summary.supplier_goods_ap_gross_total_gbp)} tone={supplierGoodsRows.length > 0 ? "complete" : "muted"} />
               <StatPill label="Shipper AP" value={String(summary.shipper_ap_count ?? 0)} tone={num(summary.shipper_ap_count) > 0 ? "complete" : "muted"} />
             </div>
           </div>
           {successMessage ? <p className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-900">{successMessage}</p> : null}
           {errorMessage ? <p className="mt-3 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900">{errorMessage}</p> : null}
-          {error ? <p className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">Batch detail RPC unavailable: {error.message}. Run the Phase 9/10 migration before testing this page.</p> : null}
+          {supplierVatBlocked ? <p className="mt-3 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900">Supplier goods AP is not Sage-ready: VAT split or source evidence is missing/invalid.</p> : null}
+          {error ? <p className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">Batch detail RPC unavailable: {error.message}. Run the latest batch detail migration before testing this page.</p> : null}
           {!error && rows.length === 0 ? <p className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">No batch rows found for this batch id.</p> : null}
         </section>
 
@@ -187,21 +221,22 @@ export default async function PostingBatchDetailPage({
           <div className="flex flex-col gap-2 border-b border-slate-100 px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
             <div>
               <h2 className="text-xl font-semibold">Batch rows</h2>
-              <p className="mt-1 text-sm text-slate-500">Included and excluded rows are retained for audit. Phase 11 validates payloads only; actual Sage posting remains a later phase.</p>
+              <p className="mt-1 text-sm text-slate-500">AP rows must show VAT split and source invoice evidence. If missing, stop before Sage adapter.</p>
             </div>
           </div>
           <div className="overflow-x-auto rounded-b-3xl">
-            <table className="min-w-[1240px] table-fixed divide-y divide-slate-200 text-xs">
+            <table className="min-w-[1540px] table-fixed divide-y divide-slate-200 text-xs">
               <colgroup>
-                <col className="w-[110px]" />
+                <col className="w-[105px]" />
                 <col className="w-[120px]" />
-                <col className="w-[150px]" />
-                <col className="w-[170px]" />
+                <col className="w-[145px]" />
                 <col className="w-[160px]" />
-                <col className="w-[90px]" />
+                <col className="w-[150px]" />
+                <col className="w-[86px]" />
                 <col className="w-[170px]" />
-                <col className="w-[170px]" />
-                <col className="w-[300px]" />
+                <col className="w-[260px]" />
+                <col className="w-[165px]" />
+                <col className="w-[260px]" />
               </colgroup>
               <thead className="sticky top-0 z-10 bg-slate-100 text-[11px] uppercase tracking-wide text-slate-500">
                 <tr>
@@ -212,12 +247,13 @@ export default async function PostingBatchDetailPage({
                   <th className="px-2 py-2 text-left">Counterparty</th>
                   <th className="px-2 py-2 text-right">Amount</th>
                   <th className="px-2 py-2 text-left">Payload validation</th>
+                  <th className="px-2 py-2 text-left">AP VAT / evidence</th>
                   <th className="px-2 py-2 text-left">Snapshot / idem</th>
                   <th className="px-2 py-2 text-left">Reason / error</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 bg-white">
-                {rows.length === 0 ? <tr><td colSpan={9} className="px-3 py-8 text-center text-sm text-slate-500">No rows.</td></tr> : rows.map((row) => (
+                {rows.length === 0 ? <tr><td colSpan={10} className="px-3 py-8 text-center text-sm text-slate-500">No rows.</td></tr> : rows.map((row) => (
                   <tr key={text(row.row_id) || `${text(row.snapshot_id)}-${text(row.source_id)}`} className="align-top hover:bg-slate-50">
                     <td className="px-2 py-2"><Chip value={row.posting_status} /></td>
                     <td className="px-2 py-2"><p className="truncate font-bold text-slate-950">{pretty(row.document_lane)}</p><p className="mt-0.5 truncate text-[11px] text-slate-500">{pretty(row.sage_object_type)}</p></td>
@@ -226,6 +262,7 @@ export default async function PostingBatchDetailPage({
                     <td className="px-2 py-2"><p className="truncate font-semibold text-slate-900">{text(row.counterparty_name) || "—"}</p></td>
                     <td className="px-2 py-2 text-right font-bold text-slate-950">{gbp(row.amount_gbp)}<p className="text-[11px] font-normal text-slate-500">{text(row.currency_code) || "GBP"}</p></td>
                     <td className="px-2 py-2"><Chip value={row.payload_validation_status} /></td>
+                    <td className="px-2 py-2"><ApControlCell row={row} /></td>
                     <td className="px-2 py-2"><p className="truncate font-mono text-[11px] font-bold text-slate-950" title={text(row.snapshot_id)}>{short(row.snapshot_id, 28)}</p><p className="mt-0.5 truncate font-mono text-[11px] text-slate-500" title={text(row.idempotency_key)}>{short(row.idempotency_key, 32)}</p></td>
                     <td className="px-2 py-2"><p className="line-clamp-3 text-[11px] font-semibold leading-4 text-slate-600">{text(row.exclusion_reason) || text(row.error_message) || "—"}</p></td>
                   </tr>
