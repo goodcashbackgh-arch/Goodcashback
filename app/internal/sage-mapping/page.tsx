@@ -106,16 +106,19 @@ function RequirementList({ title, items }: { title: string; items: string[] }) {
   );
 }
 
-function CatalogSelect({ name, items, currentId }: { name: string; items: SageCatalogItem[]; currentId?: string | null }) {
+function CatalogSelect({ name, items, currentId, label = "Pick from saved Sage catalogue" }: { name: string; items: SageCatalogItem[]; currentId?: string | null; label?: string }) {
   return (
-    <select name={name} defaultValue="" className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-950">
-      <option value="">Leave unchanged</option>
-      {items.map((item) => (
-        <option key={`${name}-${item.id}`} value={catalogItemValue(item)}>
-          {item.display || item.id}{item.code ? ` · ${item.code}` : ""}{item.reference ? ` · ${item.reference}` : ""}{currentId === item.id ? " · current" : ""}
-        </option>
-      ))}
-    </select>
+    <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+      {label}
+      <select name={name} defaultValue="" className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-950">
+        <option value="">Leave unchanged</option>
+        {items.map((item) => (
+          <option key={`${name}-${item.id}`} value={catalogItemValue(item)}>
+            {item.display || item.id}{item.code ? ` · ${item.code}` : ""}{item.reference ? ` · ${item.reference}` : ""}{currentId === item.id ? " · current" : ""}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 
@@ -215,14 +218,14 @@ function BulkPartyMappingForm({ parties, categories }: { parties: PartyRow[]; ca
 }
 
 function BulkLedgerTaxForm({ rows, categories }: { rows: Row[]; categories: SageCatalogCategory[] }) {
-  const visible = rows.filter((row) => row.mapping_status !== "configured");
+  const visible = rows;
   if (visible.length === 0) return null;
   return (
     <form action={bulkSaveSageMappingsAction} className="mt-5 rounded-3xl border border-sky-200 bg-sky-50 p-4">
       <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
         <div>
-          <h3 className="font-semibold text-sky-950">Bulk save GL / tax / bank mappings</h3>
-          <p className="mt-1 text-sm text-sky-900">Uses the saved read-only catalogue. Do not select VAT control ledger rows for tax-rate mappings.</p>
+          <h3 className="font-semibold text-sky-950">Bulk save / replace GL, tax and bank mappings</h3>
+          <p className="mt-1 text-sm text-sky-900">Uses the saved read-only catalogue. Leave rows unchanged unless you pick a replacement.</p>
         </div>
         <button className="rounded-xl bg-sky-700 px-4 py-2 text-sm font-bold text-white hover:bg-sky-800">Bulk save selected mappings</button>
       </div>
@@ -237,6 +240,7 @@ function BulkLedgerTaxForm({ rows, categories }: { rows: Row[]; categories: Sage
               <div>
                 <p className="font-semibold text-slate-950">{row.display_name ?? row.mapping_code}</p>
                 <p className="text-xs text-slate-500">{groupLabel(row.mapping_group)} · {friendly(row.value_kind)} · source {key}</p>
+                <p className="mt-1 text-[11px] text-slate-500">Current: {row.sage_display_name || row.sage_external_id || "Not configured"}</p>
               </div>
               <CatalogSelect name={`mapping_pick_${index}`} items={options} currentId={row.sage_external_id} />
               <p className="text-xs text-slate-500">{row.description ?? "—"}</p>
@@ -248,7 +252,7 @@ function BulkLedgerTaxForm({ rows, categories }: { rows: Row[]; categories: Sage
   );
 }
 
-function PartyMappingCard({ party }: { party: PartyRow }) {
+function PartyMappingCard({ party, contacts }: { party: PartyRow; contacts: SageCatalogItem[] }) {
   return (
     <article className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -275,13 +279,13 @@ function PartyMappingCard({ party }: { party: PartyRow }) {
         </div>
       </div>
 
-      <form action={saveSagePartyMappingAction} className="mt-5 grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 lg:grid-cols-[1.1fr_1.1fr_0.8fr_1.2fr_auto]">
+      <form action={saveSagePartyMappingAction} className="mt-5 grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 lg:grid-cols-[1.2fr_1fr_1fr_1.2fr_auto]">
         <input type="hidden" name="platform_party_type" value={party.platform_party_type} />
         <input type="hidden" name="platform_party_id" value={party.platform_party_id} />
-        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Sage contact id<input name="sage_contact_id" defaultValue={party.sage_contact_id ?? ""} placeholder="Exact Sage contact id" className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-950" /></label>
-        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Sage contact name<input name="sage_contact_display_name" defaultValue={party.sage_contact_display_name ?? ""} placeholder="Name shown in Sage" className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-950" /></label>
+        <CatalogSelect name="party_pick" items={contacts} currentId={party.sage_contact_id} label="Pick Sage contact" />
+        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Manual contact id<input name="sage_contact_id" defaultValue={party.sage_contact_id ?? ""} placeholder="Fallback only" className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-950" /></label>
         <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Sage type<select name="sage_contact_type" defaultValue={party.sage_contact_type || party.recommended_sage_contact_type || "unknown"} className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-950"><option value="customer">Customer</option><option value="supplier">Supplier</option><option value="customer_supplier">Customer + supplier</option><option value="unknown">Unknown</option></select></label>
-        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Reference / notes<input name="sage_contact_reference" defaultValue={party.sage_contact_reference ?? ""} placeholder="Sage reference if any" className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-950" /><input name="notes" defaultValue={party.notes ?? ""} placeholder="How this was checked" className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-950" /></label>
+        <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Fallback name / notes<input name="sage_contact_display_name" defaultValue={party.sage_contact_display_name ?? ""} placeholder="Manual name only if not picking" className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-950" /><input name="sage_contact_reference" defaultValue={party.sage_contact_reference ?? ""} placeholder="Manual reference if any" className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-950" /><input name="notes" defaultValue={party.notes ?? ""} placeholder="How this was checked" className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-950" /></label>
         <div className="flex items-end"><button className="w-full rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">Save</button></div>
       </form>
     </article>
@@ -314,6 +318,7 @@ export default async function SageMappingPage({ searchParams }: { searchParams?:
   const partyMissing = partyRows.filter((row) => row.mapping_status === "missing");
   const savedDiscovery = await getLatestSavedCatalogSnapshot();
   const savedCategories = (savedDiscovery?.categories ?? []) as SageCatalogCategory[];
+  const contacts = categoryOptions(savedCategories, "contacts");
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-6 text-slate-950 sm:px-6 sm:py-8">
@@ -380,50 +385,56 @@ export default async function SageMappingPage({ searchParams }: { searchParams?:
           </div>
           <BulkPartyMappingForm parties={partyRows} categories={savedCategories} />
           <div className="mt-5 grid gap-4">
-            {partyRows.length === 0 ? <p className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-600">No party rows returned. Run the party mapping migration.</p> : partyRows.map((party) => <PartyMappingCard key={`${party.platform_party_type}-${party.platform_party_id}`} party={party} />)}
+            {partyRows.length === 0 ? <p className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-600">No party rows returned. Run the party mapping migration.</p> : partyRows.map((party) => <PartyMappingCard key={`${party.platform_party_type}-${party.platform_party_id}`} party={party} contacts={contacts} />)}
           </div>
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
           <h2 className="text-xl font-semibold">Required GL / tax / bank mappings</h2>
-          <p className="mt-2 text-sm leading-6 text-slate-600">Enter exact Sage ids after checking Sage. Do not confuse VAT/tax rate ids with VAT control ledger accounts.</p>
+          <p className="mt-2 text-sm leading-6 text-slate-600">Pick from the saved Sage catalogue where possible. Manual ID entry remains only as a fallback. Do not confuse VAT/tax rate ids with VAT control ledger accounts.</p>
           <BulkLedgerTaxForm rows={rows} categories={savedCategories} />
 
           <div className="mt-5 grid gap-4">
-            {rows.map((row) => (
-              <article key={row.mapping_code} className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
-                <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                  <div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <h3 className="text-lg font-semibold">{row.display_name ?? row.mapping_code}</h3>
-                      <span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.mapping_status)}`}>{friendly(row.mapping_status)}</span>
+            {rows.map((row) => {
+              const key = mappingCategory(row);
+              const options = categoryOptions(savedCategories, key);
+              return (
+                <article key={row.mapping_code} className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
+                  <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3 className="text-lg font-semibold">{row.display_name ?? row.mapping_code}</h3>
+                        <span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.mapping_status)}`}>{friendly(row.mapping_status)}</span>
+                      </div>
+                      <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{row.description}</p>
+                      <div className="mt-3 flex flex-wrap gap-2 text-xs font-semibold text-slate-600">
+                        <span className="rounded-full bg-white px-2.5 py-1 ring-1 ring-slate-200">{groupLabel(row.mapping_group)}</span>
+                        <span className="rounded-full bg-white px-2.5 py-1 ring-1 ring-slate-200">{friendly(row.value_kind)}</span>
+                        <span className="rounded-full bg-white px-2.5 py-1 ring-1 ring-slate-200">Catalogue: {friendly(key)}</span>
+                        {(row.required_for ?? []).map((item) => <span key={item} className="rounded-full bg-white px-2.5 py-1 ring-1 ring-slate-200">{friendly(item)}</span>)}
+                      </div>
+                      {row.blocker ? <p className="mt-3 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">{friendly(row.blocker)}</p> : null}
                     </div>
-                    <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{row.description}</p>
-                    <div className="mt-3 flex flex-wrap gap-2 text-xs font-semibold text-slate-600">
-                      <span className="rounded-full bg-white px-2.5 py-1 ring-1 ring-slate-200">{groupLabel(row.mapping_group)}</span>
-                      <span className="rounded-full bg-white px-2.5 py-1 ring-1 ring-slate-200">{friendly(row.value_kind)}</span>
-                      {(row.required_for ?? []).map((item) => <span key={item} className="rounded-full bg-white px-2.5 py-1 ring-1 ring-slate-200">{friendly(item)}</span>)}
+                    <div className="rounded-2xl bg-white p-4 text-sm shadow-sm ring-1 ring-slate-200 lg:w-80">
+                      <p className="text-xs uppercase tracking-wide text-slate-500">Current value</p>
+                      <p className="mt-1 break-all font-semibold">{row.sage_external_id || "Not configured"}</p>
+                      <p className="mt-1 text-slate-600">{row.sage_display_name || "—"}</p>
+                      <p className="mt-3 text-xs text-slate-500">Configured by: {row.configured_by_staff_name ?? "—"}</p>
+                      <p className="text-xs text-slate-500">Configured at: {row.configured_at ? row.configured_at.slice(0, 19).replace("T", " ") : "—"}</p>
                     </div>
-                    {row.blocker ? <p className="mt-3 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">{friendly(row.blocker)}</p> : null}
                   </div>
-                  <div className="rounded-2xl bg-white p-4 text-sm shadow-sm ring-1 ring-slate-200 lg:w-80">
-                    <p className="text-xs uppercase tracking-wide text-slate-500">Current value</p>
-                    <p className="mt-1 font-semibold">{row.sage_external_id || "Not configured"}</p>
-                    <p className="mt-1 text-slate-600">{row.sage_display_name || "—"}</p>
-                    <p className="mt-3 text-xs text-slate-500">Configured by: {row.configured_by_staff_name ?? "—"}</p>
-                    <p className="text-xs text-slate-500">Configured at: {row.configured_at ? row.configured_at.slice(0, 19).replace("T", " ") : "—"}</p>
-                  </div>
-                </div>
 
-                <form action={saveSageMappingAction} className="mt-5 grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 md:grid-cols-[1.2fr_1.2fr_1.5fr_auto]">
-                  <input type="hidden" name="mapping_code" value={row.mapping_code} />
-                  <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Sage id<input name="sage_external_id" defaultValue={row.sage_external_id ?? ""} placeholder="Exact Sage tax/account id" className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-950" /></label>
-                  <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Display name<input name="sage_display_name" defaultValue={row.sage_display_name ?? ""} placeholder="Name seen in Sage" className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-950" /></label>
-                  <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Notes<input name="notes" defaultValue={row.notes ?? ""} placeholder="How this was checked" className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-950" /></label>
-                  <div className="flex items-end"><button className="w-full rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">Save</button></div>
-                </form>
-              </article>
-            ))}
+                  <form action={saveSageMappingAction} className="mt-5 grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 md:grid-cols-[1.4fr_1fr_1.2fr_1.2fr_auto]">
+                    <input type="hidden" name="mapping_code" value={row.mapping_code} />
+                    <CatalogSelect name="mapping_pick" items={options} currentId={row.sage_external_id} />
+                    <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Manual Sage id<input name="sage_external_id" defaultValue={row.sage_external_id ?? ""} placeholder="Fallback only" className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-950" /></label>
+                    <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Manual display name<input name="sage_display_name" defaultValue={row.sage_display_name ?? ""} placeholder="Fallback only" className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-950" /></label>
+                    <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Notes<input name="notes" defaultValue={row.notes ?? ""} placeholder="How this was checked" className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-950" /></label>
+                    <div className="flex items-end"><button className="w-full rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">Save</button></div>
+                  </form>
+                </article>
+              );
+            })}
           </div>
         </section>
 
