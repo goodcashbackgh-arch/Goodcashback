@@ -7,8 +7,10 @@ import {
   createPostingBatchFromMatchingRowsAction,
   freezeMatchingCustomerSalesRowsAction,
   freezeMatchingShipperApRowsAction,
+  freezeMatchingSupplierGoodsApRowsAction,
   freezeSelectedCustomerSalesRowsAction,
   freezeSelectedShipperApRowsAction,
+  freezeSelectedSupplierGoodsApRowsAction,
   revalidateMatchingFrozenRowsAction,
 } from "./actions";
 
@@ -156,6 +158,9 @@ function SelectableInput({ row }: { row: Row }) {
   if (group === "customer_sales") {
     return <input type="checkbox" name="sales_invoice_id" value={text(row.source_id)} defaultChecked className="h-4 w-4 rounded border-slate-300" />;
   }
+  if (group === "supplier_goods_ap") {
+    return <input type="checkbox" name="supplier_invoice_id" value={text(row.source_id)} defaultChecked className="h-4 w-4 rounded border-slate-300" />;
+  }
   if (group === "shipper_ap") {
     return <input type="checkbox" name="shipping_document_id" value={text(row.source_id)} defaultChecked className="h-4 w-4 rounded border-slate-300" />;
   }
@@ -257,7 +262,7 @@ export default async function AccountingCommandCentrePage({
             <div>
               <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">Accounting Command Centre</h1>
               <p className="mt-2 max-w-5xl text-sm leading-6 text-slate-600">
-                Single v4 accounting/Sage cockpit from approved facts to frozen/revalidated Sage-ready work. Daily accounting work starts here; legacy live-ready, mapping and posting-preview pages are drill-down diagnostics, not separate command centres.
+                Single v5 accounting/Sage cockpit from approved facts to frozen/revalidated Sage-ready work. Daily accounting work starts here; legacy live-ready, mapping and posting-preview pages are drill-down diagnostics, not separate command centres.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700">
@@ -322,6 +327,7 @@ export default async function AccountingCommandCentrePage({
               <select name="lane" defaultValue={lane} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-950">
                 <option value="all">All lanes</option>
                 <option value="customer_sales">Customer sales</option>
+                <option value="supplier_goods_ap">Supplier goods AP</option>
                 <option value="shipper_ap">Shipper AP</option>
               </select>
             </label>
@@ -373,6 +379,8 @@ export default async function AccountingCommandCentrePage({
             <div className="mt-3 flex flex-wrap gap-2">
               <button formAction={freezeSelectedCustomerSalesRowsAction} className="rounded-lg bg-amber-700 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-amber-800" type="submit">Freeze visible customer sales</button>
               <button formAction={freezeMatchingCustomerSalesRowsAction} className="rounded-lg bg-amber-900 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-amber-950" type="submit">Freeze all matching customer sales</button>
+              <button formAction={freezeSelectedSupplierGoodsApRowsAction} className="rounded-lg bg-amber-700 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-amber-800" type="submit">Freeze visible supplier goods AP</button>
+              <button formAction={freezeMatchingSupplierGoodsApRowsAction} className="rounded-lg bg-amber-900 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-amber-950" type="submit">Freeze all matching supplier goods AP</button>
               <button formAction={freezeSelectedShipperApRowsAction} className="rounded-lg bg-amber-700 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-amber-800" type="submit">Freeze visible shipper AP</button>
               <button formAction={freezeMatchingShipperApRowsAction} className="rounded-lg bg-amber-900 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-amber-950" type="submit">Freeze all matching shipper AP</button>
               <button formAction={revalidateMatchingFrozenRowsAction} className="rounded-lg bg-violet-700 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-violet-800" type="submit">Revalidate matching frozen</button>
@@ -434,7 +442,7 @@ export default async function AccountingCommandCentrePage({
         </form>
 
         <section className="rounded-3xl border border-violet-200 bg-violet-50 p-5 text-sm leading-6 text-violet-900">
-          <h2 className="font-bold">v4 control rule</h2>
+          <h2 className="font-bold">v5 control rule</h2>
           <p className="mt-2">This page is the single accounting/Sage cockpit. Frozen snapshot preview, Sage mapping and legacy live-ready routes remain drill-down diagnostics only. Operational exception resolution, shipper receipt approval, DVA investigation and invoice OCR correction stay outside this page. Actual Sage posting is still not built.</p>
           <p className="mt-2 font-semibold">Bulk mode distinguishes selected visible rows from all matching current filter. Posting batches created here make no Sage call and remain disabled until Sage OAuth and dry-run validation are proven.</p>
         </section>
