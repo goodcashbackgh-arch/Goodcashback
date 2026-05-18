@@ -37,6 +37,13 @@ type DryRunValidationResult = {
   error_code?: string | null;
 };
 
+type SupersedeBatchResult = {
+  batch_id?: string | null;
+  batch_ref?: string | null;
+  cancelled_row_count?: number | string | null;
+  deactivated_snapshot_count?: number | string | null;
+};
+
 type SelectionGroup = "customer_sales" | "supplier_goods_ap" | "shipper_ap" | "all";
 
 function asStringArray(value: FormDataEntryValue[]) {
@@ -402,4 +409,33 @@ export async function validateSagePostingBatchPayloadsAction(formData: FormData)
   revalidatePath(`/internal/accounting-command-centre/batches/${batchId}`);
 
   redirect(`/internal/accounting-command-centre/batches/${batchId}?success=${encodeURIComponent(`Dry-run validation complete: ${ok} valid, ${failed} failed, ${excluded} excluded. No Sage object was created.`)}`);
+}
+
+export async function supersedeLocalSagePostingBatchAction(formData: FormData) {
+  const batchId = formText(formData, "batch_id", "");
+  const reason = formText(formData, "reason", "Superseded to re-freeze from current Sage resolver/payload builder");
+  if (!batchId) {
+    redirect("/internal/accounting-command-centre?error=Missing posting batch id");
+  }
+
+  const supabase = await requireAccountingAdminAccess();
+  const { data, error } = await (supabase as any).rpc("internal_supersede_sage_posting_batch_v1", {
+    p_batch_id: batchId,
+    p_reason: reason,
+  });
+
+  if (error) {
+    redirect(`/internal/accounting-command-centre/batches/${batchId}?error=${encodeURIComponent(error.message)}`);
+  }
+
+  const result = ((data ?? []) as SupersedeBatchResult[])[0];
+  const batchRef = result?.batch_ref || "batch";
+  const rows = result?.cancelled_row_count ?? 0;
+  const snapshots = result?.deactivated_snapshot_count ?? 0;
+
+  revalidatePath("/internal/accounting-command-centre");
+  revalidatePath("/internal/sage-ready");
+  revalidatePath(`/internal/accounting-command-centre/batches/${batchId}`);
+
+  redirect(`/internal/accounting-command-centre?queue=live_ready_not_frozen&success=${encodeURIComponent(`Superseded ${batchRef}: cancelled ${rows} row(s), deactivated ${snapshots} snapshot(s). Re-freeze from current resolver.`)}`);
 }
