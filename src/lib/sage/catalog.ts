@@ -39,6 +39,13 @@ type BusinessRow = {
   is_primary: boolean;
 };
 
+type CatalogEndpoint = {
+  key: string;
+  label: string;
+  endpoint: string;
+  optional?: boolean;
+};
+
 export type SageCatalogItem = {
   id: string;
   display: string;
@@ -77,7 +84,7 @@ const CATALOG_ENDPOINTS = [
   { key: "tax_rates", label: "VAT / tax rates", endpoint: "/tax_rates?items_per_page=100" },
   { key: "bank_accounts", label: "Bank accounts", endpoint: "/bank_accounts?items_per_page=100" },
   { key: "currencies", label: "Currencies (optional; some Sage businesses block this endpoint)", endpoint: "/currencies?items_per_page=100", optional: true },
-] as const;
+] satisfies readonly CatalogEndpoint[];
 
 const MAX_CATALOG_PAGES = 5;
 const MAX_DISPLAY_ROWS = 80;
@@ -97,16 +104,7 @@ function asObject(value: unknown): Row {
 
 function unwrapItem(value: unknown): Row {
   const row = asObject(value);
-  return asObject(
-    row.contact ??
-    row.ledger_account ??
-    row.tax_rate ??
-    row.bank_account ??
-    row.currency ??
-    row.payment_method ??
-    row.business ??
-    row,
-  );
+  return asObject(row.contact ?? row.ledger_account ?? row.tax_rate ?? row.bank_account ?? row.currency ?? row.payment_method ?? row.business ?? row);
 }
 
 function collection(raw: unknown): Row[] {
@@ -205,6 +203,7 @@ async function requireAccountingStaffId(): Promise<string> {
     .eq("auth_user_id", user.id)
     .eq("active", true)
     .maybeSingle();
+
   if (staffError) throw new Error(staffError.message);
   if (!staff?.id) throw new Error("Active staff record required.");
   return String(staff.id);
@@ -342,13 +341,7 @@ async function getSageContext(staffId: string): Promise<{
   }
 
   const business = await activeBusiness(tokenRow.connection_id);
-  return {
-    config,
-    accessToken,
-    connection: connection as ConnectionRow,
-    business,
-    refreshed,
-  };
+  return { config, accessToken, connection: connection as ConnectionRow, business, refreshed };
 }
 
 async function fetchPagedCatalog(params: {
@@ -375,10 +368,7 @@ async function fetchPagedCatalog(params: {
     try {
       response = await fetch(url, {
         method: "GET",
-        headers: {
-          Accept: "application/json",
-          Authorization: `Bearer ${params.accessToken}`,
-        },
+        headers: { Accept: "application/json", Authorization: `Bearer ${params.accessToken}` },
         cache: "no-store",
       });
       status = response.status;
@@ -407,7 +397,7 @@ async function getCategory(params: {
   businessRowId: string | null;
   baseUrl: string;
   accessToken: string;
-  category: typeof CATALOG_ENDPOINTS[number];
+  category: CatalogEndpoint;
 }): Promise<SageCatalogCategory> {
   const started = Date.now();
   const { data: requestLog } = await supabaseAdmin.from("sage_api_request_log").insert({
@@ -490,8 +480,8 @@ export async function discoverSageCatalog(): Promise<SageCatalogDiscovery> {
         "Later: receipt/bank account id for money allocation",
       ],
       ap_requirements: [
-        "Sage supplier contact id for the shipper/AP counterparty",
-        "AP expense/COGS/freight ledger/nominal account id",
+        "Sage supplier contact id for supplier goods AP and shipper AP counterparties",
+        "Goods AP/COGS and freight/delivery ledger account ids",
         "VAT/tax rate id for AP line treatment — not the VAT control ledger",
         "Supplier invoice reference/idempotency rule",
         "Later: bank/control account id for payment settlement",
