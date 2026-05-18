@@ -29,6 +29,8 @@ This is a controlled update, not permission to create page sprawl.
 - No mixed live posting batch across `supplier_goods_ap` and `shipper_ap` until both lanes have been proven separately.
 - OCR/manual invoice extraction must not choose Sage contact ids, ledger ids, or tax ids directly.
 - OCR/manual invoice extraction matches platform records first; saved Sage mappings supply the Sage ids.
+- Accounting Command Centre must not accept fresh AP invoice uploads as a shortcut to Sage posting.
+- Sage AP document attachment, where supported, may use only approved/current source invoice evidence already linked to the frozen AP snapshot.
 
 ## Two-cockpit model
 
@@ -109,6 +111,7 @@ It must not own:
 - invoice OCR correction
 - customer confirmation chasing
 - manual operational status patching
+- fresh AP invoice evidence upload for posting bypass
 
 ## Official accounting document lanes
 
@@ -178,6 +181,38 @@ Required mapping:
 `supplier_goods_ap` and `shipper_ap` are both AP and may share the same server-side Sage adapter function, for example `createSagePurchaseInvoice()`.
 
 But they must remain separate platform lanes and separate posting batches until both are proven independently.
+
+### AP invoice source evidence and Sage attachment rule
+
+AP posting must distinguish between two different concepts:
+
+1. Source invoice evidence upload.
+2. Sage posting attachment.
+
+Source invoice evidence upload belongs upstream in the operational lanes:
+
+- Retailer/supplier goods AP invoice evidence is uploaded through the importer/operator supplier invoice flow and stored against `supplier_invoices`.
+- Shipper AP/freight invoice evidence is uploaded through the shipper document/shipping-control flow and stored against the relevant shipping/shipper document record.
+
+Accounting Command Centre must not accept a fresh AP invoice upload as a shortcut to posting.
+
+At posting time, Accounting Command Centre may only use approved/current source invoice evidence already linked to the frozen AP snapshot.
+
+For AP posting batches, each row must show:
+
+- source invoice/document file
+- source invoice/document approval state
+- OCR/review state where applicable
+- coding/apportionment approval state
+- attachment-to-Sage state
+- Sage object id after posting
+- attachment upload result/error where supported
+
+If Sage file attachment is supported for the target Sage purchase-invoice document, the posting adapter may attach the approved source invoice file to the created Sage AP document only after Sage returns the confirmed purchase-invoice object id.
+
+If Sage attachment is unavailable or fails, the platform must still retain the invoice evidence internally and record the Sage posting reference, attachment failure reason and retry status.
+
+The Sage posting itself must not be marked failed solely because optional document attachment failed, unless the tenant has explicitly configured Sage attachment as mandatory for that AP lane.
 
 ## Sage party mapping versus GL/tax mapping
 
@@ -323,6 +358,9 @@ A `supplier_goods_ap` batch detail must show an AP goods payload grid:
 - unit price / line amount
 - net/VAT/gross where applicable
 - source supplier invoice id
+- source supplier invoice file/evidence link
+- source supplier invoice approval state
+- Sage attachment state/result where supported
 - payload hash
 - idempotency key
 - Sage object id after posting
@@ -338,6 +376,9 @@ A `shipper_ap` batch detail must show an AP logistics payload grid:
 - shipment batch / shipping document reference
 - apportionment summary where relevant
 - net/VAT/gross where applicable
+- source shipper invoice/document file/evidence link
+- source shipper invoice/document approval state
+- Sage attachment state/result where supported
 - payload hash
 - idempotency key
 - Sage object id after posting
@@ -431,6 +472,7 @@ Add supplier/retailer goods invoices from supplier reconciliation / supplier dra
 - Sage supplier contact mapping exists.
 - supplier goods AP ledger mapping exists.
 - supplier goods AP tax mapping exists.
+- approved source invoice evidence exists and is linked to the source supplier invoice record.
 
 ### Phase 6 — Lane-specific freeze and revalidation
 
@@ -439,6 +481,7 @@ Frozen snapshots must preserve:
 - lane
 - source document id
 - source party id
+- source invoice/document evidence reference where applicable
 - Sage contact mapping snapshot
 - Sage GL/tax mapping snapshot
 - payload facts
@@ -488,6 +531,7 @@ Dry-run must validate per lane:
 - goods AP ledger mapping exists
 - AP tax rate mapping exists
 - approved/coded supplier invoice source still valid
+- source supplier invoice evidence still available internally
 - amounts balance
 - supplier invoice reference/idempotency key valid
 - no duplicate posted idempotency key
@@ -500,6 +544,7 @@ Dry-run must validate per lane:
 - freight/delivery ledger mapping exists
 - AP tax rate mapping exists
 - approved shipper AP source still valid
+- source shipper invoice/document evidence still available internally
 - apportionment/source summary present where needed
 - amounts balance
 - shipper invoice reference/idempotency key valid
@@ -528,6 +573,8 @@ Reason:
 
 But payload builder and validation must remain lane-specific.
 
+If Sage attachment support is implemented, AP attachment handling may be shared behind the adapter, but it must still receive lane-specific source evidence metadata from the frozen snapshot.
+
 ### Phase 11 — Failure, retry and correction
 
 Inside Accounting Command Centre -> Posting results/failures:
@@ -535,6 +582,7 @@ Inside Accounting Command Centre -> Posting results/failures:
 Actions:
 
 - Retry failed only.
+- Retry attachment only where the Sage AP posting succeeded but optional attachment failed.
 - Open failure detail.
 - Mark terminal.
 - Create correction route.
