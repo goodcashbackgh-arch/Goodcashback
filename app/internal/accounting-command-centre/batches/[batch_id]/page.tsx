@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
-import { validateSagePostingBatchPayloadsAction } from "../../actions";
+import { supersedeLocalSagePostingBatchAction, validateSagePostingBatchPayloadsAction } from "../../actions";
 
 type Row = Record<string, unknown>;
 type Tone = "complete" | "action" | "blocked" | "review" | "muted";
@@ -360,6 +360,7 @@ export default async function PostingBatchDetailPage({
   const dryRunFailedRows = rows.filter((row) => text(row.payload_validation_status) === "dry_run_failed");
   const dryRunPendingRows = includedRows.filter((row) => !["dry_run_validated", "dry_run_failed"].includes(text(row.payload_validation_status)));
   const canValidatePayloads = !error && includedRows.length > 0;
+  const canSupersede = !error && rows.length > 0 && rows.every((row) => text(row.posting_status) !== "posted" && !text(row.sage_object_id) && !text(row.posted_at));
   const supplierGoodsRows = rows.filter((row) => text(row.document_lane) === "supplier_goods_ap" && text(row.posting_status) !== "excluded");
   const supplierVatBlocked = supplierGoodsRows.some((row) => !["ok", "not_applicable", ""].includes(text(row.ap_vat_control_status)) || text(row.source_evidence_status) === "missing_source_evidence_file");
   const targetMissingRows = includedRows.filter((row) => {
@@ -381,17 +382,30 @@ export default async function PostingBatchDetailPage({
               <h1 className="mt-1 truncate text-3xl font-semibold tracking-tight sm:text-4xl">{text(first.batch_ref) || "Posting batch"}</h1>
               <p className="mt-1 max-w-5xl text-sm leading-5 text-slate-600">Local batch lock plus Phase 11 dry-run validation. All lanes must show source facts, Sage target IDs, actual line descriptions and amount controls before adapter work.</p>
               <p className="mt-1 text-xs font-semibold text-slate-500">Batch id {batchId}</p>
-              <form action={validateSagePostingBatchPayloadsAction} className="mt-3 flex flex-wrap items-center gap-2">
-                <input type="hidden" name="batch_id" value={batchId} />
-                <button
-                  type="submit"
-                  disabled={!canValidatePayloads}
-                  className="rounded-2xl bg-violet-700 px-4 py-2 text-sm font-bold text-white shadow-sm disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-600"
-                >
-                  Validate Sage payloads — dry run only
-                </button>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <form action={validateSagePostingBatchPayloadsAction} className="flex flex-wrap items-center gap-2">
+                  <input type="hidden" name="batch_id" value={batchId} />
+                  <button
+                    type="submit"
+                    disabled={!canValidatePayloads}
+                    className="rounded-2xl bg-violet-700 px-4 py-2 text-sm font-bold text-white shadow-sm disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-600"
+                  >
+                    Validate Sage payloads — dry run only
+                  </button>
+                </form>
+                <form action={supersedeLocalSagePostingBatchAction} className="flex flex-wrap items-center gap-2">
+                  <input type="hidden" name="batch_id" value={batchId} />
+                  <input type="hidden" name="reason" value="Superseded from batch detail to re-freeze from current resolver" />
+                  <button
+                    type="submit"
+                    disabled={!canSupersede}
+                    className="rounded-2xl bg-rose-700 px-4 py-2 text-sm font-bold text-white shadow-sm disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-600"
+                  >
+                    Supersede local batch
+                  </button>
+                </form>
                 <span className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-900">No Sage API posting endpoint is called.</span>
-              </form>
+              </div>
             </div>
             <div className="flex shrink-0 flex-wrap gap-1.5 xl:max-w-[840px] xl:justify-end">
               <StatPill label="Status" value={pretty(first.status)} tone={statusTone(first.status)} />
@@ -412,6 +426,7 @@ export default async function PostingBatchDetailPage({
           {errorMessage ? <p className="mt-3 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900">{errorMessage}</p> : null}
           {supplierVatBlocked ? <p className="mt-3 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900">Supplier goods AP is not Sage-ready: VAT split or source evidence is missing/invalid.</p> : null}
           {targetMissingRows.length > 0 ? <p className="mt-3 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900">Sage target facts are incomplete on {targetMissingRows.length} row(s). Do not build/post the adapter until contact, ledger, tax and actual line descriptions are visible.</p> : null}
+          {canSupersede ? <p className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">Supersede only for stale local test batches. It cancels this local batch and deactivates its snapshots so you can re-freeze from the current resolver.</p> : null}
           {error ? <p className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">Batch detail RPC unavailable: {error.message}. Run the latest batch detail migration before testing this page.</p> : null}
           {!error && rows.length === 0 ? <p className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">No batch rows found for this batch id.</p> : null}
         </section>
