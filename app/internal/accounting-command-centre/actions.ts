@@ -30,6 +30,12 @@ type CreateBatchResult = {
   detail_href?: string | null;
 };
 
+type DryRunValidationResult = {
+  row_id?: string | null;
+  payload_validation_status?: string | null;
+  error_code?: string | null;
+};
+
 function asStringArray(value: FormDataEntryValue[]) {
   return value.map((entry) => String(entry ?? "").trim()).filter(Boolean);
 }
@@ -315,4 +321,30 @@ export async function createPostingBatchFromMatchingRowsAction(formData: FormDat
   revalidatePath("/internal/accounting-command-centre");
   revalidatePath(`/internal/accounting-command-centre/batches/${result.batch_id}`);
   redirect(result.detail_href || `/internal/accounting-command-centre/batches/${result.batch_id}`);
+}
+
+export async function validateSagePostingBatchPayloadsAction(formData: FormData) {
+  const batchId = formText(formData, "batch_id", "");
+  if (!batchId) {
+    redirect("/internal/accounting-command-centre?error=Missing posting batch id");
+  }
+
+  const supabase = await requireAccountingAdminAccess();
+  const { data, error } = await (supabase as any).rpc("internal_validate_sage_posting_batch_payloads_v1", {
+    p_batch_id: batchId,
+  });
+
+  if (error) {
+    redirect(`/internal/accounting-command-centre/batches/${batchId}?error=${encodeURIComponent(error.message)}`);
+  }
+
+  const rows = ((data ?? []) as DryRunValidationResult[]);
+  const ok = rows.filter((row) => row.payload_validation_status === "dry_run_validated").length;
+  const failed = rows.filter((row) => row.payload_validation_status === "dry_run_failed").length;
+  const excluded = rows.filter((row) => row.payload_validation_status === "excluded_before_validation").length;
+
+  revalidatePath("/internal/accounting-command-centre");
+  revalidatePath(`/internal/accounting-command-centre/batches/${batchId}`);
+
+  redirect(`/internal/accounting-command-centre/batches/${batchId}?success=${encodeURIComponent(`Dry-run validation complete: ${ok} valid, ${failed} failed, ${excluded} excluded. No Sage object was created.`)}`);
 }
