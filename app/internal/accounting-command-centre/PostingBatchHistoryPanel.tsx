@@ -34,7 +34,7 @@ function toneClass(status: unknown) {
 
 export default async function PostingBatchHistoryPanel() {
   const supabase = await createClient();
-  const { data, error } = await (supabase as any).rpc("internal_sage_posting_batch_history_v1", { p_limit: 8 });
+  const { data, error } = await (supabase as any).rpc("internal_sage_posting_batch_history_v1", { p_limit: 30 });
   const rows = ((data ?? []) as Row[]);
 
   return (
@@ -43,9 +43,9 @@ export default async function PostingBatchHistoryPanel() {
         <div>
           <p className="text-xs font-bold uppercase tracking-[0.2em] text-violet-500">Posting batch history</p>
           <h2 className="mt-1 text-xl font-semibold">Recent local batches</h2>
-          <p className="mt-1 text-sm leading-5 text-slate-600">Read-only history of local batch locks. Rows already locked here are intentionally hidden from the live workbench grid. No Sage posting action is exposed here.</p>
+          <p className="mt-1 text-sm leading-5 text-slate-600">Read-only history of the latest 30 local batch locks. Rows already locked here are intentionally hidden from the default live workbench grid. Use Queue = All documents to filter the full lifecycle in the grid.</p>
         </div>
-        <Link href="/internal/accounting-command-centre?queue=frozen_ready_to_post&posting_gate=ready_to_post" className="w-fit rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-800 hover:bg-slate-50">Create from ready rows</Link>
+        <Link href="/internal/accounting-command-centre?queue=all" className="w-fit rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-800 hover:bg-slate-50">Open full history grid</Link>
       </div>
 
       {error ? <p className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">Batch history unavailable: {error.message}</p> : null}
