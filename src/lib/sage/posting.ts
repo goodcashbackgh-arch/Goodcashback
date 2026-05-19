@@ -92,6 +92,21 @@ function sageReference(raw: unknown) {
 }
 
 function errorMessage(raw: unknown) {
+  if (Array.isArray(raw)) {
+    const messages = raw
+      .map((item) => {
+        const row = asObject(item);
+        return text(row.$message)
+          || text(row.message)
+          || text(row.error_description)
+          || text(row.error)
+          || text(row.detail)
+          || "";
+      })
+      .filter(Boolean);
+    if (messages.length > 0) return messages.join(" | ");
+  }
+
   const root = asObject(raw);
   return text(root.message)
     || text(root.error_description)
@@ -99,6 +114,22 @@ function errorMessage(raw: unknown) {
     || text(root.detail)
     || text(root.errors)
     || "Sage API request failed.";
+}
+
+function customerSalesEuGoodsServicesTypeId(line: Row, payload: Row) {
+  return firstText(line, [
+    ["eu_goods_services_type_id"],
+    ["sage_eu_goods_services_type_id"],
+    ["resolved_eu_goods_services_type_id"],
+  ])
+    || firstText(payload, [
+      ["eu_goods_services_type_id"],
+      ["customer_sales_eu_goods_services_type_id"],
+      ["tax_resolution", "eu_goods_services_type_id"],
+      ["resolved_mappings", "CUSTOMER_SALES_EU_GOODS_SERVICES_TYPE", "sage_external_id"],
+    ])
+    || text(process.env.SAGE_CUSTOMER_SALES_EU_GOODS_SERVICES_TYPE_ID)
+    || "GOODS";
 }
 
 function extractSalesInvoicePayload(row: BatchRow) {
@@ -121,16 +152,19 @@ function extractSalesInvoicePayload(row: BatchRow) {
     const taxRateId = firstText(line, [["sage_tax_rate_id"], ["resolved_tax_rate_id"]]);
     const quantity = num(line.quantity || line.qty || 1) || 1;
     const amount = num(line.unit_price_gbp || line.total_line_amount_gbp || line.gross_amount_gbp || line.amount_gbp || row.amount_gbp);
+    const euGoodsServicesTypeId = customerSalesEuGoodsServicesTypeId(line, payload);
 
     if (!description) throw new Error(`Sales invoice line ${index + 1} missing description.`);
     if (!ledgerAccountId) throw new Error(`Sales invoice line ${index + 1} missing ledger account id.`);
     if (!taxRateId) throw new Error(`Sales invoice line ${index + 1} missing tax rate id.`);
     if (!amount) throw new Error(`Sales invoice line ${index + 1} missing amount.`);
+    if (!euGoodsServicesTypeId) throw new Error(`Sales invoice line ${index + 1} missing EU goods/services type id.`);
 
     return {
       description,
       ledger_account_id: ledgerAccountId,
       tax_rate_id: taxRateId,
+      eu_goods_services_type_id: euGoodsServicesTypeId,
       quantity,
       unit_price: amount,
     };
