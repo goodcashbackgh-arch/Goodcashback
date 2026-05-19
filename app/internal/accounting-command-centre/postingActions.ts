@@ -58,6 +58,7 @@ export async function postCustomerSalesBatchToSageAction(formData: FormData) {
   if (!batchId) redirect("/internal/accounting-command-centre?error=Missing posting batch id");
 
   const { staffId } = await requireAccountingPostingContext();
+  let redirectTo = `/internal/accounting-command-centre/batches/${batchId}`;
 
   try {
     const result = await postCustomerSalesBatchToSage({
@@ -66,14 +67,17 @@ export async function postCustomerSalesBatchToSageAction(formData: FormData) {
       origin: appOrigin(),
     });
 
-    revalidatePath("/internal/accounting-command-centre");
-    revalidatePath(`/internal/accounting-command-centre/batches/${batchId}`);
-
-    redirect(`/internal/accounting-command-centre/batches/${batchId}?success=${encodeURIComponent(`Customer sales Sage posting finished: ${result.posted} posted, ${result.failed} failed, ${result.total} total.`)}`);
+    if (result.failed > 0) {
+      redirectTo = `/internal/accounting-command-centre/batches/${batchId}?error=${encodeURIComponent(`Customer sales Sage posting finished with failures: ${result.posted} posted, ${result.failed} failed, ${result.total} total. Check the row Reason / error column.`)}`;
+    } else {
+      redirectTo = `/internal/accounting-command-centre/batches/${batchId}?success=${encodeURIComponent(`Customer sales Sage posting finished: ${result.posted} posted, ${result.failed} failed, ${result.total} total.`)}`;
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : "Customer sales Sage posting failed.";
-    revalidatePath("/internal/accounting-command-centre");
-    revalidatePath(`/internal/accounting-command-centre/batches/${batchId}`);
-    redirect(`/internal/accounting-command-centre/batches/${batchId}?error=${encodeURIComponent(message)}`);
+    redirectTo = `/internal/accounting-command-centre/batches/${batchId}?error=${encodeURIComponent(message)}`;
   }
+
+  revalidatePath("/internal/accounting-command-centre");
+  revalidatePath(`/internal/accounting-command-centre/batches/${batchId}`);
+  redirect(redirectTo);
 }
