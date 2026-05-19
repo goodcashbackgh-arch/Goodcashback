@@ -193,7 +193,8 @@ function extractSupplierGoodsApPurchaseInvoicePayload(row: BatchRow) {
       tax_rate_id: taxRateId,
       quantity,
       unit_price: round2(netAmount / quantity),
-    };
+      currency_tax_amount: round2(vatAmount),
+     };
   });
 
   const headerGross = num(row.amount_gbp || payload.amount_gbp);
