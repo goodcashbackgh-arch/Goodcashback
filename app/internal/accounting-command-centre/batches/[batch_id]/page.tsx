@@ -160,13 +160,20 @@ function sageFacts(row: Row) {
   ]) || text(row.reference_text);
 
   const sourceDate = firstText(payload, [
+    ["sage_header", "date"],
+    ["sage_header", "invoice_date"],
+    ["payment_date_resolution", "invoice_date"],
+    ["payment_date"],
     ["supplier_invoice_date"],
     ["invoice_date"],
     ["document_date"],
     ["shipping_document_date"],
+    ["source_payload", "sage_header", "date"],
     ["source_payload", "document_date"],
     ["source_payload", "supplier_invoice_date"],
     ["source_payload", "invoice_date"],
+    ["commercial_payload", "sage_header", "date"],
+    ["commercial_payload", "sage_invoice_date"],
   ]);
 
   const sourceFile = text(row.source_invoice_file_url) || firstText(payload, [
