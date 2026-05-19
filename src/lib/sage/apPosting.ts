@@ -187,14 +187,17 @@ function extractSupplierGoodsApPurchaseInvoicePayload(row: BatchRow) {
     grossTotal = round2(grossTotal + grossAmount);
     sageNetTotal = round2(sageNetTotal + netAmount);
 
+    const taxAmount = round2(vatAmount);
+
     return {
       description,
       ledger_account_id: ledgerAccountId,
       tax_rate_id: taxRateId,
       quantity,
       unit_price: round2(netAmount / quantity),
-      currency_tax_amount: round2(vatAmount),
-     };
+      tax_amount: taxAmount,
+      currency_tax_amount: taxAmount,
+    };
   });
 
   const headerGross = num(row.amount_gbp || payload.amount_gbp);
