@@ -91,10 +91,10 @@ function toneClass(tone: Tone) {
 
 function statusTone(status: unknown): Tone {
   const raw = text(status);
-  if (["ready_to_post", "ok_to_post", "posted", "mapping_frozen_ok", "payload_frozen_ok", "mapping_resolved_or_not_required"].includes(raw)) return "complete";
-  if (["ready_to_freeze", "requires_revalidation", "not_revalidated", "not_posted", "not_frozen"].includes(raw)) return "action";
+  if (["ready_to_post", "ok_to_post", "posted", "mapping_frozen_ok", "payload_frozen_ok", "mapping_resolved_or_not_required", "batched_validated", "dry_run_validated"].includes(raw)) return "complete";
+  if (["ready_to_freeze", "requires_revalidation", "not_revalidated", "not_posted", "not_frozen", "already_batched", "batched_pending_dry_run", "batch_locked"].includes(raw)) return "action";
   if (["blocked_before_posting", "stale_reapproval_required", "blocked_source_not_ready", "posting_failed", "payload_not_ready", "mapping_changed_since_approval", "payload_changed_since_approval"].includes(raw)) return "blocked";
-  if (["approved_frozen", "review", "warning_only"].includes(raw)) return "review";
+  if (["approved_frozen", "review", "warning_only", "cancelled_or_superseded", "excluded_from_batch", "not_postable_batch_history"].includes(raw)) return "review";
   return "muted";
 }
 
@@ -176,6 +176,7 @@ function ControlStateCluster({ row }: { row: Row }) {
       <CompactState label="Rev" value={row.revalidation_state} />
       <CompactState label="Gate" value={row.posting_gate} />
       <CompactState label="Sage" value={row.sage_status} />
+      {text(row.batch_ref) ? <p className="col-span-2 truncate text-[11px] font-semibold leading-4 text-slate-600" title={text(row.batch_ref)}>Batch {text(row.batch_ref)}</p> : null}
       {text(row.blocker) ? <p className="col-span-2 truncate text-[11px] font-semibold leading-4 text-rose-700" title={text(row.blocker)}>{short(row.blocker, 90)}</p> : null}
     </div>
   );
@@ -293,7 +294,7 @@ export default async function AccountingCommandCentrePage({
             <div>
               <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">Accounting Command Centre</h1>
               <p className="mt-2 max-w-5xl text-sm leading-6 text-slate-600">
-                Single v5 accounting/Sage cockpit from approved facts to frozen/revalidated Sage-ready work. Daily accounting work starts here; legacy live-ready, mapping and posting-preview pages are drill-down diagnostics, not separate command centres.
+                Single v5 accounting/Sage cockpit from approved facts to frozen/revalidated Sage-ready work. Default view shows current actionable work; Queue “All documents” shows the full lifecycle history in this same grid.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700">
@@ -318,24 +319,25 @@ export default async function AccountingCommandCentrePage({
           <SectionLink title="Live ready" detail="Rows ready to freeze; replaces daily /sage-ready usage" href="/internal/accounting-command-centre?queue=live_ready_not_frozen" tone="action" />
           <SectionLink title="Frozen snapshots" detail="Frozen/revalidation rows; preview is drill-down" href="/internal/accounting-command-centre?queue=frozen_ready_to_post" tone="complete" />
           <SectionLink title="Posting batches" detail="Create no-Sage-call batches from ready snapshots" href="/internal/accounting-command-centre?queue=frozen_ready_to_post&posting_gate=ready_to_post" tone="review" />
-          <SectionLink title="Sage settings" detail="Connection/settings panel lives above; legacy mapping remains diagnostic" href="/internal/sage-mapping" tone={num(summary.blocked_before_posting) > 0 ? "review" : "muted"} />
+          <SectionLink title="Already batched" detail="Locked local batches and dry-run rows" href="/internal/accounting-command-centre?queue=already_batched" tone="review" />
           <SectionLink title="Failures/results" detail="Failed and posted filters live here" href="/internal/accounting-command-centre?queue=posting_failed" tone="blocked" />
-          <SectionLink title="Corrections/reversals" detail="Not built yet; stays here later" href="/internal/accounting-command-centre" tone="muted" />
+          <SectionLink title="Full history" detail="All documents across the lifecycle" href="/internal/accounting-command-centre?queue=all" tone="muted" />
         </section>
 
-        <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8">
+        <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-9">
           <SummaryCard label="Live ready" value={String(summary.live_ready_not_frozen ?? 0)} detail="Not frozen" tone={num(summary.live_ready_not_frozen) > 0 ? "action" : "complete"} />
           <SummaryCard label="Ready to post" value={String(summary.frozen_ready_to_post ?? 0)} detail={gbp(summary.total_ready_value)} tone={num(summary.frozen_ready_to_post) > 0 ? "complete" : "muted"} />
+          <SummaryCard label="Batched" value={String(summary.already_batched ?? 0)} detail="Locked local rows" tone={num(summary.already_batched) > 0 ? "review" : "muted"} />
+          <SummaryCard label="Cancelled" value={String(summary.cancelled_or_superseded ?? 0)} detail="Audit history" tone={num(summary.cancelled_or_superseded) > 0 ? "review" : "muted"} />
           <SummaryCard label="Revalidate" value={String(summary.requires_revalidation ?? 0)} detail="Frozen stale check" tone={num(summary.requires_revalidation) > 0 ? "action" : "complete"} />
           <SummaryCard label="Blocked" value={String(summary.blocked_before_posting ?? 0)} detail="Must not post" tone={num(summary.blocked_before_posting) > 0 ? "blocked" : "complete"} />
           <SummaryCard label="Failed" value={String(summary.posting_failed ?? 0)} detail="Retry later only" tone={num(summary.posting_failed) > 0 ? "blocked" : "complete"} />
           <SummaryCard label="Posted" value={String(summary.posted ?? 0)} detail="Recorded history" tone={num(summary.posted) > 0 ? "complete" : "muted"} />
-          <SummaryCard label="Selectable" value={String(summary.selectable ?? selectedCount)} detail="Visible clean rows" tone={selectedCount > 0 ? "action" : "muted"} />
           <SummaryCard label="Visible selected" value={gbp(selectedValue)} detail={`${selectedCount} visible row(s)`} tone={selectedCount > 0 ? "review" : "muted"} />
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
-          <form action="/internal/accounting-command-centre" className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(220px,1fr)_170px_150px_170px_120px_auto] xl:items-end">
+          <form action="/internal/accounting-command-centre" className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(220px,1fr)_190px_150px_190px_120px_auto] xl:items-end">
             <label className="grid gap-1 text-xs font-bold uppercase tracking-wide text-slate-500 md:col-span-2 xl:col-span-1">
               Search
               <input name="q" defaultValue={search} placeholder="Order, source, counterparty, batch, idempotency" className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-950" />
@@ -346,6 +348,9 @@ export default async function AccountingCommandCentrePage({
                 <option value="actionable">Actionable</option>
                 <option value="live_ready_not_frozen">Live ready not frozen</option>
                 <option value="frozen_ready_to_post">Frozen ready to post</option>
+                <option value="already_batched">Already batched</option>
+                <option value="cancelled_or_superseded">Cancelled / superseded</option>
+                <option value="excluded_from_batch">Excluded from batch</option>
                 <option value="requires_revalidation">Requires revalidation</option>
                 <option value="blocked_before_posting">Blocked</option>
                 <option value="posting_failed">Posting failed</option>
@@ -368,8 +373,10 @@ export default async function AccountingCommandCentrePage({
                 <option value="all">All gates</option>
                 <option value="ready_to_freeze">Ready to freeze</option>
                 <option value="ready_to_post">Ready to post</option>
+                <option value="batched_pending_dry_run">Batched pending dry-run</option>
                 <option value="requires_revalidation">Requires revalidation</option>
                 <option value="blocked_before_posting">Blocked before posting</option>
+                <option value="not_postable_batch_history">Not postable history</option>
                 <option value="posted">Posted</option>
               </select>
             </label>
@@ -400,7 +407,7 @@ export default async function AccountingCommandCentrePage({
             <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
               <div>
                 <h2 className="text-xl font-semibold">Accounting workbench grid</h2>
-                <p className="mt-1 text-sm text-slate-500">Showing {rows.length} of {totalCount} matching row(s). Operate from this grid; legacy pages are diagnostics.</p>
+                <p className="mt-1 text-sm text-slate-500">Showing {rows.length} of {totalCount} matching row(s). Default view is current actionable work; All documents includes batch history and prior statuses.</p>
               </div>
               <label className="flex w-fit items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700">
                 <input type="checkbox" name="bulk_include_warnings" value="true" />
@@ -474,7 +481,7 @@ export default async function AccountingCommandCentrePage({
 
         <section className="rounded-3xl border border-violet-200 bg-violet-50 p-5 text-sm leading-6 text-violet-900">
           <h2 className="font-bold">v5 control rule</h2>
-          <p className="mt-2">This page is the single accounting/Sage cockpit. Frozen snapshot preview, Sage mapping and legacy live-ready routes remain drill-down diagnostics only. Operational exception resolution, shipper receipt approval, DVA investigation and invoice OCR correction stay outside this page. Actual Sage posting is still not built.</p>
+          <p className="mt-2">This page is the single accounting/Sage cockpit. Default view shows current actionable rows only. Queue “All documents” includes full lifecycle history, including rows already locked in local posting batches. Actual Sage posting is still not built.</p>
           <p className="mt-2 font-semibold">Bulk mode distinguishes selected visible rows from all matching current filter. Posting batches created here make no Sage call and remain disabled until Sage OAuth and dry-run validation are proven.</p>
         </section>
       </div>
