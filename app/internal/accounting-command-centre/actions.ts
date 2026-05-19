@@ -46,6 +46,12 @@ type SupersedeBatchResult = {
 
 type SelectionGroup = "customer_sales" | "supplier_goods_ap" | "shipper_ap" | "all";
 
+type RefreezePayload = {
+  document_lane?: string | null;
+  source_id?: string | null;
+  source_table?: string | null;
+};
+
 function asStringArray(value: FormDataEntryValue[]) {
   return value.map((entry) => String(entry ?? "").trim()).filter(Boolean);
 }
@@ -81,6 +87,18 @@ function hasAccountingAdminTesting(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const permissions = value as Record<string, unknown>;
   return permissions.accounting_admin_testing === true || permissions.admin_testing === true;
+}
+
+function parseRefreezePayload(formData: FormData): RefreezePayload {
+  const raw = formText(formData, "refreeze_payload", "");
+  if (!raw) return {};
+
+  try {
+    const parsed = JSON.parse(raw) as RefreezePayload;
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
 }
 
 async function requireAccountingAdminAccess() {
@@ -438,4 +456,64 @@ export async function supersedeLocalSagePostingBatchAction(formData: FormData) {
   revalidatePath(`/internal/accounting-command-centre/batches/${batchId}`);
 
   redirect(`/internal/accounting-command-centre?queue=live_ready_not_frozen&success=${encodeURIComponent(`Superseded ${batchRef}: cancelled ${rows} row(s), deactivated ${snapshots} snapshot(s). Re-freeze from current resolver.`)}`);
+}
+
+export async function refreezeSourceFromBatchHistoryAction(formData: FormData) {
+  const payload = parseRefreezePayload(formData);
+  const lane = String(payload.document_lane ?? "").trim();
+  const sourceId = String(payload.source_id ?? "").trim();
+  const sourceTable = String(payload.source_table ?? "").trim();
+
+  if (!sourceId || !lane) {
+    redirect("/internal/accounting-command-centre?error=Missing source to re-freeze");
+  }
+
+  const expectedSourceTable: Record<string, string> = {
+    customer_sales: "sales_invoices",
+    supplier_goods_ap: "supplier_invoices",
+    shipper_ap: "shipping_documents",
+  };
+
+  if (!expectedSourceTable[lane] || (sourceTable && sourceTable !== expectedSourceTable[lane])) {
+    redirect(`/internal/accounting-command-centre?error=${encodeURIComponent(`Cannot re-freeze unsupported source ${sourceTable || "unknown"}/${lane || "unknown"}`)}`);
+  }
+
+  const supabase = await requireAccountingAdminAccess();
+  let rows: FreezeResult[] = [];
+
+  if (lane === "customer_sales") {
+    const { data, error } = await (supabase as any).rpc("internal_freeze_customer_sales_sage_batch_v1", {
+      p_sales_invoice_ids: [sourceId],
+      p_notes: "Accounting command centre re-freeze source from cancelled/superseded batch history",
+    });
+    if (error) redirect(`/internal/accounting-command-centre?queue=cancelled_or_superseded&error=${encodeURIComponent(error.message)}`);
+    rows = ((data ?? []) as FreezeResult[]);
+    await revalidateFrozenSnapshots(supabase, frozenSnapshotIds(rows));
+  } else if (lane === "supplier_goods_ap") {
+    const { data, error } = await (supabase as any).rpc("internal_freeze_supplier_goods_ap_sage_batch_v1", {
+      p_supplier_invoice_ids: [sourceId],
+      p_notes: "Accounting command centre re-freeze source from cancelled/superseded batch history",
+    });
+    if (error) redirect(`/internal/accounting-command-centre?queue=cancelled_or_superseded&error=${encodeURIComponent(error.message)}`);
+    rows = ((data ?? []) as FreezeResult[]);
+  } else if (lane === "shipper_ap") {
+    const { data, error } = await (supabase as any).rpc("internal_freeze_shipper_ap_sage_batch_v1", {
+      p_shipping_document_ids: [sourceId],
+      p_notes: "Accounting command centre re-freeze source from cancelled/superseded batch history",
+    });
+    if (error) redirect(`/internal/accounting-command-centre?queue=cancelled_or_superseded&error=${encodeURIComponent(error.message)}`);
+    rows = ((data ?? []) as FreezeResult[]);
+  }
+
+  const frozenCount = rows.filter((row) => row.freeze_status === "frozen" && row.snapshot_id).length;
+  const blocker = rows.find((row) => row.freeze_status !== "frozen")?.blocker;
+
+  revalidatePath("/internal/accounting-command-centre");
+  revalidatePath("/internal/sage-ready");
+
+  if (frozenCount === 0) {
+    redirect(`/internal/accounting-command-centre?queue=cancelled_or_superseded&lane=${encodeURIComponent(lane)}&error=${encodeURIComponent(blocker || "Source was not re-frozen")}`);
+  }
+
+  redirect(`/internal/accounting-command-centre?queue=frozen_ready_to_post&lane=${encodeURIComponent(lane)}&success=${encodeURIComponent(`Re-frozen ${lane.replaceAll("_", " ")} source. Create a new posting batch from the fresh frozen row.`)}`);
 }
