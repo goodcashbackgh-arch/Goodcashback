@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 import SageConnectionPanel from "./SageConnectionPanel";
 import PostingBatchHistoryPanel from "./PostingBatchHistoryPanel";
+import SelectionControls from "./SelectionControls";
 import {
   createPostingBatchFromMatchingRowsAction,
   freezeMatchingCustomerSalesRowsAction,
@@ -152,17 +153,30 @@ function pageHref(base: string, params: Record<string, string | number | undefin
   return query ? `${base}?${query}` : base;
 }
 
+function checkboxClass() {
+  return "h-4 w-4 rounded border-slate-300";
+}
+
 function SelectableInput({ row }: { row: Row }) {
   const group = text(row.selection_group);
-  if (!bool(row.selectable) || !text(row.source_id)) return <span className="text-xs text-slate-400">—</span>;
+  const sourceId = text(row.source_id);
+  if (!bool(row.selectable) || !sourceId) return <span className="text-xs text-slate-400">—</span>;
+
+  const common = {
+    defaultChecked: true,
+    className: checkboxClass(),
+    "data-accounting-row-select": "true",
+    "aria-label": `Select ${pretty(group)} ${sourceId}`,
+  } as const;
+
   if (group === "customer_sales") {
-    return <input type="checkbox" name="sales_invoice_id" value={text(row.source_id)} defaultChecked className="h-4 w-4 rounded border-slate-300" />;
+    return <input type="checkbox" name="sales_invoice_id" value={sourceId} {...common} />;
   }
   if (group === "supplier_goods_ap") {
-    return <input type="checkbox" name="supplier_invoice_id" value={text(row.source_id)} defaultChecked className="h-4 w-4 rounded border-slate-300" />;
+    return <input type="checkbox" name="supplier_invoice_id" value={sourceId} {...common} />;
   }
   if (group === "shipper_ap") {
-    return <input type="checkbox" name="shipping_document_id" value={text(row.source_id)} defaultChecked className="h-4 w-4 rounded border-slate-300" />;
+    return <input type="checkbox" name="shipping_document_id" value={sourceId} {...common} />;
   }
   return <span className="text-xs text-slate-400">—</span>;
 }
@@ -182,31 +196,41 @@ function ControlStateCluster({ row }: { row: Row }) {
   );
 }
 
+function FreezeRowButton({ label, name, value, formAction }: { label: string; name: string; value: string; formAction: (formData: FormData) => void | Promise<void> }) {
+  return (
+    <button
+      type="submit"
+      formAction={formAction}
+      name={name}
+      value={value}
+      title={`Freeze this ${label} row only`}
+      className="inline-flex max-w-[96px] rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-left text-[11px] font-bold leading-4 text-slate-800 hover:bg-slate-100"
+    >
+      Freeze row
+    </button>
+  );
+}
+
 function ActionControl({ row }: { row: Row }) {
-  if (
-    text(row.work_queue) === "live_ready_not_frozen" &&
-    text(row.selection_group) === "supplier_goods_ap" &&
-    text(row.source_id)
-  ) {
-    return (
-      <button
-        type="submit"
-        formAction={freezeSelectedSupplierGoodsApRowsAction}
-        name="single_supplier_invoice_id"
-        value={text(row.source_id)}
-        title="Freeze this supplier goods AP row only"
-        className="inline-flex max-w-[86px] rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-left text-[11px] font-bold leading-4 text-slate-800 hover:bg-slate-100"
-      >
-        Freeze supplier goods AP
-      </button>
-    );
+  const sourceId = text(row.source_id);
+  const group = text(row.selection_group);
+  if (text(row.work_queue) === "live_ready_not_frozen" && sourceId) {
+    if (group === "customer_sales") {
+      return <FreezeRowButton label="customer sales" name="single_sales_invoice_id" value={sourceId} formAction={freezeSelectedCustomerSalesRowsAction} />;
+    }
+    if (group === "supplier_goods_ap") {
+      return <FreezeRowButton label="supplier goods AP" name="single_supplier_invoice_id" value={sourceId} formAction={freezeSelectedSupplierGoodsApRowsAction} />;
+    }
+    if (group === "shipper_ap") {
+      return <FreezeRowButton label="shipper AP" name="single_shipping_document_id" value={sourceId} formAction={freezeSelectedShipperApRowsAction} />;
+    }
   }
 
   return (
     <Link
       href={text(row.next_action_href) || "/internal/accounting-command-centre"}
       title={actionTitle(row)}
-      className="inline-flex max-w-[86px] rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-[11px] font-bold leading-4 text-slate-800 hover:bg-slate-100"
+      className="inline-flex max-w-[96px] rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-[11px] font-bold leading-4 text-slate-800 hover:bg-slate-100"
     >
       {short(actionLabel(row), 24)}
     </Link>
@@ -305,7 +329,7 @@ export default async function AccountingCommandCentrePage({
           <div className="mt-4 flex flex-wrap gap-2 text-xs font-semibold">
             <span className="rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-violet-900">Accounting owns freeze, revalidation and posting readiness</span>
             <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-slate-700">Operational blockers route back to Supervisor/child pages</span>
-            <span className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-amber-900">Actual Sage posting is still not built</span>
+            <span className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-amber-900">Actual Sage posting is still guarded by contract gates</span>
           </div>
           {firstParam(qp.success) ? <p className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-900">{firstParam(qp.success)}</p> : null}
           {firstParam(qp.error) ? <p className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900">{firstParam(qp.error)}</p> : null}
@@ -333,7 +357,7 @@ export default async function AccountingCommandCentrePage({
           <SummaryCard label="Blocked" value={String(summary.blocked_before_posting ?? 0)} detail="Must not post" tone={num(summary.blocked_before_posting) > 0 ? "blocked" : "complete"} />
           <SummaryCard label="Failed" value={String(summary.posting_failed ?? 0)} detail="Retry later only" tone={num(summary.posting_failed) > 0 ? "blocked" : "complete"} />
           <SummaryCard label="Posted" value={String(summary.posted ?? 0)} detail="Recorded history" tone={num(summary.posted) > 0 ? "complete" : "muted"} />
-          <SummaryCard label="Visible selected" value={gbp(selectedValue)} detail={`${selectedCount} visible row(s)`} tone={selectedCount > 0 ? "review" : "muted"} />
+          <SummaryCard label="Visible selected" value={gbp(selectedValue)} detail={`${selectedCount} selectable visible row(s)`} tone={selectedCount > 0 ? "review" : "muted"} />
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -414,16 +438,33 @@ export default async function AccountingCommandCentrePage({
                 Include warnings in all-matching actions
               </label>
             </div>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <button formAction={freezeSelectedCustomerSalesRowsAction} className="rounded-lg bg-amber-700 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-amber-800" type="submit">Freeze visible customer sales</button>
-              <button formAction={freezeMatchingCustomerSalesRowsAction} className="rounded-lg bg-amber-900 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-amber-950" type="submit">Freeze all matching customer sales</button>
-              <button formAction={freezeSelectedSupplierGoodsApRowsAction} className="rounded-lg bg-amber-700 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-amber-800" type="submit">Freeze visible supplier goods AP</button>
-              <button formAction={freezeMatchingSupplierGoodsApRowsAction} className="rounded-lg bg-amber-900 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-amber-950" type="submit">Freeze all matching supplier goods AP</button>
-              <button formAction={freezeSelectedShipperApRowsAction} className="rounded-lg bg-amber-700 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-amber-800" type="submit">Freeze visible shipper AP</button>
-              <button formAction={freezeMatchingShipperApRowsAction} className="rounded-lg bg-amber-900 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-amber-950" type="submit">Freeze all matching shipper AP</button>
-              <button formAction={revalidateMatchingFrozenRowsAction} className="rounded-lg bg-violet-700 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-violet-800" type="submit">Revalidate matching frozen</button>
-              <button formAction={createPostingBatchFromMatchingRowsAction} className="rounded-lg bg-slate-950 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-slate-800" type="submit">Create posting batch — no Sage call</button>
-              <Link href="/internal/accounting-command-centre/posting-preview" className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-center text-[11px] font-bold text-slate-800 hover:bg-slate-50">Frozen snapshot drill-down</Link>
+            <div className="mt-3 flex flex-col gap-3">
+              <SelectionControls />
+              <div className="grid gap-2 rounded-2xl border border-amber-100 bg-amber-50 p-3 md:grid-cols-3">
+                <div>
+                  <p className="text-xs font-extrabold uppercase tracking-wide text-amber-900">Selected visible rows</p>
+                  <p className="mt-1 text-[11px] leading-4 text-amber-900">Uses the checked boxes on this page only. Safe for one-by-one or visible-page work.</p>
+                </div>
+                <div>
+                  <p className="text-xs font-extrabold uppercase tracking-wide text-amber-900">All matching rows</p>
+                  <p className="mt-1 text-[11px] leading-4 text-amber-900">Ignores the checkboxes and uses the current filters/search across all matching rows.</p>
+                </div>
+                <div>
+                  <p className="text-xs font-extrabold uppercase tracking-wide text-amber-900">Row action</p>
+                  <p className="mt-1 text-[11px] leading-4 text-amber-900">Freezes that one row only. Use this when testing a single document.</p>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button formAction={freezeSelectedCustomerSalesRowsAction} className="rounded-lg bg-amber-700 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-amber-800" type="submit">Freeze selected customer sales</button>
+                <button formAction={freezeMatchingCustomerSalesRowsAction} className="rounded-lg bg-amber-900 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-amber-950" type="submit">Freeze all matching customer sales</button>
+                <button formAction={freezeSelectedSupplierGoodsApRowsAction} className="rounded-lg bg-amber-700 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-amber-800" type="submit">Freeze selected supplier goods AP</button>
+                <button formAction={freezeMatchingSupplierGoodsApRowsAction} className="rounded-lg bg-amber-900 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-amber-950" type="submit">Freeze all matching supplier goods AP</button>
+                <button formAction={freezeSelectedShipperApRowsAction} className="rounded-lg bg-amber-700 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-amber-800" type="submit">Freeze selected shipper AP</button>
+                <button formAction={freezeMatchingShipperApRowsAction} className="rounded-lg bg-amber-900 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-amber-950" type="submit">Freeze all matching shipper AP</button>
+                <button formAction={revalidateMatchingFrozenRowsAction} className="rounded-lg bg-violet-700 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-violet-800" type="submit">Revalidate matching frozen</button>
+                <button formAction={createPostingBatchFromMatchingRowsAction} className="rounded-lg bg-slate-950 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-slate-800" type="submit">Create posting batch — no Sage call</button>
+                <Link href="/internal/accounting-command-centre/posting-preview" className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-center text-[11px] font-bold text-slate-800 hover:bg-slate-50">Frozen snapshot drill-down</Link>
+              </div>
             </div>
           </div>
 
@@ -481,8 +522,8 @@ export default async function AccountingCommandCentrePage({
 
         <section className="rounded-3xl border border-violet-200 bg-violet-50 p-5 text-sm leading-6 text-violet-900">
           <h2 className="font-bold">v5 control rule</h2>
-          <p className="mt-2">This page is the single accounting/Sage cockpit. Default view shows current actionable rows only. Queue “All documents” includes full lifecycle history, including rows already locked in local posting batches. Actual Sage posting is still not built.</p>
-          <p className="mt-2 font-semibold">Bulk mode distinguishes selected visible rows from all matching current filter. Posting batches created here make no Sage call and remain disabled until Sage OAuth and dry-run validation are proven.</p>
+          <p className="mt-2">This page is the single accounting/Sage cockpit. Default view shows current actionable rows only. Queue “All documents” includes full lifecycle history, including rows already locked in local posting batches. Actual Sage posting stays guarded by dry-run, mapping, OAuth and lane-specific posting controls.</p>
+          <p className="mt-2 font-semibold">Selected-visible actions use the checked boxes on the visible page. All-matching actions ignore the checked boxes and use the current filters/search. Row action freezes one document only.</p>
         </section>
       </div>
     </main>
