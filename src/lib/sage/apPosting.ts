@@ -123,7 +123,6 @@ function errorMessage(raw: unknown) {
 function extractSupplierGoodsApPurchaseInvoicePayload(row: BatchRow) {
   const payload = asObject(row.request_payload_json);
   const header = asObject(payload.sage_header);
-  const supplierTarget = asObject(payload.supplier_target);
   const sourcePayload = asObject(payload.source_payload);
   const sourceHeader = asObject(sourcePayload.sage_header);
   const contactId = firstText(payload, [
@@ -149,17 +148,28 @@ function extractSupplierGoodsApPurchaseInvoicePayload(row: BatchRow) {
   const currencyCode = text(header.currency_code) || text(row.currency_code) || "GBP";
   const resolvedLines = asArray(payload.resolved_lines).map(asObject);
 
+  const frozenLedgerAccountId = firstText(payload, [
+    ["mapping_snapshot", "SUPPLIER_GOODS_AP_LEDGER", "sage_external_id"],
+    ["source_payload", "mapping_snapshot", "SUPPLIER_GOODS_AP_LEDGER", "sage_external_id"],
+  ]);
+  const frozenTaxRateId = firstText(payload, [
+    ["mapping_snapshot", "SUPPLIER_GOODS_AP_TAX_RATE", "sage_external_id"],
+    ["source_payload", "mapping_snapshot", "SUPPLIER_GOODS_AP_TAX_RATE", "sage_external_id"],
+  ]);
+
   if (!contactId) throw new Error("Supplier goods AP Sage supplier contact id missing from frozen payload.");
   if (!date) throw new Error("Supplier goods AP invoice date missing from frozen payload.");
   if (resolvedLines.length === 0) throw new Error("Supplier goods AP invoice has no resolved lines.");
+  if (!frozenLedgerAccountId) throw new Error("Supplier goods AP frozen ledger mapping is missing.");
+  if (!frozenTaxRateId) throw new Error("Supplier goods AP frozen tax-rate mapping is missing.");
 
   let grossTotal = 0;
   let sageNetTotal = 0;
 
   const invoiceLines = resolvedLines.map((line, index) => {
     const description = firstText(line, [["description"], ["posting_description"], ["source_description"]]);
-    const ledgerAccountId = firstText(line, [["sage_ledger_account_id"], ["resolved_ledger_account_id"]]);
-    const taxRateId = firstText(line, [["sage_tax_rate_id"], ["resolved_tax_rate_id"]]);
+    const ledgerAccountId = frozenLedgerAccountId || firstText(line, [["sage_ledger_account_id"], ["resolved_ledger_account_id"]]);
+    const taxRateId = frozenTaxRateId || firstText(line, [["sage_tax_rate_id"], ["resolved_tax_rate_id"]]);
     const quantity = num(line.quantity || line.qty || 1) || 1;
     const netAmount = num(line.net_amount_gbp);
     const vatAmount = num(line.vat_amount_gbp);
@@ -344,12 +354,13 @@ export async function postSupplierGoodsApBatchToSage(params: {
     .from("sage_posting_batch_rows")
     .select("*")
     .eq("batch_id", params.batchId)
-    .in("posting_status", ["included", "validated", "failed_retryable"]);
+    .in("posting_status", ["included", "validated", "failed_retryable", "failed_terminal"]);
   if (rowsError) throw new Error(rowsError.message);
   const rows = (rowsRaw ?? []) as BatchRow[];
   if (rows.length === 0) throw new Error("No postable rows found in this batch.");
   if (rows.some((row) => row.document_lane !== "supplier_goods_ap")) throw new Error("Supplier-goods AP posting only supports a supplier_goods_ap-only batch.");
   if (rows.some((row) => row.payload_validation_status !== "dry_run_validated")) throw new Error("Every supplier goods AP row must be dry-run validated before posting.");
+  if (rows.some((row) => text((row as Row).sage_object_id) || row.posting_status === "posted")) throw new Error("One or more supplier goods AP rows already have a Sage object id or posted status.");
 
   const context = await activeSageContext(params.origin);
   await supabaseAdmin.from("sage_posting_batches").update({
