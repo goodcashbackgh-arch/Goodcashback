@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 import { supersedeLocalSagePostingBatchAction, validateSagePostingBatchPayloadsAction } from "../../actions";
+import { postCustomerSalesBatchToSageAction } from "../../postingActions";
 
 type Row = Record<string, unknown>;
 type Tone = "complete" | "action" | "blocked" | "review" | "muted";
@@ -374,6 +375,14 @@ export default async function PostingBatchDetailPage({
     const facts = sageFacts(row);
     return !facts.contactId || !facts.ledgerId || !facts.taxRateId || facts.lines.length === 0 || facts.missingLineDescriptions > 0;
   });
+  const customerSalesRows = includedRows.filter((row) => text(row.document_lane) === "customer_sales");
+  const canPostCustomerSales = !error
+    && process.env.SAGE_LIVE_POSTING_ENABLED === "true"
+    && customerSalesRows.length > 0
+    && includedRows.length === customerSalesRows.length
+    && dryRunValidRows.length === includedRows.length
+    && targetMissingRows.length === 0
+    && includedRows.every((row) => !text(row.sage_object_id) && text(row.posting_status) !== "posted");
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-5 text-slate-950 sm:px-6 lg:px-8">
@@ -384,7 +393,7 @@ export default async function PostingBatchDetailPage({
               <Link href="/internal/accounting-command-centre" className="text-sm font-semibold text-sky-700">← Accounting Command Centre</Link>
               <div className="mt-3 flex flex-wrap items-center gap-2">
                 <p className="text-xs font-bold uppercase tracking-[0.2em] text-violet-500">Posting batch detail</p>
-                <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] font-bold text-amber-900">Posting disabled · no Sage object creation</span>
+                <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] font-bold text-amber-900">Posting guarded by live env flag</span>
               </div>
               <h1 className="mt-1 truncate text-3xl font-semibold tracking-tight sm:text-4xl">{text(first.batch_ref) || "Posting batch"}</h1>
               <p className="mt-1 max-w-5xl text-sm leading-5 text-slate-600">Local batch lock plus Phase 11 dry-run validation. All lanes must show source facts, Sage target IDs, actual line descriptions and amount controls before adapter work.</p>
@@ -400,6 +409,17 @@ export default async function PostingBatchDetailPage({
                     Validate Sage payloads — dry run only
                   </button>
                 </form>
+                <form action={postCustomerSalesBatchToSageAction} className="flex flex-wrap items-center gap-2">
+                  <input type="hidden" name="batch_id" value={batchId} />
+                  <button
+                    type="submit"
+                    disabled={!canPostCustomerSales}
+                    className="rounded-2xl bg-emerald-700 px-4 py-2 text-sm font-bold text-white shadow-sm disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-600"
+                    title="Posts customer_sales batches only. Requires SAGE_LIVE_POSTING_ENABLED=true and all rows dry-run validated."
+                  >
+                    Post customer sales to Sage
+                  </button>
+                </form>
                 <form action={supersedeLocalSagePostingBatchAction} className="flex flex-wrap items-center gap-2">
                   <input type="hidden" name="batch_id" value={batchId} />
                   <input type="hidden" name="reason" value="Superseded from batch detail to re-freeze from current resolver" />
@@ -411,7 +431,11 @@ export default async function PostingBatchDetailPage({
                     Supersede local batch
                   </button>
                 </form>
-                <span className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-900">No Sage API posting endpoint is called.</span>
+                {process.env.SAGE_LIVE_POSTING_ENABLED === "true" ? (
+                  <span className="rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-900">Live Sage posting flag is enabled.</span>
+                ) : (
+                  <span className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-900">Live Sage posting disabled until SAGE_LIVE_POSTING_ENABLED=true.</span>
+                )}
               </div>
             </div>
             <div className="flex shrink-0 flex-wrap gap-1.5 xl:max-w-[840px] xl:justify-end">
