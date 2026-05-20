@@ -1,3 +1,4 @@
+type Row = Record<string, unknown>;
 
 export type SageAttachmentJsonAttempt = {
   endpoint: string;
