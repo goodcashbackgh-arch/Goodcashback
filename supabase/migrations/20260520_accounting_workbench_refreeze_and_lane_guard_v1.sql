@@ -13,7 +13,7 @@ BEGIN;
 SET LOCAL lock_timeout = '15s';
 SET LOCAL statement_timeout = '0';
 
-DO $$
+DO $do$
 DECLARE
   v_grid_oid oid := to_regprocedure('public.internal_accounting_command_centre_grid_v1(text,text,text,text,integer,integer)');
   v_batch_oid oid := to_regprocedure('public.internal_create_sage_posting_batch_from_filter_v1(text,text,text,text,boolean,text,integer)');
@@ -30,11 +30,11 @@ BEGIN
   END IF;
 
   v_sql := pg_get_functiondef(v_grid_oid);
-  v_before := $$OR (v_queue = 'actionable' AND s.out_work_queue IN ('live_ready_not_frozen', 'frozen_ready_to_post', 'requires_revalidation', 'blocked_before_posting', 'posting_failed'))$$;
-  v_after := $$OR (v_queue = 'actionable' AND (
+  v_before := $needle$OR (v_queue = 'actionable' AND s.out_work_queue IN ('live_ready_not_frozen', 'frozen_ready_to_post', 'requires_revalidation', 'blocked_before_posting', 'posting_failed'))$needle$;
+  v_after := $replacement$OR (v_queue = 'actionable' AND (
         s.out_work_queue IN ('live_ready_not_frozen', 'frozen_ready_to_post', 'requires_revalidation', 'blocked_before_posting', 'posting_failed')
         OR (s.out_work_queue = 'cancelled_or_superseded' AND s.out_selectable = true)
-      ))$$;
+      ))$replacement$;
 
   IF position(v_before in v_sql) = 0 AND position(v_after in v_sql) = 0 THEN
     RAISE EXCEPTION 'Could not find actionable queue predicate to patch in internal_accounting_command_centre_grid_v1';
@@ -46,12 +46,12 @@ BEGIN
   END IF;
 
   v_sql := pg_get_functiondef(v_batch_oid);
-  v_before := $$SELECT public.internal_current_staff_id_v1() INTO v_staff_id;$$;
-  v_after := $$SELECT public.internal_current_staff_id_v1() INTO v_staff_id;
+  v_before := $needle$SELECT public.internal_current_staff_id_v1() INTO v_staff_id;$needle$;
+  v_after := $replacement$SELECT public.internal_current_staff_id_v1() INTO v_staff_id;
 
   IF v_lane NOT IN ('customer_sales', 'supplier_goods_ap', 'shipper_ap') THEN
     RAISE EXCEPTION 'Choose exactly one posting lane before creating a Sage posting batch. Mixed customer/AP batches are blocked.';
-  END IF;$$;
+  END IF;$replacement$;
 
   IF position(v_after in v_sql) = 0 THEN
     IF position(v_before in v_sql) = 0 THEN
@@ -60,7 +60,8 @@ BEGIN
     v_sql := replace(v_sql, v_before, v_after);
     EXECUTE v_sql;
   END IF;
-END $$;
+END
+$do$;
 
 NOTIFY pgrst, 'reload schema';
 COMMIT;
