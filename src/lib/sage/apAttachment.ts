@@ -191,6 +191,7 @@ function jsonAttempts(args: {
   return buildSageAttachmentJsonAttempts({
     configuredEndpointTemplate: process.env.SAGE_PURCHASE_INVOICE_ATTACHMENT_ENDPOINT_TEMPLATE,
     sageInvoiceId: args.sageInvoiceId,
+    sourceUrl: args.sourceUrl,
     fileName: args.fileName,
     mimeType: args.contentType,
     encodedFile: args.base64,
