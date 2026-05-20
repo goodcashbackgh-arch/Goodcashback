@@ -32,18 +32,31 @@ function toneClass(status: unknown) {
   return "border-slate-200 bg-slate-50 text-slate-700";
 }
 
+function isCancelledOrSuperseded(row: Row) {
+  const status = text(row.status).toLowerCase();
+  const batchStatus = text(row.batch_status).toLowerCase();
+  const batchStatusField = text(row.batch_status_field).toLowerCase();
+
+  return status === "cancelled"
+    || status === "superseded"
+    || batchStatus === "cancelled"
+    || batchStatus === "superseded"
+    || batchStatusField === "cancelled"
+    || batchStatusField === "superseded";
+}
+
 export default async function PostingBatchHistoryPanel() {
   const supabase = await createClient();
   const { data, error } = await (supabase as any).rpc("internal_sage_posting_batch_history_v1", { p_limit: 30 });
-  const rows = ((data ?? []) as Row[]);
+  const rows = ((data ?? []) as Row[]).filter((row) => !isCancelledOrSuperseded(row));
 
   return (
     <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
       <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <p className="text-xs font-bold uppercase tracking-[0.2em] text-violet-500">Posting batch history</p>
-          <h2 className="mt-1 text-xl font-semibold">Recent local batches</h2>
-          <p className="mt-1 text-sm leading-5 text-slate-600">Read-only history of the latest 30 local batch locks. Rows already locked here are intentionally hidden from the default live workbench grid. Use Queue = All documents to filter the full lifecycle in the grid.</p>
+          <h2 className="mt-1 text-xl font-semibold">Recent active batches</h2>
+          <p className="mt-1 text-sm leading-5 text-slate-600">Read-only list of current local batch locks. Cancelled/superseded batches are hidden here so they do not look like work in progress. Use Queue = Cancelled/Superseded or All documents in the grid only when you need audit history or refreeze pointers.</p>
         </div>
         <Link href="/internal/accounting-command-centre?queue=all" className="w-fit rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-800 hover:bg-slate-50">Open full history grid</Link>
       </div>
@@ -78,7 +91,7 @@ export default async function PostingBatchHistoryPanel() {
           </thead>
           <tbody className="divide-y divide-slate-100 bg-white">
             {rows.length === 0 ? (
-              <tr><td colSpan={9} className="px-3 py-5 text-center text-sm text-slate-500">No posting batches yet.</td></tr>
+              <tr><td colSpan={9} className="px-3 py-5 text-center text-sm text-slate-500">No active posting batches.</td></tr>
             ) : rows.map((row) => {
               const href = text(row.detail_href) || `/internal/accounting-command-centre/batches/${text(row.batch_id)}`;
               return (
