@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
+import { supabaseAdmin } from "@/lib/supabase/admin";
 import { postSupplierGoodsApBatchToSage } from "@/lib/sage/apPosting";
 import { attachSupplierGoodsApSourcePdfToSage } from "@/lib/sage/apAttachment";
 
@@ -10,6 +11,13 @@ type StaffRow = {
   id: string;
   role_type: string | null;
   permissions_json: unknown;
+};
+
+type AttachmentSummary = {
+  attempted: number;
+  attached: number;
+  failed: number;
+  errors: string[];
 };
 
 function hasAccountingAdminTesting(value: unknown) {
@@ -20,6 +28,12 @@ function hasAccountingAdminTesting(value: unknown) {
 
 function formText(formData: FormData, key: string, fallback = "") {
   return String(formData.get(key) ?? fallback).trim();
+}
+
+function text(value: unknown) {
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return "";
 }
 
 function appOrigin() {
@@ -54,6 +68,70 @@ async function requireAccountingPostingContext() {
   return { staffId: row.id };
 }
 
+async function postedSupplierGoodsApSnapshotIdsForBatch(batchId: string) {
+  const { data, error } = await supabaseAdmin
+    .from("sage_posting_batch_rows")
+    .select("snapshot_id")
+    .eq("batch_id", batchId)
+    .eq("document_lane", "supplier_goods_ap")
+    .eq("posting_status", "posted");
+
+  if (error) throw new Error(error.message);
+
+  const rowSnapshotIds = Array.from(new Set(
+    ((data ?? []) as Array<{ snapshot_id: string | null }>)
+      .map((row) => text(row.snapshot_id))
+      .filter(Boolean),
+  ));
+
+  if (rowSnapshotIds.length === 0) return [];
+
+  const { data: snapshots, error: snapshotError } = await supabaseAdmin
+    .from("sage_posting_snapshots")
+    .select("id, sage_attachment_status")
+    .in("id", rowSnapshotIds)
+    .eq("document_lane", "supplier_goods_ap")
+    .eq("sage_posting_status", "posted");
+
+  if (snapshotError) throw new Error(snapshotError.message);
+
+  return ((snapshots ?? []) as Array<{ id: string; sage_attachment_status: string | null }>)
+    .filter((snapshot) => text(snapshot.sage_attachment_status) !== "attached")
+    .map((snapshot) => snapshot.id);
+}
+
+async function attachPostedSupplierGoodsApSnapshots(args: { batchId: string; staffId: string; origin: string }): Promise<AttachmentSummary> {
+  const snapshotIds = await postedSupplierGoodsApSnapshotIdsForBatch(args.batchId);
+  const summary: AttachmentSummary = { attempted: snapshotIds.length, attached: 0, failed: 0, errors: [] };
+
+  for (const snapshotId of snapshotIds) {
+    try {
+      const result = await attachSupplierGoodsApSourcePdfToSage({
+        snapshotId,
+        staffId: args.staffId,
+        origin: args.origin,
+      });
+      summary.attached += result.attached;
+    } catch (error) {
+      summary.failed += 1;
+      summary.errors.push(error instanceof Error ? error.message : "Supplier AP source PDF attachment failed.");
+    }
+  }
+
+  return summary;
+}
+
+function postingSuccessMessage(result: { posted: number; failed: number; total: number }, attachment: AttachmentSummary) {
+  const base = `Supplier goods AP Sage posting finished: ${result.posted} posted, ${result.failed} failed, ${result.total} total.`;
+  if (result.posted === 0) return base;
+
+  const attachmentText = ` Source PDF attachment: ${attachment.attached} attached, ${attachment.failed} failed, ${attachment.attempted} attempted.`;
+  if (attachment.failed === 0) return `${base}${attachmentText}`;
+
+  const firstError = attachment.errors[0] ? ` First attachment error: ${attachment.errors[0]}` : "";
+  return `${base}${attachmentText}${firstError}`;
+}
+
 export async function postSupplierGoodsApBatchToSageAction(formData: FormData) {
   const batchId = formText(formData, "batch_id", "");
   if (!batchId) redirect("/internal/accounting-command-centre?error=Missing posting batch id");
@@ -62,16 +140,24 @@ export async function postSupplierGoodsApBatchToSageAction(formData: FormData) {
   let redirectTo = `/internal/accounting-command-centre/batches/${batchId}`;
 
   try {
+    const origin = appOrigin();
     const result = await postSupplierGoodsApBatchToSage({
       batchId,
       staffId,
-      origin: appOrigin(),
+      origin,
     });
+
+    let attachmentSummary: AttachmentSummary = { attempted: 0, attached: 0, failed: 0, errors: [] };
+    if (result.posted > 0) {
+      attachmentSummary = await attachPostedSupplierGoodsApSnapshots({ batchId, staffId, origin });
+    }
 
     if (result.failed > 0) {
       redirectTo = `/internal/accounting-command-centre/batches/${batchId}?error=${encodeURIComponent(`Supplier goods AP Sage posting finished with failures: ${result.posted} posted, ${result.failed} failed, ${result.total} total. Check the row Reason / error column.`)}`;
+    } else if (attachmentSummary.failed > 0) {
+      redirectTo = `/internal/accounting-command-centre/batches/${batchId}?error=${encodeURIComponent(postingSuccessMessage(result, attachmentSummary))}`;
     } else {
-      redirectTo = `/internal/accounting-command-centre/batches/${batchId}?success=${encodeURIComponent(`Supplier goods AP Sage posting finished: ${result.posted} posted, ${result.failed} failed, ${result.total} total.`)}`;
+      redirectTo = `/internal/accounting-command-centre/batches/${batchId}?success=${encodeURIComponent(postingSuccessMessage(result, attachmentSummary))}`;
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : "Supplier goods AP Sage posting failed.";
@@ -80,6 +166,7 @@ export async function postSupplierGoodsApBatchToSageAction(formData: FormData) {
 
   revalidatePath("/internal/accounting-command-centre");
   revalidatePath(`/internal/accounting-command-centre/batches/${batchId}`);
+  revalidatePath(`/internal/accounting-command-centre/batches/${batchId}/supplier-goods-ap-attachments`);
   redirect(redirectTo);
 }
 
