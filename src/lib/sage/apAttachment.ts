@@ -19,6 +19,8 @@ import {
 type Row = Record<string, any>;
 type JsonAttempt = SageAttachmentJsonAttempt;
 
+type SupportedApAttachmentLane = "supplier_goods_ap" | "shipper_ap";
+
 function asObject(value: unknown): Row {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Row) : {};
 }
@@ -79,15 +81,57 @@ function sourceUrl(snapshot: Row) {
     ["resolved_payload", "source_evidence", "file_url"],
     ["resolved_payload", "source_payload", "supplier_invoice_pdf_url"],
     ["resolved_payload", "source_payload", "invoice_pdf_url"],
+    ["resolved_payload", "source_payload", "document_file_url"],
+    ["resolved_payload", "source_payload", "file_url"],
     ["commercial_payload", "source_evidence", "file_url"],
     ["commercial_payload", "supplier_invoice_pdf_url"],
     ["commercial_payload", "invoice_pdf_url"],
+    ["commercial_payload", "document_file_url"],
+    ["commercial_payload", "file_url"],
   ]);
 }
 
 function fileName(snapshot: Row) {
-  const base = text(snapshot.reference_text) || text(snapshot.order_ref) || text(snapshot.source_id) || "supplier_invoice";
+  const lane = text(snapshot.document_lane) || "ap";
+  const base = text(snapshot.reference_text) || text(snapshot.order_ref) || text(snapshot.source_id) || `${lane}_source_document`;
   return `${base.replace(/[^a-zA-Z0-9._-]+/g, "_")}.pdf`;
+}
+
+function laneLabel(lane: string) {
+  if (lane === "supplier_goods_ap") return "Supplier goods AP";
+  if (lane === "shipper_ap") return "Shipper AP";
+  return "AP";
+}
+
+async function hydrateSourceUrlFromSourceTable(snapshot: Row) {
+  const existing = sourceUrl(snapshot);
+  if (existing) return existing;
+
+  const sourceTable = text(snapshot.source_table);
+  const sourceId = text(snapshot.source_id);
+  if (!sourceTable || !sourceId) return "";
+
+  if (sourceTable === "supplier_invoices") {
+    const { data, error } = await supabaseAdmin
+      .from("supplier_invoices")
+      .select("invoice_pdf_url")
+      .eq("id", sourceId)
+      .maybeSingle();
+    if (error) throw new Error(error.message);
+    return text((data as Row | null)?.invoice_pdf_url);
+  }
+
+  if (sourceTable === "shipping_documents") {
+    const { data, error } = await supabaseAdmin
+      .from("shipping_documents")
+      .select("file_url")
+      .eq("id", sourceId)
+      .maybeSingle();
+    if (error) throw new Error(error.message);
+    return text((data as Row | null)?.file_url);
+  }
+
+  return "";
 }
 
 async function sageContext(origin: string) {
@@ -268,7 +312,7 @@ async function logRequest(args: {
   return text(data?.id);
 }
 
-export async function attachSupplierGoodsApSourcePdfToSage(params: { snapshotId: string; staffId: string; origin: string }) {
+export async function attachApSourcePdfToSage(params: { snapshotId: string; staffId: string; origin: string }) {
   if (process.env.SAGE_LIVE_POSTING_ENABLED !== "true") throw new Error("Live Sage posting is disabled. Attachment calls are disabled too.");
 
   const { data: snapshotRaw, error: snapshotError } = await supabaseAdmin
@@ -279,12 +323,14 @@ export async function attachSupplierGoodsApSourcePdfToSage(params: { snapshotId:
   if (snapshotError) throw new Error(snapshotError.message);
   const snapshot = (snapshotRaw ?? null) as Row | null;
   if (!snapshot) throw new Error("Sage posting snapshot not found.");
-  if (text(snapshot.document_lane) !== "supplier_goods_ap") throw new Error("Only supplier goods AP attachments are supported here.");
-  if (text(snapshot.sage_posting_status) !== "posted" || !text(snapshot.sage_invoice_id)) throw new Error("Supplier AP must be posted before attaching evidence.");
+
+  const lane = text(snapshot.document_lane) as SupportedApAttachmentLane;
+  if (lane !== "supplier_goods_ap" && lane !== "shipper_ap") throw new Error("Only supplier goods AP and shipper AP attachments are supported here.");
+  if (text(snapshot.sage_posting_status) !== "posted" || !text(snapshot.sage_invoice_id)) throw new Error(`${laneLabel(lane)} must be posted before attaching evidence.`);
   if (text(snapshot.sage_attachment_status) === "attached") throw new Error("Source PDF is already marked attached. Reset/retry only if the earlier Sage response proves it was unlinked.");
 
-  const url = sourceUrl(snapshot);
-  if (!url) throw new Error("No source PDF URL found on this posted supplier AP snapshot.");
+  const url = await hydrateSourceUrlFromSourceTable(snapshot);
+  if (!url) throw new Error(`No source PDF URL found on this posted ${laneLabel(lane)} snapshot.`);
 
   const ctx = await sageContext(params.origin);
   const pdf = await fetch(url, { cache: "no-store" });
@@ -399,4 +445,8 @@ export async function attachSupplierGoodsApSourcePdfToSage(params: { snapshotId:
   }).eq("id", params.snapshotId);
 
   throw new Error(finalError);
+}
+
+export async function attachSupplierGoodsApSourcePdfToSage(params: { snapshotId: string; staffId: string; origin: string }) {
+  return attachApSourcePdfToSage(params);
 }
