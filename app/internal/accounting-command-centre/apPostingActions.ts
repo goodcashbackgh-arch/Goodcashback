@@ -10,7 +10,7 @@ import {
   postShipperApBatchToSage,
   type ApPostingLane,
 } from "@/lib/sage/apPosting";
-import { attachSupplierGoodsApSourcePdfToSage } from "@/lib/sage/apAttachment";
+import { attachApSourcePdfToSage } from "@/lib/sage/apAttachment";
 
 type StaffRow = {
   id: string;
@@ -56,6 +56,10 @@ function apLaneFromForm(formData: FormData): ApPostingLane {
   throw new Error(`Unsupported AP posting lane ${lane || "unknown"}`);
 }
 
+function apLaneLabel(lane: ApPostingLane) {
+  return lane === "shipper_ap" ? "Shipper AP" : "Supplier goods AP";
+}
+
 async function requireAccountingPostingContext() {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -79,12 +83,12 @@ async function requireAccountingPostingContext() {
   return { staffId: row.id };
 }
 
-async function postedSupplierGoodsApSnapshotIdsForBatch(batchId: string) {
+async function postedApSnapshotIdsForBatch(batchId: string, lane: ApPostingLane) {
   const { data, error } = await supabaseAdmin
     .from("sage_posting_batch_rows")
     .select("snapshot_id")
     .eq("batch_id", batchId)
-    .eq("document_lane", "supplier_goods_ap")
+    .eq("document_lane", lane)
     .eq("posting_status", "posted");
 
   if (error) throw new Error(error.message);
@@ -101,7 +105,7 @@ async function postedSupplierGoodsApSnapshotIdsForBatch(batchId: string) {
     .from("sage_posting_snapshots")
     .select("id, sage_attachment_status")
     .in("id", rowSnapshotIds)
-    .eq("document_lane", "supplier_goods_ap")
+    .eq("document_lane", lane)
     .eq("sage_posting_status", "posted");
 
   if (snapshotError) throw new Error(snapshotError.message);
@@ -111,13 +115,13 @@ async function postedSupplierGoodsApSnapshotIdsForBatch(batchId: string) {
     .map((snapshot) => snapshot.id);
 }
 
-async function attachPostedSupplierGoodsApSnapshots(args: { batchId: string; staffId: string; origin: string }): Promise<AttachmentSummary> {
-  const snapshotIds = await postedSupplierGoodsApSnapshotIdsForBatch(args.batchId);
+async function attachPostedApSnapshots(args: { batchId: string; lane: ApPostingLane; staffId: string; origin: string }): Promise<AttachmentSummary> {
+  const snapshotIds = await postedApSnapshotIdsForBatch(args.batchId, args.lane);
   const summary: AttachmentSummary = { attempted: snapshotIds.length, attached: 0, failed: 0, errors: [] };
 
   for (const snapshotId of snapshotIds) {
     try {
-      const result = await attachSupplierGoodsApSourcePdfToSage({
+      const result = await attachApSourcePdfToSage({
         snapshotId,
         staffId: args.staffId,
         origin: args.origin,
@@ -125,7 +129,7 @@ async function attachPostedSupplierGoodsApSnapshots(args: { batchId: string; sta
       summary.attached += result.attached;
     } catch (error) {
       summary.failed += 1;
-      summary.errors.push(error instanceof Error ? error.message : "Supplier AP source PDF attachment failed.");
+      summary.errors.push(error instanceof Error ? error.message : `${apLaneLabel(args.lane)} source PDF attachment failed.`);
     }
   }
 
@@ -162,8 +166,8 @@ async function postApPurchaseInvoiceBatchAction(formData: FormData, forcedLane?:
     });
 
     let attachmentSummary: AttachmentSummary | undefined;
-    if (lane === "supplier_goods_ap" && result.posted > 0) {
-      attachmentSummary = await attachPostedSupplierGoodsApSnapshots({ batchId, staffId, origin });
+    if (result.posted > 0) {
+      attachmentSummary = await attachPostedApSnapshots({ batchId, lane, staffId, origin });
     }
 
     if (result.failed > 0) {
@@ -210,14 +214,14 @@ export async function attachSupplierGoodsApSourcePdfAction(formData: FormData) {
   let redirectTo = `/internal/accounting-command-centre/batches/${batchId}/supplier-goods-ap-attachments`;
 
   try {
-    const result = await attachSupplierGoodsApSourcePdfToSage({
+    const result = await attachApSourcePdfToSage({
       snapshotId,
       staffId,
       origin: appOrigin(),
     });
-    redirectTo = `/internal/accounting-command-centre/batches/${batchId}/supplier-goods-ap-attachments?success=${encodeURIComponent(`Supplier AP source PDF attached to Sage. Endpoint ${result.endpoint}; field ${result.fieldName}.`)}`;
+    redirectTo = `/internal/accounting-command-centre/batches/${batchId}/supplier-goods-ap-attachments?success=${encodeURIComponent(`AP source PDF attached to Sage. Endpoint ${result.endpoint}; field ${result.fieldName}.`)}`;
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Supplier AP source PDF attachment failed.";
+    const message = error instanceof Error ? error.message : "AP source PDF attachment failed.";
     redirectTo = `/internal/accounting-command-centre/batches/${batchId}/supplier-goods-ap-attachments?error=${encodeURIComponent(message)}`;
   }
 
