@@ -1,5 +1,4 @@
 import crypto from "node:crypto";
-import { Buffer } from "node:buffer";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import {
   assertSageOAuthConfigured,
@@ -14,10 +13,11 @@ import {
 
 type Row = Record<string, any>;
 
-type AttachmentAttempt = {
+type JsonAttempt = {
   endpoint: string;
-  fieldName: string;
-  meta: Record<string, string>;
+  label: string;
+  payload: Row;
+  auditPayload: Row;
 };
 
 function asObject(value: unknown): Row {
@@ -182,63 +182,142 @@ async function sageContext(origin: string) {
   };
 }
 
-function candidateAttempts(sageInvoiceId: string, name: string): AttachmentAttempt[] {
-  const id = encodeURIComponent(sageInvoiceId);
+function jsonAttempts(args: {
+  sageInvoiceId: string;
+  sourceUrl: string;
+  fileName: string;
+  contentType: string;
+  base64: string;
+  byteLength: number;
+}): JsonAttempt[] {
+  const id = encodeURIComponent(args.sageInvoiceId);
   const configured = text(process.env.SAGE_PURCHASE_INVOICE_ATTACHMENT_ENDPOINT_TEMPLATE);
   const endpoints = configured
     ? [configured.replaceAll("{purchase_invoice_id}", id).replaceAll("{id}", id).replaceAll("{sage_object_id}", id)]
     : [`/purchase_invoices/${id}/attachments`, "/attachments"];
 
-  const fileFields = [
-    text(process.env.SAGE_ATTACHMENT_FILE_FIELD_NAME) || "file",
-    "attachment[file]",
-    "attachment",
-    "attachment_file",
-  ];
-
-  const attempts: AttachmentAttempt[] = [];
+  const attempts: JsonAttempt[] = [];
   for (const endpoint of endpoints) {
-    for (const fieldName of fileFields) {
-      attempts.push({ endpoint, fieldName, meta: { description: name } });
-    }
+    attempts.push({
+      endpoint,
+      label: "json_attachment_file_data",
+      payload: {
+        attachment: {
+          file_name: args.fileName,
+          content_type: args.contentType,
+          file_data: args.base64,
+          description: args.fileName,
+        },
+      },
+      auditPayload: {
+        attachment: {
+          file_name: args.fileName,
+          content_type: args.contentType,
+          file_data: `[base64 redacted; ${args.byteLength} bytes]`,
+          description: args.fileName,
+        },
+      },
+    });
+
+    attempts.push({
+      endpoint,
+      label: "json_attachment_data",
+      payload: {
+        attachment: {
+          file_name: args.fileName,
+          mime_type: args.contentType,
+          data: args.base64,
+          description: args.fileName,
+        },
+      },
+      auditPayload: {
+        attachment: {
+          file_name: args.fileName,
+          mime_type: args.contentType,
+          data: `[base64 redacted; ${args.byteLength} bytes]`,
+          description: args.fileName,
+        },
+      },
+    });
+
+    attempts.push({
+      endpoint,
+      label: "json_attachment_url",
+      payload: {
+        attachment: {
+          file_name: args.fileName,
+          url: args.sourceUrl,
+          description: args.fileName,
+        },
+      },
+      auditPayload: {
+        attachment: {
+          file_name: args.fileName,
+          url: args.sourceUrl,
+          description: args.fileName,
+        },
+      },
+    });
+
     if (endpoint === "/attachments") {
-      attempts.push({ endpoint, fieldName: "file", meta: { context_type: "purchase_invoice", context_id: sageInvoiceId, description: name } });
-      attempts.push({ endpoint, fieldName: "attachment[file]", meta: { "attachment[context_type]": "purchase_invoice", "attachment[context_id]": sageInvoiceId, "attachment[description]": name } });
+      attempts.push({
+        endpoint,
+        label: "json_context_attachment_file_data",
+        payload: {
+          attachment: {
+            context_type: "purchase_invoice",
+            context_id: args.sageInvoiceId,
+            file_name: args.fileName,
+            content_type: args.contentType,
+            file_data: args.base64,
+            description: args.fileName,
+          },
+        },
+        auditPayload: {
+          attachment: {
+            context_type: "purchase_invoice",
+            context_id: args.sageInvoiceId,
+            file_name: args.fileName,
+            content_type: args.contentType,
+            file_data: `[base64 redacted; ${args.byteLength} bytes]`,
+            description: args.fileName,
+          },
+        },
+      });
     }
   }
   return attempts;
 }
 
-function multipartBody(args: {
-  fieldName: string;
-  fileName: string;
-  contentType: string;
-  bytes: Buffer;
-  meta: Record<string, string>;
+async function logRequest(args: {
+  ctx: Awaited<ReturnType<typeof sageContext>>;
+  snapshot: Row;
+  staffId: string;
+  endpoint: string;
+  auditPayload: Row;
+  label: string;
 }) {
-  const boundary = `----goodcashback-sage-${crypto.randomBytes(12).toString("hex")}`;
-  const parts: Buffer[] = [];
+  const { data, error } = await supabaseAdmin.from("sage_api_request_log").insert({
+    connection_id: args.ctx.connectionId,
+    sage_business_row_id: args.ctx.sageBusinessRowId,
+    posting_batch_id: args.snapshot.batch_id || null,
+    connection_event_type: "posting_batch",
+    request_kind: "other",
+    http_method: "POST",
+    endpoint_path: args.endpoint,
+    idempotency_key: `attachment:${args.snapshot.id}:${args.endpoint}:${args.label}`,
+    request_payload_redacted: {
+      request_kind_actual: "attachment",
+      attachment_attempt_label: args.label,
+      ...args.auditPayload,
+    },
+    request_headers_redacted: { accept: "application/json", content_type: "application/json", x_business: args.ctx.sageBusinessId },
+    request_payload_hash: bodyHash(args.auditPayload),
+    created_by_staff_id: args.staffId,
+  }).select("id").single();
 
-  for (const [key, value] of Object.entries(args.meta)) {
-    parts.push(Buffer.from(`--${boundary}\r\n`));
-    parts.push(Buffer.from(`Content-Disposition: form-data; name="${key.replace(/"/g, "")}"\r\n\r\n`));
-    parts.push(Buffer.from(`${value}\r\n`));
-  }
-
-  parts.push(Buffer.from(`--${boundary}\r\n`));
-  parts.push(Buffer.from(
-    `Content-Disposition: form-data; name="${args.fieldName.replace(/"/g, "")}"; filename="${args.fileName.replace(/"/g, "")}"\r\n` +
-    `Content-Type: ${args.contentType || "application/pdf"}\r\n\r\n`
-  ));
-  parts.push(args.bytes);
-  parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
-
-  const body = Buffer.concat(parts);
-  return {
-    body,
-    contentType: `multipart/form-data; boundary=${boundary}`,
-    contentLength: String(body.byteLength),
-  };
+  if (error) throw new Error(`Could not log Sage attachment request: ${error.message}`);
+  return text(data?.id);
 }
 
 export async function attachSupplierGoodsApSourcePdfToSage(params: { snapshotId: string; staffId: string; origin: string }) {
@@ -264,6 +343,7 @@ export async function attachSupplierGoodsApSourcePdfToSage(params: { snapshotId:
   if (!pdf.ok) throw new Error(`Could not fetch source PDF (${pdf.status}).`);
   const contentType = pdf.headers.get("content-type") || "application/pdf";
   const bytes = Buffer.from(await pdf.arrayBuffer());
+  const base64 = bytes.toString("base64");
   const name = fileName(snapshot);
 
   await supabaseAdmin.from("sage_posting_snapshots").update({
@@ -276,36 +356,25 @@ export async function attachSupplierGoodsApSourcePdfToSage(params: { snapshotId:
     sage_attachment_attempted_at: new Date().toISOString(),
   }).eq("id", params.snapshotId);
 
-  let finalError = "Sage attachment request failed.";
-  for (const attempt of candidateAttempts(text(snapshot.sage_invoice_id), name)) {
-    const built = multipartBody({ fieldName: attempt.fieldName, fileName: name, contentType, bytes, meta: attempt.meta });
-    const auditPayload = {
-      sage_purchase_invoice_id: text(snapshot.sage_invoice_id),
-      source_table: text(snapshot.source_table),
-      source_id: text(snapshot.source_id),
-      endpoint: attempt.endpoint,
-      file_field_name: attempt.fieldName,
-      meta_keys: Object.keys(attempt.meta),
-      file_name: name,
-      size_bytes: bytes.byteLength,
-      content_type: contentType,
-      multipart_mode: "explicit_boundary_with_content_length",
-    };
+  let finalError = "Sage JSON attachment request failed.";
+  let finalStatus = 0;
 
-    const { data: requestLog } = await supabaseAdmin.from("sage_api_request_log").insert({
-      connection_id: ctx.connectionId,
-      sage_business_row_id: ctx.sageBusinessRowId,
-      posting_batch_id: snapshot.batch_id || null,
-      connection_event_type: "posting_batch",
-      request_kind: "attachment",
-      http_method: "POST",
-      endpoint_path: attempt.endpoint,
-      idempotency_key: `attach:${params.snapshotId}:${attempt.endpoint}:${attempt.fieldName}`,
-      request_payload_redacted: auditPayload,
-      request_headers_redacted: { accept: "application/json", content_type: built.contentType, content_length: built.contentLength, x_business: ctx.sageBusinessId },
-      request_payload_hash: bodyHash(auditPayload),
-      created_by_staff_id: params.staffId,
-    }).select("id").single();
+  for (const attempt of jsonAttempts({
+    sageInvoiceId: text(snapshot.sage_invoice_id),
+    sourceUrl: url,
+    fileName: name,
+    contentType,
+    base64,
+    byteLength: bytes.byteLength,
+  })) {
+    const requestLogId = await logRequest({
+      ctx,
+      snapshot,
+      staffId: params.staffId,
+      endpoint: attempt.endpoint,
+      auditPayload: attempt.auditPayload,
+      label: attempt.label,
+    });
 
     let response: Response | null = null;
     let raw: unknown = {};
@@ -317,10 +386,9 @@ export async function attachSupplierGoodsApSourcePdfToSage(params: { snapshotId:
           Accept: "application/json",
           Authorization: `Bearer ${ctx.accessToken}`,
           "X-Business": ctx.sageBusinessId,
-          "Content-Type": built.contentType,
-          "Content-Length": built.contentLength,
+          "Content-Type": "application/json",
         },
-        body: built.body,
+        body: JSON.stringify(attempt.payload),
         cache: "no-store",
       });
       raw = await response.json().catch(async () => ({ non_json_body: await response!.text().catch(() => null) }));
@@ -330,22 +398,23 @@ export async function attachSupplierGoodsApSourcePdfToSage(params: { snapshotId:
 
     const ok = Boolean(response?.ok);
     const objectId = ok ? attachmentId(raw) : "";
-    if (requestLog?.id) {
-      await supabaseAdmin.from("sage_api_response_log").insert({
-        request_log_id: requestLog.id,
-        connection_id: ctx.connectionId,
-        sage_business_row_id: ctx.sageBusinessRowId,
-        http_status: response?.status ?? null,
-        success_yn: ok,
-        sage_object_type: "purchase_invoice_attachment",
-        sage_object_id: objectId || null,
-        sage_reference: text(snapshot.reference_text) || null,
-        response_payload_redacted: raw as Row,
-        error_code: ok ? null : (response ? `sage_http_${response.status}` : "sage_network_error"),
-        error_message: ok ? null : errorMessage(raw),
-        duration_ms: Date.now() - started,
-      });
-    }
+    finalStatus = response?.status ?? 0;
+    finalError = errorMessage(raw);
+
+    await supabaseAdmin.from("sage_api_response_log").insert({
+      request_log_id: requestLogId,
+      connection_id: ctx.connectionId,
+      sage_business_row_id: ctx.sageBusinessRowId,
+      http_status: response?.status ?? null,
+      success_yn: ok,
+      sage_object_type: "purchase_invoice_attachment",
+      sage_object_id: objectId || null,
+      sage_reference: text(snapshot.reference_text) || null,
+      response_payload_redacted: raw as Row,
+      error_code: ok ? null : (response ? `sage_http_${response.status}` : "sage_network_error"),
+      error_message: ok ? null : finalError,
+      duration_ms: Date.now() - started,
+    });
 
     if (ok) {
       await supabaseAdmin.from("sage_posting_snapshots").update({
@@ -355,16 +424,16 @@ export async function attachSupplierGoodsApSourcePdfToSage(params: { snapshotId:
         sage_attachment_error_code: null,
         sage_attachment_error_message: null,
       }).eq("id", params.snapshotId);
-      return { attached: 1, failed: 0, endpoint: attempt.endpoint, fieldName: attempt.fieldName, objectId };
+      return { attached: 1, failed: 0, endpoint: attempt.endpoint, fieldName: attempt.label, objectId };
     }
-
-    finalError = errorMessage(raw);
   }
 
+  const terminal = finalStatus === 400 || finalStatus === 401 || finalStatus === 403 || finalStatus === 404 || finalStatus === 405 || finalStatus === 415 || finalStatus === 422;
   await supabaseAdmin.from("sage_posting_snapshots").update({
-    sage_attachment_status: "failed_terminal",
-    sage_attachment_error_code: "sage_attachment_all_attempts_failed",
+    sage_attachment_status: terminal ? "failed_terminal" : "failed_retryable",
+    sage_attachment_error_code: finalStatus ? `sage_http_${finalStatus}` : "sage_attachment_json_attempts_failed",
     sage_attachment_error_message: finalError,
   }).eq("id", params.snapshotId);
+
   throw new Error(finalError);
 }
