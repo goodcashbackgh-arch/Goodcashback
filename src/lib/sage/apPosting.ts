@@ -13,6 +13,8 @@ import {
 
 type Row = Record<string, any>;
 
+export type ApPostingLane = "supplier_goods_ap" | "shipper_ap";
+
 type BatchRow = {
   id: string;
   batch_id: string;
@@ -32,6 +34,18 @@ type BatchRow = {
   amount_gbp: string | number | null;
   currency_code: string | null;
   attempt_count: number | null;
+};
+
+type ApLaneConfig = {
+  lane: ApPostingLane;
+  label: string;
+  notesSuffix: string;
+  ledgerMappingCode: string;
+  taxRateMappingCode: string;
+  requireExplicitNetVatGross: boolean;
+  contactPaths: Array<Array<string | number>>;
+  datePaths: Array<Array<string | number>>;
+  referencePaths: Array<Array<string | number>>;
 };
 
 function asObject(value: unknown): Row {
@@ -55,6 +69,12 @@ function num(value: unknown) {
     return Number.isFinite(parsed) ? parsed : 0;
   }
   return 0;
+}
+
+function hasAmount(value: unknown) {
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value === "string") return value.trim() !== "" && Number.isFinite(Number(value));
+  return false;
 }
 
 function round2(value: number) {
@@ -81,6 +101,14 @@ function firstText(value: unknown, paths: Array<Array<string | number>>) {
     if (found) return found;
   }
   return "";
+}
+
+function firstAmount(value: unknown, paths: Array<Array<string | number>>) {
+  for (const path of paths) {
+    const found = getPath(value, path);
+    if (hasAmount(found)) return num(found);
+  }
+  return 0;
 }
 
 function bodyHash(value: unknown) {
@@ -120,50 +148,112 @@ function errorMessage(raw: unknown) {
     || "Sage API request failed.";
 }
 
-function extractSupplierGoodsApPurchaseInvoicePayload(row: BatchRow) {
+function apLaneConfig(lane: string | null | undefined): ApLaneConfig {
+  if (lane === "supplier_goods_ap") {
+    return {
+      lane,
+      label: "Supplier goods AP",
+      notesSuffix: "Supplier goods AP",
+      ledgerMappingCode: "SUPPLIER_GOODS_AP_LEDGER",
+      taxRateMappingCode: "SUPPLIER_GOODS_AP_TAX_RATE",
+      requireExplicitNetVatGross: true,
+      contactPaths: [
+        ["supplier_target", "sage_contact_id"],
+        ["sage_header", "contact_id"],
+        ["sage_header", "sage_contact_id"],
+        ["source_payload", "supplier_target", "sage_contact_id"],
+      ],
+      datePaths: [
+        ["sage_header", "date"],
+        ["sage_header", "invoice_date"],
+        ["source_payload", "supplier_invoice_date"],
+        ["source_payload", "invoice_date"],
+        ["source_payload", "document_date"],
+        ["commercial_payload", "supplier_invoice_date"],
+      ],
+      referencePaths: [
+        ["sage_header", "reference"],
+        ["source_payload", "sage_header", "reference"],
+        ["source_payload", "supplier_invoice_ref"],
+        ["source_payload", "document_ref"],
+        ["supplier_invoice_ref"],
+        ["document_ref"],
+      ],
+    };
+  }
+
+  if (lane === "shipper_ap") {
+    return {
+      lane,
+      label: "Shipper AP",
+      notesSuffix: "Shipper AP",
+      ledgerMappingCode: "SHIPPER_FREIGHT_COST_LEDGER",
+      taxRateMappingCode: "SHIPPER_AP_TAX_RATE_REVIEW",
+      requireExplicitNetVatGross: false,
+      contactPaths: [
+        ["shipper_target", "sage_contact_id"],
+        ["supplier_target", "sage_contact_id"],
+        ["sage_header", "contact_id"],
+        ["sage_header", "sage_contact_id"],
+        ["source_payload", "shipper_target", "sage_contact_id"],
+        ["source_payload", "supplier_target", "sage_contact_id"],
+      ],
+      datePaths: [
+        ["sage_header", "date"],
+        ["sage_header", "invoice_date"],
+        ["source_payload", "shipping_document_date"],
+        ["source_payload", "document_date"],
+        ["source_payload", "invoice_date"],
+        ["source_payload", "shipper_invoice_date"],
+        ["commercial_payload", "shipping_document_date"],
+        ["commercial_payload", "document_date"],
+        ["commercial_payload", "shipper_invoice_date"],
+      ],
+      referencePaths: [
+        ["sage_header", "reference"],
+        ["source_payload", "sage_header", "reference"],
+        ["source_payload", "shipping_document_ref"],
+        ["source_payload", "document_ref"],
+        ["source_payload", "shipper_invoice_ref"],
+        ["shipping_document_ref"],
+        ["document_ref"],
+      ],
+    };
+  }
+
+  throw new Error(`Unsupported AP posting lane ${lane || "unknown"}.`);
+}
+
+function mappingValue(payload: Row, code: string) {
+  return firstText(payload, [
+    ["mapping_snapshot", code, "sage_external_id"],
+    ["source_payload", "mapping_snapshot", code, "sage_external_id"],
+  ]);
+}
+
+function extractApPurchaseInvoicePayload(row: BatchRow) {
+  const config = apLaneConfig(row.document_lane);
   const payload = asObject(row.request_payload_json);
   const header = asObject(payload.sage_header);
-  const sourcePayload = asObject(payload.source_payload);
-  const sourceHeader = asObject(sourcePayload.sage_header);
-  const contactId = firstText(payload, [
-    ["supplier_target", "sage_contact_id"],
-    ["sage_header", "contact_id"],
-    ["sage_header", "sage_contact_id"],
-  ]);
-  const date = firstText(payload, [
-    ["sage_header", "date"],
-    ["sage_header", "invoice_date"],
-    ["source_payload", "supplier_invoice_date"],
-    ["source_payload", "invoice_date"],
-    ["source_payload", "document_date"],
-    ["commercial_payload", "supplier_invoice_date"],
-  ]);
-  const reference = text(header.reference)
-    || text(sourceHeader.reference)
-    || firstText(sourcePayload, [["supplier_invoice_ref"], ["document_ref"]])
+  const contactId = firstText(payload, config.contactPaths);
+  const date = firstText(payload, config.datePaths);
+  const reference = firstText(payload, config.referencePaths)
     || text(row.reference_text)
     || text(row.order_ref)
     || row.id;
-  const notes = text(header.notes) || `Order ${text(row.order_ref)} · Supplier goods AP`;
+  const notes = text(header.notes) || `Order ${text(row.order_ref)} · ${config.notesSuffix}`;
   const currencyCode = text(header.currency_code) || text(row.currency_code) || "GBP";
   const resolvedLines = asArray(payload.resolved_lines).map(asObject);
+  const frozenLedgerAccountId = mappingValue(payload, config.ledgerMappingCode);
+  const frozenTaxRateId = mappingValue(payload, config.taxRateMappingCode);
 
-  const frozenLedgerAccountId = firstText(payload, [
-    ["mapping_snapshot", "SUPPLIER_GOODS_AP_LEDGER", "sage_external_id"],
-    ["source_payload", "mapping_snapshot", "SUPPLIER_GOODS_AP_LEDGER", "sage_external_id"],
-  ]);
-  const frozenTaxRateId = firstText(payload, [
-    ["mapping_snapshot", "SUPPLIER_GOODS_AP_TAX_RATE", "sage_external_id"],
-    ["source_payload", "mapping_snapshot", "SUPPLIER_GOODS_AP_TAX_RATE", "sage_external_id"],
-  ]);
+  if (!contactId) throw new Error(`${config.label} Sage supplier contact id missing from frozen payload.`);
+  if (!date) throw new Error(`${config.label} invoice date missing from frozen payload.`);
+  if (resolvedLines.length === 0) throw new Error(`${config.label} invoice has no resolved lines.`);
+  if (!frozenLedgerAccountId) throw new Error(`${config.label} frozen ledger mapping is missing.`);
+  if (!frozenTaxRateId) throw new Error(`${config.label} frozen tax-rate mapping is missing.`);
 
-  if (!contactId) throw new Error("Supplier goods AP Sage supplier contact id missing from frozen payload.");
-  if (!date) throw new Error("Supplier goods AP invoice date missing from frozen payload.");
-  if (resolvedLines.length === 0) throw new Error("Supplier goods AP invoice has no resolved lines.");
-  if (!frozenLedgerAccountId) throw new Error("Supplier goods AP frozen ledger mapping is missing.");
-  if (!frozenTaxRateId) throw new Error("Supplier goods AP frozen tax-rate mapping is missing.");
-
-  let grossTotal = 0;
+  let sourceTotal = 0;
   let sageNetTotal = 0;
 
   const invoiceLines = resolvedLines.map((line, index) => {
@@ -171,40 +261,52 @@ function extractSupplierGoodsApPurchaseInvoicePayload(row: BatchRow) {
     const ledgerAccountId = frozenLedgerAccountId || firstText(line, [["sage_ledger_account_id"], ["resolved_ledger_account_id"]]);
     const taxRateId = frozenTaxRateId || firstText(line, [["sage_tax_rate_id"], ["resolved_tax_rate_id"]]);
     const quantity = num(line.quantity || line.qty || 1) || 1;
-    const netAmount = num(line.net_amount_gbp);
-    const vatAmount = num(line.vat_amount_gbp);
-    const grossAmount = num(line.gross_amount_gbp || line.total_line_amount_gbp || line.amount_gbp || line.unit_price_gbp);
+    const grossAmount = firstAmount(line, [["gross_amount_gbp"], ["total_line_amount_gbp"], ["line_total_gbp"], ["amount_gbp"], ["unit_price_gbp"], ["unit_price"]]);
+    const hasNet = hasAmount(line.net_amount_gbp);
+    const hasVat = hasAmount(line.vat_amount_gbp);
+    const netAmount = hasNet ? num(line.net_amount_gbp) : grossAmount;
+    const vatAmount = hasVat ? num(line.vat_amount_gbp) : 0;
 
-    if (!description) throw new Error(`Supplier goods AP line ${index + 1} missing description.`);
-    if (!ledgerAccountId) throw new Error(`Supplier goods AP line ${index + 1} missing ledger account id.`);
-    if (!taxRateId) throw new Error(`Supplier goods AP line ${index + 1} missing tax rate id.`);
-    if (!grossAmount) throw new Error(`Supplier goods AP line ${index + 1} missing gross amount.`);
-    if (!netAmount && vatAmount !== 0) throw new Error(`Supplier goods AP line ${index + 1} missing net amount.`);
-    if (Math.abs(round2(netAmount + vatAmount) - round2(grossAmount)) > 0.01) {
-      throw new Error(`Supplier goods AP line ${index + 1} net + VAT does not equal approved gross.`);
+    if (!description) throw new Error(`${config.label} line ${index + 1} missing description.`);
+    if (!ledgerAccountId) throw new Error(`${config.label} line ${index + 1} missing ledger account id.`);
+    if (!taxRateId) throw new Error(`${config.label} line ${index + 1} missing tax rate id.`);
+    if (!grossAmount) throw new Error(`${config.label} line ${index + 1} missing amount.`);
+
+    if (config.requireExplicitNetVatGross) {
+      if (!hasNet) throw new Error(`${config.label} line ${index + 1} missing net amount.`);
+      if (!hasVat) throw new Error(`${config.label} line ${index + 1} missing VAT amount.`);
+      if (Math.abs(round2(netAmount + vatAmount) - round2(grossAmount)) > 0.01) {
+        throw new Error(`${config.label} line ${index + 1} net + VAT does not equal approved gross.`);
+      }
+    } else if ((hasNet || hasVat) && Math.abs(round2(netAmount + vatAmount) - round2(grossAmount)) > 0.01) {
+      throw new Error(`${config.label} line ${index + 1} net + VAT does not equal approved total.`);
     }
 
-    grossTotal = round2(grossTotal + grossAmount);
+    sourceTotal = round2(sourceTotal + grossAmount);
     sageNetTotal = round2(sageNetTotal + netAmount);
 
-    const taxAmount = round2(vatAmount);
-
-    return {
+    const invoiceLine: Row = {
       description,
       ledger_account_id: ledgerAccountId,
       tax_rate_id: taxRateId,
       quantity,
       unit_price: round2(netAmount / quantity),
-      tax_amount: taxAmount,
-      currency_tax_amount: taxAmount,
     };
+
+    if (hasVat || config.requireExplicitNetVatGross) {
+      const taxAmount = round2(vatAmount);
+      invoiceLine.tax_amount = taxAmount;
+      invoiceLine.currency_tax_amount = taxAmount;
+    }
+
+    return invoiceLine;
   });
 
-  const headerGross = num(row.amount_gbp || payload.amount_gbp);
-  if (headerGross && Math.abs(grossTotal - round2(headerGross)) > 0.01) {
-    throw new Error(`Supplier goods AP line gross total ${grossTotal.toFixed(2)} does not match batch amount ${round2(headerGross).toFixed(2)}.`);
+  const headerAmount = num(row.amount_gbp || payload.amount_gbp);
+  if (headerAmount && Math.abs(sourceTotal - round2(headerAmount)) > 0.01) {
+    throw new Error(`${config.label} line total ${sourceTotal.toFixed(2)} does not match batch amount ${round2(headerAmount).toFixed(2)}.`);
   }
-  if (!sageNetTotal) throw new Error("Supplier goods AP net total is missing; refusing to send gross as Sage net.");
+  if (!sageNetTotal) throw new Error(`${config.label} net total is missing.`);
 
   return {
     purchase_invoice: {
@@ -336,13 +438,14 @@ async function updateBatchCounts(batchId: string) {
   }).eq("id", batchId);
 }
 
-export async function postSupplierGoodsApBatchToSage(params: {
+export async function postApPurchaseInvoiceBatchToSage(params: {
   batchId: string;
   staffId: string;
   origin: string;
+  documentLane?: ApPostingLane;
 }) {
   if (process.env.SAGE_LIVE_POSTING_ENABLED !== "true") {
-    throw new Error("Live Sage posting is disabled. Set SAGE_LIVE_POSTING_ENABLED=true only after supplier-goods AP dry-run is approved.");
+    throw new Error("Live Sage posting is disabled. Set SAGE_LIVE_POSTING_ENABLED=true only after AP dry-run is approved.");
   }
 
   const { data: batch, error: batchError } = await supabaseAdmin
@@ -362,9 +465,15 @@ export async function postSupplierGoodsApBatchToSage(params: {
   if (rowsError) throw new Error(rowsError.message);
   const rows = (rowsRaw ?? []) as BatchRow[];
   if (rows.length === 0) throw new Error("No postable rows found in this batch.");
-  if (rows.some((row) => row.document_lane !== "supplier_goods_ap")) throw new Error("Supplier-goods AP posting only supports a supplier_goods_ap-only batch.");
-  if (rows.some((row) => row.payload_validation_status !== "dry_run_validated")) throw new Error("Every supplier goods AP row must be dry-run validated before posting.");
-  if (rows.some((row) => text((row as Row).sage_object_id) || row.posting_status === "posted")) throw new Error("One or more supplier goods AP rows already have a Sage object id or posted status.");
+
+  const rowLanes = Array.from(new Set(rows.map((row) => text(row.document_lane)).filter(Boolean)));
+  if (rowLanes.length !== 1) throw new Error("AP posting requires a single-lane batch.");
+  const rowLane = rowLanes[0] as ApPostingLane;
+  const config = apLaneConfig(rowLane);
+  if (params.documentLane && rowLane !== params.documentLane) throw new Error(`Expected ${params.documentLane} batch but found ${rowLane}.`);
+  if (!rows.every((row) => row.document_lane === config.lane)) throw new Error(`${config.label} posting only supports a ${config.lane}-only batch.`);
+  if (rows.some((row) => row.payload_validation_status !== "dry_run_validated")) throw new Error(`Every ${config.label} row must be dry-run validated before posting.`);
+  if (rows.some((row) => text((row as Row).sage_object_id) || row.posting_status === "posted")) throw new Error(`One or more ${config.label} rows already have a Sage object id or posted status.`);
 
   const context = await activeSageContext(params.origin);
   await supabaseAdmin.from("sage_posting_batches").update({
@@ -396,10 +505,10 @@ export async function postSupplierGoodsApBatchToSage(params: {
 
     let requestBody: Row;
     try {
-      requestBody = extractSupplierGoodsApPurchaseInvoicePayload(row);
+      requestBody = extractApPurchaseInvoicePayload(row);
     } catch (error) {
       failed += 1;
-      const message = error instanceof Error ? error.message : "Could not build supplier goods AP Sage payload.";
+      const message = error instanceof Error ? error.message : `Could not build ${config.label} Sage payload.`;
       await supabaseAdmin.from("sage_posting_batch_rows").update({
         posting_status: "failed_terminal",
         payload_validation_status: "dry_run_failed",
@@ -509,5 +618,21 @@ export async function postSupplierGoodsApBatchToSage(params: {
   }
 
   await updateBatchCounts(params.batchId);
-  return { posted, failed, total: rows.length };
+  return { posted, failed, total: rows.length, documentLane: config.lane, label: config.label };
+}
+
+export async function postSupplierGoodsApBatchToSage(params: {
+  batchId: string;
+  staffId: string;
+  origin: string;
+}) {
+  return postApPurchaseInvoiceBatchToSage({ ...params, documentLane: "supplier_goods_ap" });
+}
+
+export async function postShipperApBatchToSage(params: {
+  batchId: string;
+  staffId: string;
+  origin: string;
+}) {
+  return postApPurchaseInvoiceBatchToSage({ ...params, documentLane: "shipper_ap" });
 }
