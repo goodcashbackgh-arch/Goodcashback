@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { Buffer } from "node:buffer";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import {
   assertSageOAuthConfigured,
@@ -180,8 +181,44 @@ async function sageContext(origin: string) {
   };
 }
 
+async function sageTransactionIdForPurchaseInvoice(sageInvoiceId: string) {
+  if (!sageInvoiceId) return "";
+
+  const { data, error } = await supabaseAdmin
+    .from("sage_api_response_log")
+    .select("response_payload_redacted, created_at")
+    .eq("sage_object_id", sageInvoiceId)
+    .order("created_at", { ascending: false })
+    .limit(10);
+
+  if (error) return "";
+
+  for (const row of ((data ?? []) as Row[])) {
+    const payload = row.response_payload_redacted;
+    const found = firstText(payload, [["transaction", "id"], ["transaction_id"]]);
+    if (found) return found;
+  }
+
+  return "";
+}
+
+function attachmentLinkedToSource(args: { raw: unknown; sageInvoiceId: string; sageTransactionId: string; endpoint: string }) {
+  const directTransaction = firstText(args.raw, [["transaction", "id"], ["transaction_id"], ["attachment_context", "id"], ["attachment_context_id"]]);
+  const directOrigin = firstText(args.raw, [["transaction", "origin", "id"], ["attachment_context", "origin", "id"]]);
+  const contextType = firstText(args.raw, [["attachment_context_type"], ["context_type"]]).toLowerCase();
+
+  if (args.sageTransactionId && directTransaction === args.sageTransactionId) return true;
+  if (args.sageInvoiceId && directOrigin === args.sageInvoiceId) return true;
+  if (args.sageInvoiceId && directTransaction === args.sageInvoiceId) return true;
+  if (contextType.includes("transaction") && args.sageTransactionId) return true;
+  if (contextType.includes("purchase") && args.sageInvoiceId) return true;
+
+  return false;
+}
+
 function jsonAttempts(args: {
   sageInvoiceId: string;
+  sageTransactionId: string;
   sourceUrl: string;
   fileName: string;
   contentType: string;
@@ -191,6 +228,7 @@ function jsonAttempts(args: {
   return buildSageAttachmentJsonAttempts({
     configuredEndpointTemplate: process.env.SAGE_PURCHASE_INVOICE_ATTACHMENT_ENDPOINT_TEMPLATE,
     sageInvoiceId: args.sageInvoiceId,
+    sageTransactionId: args.sageTransactionId,
     sourceUrl: args.sourceUrl,
     fileName: args.fileName,
     mimeType: args.contentType,
@@ -215,7 +253,7 @@ async function logRequest(args: {
     request_kind: "other",
     http_method: "POST",
     endpoint_path: args.endpoint,
-    idempotency_key: `attachment:${args.snapshot.id}:${args.endpoint}:${args.label}`,
+    idempotency_key: `attachment:${args.snapshot.id}:${args.endpoint}:${args.label}:${Date.now()}`,
     request_payload_redacted: {
       request_kind_actual: "attachment",
       attachment_attempt_label: args.label,
@@ -243,7 +281,7 @@ export async function attachSupplierGoodsApSourcePdfToSage(params: { snapshotId:
   if (!snapshot) throw new Error("Sage posting snapshot not found.");
   if (text(snapshot.document_lane) !== "supplier_goods_ap") throw new Error("Only supplier goods AP attachments are supported here.");
   if (text(snapshot.sage_posting_status) !== "posted" || !text(snapshot.sage_invoice_id)) throw new Error("Supplier AP must be posted before attaching evidence.");
-  if (text(snapshot.sage_attachment_status) === "attached") throw new Error("Source PDF is already marked attached.");
+  if (text(snapshot.sage_attachment_status) === "attached") throw new Error("Source PDF is already marked attached. Reset/retry only if the earlier Sage response proves it was unlinked.");
 
   const url = sourceUrl(snapshot);
   if (!url) throw new Error("No source PDF URL found on this posted supplier AP snapshot.");
@@ -255,6 +293,12 @@ export async function attachSupplierGoodsApSourcePdfToSage(params: { snapshotId:
   const bytes = Buffer.from(await pdf.arrayBuffer());
   const base64 = bytes.toString("base64");
   const name = fileName(snapshot);
+  const sageInvoiceId = text(snapshot.sage_invoice_id);
+  const sageTransactionId = await sageTransactionIdForPurchaseInvoice(sageInvoiceId);
+
+  if (!sageTransactionId) {
+    throw new Error("Could not resolve Sage transaction id for the posted purchase invoice. Cannot prove invoice-level attachment.");
+  }
 
   await supabaseAdmin.from("sage_posting_snapshots").update({
     sage_attachment_status: "pending",
@@ -268,9 +312,11 @@ export async function attachSupplierGoodsApSourcePdfToSage(params: { snapshotId:
 
   let finalError = "Sage JSON attachment request failed.";
   let finalStatus = 0;
+  let lastUnlinkedObjectId = "";
 
   for (const attempt of jsonAttempts({
-    sageInvoiceId: text(snapshot.sage_invoice_id),
+    sageInvoiceId,
+    sageTransactionId,
     sourceUrl: url,
     fileName: name,
     contentType,
@@ -308,6 +354,7 @@ export async function attachSupplierGoodsApSourcePdfToSage(params: { snapshotId:
 
     const ok = Boolean(response?.ok);
     const objectId = ok ? attachmentId(raw) : "";
+    const linked = ok && attachmentLinkedToSource({ raw, sageInvoiceId, sageTransactionId, endpoint: attempt.endpoint });
     finalStatus = response?.status ?? 0;
     finalError = errorMessage(raw);
 
@@ -321,12 +368,12 @@ export async function attachSupplierGoodsApSourcePdfToSage(params: { snapshotId:
       sage_object_id: objectId || null,
       sage_reference: text(snapshot.reference_text) || null,
       response_payload_redacted: raw as Row,
-      error_code: ok ? null : (response ? `sage_http_${response.status}` : "sage_network_error"),
-      error_message: ok ? null : finalError,
+      error_code: ok && linked ? null : ok ? "sage_attachment_created_unlinked" : (response ? `sage_http_${response.status}` : "sage_network_error"),
+      error_message: ok && linked ? null : ok ? "Sage created an attachment object but returned no transaction/context linkage." : finalError,
       duration_ms: Date.now() - started,
     });
 
-    if (ok) {
+    if (ok && linked) {
       await supabaseAdmin.from("sage_posting_snapshots").update({
         sage_attachment_status: "attached",
         sage_attachment_object_id: objectId || null,
@@ -336,12 +383,18 @@ export async function attachSupplierGoodsApSourcePdfToSage(params: { snapshotId:
       }).eq("id", params.snapshotId);
       return { attached: 1, failed: 0, endpoint: attempt.endpoint, fieldName: attempt.label, objectId };
     }
+
+    if (ok && !linked) {
+      lastUnlinkedObjectId = objectId;
+      finalError = "Sage created an attachment object but returned no transaction/context linkage.";
+    }
   }
 
   const terminal = finalStatus === 400 || finalStatus === 401 || finalStatus === 403 || finalStatus === 404 || finalStatus === 405 || finalStatus === 415 || finalStatus === 422;
   await supabaseAdmin.from("sage_posting_snapshots").update({
-    sage_attachment_status: terminal ? "failed_terminal" : "failed_retryable",
-    sage_attachment_error_code: finalStatus ? `sage_http_${finalStatus}` : "sage_attachment_json_attempts_failed",
+    sage_attachment_status: lastUnlinkedObjectId ? "failed_retryable" : terminal ? "failed_terminal" : "failed_retryable",
+    sage_attachment_object_id: lastUnlinkedObjectId || null,
+    sage_attachment_error_code: lastUnlinkedObjectId ? "sage_attachment_created_unlinked" : finalStatus ? `sage_http_${finalStatus}` : "sage_attachment_json_attempts_failed",
     sage_attachment_error_message: finalError,
   }).eq("id", params.snapshotId);
 
