@@ -129,12 +129,31 @@ function refreezeDedupKey(row: Row) {
 
 function dedupeActionableRefreezeRows(rows: Row[], queue: string) {
   if (queue !== "actionable") return rows;
-  const seen = new Set<string>();
+
+  const currentRowKeys = new Set<string>();
+
+  for (const row of rows) {
+    if (!isRefreezePointer(row)) {
+      currentRowKeys.add(refreezeDedupKey(row));
+    }
+  }
+
+  const seenRefreezeKeys = new Set<string>();
+
   return rows.filter((row) => {
     if (!isRefreezePointer(row)) return true;
+
     const key = refreezeDedupKey(row);
-    if (seen.has(key)) return false;
-    seen.add(key);
+
+    // If a fresh/current row exists for the same source/lane, do not show
+    // the old cancelled/superseded refreeze pointer in Actionable.
+    if (currentRowKeys.has(key)) return false;
+
+    // If there are several old cancelled/superseded rows for the same source,
+    // show only one pointer.
+    if (seenRefreezeKeys.has(key)) return false;
+
+    seenRefreezeKeys.add(key);
     return true;
   });
 }
