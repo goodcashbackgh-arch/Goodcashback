@@ -16,6 +16,7 @@ function text(value: unknown) {
 export function buildSageAttachmentJsonAttempts(args: {
   configuredEndpointTemplate?: string;
   sageInvoiceId: string;
+  sourceUrl?: string;
   fileName: string;
   mimeType: string;
   encodedFile: string;
@@ -32,9 +33,44 @@ export function buildSageAttachmentJsonAttempts(args: {
   const keyA = ["fi", "le"].join("");
   const keyB = ["mime", "type"].join("_");
   const redacted = `[encoded PDF redacted; ${args.byteLength} bytes]`;
+  const url = text(args.sourceUrl);
 
   const attempts: SageAttachmentJsonAttempt[] = [];
   for (const endpoint of endpoints) {
+    if (url) {
+      const urlContextPayload: Row = {
+        file_name: args.fileName,
+        filename: args.fileName,
+        description: args.fileName,
+        context_type: "purchase_invoice",
+        context_id: args.sageInvoiceId,
+        [keyA]: url,
+        [keyB]: args.mimeType,
+      };
+
+      attempts.push({
+        endpoint,
+        label: "json_required_file_url_and_mime_type_with_context",
+        payload: { attachment: urlContextPayload },
+        auditPayload: { attachment: urlContextPayload },
+      });
+
+      const urlNoContextPayload: Row = {
+        file_name: args.fileName,
+        filename: args.fileName,
+        description: args.fileName,
+        [keyA]: url,
+        [keyB]: args.mimeType,
+      };
+
+      attempts.push({
+        endpoint,
+        label: "json_required_file_url_and_mime_type_no_context",
+        payload: { attachment: urlNoContextPayload },
+        auditPayload: { attachment: urlNoContextPayload },
+      });
+    }
+
     const contextPayload: Row = {
       file_name: args.fileName,
       filename: args.fileName,
