@@ -1,6 +1,15 @@
 import crypto from "node:crypto";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { assertSageOAuthConfigured, decryptSecret } from "@/lib/sage/oauth";
+import {
+  assertSageOAuthConfigured,
+  decryptSecret,
+  encryptSecret,
+  exchangeSageToken,
+  redactedTokenPayload,
+  scopesFromToken,
+  tokenExpiresAt,
+  tokenRefreshRequired,
+} from "@/lib/sage/oauth";
 
 type Row = Record<string, any>;
 
@@ -79,7 +88,7 @@ async function sageContext(origin: string) {
   const config = assertSageOAuthConfigured(origin);
   const { data: tokenRows, error: tokenError } = await supabaseAdmin
     .from("sage_oauth_tokens")
-    .select("connection_id, access_token_encrypted, expires_at, sage_business_row_id")
+    .select("id, connection_id, access_token_encrypted, refresh_token_encrypted, token_type, expires_at, scopes, sage_business_row_id")
     .eq("status", "active")
     .order("expires_at", { ascending: false })
     .limit(1);
@@ -87,9 +96,60 @@ async function sageContext(origin: string) {
   const token = (tokenRows?.[0] ?? null) as Row | null;
   if (!token) throw new Error("No active Sage OAuth token found.");
 
-  const expiresAt = Date.parse(text(token.expires_at));
-  if (Number.isFinite(expiresAt) && expiresAt < Date.now() + 60_000) {
-    throw new Error("Sage OAuth token is near expiry. Refresh the Sage connection before attaching evidence.");
+  const { data: connection, error: connectionError } = await supabaseAdmin
+    .from("sage_connections")
+    .select("id, status")
+    .eq("id", token.connection_id)
+    .maybeSingle();
+  if (connectionError) throw new Error(connectionError.message);
+  if (!connection || connection.status !== "connected") throw new Error("Sage connection is not connected.");
+
+  let accessToken = decryptSecret(text(token.access_token_encrypted));
+  let sageBusinessRowId = text(token.sage_business_row_id);
+
+  if (tokenRefreshRequired(token.expires_at)) {
+    const refreshed = await exchangeSageToken({
+      tokenUrl: config.tokenUrl,
+      clientId: config.clientId,
+      clientSecret: config.clientSecret,
+      grantType: "refresh_token",
+      refreshToken: decryptSecret(text(token.refresh_token_encrypted)),
+    });
+
+    if (!refreshed.response.ok || !refreshed.raw.access_token || !refreshed.raw.refresh_token) {
+      await supabaseAdmin.from("sage_connections").update({
+        status: "refresh_failed",
+        last_error_code: "token_refresh_failed",
+        last_error_message: JSON.stringify(redactedTokenPayload(refreshed.raw)),
+        updated_at: new Date().toISOString(),
+      }).eq("id", token.connection_id);
+      throw new Error(`Sage token refresh failed (${refreshed.response.status}).`);
+    }
+
+    await supabaseAdmin.from("sage_oauth_tokens").update({
+      status: "superseded",
+      superseded_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }).eq("id", token.id);
+
+    const expiresAt = tokenExpiresAt(refreshed.raw.expires_in);
+    const { data: inserted, error: insertError } = await supabaseAdmin.from("sage_oauth_tokens").insert({
+      connection_id: token.connection_id,
+      sage_business_row_id: token.sage_business_row_id,
+      access_token_encrypted: encryptSecret(refreshed.raw.access_token),
+      refresh_token_encrypted: encryptSecret(refreshed.raw.refresh_token),
+      token_type: refreshed.raw.token_type || "Bearer",
+      expires_at: expiresAt,
+      scopes: scopesFromToken(refreshed.raw, config.scopes),
+      status: "active",
+      encryption_key_ref: "SAGE_TOKEN_ENCRYPTION_KEY:v1",
+      issued_at: new Date().toISOString(),
+      last_refresh_at: new Date().toISOString(),
+    }).select("id, sage_business_row_id").single();
+    if (insertError) throw new Error(insertError.message);
+
+    accessToken = refreshed.raw.access_token;
+    sageBusinessRowId = text(inserted?.sage_business_row_id) || sageBusinessRowId;
   }
 
   let businessQuery = supabaseAdmin
@@ -99,8 +159,7 @@ async function sageContext(origin: string) {
     .eq("status", "active")
     .order("is_primary", { ascending: false })
     .limit(1);
-  const businessRowId = text(token.sage_business_row_id);
-  if (businessRowId) businessQuery = businessQuery.eq("id", businessRowId);
+  if (sageBusinessRowId) businessQuery = businessQuery.eq("id", sageBusinessRowId);
 
   const { data: businesses, error: businessError } = await businessQuery;
   if (businessError) throw new Error(businessError.message);
@@ -109,7 +168,7 @@ async function sageContext(origin: string) {
 
   return {
     apiBaseUrl: config.apiBaseUrl.replace(/\/$/, ""),
-    accessToken: decryptSecret(text(token.access_token_encrypted)),
+    accessToken,
     connectionId: text(token.connection_id),
     sageBusinessRowId: text(business.id),
     sageBusinessId: text(business.sage_business_id),
