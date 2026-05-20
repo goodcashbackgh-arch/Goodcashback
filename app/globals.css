@@ -22,6 +22,16 @@ body {
   box-sizing: border-box;
 }
 
+/* Accounting batch detail: hide inactive lane posting controls.
+   The server page renders both AR and AP forms for guard safety, but the inactive one is disabled.
+   Hide only those disabled posting forms; keep Validate and Supersede visible. */
+form:has(button[disabled][title^="Posts customer_sales batches only"]),
+form:has(button[disabled][title*="AP posting is not available for this batch"]),
+form:has(button[disabled][title*="batch is not a single AP lane"]),
+form:has(button[disabled][title*="AP posting"]) {
+  display: none !important;
+}
+
 /* Layout-only fix for the active DVA/card matching sticky bar. Keep it shallow so it does not cover the matching workspace. */
 aside.fixed.inset-x-0.bottom-0.z-40 {
   max-height: 72px !important;
