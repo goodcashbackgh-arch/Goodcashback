@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 import { postSupplierGoodsApBatchToSage } from "@/lib/sage/apPosting";
+import { attachSupplierGoodsApSourcePdfToSage } from "@/lib/sage/apAttachment";
 
 type StaffRow = {
   id: string;
@@ -79,5 +80,32 @@ export async function postSupplierGoodsApBatchToSageAction(formData: FormData) {
 
   revalidatePath("/internal/accounting-command-centre");
   revalidatePath(`/internal/accounting-command-centre/batches/${batchId}`);
+  redirect(redirectTo);
+}
+
+export async function attachSupplierGoodsApSourcePdfAction(formData: FormData) {
+  const batchId = formText(formData, "batch_id", "");
+  const snapshotId = formText(formData, "snapshot_id", "");
+  if (!batchId) redirect("/internal/accounting-command-centre?error=Missing posting batch id");
+  if (!snapshotId) redirect(`/internal/accounting-command-centre/batches/${batchId}/supplier-goods-ap-attachments?error=${encodeURIComponent("Missing snapshot id")}`);
+
+  const { staffId } = await requireAccountingPostingContext();
+  let redirectTo = `/internal/accounting-command-centre/batches/${batchId}/supplier-goods-ap-attachments`;
+
+  try {
+    const result = await attachSupplierGoodsApSourcePdfToSage({
+      snapshotId,
+      staffId,
+      origin: appOrigin(),
+    });
+    redirectTo = `/internal/accounting-command-centre/batches/${batchId}/supplier-goods-ap-attachments?success=${encodeURIComponent(`Supplier AP source PDF attached to Sage. Endpoint ${result.endpoint}; field ${result.fieldName}.`)}`;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Supplier AP source PDF attachment failed.";
+    redirectTo = `/internal/accounting-command-centre/batches/${batchId}/supplier-goods-ap-attachments?error=${encodeURIComponent(message)}`;
+  }
+
+  revalidatePath("/internal/accounting-command-centre");
+  revalidatePath(`/internal/accounting-command-centre/batches/${batchId}`);
+  revalidatePath(`/internal/accounting-command-centre/batches/${batchId}/supplier-goods-ap-attachments`);
   redirect(redirectTo);
 }
