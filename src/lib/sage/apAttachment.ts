@@ -10,15 +10,13 @@ import {
   tokenExpiresAt,
   tokenRefreshRequired,
 } from "@/lib/sage/oauth";
+import {
+  buildSageAttachmentJsonAttempts,
+  type SageAttachmentJsonAttempt,
+} from "@/lib/sage/apAttachmentAttempts";
 
 type Row = Record<string, any>;
-
-type JsonAttempt = {
-  endpoint: string;
-  label: string;
-  payload: Row;
-  auditPayload: Row;
-};
+type JsonAttempt = SageAttachmentJsonAttempt;
 
 function asObject(value: unknown): Row {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Row) : {};
@@ -190,103 +188,14 @@ function jsonAttempts(args: {
   base64: string;
   byteLength: number;
 }): JsonAttempt[] {
-  const id = encodeURIComponent(args.sageInvoiceId);
-  const configured = text(process.env.SAGE_PURCHASE_INVOICE_ATTACHMENT_ENDPOINT_TEMPLATE);
-  const endpoints = configured
-    ? [configured.replaceAll("{purchase_invoice_id}", id).replaceAll("{id}", id).replaceAll("{sage_object_id}", id)]
-    : [`/purchase_invoices/${id}/attachments`, "/attachments"];
-
-  const attempts: JsonAttempt[] = [];
-  for (const endpoint of endpoints) {
-    attempts.push({
-      endpoint,
-      label: "json_attachment_file_data",
-      payload: {
-        attachment: {
-          file_name: args.fileName,
-          content_type: args.contentType,
-          file_data: args.base64,
-          description: args.fileName,
-        },
-      },
-      auditPayload: {
-        attachment: {
-          file_name: args.fileName,
-          content_type: args.contentType,
-          file_data: `[base64 redacted; ${args.byteLength} bytes]`,
-          description: args.fileName,
-        },
-      },
-    });
-
-    attempts.push({
-      endpoint,
-      label: "json_attachment_data",
-      payload: {
-        attachment: {
-          file_name: args.fileName,
-          mime_type: args.contentType,
-          data: args.base64,
-          description: args.fileName,
-        },
-      },
-      auditPayload: {
-        attachment: {
-          file_name: args.fileName,
-          mime_type: args.contentType,
-          data: `[base64 redacted; ${args.byteLength} bytes]`,
-          description: args.fileName,
-        },
-      },
-    });
-
-    attempts.push({
-      endpoint,
-      label: "json_attachment_url",
-      payload: {
-        attachment: {
-          file_name: args.fileName,
-          url: args.sourceUrl,
-          description: args.fileName,
-        },
-      },
-      auditPayload: {
-        attachment: {
-          file_name: args.fileName,
-          url: args.sourceUrl,
-          description: args.fileName,
-        },
-      },
-    });
-
-    if (endpoint === "/attachments") {
-      attempts.push({
-        endpoint,
-        label: "json_context_attachment_file_data",
-        payload: {
-          attachment: {
-            context_type: "purchase_invoice",
-            context_id: args.sageInvoiceId,
-            file_name: args.fileName,
-            content_type: args.contentType,
-            file_data: args.base64,
-            description: args.fileName,
-          },
-        },
-        auditPayload: {
-          attachment: {
-            context_type: "purchase_invoice",
-            context_id: args.sageInvoiceId,
-            file_name: args.fileName,
-            content_type: args.contentType,
-            file_data: `[base64 redacted; ${args.byteLength} bytes]`,
-            description: args.fileName,
-          },
-        },
-      });
-    }
-  }
-  return attempts;
+  return buildSageAttachmentJsonAttempts({
+    configuredEndpointTemplate: process.env.SAGE_PURCHASE_INVOICE_ATTACHMENT_ENDPOINT_TEMPLATE,
+    sageInvoiceId: args.sageInvoiceId,
+    fileName: args.fileName,
+    mimeType: args.contentType,
+    encodedFile: args.base64,
+    byteLength: args.byteLength,
+  });
 }
 
 async function logRequest(args: {
