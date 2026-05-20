@@ -23,86 +23,108 @@ export function buildSageAttachmentJsonAttempts(args: {
   byteLength: number;
 }): SageAttachmentJsonAttempt[] {
   const endpointTemplate = text(args.configuredEndpointTemplate);
+
   const endpoints = endpointTemplate
-    ? [endpointTemplate
-        .replaceAll("{purchase_invoice_id}", encodeURIComponent(args.sageInvoiceId))
-        .replaceAll("{id}", encodeURIComponent(args.sageInvoiceId))
-        .replaceAll("{sage_object_id}", encodeURIComponent(args.sageInvoiceId))]
+    ? [
+        endpointTemplate
+          .replaceAll("{purchase_invoice_id}", encodeURIComponent(args.sageInvoiceId))
+          .replaceAll("{id}", encodeURIComponent(args.sageInvoiceId))
+          .replaceAll("{sage_object_id}", encodeURIComponent(args.sageInvoiceId)),
+      ]
     : ["/attachments"];
 
-  const keyA = ["fi", "le"].join("");
-  const keyB = ["mime", "type"].join("_");
   const redacted = `[encoded PDF redacted; ${args.byteLength} bytes]`;
-  const url = text(args.sourceUrl);
-
   const attempts: SageAttachmentJsonAttempt[] = [];
+
   for (const endpoint of endpoints) {
-    if (url) {
-      const urlContextPayload: Row = {
-        file_name: args.fileName,
-        filename: args.fileName,
-        description: args.fileName,
-        context_type: "purchase_invoice",
-        context_id: args.sageInvoiceId,
-        [keyA]: url,
-        [keyB]: args.mimeType,
-      };
+    /*
+      Sage has told us the required JSON fields are:
+      attachment[file]
+      attachment[mime_type]
 
-      attempts.push({
-        endpoint,
-        label: "json_required_file_url_and_mime_type_with_context",
-        payload: { attachment: urlContextPayload },
-        auditPayload: { attachment: urlContextPayload },
-      });
-
-      const urlNoContextPayload: Row = {
-        file_name: args.fileName,
-        filename: args.fileName,
-        description: args.fileName,
-        [keyA]: url,
-        [keyB]: args.mimeType,
-      };
-
-      attempts.push({
-        endpoint,
-        label: "json_required_file_url_and_mime_type_no_context",
-        payload: { attachment: urlNoContextPayload },
-        auditPayload: { attachment: urlNoContextPayload },
-      });
-    }
-
-    const contextPayload: Row = {
-      file_name: args.fileName,
-      filename: args.fileName,
-      description: args.fileName,
-      context_type: "purchase_invoice",
-      context_id: args.sageInvoiceId,
-      [keyA]: args.encodedFile,
-      [keyB]: args.mimeType,
-    };
-    const contextAudit: Row = { ...contextPayload, [keyA]: redacted };
-
+      So the first probe must be the cleanest possible body.
+      No filename.
+      No file_name.
+      No description.
+      No context_id.
+      No context_type.
+    */
     attempts.push({
       endpoint,
-      label: "json_required_file_and_mime_type_with_context",
-      payload: { attachment: contextPayload },
-      auditPayload: { attachment: contextAudit },
+      label: "json_minimal_required_fields",
+      payload: {
+        attachment: {
+          file: args.encodedFile,
+          mime_type: args.mimeType,
+        },
+      },
+      auditPayload: {
+        attachment: {
+          file: redacted,
+          mime_type: args.mimeType,
+        },
+      },
     });
 
-    const noContextPayload: Row = {
-      file_name: args.fileName,
-      filename: args.fileName,
-      description: args.fileName,
-      [keyA]: args.encodedFile,
-      [keyB]: args.mimeType,
-    };
-    const noContextAudit: Row = { ...noContextPayload, [keyA]: redacted };
+    attempts.push({
+      endpoint,
+      label: "json_required_fields_with_file_name",
+      payload: {
+        attachment: {
+          file: args.encodedFile,
+          mime_type: args.mimeType,
+          file_name: args.fileName,
+        },
+      },
+      auditPayload: {
+        attachment: {
+          file: redacted,
+          mime_type: args.mimeType,
+          file_name: args.fileName,
+        },
+      },
+    });
 
     attempts.push({
       endpoint,
-      label: "json_required_file_and_mime_type_no_context",
-      payload: { attachment: noContextPayload },
-      auditPayload: { attachment: noContextAudit },
+      label: "json_required_fields_with_filename",
+      payload: {
+        attachment: {
+          file: args.encodedFile,
+          mime_type: args.mimeType,
+          filename: args.fileName,
+        },
+      },
+      auditPayload: {
+        attachment: {
+          file: redacted,
+          mime_type: args.mimeType,
+          filename: args.fileName,
+        },
+      },
+    });
+
+    attempts.push({
+      endpoint,
+      label: "json_required_fields_with_purchase_invoice_context",
+      payload: {
+        attachment: {
+          file: args.encodedFile,
+          mime_type: args.mimeType,
+          file_name: args.fileName,
+          context_type: "purchase_invoice",
+          context_id: args.sageInvoiceId,
+        },
+      },
+      auditPayload: {
+        attachment: {
+          file: redacted,
+          mime_type: args.mimeType,
+          file_name: args.fileName,
+          context_type: "purchase_invoice",
+          context_id: args.sageInvoiceId,
+        },
+      },
     });
   }
 
