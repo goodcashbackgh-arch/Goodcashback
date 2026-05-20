@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { Buffer } from "node:buffer";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import {
   assertSageOAuthConfigured,
@@ -12,6 +13,12 @@ import {
 } from "@/lib/sage/oauth";
 
 type Row = Record<string, any>;
+
+type AttachmentAttempt = {
+  endpoint: string;
+  fieldName: string;
+  meta: Record<string, string>;
+};
 
 function asObject(value: unknown): Row {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Row) : {};
@@ -175,23 +182,63 @@ async function sageContext(origin: string) {
   };
 }
 
-function candidateAttempts(sageInvoiceId: string, name: string) {
+function candidateAttempts(sageInvoiceId: string, name: string): AttachmentAttempt[] {
   const id = encodeURIComponent(sageInvoiceId);
   const configured = text(process.env.SAGE_PURCHASE_INVOICE_ATTACHMENT_ENDPOINT_TEMPLATE);
   const endpoints = configured
     ? [configured.replaceAll("{purchase_invoice_id}", id).replaceAll("{id}", id).replaceAll("{sage_object_id}", id)]
     : [`/purchase_invoices/${id}/attachments`, "/attachments"];
 
-  const attempts: Array<{ endpoint: string; fieldName: string; meta: Record<string, string> }> = [];
+  const fileFields = [
+    text(process.env.SAGE_ATTACHMENT_FILE_FIELD_NAME) || "file",
+    "attachment[file]",
+    "attachment",
+    "attachment_file",
+  ];
+
+  const attempts: AttachmentAttempt[] = [];
   for (const endpoint of endpoints) {
-    attempts.push({ endpoint, fieldName: text(process.env.SAGE_ATTACHMENT_FILE_FIELD_NAME) || "file", meta: {} });
-    attempts.push({ endpoint, fieldName: "attachment[file]", meta: {} });
+    for (const fieldName of fileFields) {
+      attempts.push({ endpoint, fieldName, meta: { description: name } });
+    }
     if (endpoint === "/attachments") {
       attempts.push({ endpoint, fieldName: "file", meta: { context_type: "purchase_invoice", context_id: sageInvoiceId, description: name } });
       attempts.push({ endpoint, fieldName: "attachment[file]", meta: { "attachment[context_type]": "purchase_invoice", "attachment[context_id]": sageInvoiceId, "attachment[description]": name } });
     }
   }
   return attempts;
+}
+
+function multipartBody(args: {
+  fieldName: string;
+  fileName: string;
+  contentType: string;
+  bytes: Buffer;
+  meta: Record<string, string>;
+}) {
+  const boundary = `----goodcashback-sage-${crypto.randomBytes(12).toString("hex")}`;
+  const parts: Buffer[] = [];
+
+  for (const [key, value] of Object.entries(args.meta)) {
+    parts.push(Buffer.from(`--${boundary}\r\n`));
+    parts.push(Buffer.from(`Content-Disposition: form-data; name="${key.replace(/"/g, "")}"\r\n\r\n`));
+    parts.push(Buffer.from(`${value}\r\n`));
+  }
+
+  parts.push(Buffer.from(`--${boundary}\r\n`));
+  parts.push(Buffer.from(
+    `Content-Disposition: form-data; name="${args.fieldName.replace(/"/g, "")}"; filename="${args.fileName.replace(/"/g, "")}"\r\n` +
+    `Content-Type: ${args.contentType || "application/pdf"}\r\n\r\n`
+  ));
+  parts.push(args.bytes);
+  parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
+
+  const body = Buffer.concat(parts);
+  return {
+    body,
+    contentType: `multipart/form-data; boundary=${boundary}`,
+    contentLength: String(body.byteLength),
+  };
 }
 
 export async function attachSupplierGoodsApSourcePdfToSage(params: { snapshotId: string; staffId: string; origin: string }) {
@@ -216,7 +263,7 @@ export async function attachSupplierGoodsApSourcePdfToSage(params: { snapshotId:
   const pdf = await fetch(url, { cache: "no-store" });
   if (!pdf.ok) throw new Error(`Could not fetch source PDF (${pdf.status}).`);
   const contentType = pdf.headers.get("content-type") || "application/pdf";
-  const bytes = await pdf.arrayBuffer();
+  const bytes = Buffer.from(await pdf.arrayBuffer());
   const name = fileName(snapshot);
 
   await supabaseAdmin.from("sage_posting_snapshots").update({
@@ -231,10 +278,7 @@ export async function attachSupplierGoodsApSourcePdfToSage(params: { snapshotId:
 
   let finalError = "Sage attachment request failed.";
   for (const attempt of candidateAttempts(text(snapshot.sage_invoice_id), name)) {
-    const form = new FormData();
-    form.append(attempt.fieldName, new Blob([bytes], { type: contentType }), name);
-    for (const [key, value] of Object.entries(attempt.meta)) form.append(key, value);
-
+    const built = multipartBody({ fieldName: attempt.fieldName, fileName: name, contentType, bytes, meta: attempt.meta });
     const auditPayload = {
       sage_purchase_invoice_id: text(snapshot.sage_invoice_id),
       source_table: text(snapshot.source_table),
@@ -245,6 +289,7 @@ export async function attachSupplierGoodsApSourcePdfToSage(params: { snapshotId:
       file_name: name,
       size_bytes: bytes.byteLength,
       content_type: contentType,
+      multipart_mode: "explicit_boundary_with_content_length",
     };
 
     const { data: requestLog } = await supabaseAdmin.from("sage_api_request_log").insert({
@@ -257,7 +302,7 @@ export async function attachSupplierGoodsApSourcePdfToSage(params: { snapshotId:
       endpoint_path: attempt.endpoint,
       idempotency_key: `attach:${params.snapshotId}:${attempt.endpoint}:${attempt.fieldName}`,
       request_payload_redacted: auditPayload,
-      request_headers_redacted: { accept: "application/json", content_type: "multipart/form-data", x_business: ctx.sageBusinessId },
+      request_headers_redacted: { accept: "application/json", content_type: built.contentType, content_length: built.contentLength, x_business: ctx.sageBusinessId },
       request_payload_hash: bodyHash(auditPayload),
       created_by_staff_id: params.staffId,
     }).select("id").single();
@@ -268,8 +313,14 @@ export async function attachSupplierGoodsApSourcePdfToSage(params: { snapshotId:
     try {
       response = await fetch(`${ctx.apiBaseUrl}${attempt.endpoint}`, {
         method: "POST",
-        headers: { Accept: "application/json", Authorization: `Bearer ${ctx.accessToken}`, "X-Business": ctx.sageBusinessId },
-        body: form,
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${ctx.accessToken}`,
+          "X-Business": ctx.sageBusinessId,
+          "Content-Type": built.contentType,
+          "Content-Length": built.contentLength,
+        },
+        body: built.body,
         cache: "no-store",
       });
       raw = await response.json().catch(async () => ({ non_json_body: await response!.text().catch(() => null) }));
