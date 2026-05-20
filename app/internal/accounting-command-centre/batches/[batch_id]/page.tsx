@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 import { supersedeLocalSagePostingBatchAction, validateSagePostingBatchPayloadsAction } from "../../actions";
+import { postApPurchaseInvoiceBatchToSageAction } from "../../apPostingActions";
 import { postCustomerSalesBatchToSageAction } from "../../postingActions";
 
 type Row = Record<string, unknown>;
@@ -148,7 +149,6 @@ function sageFacts(row: Row) {
   const payload = asObject(row.request_payload_json);
   const lines = asArray(payload.resolved_lines).map(asObject);
   const firstLine = lines[0] ?? {};
-  const sourcePayload = asObject(payload.source_payload);
 
   const sourceRef = firstText(payload, [
     ["sage_header", "reference"],
@@ -156,6 +156,7 @@ function sageFacts(row: Row) {
     ["shipping_document_ref"],
     ["document_ref"],
     ["source_payload", "supplier_invoice_ref"],
+    ["source_payload", "shipping_document_ref"],
     ["source_payload", "document_ref"],
     ["commercial_payload", "sage_header", "reference"],
   ]) || text(row.reference_text);
@@ -172,6 +173,7 @@ function sageFacts(row: Row) {
     ["source_payload", "sage_header", "date"],
     ["source_payload", "document_date"],
     ["source_payload", "supplier_invoice_date"],
+    ["source_payload", "shipping_document_date"],
     ["source_payload", "invoice_date"],
     ["commercial_payload", "sage_header", "date"],
     ["commercial_payload", "sage_invoice_date"],
@@ -191,6 +193,8 @@ function sageFacts(row: Row) {
     ["customer_target", "sage_contact_id"],
     ["supplier_target", "sage_contact_id"],
     ["shipper_target", "sage_contact_id"],
+    ["sage_header", "contact_id"],
+    ["sage_header", "sage_contact_id"],
     ["source_payload", "customer_target", "sage_contact_id"],
     ["source_payload", "supplier_target", "sage_contact_id"],
     ["source_payload", "shipper_target", "sage_contact_id"],
@@ -202,11 +206,11 @@ function sageFacts(row: Row) {
     ["supplier_target", "sage_contact_display_name"],
     ["supplier_target", "display_name"],
     ["shipper_target", "sage_contact_display_name"],
+    ["shipper_target", "display_name"],
     ["counterparty_name"],
   ]) || text(row.counterparty_name);
 
   const ledgerId = lineLedgerId(firstLine) || firstText(payload, [["ledger_resolution", "sage_ledger_account_id"]]);
-
   const ledgerDisplay = firstText(firstLine, [
     ["sage_ledger_account_display"],
     ["resolver_ledger_account_role"],
@@ -214,7 +218,6 @@ function sageFacts(row: Row) {
   ]) || firstText(payload, [["ledger_resolution", "sage_ledger_account_display"], ["ledger_resolution", "ledger_account_role"]]);
 
   const taxRateId = lineTaxId(firstLine) || firstText(payload, [["tax_resolution", "sage_tax_rate_id"]]);
-
   const taxDisplay = firstText(firstLine, [
     ["sage_tax_rate_display"],
     ["tax_rate_label"],
@@ -224,7 +227,6 @@ function sageFacts(row: Row) {
 
   return {
     payload,
-    sourcePayload,
     lines,
     missingLineDescriptions,
     sourceRef,
@@ -296,24 +298,53 @@ function SageTargetCell({ row }: { row: Row }) {
 }
 
 function ApControlCell({ row }: { row: Row }) {
-  if (text(row.document_lane) !== "supplier_goods_ap") {
+  const lane = text(row.document_lane);
+  if (!lane.endsWith("_ap")) {
     return <span className="text-[11px] text-slate-400">—</span>;
+  }
+
+  if (lane === "supplier_goods_ap") {
+    return (
+      <div className="space-y-1 text-[11px] leading-4">
+        <div className="grid grid-cols-3 gap-1 font-semibold text-slate-800">
+          <span>Net {gbp(row.ap_net_amount_gbp)}</span>
+          <span>VAT {gbp(row.ap_vat_amount_gbp)}</span>
+          <span>Gross {gbp(row.ap_gross_amount_gbp)}</span>
+        </div>
+        <div className="flex flex-wrap gap-1">
+          <Chip value={row.ap_vat_control_status} />
+          <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 font-bold text-slate-700">VAT {text(row.ap_vat_rate_summary) || "—"}%</span>
+          <Chip value={row.source_evidence_status} />
+        </div>
+      </div>
+    );
   }
 
   return (
     <div className="space-y-1 text-[11px] leading-4">
-      <div className="grid grid-cols-3 gap-1 font-semibold text-slate-800">
-        <span>Net {gbp(row.ap_net_amount_gbp)}</span>
-        <span>VAT {gbp(row.ap_vat_amount_gbp)}</span>
-        <span>Gross {gbp(row.ap_gross_amount_gbp)}</span>
-      </div>
-      <div className="flex flex-wrap gap-1">
-        <Chip value={row.ap_vat_control_status} />
-        <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 font-bold text-slate-700">VAT {text(row.ap_vat_rate_summary) || "—"}%</span>
-        <Chip value={row.source_evidence_status} />
-      </div>
+      <p className="font-semibold text-slate-800">Purchase invoice AP</p>
+      <p className="text-slate-500">Uses shipper freight ledger/tax mapping from frozen payload.</p>
+      <Chip value={row.source_evidence_status || "not_applicable"} />
     </div>
   );
+}
+
+function disabledReasons(args: {
+  liveFlag: boolean;
+  laneOnly: boolean;
+  dryRunOk: boolean;
+  unposted: boolean;
+  targetGapCount: number;
+  supplierVatBlocked: boolean;
+}) {
+  const reasons: string[] = [];
+  if (!args.liveFlag) reasons.push("live Sage posting flag is off");
+  if (!args.laneOnly) reasons.push("batch is not a single AP lane");
+  if (!args.dryRunOk) reasons.push("dry-run validation is not complete");
+  if (!args.unposted) reasons.push("one or more rows are already posted or have Sage ids");
+  if (args.targetGapCount > 0) reasons.push("Sage contact, ledger, tax or line facts are missing");
+  if (args.supplierVatBlocked) reasons.push("supplier AP VAT/evidence control is blocked");
+  return reasons;
 }
 
 export default async function PostingBatchDetailPage({
@@ -369,20 +400,44 @@ export default async function PostingBatchDetailPage({
   const dryRunPendingRows = includedRows.filter((row) => !["dry_run_validated", "dry_run_failed"].includes(text(row.payload_validation_status)));
   const canValidatePayloads = !error && includedRows.length > 0;
   const canSupersede = !error && rows.length > 0 && rows.every((row) => text(row.posting_status) !== "posted" && !text(row.sage_object_id) && !text(row.posted_at));
-  const supplierGoodsRows = rows.filter((row) => text(row.document_lane) === "supplier_goods_ap" && text(row.posting_status) !== "excluded");
+  const supplierGoodsRows = includedRows.filter((row) => text(row.document_lane) === "supplier_goods_ap");
+  const shipperApRows = includedRows.filter((row) => text(row.document_lane) === "shipper_ap");
+  const apRows = includedRows.filter((row) => ["supplier_goods_ap", "shipper_ap"].includes(text(row.document_lane)));
+  const apLanes = Array.from(new Set(apRows.map((row) => text(row.document_lane)).filter(Boolean)));
+  const activeApLane = apLanes.length === 1 ? apLanes[0] : "";
   const supplierVatBlocked = supplierGoodsRows.some((row) => !["ok", "not_applicable", ""].includes(text(row.ap_vat_control_status)) || text(row.source_evidence_status) === "missing_source_evidence_file");
   const targetMissingRows = includedRows.filter((row) => {
     const facts = sageFacts(row);
     return !facts.contactId || !facts.ledgerId || !facts.taxRateId || facts.lines.length === 0 || facts.missingLineDescriptions > 0;
   });
   const customerSalesRows = includedRows.filter((row) => text(row.document_lane) === "customer_sales");
+  const liveFlag = process.env.SAGE_LIVE_POSTING_ENABLED === "true";
+  const unposted = includedRows.every((row) => !text(row.sage_object_id) && text(row.posting_status) !== "posted");
+  const dryRunOk = includedRows.length > 0 && dryRunValidRows.length === includedRows.length;
   const canPostCustomerSales = !error
-    && process.env.SAGE_LIVE_POSTING_ENABLED === "true"
+    && liveFlag
     && customerSalesRows.length > 0
     && includedRows.length === customerSalesRows.length
-    && dryRunValidRows.length === includedRows.length
+    && dryRunOk
     && targetMissingRows.length === 0
-    && includedRows.every((row) => !text(row.sage_object_id) && text(row.posting_status) !== "posted");
+    && unposted;
+  const canPostApPurchaseInvoice = !error
+    && liveFlag
+    && apRows.length > 0
+    && includedRows.length === apRows.length
+    && apLanes.length === 1
+    && dryRunOk
+    && targetMissingRows.length === 0
+    && !supplierVatBlocked
+    && unposted;
+  const apDisabledReasons = disabledReasons({
+    liveFlag,
+    laneOnly: apRows.length > 0 && includedRows.length === apRows.length && apLanes.length === 1,
+    dryRunOk,
+    unposted,
+    targetGapCount: targetMissingRows.length,
+    supplierVatBlocked,
+  });
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-5 text-slate-950 sm:px-6 lg:px-8">
@@ -394,9 +449,10 @@ export default async function PostingBatchDetailPage({
               <div className="mt-3 flex flex-wrap items-center gap-2">
                 <p className="text-xs font-bold uppercase tracking-[0.2em] text-violet-500">Posting batch detail</p>
                 <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] font-bold text-amber-900">Posting guarded by live env flag</span>
+                <span className="rounded-full border border-violet-200 bg-violet-50 px-2 py-1 text-[10px] font-bold text-violet-900">Lane-aware AR/AP actions</span>
               </div>
               <h1 className="mt-1 truncate text-3xl font-semibold tracking-tight sm:text-4xl">{text(first.batch_ref) || "Posting batch"}</h1>
-              <p className="mt-1 max-w-5xl text-sm leading-5 text-slate-600">Local batch lock plus Phase 11 dry-run validation. All lanes must show source facts, Sage target IDs, actual line descriptions and amount controls before adapter work.</p>
+              <p className="mt-1 max-w-5xl text-sm leading-5 text-slate-600">Local batch lock plus dry-run validation. The correct posting button appears here after the selected lane is validated; no manual /supplier-goods-ap-post URL should be needed.</p>
               <p className="mt-1 text-xs font-semibold text-slate-500">Batch id {batchId}</p>
               <div className="mt-3 flex flex-wrap items-center gap-2">
                 <form action={validateSagePostingBatchPayloadsAction} className="flex flex-wrap items-center gap-2">
@@ -420,6 +476,18 @@ export default async function PostingBatchDetailPage({
                     Post customer sales to Sage
                   </button>
                 </form>
+                <form action={postApPurchaseInvoiceBatchToSageAction} className="flex flex-wrap items-center gap-2">
+                  <input type="hidden" name="batch_id" value={batchId} />
+                  <input type="hidden" name="document_lane" value={activeApLane} />
+                  <button
+                    type="submit"
+                    disabled={!canPostApPurchaseInvoice}
+                    className="rounded-2xl bg-emerald-700 px-4 py-2 text-sm font-bold text-white shadow-sm disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-600"
+                    title={canPostApPurchaseInvoice ? "Posts AP purchase invoices to Sage for the selected AP lane." : apDisabledReasons.join("; ") || "AP posting is not available for this batch."}
+                  >
+                    {activeApLane === "shipper_ap" ? "Post shipper AP to Sage" : "Post supplier goods AP to Sage"}
+                  </button>
+                </form>
                 <form action={supersedeLocalSagePostingBatchAction} className="flex flex-wrap items-center gap-2">
                   <input type="hidden" name="batch_id" value={batchId} />
                   <input type="hidden" name="reason" value="Superseded from batch detail to re-freeze from current resolver" />
@@ -431,14 +499,14 @@ export default async function PostingBatchDetailPage({
                     Supersede local batch
                   </button>
                 </form>
-                {process.env.SAGE_LIVE_POSTING_ENABLED === "true" ? (
+                {liveFlag ? (
                   <span className="rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-900">Live Sage posting flag is enabled.</span>
                 ) : (
                   <span className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-900">Live Sage posting disabled until SAGE_LIVE_POSTING_ENABLED=true.</span>
                 )}
               </div>
             </div>
-            <div className="flex shrink-0 flex-wrap gap-1.5 xl:max-w-[840px] xl:justify-end">
+            <div className="flex shrink-0 flex-wrap gap-1.5 xl:max-w-[900px] xl:justify-end">
               <StatPill label="Status" value={pretty(first.status)} tone={statusTone(first.status)} />
               <StatPill label="Lane" value={pretty(first.lane)} tone="review" />
               <StatPill label="Included" value={String(summary.included_count ?? includedRows.length)} tone={includedRows.length > 0 ? "complete" : "muted"} />
@@ -448,15 +516,16 @@ export default async function PostingBatchDetailPage({
               <StatPill label="Target gaps" value={String(targetMissingRows.length)} tone={targetMissingRows.length > 0 ? "blocked" : "complete"} />
               <StatPill label="Dry-run pending" value={String(dryRunPendingRows.length)} tone={dryRunPendingRows.length > 0 ? "action" : "complete"} />
               <StatPill label="Value" value={gbp(summary.total_included_value ?? first.total_amount_gbp)} tone="complete" />
-              <StatPill label="AP net" value={gbp(summary.supplier_goods_ap_net_total_gbp)} tone={supplierGoodsRows.length > 0 ? "complete" : "muted"} />
-              <StatPill label="AP VAT" value={gbp(summary.supplier_goods_ap_vat_total_gbp)} tone={supplierGoodsRows.length > 0 ? "complete" : "muted"} />
-              <StatPill label="AP gross" value={gbp(summary.supplier_goods_ap_gross_total_gbp)} tone={supplierGoodsRows.length > 0 ? "complete" : "muted"} />
+              <StatPill label="Supplier AP" value={String(supplierGoodsRows.length)} tone={supplierGoodsRows.length > 0 ? "complete" : "muted"} />
+              <StatPill label="Shipper AP" value={String(shipperApRows.length)} tone={shipperApRows.length > 0 ? "complete" : "muted"} />
+              <StatPill label="AP gross" value={gbp(summary.supplier_goods_ap_gross_total_gbp ?? first.total_amount_gbp)} tone={apRows.length > 0 ? "complete" : "muted"} />
             </div>
           </div>
           {successMessage ? <p className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-900">{successMessage}</p> : null}
           {errorMessage ? <p className="mt-3 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900">{errorMessage}</p> : null}
           {supplierVatBlocked ? <p className="mt-3 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900">Supplier goods AP is not Sage-ready: VAT split or source evidence is missing/invalid.</p> : null}
-          {targetMissingRows.length > 0 ? <p className="mt-3 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900">Sage target facts are incomplete on {targetMissingRows.length} row(s). Do not build/post the adapter until contact, ledger, tax and actual line descriptions are visible.</p> : null}
+          {targetMissingRows.length > 0 ? <p className="mt-3 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900">Sage target facts are incomplete on {targetMissingRows.length} row(s). Do not post until contact, ledger, tax and actual line descriptions are visible.</p> : null}
+          {!canPostApPurchaseInvoice && apRows.length > 0 && apDisabledReasons.length > 0 ? <p className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">AP posting blocked: {apDisabledReasons.join("; ")}.</p> : null}
           {canSupersede ? <p className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">Supersede only for stale local test batches. It cancels this local batch and deactivates its snapshots so you can re-freeze from the current resolver.</p> : null}
           {error ? <p className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">Batch detail RPC unavailable: {error.message}. Run the latest batch detail migration before testing this page.</p> : null}
           {!error && rows.length === 0 ? <p className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">No batch rows found for this batch id.</p> : null}
@@ -466,7 +535,7 @@ export default async function PostingBatchDetailPage({
           <div className="flex flex-col gap-2 border-b border-slate-100 px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
             <div>
               <h2 className="text-xl font-semibold">Batch rows</h2>
-              <p className="mt-1 text-sm text-slate-500">Each row must show source facts, Sage target IDs, actual invoice line descriptions and amount controls. If missing, stop before Sage adapter.</p>
+              <p className="mt-1 text-sm text-slate-500">Each row must show source facts, Sage target IDs, actual invoice line descriptions and amount controls. If missing, stop before Sage posting.</p>
             </div>
           </div>
           <div className="overflow-x-auto rounded-b-3xl">
