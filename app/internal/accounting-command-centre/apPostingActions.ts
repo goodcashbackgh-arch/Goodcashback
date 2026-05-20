@@ -4,7 +4,12 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { postSupplierGoodsApBatchToSage } from "@/lib/sage/apPosting";
+import {
+  postApPurchaseInvoiceBatchToSage,
+  postSupplierGoodsApBatchToSage,
+  postShipperApBatchToSage,
+  type ApPostingLane,
+} from "@/lib/sage/apPosting";
 import { attachSupplierGoodsApSourcePdfToSage } from "@/lib/sage/apAttachment";
 
 type StaffRow = {
@@ -43,6 +48,12 @@ function appOrigin() {
   if (configured) return configured.replace(/\/$/, "");
   if (process.env.VERCEL_URL?.trim()) return `https://${process.env.VERCEL_URL.trim()}`;
   return "https://goodcashback-v2.vercel.app";
+}
+
+function apLaneFromForm(formData: FormData): ApPostingLane {
+  const lane = formText(formData, "document_lane", "supplier_goods_ap");
+  if (lane === "supplier_goods_ap" || lane === "shipper_ap") return lane;
+  throw new Error(`Unsupported AP posting lane ${lane || "unknown"}`);
 }
 
 async function requireAccountingPostingContext() {
@@ -121,9 +132,10 @@ async function attachPostedSupplierGoodsApSnapshots(args: { batchId: string; sta
   return summary;
 }
 
-function postingSuccessMessage(result: { posted: number; failed: number; total: number }, attachment: AttachmentSummary) {
-  const base = `Supplier goods AP Sage posting finished: ${result.posted} posted, ${result.failed} failed, ${result.total} total.`;
-  if (result.posted === 0) return base;
+function apPostingSuccessMessage(result: { posted: number; failed: number; total: number; label?: string }, attachment?: AttachmentSummary) {
+  const label = result.label || "AP purchase invoice";
+  const base = `${label} Sage posting finished: ${result.posted} posted, ${result.failed} failed, ${result.total} total.`;
+  if (!attachment || result.posted === 0) return base;
 
   const attachmentText = ` Source PDF attachment: ${attachment.attached} attached, ${attachment.failed} failed, ${attachment.attempted} attempted.`;
   if (attachment.failed === 0) return `${base}${attachmentText}`;
@@ -132,7 +144,7 @@ function postingSuccessMessage(result: { posted: number; failed: number; total: 
   return `${base}${attachmentText}${firstError}`;
 }
 
-export async function postSupplierGoodsApBatchToSageAction(formData: FormData) {
+async function postApPurchaseInvoiceBatchAction(formData: FormData, forcedLane?: ApPostingLane) {
   const batchId = formText(formData, "batch_id", "");
   if (!batchId) redirect("/internal/accounting-command-centre?error=Missing posting batch id");
 
@@ -141,26 +153,28 @@ export async function postSupplierGoodsApBatchToSageAction(formData: FormData) {
 
   try {
     const origin = appOrigin();
-    const result = await postSupplierGoodsApBatchToSage({
+    const lane = forcedLane ?? apLaneFromForm(formData);
+    const result = await postApPurchaseInvoiceBatchToSage({
       batchId,
       staffId,
       origin,
+      documentLane: lane,
     });
 
-    let attachmentSummary: AttachmentSummary = { attempted: 0, attached: 0, failed: 0, errors: [] };
-    if (result.posted > 0) {
+    let attachmentSummary: AttachmentSummary | undefined;
+    if (lane === "supplier_goods_ap" && result.posted > 0) {
       attachmentSummary = await attachPostedSupplierGoodsApSnapshots({ batchId, staffId, origin });
     }
 
     if (result.failed > 0) {
-      redirectTo = `/internal/accounting-command-centre/batches/${batchId}?error=${encodeURIComponent(`Supplier goods AP Sage posting finished with failures: ${result.posted} posted, ${result.failed} failed, ${result.total} total. Check the row Reason / error column.`)}`;
-    } else if (attachmentSummary.failed > 0) {
-      redirectTo = `/internal/accounting-command-centre/batches/${batchId}?error=${encodeURIComponent(postingSuccessMessage(result, attachmentSummary))}`;
+      redirectTo = `/internal/accounting-command-centre/batches/${batchId}?error=${encodeURIComponent(`${result.label || "AP purchase invoice"} Sage posting finished with failures: ${result.posted} posted, ${result.failed} failed, ${result.total} total. Check the row Reason / error column.`)}`;
+    } else if (attachmentSummary?.failed) {
+      redirectTo = `/internal/accounting-command-centre/batches/${batchId}?error=${encodeURIComponent(apPostingSuccessMessage(result, attachmentSummary))}`;
     } else {
-      redirectTo = `/internal/accounting-command-centre/batches/${batchId}?success=${encodeURIComponent(postingSuccessMessage(result, attachmentSummary))}`;
+      redirectTo = `/internal/accounting-command-centre/batches/${batchId}?success=${encodeURIComponent(apPostingSuccessMessage(result, attachmentSummary))}`;
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Supplier goods AP Sage posting failed.";
+    const message = error instanceof Error ? error.message : "AP purchase invoice Sage posting failed.";
     redirectTo = `/internal/accounting-command-centre/batches/${batchId}?error=${encodeURIComponent(message)}`;
   }
 
@@ -169,6 +183,22 @@ export async function postSupplierGoodsApBatchToSageAction(formData: FormData) {
   revalidatePath(`/internal/accounting-command-centre/batches/${batchId}/supplier-goods-ap-attachments`);
   redirect(redirectTo);
 }
+
+export async function postApPurchaseInvoiceBatchToSageAction(formData: FormData) {
+  return postApPurchaseInvoiceBatchAction(formData);
+}
+
+export async function postSupplierGoodsApBatchToSageAction(formData: FormData) {
+  return postApPurchaseInvoiceBatchAction(formData, "supplier_goods_ap");
+}
+
+export async function postShipperApBatchToSageAction(formData: FormData) {
+  return postApPurchaseInvoiceBatchAction(formData, "shipper_ap");
+}
+
+// Keep direct wrappers available for older drill-down routes/imports.
+void postSupplierGoodsApBatchToSage;
+void postShipperApBatchToSage;
 
 export async function attachSupplierGoodsApSourcePdfAction(formData: FormData) {
   const batchId = formText(formData, "batch_id", "");
