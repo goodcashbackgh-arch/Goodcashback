@@ -1,9 +1,10 @@
 BEGIN;
 
--- Fix workbench selected/all-matching freeze support for refreeze pointers.
--- Superseded/cancelled batch rows can be selectable pointers back to the current
--- source. This patch makes the bulk candidate RPC include exactly one such
--- pointer per source/lane when candidate_kind = freeze.
+-- Safe correction for Accounting Command Centre bulk freeze candidates.
+-- The earlier version targeted an older candidate-filter shape. This version
+-- patches only the live_ready CASE expressions used by the current function so
+-- supplier_goods_ap is a supported selected/all-matching freeze group alongside
+-- customer_sales and shipper_ap.
 --
 -- No data mutation. No Sage call. No schema change.
 
@@ -14,8 +15,6 @@ DO $do$
 DECLARE
   v_oid oid := to_regprocedure('public.internal_accounting_command_centre_bulk_candidates_v1(text,text,text,text,text,text,boolean,integer)');
   v_sql text;
-  v_before text;
-  v_after text;
 BEGIN
   IF v_oid IS NULL THEN
     RAISE EXCEPTION 'Prerequisite missing: internal_accounting_command_centre_bulk_candidates_v1(text,text,text,text,text,text,boolean,integer)';
@@ -23,19 +22,25 @@ BEGIN
 
   v_sql := pg_get_functiondef(v_oid);
 
-  v_before := $needle$WHERE row_is_candidate = true$needle$;
-  v_after := $replacement$WHERE row_is_candidate = true
-    OR (
-      v_candidate_kind = 'freeze'
-      AND out_work_queue = 'cancelled_or_superseded'
-      AND out_selectable = true
-    )$replacement$;
+  IF position('WHEN rq.document_lane = ''supplier_goods_ap'' AND rq.source_table = ''supplier_invoices'' THEN ''supplier_goods_ap''' in v_sql) = 0 THEN
+    v_sql := replace(
+      v_sql,
+      'WHEN rq.document_lane = ''customer_sales'' AND rq.source_table = ''sales_invoices'' THEN ''customer_sales''
+        WHEN rq.document_lane = ''shipper_ap'' AND rq.source_table = ''shipping_documents'' THEN ''shipper_ap''',
+      'WHEN rq.document_lane = ''customer_sales'' AND rq.source_table = ''sales_invoices'' THEN ''customer_sales''
+        WHEN rq.document_lane = ''supplier_goods_ap'' AND rq.source_table = ''supplier_invoices'' THEN ''supplier_goods_ap''
+        WHEN rq.document_lane = ''shipper_ap'' AND rq.source_table = ''shipping_documents'' THEN ''shipper_ap'''
+    );
 
-  IF position(v_after in v_sql) = 0 THEN
-    IF position(v_before in v_sql) = 0 THEN
-      RAISE EXCEPTION 'Could not find candidate filter in internal_accounting_command_centre_bulk_candidates_v1';
-    END IF;
-    v_sql := replace(v_sql, v_before, v_after);
+    v_sql := replace(
+      v_sql,
+      'WHEN rq.document_lane = ''customer_sales'' AND rq.source_table = ''sales_invoices'' THEN NULL::text
+        WHEN rq.document_lane = ''shipper_ap'' AND rq.source_table = ''shipping_documents'' THEN NULL::text',
+      'WHEN rq.document_lane = ''customer_sales'' AND rq.source_table = ''sales_invoices'' THEN NULL::text
+        WHEN rq.document_lane = ''supplier_goods_ap'' AND rq.source_table = ''supplier_invoices'' THEN NULL::text
+        WHEN rq.document_lane = ''shipper_ap'' AND rq.source_table = ''shipping_documents'' THEN NULL::text'
+    );
+
     EXECUTE v_sql;
   END IF;
 END
