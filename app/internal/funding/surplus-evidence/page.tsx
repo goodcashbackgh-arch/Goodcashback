@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 import { confirmSettlementSurplusCreditAction } from "../actions";
 
@@ -19,6 +20,7 @@ type Row = {
   active_hold_count: string | number | null;
 };
 
+type StaffRow = { role_type: string | null };
 type SearchParams = { settlement_success?: string; settlement_error?: string };
 
 function num(v: unknown) { const n = Number(v ?? 0); return Number.isFinite(n) ? n : 0; }
@@ -28,6 +30,23 @@ function label(v: string | null | undefined) { return v ? v.replaceAll("_", " ")
 export default async function SurplusEvidencePage({ searchParams }: { searchParams?: Promise<SearchParams> }) {
   const params = searchParams ? await searchParams : {};
   const supabase = await createClient();
+
+  const { data: authData } = await supabase.auth.getUser();
+  const userId = authData.user?.id;
+  if (!userId) redirect("/login");
+
+  const { data: staffData, error: staffError } = await supabase
+    .from("staff")
+    .select("role_type")
+    .eq("auth_user_id", userId)
+    .eq("active", true)
+    .maybeSingle();
+
+  const staff = staffData as StaffRow | null;
+  if (staffError || !staff || !["admin", "supervisor"].includes(String(staff.role_type))) {
+    redirect("/internal");
+  }
+
   const { data, error } = await supabase
     .from("order_surplus_evidence_position_v1")
     .select("order_id,order_ref,payment_auth_id,declared_order_gbp,funding_total_gbp,supplier_out_gbp,posted_invoice_gbp,draft_invoice_gbp,evidence_value_gbp,evidence_surplus_gbp,evidence_status,evidence_basis,open_dispute_count,active_hold_count")
