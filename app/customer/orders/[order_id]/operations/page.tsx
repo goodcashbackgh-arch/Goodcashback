@@ -4,6 +4,7 @@ import { createClient } from "@/utils/supabase/server";
 
 type ScreenshotRow = { id: string; screenshot_url: string };
 type ReviewLinkRow = { customer_review_path: string | null };
+type CreditLedgerRow = { direction: string | null; amount_gbp: number | string | null; amount_local_ccy: number | string | null; local_ccy: string | null; lock_reason: string | null };
 
 function money(value: unknown) {
   return new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP", minimumFractionDigits: 2 }).format(Number(value ?? 0));
@@ -22,6 +23,14 @@ function chip(ok: boolean) {
   return ok
     ? "rounded-full bg-emerald-100 px-3 py-1 text-xs font-bold text-emerald-800 ring-1 ring-emerald-200"
     : "rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-800 ring-1 ring-amber-200";
+}
+
+function signedCreditLocal(row: CreditLedgerRow, currencyCode: string, fallbackRate: number) {
+  const sign = row.direction === "credit" ? 1 : row.direction === "debit" ? -1 : 0;
+  const localStored = Number(row.amount_local_ccy ?? 0);
+  const gbp = Number(row.amount_gbp ?? 0);
+  const local = row.local_ccy === currencyCode && localStored > 0 ? localStored : gbp * fallbackRate;
+  return sign * local;
 }
 
 export default async function CustomerOrderOperationsPage({
@@ -48,7 +57,7 @@ export default async function CustomerOrderOperationsPage({
 
   const { data: order } = await supabase
     .from("orders")
-    .select("*, importers(id, company_name, trading_name, countries(currencies(code))), retailers(name)")
+    .select("*, importers(id, company_name, trading_name, country_id, countries(currencies(code))), retailers(name)")
     .eq("id", orderId)
     .maybeSingle();
   if (!order) redirect("/customer");
@@ -63,11 +72,14 @@ export default async function CustomerOrderOperationsPage({
     .maybeSingle();
   if (!access) redirect("/customer");
 
-  const [fundingRes, screenshotsRes, stateRes, reviewRes] = await Promise.all([
+  const today = new Date().toISOString().slice(0, 10);
+  const [fundingRes, screenshotsRes, stateRes, reviewRes, creditRes, fxRes] = await Promise.all([
     supabase.from("order_funding_position_vw").select("*").eq("order_id", orderId).maybeSingle(),
     supabase.from("order_screenshots").select("id, screenshot_url").eq("order_id", orderId).order("display_order"),
     supabase.from("order_state_vw").select("lifecycle_status").eq("id", orderId).maybeSingle(),
     (supabase as any).rpc("customer_active_order_review_link_v1", { p_order_id: orderId }).maybeSingle(),
+    supabase.from("importer_credit_ledger").select("direction, amount_gbp, amount_local_ccy, local_ccy, lock_reason").eq("importer_id", order.importer_id).is("lock_reason", null),
+    supabase.from("fx_rates").select("quote_rate, quote_card_markup_pct, rate_date").eq("country_id", order.importers?.country_id).lte("rate_date", today).order("rate_date", { ascending: false }).limit(1).maybeSingle(),
   ]);
 
   const funding = fundingRes.data;
@@ -77,6 +89,18 @@ export default async function CustomerOrderOperationsPage({
   const reviewHref = reviewLink?.customer_review_path ?? null;
   const thresholdMet = Boolean(funding?.threshold_met_yn);
   const currencyCode = order.importers?.countries?.currencies?.code ?? "Local";
+  const rate = Number(fxRes.data?.quote_rate ?? 0);
+  const markup = Number(fxRes.data?.quote_card_markup_pct ?? 0);
+  const effectiveRate = rate ? rate * (1 + markup / 100) : 0;
+  const fxDate = fxRes.data?.rate_date as string | undefined;
+  const creditRows = (creditRes.data ?? []) as CreditLedgerRow[];
+  const availableCreditLocal = creditRows.reduce((sum, row) => sum + signedCreditLocal(row, currencyCode, effectiveRate || 1), 0);
+  const availableCreditCurrentGbp = effectiveRate ? Math.max(availableCreditLocal / effectiveRate, 0) : 0;
+  const orderGbp = Number(order.order_total_gbp_declared ?? 0);
+  const creditUsableGbp = Math.min(orderGbp, availableCreditCurrentGbp);
+  const netGbpAfterCurrentCredit = Math.max(orderGbp - creditUsableGbp, 0);
+  const netLocalAfterCurrentCredit = effectiveRate ? netGbpAfterCurrentCredit * effectiveRate : 0;
+  const fxLabel = fxDate === today ? "today's FX" : fxDate ? `latest FX ${fxDate}` : "no FX available";
 
   return (
     <main className="min-h-screen bg-gradient-to-b from-sky-50 via-white to-slate-50 p-4 text-slate-950 md:p-6">
@@ -108,8 +132,19 @@ export default async function CustomerOrderOperationsPage({
       <section className="mt-5 grid gap-4 md:grid-cols-4">
         <div className="rounded-[1.5rem] border border-slate-200 bg-white p-5 shadow-sm"><p className="text-sm font-semibold text-slate-500">Status</p><p className="mt-2 text-xl font-black">{friendly(state?.lifecycle_status ?? order.status)}</p></div>
         <div className="rounded-[1.5rem] border border-slate-200 bg-white p-5 shadow-sm"><p className="text-sm font-semibold text-slate-500">Funding</p><p className="mt-2"><span className={chip(thresholdMet)}>{thresholdMet ? "Funded" : friendly(funding?.status)}</span></p></div>
-        <div className="rounded-[1.5rem] border border-cyan-100 bg-cyan-50/70 p-5 shadow-sm"><p className="text-sm font-semibold text-cyan-700">Goods GBP</p><p className="mt-2 text-xl font-black text-cyan-950">{money(order.order_total_gbp_declared)}</p></div>
-        <div className="rounded-[1.5rem] border border-amber-100 bg-amber-50/70 p-5 shadow-sm"><p className="text-sm font-semibold text-amber-700">Pro forma local</p><p className="mt-2 text-xl font-black text-amber-950">{localAmount(order.quote_total_ghs, currencyCode)}</p></div>
+        <div className="rounded-[1.5rem] border border-cyan-100 bg-cyan-50/70 p-5 shadow-sm"><p className="text-sm font-semibold text-cyan-700">Original GBP order</p><p className="mt-2 text-xl font-black text-cyan-950">{money(orderGbp)}</p></div>
+        <div className="rounded-[1.5rem] border border-amber-100 bg-amber-50/70 p-5 shadow-sm"><p className="text-sm font-semibold text-amber-700">Current net payable</p><p className="mt-2 text-xl font-black text-amber-950">{money(netGbpAfterCurrentCredit)}</p><p className="mt-1 text-xs font-semibold text-amber-800">{effectiveRate ? localAmount(netLocalAfterCurrentCredit, currencyCode) : "No FX rate"}</p></div>
+      </section>
+
+      <section className="mt-5 rounded-[1.75rem] border border-cyan-100 bg-cyan-50/70 p-5 shadow-sm">
+        <h2 className="text-xl font-black text-cyan-950">Credit applied at current order FX</h2>
+        <p className="mt-2 text-sm text-slate-700">The old order closes in original GBP. For this order, available credit is revalued using the current/latest FX rate.</p>
+        <div className="mt-4 grid gap-3 md:grid-cols-4">
+          <div className="rounded-2xl bg-white p-4 ring-1 ring-cyan-100"><p className="text-xs font-black uppercase text-cyan-700">Available credit local</p><p className="mt-1 text-xl font-black">{localAmount(Math.max(availableCreditLocal, 0), currencyCode)}</p></div>
+          <div className="rounded-2xl bg-white p-4 ring-1 ring-cyan-100"><p className="text-xs font-black uppercase text-cyan-700">Current GBP value</p><p className="mt-1 text-xl font-black">{money(availableCreditCurrentGbp)}</p></div>
+          <div className="rounded-2xl bg-white p-4 ring-1 ring-cyan-100"><p className="text-xs font-black uppercase text-cyan-700">Usable on this order</p><p className="mt-1 text-xl font-black">{money(creditUsableGbp)}</p></div>
+          <div className="rounded-2xl bg-white p-4 ring-1 ring-cyan-100"><p className="text-xs font-black uppercase text-cyan-700">FX used</p><p className="mt-1 text-xl font-black">{effectiveRate ? effectiveRate.toFixed(4) : "—"}</p><p className="mt-1 text-xs font-semibold text-slate-500">{fxLabel}</p></div>
+        </div>
       </section>
 
       <section className="mt-5 grid gap-4 lg:grid-cols-2">
