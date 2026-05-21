@@ -39,7 +39,7 @@ export default async function SurplusEvidencePage({ searchParams }: { searchPara
   if (staffError || !staff || !["admin", "supervisor"].includes(String(staff.role_type))) redirect("/internal");
 
   const { data, error } = await supabase
-    .from("order_surplus_evidence_position_v1")
+    .from("order_surplus_evidence_position_v2")
     .select("order_id,order_ref,payment_auth_id,declared_order_gbp,funding_total_gbp,supplier_out_gbp,posted_invoice_gbp,draft_invoice_gbp,evidence_value_gbp,evidence_surplus_gbp,evidence_status,evidence_basis,open_dispute_count,active_hold_count")
     .in("evidence_status", ["ready_posted_invoice_surplus", "ready_draft_invoice_surplus", "ready_strong_in_out_surplus", "blocked_by_open_issue", "credit_created"])
     .order("evidence_surplus_gbp", { ascending: false });
@@ -56,7 +56,7 @@ export default async function SurplusEvidencePage({ searchParams }: { searchPara
           <Link href="/internal/funding" className="text-sm font-semibold text-sky-700">Back to funding</Link>
           <p className="mt-6 text-sm font-black uppercase tracking-[0.22em] text-cyan-700">Surplus evidence</p>
           <h1 className="mt-2 text-3xl font-black">Confirm customer surplus</h1>
-          <p className="mt-2 max-w-4xl text-sm text-slate-600">Compact list for high volume review. Expand one row only when you are ready to confirm it as available customer credit.</p>
+          <p className="mt-2 max-w-4xl text-sm text-slate-600">Expand one row only when you are ready to confirm it as available customer credit.</p>
         </section>
 
         {params.settlement_success ? <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-semibold text-emerald-900">{params.settlement_success}</div> : null}
