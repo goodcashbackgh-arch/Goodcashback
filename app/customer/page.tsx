@@ -15,6 +15,7 @@ type OrderRow = {
 };
 
 type CreditRow = { direction: string | null; amount_gbp: number | string | null };
+type FundingEventRow = { order_id: string | null; event_type: string | null; amount_gbp: number | string | null };
 
 type CurrencyRelation = { currencies?: { code?: string | null }[] | { code?: string | null } | null }[] | { currencies?: { code?: string | null }[] | { code?: string | null } | null } | null;
 
@@ -41,6 +42,11 @@ function statusPill(funded: boolean) {
   return funded
     ? "rounded-full bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700 ring-1 ring-emerald-200"
     : "rounded-full bg-amber-50 px-3 py-1 text-xs font-bold text-amber-800 ring-1 ring-amber-200";
+}
+
+function fundingTextClass(value: number) {
+  if (value <= 0.01) return "text-emerald-700";
+  return "text-amber-800";
 }
 
 export default async function CustomerDashboardPage() {
@@ -73,13 +79,14 @@ export default async function CustomerDashboardPage() {
   if (!importer) redirect("/auth/check");
 
   const today = new Date().toISOString().slice(0, 10);
-  const [{ data: orders, error: ordersError }, { data: creditRows }, { data: fxRate }] = await Promise.all([
+  const [{ data: orders, error: ordersError }, { data: creditRows }, { data: fundingEvents }, { data: fxRate }] = await Promise.all([
     supabase
       .from("orders")
       .select("id, order_ref, status, payment_auth_id, order_total_gbp_declared, quote_total_ghs, funded_at, created_at, retailers(name)")
       .eq("importer_id", importer.id)
       .order("created_at", { ascending: false }),
     supabase.from("importer_credit_ledger").select("direction, amount_gbp").eq("importer_id", importer.id),
+    supabase.from("order_funding_events").select("order_id, event_type, amount_gbp").in("event_type", ["funding_contribution", "credit_applied", "manual_adjustment", "funding_reversed"]),
     supabase
       .from("fx_rates")
       .select("quote_rate, quote_card_markup_pct, rate_date")
@@ -92,6 +99,20 @@ export default async function CustomerDashboardPage() {
   if (ordersError) throw ordersError;
 
   const rows = (orders ?? []) as unknown as OrderRow[];
+  const orderIds = new Set(rows.map((order) => order.id));
+  const fundingRows = ((fundingEvents ?? []) as FundingEventRow[]).filter((event) => event.order_id && orderIds.has(event.order_id));
+  const fundingByOrder = new Map<string, { cash: number; credit: number; total: number }>();
+  for (const event of fundingRows) {
+    const orderId = event.order_id ?? "";
+    const amount = Number(event.amount_gbp ?? 0);
+    const current = fundingByOrder.get(orderId) ?? { cash: 0, credit: 0, total: 0 };
+    if (event.event_type === "credit_applied") current.credit += Math.abs(amount);
+    else if (event.event_type === "funding_reversed") current.cash -= Math.abs(amount);
+    else current.cash += amount;
+    current.total = current.cash + current.credit;
+    fundingByOrder.set(orderId, current);
+  }
+
   const creditBalanceGbp = ((creditRows ?? []) as CreditRow[]).reduce((sum, row) => {
     const amount = Number(row.amount_gbp ?? 0);
     return sum + (row.direction === "credit" ? amount : -amount);
@@ -142,26 +163,33 @@ export default async function CustomerDashboardPage() {
         <div className="flex flex-col gap-2 border-b border-slate-100 bg-slate-50/70 p-5 md:flex-row md:items-center md:justify-between">
           <div>
             <h2 className="text-xl font-black">Orders</h2>
-            <p className="text-sm text-slate-600">Customer order status, pro forma value and funding position.</p>
+            <p className="text-sm text-slate-600">Customer order status, declared value, credit used and remaining cash funding position.</p>
           </div>
           <span className="rounded-full bg-sky-100 px-3 py-1 text-xs font-black text-sky-700">{rows.length} orders</span>
         </div>
         <div className="overflow-x-auto">
           <table className="min-w-full text-sm">
-            <thead className="bg-white text-left text-xs font-black uppercase tracking-wide text-slate-500"><tr><th className="p-4">Order</th><th className="p-4">Retailer</th><th className="p-4">Auth ref</th><th className="p-4">GBP</th><th className="p-4">Local quote</th><th className="p-4">Funding</th><th className="p-4">Status</th><th className="p-4">Action</th></tr></thead>
+            <thead className="bg-white text-left text-xs font-black uppercase tracking-wide text-slate-500"><tr><th className="p-4">Order</th><th className="p-4">Retailer</th><th className="p-4">Auth ref</th><th className="p-4">Order GBP</th><th className="p-4">Credit used</th><th className="p-4">Cash still needed</th><th className="p-4">Funding</th><th className="p-4">Status</th><th className="p-4">Action</th></tr></thead>
             <tbody>
-              {rows.map((order) => (
-                <tr key={order.id} className="border-t border-slate-100 align-top hover:bg-sky-50/40">
-                  <td className="p-4"><div className="font-black">{order.order_ref}</div><div className="text-xs text-slate-400">{order.id}</div></td>
-                  <td className="p-4 font-semibold">{order.retailers?.name ?? "—"}</td>
-                  <td className="p-4 text-slate-700">{order.payment_auth_id ?? "—"}</td>
-                  <td className="p-4 font-black">{gbp(order.order_total_gbp_declared)}</td>
-                  <td className="p-4 font-semibold text-slate-700">{localAmount(order.quote_total_ghs, currencyCode)}</td>
-                  <td className="p-4"><span className={statusPill(Boolean(order.funded_at))}>{order.funded_at ? "Funded" : "Funding pending"}</span></td>
-                  <td className="p-4 font-semibold text-slate-700">{friendly(order.status)}</td>
-                  <td className="p-4"><Link className="rounded-xl bg-slate-950 px-3 py-2 text-xs font-black text-white" href={`/customer/orders/${order.id}/operations`}>Open</Link></td>
-                </tr>
-              ))}
+              {rows.map((order) => {
+                const funding = fundingByOrder.get(order.id) ?? { cash: 0, credit: 0, total: 0 };
+                const declaredGbp = Number(order.order_total_gbp_declared ?? 0);
+                const remainingCashNeeded = Math.max(declaredGbp - funding.credit - funding.cash, 0);
+                const netAfterCredit = Math.max(declaredGbp - funding.credit, 0);
+                return (
+                  <tr key={order.id} className="border-t border-slate-100 align-top hover:bg-sky-50/40">
+                    <td className="p-4"><div className="font-black">{order.order_ref}</div><div className="text-xs text-slate-400">{order.id}</div></td>
+                    <td className="p-4 font-semibold">{order.retailers?.name ?? "—"}</td>
+                    <td className="p-4 text-slate-700">{order.payment_auth_id ?? "—"}</td>
+                    <td className="p-4"><div className="font-black">{gbp(declaredGbp)}</div><div className="text-xs text-slate-500">Local quote {localAmount(order.quote_total_ghs, currencyCode)}</div></td>
+                    <td className="p-4"><div className="font-black text-cyan-800">{gbp(funding.credit)}</div><div className="text-xs text-slate-500">Net after credit {gbp(netAfterCredit)}</div></td>
+                    <td className="p-4"><div className={`font-black ${fundingTextClass(remainingCashNeeded)}`}>{gbp(remainingCashNeeded)}</div><div className="text-xs text-slate-500">Cash matched {gbp(funding.cash)}</div></td>
+                    <td className="p-4"><span className={statusPill(Boolean(order.funded_at))}>{order.funded_at ? "Funded" : "Funding pending"}</span></td>
+                    <td className="p-4 font-semibold text-slate-700">{friendly(order.status)}</td>
+                    <td className="p-4"><Link className="rounded-xl bg-slate-950 px-3 py-2 text-xs font-black text-white" href={`/customer/orders/${order.id}/operations`}>Open</Link></td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
