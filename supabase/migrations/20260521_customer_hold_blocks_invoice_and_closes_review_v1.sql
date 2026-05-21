@@ -55,8 +55,7 @@ BEGIN
      AND COALESCE(NEW.sage_status::text, '') IN ('draft','posted')
   THEN
     UPDATE public.customer_order_review_links l
-    SET is_active = false,
-        updated_at = now()
+    SET is_active = false
     WHERE l.order_id = NEW.order_id
       AND l.is_active = true;
   END IF;
@@ -75,8 +74,7 @@ FOR EACH ROW
 EXECUTE FUNCTION public.customer_close_order_review_links_for_invoice_v1();
 
 UPDATE public.customer_order_review_links l
-SET is_active = false,
-    updated_at = now()
+SET is_active = false
 WHERE l.is_active = true
   AND EXISTS (
     SELECT 1
