@@ -3,6 +3,7 @@ import { submitCustomerHoldRequestAction } from "./actions";
 
 type LineRow = {
   id: string;
+  tracking_submission_id?: string | null;
   description?: string | null;
   size?: string | null;
   retailer_sku?: unknown;
@@ -13,10 +14,18 @@ type LineRow = {
 type HoldRow = {
   id: string;
   requested_scope?: string | null;
+  tracking_submission_id?: string | null;
   supplier_invoice_line_id?: string | null;
   status?: string | null;
   reason?: string | null;
   supervisor_review_note?: string | null;
+};
+
+type PackageGroup = {
+  key: string;
+  trackingSubmissionId: string | null;
+  label: string;
+  lines: LineRow[];
 };
 
 type ReviewPayload = {
@@ -41,6 +50,13 @@ function friendly(value: string | null | undefined) {
   return value.replaceAll("_", " ").replace(/^./, (first) => first.toUpperCase());
 }
 
+function scopeLabel(value: string | null | undefined) {
+  if (value === "tracking") return "Package";
+  if (value === "line") return "Item";
+  if (value === "order") return "Order";
+  return friendly(value);
+}
+
 function safeText(value: unknown) {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
@@ -56,8 +72,39 @@ function statusClass(status: string | null | undefined) {
   return "bg-slate-100 text-slate-700 ring-slate-200";
 }
 
+function isActiveHold(status: string | null | undefined) {
+  return ["requested", "supervisor_approved"].includes(String(status ?? ""));
+}
+
 function holdsForLine(holds: HoldRow[], lineId: string) {
   return holds.filter((hold) => hold.supplier_invoice_line_id === lineId);
+}
+
+function holdsForPackage(holds: HoldRow[], trackingSubmissionId: string | null) {
+  if (!trackingSubmissionId) return [];
+  return holds.filter((hold) => hold.requested_scope === "tracking" && hold.tracking_submission_id === trackingSubmissionId);
+}
+
+function groupLinesByPackage(lines: LineRow[]): PackageGroup[] {
+  const groups = new Map<string, PackageGroup>();
+
+  for (const line of lines) {
+    const trackingSubmissionId = line.tracking_submission_id ?? null;
+    const key = trackingSubmissionId ?? "unknown-package";
+    const existing = groups.get(key);
+    if (existing) {
+      existing.lines.push(line);
+    } else {
+      groups.set(key, {
+        key,
+        trackingSubmissionId,
+        label: `Package ${groups.size + 1}`,
+        lines: [line],
+      });
+    }
+  }
+
+  return Array.from(groups.values());
 }
 
 function LineSummary({ line }: { line: LineRow }) {
@@ -104,6 +151,7 @@ export default async function CustomerOrderReviewPage({
   const lines = payload.lines ?? [];
   const holds = payload.holds ?? [];
   const orderHolds = holds.filter((hold) => hold.requested_scope === "order");
+  const packages = groupLinesByPackage(lines);
 
   return (
     <main className="min-h-screen bg-gradient-to-b from-sky-50 via-white to-slate-50 p-4 text-slate-950 md:p-6">
@@ -115,7 +163,7 @@ export default async function CustomerOrderReviewPage({
             <h1 className="mt-2 text-3xl font-black tracking-tight md:text-5xl">Review before shipment</h1>
             <p className="mt-2 text-sm text-slate-600">Order {order.order_ref ?? order.id ?? "—"} · {order.retailer_name ?? "Retailer"}</p>
             <p className="mt-4 max-w-3xl text-sm leading-6 text-slate-700">
-              Review the items recorded for this order. If you no longer want an item, request a hold before shipment. Internal retailer invoices and retailer-to-warehouse tracking are intentionally hidden.
+              Review received packages and items before shipment. If you no longer want a whole package or a specific item, request a hold. Internal retailer invoices and retailer-to-warehouse tracking are hidden.
             </p>
             {query.success ? <p className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-800">{query.success}</p> : null}
             {query.error ? <p className="mt-4 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-800">{query.error}</p> : null}
@@ -142,30 +190,67 @@ export default async function CustomerOrderReviewPage({
 
         <section className="overflow-hidden rounded-[1.75rem] border border-slate-200 bg-white shadow-sm">
           <div className="border-b border-slate-100 bg-slate-50/70 p-5">
-            <h2 className="text-xl font-black">Items in this review</h2>
-            <p className="mt-1 text-sm text-slate-600">Select only items you no longer want shipped or included in the final invoice.</p>
+            <h2 className="text-xl font-black">Packages and items in this review</h2>
+            <p className="mt-1 text-sm text-slate-600">Hold a full package if nothing in that package should ship, or hold specific items only.</p>
           </div>
-          <div className="grid gap-4 p-5">
-            {lines.length === 0 ? <p className="rounded-xl bg-slate-50 p-4 text-sm text-slate-600">No item lines are available for review yet.</p> : null}
-            {lines.map((line) => {
-              const lineHolds = holdsForLine(holds, line.id);
+          <div className="grid gap-5 p-5">
+            {packages.length === 0 ? <p className="rounded-xl bg-slate-50 p-4 text-sm text-slate-600">No packages or item lines are available for review yet.</p> : null}
+            {packages.map((pkg) => {
+              const packageHolds = holdsForPackage(holds, pkg.trackingSubmissionId);
+              const activePackageHold = packageHolds.some((hold) => isActiveHold(hold.status));
+
               return (
-                <article key={line.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <section key={pkg.key} className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
                   <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                    <LineSummary line={line} />
+                    <div>
+                      <h3 className="text-lg font-black text-slate-950">{pkg.label}</h3>
+                      <p className="mt-1 text-sm text-slate-600">{pkg.lines.length} item line(s) received clean and ready for review.</p>
+                    </div>
                     <div className="flex flex-wrap gap-2">
-                      {lineHolds.length === 0 ? <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700 ring-1 ring-emerald-200">No hold requested</span> : null}
-                      {lineHolds.map((hold) => <span key={hold.id} className={`rounded-full px-3 py-1 text-xs font-bold ring-1 ${statusClass(hold.status)}`}>{friendly(hold.status)}</span>)}
+                      {packageHolds.length === 0 ? <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700 ring-1 ring-emerald-200">No package hold</span> : null}
+                      {packageHolds.map((hold) => <span key={hold.id} className={`rounded-full px-3 py-1 text-xs font-bold ring-1 ${statusClass(hold.status)}`}>{friendly(hold.status)}</span>)}
                     </div>
                   </div>
-                  <form action={submitCustomerHoldRequestAction} className="mt-4 grid gap-3 md:grid-cols-[1fr_auto]">
-                    <input type="hidden" name="secure_token" value={secureToken} />
-                    <input type="hidden" name="requested_scope" value="line" />
-                    <input type="hidden" name="supplier_invoice_line_id" value={line.id} />
-                    <input name="reason" required className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm" placeholder="Reason, e.g. I no longer want this item" />
-                    <button className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-black text-white">Request hold</button>
-                  </form>
-                </article>
+
+                  {pkg.trackingSubmissionId ? (
+                    <form action={submitCustomerHoldRequestAction} className="mt-4 grid gap-3 md:grid-cols-[1fr_auto]">
+                      <input type="hidden" name="secure_token" value={secureToken} />
+                      <input type="hidden" name="requested_scope" value="tracking" />
+                      <input type="hidden" name="tracking_submission_id" value={pkg.trackingSubmissionId} />
+                      <input name="reason" required className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm" placeholder="Reason, e.g. hold this whole package" />
+                      <button className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-black text-white">Request package hold</button>
+                    </form>
+                  ) : null}
+
+                  <div className="mt-4 grid gap-3">
+                    {pkg.lines.map((line) => {
+                      const lineHolds = holdsForLine(holds, line.id);
+                      const activeLineHold = lineHolds.some((hold) => isActiveHold(hold.status));
+                      return (
+                        <article key={line.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                          <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                            <LineSummary line={line} />
+                            <div className="flex flex-wrap gap-2">
+                              {lineHolds.length === 0 ? <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700 ring-1 ring-emerald-200">No item hold</span> : null}
+                              {lineHolds.map((hold) => <span key={hold.id} className={`rounded-full px-3 py-1 text-xs font-bold ring-1 ${statusClass(hold.status)}`}>{friendly(hold.status)}</span>)}
+                            </div>
+                          </div>
+                          {activePackageHold || activeLineHold ? (
+                            <p className="mt-3 rounded-xl bg-amber-50 p-3 text-sm font-semibold text-amber-900">This item is already covered by an active package/item hold.</p>
+                          ) : (
+                            <form action={submitCustomerHoldRequestAction} className="mt-4 grid gap-3 md:grid-cols-[1fr_auto]">
+                              <input type="hidden" name="secure_token" value={secureToken} />
+                              <input type="hidden" name="requested_scope" value="line" />
+                              <input type="hidden" name="supplier_invoice_line_id" value={line.id} />
+                              <input name="reason" required className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm" placeholder="Reason, e.g. I no longer want this item" />
+                              <button className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-black text-white">Request item hold</button>
+                            </form>
+                          )}
+                        </article>
+                      );
+                    })}
+                  </div>
+                </section>
               );
             })}
           </div>
@@ -178,7 +263,7 @@ export default async function CustomerOrderReviewPage({
             {holds.map((hold) => (
               <article key={hold.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <p className="font-black">{friendly(hold.requested_scope)} hold</p>
+                  <p className="font-black">{scopeLabel(hold.requested_scope)} hold</p>
                   <span className={`rounded-full px-3 py-1 text-xs font-bold ring-1 ${statusClass(hold.status)}`}>{friendly(hold.status)}</span>
                 </div>
                 <p className="mt-2 text-slate-700">{hold.reason}</p>
