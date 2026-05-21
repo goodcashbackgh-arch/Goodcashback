@@ -129,6 +129,16 @@ export default async function ImporterPage() {
     redirect("/auth/check");
   }
 
+  const { data: customerPortalLink } = await supabase
+    .from("operator_importers")
+    .select("id")
+    .eq("operator_id", operator.id)
+    .is("revoked_at", null)
+    .limit(1)
+    .maybeSingle();
+
+  const canOpenCustomerPortal = Boolean(customerPortalLink);
+
   const [{ data: orders, error: ordersError }, { data: screenshots }, { data: tracking }, { data: invoices }] =
     await Promise.all([
       supabase
@@ -267,6 +277,18 @@ export default async function ImporterPage() {
           </div>
         </div>
       </header>
+
+      {canOpenCustomerPortal ? (
+        <section className="rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm text-slate-800">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div>
+              <h2 className="text-base font-semibold text-slate-950">Customer lane available</h2>
+              <p className="mt-1 text-slate-600">Open the customer dashboard to view ledger balance, order status, pro forma values and final invoice readiness.</p>
+            </div>
+            <Link href="/customer" className="rounded-lg bg-sky-600 px-4 py-2 text-center font-semibold text-white">Open Customer Portal</Link>
+          </div>
+        </section>
+      ) : null}
 
       <section className="grid gap-4 md:grid-cols-4">
         <div className="rounded-2xl border p-4">
