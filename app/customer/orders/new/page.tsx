@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { createClient } from "@/utils/supabase/server";
-import OrderForm from "@/app/importer/orders/new/OrderForm";
+import OrderForm from "../../../importer/orders/new/OrderForm";
 import { createCustomerOrderAction } from "./actions";
 
 type RetailerOption = { id: string; name: string };
