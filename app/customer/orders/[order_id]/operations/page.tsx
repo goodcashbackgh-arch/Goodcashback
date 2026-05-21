@@ -6,6 +6,7 @@ type ScreenshotRow = { id: string; screenshot_url: string };
 type InvoiceLineRow = { eligible_for_invoice_yn: string | null; supplier_invoices: { order_id: string }[] | { order_id: string } | null };
 type AdjustmentRow = { adjustment_type: string | null; amount_gbp: number | string | null; approval_status: string | null; requires_supervisor_approval: boolean | null };
 type SalesInvoiceRow = { id: string; invoice_type: string | null; amount_gbp: number | string | null; sage_status: string | null; sage_invoice_id: string | null; created_at: string | null };
+type ReviewLinkRow = { secure_token: string | null };
 
 function money(value: unknown) {
   return new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP", minimumFractionDigits: 2 }).format(Number(value ?? 0));
@@ -59,7 +60,7 @@ export default async function CustomerOrderOperationsPage({ params, searchParams
     .maybeSingle();
   if (!access) redirect("/customer");
 
-  const [{ data: funding }, { data: screenshots }, { data: tracking }, { data: invoices }, { data: invoiceLines }, { data: adjustments }, { data: salesInvoices }, { data: state }] = await Promise.all([
+  const [{ data: funding }, { data: screenshots }, { data: tracking }, { data: invoices }, { data: invoiceLines }, { data: adjustments }, { data: salesInvoices }, { data: state }, { data: reviewLink }] = await Promise.all([
     supabase.from("order_funding_position_vw").select("*").eq("order_id", orderId).maybeSingle(),
     supabase.from("order_screenshots").select("id, screenshot_url").eq("order_id", orderId).order("display_order"),
     supabase.from("order_tracking_submissions").select("id, is_final_delivery_yn").eq("order_id", orderId).order("submitted_at", { ascending: false }),
@@ -68,11 +69,14 @@ export default async function CustomerOrderOperationsPage({ params, searchParams
     supabase.from("order_value_adjustments").select("adjustment_type, amount_gbp, approval_status, requires_supervisor_approval").eq("order_id", orderId),
     supabase.from("sales_invoices").select("id, invoice_type, amount_gbp, sage_status, sage_invoice_id, created_at").eq("order_id", orderId).order("created_at", { ascending: false }),
     supabase.from("order_state_vw").select("lifecycle_status").eq("id", orderId).maybeSingle(),
+    supabase.from("customer_order_review_links").select("secure_token").eq("order_id", orderId).eq("is_active", true).order("created_at", { ascending: false }).limit(1).maybeSingle(),
   ]);
 
   const lineRows = (invoiceLines ?? []) as InvoiceLineRow[];
   const adjustmentRows = (adjustments ?? []) as AdjustmentRow[];
   const salesRows = (salesInvoices ?? []) as SalesInvoiceRow[];
+  const activeReviewLink = reviewLink as ReviewLinkRow | null;
+  const reviewHref = activeReviewLink?.secure_token ? `/customer/orders/${activeReviewLink.secure_token}/review` : null;
 
   const thresholdMet = Boolean(funding?.threshold_met_yn);
   const finalDelivery = (tracking ?? []).some((row: { is_final_delivery_yn: boolean | null }) => row.is_final_delivery_yn);
@@ -93,6 +97,23 @@ export default async function CustomerOrderOperationsPage({ params, searchParams
         {qp.success ? <p className="mt-3 rounded border border-emerald-300 bg-emerald-50 p-3 text-sm text-emerald-900">{qp.success}</p> : null}
         {qp.error ? <p className="mt-3 rounded border border-rose-300 bg-rose-50 p-3 text-sm text-rose-900">{qp.error}</p> : null}
       </header>
+
+      {reviewHref ? (
+        <section className="mt-6 rounded-2xl border border-sky-200 bg-sky-50 p-5">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-950">Review before shipment</h2>
+              <p className="mt-1 text-sm text-slate-600">Open this to request a hold for items you no longer want before shipment.</p>
+            </div>
+            <Link href={reviewHref} className="rounded-xl bg-sky-600 px-4 py-2 text-center text-sm font-bold text-white">Open review page</Link>
+          </div>
+        </section>
+      ) : (
+        <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-5">
+          <h2 className="text-lg font-semibold">Review before shipment</h2>
+          <p className="mt-1 text-sm text-slate-600">No customer review link has been created for this order yet.</p>
+        </section>
+      )}
 
       <section className="mt-6 grid gap-4 md:grid-cols-5">
         <div className="rounded-2xl border bg-white p-4"><div className="text-sm text-slate-500">Status</div><div className="mt-2 font-semibold">{friendly(state?.lifecycle_status ?? order.status)}</div></div>
@@ -137,7 +158,7 @@ export default async function CustomerOrderOperationsPage({ params, searchParams
         <div className="mt-4 grid gap-4 lg:grid-cols-3">
           <div><h3 className="font-semibold">Original order screenshots</h3><p className="text-sm text-slate-600">{(screenshots ?? []).length} uploaded</p><div className="mt-2 flex flex-wrap gap-2">{((screenshots ?? []) as ScreenshotRow[]).map((row) => <a key={row.id} href={row.screenshot_url} target="_blank" rel="noreferrer" className="text-sm font-semibold text-sky-700 underline">Open</a>)}</div></div>
           <div><h3 className="font-semibold">Shipping updates</h3><p className="mt-2 text-sm text-slate-600">Shipper/customer delivery tracking will appear here when available. Retailer-to-warehouse tracking is internal and hidden.</p></div>
-          <div><h3 className="font-semibold">Customer review</h3><p className="mt-2 text-sm text-slate-600">Final pro forma/customer selection gate is not surfaced on this page yet.</p></div>
+          <div><h3 className="font-semibold">Customer review</h3><p className="mt-2 text-sm text-slate-600">Use the review card above to request pre-shipment item holds.</p></div>
         </div>
       </section>
     </main>
