@@ -18,6 +18,12 @@ function todayIso() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function readAppliedCredit(data: unknown) {
+  if (!data || typeof data !== "object" || !("applied_gbp" in data)) return 0;
+  const parsed = Number((data as { applied_gbp?: unknown }).applied_gbp ?? 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 export async function createCustomerOrderAction(formData: FormData) {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -130,7 +136,15 @@ export async function createCustomerOrderAction(formData: FormData) {
   const { error: screenshotInsertError } = await supabase.from("order_screenshots").insert(screenshotRows);
   if (screenshotInsertError) redirect(`/customer/orders/new?error=${encodeURIComponent(screenshotInsertError.message)}`);
 
+  let successMessage = "Pro Forma Quote created";
+  const { data: creditData, error: creditError } = await supabase.rpc("customer_apply_available_credit_to_order_v1", { p_order_id: createdOrderId });
+  if (!creditError) {
+    const appliedCredit = readAppliedCredit(creditData);
+    if (appliedCredit > 0) successMessage = `Pro Forma Quote created. £${appliedCredit.toFixed(2)} credit auto-applied.`;
+  }
+
   revalidatePath("/customer");
+  revalidatePath("/internal/funding");
   revalidatePath(`/customer/orders/${createdOrderId}/operations`);
-  redirect(`/customer/orders/${createdOrderId}/operations?success=Pro+Forma+Quote+created&order_ref=${encodeURIComponent(orderRef)}&auth_ref=${encodeURIComponent(paymentAuthId)}`);
+  redirect(`/customer/orders/${createdOrderId}/operations?success=${encodeURIComponent(successMessage)}&order_ref=${encodeURIComponent(orderRef)}&auth_ref=${encodeURIComponent(paymentAuthId)}`);
 }
