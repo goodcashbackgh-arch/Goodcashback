@@ -9,22 +9,26 @@ function redirectWithFundingResult(params: Record<string, string>): never {
   redirect(`/internal/funding?${query.toString()}`);
 }
 
+function redirectWithSettlementResult(params: Record<string, string>): never {
+  const query = new URLSearchParams(params);
+  redirect(`/internal/funding/settlement-surplus?${query.toString()}`);
+}
+
 function readString(formData: FormData, key: string) {
   const value = formData.get(key);
   return typeof value === "string" ? value.trim() : "";
 }
 
-export async function applyImporterCreditAction(formData: FormData) {
+async function requireFundingStaff(resultTarget: "funding" | "settlement", errorKey: string) {
   const supabase = await createClient();
-
   const {
     data: { user },
   } = await supabase.auth.getUser();
 
+  const redirectResult = resultTarget === "settlement" ? redirectWithSettlementResult : redirectWithFundingResult;
+
   if (!user) {
-    redirectWithFundingResult({
-      credit_error: "Please sign in again before applying credit.",
-    });
+    redirectResult({ [errorKey]: "Please sign in again." });
   }
 
   const { data: staff, error: staffError } = await supabase
@@ -35,16 +39,18 @@ export async function applyImporterCreditAction(formData: FormData) {
     .maybeSingle();
 
   if (staffError || !staff) {
-    redirectWithFundingResult({
-      credit_error: "Active staff user not found.",
-    });
+    redirectResult({ [errorKey]: "Active staff user not found." });
   }
 
   if (!["admin", "supervisor"].includes(String(staff.role_type))) {
-    redirectWithFundingResult({
-      credit_error: "Only admin or supervisor staff can apply importer credit.",
-    });
+    redirectResult({ [errorKey]: "Only admin or supervisor staff can perform this funding action." });
   }
+
+  return { supabase, staff };
+}
+
+export async function applyImporterCreditAction(formData: FormData) {
+  const { supabase, staff } = await requireFundingStaff("funding", "credit_error");
 
   const importerId = readString(formData, "importer_id");
   const orderId = readString(formData, "order_id");
@@ -90,36 +96,7 @@ export async function applyImporterCreditAction(formData: FormData) {
 }
 
 export async function reconcileDvaLineToOrderAction(formData: FormData) {
-  const supabase = await createClient();
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) {
-    redirectWithFundingResult({
-      dva_error: "Please sign in again before reconciling DVA funding.",
-    });
-  }
-
-  const { data: staff, error: staffError } = await supabase
-    .from("staff")
-    .select("id, role_type")
-    .eq("auth_user_id", user.id)
-    .eq("active", true)
-    .maybeSingle();
-
-  if (staffError || !staff) {
-    redirectWithFundingResult({
-      dva_error: "Active staff user not found.",
-    });
-  }
-
-  if (!["admin", "supervisor"].includes(String(staff.role_type))) {
-    redirectWithFundingResult({
-      dva_error: "Only admin or supervisor staff can reconcile DVA funding.",
-    });
-  }
+  const { supabase } = await requireFundingStaff("funding", "dva_error");
 
   const dvaStatementLineId = readString(formData, "dva_statement_line_id");
   const orderId = readString(formData, "order_id");
@@ -180,4 +157,31 @@ export async function reconcileDvaLineToOrderAction(formData: FormData) {
   redirectWithFundingResult({
     dva_success: `Reconciled £${appliedAmount} DVA funding to order.`,
   });
+}
+
+export async function confirmSettlementSurplusCreditAction(formData: FormData) {
+  const { supabase } = await requireFundingStaff("settlement", "settlement_error");
+
+  const orderId = readString(formData, "order_id");
+  const reason = readString(formData, "reason") || "supervisor_confirmed_credit";
+  const notes = readString(formData, "notes") || null;
+
+  if (!orderId) {
+    redirectWithSettlementResult({ settlement_error: "Missing order id." });
+  }
+
+  const { error } = await supabase.rpc("staff_confirm_order_settlement_credit_v1", {
+    p_order_id: orderId,
+    p_reason: reason,
+    p_notes: notes,
+  });
+
+  if (error) {
+    redirectWithSettlementResult({ settlement_error: error.message });
+  }
+
+  revalidatePath("/internal/funding");
+  revalidatePath("/internal/funding/settlement-surplus");
+  revalidatePath("/customer");
+  redirectWithSettlementResult({ settlement_success: "Settlement surplus converted to customer credit." });
 }
