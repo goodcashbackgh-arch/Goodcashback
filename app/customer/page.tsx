@@ -107,6 +107,16 @@ export default async function CustomerDashboardPage() {
         <Link href="/customer/orders/new" className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white">Create order</Link>
       </header>
 
+      <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-800">
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h2 className="text-base font-semibold text-slate-950">Importer lane available</h2>
+            <p className="mt-1 text-slate-600">Open the importer/operator dashboard to upload invoices, add tracking and reconcile order items.</p>
+          </div>
+          <Link href="/importer" className="rounded-lg bg-slate-900 px-4 py-2 text-center font-semibold text-white">Open Importer Portal</Link>
+        </div>
+      </section>
+
       <section className="mt-6 grid gap-4 md:grid-cols-4">
         <div className="rounded-2xl border bg-white p-4"><div className="text-sm text-slate-500">Total orders</div><div className="mt-2 text-2xl font-semibold">{rows.length}</div></div>
         <div className="rounded-2xl border bg-white p-4"><div className="text-sm text-slate-500">Funded</div><div className="mt-2 text-2xl font-semibold">{rows.filter((order) => order.funded_at).length}</div></div>
