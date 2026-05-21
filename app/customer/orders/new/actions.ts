@@ -32,7 +32,7 @@ export async function createCustomerOrderAction(formData: FormData) {
   const { data: operator } = await supabase.from("operators").select("id").eq("auth_user_id", user.id).eq("active", true).maybeSingle();
   if (!operator) redirect("/auth/check");
 
-  const { data: operatorImporter } = await supabase.from("operator_importers").select("importer_id").eq("operator_id", operator.id).is("revoked_at", null).limit(1).maybeSingle();
+  const { data: operatorImporter } = await supabase.from("operator_importers").select("importer_id").eq("operator_id", operator.id).is("revoked_at", null).order("id", { ascending: false }).limit(1).maybeSingle();
   if (!operatorImporter?.importer_id) redirect("/customer/orders/new?error=No+active+customer+assignment.");
 
   const { data: importer } = await supabase.from("importers").select("shipper_id, country_id").eq("id", operatorImporter.importer_id).maybeSingle();
@@ -145,6 +145,6 @@ export async function createCustomerOrderAction(formData: FormData) {
 
   revalidatePath("/customer");
   revalidatePath("/internal/funding");
-  revalidatePath(`/customer/orders/${createdOrderId}/operations`);
-  redirect(`/customer/orders/${createdOrderId}/operations?success=${encodeURIComponent(successMessage)}&order_ref=${encodeURIComponent(orderRef)}&auth_ref=${encodeURIComponent(paymentAuthId)}`);
+  revalidatePath(`/importer/orders/${createdOrderId}/operations`);
+  redirect(`/importer/orders/${createdOrderId}/operations?success=${encodeURIComponent(successMessage)}&order_ref=${encodeURIComponent(orderRef)}&auth_ref=${encodeURIComponent(paymentAuthId)}`);
 }
