@@ -1,35 +1,21 @@
 import { createClient } from "@/utils/supabase/server";
-import { narrowCustomerHoldRequestAction, submitCustomerHoldRequestAction } from "./actions";
-
-type TrackingRow = {
-  id: string;
-  courier_name?: string | null;
-  tracking_ref?: string | null;
-  tracking_date?: string | null;
-  is_final_delivery_yn?: boolean | null;
-};
+import { submitCustomerHoldRequestAction } from "./actions";
 
 type LineRow = {
   id: string;
-  supplier_invoice_id?: string | null;
-  invoice_ref?: string | null;
   description?: string | null;
   size?: string | null;
   retailer_sku?: unknown;
   qty?: number | string | null;
   amount_inc_vat_gbp?: number | string | null;
-  eligible_for_invoice_yn?: string | null;
 };
 
 type HoldRow = {
   id: string;
   requested_scope?: string | null;
-  tracking_submission_id?: string | null;
   supplier_invoice_line_id?: string | null;
-  narrowed_from_hold_request_id?: string | null;
   status?: string | null;
   reason?: string | null;
-  created_at?: string | null;
   supervisor_review_note?: string | null;
 };
 
@@ -38,11 +24,9 @@ type ReviewPayload = {
     id?: string | null;
     order_ref?: string | null;
     retailer_name?: string | null;
-    status?: string | null;
-    order_type?: string | null;
     total_qty_declared?: number | string | null;
   };
-  tracking?: TrackingRow[];
+  tracking?: { id: string }[];
   lines?: LineRow[];
   holds?: HoldRow[];
 };
@@ -65,31 +49,26 @@ function safeText(value: unknown) {
 }
 
 function statusClass(status: string | null | undefined) {
-  if (status === "supervisor_approved") return "bg-amber-100 text-amber-900";
-  if (status === "requested") return "bg-sky-100 text-sky-900";
-  if (status === "rejected") return "bg-rose-100 text-rose-900";
-  if (["resolved", "converted_to_exception", "superseded"].includes(String(status ?? ""))) return "bg-emerald-100 text-emerald-900";
-  return "bg-slate-100 text-slate-700";
+  if (status === "supervisor_approved") return "bg-amber-100 text-amber-900 ring-amber-200";
+  if (status === "requested") return "bg-sky-100 text-sky-900 ring-sky-200";
+  if (status === "rejected") return "bg-rose-100 text-rose-900 ring-rose-200";
+  if (["resolved", "converted_to_exception", "superseded"].includes(String(status ?? ""))) return "bg-emerald-100 text-emerald-900 ring-emerald-200";
+  return "bg-slate-100 text-slate-700 ring-slate-200";
 }
 
-function LineCard({ line, mode = "selectable" }: { line: LineRow; mode?: "selectable" | "held" | "pending" }) {
+function holdsForLine(holds: HoldRow[], lineId: string) {
+  return holds.filter((hold) => hold.supplier_invoice_line_id === lineId);
+}
+
+function LineSummary({ line }: { line: LineRow }) {
   const size = safeText(line.size);
   const sku = safeText(line.retailer_sku);
-  const locked = mode !== "selectable";
-
   return (
-    <label className={`flex gap-3 rounded-2xl border p-4 ${locked ? "border-emerald-200 bg-emerald-50 text-emerald-950" : "cursor-pointer border-slate-200 bg-slate-50 hover:bg-white"}`}>
-      {locked ? (
-        <span className="mt-1 h-fit rounded-full bg-emerald-100 px-2 py-1 text-xs font-semibold text-emerald-800">{mode === "pending" ? "Pending" : "Held"}</span>
-      ) : (
-        <input type="checkbox" name="supplier_invoice_line_ids" value={line.id} className="mt-1 h-5 w-5 rounded border-slate-300 text-slate-900" />
-      )}
-      <span className="min-w-0 flex-1 text-sm">
-        <span className="block font-semibold leading-5">{line.description ?? "Item line"}</span>
-        <span className="mt-1 block text-slate-600">Qty {line.qty ?? "—"} · {money(line.amount_inc_vat_gbp)}</span>
-        <span className="mt-1 block text-xs text-slate-500">Invoice {line.invoice_ref ?? "—"}{size ? ` · Size ${size}` : ""}{sku ? ` · SKU ${sku}` : ""}</span>
-      </span>
-    </label>
+    <div>
+      <p className="font-black text-slate-950">{line.description ?? "Item"}</p>
+      <p className="mt-1 text-sm text-slate-600">Qty {line.qty ?? "—"} · {money(line.amount_inc_vat_gbp)}</p>
+      {size || sku ? <p className="mt-1 text-xs text-slate-500">{size ? `Size ${size}` : ""}{size && sku ? " · " : ""}{sku ? `SKU ${sku}` : ""}</p> : null}
+    </div>
   );
 }
 
@@ -122,220 +101,91 @@ export default async function CustomerOrderReviewPage({
 
   const payload = (data ?? {}) as ReviewPayload;
   const order = payload.order ?? {};
-  const trackingRows = payload.tracking ?? [];
-  const lineRows = payload.lines ?? [];
-  const holdRows = payload.holds ?? [];
-  const hasLines = lineRows.length > 0;
-  const hasTracking = trackingRows.length > 0;
-  const activeHolds = holdRows.filter((hold) => ["requested", "supervisor_approved"].includes(String(hold.status ?? "")));
-  const pendingNarrowedLineHolds = activeHolds.filter((hold) => hold.requested_scope === "line" && hold.status === "requested" && hold.narrowed_from_hold_request_id);
-  const pendingNarrowingParentIds = new Set(pendingNarrowedLineHolds.map((hold) => String(hold.narrowed_from_hold_request_id)));
-  const activeHeldLineIds = new Set(
-    activeHolds
-      .filter((hold) => hold.requested_scope === "line" && hold.supplier_invoice_line_id)
-      .map((hold) => String(hold.supplier_invoice_line_id))
-  );
-  const pendingHeldLineIds = new Set(
-    pendingNarrowedLineHolds
-      .filter((hold) => hold.supplier_invoice_line_id)
-      .map((hold) => String(hold.supplier_invoice_line_id))
-  );
-  const heldLineRows = lineRows.filter((line) => activeHeldLineIds.has(line.id));
-  const pendingLineRows = lineRows.filter((line) => pendingHeldLineIds.has(line.id));
-  const approvedHeldLineRows = heldLineRows.filter((line) => !pendingHeldLineIds.has(line.id));
-  const availableLineRows = lineRows.filter((line) => !activeHeldLineIds.has(line.id));
-  const pendingNarrowing = pendingNarrowedLineHolds.length > 0;
-  const broadHoldToNarrow = activeHolds.find((hold) => {
-    if (pendingNarrowingParentIds.has(hold.id)) return false;
-    if (hold.requested_scope === "order" && (hasTracking || hasLines)) return true;
-    if (hold.requested_scope === "tracking" && hasLines) return true;
-    return false;
-  });
-  const shouldPromptNarrowing = Boolean(broadHoldToNarrow);
-  const narrowingScope = hasLines ? "line" : hasTracking ? "tracking" : "order";
+  const lines = payload.lines ?? [];
+  const holds = payload.holds ?? [];
+  const orderHolds = holds.filter((hold) => hold.requested_scope === "order");
 
   return (
-    <main className="min-h-screen bg-slate-50 px-4 py-6 text-slate-950 sm:px-6 sm:py-8">
-      <div className="mx-auto max-w-5xl space-y-6">
-        <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-          <p className="text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Goodcashback Customer Review</p>
-          <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">Review before shipment</h1>
-          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-            Use this page only to ask us to hold an order, package, or item before shipment. This does not edit supplier invoices, payment records, VAT, or accounting.
-          </p>
-          <div className="mt-5 grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm sm:grid-cols-4">
-            <div><p className="text-xs uppercase tracking-wide text-slate-500">Order</p><p className="mt-1 font-semibold">{order.order_ref ?? order.id ?? "—"}</p></div>
-            <div><p className="text-xs uppercase tracking-wide text-slate-500">Retailer</p><p className="mt-1 font-semibold">{order.retailer_name ?? "—"}</p></div>
-            <div><p className="text-xs uppercase tracking-wide text-slate-500">Tracking refs</p><p className="mt-1 font-semibold">{trackingRows.length}</p></div>
-            <div><p className="text-xs uppercase tracking-wide text-slate-500">Item lines</p><p className="mt-1 font-semibold">{lineRows.length} total · {approvedHeldLineRows.length} approved · {pendingLineRows.length} pending · {availableLineRows.length} available</p></div>
+    <main className="min-h-screen bg-gradient-to-b from-sky-50 via-white to-slate-50 p-4 text-slate-950 md:p-6">
+      <div className="mx-auto max-w-5xl space-y-5">
+        <header className="overflow-hidden rounded-[2rem] border border-sky-100 bg-white shadow-sm">
+          <div className="bg-gradient-to-r from-sky-500 via-cyan-400 to-emerald-300 px-5 py-2" />
+          <div className="p-5 md:p-7">
+            <p className="text-xs font-black uppercase tracking-[0.28em] text-sky-600">Goodcashback customer review</p>
+            <h1 className="mt-2 text-3xl font-black tracking-tight md:text-5xl">Review before shipment</h1>
+            <p className="mt-2 text-sm text-slate-600">Order {order.order_ref ?? order.id ?? "—"} · {order.retailer_name ?? "Retailer"}</p>
+            <p className="mt-4 max-w-3xl text-sm leading-6 text-slate-700">
+              Review the items recorded for this order. If you no longer want an item, request a hold before shipment. Internal retailer invoices and retailer-to-warehouse tracking are intentionally hidden.
+            </p>
+            {query.success ? <p className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-800">{query.success}</p> : null}
+            {query.error ? <p className="mt-4 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-800">{query.error}</p> : null}
           </div>
-          {query.success ? <p className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">{query.success}</p> : null}
-          {query.error ? <p className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-900">{query.error}</p> : null}
+        </header>
+
+        <section className="grid gap-4 md:grid-cols-3">
+          <div className="rounded-[1.5rem] border border-slate-200 bg-white p-5 shadow-sm"><p className="text-sm font-semibold text-slate-500">Order qty</p><p className="mt-2 text-3xl font-black">{order.total_qty_declared ?? lines.length}</p></div>
+          <div className="rounded-[1.5rem] border border-cyan-100 bg-cyan-50/70 p-5 shadow-sm"><p className="text-sm font-semibold text-cyan-700">Items shown</p><p className="mt-2 text-3xl font-black text-cyan-950">{lines.length}</p></div>
+          <div className="rounded-[1.5rem] border border-amber-100 bg-amber-50/70 p-5 shadow-sm"><p className="text-sm font-semibold text-amber-700">Hold requests</p><p className="mt-2 text-3xl font-black text-amber-950">{holds.length}</p></div>
         </section>
 
-        {pendingNarrowing ? (
-          <section className="rounded-3xl border border-sky-200 bg-sky-50 p-5 shadow-sm sm:p-6">
-            <p className="text-sm font-semibold uppercase tracking-wide text-sky-800">Waiting for supervisor</p>
-            <h2 className="mt-2 text-xl font-semibold text-sky-950">Your narrowed hold selection is under review</h2>
-            <p className="mt-2 text-sm leading-6 text-sky-900">
-              You have selected {pendingNarrowedLineHolds.length} item line(s) to keep on hold. The original broader hold remains active until a supervisor approves this final selection. You cannot edit this selection here while it is pending.
-            </p>
-            {pendingLineRows.length > 0 ? (
-              <div className="mt-4 grid gap-3">
-                {pendingLineRows.map((line) => <LineCard key={`pending-${line.id}`} line={line} mode="pending" />)}
-              </div>
-            ) : null}
-          </section>
-        ) : null}
+        <section className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
+          <h2 className="text-xl font-black">Hold the whole order</h2>
+          <p className="mt-1 text-sm text-slate-600">Use this only if the full order should pause before shipment.</p>
+          <form action={submitCustomerHoldRequestAction} className="mt-4 grid gap-3 md:grid-cols-[1fr_auto]">
+            <input type="hidden" name="secure_token" value={secureToken} />
+            <input type="hidden" name="requested_scope" value="order" />
+            <input name="reason" required className="rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Reason, e.g. please pause this order before shipping" />
+            <button className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-black text-white">Request order hold</button>
+          </form>
+          {orderHolds.length > 0 ? <div className="mt-3 flex flex-wrap gap-2">{orderHolds.map((hold) => <span key={hold.id} className={`rounded-full px-3 py-1 text-xs font-bold ring-1 ${statusClass(hold.status)}`}>{friendly(hold.status)}</span>)}</div> : null}
+        </section>
 
-        {shouldPromptNarrowing && broadHoldToNarrow ? (
-          <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 shadow-sm sm:p-6">
-            <p className="text-sm font-semibold uppercase tracking-wide text-amber-800">Action needed</p>
-            <h2 className="mt-2 text-xl font-semibold text-amber-950">More detail is now available for your hold</h2>
-            <p className="mt-2 text-sm leading-6 text-amber-900">
-              Your existing {friendly(broadHoldToNarrow.requested_scope).toLowerCase()} hold is still active. Please narrow it to the available {hasLines ? "item line(s)" : "tracking/package"}. A supervisor must approve the final selection before the shipper sees the updated item-level hold.
-            </p>
-            <form action={narrowCustomerHoldRequestAction} className="mt-5 space-y-5">
-              <input type="hidden" name="secure_token" value={secureToken} />
-              <input type="hidden" name="existing_hold_request_id" value={broadHoldToNarrow.id} />
-              <input type="hidden" name="requested_scope" value={narrowingScope} />
-
-              {hasLines ? (
-                <div className="space-y-3">
-                  <p className="text-sm font-semibold text-amber-950">Select every item line to keep on hold</p>
-                  <p className="text-xs leading-5 text-amber-900">You can select one or multiple available lines. Already-held lines are locked below so they are not submitted twice.</p>
-                  {availableLineRows.length > 0 ? (
-                    <div className="grid gap-3">
-                      {availableLineRows.map((line) => <LineCard key={line.id} line={line} />)}
+        <section className="overflow-hidden rounded-[1.75rem] border border-slate-200 bg-white shadow-sm">
+          <div className="border-b border-slate-100 bg-slate-50/70 p-5">
+            <h2 className="text-xl font-black">Items in this review</h2>
+            <p className="mt-1 text-sm text-slate-600">Select only items you no longer want shipped or included in the final invoice.</p>
+          </div>
+          <div className="grid gap-4 p-5">
+            {lines.length === 0 ? <p className="rounded-xl bg-slate-50 p-4 text-sm text-slate-600">No item lines are available for review yet.</p> : null}
+            {lines.map((line) => {
+              const lineHolds = holdsForLine(holds, line.id);
+              return (
+                <article key={line.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                    <LineSummary line={line} />
+                    <div className="flex flex-wrap gap-2">
+                      {lineHolds.length === 0 ? <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700 ring-1 ring-emerald-200">No hold requested</span> : null}
+                      {lineHolds.map((hold) => <span key={hold.id} className={`rounded-full px-3 py-1 text-xs font-bold ring-1 ${statusClass(hold.status)}`}>{friendly(hold.status)}</span>)}
                     </div>
-                  ) : (
-                    <p className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">All available item lines already have active holds.</p>
-                  )}
-                  {approvedHeldLineRows.length > 0 ? (
-                    <div className="mt-4 space-y-2">
-                      <p className="text-xs font-semibold uppercase tracking-wide text-emerald-800">Already approved</p>
-                      {approvedHeldLineRows.map((line) => <LineCard key={`held-${line.id}`} line={line} mode="held" />)}
-                    </div>
-                  ) : null}
-                </div>
-              ) : hasTracking ? (
-                <div>
-                  <label className="text-sm font-semibold text-amber-950">Select the package/tracking ref to keep on hold</label>
-                  <select name="tracking_submission_id" required className="mt-2 w-full rounded-xl border border-amber-300 bg-white px-3 py-2 text-sm">
-                    <option value="">Choose tracking/package</option>
-                    {trackingRows.map((row) => (
-                      <option key={row.id} value={row.id}>{row.courier_name ?? "Courier"} · {row.tracking_ref ?? row.id}</option>
-                    ))}
-                  </select>
-                </div>
-              ) : null}
-
-              {availableLineRows.length > 0 || !hasLines ? (
-                <>
-                  <label className="block text-sm font-semibold text-amber-950">
-                    Updated note, optional
-                    <textarea name="reason" rows={3} className="mt-2 w-full rounded-xl border border-amber-300 px-3 py-2 text-sm font-normal" placeholder={broadHoldToNarrow.reason ?? "Keep the same reason or add a clearer note."} />
-                  </label>
-
-                  <button className="rounded-xl bg-amber-900 px-5 py-3 text-sm font-semibold text-white hover:bg-amber-800">
-                    Submit final selection for supervisor approval
-                  </button>
-                </>
-              ) : null}
-            </form>
-          </section>
-        ) : null}
-
-        {!shouldPromptNarrowing && !pendingNarrowing ? (
-          <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-            <h2 className="text-xl font-semibold">Request a hold</h2>
-            <p className="mt-2 text-sm leading-6 text-slate-600">
-              If item lines are visible, select the exact item(s). If item lines are not available yet, request a temporary package or whole-order hold and the team will narrow it later.
-            </p>
-            <form action={submitCustomerHoldRequestAction} className="mt-5 space-y-5">
-              <input type="hidden" name="secure_token" value={secureToken} />
-              <input type="hidden" name="customer_contact_label" value="" />
-
-              {hasLines ? (
-                <input type="hidden" name="requested_scope" value="line" />
-              ) : hasTracking ? (
-                <input type="hidden" name="requested_scope" value="tracking" />
-              ) : (
-                <input type="hidden" name="requested_scope" value="order" />
-              )}
-
-              {!hasTracking && !hasLines ? (
-                <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-                  <p className="font-semibold">No tracking or item lines are available yet.</p>
-                  <p className="mt-1">Your request will temporarily hold the whole order until the team can identify the exact item.</p>
-                </div>
-              ) : null}
-
-              {hasTracking && !hasLines ? (
-                <div>
-                  <label className="text-sm font-semibold">Select package/tracking ref to hold</label>
-                  <select name="tracking_submission_id" required className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm">
-                    <option value="">Choose tracking/package</option>
-                    {trackingRows.map((row) => (
-                      <option key={row.id} value={row.id}>{row.courier_name ?? "Courier"} · {row.tracking_ref ?? row.id}</option>
-                    ))}
-                  </select>
-                </div>
-              ) : null}
-
-              {hasLines ? (
-                <div className="space-y-3">
-                  <p className="text-sm font-semibold">Select item(s) to hold</p>
-                  {availableLineRows.length > 0 ? (
-                    <div className="grid gap-3">
-                      {availableLineRows.map((line) => <LineCard key={line.id} line={line} />)}
-                    </div>
-                  ) : (
-                    <p className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">All item lines already have active holds.</p>
-                  )}
-                  {approvedHeldLineRows.length > 0 ? (
-                    <div className="mt-4 space-y-2">
-                      <p className="text-xs font-semibold uppercase tracking-wide text-emerald-800">Already approved</p>
-                      {approvedHeldLineRows.map((line) => <LineCard key={`held-${line.id}`} line={line} mode="held" />)}
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-
-              {availableLineRows.length > 0 || !hasLines ? (
-                <>
-                  <label className="block text-sm font-semibold">
-                    Reason for hold
-                    <textarea name="reason" required rows={4} className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm font-normal" placeholder="Tell us what should not be shipped or included in the final invoice." />
-                  </label>
-
-                  <button className="rounded-xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-800">
-                    Submit hold request for supervisor approval
-                  </button>
-                </>
-              ) : null}
-            </form>
-          </section>
-        ) : null}
-
-        <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-          <h2 className="text-xl font-semibold">Hold request history</h2>
-          {holdRows.length === 0 ? (
-            <p className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">No hold requests submitted through this link yet.</p>
-          ) : (
-            <div className="mt-4 space-y-3">
-              {holdRows.map((hold) => (
-                <article key={hold.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <p className="font-semibold">{friendly(hold.requested_scope)} hold{hold.narrowed_from_hold_request_id ? " · narrowed selection" : ""}</p>
-                    <span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(hold.status)}`}>{friendly(hold.status)}</span>
                   </div>
-                  <p className="mt-2 text-slate-700">{hold.reason}</p>
-                  {hold.supervisor_review_note ? <p className="mt-2 rounded-xl bg-white p-3 text-slate-700"><span className="font-semibold">Review note:</span> {hold.supervisor_review_note}</p> : null}
+                  <form action={submitCustomerHoldRequestAction} className="mt-4 grid gap-3 md:grid-cols-[1fr_auto]">
+                    <input type="hidden" name="secure_token" value={secureToken} />
+                    <input type="hidden" name="requested_scope" value="line" />
+                    <input type="hidden" name="supplier_invoice_line_id" value={line.id} />
+                    <input name="reason" required className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm" placeholder="Reason, e.g. I no longer want this item" />
+                    <button className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-black text-white">Request hold</button>
+                  </form>
                 </article>
-              ))}
-            </div>
-          )}
+              );
+            })}
+          </div>
+        </section>
+
+        <section className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
+          <h2 className="text-xl font-black">Hold request history</h2>
+          {holds.length === 0 ? <p className="mt-3 rounded-xl bg-slate-50 p-4 text-sm text-slate-600">No hold requests submitted through this link yet.</p> : null}
+          <div className="mt-4 grid gap-3">
+            {holds.map((hold) => (
+              <article key={hold.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="font-black">{friendly(hold.requested_scope)} hold</p>
+                  <span className={`rounded-full px-3 py-1 text-xs font-bold ring-1 ${statusClass(hold.status)}`}>{friendly(hold.status)}</span>
+                </div>
+                <p className="mt-2 text-slate-700">{hold.reason}</p>
+                {hold.supervisor_review_note ? <p className="mt-2 rounded-xl bg-white p-3 text-slate-700"><span className="font-semibold">Review note:</span> {hold.supervisor_review_note}</p> : null}
+              </article>
+            ))}
+          </div>
         </section>
       </div>
     </main>
