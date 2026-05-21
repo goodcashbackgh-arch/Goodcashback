@@ -3,7 +3,8 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 
 type ScreenshotRow = { id: string; screenshot_url: string };
-type TrackingRow = { id: string; tracking_ref: string; tracking_date: string | null; is_final_delivery_yn: boolean | null; tracking_screenshot_url: string | null; couriers: { name: string | null } | null };
+type CourierRelation = { name: string | null }[] | { name: string | null } | null;
+type TrackingRow = { id: string; tracking_ref: string; tracking_date: string | null; is_final_delivery_yn: boolean | null; tracking_screenshot_url: string | null; couriers: CourierRelation };
 type InvoiceRow = { id: string; invoice_ref: string; review_status: string | null; uploaded_at: string | null };
 type InvoiceLineRow = { eligible_for_invoice_yn: string | null; supplier_invoices: { order_id: string }[] | { order_id: string } | null };
 type AdjustmentRow = { adjustment_type: string | null; amount_gbp: number | string | null; approval_status: string | null; requires_supervisor_approval: boolean | null };
@@ -32,6 +33,11 @@ function chip(ok: boolean) {
 
 function isProgressed(value: string | null | undefined) {
   return ["y", "yes", "true", "1"].includes((value ?? "").trim().toLowerCase());
+}
+
+function courierName(value: CourierRelation) {
+  if (Array.isArray(value)) return value[0]?.name ?? "Courier";
+  return value?.name ?? "Courier";
 }
 
 export default async function CustomerOrderOperationsPage({ params, searchParams }: { params: Promise<{ order_id: string }>; searchParams?: Promise<{ success?: string; error?: string }> }) {
@@ -72,7 +78,7 @@ export default async function CustomerOrderOperationsPage({ params, searchParams
     supabase.from("order_state_vw").select("lifecycle_status").eq("id", orderId).maybeSingle(),
   ]);
 
-  const trackingRows = (tracking ?? []) as TrackingRow[];
+  const trackingRows = (tracking ?? []) as unknown as TrackingRow[];
   const invoiceRows = (invoices ?? []) as InvoiceRow[];
   const lineRows = (invoiceLines ?? []) as InvoiceLineRow[];
   const adjustmentRows = (adjustments ?? []) as AdjustmentRow[];
@@ -140,7 +146,7 @@ export default async function CustomerOrderOperationsPage({ params, searchParams
         <h2 className="text-lg font-semibold">Order evidence and activity</h2>
         <div className="mt-4 grid gap-4 lg:grid-cols-3">
           <div><h3 className="font-semibold">Screenshots</h3><p className="text-sm text-slate-600">{(screenshots ?? []).length} uploaded</p><div className="mt-2 flex flex-wrap gap-2">{((screenshots ?? []) as ScreenshotRow[]).map((row) => <a key={row.id} href={row.screenshot_url} target="_blank" className="text-sm font-semibold text-sky-700 underline">Open</a>)}</div></div>
-          <div><h3 className="font-semibold">Tracking</h3><div className="mt-2 space-y-2 text-sm">{trackingRows.length === 0 ? "No tracking yet." : trackingRows.map((row) => <p key={row.id}>{row.couriers?.name ?? "Courier"} · {row.tracking_ref} · {row.tracking_date ?? "—"}{row.is_final_delivery_yn ? " · Final" : ""}</p>)}</div></div>
+          <div><h3 className="font-semibold">Tracking</h3><div className="mt-2 space-y-2 text-sm">{trackingRows.length === 0 ? "No tracking yet." : trackingRows.map((row) => <p key={row.id}>{courierName(row.couriers)} · {row.tracking_ref} · {row.tracking_date ?? "—"}{row.is_final_delivery_yn ? " · Final" : ""}</p>)}</div></div>
           <div><h3 className="font-semibold">Retailer invoices</h3><div className="mt-2 space-y-2 text-sm">{invoiceRows.length === 0 ? "No invoice yet." : invoiceRows.map((row) => <p key={row.id}>{row.invoice_ref} · {friendly(row.review_status)}</p>)}</div></div>
         </div>
       </section>
