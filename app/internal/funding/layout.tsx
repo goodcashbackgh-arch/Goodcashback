@@ -62,14 +62,19 @@ export default async function FundingLayout({ children }: { children: ReactNode 
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
               <p className="text-sm font-black uppercase tracking-[0.22em] text-cyan-700">Credit lifecycle</p>
-              <h2 className="mt-2 text-2xl font-black">Create surplus credit, then apply confirmed credit</h2>
+              <h2 className="mt-2 text-2xl font-black">Confirm surplus credit, then auto-apply confirmed credit</h2>
               <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
-                Surplus evidence creates new customer credit. Ready importer credit below applies already-confirmed credit to open order gaps.
+                Surplus evidence creates confirmed customer credit. Confirmed credit is the spendable balance used against new order funding gaps.
               </p>
             </div>
-            <Link href="/internal/funding/surplus-evidence" className="rounded-xl bg-cyan-700 px-4 py-2 text-sm font-black text-white">
-              Review surplus evidence →
-            </Link>
+            <div className="flex flex-wrap gap-2">
+              <Link href="/internal/funding" className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-black text-slate-800">
+                Funding overview →
+              </Link>
+              <Link href="/internal/funding/surplus-evidence" className="rounded-xl bg-cyan-700 px-4 py-2 text-sm font-black text-white">
+                Surplus review →
+              </Link>
+            </div>
           </div>
 
           {surplusError ? (
@@ -92,7 +97,7 @@ export default async function FundingLayout({ children }: { children: ReactNode 
             <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4">
               <p className="text-xs font-black uppercase text-sky-700">Available credit</p>
               <p className="mt-1 text-3xl font-black">{gbp(availableCredit)}</p>
-              <p className="mt-1 text-xs text-slate-600">Already spendable on order gaps.</p>
+              <p className="mt-1 text-xs text-slate-600">Spendable against order gaps.</p>
             </div>
             <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
               <p className="text-xs font-black uppercase text-amber-700">Blocked / created</p>
