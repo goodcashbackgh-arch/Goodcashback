@@ -132,6 +132,12 @@ const cards: QueueCard[] = [
     proof: "Internal sales invoice draft gate",
   },
   {
+    title: "Customer pre-shipment holds",
+    href: "/internal/customer-holds",
+    description: "Supervisor worklist for customer review links, item/package/order hold requests, approvals, rejections, and narrowing customer holds to exact item lines before shipment.",
+    proof: "Customer hold review and approval gate",
+  },
+  {
     title: "Sage mapping diagnostic",
     href: "/internal/sage-mapping",
     description: "Legacy/drill-down mapping page. Daily accounting users should start from Accounting Command Centre; this page remains for exact mapping edits until the settings tab is fully absorbed.",
