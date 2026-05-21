@@ -16,6 +16,8 @@ type OrderRow = {
 
 type CreditRow = { direction: string | null; amount_gbp: number | string | null };
 
+type CurrencyRelation = { currencies?: { code?: string | null }[] | { code?: string | null } | null }[] | { currencies?: { code?: string | null }[] | { code?: string | null } | null } | null;
+
 function gbp(value: unknown) {
   return new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP", minimumFractionDigits: 2 }).format(Number(value ?? 0));
 }
@@ -27,6 +29,12 @@ function localAmount(value: unknown, code = "Local") {
 function friendly(value: string | null | undefined) {
   if (!value) return "In progress";
   return value.replaceAll("_", " ").replace(/^./, (first) => first.toUpperCase());
+}
+
+function currencyCodeFromCountries(value: CurrencyRelation) {
+  const country = Array.isArray(value) ? value[0] : value;
+  const currency = Array.isArray(country?.currencies) ? country?.currencies[0] : country?.currencies;
+  return currency?.code ?? "Local";
 }
 
 export default async function CustomerDashboardPage() {
@@ -85,7 +93,7 @@ export default async function CustomerDashboardPage() {
   const rate = Number(fxRate?.quote_rate ?? 0);
   const markup = Number(fxRate?.quote_card_markup_pct ?? 0);
   const effectiveRate = rate ? rate * (1 + markup / 100) : 0;
-  const currencyCode = importer.countries?.currencies?.code ?? "Local";
+  const currencyCode = currencyCodeFromCountries(importer.countries as CurrencyRelation);
   const rateDate = fxRate?.rate_date as string | undefined;
 
   return (
