@@ -37,6 +37,12 @@ function currencyCodeFromCountries(value: CurrencyRelation) {
   return currency?.code ?? "Local";
 }
 
+function statusPill(funded: boolean) {
+  return funded
+    ? "rounded-full bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700 ring-1 ring-emerald-200"
+    : "rounded-full bg-amber-50 px-3 py-1 text-xs font-bold text-amber-800 ring-1 ring-amber-200";
+}
+
 export default async function CustomerDashboardPage() {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -97,53 +103,63 @@ export default async function CustomerDashboardPage() {
   const rateDate = fxRate?.rate_date as string | undefined;
 
   return (
-    <main className="min-h-screen bg-slate-50 p-6 text-slate-950">
-      <header className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-        <div>
-          <p className="text-xs font-bold uppercase tracking-[0.2em] text-sky-600">Customer portal</p>
-          <h1 className="text-3xl font-semibold">Goodcashback Customer</h1>
-          <p className="text-sm text-slate-600">{operator.full_name} · {importer.trading_name ?? importer.company_name}</p>
+    <main className="min-h-screen bg-gradient-to-b from-sky-50 via-white to-slate-50 p-4 text-slate-950 md:p-6">
+      <header className="overflow-hidden rounded-[2rem] border border-sky-100 bg-white shadow-sm">
+        <div className="bg-gradient-to-r from-sky-500 via-cyan-400 to-emerald-300 px-5 py-2" />
+        <div className="flex flex-col gap-5 p-5 md:flex-row md:items-start md:justify-between md:p-7">
+          <div>
+            <p className="text-xs font-black uppercase tracking-[0.28em] text-sky-600">Customer portal</p>
+            <h1 className="mt-2 text-4xl font-black tracking-tight text-slate-950 md:text-5xl">Goodcashback Customer</h1>
+            <p className="mt-2 text-base text-slate-600">{operator.full_name} · {importer.trading_name ?? importer.company_name}</p>
+          </div>
+          <Link href="/customer/orders/new" className="rounded-2xl bg-slate-950 px-5 py-3 text-center text-sm font-black text-white shadow-sm transition hover:bg-slate-800">Create order</Link>
         </div>
-        <Link href="/customer/orders/new" className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white">Create order</Link>
       </header>
 
-      <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-800">
-        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+      <section className="mt-5 rounded-[1.75rem] border border-sky-200 bg-sky-50/80 p-5 text-sm text-slate-800 shadow-sm">
+        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
-            <h2 className="text-base font-semibold text-slate-950">Importer lane available</h2>
+            <p className="text-xs font-black uppercase tracking-[0.18em] text-sky-700">Linked workspace</p>
+            <h2 className="mt-1 text-lg font-black text-slate-950">Importer lane available</h2>
             <p className="mt-1 text-slate-600">Open the importer/operator dashboard to upload invoices, add tracking and reconcile order items.</p>
           </div>
-          <Link href="/importer" className="rounded-lg bg-slate-900 px-4 py-2 text-center font-semibold text-white">Open Importer Portal</Link>
+          <Link href="/importer" className="rounded-2xl bg-sky-600 px-5 py-3 text-center font-black text-white shadow-sm transition hover:bg-sky-700">Open Importer Portal</Link>
         </div>
       </section>
 
-      <section className="mt-6 grid gap-4 md:grid-cols-4">
-        <div className="rounded-2xl border bg-white p-4"><div className="text-sm text-slate-500">Total orders</div><div className="mt-2 text-2xl font-semibold">{rows.length}</div></div>
-        <div className="rounded-2xl border bg-white p-4"><div className="text-sm text-slate-500">Funded</div><div className="mt-2 text-2xl font-semibold">{rows.filter((order) => order.funded_at).length}</div></div>
-        <div className="rounded-2xl border bg-white p-4"><div className="text-sm text-slate-500">Ledger credit GBP</div><div className="mt-2 text-2xl font-semibold">{gbp(creditBalanceGbp)}</div></div>
-        <div className="rounded-2xl border bg-white p-4">
-          <div className="text-sm text-slate-500">Ledger credit local</div>
-          <div className="mt-2 text-2xl font-semibold">{effectiveRate ? localAmount(creditBalanceGbp * effectiveRate, currencyCode) : "—"}</div>
-          <div className={rateDate === today ? "mt-1 text-xs text-emerald-700" : "mt-1 text-xs font-semibold text-amber-700"}>{rateDate === today ? "Today's FX rate" : rateDate ? `Latest available FX rate: ${rateDate}` : "No FX rate available"}</div>
+      <section className="mt-5 grid gap-4 md:grid-cols-4">
+        <div className="rounded-[1.5rem] border border-slate-200 bg-white p-5 shadow-sm"><div className="text-sm font-semibold text-slate-500">Total orders</div><div className="mt-2 text-3xl font-black">{rows.length}</div></div>
+        <div className="rounded-[1.5rem] border border-emerald-100 bg-emerald-50/70 p-5 shadow-sm"><div className="text-sm font-semibold text-emerald-700">Funded</div><div className="mt-2 text-3xl font-black text-emerald-950">{rows.filter((order) => order.funded_at).length}</div></div>
+        <div className="rounded-[1.5rem] border border-cyan-100 bg-cyan-50/70 p-5 shadow-sm"><div className="text-sm font-semibold text-cyan-700">Ledger credit GBP</div><div className="mt-2 text-3xl font-black text-cyan-950">{gbp(creditBalanceGbp)}</div></div>
+        <div className="rounded-[1.5rem] border border-amber-100 bg-amber-50/70 p-5 shadow-sm">
+          <div className="text-sm font-semibold text-amber-700">Ledger credit local</div>
+          <div className="mt-2 text-3xl font-black text-amber-950">{effectiveRate ? localAmount(creditBalanceGbp * effectiveRate, currencyCode) : "—"}</div>
+          <div className={rateDate === today ? "mt-2 text-xs font-bold text-emerald-700" : "mt-2 text-xs font-bold text-amber-800"}>{rateDate === today ? "Today's FX rate" : rateDate ? `Latest available FX rate: ${rateDate}` : "No FX rate available"}</div>
         </div>
       </section>
 
-      <section className="mt-6 rounded-2xl border bg-white p-4">
-        <h2 className="text-lg font-semibold">Orders</h2>
-        <div className="mt-4 overflow-x-auto">
+      <section className="mt-5 overflow-hidden rounded-[1.75rem] border border-slate-200 bg-white shadow-sm">
+        <div className="flex flex-col gap-2 border-b border-slate-100 bg-slate-50/70 p-5 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h2 className="text-xl font-black">Orders</h2>
+            <p className="text-sm text-slate-600">Customer order status, pro forma value and funding position.</p>
+          </div>
+          <span className="rounded-full bg-sky-100 px-3 py-1 text-xs font-black text-sky-700">{rows.length} orders</span>
+        </div>
+        <div className="overflow-x-auto">
           <table className="min-w-full text-sm">
-            <thead className="bg-slate-50 text-left"><tr><th className="p-3">Order</th><th className="p-3">Retailer</th><th className="p-3">Auth ref</th><th className="p-3">GBP</th><th className="p-3">Local quote</th><th className="p-3">Funding</th><th className="p-3">Status</th><th className="p-3">Action</th></tr></thead>
+            <thead className="bg-white text-left text-xs font-black uppercase tracking-wide text-slate-500"><tr><th className="p-4">Order</th><th className="p-4">Retailer</th><th className="p-4">Auth ref</th><th className="p-4">GBP</th><th className="p-4">Local quote</th><th className="p-4">Funding</th><th className="p-4">Status</th><th className="p-4">Action</th></tr></thead>
             <tbody>
               {rows.map((order) => (
-                <tr key={order.id} className="border-t align-top">
-                  <td className="p-3"><div className="font-medium">{order.order_ref}</div><div className="text-xs text-slate-500">{order.id}</div></td>
-                  <td className="p-3">{order.retailers?.name ?? "—"}</td>
-                  <td className="p-3">{order.payment_auth_id ?? "—"}</td>
-                  <td className="p-3">{gbp(order.order_total_gbp_declared)}</td>
-                  <td className="p-3">{localAmount(order.quote_total_ghs, currencyCode)}</td>
-                  <td className="p-3">{order.funded_at ? "Funded" : "Funding pending"}</td>
-                  <td className="p-3">{friendly(order.status)}</td>
-                  <td className="p-3"><Link className="font-semibold text-sky-700 underline" href={`/customer/orders/${order.id}/operations`}>Open</Link></td>
+                <tr key={order.id} className="border-t border-slate-100 align-top hover:bg-sky-50/40">
+                  <td className="p-4"><div className="font-black">{order.order_ref}</div><div className="text-xs text-slate-400">{order.id}</div></td>
+                  <td className="p-4 font-semibold">{order.retailers?.name ?? "—"}</td>
+                  <td className="p-4 text-slate-700">{order.payment_auth_id ?? "—"}</td>
+                  <td className="p-4 font-black">{gbp(order.order_total_gbp_declared)}</td>
+                  <td className="p-4 font-semibold text-slate-700">{localAmount(order.quote_total_ghs, currencyCode)}</td>
+                  <td className="p-4"><span className={statusPill(Boolean(order.funded_at))}>{order.funded_at ? "Funded" : "Funding pending"}</span></td>
+                  <td className="p-4 font-semibold text-slate-700">{friendly(order.status)}</td>
+                  <td className="p-4"><Link className="rounded-xl bg-slate-950 px-3 py-2 text-xs font-black text-white" href={`/customer/orders/${order.id}/operations`}>Open</Link></td>
                 </tr>
               ))}
             </tbody>
