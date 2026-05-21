@@ -15,6 +15,7 @@ type OrderRow = {
 };
 
 type CreditRow = { direction: string | null; amount_gbp: number | string | null };
+type CreditBalanceRow = { importer_id: string | null; available_credit_gbp: number | string | null };
 type FundingEventRow = { order_id: string | null; event_type: string | null; amount_gbp: number | string | null };
 
 type CurrencyRelation = { currencies?: { code?: string | null }[] | { code?: string | null } | null }[] | { currencies?: { code?: string | null }[] | { code?: string | null } | null } | null;
@@ -79,7 +80,7 @@ export default async function CustomerDashboardPage() {
   if (!importer) redirect("/auth/check");
 
   const today = new Date().toISOString().slice(0, 10);
-  const [{ data: orders, error: ordersError }, { data: creditRows }, { data: fundingEvents }, { data: fxRate }] = await Promise.all([
+  const [{ data: orders, error: ordersError }, { data: creditRows }, { data: fundingEvents }, { data: fxRate }, { data: creditBalanceRows }] = await Promise.all([
     supabase
       .from("orders")
       .select("id, order_ref, status, payment_auth_id, order_total_gbp_declared, quote_total_ghs, funded_at, created_at, retailers(name)")
@@ -95,6 +96,7 @@ export default async function CustomerDashboardPage() {
       .order("rate_date", { ascending: false })
       .limit(1)
       .maybeSingle(),
+    supabase.rpc("customer_importer_credit_balance_v1"),
   ]);
   if (ordersError) throw ordersError;
 
@@ -113,10 +115,12 @@ export default async function CustomerDashboardPage() {
     fundingByOrder.set(orderId, current);
   }
 
-  const creditBalanceGbp = ((creditRows ?? []) as CreditRow[]).reduce((sum, row) => {
+  const fallbackCreditBalanceGbp = ((creditRows ?? []) as CreditRow[]).reduce((sum, row) => {
     const amount = Number(row.amount_gbp ?? 0);
     return sum + (row.direction === "credit" ? amount : -amount);
   }, 0);
+  const rpcCreditBalanceGbp = ((creditBalanceRows ?? []) as CreditBalanceRow[]).reduce((sum, row) => sum + Number(row.available_credit_gbp ?? 0), 0);
+  const creditBalanceGbp = Number.isFinite(rpcCreditBalanceGbp) && rpcCreditBalanceGbp !== 0 ? rpcCreditBalanceGbp : fallbackCreditBalanceGbp;
   const rate = Number(fxRate?.quote_rate ?? 0);
   const markup = Number(fxRate?.quote_card_markup_pct ?? 0);
   const effectiveRate = rate ? rate * (1 + markup / 100) : 0;
