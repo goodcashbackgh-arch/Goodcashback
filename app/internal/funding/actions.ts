@@ -19,7 +19,9 @@ function readString(formData: FormData, key: string) {
   return typeof value === "string" ? value.trim() : "";
 }
 
-async function requireFundingStaff(resultTarget: "funding" | "settlement", errorKey: string) {
+type FundingStaff = { id: string; role_type: string | null };
+
+async function requireFundingStaff(resultTarget: "funding" | "settlement", errorKey: string): Promise<{ supabase: Awaited<ReturnType<typeof createClient>>; staff: FundingStaff }> {
   const supabase = await createClient();
   const {
     data: { user },
@@ -32,16 +34,18 @@ async function requireFundingStaff(resultTarget: "funding" | "settlement", error
     redirectResult({ [errorKey]: "Please sign in again." });
   }
 
-  const { data: staff, error: staffError } = await supabase
+  const { data: staffRow, error: staffError } = await supabase
     .from("staff")
     .select("id, role_type")
     .eq("auth_user_id", userId)
     .eq("active", true)
     .maybeSingle();
 
-  if (staffError || !staff) {
+  if (staffError || !staffRow) {
     redirectResult({ [errorKey]: "Active staff user not found." });
   }
+
+  const staff = staffRow as FundingStaff;
 
   if (!["admin", "supervisor"].includes(String(staff.role_type))) {
     redirectResult({ [errorKey]: "Only admin or supervisor staff can perform this funding action." });
