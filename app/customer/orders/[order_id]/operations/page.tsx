@@ -3,9 +3,6 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 
 type ScreenshotRow = { id: string; screenshot_url: string };
-type CourierRelation = { name: string | null }[] | { name: string | null } | null;
-type TrackingRow = { id: string; tracking_ref: string; tracking_date: string | null; is_final_delivery_yn: boolean | null; tracking_screenshot_url: string | null; couriers: CourierRelation };
-type InvoiceRow = { id: string; invoice_ref: string; review_status: string | null; uploaded_at: string | null };
 type InvoiceLineRow = { eligible_for_invoice_yn: string | null; supplier_invoices: { order_id: string }[] | { order_id: string } | null };
 type AdjustmentRow = { adjustment_type: string | null; amount_gbp: number | string | null; approval_status: string | null; requires_supervisor_approval: boolean | null };
 type SalesInvoiceRow = { id: string; invoice_type: string | null; amount_gbp: number | string | null; sage_status: string | null; sage_invoice_id: string | null; created_at: string | null };
@@ -33,11 +30,6 @@ function chip(ok: boolean) {
 
 function isProgressed(value: string | null | undefined) {
   return ["y", "yes", "true", "1"].includes((value ?? "").trim().toLowerCase());
-}
-
-function courierName(value: CourierRelation) {
-  if (Array.isArray(value)) return value[0]?.name ?? "Courier";
-  return value?.name ?? "Courier";
 }
 
 export default async function CustomerOrderOperationsPage({ params, searchParams }: { params: Promise<{ order_id: string }>; searchParams?: Promise<{ success?: string; error?: string }> }) {
@@ -70,27 +62,25 @@ export default async function CustomerOrderOperationsPage({ params, searchParams
   const [{ data: funding }, { data: screenshots }, { data: tracking }, { data: invoices }, { data: invoiceLines }, { data: adjustments }, { data: salesInvoices }, { data: state }] = await Promise.all([
     supabase.from("order_funding_position_vw").select("*").eq("order_id", orderId).maybeSingle(),
     supabase.from("order_screenshots").select("id, screenshot_url").eq("order_id", orderId).order("display_order"),
-    supabase.from("order_tracking_submissions").select("id, tracking_ref, tracking_date, is_final_delivery_yn, tracking_screenshot_url, couriers(name)").eq("order_id", orderId).order("submitted_at", { ascending: false }),
-    supabase.from("supplier_invoices").select("id, invoice_ref, review_status, uploaded_at").eq("order_id", orderId).order("uploaded_at", { ascending: false }),
+    supabase.from("order_tracking_submissions").select("id, is_final_delivery_yn").eq("order_id", orderId).order("submitted_at", { ascending: false }),
+    supabase.from("supplier_invoices").select("id, review_status, uploaded_at").eq("order_id", orderId).order("uploaded_at", { ascending: false }),
     supabase.from("supplier_invoice_lines").select("eligible_for_invoice_yn, supplier_invoices!inner(order_id)").eq("supplier_invoices.order_id", orderId),
     supabase.from("order_value_adjustments").select("adjustment_type, amount_gbp, approval_status, requires_supervisor_approval").eq("order_id", orderId),
     supabase.from("sales_invoices").select("id, invoice_type, amount_gbp, sage_status, sage_invoice_id, created_at").eq("order_id", orderId).order("created_at", { ascending: false }),
     supabase.from("order_state_vw").select("lifecycle_status").eq("id", orderId).maybeSingle(),
   ]);
 
-  const trackingRows = (tracking ?? []) as unknown as TrackingRow[];
-  const invoiceRows = (invoices ?? []) as InvoiceRow[];
   const lineRows = (invoiceLines ?? []) as InvoiceLineRow[];
   const adjustmentRows = (adjustments ?? []) as AdjustmentRow[];
   const salesRows = (salesInvoices ?? []) as SalesInvoiceRow[];
 
   const thresholdMet = Boolean(funding?.threshold_met_yn);
-  const finalDelivery = trackingRows.some((row) => row.is_final_delivery_yn);
-  const invoiceUploaded = invoiceRows.length > 0;
+  const finalDelivery = (tracking ?? []).some((row: { is_final_delivery_yn: boolean | null }) => row.is_final_delivery_yn);
+  const supplierEvidenceChecked = (invoices ?? []).length > 0;
   const allInvoiceLinesProgressed = lineRows.length > 0 && lineRows.every((line) => isProgressed(line.eligible_for_invoice_yn));
   const pendingAdjustments = adjustmentRows.filter((row) => row.approval_status === "pending_supervisor").length;
   const finalInvoiceExists = salesRows.some((row) => row.invoice_type === "main" && ["draft", "posted"].includes(row.sage_status ?? ""));
-  const finalInvoiceReady = thresholdMet && finalDelivery && invoiceUploaded && allInvoiceLinesProgressed && pendingAdjustments === 0;
+  const finalInvoiceReady = thresholdMet && finalDelivery && supplierEvidenceChecked && allInvoiceLinesProgressed && pendingAdjustments === 0;
   const currencyCode = order.importers?.countries?.currencies?.code ?? "Local";
 
   return (
@@ -113,17 +103,17 @@ export default async function CustomerOrderOperationsPage({ params, searchParams
       </section>
 
       <section className="mt-6 rounded-2xl border bg-white p-5">
-        <h2 className="text-lg font-semibold">Final invoice readiness checks</h2>
-        <p className="mt-1 text-sm text-slate-600">These are the checks before the final customer invoice can be released.</p>
+        <h2 className="text-lg font-semibold">Final invoice readiness</h2>
+        <p className="mt-1 text-sm text-slate-600">Customer-facing progress only. Internal retailer invoices and retailer-to-warehouse tracking are not shown here.</p>
         <div className="mt-4 grid gap-3 md:grid-cols-3">
-          <div><span className={chip(thresholdMet)}>Funding threshold reached: {yesNo(thresholdMet)}</span></div>
-          <div><span className={chip(invoiceUploaded)}>Retailer invoice uploaded: {yesNo(invoiceUploaded)}</span></div>
-          <div><span className={chip(allInvoiceLinesProgressed)}>Invoice reconciliation complete: {yesNo(allInvoiceLinesProgressed)}</span></div>
-          <div><span className={chip(finalDelivery)}>Final delivery evidence: {yesNo(finalDelivery)}</span></div>
-          <div><span className={chip(pendingAdjustments === 0)}>Adjustment approvals clear: {yesNo(pendingAdjustments === 0)}</span></div>
+          <div><span className={chip(thresholdMet)}>Funding reached: {yesNo(thresholdMet)}</span></div>
+          <div><span className={chip(supplierEvidenceChecked)}>Order evidence checked: {yesNo(supplierEvidenceChecked)}</span></div>
+          <div><span className={chip(allInvoiceLinesProgressed)}>Order review complete: {yesNo(allInvoiceLinesProgressed)}</span></div>
+          <div><span className={chip(finalDelivery)}>Delivery confirmation: {yesNo(finalDelivery)}</span></div>
+          <div><span className={chip(pendingAdjustments === 0)}>Adjustments clear: {yesNo(pendingAdjustments === 0)}</span></div>
           <div><span className={chip(finalInvoiceReady || finalInvoiceExists)}>Final invoice ready/drafted: {yesNo(finalInvoiceReady || finalInvoiceExists)}</span></div>
         </div>
-        <p className="mt-4 rounded-xl bg-slate-50 p-3 text-sm text-slate-700">{finalInvoiceExists ? "Final customer invoice has been drafted or posted." : finalInvoiceReady ? "Ready for staff to create the final customer invoice draft." : "Not ready yet. The open checks above explain why."}</p>
+        <p className="mt-4 rounded-xl bg-slate-50 p-3 text-sm text-slate-700">{finalInvoiceExists ? "Final customer invoice has been drafted or posted." : finalInvoiceReady ? "Ready for final customer invoice preparation." : "Not ready yet. The open checks above explain why."}</p>
       </section>
 
       <section className="mt-6 grid gap-4 lg:grid-cols-2">
@@ -137,17 +127,17 @@ export default async function CustomerOrderOperationsPage({ params, searchParams
           </div>
         </div>
         <div className="rounded-2xl border bg-white p-5">
-          <h2 className="text-lg font-semibold">Final invoice records</h2>
-          {salesRows.length === 0 ? <p className="mt-3 text-sm text-slate-600">No customer invoice draft yet.</p> : salesRows.map((invoice) => <div key={invoice.id} className="mt-3 rounded bg-slate-50 p-3 text-sm"><p className="font-semibold">{friendly(invoice.invoice_type)} · {money(invoice.amount_gbp)}</p><p className="text-slate-600">Sage: {friendly(invoice.sage_status)} · {invoice.sage_invoice_id ?? "not posted"}</p></div>)}
+          <h2 className="text-lg font-semibold">Final invoice</h2>
+          {salesRows.length === 0 ? <p className="mt-3 text-sm text-slate-600">No customer invoice draft yet.</p> : salesRows.map((invoice) => <div key={invoice.id} className="mt-3 rounded bg-slate-50 p-3 text-sm"><p className="font-semibold">{friendly(invoice.invoice_type)} · {money(invoice.amount_gbp)}</p><p className="text-slate-600">Status: {friendly(invoice.sage_status)}</p></div>)}
         </div>
       </section>
 
       <section className="mt-6 rounded-2xl border bg-white p-5">
-        <h2 className="text-lg font-semibold">Order evidence and activity</h2>
+        <h2 className="text-lg font-semibold">Order evidence and customer updates</h2>
         <div className="mt-4 grid gap-4 lg:grid-cols-3">
-          <div><h3 className="font-semibold">Screenshots</h3><p className="text-sm text-slate-600">{(screenshots ?? []).length} uploaded</p><div className="mt-2 flex flex-wrap gap-2">{((screenshots ?? []) as ScreenshotRow[]).map((row) => <a key={row.id} href={row.screenshot_url} target="_blank" className="text-sm font-semibold text-sky-700 underline">Open</a>)}</div></div>
-          <div><h3 className="font-semibold">Tracking</h3><div className="mt-2 space-y-2 text-sm">{trackingRows.length === 0 ? "No tracking yet." : trackingRows.map((row) => <p key={row.id}>{courierName(row.couriers)} · {row.tracking_ref} · {row.tracking_date ?? "—"}{row.is_final_delivery_yn ? " · Final" : ""}</p>)}</div></div>
-          <div><h3 className="font-semibold">Retailer invoices</h3><div className="mt-2 space-y-2 text-sm">{invoiceRows.length === 0 ? "No invoice yet." : invoiceRows.map((row) => <p key={row.id}>{row.invoice_ref} · {friendly(row.review_status)}</p>)}</div></div>
+          <div><h3 className="font-semibold">Original order screenshots</h3><p className="text-sm text-slate-600">{(screenshots ?? []).length} uploaded</p><div className="mt-2 flex flex-wrap gap-2">{((screenshots ?? []) as ScreenshotRow[]).map((row) => <a key={row.id} href={row.screenshot_url} target="_blank" rel="noreferrer" className="text-sm font-semibold text-sky-700 underline">Open</a>)}</div></div>
+          <div><h3 className="font-semibold">Shipping updates</h3><p className="mt-2 text-sm text-slate-600">Shipper/customer delivery tracking will appear here when available. Retailer-to-warehouse tracking is internal and hidden.</p></div>
+          <div><h3 className="font-semibold">Customer review</h3><p className="mt-2 text-sm text-slate-600">Final pro forma/customer selection gate is not surfaced on this page yet.</p></div>
         </div>
       </section>
     </main>
