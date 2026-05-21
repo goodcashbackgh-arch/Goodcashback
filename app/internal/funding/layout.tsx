@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
+import { FundingLifecycleNav } from "./FundingLifecycleNav";
 
 type DataRow = Record<string, unknown>;
 
@@ -64,6 +65,7 @@ export default async function FundingLayout({ children }: { children: ReactNode 
             <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
               Surplus evidence creates confirmed customer credit. Confirmed credit is the spendable balance used against new order funding gaps.
             </p>
+            <FundingLifecycleNav />
           </div>
 
           {surplusError ? (
