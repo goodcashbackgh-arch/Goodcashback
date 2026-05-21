@@ -9,9 +9,9 @@ function redirectWithFundingResult(params: Record<string, string>): never {
   redirect(`/internal/funding?${query.toString()}`);
 }
 
-function redirectWithSettlementResult(params: Record<string, string>): never {
+function redirectWithSurplusResult(params: Record<string, string>): never {
   const query = new URLSearchParams(params);
-  redirect(`/internal/funding/settlement-surplus?${query.toString()}`);
+  redirect(`/internal/funding/surplus-evidence?${query.toString()}`);
 }
 
 function readString(formData: FormData, key: string) {
@@ -21,13 +21,13 @@ function readString(formData: FormData, key: string) {
 
 type FundingStaff = { id: string; role_type: string | null };
 
-async function requireFundingStaff(resultTarget: "funding" | "settlement", errorKey: string): Promise<{ supabase: Awaited<ReturnType<typeof createClient>>; staff: FundingStaff }> {
+async function requireFundingStaff(resultTarget: "funding" | "surplus", errorKey: string): Promise<{ supabase: Awaited<ReturnType<typeof createClient>>; staff: FundingStaff }> {
   const supabase = await createClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
 
-  const redirectResult = resultTarget === "settlement" ? redirectWithSettlementResult : redirectWithFundingResult;
+  const redirectResult = resultTarget === "surplus" ? redirectWithSurplusResult : redirectWithFundingResult;
   const userId = user?.id;
 
   if (!userId) {
@@ -165,14 +165,14 @@ export async function reconcileDvaLineToOrderAction(formData: FormData) {
 }
 
 export async function confirmSettlementSurplusCreditAction(formData: FormData) {
-  const { supabase } = await requireFundingStaff("settlement", "settlement_error");
+  const { supabase } = await requireFundingStaff("surplus", "settlement_error");
 
   const orderId = readString(formData, "order_id");
   const reason = readString(formData, "reason") || "supervisor_confirmed_credit";
   const notes = readString(formData, "notes") || null;
 
   if (!orderId) {
-    redirectWithSettlementResult({ settlement_error: "Missing order id." });
+    redirectWithSurplusResult({ settlement_error: "Missing order id." });
   }
 
   const { error } = await supabase.rpc("staff_confirm_surplus_from_evidence_min_v1", {
@@ -182,12 +182,11 @@ export async function confirmSettlementSurplusCreditAction(formData: FormData) {
   });
 
   if (error) {
-    redirectWithSettlementResult({ settlement_error: error.message });
+    redirectWithSurplusResult({ settlement_error: error.message });
   }
 
   revalidatePath("/internal/funding");
-  revalidatePath("/internal/funding/settlement-surplus");
   revalidatePath("/internal/funding/surplus-evidence");
   revalidatePath("/customer");
-  redirectWithSettlementResult({ settlement_success: "Settlement surplus converted to customer credit." });
+  redirectWithSurplusResult({ settlement_success: "Settlement surplus converted to customer credit." });
 }
