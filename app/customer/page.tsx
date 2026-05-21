@@ -122,6 +122,7 @@ export default async function CustomerDashboardPage() {
   const effectiveRate = rate ? rate * (1 + markup / 100) : 0;
   const currencyCode = currencyCodeFromCountries(importer.countries as CurrencyRelation);
   const rateDate = fxRate?.rate_date as string | undefined;
+  const fxLabel = rateDate === today ? "Today's FX rate" : rateDate ? `Latest available FX rate: ${rateDate}` : "No FX rate available";
 
   return (
     <main className="min-h-screen bg-gradient-to-b from-sky-50 via-white to-slate-50 p-4 text-slate-950 md:p-6">
@@ -155,7 +156,7 @@ export default async function CustomerDashboardPage() {
         <div className="rounded-[1.5rem] border border-amber-100 bg-amber-50/70 p-5 shadow-sm">
           <div className="text-sm font-semibold text-amber-700">Ledger credit local</div>
           <div className="mt-2 text-3xl font-black text-amber-950">{effectiveRate ? localAmount(creditBalanceGbp * effectiveRate, currencyCode) : "—"}</div>
-          <div className={rateDate === today ? "mt-2 text-xs font-bold text-emerald-700" : "mt-2 text-xs font-bold text-amber-800"}>{rateDate === today ? "Today's FX rate" : rateDate ? `Latest available FX rate: ${rateDate}` : "No FX rate available"}</div>
+          <div className={rateDate === today ? "mt-2 text-xs font-bold text-emerald-700" : "mt-2 text-xs font-bold text-amber-800"}>{fxLabel}</div>
         </div>
       </section>
 
@@ -163,27 +164,29 @@ export default async function CustomerDashboardPage() {
         <div className="flex flex-col gap-2 border-b border-slate-100 bg-slate-50/70 p-5 md:flex-row md:items-center md:justify-between">
           <div>
             <h2 className="text-xl font-black">Orders</h2>
-            <p className="text-sm text-slate-600">Customer order status, declared value, credit used and remaining cash funding position.</p>
+            <p className="text-sm text-slate-600">GBP is the order closure basis. Local figures are payment-stage guidance using the current/latest FX rate.</p>
           </div>
           <span className="rounded-full bg-sky-100 px-3 py-1 text-xs font-black text-sky-700">{rows.length} orders</span>
         </div>
         <div className="overflow-x-auto">
           <table className="min-w-full text-sm">
-            <thead className="bg-white text-left text-xs font-black uppercase tracking-wide text-slate-500"><tr><th className="p-4">Order</th><th className="p-4">Retailer</th><th className="p-4">Auth ref</th><th className="p-4">Order GBP</th><th className="p-4">Credit used</th><th className="p-4">Cash still needed</th><th className="p-4">Funding</th><th className="p-4">Status</th><th className="p-4">Action</th></tr></thead>
+            <thead className="bg-white text-left text-xs font-black uppercase tracking-wide text-slate-500"><tr><th className="p-4">Order</th><th className="p-4">Retailer</th><th className="p-4">Auth ref</th><th className="p-4">GBP closure basis</th><th className="p-4">Credit used</th><th className="p-4">Current cash due</th><th className="p-4">Funding</th><th className="p-4">Status</th><th className="p-4">Action</th></tr></thead>
             <tbody>
               {rows.map((order) => {
                 const funding = fundingByOrder.get(order.id) ?? { cash: 0, credit: 0, total: 0 };
                 const declaredGbp = Number(order.order_total_gbp_declared ?? 0);
                 const remainingCashNeeded = Math.max(declaredGbp - funding.credit - funding.cash, 0);
                 const netAfterCredit = Math.max(declaredGbp - funding.credit, 0);
+                const currentLocalDue = effectiveRate ? remainingCashNeeded * effectiveRate : 0;
+                const currentLocalNetAfterCredit = effectiveRate ? netAfterCredit * effectiveRate : 0;
                 return (
                   <tr key={order.id} className="border-t border-slate-100 align-top hover:bg-sky-50/40">
                     <td className="p-4"><div className="font-black">{order.order_ref}</div><div className="text-xs text-slate-400">{order.id}</div></td>
                     <td className="p-4 font-semibold">{order.retailers?.name ?? "—"}</td>
                     <td className="p-4 text-slate-700">{order.payment_auth_id ?? "—"}</td>
-                    <td className="p-4"><div className="font-black">{gbp(declaredGbp)}</div><div className="text-xs text-slate-500">Local quote {localAmount(order.quote_total_ghs, currencyCode)}</div></td>
-                    <td className="p-4"><div className="font-black text-cyan-800">{gbp(funding.credit)}</div><div className="text-xs text-slate-500">Net after credit {gbp(netAfterCredit)}</div></td>
-                    <td className="p-4"><div className={`font-black ${fundingTextClass(remainingCashNeeded)}`}>{gbp(remainingCashNeeded)}</div><div className="text-xs text-slate-500">Cash matched {gbp(funding.cash)}</div></td>
+                    <td className="p-4"><div className="font-black">{gbp(declaredGbp)}</div><div className="text-xs text-slate-500">Original GBP used to close order</div></td>
+                    <td className="p-4"><div className="font-black text-cyan-800">{gbp(funding.credit)}</div><div className="text-xs text-slate-500">Net GBP after credit {gbp(netAfterCredit)}</div></td>
+                    <td className="p-4"><div className={`font-black ${fundingTextClass(remainingCashNeeded)}`}>{gbp(remainingCashNeeded)}</div><div className="text-xs text-slate-500">Current local due {effectiveRate ? localAmount(currentLocalDue, currencyCode) : "—"}</div><div className="text-xs text-slate-400">Net local after credit {effectiveRate ? localAmount(currentLocalNetAfterCredit, currencyCode) : "—"} · {fxLabel}</div></td>
                     <td className="p-4"><span className={statusPill(Boolean(order.funded_at))}>{order.funded_at ? "Funded" : "Funding pending"}</span></td>
                     <td className="p-4 font-semibold text-slate-700">{friendly(order.status)}</td>
                     <td className="p-4"><Link className="rounded-xl bg-slate-950 px-3 py-2 text-xs font-black text-white" href={`/customer/orders/${order.id}/operations`}>Open</Link></td>
