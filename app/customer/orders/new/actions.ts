@@ -145,6 +145,7 @@ export async function createCustomerOrderAction(formData: FormData) {
 
   revalidatePath("/customer");
   revalidatePath("/internal/funding");
+  revalidatePath(`/customer/orders/${createdOrderId}/operations`);
   revalidatePath(`/importer/orders/${createdOrderId}/operations`);
-  redirect(`/importer/orders/${createdOrderId}/operations?success=${encodeURIComponent(successMessage)}&order_ref=${encodeURIComponent(orderRef)}&auth_ref=${encodeURIComponent(paymentAuthId)}`);
+  redirect(`/customer/orders/${createdOrderId}/operations?success=${encodeURIComponent(successMessage)}&order_ref=${encodeURIComponent(orderRef)}&auth_ref=${encodeURIComponent(paymentAuthId)}`);
 }
