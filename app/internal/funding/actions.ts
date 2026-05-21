@@ -26,15 +26,16 @@ async function requireFundingStaff(resultTarget: "funding" | "settlement", error
   } = await supabase.auth.getUser();
 
   const redirectResult = resultTarget === "settlement" ? redirectWithSettlementResult : redirectWithFundingResult;
+  const userId = user?.id;
 
-  if (!user) {
+  if (!userId) {
     redirectResult({ [errorKey]: "Please sign in again." });
   }
 
   const { data: staff, error: staffError } = await supabase
     .from("staff")
     .select("id, role_type")
-    .eq("auth_user_id", user.id)
+    .eq("auth_user_id", userId)
     .eq("active", true)
     .maybeSingle();
 
@@ -182,6 +183,7 @@ export async function confirmSettlementSurplusCreditAction(formData: FormData) {
 
   revalidatePath("/internal/funding");
   revalidatePath("/internal/funding/settlement-surplus");
+  revalidatePath("/internal/funding/surplus-evidence");
   revalidatePath("/customer");
   redirectWithSettlementResult({ settlement_success: "Settlement surplus converted to customer credit." });
 }
