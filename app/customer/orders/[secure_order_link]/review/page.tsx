@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { createClient } from "@/utils/supabase/server";
 import { submitCustomerHoldRequestAction } from "./actions";
 
@@ -156,6 +157,10 @@ export default async function CustomerOrderReviewPage({
   return (
     <main className="min-h-screen bg-gradient-to-b from-sky-50 via-white to-slate-50 p-4 text-slate-950 md:p-6">
       <div className="mx-auto max-w-5xl space-y-5">
+        <Link href="/customer" className="inline-flex items-center rounded-full border border-sky-200 bg-white px-4 py-2 text-sm font-black text-sky-700 shadow-sm hover:bg-sky-50">
+          ← Customer dashboard
+        </Link>
+
         <header className="overflow-hidden rounded-[2rem] border border-sky-100 bg-white shadow-sm">
           <div className="bg-gradient-to-r from-sky-500 via-cyan-400 to-emerald-300 px-5 py-2" />
           <div className="p-5 md:p-7">
