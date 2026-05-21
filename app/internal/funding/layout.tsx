@@ -1,5 +1,4 @@
 import type { ReactNode } from "react";
-import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 
@@ -35,7 +34,7 @@ export default async function FundingLayout({ children }: { children: ReactNode 
 
   const [{ data: surplusRows, error: surplusError }, { data: creditRows }] = await Promise.all([
     supabase
-      .from("order_surplus_evidence_position_v1")
+      .from("order_surplus_evidence_position_v2")
       .select("order_id,evidence_status,evidence_surplus_gbp,open_dispute_count,active_hold_count")
       .in("evidence_status", ["ready_posted_invoice_surplus", "ready_draft_invoice_surplus", "ready_strong_in_out_surplus", "blocked_by_open_issue", "credit_created"])
       .limit(500),
@@ -59,22 +58,12 @@ export default async function FundingLayout({ children }: { children: ReactNode 
     <>
       <section className="bg-slate-50 px-6 pt-6 text-slate-950">
         <div className="mx-auto max-w-7xl rounded-3xl border border-cyan-200 bg-white p-5 shadow-sm">
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div>
-              <p className="text-sm font-black uppercase tracking-[0.22em] text-cyan-700">Credit lifecycle</p>
-              <h2 className="mt-2 text-2xl font-black">Confirm surplus credit, then auto-apply confirmed credit</h2>
-              <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
-                Surplus evidence creates confirmed customer credit. Confirmed credit is the spendable balance used against new order funding gaps.
-              </p>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <Link href="/internal/funding" className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-black text-slate-800">
-                Funding overview →
-              </Link>
-              <Link href="/internal/funding/surplus-evidence" className="rounded-xl bg-cyan-700 px-4 py-2 text-sm font-black text-white">
-                Surplus review →
-              </Link>
-            </div>
+          <div>
+            <p className="text-sm font-black uppercase tracking-[0.22em] text-cyan-700">Credit lifecycle</p>
+            <h2 className="mt-2 text-2xl font-black">Confirm surplus credit, then auto-apply confirmed credit</h2>
+            <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
+              Surplus evidence creates confirmed customer credit. Confirmed credit is the spendable balance used against new order funding gaps.
+            </p>
           </div>
 
           {surplusError ? (
