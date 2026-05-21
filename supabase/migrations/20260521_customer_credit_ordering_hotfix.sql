@@ -1,0 +1,5 @@
+-- Hotfix: in 20260521_customer_credit_balance_and_auto_apply_v1.sql replace both occurrences of:
+-- ORDER BY oi.created_at DESC NULLS LAST, oi.id DESC
+-- with:
+-- ORDER BY oi.id DESC
+-- Reason: operator_importers has no created_at column in live DB.
