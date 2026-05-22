@@ -39,9 +39,10 @@ export default async function ImporterReconciliationLayout({
     .maybeSingle();
 
   const evidence = data as SurplusEvidenceRow | null;
-  const creditCreated = Number(evidence?.credit_created_gbp ?? 0);
-  const surplus = Number(evidence?.evidence_surplus_gbp ?? 0);
-  const showConfirmedCredit = evidence?.evidence_status === "credit_created" && creditCreated > 0;
+  const creditCreated = Math.abs(Number(evidence?.credit_created_gbp ?? 0));
+  const surplus = Math.abs(Number(evidence?.evidence_surplus_gbp ?? 0));
+  const explainedSurplus = Math.min(creditCreated, surplus);
+  const showConfirmedCredit = evidence?.evidence_status === "credit_created" && surplus > 0 && explainedSurplus > 0;
 
   return (
     <>
@@ -52,10 +53,10 @@ export default async function ImporterReconciliationLayout({
           <section className="rounded-3xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-950 shadow-sm">
             <p className="font-black">Variance explained by confirmed customer credit</p>
             <p className="mt-1 leading-6">
-              This order has {money(creditCreated)} confirmed as customer credit from surplus evidence. Funding total {money(evidence?.funding_total_gbp)} less evidence value {money(evidence?.evidence_value_gbp)} created a surplus of {money(surplus)}. Evidence basis: {pretty(evidence?.evidence_basis)}.
+              Funding total {money(evidence?.funding_total_gbp)} less evidence value {money(evidence?.evidence_value_gbp)} created a surplus of {money(surplus)}. {money(explainedSurplus)} of that surplus has been confirmed as customer credit. Evidence basis: {pretty(evidence?.evidence_basis)}.
             </p>
             <p className="mt-1 text-xs font-semibold text-emerald-800">
-              Keep the invoice-line variance visible for audit, but treat it as accounted for when it matches this confirmed credit.
+              Keep the invoice-line variance visible for audit, but treat this variance as accounted for only up to the confirmed surplus amount.
             </p>
           </section>
         </div>
