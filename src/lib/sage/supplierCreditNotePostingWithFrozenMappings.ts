@@ -22,9 +22,8 @@ function mappingValue(payload: Row, code: string) {
 function patchPayload(payload: Row) {
   const ledger = mappingValue(payload, "SUPPLIER_GOODS_AP_LEDGER");
   const tax = mappingValue(payload, "SUPPLIER_GOODS_AP_TAX_RATE");
-  if (!ledger && !tax) return payload;
-
   const lines = Array.isArray(payload.resolved_lines) ? payload.resolved_lines : [];
+
   return {
     ...payload,
     resolved_lines: lines.map((lineRaw) => {
@@ -41,7 +40,7 @@ function patchPayload(payload: Row) {
 async function applyFrozenApMappingsToSupplierCreditNoteRows(batchId: string) {
   const { data: rows, error } = await supabaseAdmin
     .from("sage_posting_batch_rows")
-    .select("id, request_payload_json")
+    .select("id, snapshot_id, request_payload_json")
     .eq("batch_id", batchId)
     .eq("document_lane", "supplier_credit_note")
     .is("sage_object_id", null)
@@ -55,7 +54,40 @@ async function applyFrozenApMappingsToSupplierCreditNoteRows(batchId: string) {
       .from("sage_posting_batch_rows")
       .update({ request_payload_json: patched })
       .eq("id", (row as Row).id);
+
+    const snapshotId = text((row as Row).snapshot_id);
+    if (snapshotId) {
+      await supabaseAdmin
+        .from("sage_posting_snapshots")
+        .update({ resolved_payload: patched })
+        .eq("id", snapshotId);
+    }
   }
+}
+
+async function restoreFrozenPayloadForPostedRows(batchId: string) {
+  const { data: rows, error } = await supabaseAdmin
+    .from("sage_posting_batch_rows")
+    .select("id, request_payload_json, snapshot:sage_posting_snapshots(resolved_payload)")
+    .eq("batch_id", batchId)
+    .eq("document_lane", "supplier_credit_note")
+    .eq("posting_status", "posted");
+
+  if (error) throw new Error(error.message);
+
+  let restored = 0;
+  for (const row of rows ?? []) {
+    const current = asObject((row as Row).request_payload_json);
+    const frozen = asObject(asObject((row as Row).snapshot).resolved_payload);
+    if (current.purchase_credit_note && Object.keys(frozen).length > 0) {
+      await supabaseAdmin
+        .from("sage_posting_batch_rows")
+        .update({ request_payload_json: frozen })
+        .eq("id", (row as Row).id);
+      restored += 1;
+    }
+  }
+  return restored;
 }
 
 export async function postSupplierCreditNoteBatchToSage(params: {
@@ -64,5 +96,7 @@ export async function postSupplierCreditNoteBatchToSage(params: {
   origin: string;
 }) {
   await applyFrozenApMappingsToSupplierCreditNoteRows(params.batchId);
-  return postBaseSupplierCreditNoteBatchToSage(params);
+  const result = await postBaseSupplierCreditNoteBatchToSage(params);
+  const restoredPayloadRows = await restoreFrozenPayloadForPostedRows(params.batchId);
+  return { ...result, restoredPayloadRows };
 }
