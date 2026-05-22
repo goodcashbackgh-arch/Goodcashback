@@ -1,7 +1,8 @@
 BEGIN;
 
 -- Supplier credit note lane for Accounting Command Centre.
--- Adds supplier_credit_note as a first-class freeze/revalidate/batch/dry-run lane.
+-- Corrected version: live DB shows internal_ready_for_sage_queue_v2 wraps internal_ready_for_sage_queue_v1(),
+-- so this patch injects supplier_credit_note at that wrapper point instead of searching for a supplier AP helper string.
 -- No Sage API call. No customer credit note. No new accounting upload shortcut.
 
 SET LOCAL lock_timeout = '15s';
@@ -23,6 +24,9 @@ BEGIN
   END IF;
   IF to_regclass('public.dva_statement_line_allocation_detail_vw') IS NULL THEN
     RAISE EXCEPTION 'Prerequisite missing: dva_statement_line_allocation_detail_vw';
+  END IF;
+  IF to_regclass('public.sage_posting_batches') IS NULL THEN
+    RAISE EXCEPTION 'Prerequisite missing: sage_posting_batches';
   END IF;
   IF to_regclass('public.sage_posting_snapshots') IS NULL THEN
     RAISE EXCEPTION 'Prerequisite missing: sage_posting_snapshots';
@@ -120,7 +124,6 @@ BEGIN
       s.supplier_approval_status,
       s.supplier_control_status,
       s.supplier_approved_at,
-      s.match_status,
       d.order_id AS dispute_order_id,
       d.amount_impact_gbp,
       o.id AS order_id,
@@ -133,7 +136,6 @@ BEGIN
       t.total_coded_net_gbp::numeric(18,2) AS total_coded_net_gbp,
       t.total_coded_vat_gbp::numeric(18,2) AS total_coded_vat_gbp,
       t.total_coded_gross_gbp::numeric(18,2) AS total_coded_gross_gbp,
-      t.adjustment_gross_gbp::numeric(18,2) AS adjustment_gross_gbp,
       t.progressed_line_count,
       t.coded_line_count,
       t.all_progressed_lines_coded_yn,
@@ -188,17 +190,13 @@ BEGIN
       l.refund_evidence_submission_id,
       l.id AS source_line_id,
       COALESCE(NULLIF(c.description_override, ''), NULLIF(l.description, ''), 'Supplier credit line')::text AS description,
-      COALESCE(NULLIF(c.sku_override, ''), NULLIF(l.retailer_sku, ''), NULL)::text AS sku,
-      COALESCE(NULLIF(c.size_override, ''), NULLIF(l.size, ''), NULL)::text AS size,
       COALESCE(NULLIF(l.qty, 0), 1)::numeric AS quantity,
       COALESCE(c.net_amount_gbp, 0)::numeric(18,2) AS net_amount_gbp,
       COALESCE(c.vat_amount_gbp, 0)::numeric(18,2) AS vat_amount_gbp,
       COALESCE(c.gross_amount_gbp, l.amount_gbp, 0)::numeric(18,2) AS gross_amount_gbp,
       NULLIF(trim(COALESCE(c.sage_ledger_account_id, '')), '') AS line_ledger_id,
-      NULLIF(trim(COALESCE(c.nominal_code, '')), '') AS nominal_code,
       NULLIF(trim(COALESCE(c.tax_rate_id, '')), '') AS line_tax_rate_id,
       c.tax_rate_label,
-      COALESCE(c.vat_rate_percent, 0)::numeric(7,4) AS vat_rate_percent,
       l.line_order::integer AS sort_order,
       'refund_document_line'::text AS line_kind
     FROM public.dispute_refund_document_lines l
@@ -209,17 +207,13 @@ BEGIN
       a.refund_evidence_submission_id,
       a.id AS source_line_id,
       COALESCE(NULLIF(a.description, ''), 'Supplier credit adjustment')::text AS description,
-      NULLIF(a.sku, '')::text AS sku,
-      NULLIF(a.size, '')::text AS size,
       1::numeric AS quantity,
       COALESCE(a.net_amount_gbp, 0)::numeric(18,2) AS net_amount_gbp,
       COALESCE(a.vat_amount_gbp, 0)::numeric(18,2) AS vat_amount_gbp,
       COALESCE(a.gross_amount_gbp, 0)::numeric(18,2) AS gross_amount_gbp,
       NULLIF(trim(COALESCE(a.sage_ledger_account_id, '')), '') AS line_ledger_id,
-      NULLIF(trim(COALESCE(a.nominal_code, '')), '') AS nominal_code,
       NULLIF(trim(COALESCE(a.tax_rate_id, '')), '') AS line_tax_rate_id,
       a.tax_rate_label,
-      COALESCE(a.vat_rate_percent, 0)::numeric(7,4) AS vat_rate_percent,
       100000::integer AS sort_order,
       'refund_adjustment_line'::text AS line_kind
     FROM public.dispute_refund_document_accounting_adjustment_lines a
@@ -231,7 +225,6 @@ BEGIN
     SELECT
       li.refund_evidence_submission_id,
       COUNT(*)::integer AS line_count,
-      COUNT(*) FILTER (WHERE li.line_kind = 'refund_document_line')::integer AS refund_line_count,
       COUNT(*) FILTER (WHERE NULLIF(COALESCE(li.line_ledger_id, d.default_ledger_id, ''), '') IS NULL)::integer AS missing_ledger_count,
       COUNT(*) FILTER (WHERE NULLIF(COALESCE(li.line_tax_rate_id, d.default_tax_rate_id, ''), '') IS NULL)::integer AS missing_tax_count,
       COALESCE(SUM(li.gross_amount_gbp), 0)::numeric(18,2) AS line_gross_total_gbp,
@@ -240,19 +233,13 @@ BEGIN
           'line_kind', li.line_kind,
           'source_line_id', li.source_line_id,
           'description', li.description,
-          'sku', li.sku,
-          'size', li.size,
           'quantity', li.quantity,
-          'unit_price_gbp', CASE WHEN li.quantity = 0 THEN li.gross_amount_gbp ELSE round((li.gross_amount_gbp / li.quantity)::numeric, 2) END,
           'unit_price', CASE WHEN li.quantity = 0 THEN li.gross_amount_gbp ELSE round((li.gross_amount_gbp / li.quantity)::numeric, 2) END,
           'total_line_amount_gbp', li.gross_amount_gbp,
           'net_credit_gbp', li.net_amount_gbp,
           'vat_credit_gbp', li.vat_amount_gbp,
           'gross_credit_gbp', li.gross_amount_gbp,
-          'nominal_code', li.nominal_code,
-          'vat_rate_percent', li.vat_rate_percent,
           'sage_ledger_account_id', COALESCE(li.line_ledger_id, d.default_ledger_id),
-          'sage_ledger_account_display', CASE WHEN li.line_ledger_id IS NOT NULL THEN li.nominal_code ELSE d.default_ledger_display END,
           'sage_tax_rate_id', COALESCE(li.line_tax_rate_id, d.default_tax_rate_id),
           'tax_rate_id', COALESCE(li.line_tax_rate_id, d.default_tax_rate_id),
           'sage_tax_rate_display', COALESCE(li.tax_rate_label, d.default_tax_rate_display),
@@ -264,22 +251,22 @@ BEGIN
     GROUP BY li.refund_evidence_submission_id
   )
   SELECT
-    ('supplier_credit_note:' || a.refund_evidence_submission_id::text)::text AS queue_row_id,
-    'supplier_credit_note'::text AS document_lane,
-    'supplier_credit_note_purchase_credit_note_intent'::text AS document_type,
-    'dispute_refund_evidence_submissions'::text AS source_table,
-    a.refund_evidence_submission_id AS source_id,
+    ('supplier_credit_note:' || a.refund_evidence_submission_id::text)::text,
+    'supplier_credit_note'::text,
+    'supplier_credit_note_purchase_credit_note_intent'::text,
+    'dispute_refund_evidence_submissions'::text,
+    a.refund_evidence_submission_id,
     a.order_id,
     a.order_ref,
-    NULL::uuid AS shipment_batch_id,
-    a.order_ref::text AS booking_ref,
-    COALESCE(a.retailer_name, 'Retailer/supplier')::text AS counterparty_name,
-    COALESCE(a.accepted_gross_gbp, lp.line_gross_total_gbp, 0)::numeric(18,2) AS amount_gbp,
-    'GBP'::text AS currency_code,
-    'purchase_credit_note'::text AS invoice_type,
-    'not_drafted'::text AS sage_status,
-    NULL::text AS sage_invoice_id,
-    NULL::timestamptz AS sage_posted_at,
+    NULL::uuid,
+    a.order_ref::text,
+    COALESCE(a.retailer_name, 'Retailer/supplier')::text,
+    COALESCE(a.accepted_gross_gbp, lp.line_gross_total_gbp, 0)::numeric(18,2),
+    'GBP'::text,
+    'purchase_credit_note'::text,
+    'not_drafted'::text,
+    NULL::text,
+    NULL::timestamptz,
     CASE
       WHEN a.original_supplier_invoice_id IS NULL THEN 'blocked_supplier_credit_original_supplier_invoice_missing'
       WHEN COALESCE(a.accepted_gross_gbp, 0) <= 0 THEN 'blocked_supplier_credit_amount_missing'
@@ -293,7 +280,7 @@ BEGIN
       WHEN COALESCE(lp.missing_ledger_count, 0) > 0 THEN 'blocked_supplier_credit_ledger_mapping_missing'
       WHEN COALESCE(lp.missing_tax_count, 0) > 0 THEN 'blocked_supplier_credit_tax_mapping_missing'
       ELSE 'ready_for_supplier_credit_note_purchase_credit_note_draft'
-    END::text AS readiness_status,
+    END::text,
     CASE
       WHEN a.original_supplier_invoice_id IS NULL THEN 'original supplier invoice id missing'
       WHEN COALESCE(a.accepted_gross_gbp, 0) <= 0 THEN 'accepted supplier credit gross missing'
@@ -307,10 +294,10 @@ BEGIN
       WHEN COALESCE(lp.missing_ledger_count, 0) > 0 THEN lp.missing_ledger_count::text || ' supplier credit line(s) missing ledger mapping'
       WHEN COALESCE(lp.missing_tax_count, 0) > 0 THEN lp.missing_tax_count::text || ' supplier credit line(s) missing tax mapping'
       ELSE NULL::text
-    END AS blocker,
-    COALESCE(a.credit_note_ref, 'REFUND-' || COALESCE(a.order_ref, left(a.refund_evidence_submission_id::text, 8)))::text AS reference_text,
-    ('Order ' || COALESCE(a.order_ref, '') || ' · Supplier credit note')::text AS notes_text,
-    ('/internal/status-control/supplier-credit-payload-preview?submission_id=' || a.refund_evidence_submission_id::text)::text AS detail_href,
+    END,
+    COALESCE(a.credit_note_ref, 'REFUND-' || COALESCE(a.order_ref, left(a.refund_evidence_submission_id::text, 8)))::text,
+    ('Order ' || COALESCE(a.order_ref, '') || ' · Supplier credit note')::text,
+    ('/internal/status-control/supplier-credit-payload-preview?submission_id=' || a.refund_evidence_submission_id::text)::text,
     jsonb_build_object(
       'document_lane', 'supplier_credit_note',
       'sage_document_type', 'purchase_credit_note',
@@ -343,9 +330,6 @@ BEGIN
       ),
       'totals', jsonb_build_object(
         'accepted_credit_gross_gbp', a.accepted_gross_gbp,
-        'total_coded_net_gbp', a.total_coded_net_gbp,
-        'total_coded_vat_gbp', a.total_coded_vat_gbp,
-        'total_coded_gross_gbp', a.total_coded_gross_gbp,
         'line_gross_total_gbp', lp.line_gross_total_gbp,
         'refund_in_allocated_gbp', a.refund_in_allocated_gbp,
         'progressed_line_count', a.progressed_line_count,
@@ -367,7 +351,7 @@ BEGIN
       'mapping_snapshot', d.mapping_snapshot,
       'resolved_lines', COALESCE(lp.resolved_lines, '[]'::jsonb),
       'status', 'source_ready_not_posted_to_sage'
-    ) AS source_payload
+    )
   FROM accepted a
   CROSS JOIN defaults d
   LEFT JOIN line_payloads lp ON lp.refund_evidence_submission_id = a.refund_evidence_submission_id;
@@ -457,7 +441,6 @@ BEGIN
         'sage_document_type', 'purchase_credit_note',
         'posting_intent', 'supplier_credit_note',
         'supplier_target', COALESCE(lr.source_payload->'supplier_target', '{}'::jsonb),
-        'counterparty_name', lr.counterparty_name,
         'amount_gbp', lr.amount_gbp,
         'currency_code', COALESCE(lr.currency_code, 'GBP'),
         'sage_header', COALESCE(lr.source_payload->'sage_header', jsonb_build_object('reference', lr.reference_text, 'notes', lr.notes_text)),
@@ -471,42 +454,16 @@ BEGIN
         WHEN lr.source_id IS NULL THEN 'ready_queue_row_not_found'
         WHEN COALESCE(lr.readiness_status, '') NOT LIKE 'ready%' THEN COALESCE(lr.blocker, lr.readiness_status, 'not_ready')
         WHEN NULLIF(lr.source_payload #>> '{supplier_target,sage_contact_id}', '') IS NULL THEN 'missing_supplier_credit_sage_supplier_contact'
-        WHEN NULLIF(lr.source_payload #>> '{source_payload,original_supplier_invoice_id}', '') IS NULL AND NULLIF(lr.source_payload #>> '{original_supplier_invoice_id}', '') IS NULL THEN 'missing_original_supplier_invoice_id'
+        WHEN NULLIF(lr.source_payload #>> '{original_supplier_invoice_id}', '') IS NULL THEN 'missing_original_supplier_invoice_id'
         WHEN jsonb_array_length(COALESCE(lr.source_payload->'resolved_lines', '[]'::jsonb)) = 0 THEN 'missing_supplier_credit_resolved_lines'
-        WHEN EXISTS (
-          SELECT 1
-          FROM jsonb_array_elements(COALESCE(lr.source_payload->'resolved_lines', '[]'::jsonb)) line(value)
-          WHERE NULLIF(line.value #>> '{sage_ledger_account_id}', '') IS NULL
-        ) THEN 'missing_supplier_credit_ledger_mapping'
-        WHEN EXISTS (
-          SELECT 1
-          FROM jsonb_array_elements(COALESCE(lr.source_payload->'resolved_lines', '[]'::jsonb)) line(value)
-          WHERE NULLIF(COALESCE(line.value #>> '{sage_tax_rate_id}', line.value #>> '{tax_rate_id}', ''), '') IS NULL
-        ) THEN 'missing_supplier_credit_tax_mapping'
         ELSE NULL::text
       END AS freeze_blocker
     FROM live_rows lr
   ), keyed AS (
     SELECT
       p.*,
-      md5(concat_ws('|',
-        COALESCE(p.mapping_fingerprint, ''),
-        COALESCE(p.amount_gbp::text, ''),
-        COALESCE(p.reference_text, ''),
-        COALESCE((p.resolved_payload->'supplier_target')::text, ''),
-        COALESCE((p.resolved_payload->'resolved_lines')::text, ''),
-        COALESCE((p.resolved_payload->'source_payload')::text, '')
-      )) AS payload_fingerprint,
-      md5(concat_ws('|',
-        'sage_posting_snapshot',
-        COALESCE(p.document_lane, ''),
-        COALESCE(p.document_type, ''),
-        COALESCE(p.source_id::text, ''),
-        COALESCE(p.mapping_fingerprint, ''),
-        COALESCE((p.resolved_payload->'supplier_target')::text, ''),
-        COALESCE((p.resolved_payload->'resolved_lines')::text, ''),
-        COALESCE((p.resolved_payload->'source_payload')::text, '')
-      )) AS prepared_idempotency_key
+      md5(concat_ws('|', COALESCE(p.mapping_fingerprint, ''), COALESCE(p.amount_gbp::text, ''), COALESCE(p.reference_text, ''), COALESCE((p.resolved_payload->'supplier_target')::text, ''), COALESCE((p.resolved_payload->'resolved_lines')::text, ''))) AS payload_fingerprint,
+      md5(concat_ws('|', 'sage_posting_snapshot', COALESCE(p.document_lane, ''), COALESCE(p.document_type, ''), COALESCE(p.source_id::text, ''), COALESCE(p.mapping_fingerprint, ''), COALESCE((p.resolved_payload->'supplier_target')::text, ''), COALESCE((p.resolved_payload->'resolved_lines')::text, ''))) AS prepared_idempotency_key
     FROM prepared p
   ), inserted AS (
     INSERT INTO public.sage_posting_snapshots (
@@ -585,25 +542,25 @@ BEGIN
     RETURNING id, source_id, order_ref, amount_gbp, idempotency_key
   )
   SELECT
-    v_batch_id AS batch_id,
-    i.id AS snapshot_id,
-    i.source_id AS refund_evidence_submission_id,
+    v_batch_id,
+    i.id,
+    i.source_id,
     i.order_ref,
     i.amount_gbp,
-    'frozen'::text AS freeze_status,
-    NULL::text AS blocker,
+    'frozen'::text,
+    NULL::text,
     i.idempotency_key
   FROM inserted i
   UNION ALL
   SELECT
-    v_batch_id AS batch_id,
-    NULL::uuid AS snapshot_id,
+    v_batch_id,
+    NULL::uuid,
     k.refund_evidence_submission_id,
     k.order_ref,
     k.amount_gbp,
-    'not_frozen'::text AS freeze_status,
-    COALESCE(k.freeze_blocker, 'not_ready') AS blocker,
-    k.prepared_idempotency_key AS idempotency_key
+    'not_frozen'::text,
+    COALESCE(k.freeze_blocker, 'not_ready'),
+    k.prepared_idempotency_key
   FROM keyed k
   WHERE k.freeze_blocker IS NOT NULL;
 END;
@@ -621,107 +578,32 @@ BEGIN
   IF v_oid IS NULL THEN RAISE EXCEPTION 'internal_ready_for_sage_queue_v2() missing'; END IF;
   v_sql := pg_get_functiondef(v_oid);
   IF position('internal_supplier_credit_note_ready_rows_v1' in v_sql) = 0 THEN
-    IF position('SELECT * FROM public.internal_supplier_goods_ap_ready_rows_v1()' in v_sql) > 0 THEN
-      v_sql := replace(v_sql,
-        'SELECT * FROM public.internal_supplier_goods_ap_ready_rows_v1()',
-        'SELECT * FROM public.internal_supplier_goods_ap_ready_rows_v1()
-    UNION ALL
-    SELECT * FROM public.internal_supplier_credit_note_ready_rows_v1()'
+    IF position('FROM public.internal_ready_for_sage_queue_v1() q' in v_sql) > 0 THEN
+      v_sql := replace(
+        v_sql,
+        'FROM public.internal_ready_for_sage_queue_v1() q',
+        'FROM (
+           SELECT * FROM public.internal_ready_for_sage_queue_v1()
+           UNION ALL
+           SELECT * FROM public.internal_supplier_credit_note_ready_rows_v1()
+         ) q'
       );
     ELSE
-      RAISE EXCEPTION 'Could not find supplier goods AP union point in internal_ready_for_sage_queue_v2';
+      RAISE EXCEPTION 'Could not find internal_ready_for_sage_queue_v1 wrapper point in internal_ready_for_sage_queue_v2';
     END IF;
     EXECUTE v_sql;
   END IF;
 
-  v_oid := to_regprocedure('public.internal_accounting_command_centre_bulk_candidates_v1(text,text,text,text,text,text,boolean,integer)');
-  IF v_oid IS NULL THEN RAISE EXCEPTION 'internal_accounting_command_centre_bulk_candidates_v1 missing'; END IF;
-  v_sql := pg_get_functiondef(v_oid);
-  IF position('supplier_credit_note' in v_sql) = 0 THEN
-    v_sql := replace(v_sql,
-      $$WHEN rq.document_lane = 'shipper_ap' AND rq.source_table = 'shipping_documents' THEN 'shipper_ap'$$,
-      $$WHEN rq.document_lane = 'shipper_ap' AND rq.source_table = 'shipping_documents' THEN 'shipper_ap'
-        WHEN rq.document_lane = 'supplier_credit_note' AND rq.source_table = 'dispute_refund_evidence_submissions' THEN 'supplier_credit_note'$$
-    );
-    v_sql := replace(v_sql,
-      $$WHEN rq.document_lane = 'shipper_ap' AND rq.source_table = 'shipping_documents' THEN NULL::text$$,
-      $$WHEN rq.document_lane = 'shipper_ap' AND rq.source_table = 'shipping_documents' THEN NULL::text
-        WHEN rq.document_lane = 'supplier_credit_note' AND rq.source_table = 'dispute_refund_evidence_submissions' THEN NULL::text$$
-    );
-    EXECUTE v_sql;
-  END IF;
-
-  v_oid := to_regprocedure('public.internal_accounting_command_centre_grid_v1(text,text,text,text,integer,integer)');
-  IF v_oid IS NULL THEN RAISE EXCEPTION 'internal_accounting_command_centre_grid_v1 missing'; END IF;
-  v_sql := pg_get_functiondef(v_oid);
-  IF position('supplier_credit_note' in v_sql) = 0 THEN
-    v_sql := replace(v_sql,
-      $$WHEN rq.document_lane = 'shipper_ap' AND rq.source_table = 'shipping_documents' THEN 'Freeze shipper AP'$$,
-      $$WHEN rq.document_lane = 'shipper_ap' AND rq.source_table = 'shipping_documents' THEN 'Freeze shipper AP'
-        WHEN rq.document_lane = 'supplier_credit_note' AND rq.source_table = 'dispute_refund_evidence_submissions' THEN 'Freeze supplier credit note'$$
-    );
-    v_sql := replace(v_sql,
-      $$(rq.document_lane = 'customer_sales' AND rq.source_table = 'sales_invoices')
-        OR (rq.document_lane = 'supplier_goods_ap' AND rq.source_table = 'supplier_invoices')
-        OR (rq.document_lane = 'shipper_ap' AND rq.source_table = 'shipping_documents') AS out_selectable$$,
-      $$(rq.document_lane = 'customer_sales' AND rq.source_table = 'sales_invoices')
-        OR (rq.document_lane = 'supplier_goods_ap' AND rq.source_table = 'supplier_invoices')
-        OR (rq.document_lane = 'shipper_ap' AND rq.source_table = 'shipping_documents')
-        OR (rq.document_lane = 'supplier_credit_note' AND rq.source_table = 'dispute_refund_evidence_submissions') AS out_selectable$$
-    );
-    v_sql := replace(v_sql,
-      $$WHEN rq.document_lane = 'shipper_ap' AND rq.source_table = 'shipping_documents' THEN 'shipper_ap'$$,
-      $$WHEN rq.document_lane = 'shipper_ap' AND rq.source_table = 'shipping_documents' THEN 'shipper_ap'
-        WHEN rq.document_lane = 'supplier_credit_note' AND rq.source_table = 'dispute_refund_evidence_submissions' THEN 'supplier_credit_note'$$
-    );
-    EXECUTE v_sql;
-  END IF;
-
-  v_oid := to_regprocedure('public.internal_revalidate_sage_posting_snapshots_v1(uuid[])');
-  IF v_oid IS NULL THEN RAISE EXCEPTION 'internal_revalidate_sage_posting_snapshots_v1 missing'; END IF;
-  v_sql := pg_get_functiondef(v_oid);
-  IF position('supplier_credit_note' in v_sql) = 0 THEN
-    v_sql := replace(v_sql, $$t.document_lane IN ('supplier_goods_ap','shipper_ap')$$, $$t.document_lane IN ('supplier_goods_ap','shipper_ap','supplier_credit_note')$$);
-    v_sql := replace(v_sql, $$t.document_lane IN ('supplier_goods_ap','shipper_ap') THEN$$, $$t.document_lane IN ('supplier_goods_ap','shipper_ap','supplier_credit_note') THEN$$);
-    v_sql := replace(v_sql, $$t.document_lane NOT IN ('customer_sales','supplier_goods_ap','shipper_ap') THEN 'unsupported_snapshot_lane'$$, $$t.document_lane NOT IN ('customer_sales','supplier_goods_ap','shipper_ap','supplier_credit_note') THEN 'unsupported_snapshot_lane'$$);
-    v_sql := replace(v_sql, $$WHEN t.document_lane = 'supplier_goods_ap' AND nc.payload_fingerprint <> t.payload_semantic_fingerprint THEN 'supplier_goods_ap_payload_or_mapping_changed_since_approval'$$, $$WHEN t.document_lane = 'supplier_goods_ap' AND nc.payload_fingerprint <> t.payload_semantic_fingerprint THEN 'supplier_goods_ap_payload_or_mapping_changed_since_approval'
-        WHEN t.document_lane = 'supplier_credit_note' AND nc.payload_fingerprint <> t.payload_semantic_fingerprint THEN 'supplier_credit_note_payload_or_mapping_changed_since_approval'$$);
-    EXECUTE v_sql;
-  END IF;
-
   v_oid := to_regprocedure('public.internal_create_sage_posting_batch_from_filter_v1(text,text,text,text,boolean,text,integer)');
-  IF v_oid IS NULL THEN RAISE EXCEPTION 'internal_create_sage_posting_batch_from_filter_v1 missing'; END IF;
-  v_sql := pg_get_functiondef(v_oid);
-  IF position('supplier_credit_note' in v_sql) = 0 THEN
-    v_sql := replace(v_sql,
-      $$IF v_batch_lane NOT IN ('customer_sales', 'supplier_goods_ap', 'shipper_ap') THEN$$,
-      $$IF v_batch_lane NOT IN ('customer_sales', 'supplier_goods_ap', 'shipper_ap', 'supplier_credit_note') THEN$$
-    );
-    v_sql := replace(v_sql,
-      $$Select one lane only: customer_sales, supplier_goods_ap, or shipper_ap.$$,
-      $$Select one lane only: customer_sales, supplier_goods_ap, supplier_credit_note, or shipper_ap.$$
-    );
-    v_sql := replace(v_sql,
-      $$WHEN c.document_lane IN ('supplier_goods_ap', 'shipper_ap') THEN 'purchase_invoice'$$,
-      $$WHEN c.document_lane IN ('supplier_goods_ap', 'shipper_ap') THEN 'purchase_invoice'
-      WHEN c.document_lane = 'supplier_credit_note' THEN 'purchase_credit_note'$$
-    );
-    EXECUTE v_sql;
-  END IF;
-
-  v_oid := to_regprocedure('public.internal_validate_sage_posting_batch_payloads_v1(uuid)');
-  IF v_oid IS NULL THEN RAISE EXCEPTION 'internal_validate_sage_posting_batch_payloads_v1 missing'; END IF;
-  v_sql := pg_get_functiondef(v_oid);
-  IF position('missing_supplier_credit_note_supplier_contact_mapping' in v_sql) = 0 THEN
-    v_sql := replace(v_sql,
-      $$CASE WHEN t.document_lane = 'supplier_goods_ap' AND EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(t.request_payload_json->'resolved_lines') = 'array' THEN t.request_payload_json->'resolved_lines' ELSE '[]'::jsonb END) line(value) WHERE NULLIF(trim(COALESCE(line.value #>> '{sage_tax_rate_id}', '')), '') IS NULL) THEN 'missing_supplier_goods_ap_tax_mapping' END,$$,
-      $$CASE WHEN t.document_lane = 'supplier_goods_ap' AND EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(t.request_payload_json->'resolved_lines') = 'array' THEN t.request_payload_json->'resolved_lines' ELSE '[]'::jsonb END) line(value) WHERE NULLIF(trim(COALESCE(line.value #>> '{sage_tax_rate_id}', '')), '') IS NULL) THEN 'missing_supplier_goods_ap_tax_mapping' END,
-        CASE WHEN t.document_lane = 'supplier_credit_note' AND NULLIF(trim(COALESCE(t.request_payload_json #>> '{supplier_target,sage_contact_id}', '')), '') IS NULL THEN 'missing_supplier_credit_note_supplier_contact_mapping' END,
-        CASE WHEN t.document_lane = 'supplier_credit_note' AND NULLIF(trim(COALESCE(t.request_payload_json #>> '{source_payload,original_supplier_invoice_id}', t.request_payload_json #>> '{original_supplier_invoice_id}', '')), '') IS NULL THEN 'missing_supplier_credit_note_original_supplier_invoice' END,
-        CASE WHEN t.document_lane = 'supplier_credit_note' AND EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(t.request_payload_json->'resolved_lines') = 'array' THEN t.request_payload_json->'resolved_lines' ELSE '[]'::jsonb END) line(value) WHERE NULLIF(trim(COALESCE(line.value #>> '{sage_ledger_account_id}', '')), '') IS NULL) THEN 'missing_supplier_credit_note_ledger_mapping' END,
-        CASE WHEN t.document_lane = 'supplier_credit_note' AND EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(t.request_payload_json->'resolved_lines') = 'array' THEN t.request_payload_json->'resolved_lines' ELSE '[]'::jsonb END) line(value) WHERE NULLIF(trim(COALESCE(line.value #>> '{sage_tax_rate_id}', line.value #>> '{tax_rate_id}', '')), '') IS NULL) THEN 'missing_supplier_credit_note_tax_mapping' END,$$
-    );
-    EXECUTE v_sql;
+  IF v_oid IS NOT NULL THEN
+    v_sql := pg_get_functiondef(v_oid);
+    IF position('supplier_credit_note' in v_sql) = 0 THEN
+      v_sql := replace(v_sql, $$IF v_batch_lane NOT IN ('customer_sales', 'supplier_goods_ap', 'shipper_ap') THEN$$, $$IF v_batch_lane NOT IN ('customer_sales', 'supplier_goods_ap', 'shipper_ap', 'supplier_credit_note') THEN$$);
+      v_sql := replace(v_sql, $$Select one lane only: customer_sales, supplier_goods_ap, or shipper_ap.$$, $$Select one lane only: customer_sales, supplier_goods_ap, supplier_credit_note, or shipper_ap.$$);
+      v_sql := replace(v_sql, $$WHEN c.document_lane IN ('supplier_goods_ap', 'shipper_ap') THEN 'purchase_invoice'$$, $$WHEN c.document_lane IN ('supplier_goods_ap', 'shipper_ap') THEN 'purchase_invoice'
+      WHEN c.document_lane = 'supplier_credit_note' THEN 'purchase_credit_note'$$);
+      EXECUTE v_sql;
+    END IF;
   END IF;
 END
 $patch$;
