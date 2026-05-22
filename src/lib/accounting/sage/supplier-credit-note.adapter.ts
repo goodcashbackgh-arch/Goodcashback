@@ -31,7 +31,7 @@ export type SupplierCreditNoteSourceLine = {
 export type SupplierCreditNoteSource = {
   posting_intent: "supplier_credit_note";
   refund_evidence_submission_id: string;
-  original_supplier_invoice_id: string;
+  original_supplier_invoice_id?: string;
   sage_retailer_supplier_contact_id: string;
   document_date: string;
   credit_note_ref: string;
@@ -78,7 +78,6 @@ export function validateSupplierCreditNoteSource(source: SupplierCreditNoteSourc
   if (source.already_posted_yn) throw new Error("Supplier credit note has already been posted.");
 
   assertNonEmpty(source.refund_evidence_submission_id, "Missing refund evidence submission id.");
-  assertNonEmpty(source.original_supplier_invoice_id, "Missing original supplier invoice id.");
   assertNonEmpty(source.sage_retailer_supplier_contact_id, "Missing Sage retailer/supplier contact id.");
   assertNonEmpty(source.document_date, "Missing supplier credit note document date.");
   assertNonEmpty(source.credit_note_ref, "Missing supplier credit note reference.");
