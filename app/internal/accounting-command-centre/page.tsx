@@ -14,6 +14,10 @@ import {
   freezeSelectedSupplierGoodsApRowsAction,
   revalidateMatchingFrozenRowsAction,
 } from "./actions";
+import {
+  freezeMatchingSupplierCreditNoteRowsAction,
+  freezeSelectedSupplierCreditNoteRowsAction,
+} from "./supplierCreditActions";
 
 type Row = Record<string, unknown>;
 type SearchParamsValue = Record<string, string | string[] | undefined>;
@@ -145,12 +149,7 @@ function dedupeActionableRefreezeRows(rows: Row[], queue: string) {
 
     const key = refreezeDedupKey(row);
 
-    // If a fresh/current row exists for the same source/lane, do not show
-    // the old cancelled/superseded refreeze pointer in Actionable.
     if (currentRowKeys.has(key)) return false;
-
-    // If there are several old cancelled/superseded rows for the same source,
-    // show only one pointer.
     if (seenRefreezeKeys.has(key)) return false;
 
     seenRefreezeKeys.add(key);
@@ -225,6 +224,9 @@ function SelectableInput({ row }: { row: Row }) {
   if (group === "shipper_ap") {
     return <input type="checkbox" name="shipping_document_id" value={sourceId} {...common} />;
   }
+  if (group === "supplier_credit_note") {
+    return <input type="checkbox" name="supplier_credit_submission_id" value={sourceId} {...common} />;
+  }
   return <span className="text-xs text-slate-400">—</span>;
 }
 
@@ -271,6 +273,9 @@ function ActionControl({ row }: { row: Row }) {
     }
     if (group === "shipper_ap") {
       return <FreezeRowButton label="shipper AP" name="single_shipping_document_id" value={sourceId} formAction={freezeSelectedShipperApRowsAction} />;
+    }
+    if (group === "supplier_credit_note") {
+      return <FreezeRowButton label="supplier credit note" name="single_supplier_credit_submission_id" value={sourceId} formAction={freezeSelectedSupplierCreditNoteRowsAction} />;
     }
   }
 
@@ -350,6 +355,7 @@ export default async function AccountingCommandCentrePage({
   const selectedCount = rows.filter((row) => bool(row.selectable)).length;
   const laneIsCustomer = lane === "customer_sales";
   const laneIsSupplierGoodsAp = lane === "supplier_goods_ap";
+  const laneIsSupplierCreditNote = lane === "supplier_credit_note";
   const laneIsShipperAp = lane === "shipper_ap";
   const laneIsAll = lane === "all";
 
@@ -392,8 +398,9 @@ export default async function AccountingCommandCentrePage({
         <SageConnectionPanel />
         <PostingBatchHistoryPanel />
 
-        <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+        <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-7">
           <SectionLink title="Supplier AP" detail="Retailer/supplier purchase invoices only" href="/internal/accounting-command-centre?queue=actionable&lane=supplier_goods_ap" tone={laneIsSupplierGoodsAp ? "action" : "muted"} />
+          <SectionLink title="Supplier credit note" detail="Retailer/supplier purchase credit notes only" href="/internal/accounting-command-centre?queue=actionable&lane=supplier_credit_note" tone={laneIsSupplierCreditNote ? "action" : "muted"} />
           <SectionLink title="Shipper AP" detail="Shipper purchase invoices only" href="/internal/accounting-command-centre?queue=actionable&lane=shipper_ap" tone={laneIsShipperAp ? "action" : "muted"} />
           <SectionLink title="Customer sales" detail="Customer sales / AR only" href="/internal/accounting-command-centre?queue=actionable&lane=customer_sales" tone={laneIsCustomer ? "action" : "muted"} />
           <SectionLink title="Live ready" detail="Rows ready to freeze in this lane" href={`/internal/accounting-command-centre?queue=live_ready_not_frozen&lane=${encodeURIComponent(lane)}`} tone="action" />
@@ -414,7 +421,7 @@ export default async function AccountingCommandCentrePage({
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
-          <form action="/internal/accounting-command-centre" className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(220px,1fr)_190px_150px_190px_120px_auto] xl:items-end">
+          <form action="/internal/accounting-command-centre" className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(220px,1fr)_190px_170px_190px_120px_auto] xl:items-end">
             <label className="grid gap-1 text-xs font-bold uppercase tracking-wide text-slate-500 md:col-span-2 xl:col-span-1">
               Search
               <input name="q" defaultValue={search} placeholder="Order, source, counterparty, batch, idempotency" className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-950" />
@@ -439,6 +446,7 @@ export default async function AccountingCommandCentrePage({
               Lane
               <select name="lane" defaultValue={lane} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-950">
                 <option value="supplier_goods_ap">Supplier goods AP</option>
+                <option value="supplier_credit_note">Supplier credit note</option>
                 <option value="shipper_ap">Shipper AP</option>
                 <option value="customer_sales">Customer sales</option>
                 <option value="all">All lanes — audit only</option>
@@ -520,13 +528,19 @@ export default async function AccountingCommandCentrePage({
                     <button formAction={freezeMatchingSupplierGoodsApRowsAction} className="rounded-lg bg-amber-900 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-amber-950" type="submit">Freeze all matching supplier goods AP</button>
                   </>
                 ) : null}
+                {laneIsSupplierCreditNote ? (
+                  <>
+                    <button formAction={freezeSelectedSupplierCreditNoteRowsAction} className="rounded-lg bg-amber-700 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-amber-800" type="submit">Freeze selected supplier credit note</button>
+                    <button formAction={freezeMatchingSupplierCreditNoteRowsAction} className="rounded-lg bg-amber-900 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-amber-950" type="submit">Freeze all matching supplier credit notes</button>
+                  </>
+                ) : null}
                 {laneIsShipperAp ? (
                   <>
                     <button formAction={freezeSelectedShipperApRowsAction} className="rounded-lg bg-amber-700 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-amber-800" type="submit">Freeze selected shipper AP</button>
                     <button formAction={freezeMatchingShipperApRowsAction} className="rounded-lg bg-amber-900 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-amber-950" type="submit">Freeze all matching shipper AP</button>
                   </>
                 ) : null}
-                {laneIsAll ? <span className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-[11px] font-bold text-amber-900">Mixed-lane audit only: choose Customer sales, Supplier AP or Shipper AP to freeze or batch.</span> : null}
+                {laneIsAll ? <span className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-[11px] font-bold text-amber-900">Mixed-lane audit only: choose Customer sales, Supplier AP, Supplier credit note or Shipper AP to freeze or batch.</span> : null}
                 {!laneIsAll ? <button formAction={revalidateMatchingFrozenRowsAction} className="rounded-lg bg-violet-700 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-violet-800" type="submit">Revalidate matching frozen</button> : null}
                 {!laneIsAll ? <button formAction={createPostingBatchFromMatchingRowsAction} className="rounded-lg bg-slate-950 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-slate-800" type="submit">Create posting batch — no Sage call</button> : null}
                 <Link href="/internal/accounting-command-centre/posting-preview" className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-center text-[11px] font-bold text-slate-800 hover:bg-slate-50">Frozen snapshot drill-down</Link>
@@ -588,7 +602,7 @@ export default async function AccountingCommandCentrePage({
 
         <section className="rounded-3xl border border-violet-200 bg-violet-50 p-5 text-sm leading-6 text-violet-900">
           <h2 className="font-bold">v5 control rule</h2>
-          <p className="mt-2">This page is lane-separated by default. Supplier AP, shipper AP and customer sales remain visible from one cockpit, but freeze and posting-batch actions are shown only after choosing a single lane.</p>
+          <p className="mt-2">This page is lane-separated by default. Supplier AP, supplier credit note, shipper AP and customer sales remain visible from one cockpit, but freeze and posting-batch actions are shown only after choosing a single lane.</p>
           <p className="mt-2 font-semibold">Ready-to-refreeze rows are deduped source pointers from cancelled/superseded history. All historic duplicates remain available under full history/audit filters.</p>
         </section>
       </div>
