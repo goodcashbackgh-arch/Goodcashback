@@ -78,6 +78,8 @@ function signedMoney(value: number) {
 
 function friendlyValue(value: string | null | undefined) {
   if (!value) return "—";
+  if (value === "partially_progressed") return "Invoice reconciled; tracking open";
+  if (value === "pending_dva_funding") return "Payment pending";
   return value.replaceAll("_", " ").replace(/^./, (first) => first.toUpperCase());
 }
 
@@ -201,7 +203,7 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
         <div><div className="text-slate-500">Quantity</div><div className="font-medium">{order.total_qty_declared}</div></div>
         <div><div className="text-slate-500">Goods amount</div><div className="font-medium">{money(order.order_total_gbp_declared)}</div></div>
         <div><div className="text-slate-500">Local quote amount</div><div className="font-medium">{localAmount(order.quote_total_ghs, currencyCode)}</div></div>
-        <div><div className="text-slate-500">Status</div><div className="font-medium">{operationalStatus}</div><div className="text-xs text-slate-500">Raw: {friendlyValue(order.status)}</div></div>
+        <div><div className="text-slate-500">Status</div><div className="font-medium">{operationalStatus}</div><div className="text-xs text-slate-500">System: {friendlyValue(order.status)}</div></div>
       </div>
     </section>
 
