@@ -1,4 +1,5 @@
 import CompactInvoiceLinesPatch from "./CompactInvoiceLinesPatch";
+import ConfirmedSurplusCreditPatch from "./ConfirmedSurplusCreditPatch";
 import { createClient } from "@/utils/supabase/server";
 
 type SurplusEvidenceRow = {
@@ -45,6 +46,7 @@ export default async function ImporterReconciliationLayout({
   return (
     <>
       <CompactInvoiceLinesPatch />
+      {showConfirmedCredit ? <ConfirmedSurplusCreditPatch /> : null}
       {showConfirmedCredit ? (
         <div className="mx-auto max-w-7xl px-4 pt-4 sm:px-6 sm:pt-6">
           <section className="rounded-3xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-950 shadow-sm">
