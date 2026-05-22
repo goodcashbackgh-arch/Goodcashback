@@ -1,8 +1,10 @@
 import Link from "next/link";
+import SupplierCreditNoteWorkbenchPatch from "./SupplierCreditNoteWorkbenchPatch";
 
 export default function AccountingCommandCentreLayout({ children }: { children: React.ReactNode }) {
   return (
     <>
+      <SupplierCreditNoteWorkbenchPatch />
       <div className="bg-slate-50 px-4 pt-4 sm:px-6 lg:px-8">
         <section className="mx-auto max-w-[1600px] rounded-2xl border border-violet-200 bg-violet-50 p-3 text-sm text-violet-950 shadow-sm">
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
