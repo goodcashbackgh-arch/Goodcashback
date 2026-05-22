@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
-import { postSupplierCreditNoteBatchToSage } from "@/lib/sage/supplierCreditNotePosting";
+import { postSupplierCreditNoteBatchToSage } from "@/lib/sage/supplierCreditNotePostingWithFrozenMappings";
 
 type StaffRow = {
   id: string;
