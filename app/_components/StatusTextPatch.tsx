@@ -3,10 +3,16 @@
 import { useEffect } from "react";
 
 const replacements: Record<string, string> = {
-  "Partially progressed": "Invoice reconciled; tracking open",
+  "Raw DB status partially progressed": "System status invoice reconciled; tracking open",
+  "Raw DB status pending dva funding": "System status payment pending",
+  "Raw DB status reconciling": "System status invoice reconciliation open",
   "Raw: Partially progressed": "System: Invoice reconciled; tracking open",
-  "Pending dva funding": "Payment pending",
   "Raw: Pending dva funding": "System: Payment pending",
+  "Partially progressed": "Invoice reconciled; tracking open",
+  "partially progressed": "invoice reconciled; tracking open",
+  "Pending dva funding": "Payment pending",
+  "pending dva funding": "payment pending",
+  "not built yet": "not assessed in this control",
 };
 
 function replaceTextNode(node: Text) {
@@ -38,7 +44,7 @@ export default function StatusTextPatch() {
         }
       }
     });
-    observer.observe(document.body, { childList: true, subtree: true });
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
     return () => observer.disconnect();
   }, []);
 
