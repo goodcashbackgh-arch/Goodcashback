@@ -1,6 +1,9 @@
 import type { ReactNode } from "react";
 import { createClient } from "@/utils/supabase/server";
-import { postSupplierCreditNoteBatchToSageAction } from "../../supplierCreditNotePostingActions";
+import {
+  postSupplierCreditNoteBatchToSageWithAftercareAction,
+  runSupplierCreditNoteAftercareAction,
+} from "../../supplierCreditNotePostingAftercareActions";
 
 type Row = Record<string, unknown>;
 
@@ -48,7 +51,7 @@ function lineDescription(line: Row) {
 }
 
 function lineLedgerId(line: Row) {
-  return firstText(line, [["sage_ledger_account_id"], ["resolved_ledger_account_id"]]);
+  return firstText(line, [["sage_ledger_account_id"], ["resolved_ledger_account_id"], ["ledger_account_id"]]);
 }
 
 function lineTaxId(line: Row) {
@@ -57,7 +60,10 @@ function lineTaxId(line: Row) {
 
 function rowFacts(row: Row) {
   const payload = asObject(row.request_payload_json);
-  const lines = asArray(payload.resolved_lines).map(asObject);
+  const purchaseCreditNote = asObject(payload.purchase_credit_note);
+  const resolverLines = asArray(payload.resolved_lines).map(asObject);
+  const postedLines = asArray(purchaseCreditNote.credit_note_lines).map(asObject);
+  const lines = resolverLines.length > 0 ? resolverLines : postedLines;
   const firstLine = lines[0] ?? {};
   const sourceFile = firstText(payload, [
     ["evidence", "credit_note_file_url"],
@@ -76,6 +82,7 @@ function rowFacts(row: Row) {
     ["sage_header", "contact_id"],
     ["sage_header", "sage_contact_id"],
     ["source_payload", "supplier_target", "sage_contact_id"],
+    ["purchase_credit_note", "contact_id"],
   ]);
   const ledgerId = lineLedgerId(firstLine);
   const taxRateId = lineTaxId(firstLine);
@@ -120,9 +127,11 @@ export default async function PostingBatchDetailLayout({
         const singleCreditNoteLane = creditNoteRows.length > 0 && creditNoteRows.length === includedRows.length;
         const dryRunOk = includedRows.length > 0 && includedRows.every((row) => text(row.payload_validation_status) === "dry_run_validated");
         const unposted = includedRows.every((row) => !text(row.sage_object_id) && text(row.posting_status) !== "posted" && !text(row.posted_at));
+        const anyPosted = includedRows.some((row) => text(row.sage_object_id) || text(row.posting_status) === "posted" || text(row.posted_at));
         const missingTargetRows = includedRows.filter((row) => !rowFacts(row).hasTargetFacts).length;
         const missingSourceFileRows = includedRows.filter((row) => !rowFacts(row).sourceFile).length;
         const canPost = liveFlag && singleCreditNoteLane && dryRunOk && unposted && missingTargetRows === 0 && missingSourceFileRows === 0;
+        const canRunAftercare = liveFlag && singleCreditNoteLane && anyPosted;
         const reasons: string[] = [];
         if (!liveFlag) reasons.push("live Sage posting flag is off");
         if (!singleCreditNoteLane) reasons.push("not a supplier credit note-only batch");
@@ -140,21 +149,35 @@ export default async function PostingBatchDetailLayout({
                     <p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-700">Supplier credit note posting</p>
                     <h2 className="mt-1 text-xl font-bold text-emerald-950">Post purchase credit note to Sage</h2>
                     <p className="mt-1 text-sm leading-5 text-emerald-900">
-                      Guarded for supplier credit note batches only. Requires dry-run OK, unposted row, contact, ledger, tax, line description and attached source file.
+                      Post now runs aftercare: restore the resolver payload for the UI and try to attach the credit note PDF to the Sage transaction.
                     </p>
-                    {!canPost && reasons.length > 0 ? <p className="mt-2 text-xs font-bold text-amber-900">Blocked: {reasons.join("; ")}.</p> : null}
+                    {!canPost && !anyPosted && reasons.length > 0 ? <p className="mt-2 text-xs font-bold text-amber-900">Blocked: {reasons.join("; ")}.</p> : null}
+                    {anyPosted ? <p className="mt-2 text-xs font-bold text-amber-900">Posted batch: use aftercare to restore row facts and attach the source file if attachment did not complete.</p> : null}
                   </div>
-                  <form action={postSupplierCreditNoteBatchToSageAction} className="shrink-0">
-                    <input type="hidden" name="batch_id" value={batchId} />
-                    <button
-                      type="submit"
-                      disabled={!canPost}
-                      className="rounded-2xl bg-emerald-700 px-5 py-3 text-sm font-extrabold text-white shadow-sm hover:bg-emerald-800 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-600"
-                      title={canPost ? "Post supplier purchase credit note to Sage." : reasons.join("; ")}
-                    >
-                      Post supplier credit note to Sage
-                    </button>
-                  </form>
+                  <div className="flex shrink-0 flex-col gap-2 sm:flex-row">
+                    <form action={postSupplierCreditNoteBatchToSageWithAftercareAction}>
+                      <input type="hidden" name="batch_id" value={batchId} />
+                      <button
+                        type="submit"
+                        disabled={!canPost}
+                        className="rounded-2xl bg-emerald-700 px-5 py-3 text-sm font-extrabold text-white shadow-sm hover:bg-emerald-800 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-600"
+                        title={canPost ? "Post supplier purchase credit note to Sage and run aftercare." : reasons.join("; ")}
+                      >
+                        Post supplier credit note to Sage
+                      </button>
+                    </form>
+                    <form action={runSupplierCreditNoteAftercareAction}>
+                      <input type="hidden" name="batch_id" value={batchId} />
+                      <button
+                        type="submit"
+                        disabled={!canRunAftercare}
+                        className="rounded-2xl bg-sky-700 px-5 py-3 text-sm font-extrabold text-white shadow-sm hover:bg-sky-800 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-600"
+                        title={canRunAftercare ? "Restore row facts and attach source file for posted supplier credit note." : "Only available after a supplier credit note batch is posted."}
+                      >
+                        Run post-success aftercare
+                      </button>
+                    </form>
+                  </div>
                 </div>
               </section>
             </div>
