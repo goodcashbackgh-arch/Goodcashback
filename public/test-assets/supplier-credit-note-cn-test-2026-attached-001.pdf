@@ -1,0 +1,61 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+5 0 obj
+<< /Length 683 >>
+stream
+BT
+/F1 18 Tf
+72 760 Td
+(SUPPLIER CREDIT NOTE) Tj
+/F1 10 Tf
+1 0 0 1 72 730 Tm
+(Test Retailer: Day3 Tracking Test Retailer 1d7cfa66) Tj
+1 0 0 1 72 712 Tm
+(Supplier: Ninja) Tj
+1 0 0 1 72 694 Tm
+(Credit Note Ref: CN-TEST-2026-ATTACHED-001) Tj
+1 0 0 1 72 676 Tm
+(Date: 2026-05-08) Tj
+1 0 0 1 72 658 Tm
+(Order Ref: DAY3-EXC-MVP-004) Tj
+1 0 0 1 72 640 Tm
+() Tj
+1 0 0 1 72 622 Tm
+(Description                 Qty      Net      VAT      Gross) Tj
+1 0 0 1 72 604 Tm
+(Returned shoes              1        25.00    5.00     30.00) Tj
+1 0 0 1 72 586 Tm
+() Tj
+1 0 0 1 72 568 Tm
+(Net Total: GBP 25.00) Tj
+1 0 0 1 72 550 Tm
+(VAT Total: GBP 5.00) Tj
+1 0 0 1 72 532 Tm
+(Credit Total: GBP 30.00) Tj
+ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000000311 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1044
+%%EOF
