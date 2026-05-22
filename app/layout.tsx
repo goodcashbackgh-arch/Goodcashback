@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import LogoutButton from "@/components/LogoutButton";
+import StatusTextPatch from "./_components/StatusTextPatch";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -16,6 +17,7 @@ export default function RootLayout({
     <html lang="en">
       <body>
         <LogoutButton />
+        <StatusTextPatch />
         {children}
       </body>
     </html>
