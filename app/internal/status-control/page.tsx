@@ -133,6 +133,18 @@ function pretty(value: unknown) {
   return raw ? raw.replaceAll("_", " ") : "—";
 }
 
+function systemStatusLabel(value: unknown) {
+  const raw = text(value);
+  if (raw === "partially_progressed") return "invoice reconciled; tracking open";
+  if (raw === "pending_dva_funding") return "payment pending";
+  if (raw === "reconciling") return "invoice reconciliation open";
+  return pretty(raw);
+}
+
+function laneNotAssessed() {
+  return "not_assessed_in_this_control";
+}
+
 function importerLabel(importer?: ImporterRow) {
   return importer?.trading_name || importer?.company_name || importer?.id || "All importers";
 }
@@ -381,7 +393,7 @@ export default async function StatusControlPage({
           <p className="mt-5 text-xs font-bold uppercase tracking-[0.25em] text-sky-600">Status spine control</p>
           <h1 className="mt-2 text-3xl font-bold tracking-tight">Order status integrity control</h1>
           <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
-            Read-only status spine across orders, invoice/OCR, commercial exceptions, DVA/card financial control and known missing lanes for shipper discrepancy/export evidence. This page is for finding contradictions before delivery, Sage or VAT readiness.
+            Read-only status spine across orders, invoice/OCR, commercial exceptions and DVA/card financial control. Some downstream lanes are shown as not assessed here until their own evidence/control views are wired into this page.
           </p>
           <div className="mt-4 flex flex-wrap gap-2">
             <Link href="/internal/dva-reconciliation/exception-actions" className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white">Exception actions</Link>
@@ -448,7 +460,7 @@ export default async function StatusControlPage({
                       <div>
                         <p className="text-lg font-bold text-slate-950">{card.order.order_ref || card.order.id}</p>
                         <p className="mt-1 text-sm text-slate-600">
-                          {card.retailer?.name || "No retailer"} · Operational status {pretty(card.headline)} · Raw DB status {pretty(card.order.status)} · Type {pretty(card.order.order_type)}
+                          {card.retailer?.name || "No retailer"} · Operational status {pretty(card.headline)} · System status {systemStatusLabel(card.order.status)} · Type {pretty(card.order.order_type)}
                         </p>
                       </div>
                       <span className={`rounded-full px-3 py-1 text-xs font-bold ring-1 ${card.warnings.length > 0 ? "bg-amber-50 text-amber-800 ring-amber-200" : "bg-emerald-50 text-emerald-800 ring-emerald-200"}`}>
@@ -460,9 +472,9 @@ export default async function StatusControlPage({
                       {lanePill("Invoice", card.invoiceStatus)}
                       {lanePill("Commercial exception", card.exceptionStatus)}
                       {lanePill("DVA/card", card.dvaStatus)}
-                      {lanePill("Export evidence", "not_built_yet")}
-                      {lanePill("Shipper discrepancy", "not_built_yet")}
-                      {lanePill("Shipping/delivery", "not_built_yet")}
+                      {lanePill("Export evidence", laneNotAssessed())}
+                      {lanePill("Shipper discrepancy", laneNotAssessed())}
+                      {lanePill("Shipping/delivery", laneNotAssessed())}
                       {lanePill("Accounting/VAT", card.integrityWarnings.length > 0 ? "blocked_by_status_warnings" : card.auditWarnings.length > 0 ? "audit_warning_before_final_signoff" : "not_ready_or_unchecked")}
                       {lanePill("Next owner", card.next.role)}
                     </div>
