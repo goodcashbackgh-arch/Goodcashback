@@ -14,7 +14,7 @@ export default async function PostingBatchDetailLayout({
   return (
     <>
       <div className="bg-slate-50 px-4 pt-4 text-slate-950 sm:px-6 lg:px-8">
-        <section className="mx-auto max-w-[1900px] rounded-3pl border border-emerald-200 bg-emerald-50 p-4 shadow-sm">
+        <section className="mx-auto max-w-[1900px] rounded-3xl border border-emerald-200 bg-emerald-50 p-4 shadow-sm">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div>
               <p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-700">Supplier credit note posting</p>
