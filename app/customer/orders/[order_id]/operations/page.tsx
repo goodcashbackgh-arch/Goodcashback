@@ -25,6 +25,29 @@ function chip(ok: boolean) {
     : "rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-800 ring-1 ring-amber-200";
 }
 
+function customerStatusLabel({
+  rawStatus,
+  lifecycleStatus,
+  thresholdMet,
+  reviewHref,
+}: {
+  rawStatus: string | null | undefined;
+  lifecycleStatus: string | null | undefined;
+  thresholdMet: boolean;
+  reviewHref: string | null;
+}) {
+  const status = String(lifecycleStatus ?? rawStatus ?? "").toLowerCase();
+  if (reviewHref) return "Ready for your review";
+  if (!thresholdMet) return "Payment required";
+  if (["pending_dva_funding", "funding_pending", "draft"].includes(status)) return "Funded; awaiting purchase evidence";
+  if (["reconciling", "partially_progressed", "invoice_reconciled_tracking_open"].includes(status)) return "Order being prepared";
+  if (["ready_for_shipment", "shipment_booked"].includes(status)) return "Preparing for shipment";
+  if (["shipment_dispatched", "awaiting_importer_receipt"].includes(status)) return "Shipment in progress";
+  if (["completed", "archived"].includes(status)) return "Completed";
+  if (["discrepancy_open", "awaiting_financial_closure"].includes(status)) return "Under review";
+  return friendly(lifecycleStatus ?? rawStatus);
+}
+
 export default async function CustomerOrderOperationsPage({
   params,
   searchParams,
@@ -98,9 +121,12 @@ export default async function CustomerOrderOperationsPage({
   const currentNetPayableLocal = effectiveRate ? currentNetPayableGbp * effectiveRate : 0;
   const appliedCreditLocal = effectiveRate ? appliedCreditGbp * effectiveRate : 0;
   const fxLabel = fxDate === today ? "today's FX" : fxDate ? `latest FX ${fxDate}` : "no FX available";
-  const statusLabel = thresholdMet && order.status === "pending_dva_funding"
-    ? "Funding complete; awaiting invoice/tracking"
-    : friendly(state?.lifecycle_status ?? order.status);
+  const statusLabel = customerStatusLabel({
+    rawStatus: order.status,
+    lifecycleStatus: state?.lifecycle_status,
+    thresholdMet,
+    reviewHref,
+  });
 
   return (
     <main className="min-h-screen bg-gradient-to-b from-sky-50 via-white to-slate-50 p-4 text-slate-950 md:p-6">
@@ -131,7 +157,7 @@ export default async function CustomerOrderOperationsPage({
 
       <section className="mt-5 grid gap-4 md:grid-cols-4">
         <div className="rounded-[1.5rem] border border-slate-200 bg-white p-5 shadow-sm"><p className="text-sm font-semibold text-slate-500">Status</p><p className="mt-2 text-xl font-black">{statusLabel}</p></div>
-        <div className="rounded-[1.5rem] border border-slate-200 bg-white p-5 shadow-sm"><p className="text-sm font-semibold text-slate-500">Funding</p><p className="mt-2"><span className={chip(thresholdMet)}>{thresholdMet ? "Funded" : friendly(funding?.status)}</span></p></div>
+        <div className="rounded-[1.5rem] border border-slate-200 bg-white p-5 shadow-sm"><p className="text-sm font-semibold text-slate-500">Funding</p><p className="mt-2"><span className={chip(thresholdMet)}>{thresholdMet ? "Funded" : "Payment required"}</span></p></div>
         <div className="rounded-[1.5rem] border border-cyan-100 bg-cyan-50/70 p-5 shadow-sm"><p className="text-sm font-semibold text-cyan-700">Original GBP order</p><p className="mt-2 text-xl font-black text-cyan-950">{money(orderGbp)}</p></div>
         <div className="rounded-[1.5rem] border border-amber-100 bg-amber-50/70 p-5 shadow-sm"><p className="text-sm font-semibold text-amber-700">Current net payable</p><p className="mt-2 text-xl font-black text-amber-950">{money(currentNetPayableGbp)}</p><p className="mt-1 text-xs font-semibold text-amber-800">{effectiveRate ? localAmount(currentNetPayableLocal, currencyCode) : "No FX rate"}</p></div>
       </section>
