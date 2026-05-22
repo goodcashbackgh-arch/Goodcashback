@@ -4,6 +4,8 @@ export type SagePurchaseCreditNoteLinePayload = {
   quantity: number;
   unit_price: number;
   tax_rate_id: string;
+  tax_amount?: number;
+  currency_tax_amount?: number;
 };
 
 export type SagePurchaseCreditNotePayload = {
@@ -11,6 +13,7 @@ export type SagePurchaseCreditNotePayload = {
     contact_id: string;
     date: string;
     reference: string;
+    notes?: string;
     credit_note_lines: SagePurchaseCreditNoteLinePayload[];
   };
 };
@@ -21,6 +24,8 @@ export type SupplierCreditNoteSourceLine = {
   quantity: number;
   unit_price: number;
   tax_rate_id: string;
+  tax_amount?: number;
+  currency_tax_amount?: number;
 };
 
 export type SupplierCreditNoteSource = {
@@ -30,6 +35,7 @@ export type SupplierCreditNoteSource = {
   sage_retailer_supplier_contact_id: string;
   document_date: string;
   credit_note_ref: string;
+  notes?: string;
   supplier_approval_status: string;
   supplier_control_status: string;
   gross_reconciled_to_document_yn: boolean;
@@ -56,6 +62,11 @@ function assertPositiveNumber(value: number, message: string) {
   if (!Number.isFinite(value) || value <= 0) throw new Error(message);
 }
 
+function optionalNonNegativeNumber(value: number | undefined, message: string) {
+  if (value === undefined) return;
+  if (!Number.isFinite(value) || value < 0) throw new Error(message);
+}
+
 export function validateSupplierCreditNoteSource(source: SupplierCreditNoteSource) {
   if (source.posting_intent !== "supplier_credit_note") throw new Error("Invalid posting intent for supplier credit note adapter.");
   if (source.supplier_approval_status !== "approved_current") throw new Error("Supplier refund evidence is not approved current.");
@@ -80,6 +91,8 @@ export function validateSupplierCreditNoteSource(source: SupplierCreditNoteSourc
     assertNonEmpty(line.tax_rate_id, `Missing Sage tax rate id on supplier credit note line ${index + 1}.`);
     assertPositiveNumber(line.quantity, `Invalid quantity on supplier credit note line ${index + 1}.`);
     assertPositiveNumber(line.unit_price, `Invalid unit price on supplier credit note line ${index + 1}.`);
+    optionalNonNegativeNumber(line.tax_amount, `Invalid VAT amount on supplier credit note line ${index + 1}.`);
+    optionalNonNegativeNumber(line.currency_tax_amount, `Invalid currency VAT amount on supplier credit note line ${index + 1}.`);
   }
 }
 
@@ -91,12 +104,15 @@ export function buildSupplierCreditNotePayload(source: SupplierCreditNoteSource)
       contact_id: source.sage_retailer_supplier_contact_id,
       date: source.document_date,
       reference: source.credit_note_ref,
+      ...(source.notes ? { notes: source.notes } : {}),
       credit_note_lines: source.lines.map((line) => ({
         description: line.description,
         ledger_account_id: line.ledger_account_id,
         quantity: line.quantity,
         unit_price: line.unit_price,
         tax_rate_id: line.tax_rate_id,
+        ...(line.tax_amount !== undefined ? { tax_amount: line.tax_amount } : {}),
+        ...(line.currency_tax_amount !== undefined ? { currency_tax_amount: line.currency_tax_amount } : {}),
       })),
     },
   };
