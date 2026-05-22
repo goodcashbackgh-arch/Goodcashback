@@ -19,12 +19,38 @@ function mappingValue(payload: Row, code: string) {
   return text(direct.sage_external_id) || text(nested.sage_external_id);
 }
 
+function creditNoteSourceFileUrl(payload: Row) {
+  return text(asObject(payload.source_evidence).file_url)
+    || text(asObject(payload.evidence).credit_note_file_url)
+    || text(asObject(payload.evidence).refund_proof_file_url)
+    || text(asObject(payload.evidence).file_url)
+    || text(payload.credit_note_file_url)
+    || text(payload.refund_proof_file_url)
+    || text(asObject(asObject(payload.source_payload).evidence).credit_note_file_url)
+    || text(asObject(asObject(payload.source_payload).evidence).refund_proof_file_url)
+    || text(asObject(asObject(payload.source_payload).evidence).file_url)
+    || text(asObject(payload.source_payload).credit_note_file_url)
+    || text(asObject(payload.source_payload).refund_proof_file_url);
+}
+
+function withSourceEvidence(payload: Row) {
+  const fileUrl = creditNoteSourceFileUrl(payload);
+  if (!fileUrl) return payload;
+  return {
+    ...payload,
+    source_evidence: {
+      ...asObject(payload.source_evidence),
+      file_url: fileUrl,
+    },
+  };
+}
+
 function patchPayload(payload: Row) {
   const ledger = mappingValue(payload, "SUPPLIER_GOODS_AP_LEDGER");
   const tax = mappingValue(payload, "SUPPLIER_GOODS_AP_TAX_RATE");
   const lines = Array.isArray(payload.resolved_lines) ? payload.resolved_lines : [];
 
-  return {
+  return withSourceEvidence({
     ...payload,
     resolved_lines: lines.map((lineRaw) => {
       const line = asObject(lineRaw);
@@ -34,7 +60,7 @@ function patchPayload(payload: Row) {
         ...(tax ? { sage_tax_rate_id: tax, tax_rate_id: tax, resolved_tax_rate_id: tax } : {}),
       };
     }),
-  };
+  });
 }
 
 async function applyFrozenApMappingsToSupplierCreditNoteRows(batchId: string) {
@@ -78,7 +104,7 @@ async function restoreFrozenPayloadForPostedRows(batchId: string) {
   let restored = 0;
   for (const row of rows ?? []) {
     const current = asObject((row as Row).request_payload_json);
-    const frozen = asObject(asObject((row as Row).snapshot).resolved_payload);
+    const frozen = withSourceEvidence(asObject(asObject((row as Row).snapshot).resolved_payload));
     if (current.purchase_credit_note && Object.keys(frozen).length > 0) {
       await supabaseAdmin
         .from("sage_posting_batch_rows")
