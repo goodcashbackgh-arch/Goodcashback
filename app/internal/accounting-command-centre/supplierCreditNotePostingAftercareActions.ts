@@ -42,6 +42,34 @@ async function requireAccountingPostingContext() {
   return { staffId: row.id };
 }
 
+function aftercareRedirect(batchId: string, aftercare: { restored: number; attached: number; skipped: number; failed: number; errors: string[] }) {
+  const summary = `Supplier credit note aftercare finished: restored ${aftercare.restored} row payload(s), attached ${aftercare.attached} file(s), skipped ${aftercare.skipped}, failed ${aftercare.failed}.`;
+  if (aftercare.failed > 0) {
+    return `/internal/accounting-command-centre/batches/${batchId}?error=${encodeURIComponent(`${summary} ${aftercare.errors.join(" | ")}`)}`;
+  }
+  return `/internal/accounting-command-centre/batches/${batchId}?success=${encodeURIComponent(summary)}`;
+}
+
+export async function runSupplierCreditNoteAftercareAction(formData: FormData) {
+  const batchId = String(formData.get("batch_id") ?? "").trim();
+  if (!batchId) redirect("/internal/accounting-command-centre?error=Missing posting batch id");
+
+  const { staffId } = await requireAccountingPostingContext();
+  let redirectTo = `/internal/accounting-command-centre/batches/${batchId}`;
+
+  try {
+    const aftercare = await afterSupplierCreditNotePost({ batchId, staffId, origin: appOrigin() });
+    redirectTo = aftercareRedirect(batchId, aftercare);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Supplier credit note aftercare failed.";
+    redirectTo = `/internal/accounting-command-centre/batches/${batchId}?error=${encodeURIComponent(message)}`;
+  }
+
+  revalidatePath("/internal/accounting-command-centre");
+  revalidatePath(`/internal/accounting-command-centre/batches/${batchId}`);
+  redirect(redirectTo);
+}
+
 export async function postSupplierCreditNoteBatchToSageWithAftercareAction(formData: FormData) {
   const batchId = String(formData.get("batch_id") ?? "").trim();
   if (!batchId) redirect("/internal/accounting-command-centre?error=Missing posting batch id");
@@ -58,10 +86,11 @@ export async function postSupplierCreditNoteBatchToSageWithAftercareAction(formD
     } else {
       try {
         const aftercare = await afterSupplierCreditNotePost({ batchId, staffId, origin });
-        const summary = `Supplier credit note Sage posting finished: ${result.posted} posted, ${result.failed} failed, ${result.total} total. Endpoint /purchase_credit_notes. Aftercare restored ${aftercare.restored} row payload(s), attached ${aftercare.attached} file(s), skipped ${aftercare.skipped}, failed ${aftercare.failed}.`;
+        const postSummary = `Supplier credit note Sage posting finished: ${result.posted} posted, ${result.failed} failed, ${result.total} total. Endpoint /purchase_credit_notes.`;
+        const aftercareSummary = ` Aftercare restored ${aftercare.restored} row payload(s), attached ${aftercare.attached} file(s), skipped ${aftercare.skipped}, failed ${aftercare.failed}.`;
         redirectTo = aftercare.failed > 0
-          ? `/internal/accounting-command-centre/batches/${batchId}?error=${encodeURIComponent(`${summary} ${aftercare.errors.join(" | ")}`)}`
-          : `/internal/accounting-command-centre/batches/${batchId}?success=${encodeURIComponent(summary)}`;
+          ? `/internal/accounting-command-centre/batches/${batchId}?error=${encodeURIComponent(`${postSummary}${aftercareSummary} ${aftercare.errors.join(" | ")}`)}`
+          : `/internal/accounting-command-centre/batches/${batchId}?success=${encodeURIComponent(`${postSummary}${aftercareSummary}`)}`;
       } catch (error) {
         const message = error instanceof Error ? error.message : "Supplier credit note aftercare failed.";
         redirectTo = `/internal/accounting-command-centre/batches/${batchId}?error=${encodeURIComponent(`Supplier credit note posted, but post-success aftercare failed: ${message}`)}`;
