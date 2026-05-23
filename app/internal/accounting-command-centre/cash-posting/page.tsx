@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 import SelectionControls from "../SelectionControls";
+import { freezeSelectedCustomerReceiptCashRowsAction } from "./actions";
 
 type Row = Record<string, unknown>;
 type SearchParamsValue = Record<string, string | string[] | undefined>;
@@ -74,9 +75,9 @@ function toneClass(tone: Tone) {
 
 function statusTone(status: unknown): Tone {
   const raw = text(status).toLowerCase();
-  if (raw === "ready_to_freeze" || raw === "ready") return "complete";
-  if (raw.includes("endpoint_prove") || raw.includes("requires_decision")) return "review";
-  if (raw.startsWith("blocked")) return "blocked";
+  if (["ready_to_freeze", "ready", "frozen_validated", "posted"].includes(raw)) return "complete";
+  if (raw.includes("endpoint_prove") || raw.includes("requires_decision") || raw === "frozen") return "review";
+  if (raw.startsWith("blocked") || raw.includes("failed")) return "blocked";
   return "muted";
 }
 
@@ -135,7 +136,7 @@ function DetailTrace({ row }: { row: Row }) {
           <p className="font-extrabold uppercase tracking-wide text-slate-500">Sage target</p>
           <p>Contact: {short(row.sage_contact_name || row.sage_contact_id, 34)}</p>
           <p>Bank: {short(row.sage_bank_account_id, 34)}</p>
-          <p>Object: {short(row.target_sage_object_id, 34)}</p>
+          <p>Object: {short(row.target_sage_object_id || row.snapshot_id, 34)}</p>
         </div>
       </div>
       <pre className="mt-2 max-h-48 overflow-auto rounded-lg bg-white p-2 text-[10px] text-slate-600">{JSON.stringify(detail, null, 2)}</pre>
@@ -145,7 +146,11 @@ function DetailTrace({ row }: { row: Row }) {
 
 function CashRowCheckbox({ row }: { row: Row }) {
   const id = text(row.source_id);
-  if (!bool(row.selectable) || !id) return <span className="text-xs text-slate-400">—</span>;
+  const category = text(row.category);
+  const status = text(row.posting_status);
+  if (!bool(row.selectable) || !id || category !== "customer_receipt_on_account" || status !== "ready_to_freeze") {
+    return <span className="text-xs text-slate-400">—</span>;
+  }
   return (
     <input
       type="checkbox"
@@ -154,7 +159,7 @@ function CashRowCheckbox({ row }: { row: Row }) {
       defaultChecked
       data-accounting-row-select="true"
       className="h-4 w-4 rounded border-slate-300"
-      aria-label={`Select cash row ${id}`}
+      aria-label={`Select customer cash row ${id}`}
     />
   );
 }
@@ -169,6 +174,8 @@ export default async function CashPostingWorkbenchPage({
   const category = firstParam(qp.category) || "all";
   const status = firstParam(qp.status) || "all";
   const search = firstParam(qp.q);
+  const success = firstParam(qp.success);
+  const pageError = firstParam(qp.error);
   const pageSize = Math.min(Math.max(Number(firstParam(qp.page_size) || 100), 25), 300);
   const page = Math.max(Number(firstParam(qp.page) || 1), 1);
   const offset = (page - 1) * pageSize;
@@ -211,9 +218,39 @@ export default async function CashPostingWorkbenchPage({
     p_offset: offset,
   });
 
-  const rows = ((data ?? []) as Row[]);
+  const baseRows = ((data ?? []) as Row[]);
+  const sourceIds = Array.from(new Set(baseRows.map((row) => text(row.source_id)).filter(Boolean)));
+  const { data: snapshotData } = sourceIds.length > 0
+    ? await (supabase as any).rpc("internal_cash_posting_snapshot_status_by_source_v1", { p_source_ids: sourceIds })
+    : { data: [] };
+
+  const snapshotBySource = new Map<string, Row>();
+  ((snapshotData ?? []) as Row[]).forEach((row) => snapshotBySource.set(text(row.source_id), row));
+
+  const rows = baseRows.map((row) => {
+    const snapshot = snapshotBySource.get(text(row.source_id));
+    if (!snapshot) return row;
+    return {
+      ...row,
+      snapshot_id: snapshot.snapshot_id,
+      posting_status: snapshot.workbench_status || row.posting_status,
+      blocker: snapshot.blocker || row.blocker,
+      selectable: snapshot.selectable,
+      detail_json: {
+        ...asObject(row.detail_json),
+        frozen_snapshot: {
+          snapshot_id: snapshot.snapshot_id,
+          validation_status: snapshot.validation_status,
+          sage_posting_status: snapshot.sage_posting_status,
+          short_reference: snapshot.short_reference,
+        },
+      },
+    };
+  });
+
   const totalCount = rows.length > 0 ? Number(rows[0].total_count ?? 0) : 0;
-  const readyRows = rows.filter((row) => text(row.posting_status) === "ready_to_freeze");
+  const readyRows = rows.filter((row) => text(row.posting_status) === "ready_to_freeze" && text(row.category) === "customer_receipt_on_account");
+  const frozenRows = rows.filter((row) => text(row.posting_status) === "frozen_validated");
   const blockedRows = rows.filter((row) => text(row.posting_status).startsWith("blocked"));
   const selectedValue = readyRows.reduce((sum, row) => sum + num(row.amount_gbp), 0);
   const hasPrev = page > 1;
@@ -237,7 +274,7 @@ export default async function CashPostingWorkbenchPage({
             <div>
               <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">Cash Posting Workbench</h1>
               <p className="mt-2 max-w-5xl text-sm leading-6 text-slate-600">
-                Read-only cash posting control for DVA/card/bank IN and OUT movements. The row follows the upstream match: statement line → confirmed reconciliation/allocation → matched platform target → Sage target. This page does not infer the retailer, shipper, customer or order from raw statement text.
+                Controlled cash posting for DVA/card/bank IN and OUT movements. Freeze is now enabled only for customer/importer IN receipts; it creates a frozen validated payload and makes no Sage API call.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700">
@@ -246,10 +283,12 @@ export default async function CashPostingWorkbenchPage({
             </div>
           </div>
           <div className="mt-4 flex flex-wrap gap-2 text-xs font-semibold">
-            <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-emerald-900">Read model wired</span>
-            <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-slate-700">Bulk posting buttons intentionally not live yet</span>
-            <span className="rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-violet-900">References: order ref · auth/ref · target invoice/CN · statement line</span>
+            <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-emerald-900">Customer IN freeze/validation wired</span>
+            <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-slate-700">No Sage cash call yet</span>
+            <span className="rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-violet-900">References: order ref · auth/ref · statement line · frozen payload</span>
           </div>
+          {success ? <p className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-900">{success}</p> : null}
+          {pageError ? <p className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900">{pageError}</p> : null}
           {error ? <p className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">Cash RPC unavailable: {error.message}. Run the latest Supabase migration before testing this page.</p> : null}
         </section>
 
@@ -265,9 +304,9 @@ export default async function CashPostingWorkbenchPage({
 
         <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <SummaryCard label="Visible rows" value={String(rows.length)} detail={`${totalCount} matching row(s)`} tone="review" />
-          <SummaryCard label="Ready visible" value={String(readyRows.length)} detail={gbp(selectedValue)} tone={readyRows.length > 0 ? "complete" : "muted"} />
+          <SummaryCard label="Ready customer IN" value={String(readyRows.length)} detail={gbp(selectedValue)} tone={readyRows.length > 0 ? "complete" : "muted"} />
+          <SummaryCard label="Frozen validated" value={String(frozenRows.length)} detail="Ready for later Sage post phase" tone={frozenRows.length > 0 ? "complete" : "muted"} />
           <SummaryCard label="Blocked visible" value={String(blockedRows.length)} detail="Mapping, Sage target or endpoint proof" tone={blockedRows.length > 0 ? "blocked" : "complete"} />
-          <SummaryCard label="Next live lane" value="Customer IN" detail="Freeze/validate/post after read model is proven" tone="action" />
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -322,17 +361,21 @@ export default async function CashPostingWorkbenchPage({
           </form>
         </section>
 
-        <form className="rounded-3xl border border-slate-200 bg-white shadow-sm">
+        <form action={freezeSelectedCustomerReceiptCashRowsAction} className="rounded-3xl border border-slate-200 bg-white shadow-sm">
+          <input type="hidden" name="cash_direction" value={direction} />
+          <input type="hidden" name="cash_category" value={category} />
+          <input type="hidden" name="cash_status" value={status} />
+          <input type="hidden" name="cash_q" value={search} />
+          <input type="hidden" name="cash_page_size" value={String(pageSize)} />
           <div className="border-b border-slate-100 px-4 py-3">
             <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
               <div>
                 <h2 className="text-xl font-semibold">Cash posting rows</h2>
-                <p className="mt-1 text-sm text-slate-500">Showing simple rows only. Open Posting trace for the matched statement line, upstream reconciliation/allocation and Sage target.</p>
+                <p className="mt-1 text-sm text-slate-500">Freeze selected currently applies only to ready customer/importer IN rows. Supplier OUT, refunds and residuals remain read-only until their posting phases are added.</p>
               </div>
               <div className="flex flex-wrap gap-2">
-                <span className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-[11px] font-bold text-amber-900">Freeze/validate/post actions next phase</span>
-                <button disabled className="rounded-lg bg-slate-200 px-3 py-1.5 text-[11px] font-bold text-slate-500">Freeze selected</button>
-                <button disabled className="rounded-lg bg-slate-200 px-3 py-1.5 text-[11px] font-bold text-slate-500">Validate selected</button>
+                <span className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-[11px] font-bold text-amber-900">No Sage API call</span>
+                <button className="rounded-lg bg-slate-950 px-3 py-1.5 text-[11px] font-bold text-white disabled:bg-slate-200 disabled:text-slate-500">Freeze + validate selected customer IN</button>
                 <button disabled className="rounded-lg bg-slate-200 px-3 py-1.5 text-[11px] font-bold text-slate-500">Post selected</button>
               </div>
             </div>
@@ -395,7 +438,7 @@ export default async function CashPostingWorkbenchPage({
 
         <section className="rounded-3xl border border-violet-200 bg-violet-50 p-5 text-sm leading-6 text-violet-900">
           <h2 className="font-bold">Control position</h2>
-          <p className="mt-2">Supplier/retailer and customer rows are derived from confirmed upstream matches. Refund IN, FX/card residuals, bank fees and holds are visible but blocked until the exact Sage endpoint and mapping treatment are proven.</p>
+          <p className="mt-2">Customer IN can now be frozen and validated into an immutable payload. Supplier/retailer OUT is visible but its freeze/post actions come after the customer IN receipt path is proven. Refund IN, FX/card residuals, bank fees and holds remain blocked until the exact Sage endpoint and mapping treatment are proven.</p>
         </section>
       </div>
     </main>
