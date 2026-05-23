@@ -79,7 +79,10 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION public.internal_cash_posting_batch_detail_v1(p_batch_id uuid)
+-- Return type changes require dropping first because PostgreSQL cannot alter OUT parameters in-place.
+DROP FUNCTION IF EXISTS public.internal_cash_posting_batch_detail_v1(uuid);
+
+CREATE FUNCTION public.internal_cash_posting_batch_detail_v1(p_batch_id uuid)
 RETURNS TABLE (
   batch_id uuid,
   batch_ref text,
