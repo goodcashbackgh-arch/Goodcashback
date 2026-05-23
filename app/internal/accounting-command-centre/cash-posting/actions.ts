@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { headers } from "next/headers";
 import { createClient } from "@/utils/supabase/server";
-import { postCustomerReceiptCashBatchToSage } from "@/lib/sage/cashPosting";
+import { postCashBatchToSage } from "@/lib/sage/cashOutPosting";
 import { postCustomerReceiptAllocationsToSage } from "@/lib/sage/cashAllocation";
 
 type FreezeResult = {
@@ -169,19 +169,19 @@ export async function postCustomerReceiptCashBatchAction(formData: FormData) {
 
   const { staffId } = await requireAccountingAdminAccess();
   const origin = await originFromHeaders();
-  let result: Awaited<ReturnType<typeof postCustomerReceiptCashBatchToSage>>;
+  let result: Awaited<ReturnType<typeof postCashBatchToSage>>;
 
   try {
-    result = await postCustomerReceiptCashBatchToSage({ batchId, staffId, origin });
+    result = await postCashBatchToSage({ batchId, staffId, origin });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Customer receipt Sage posting failed.";
+    const message = error instanceof Error ? error.message : "Cash Sage posting failed.";
     revalidatePath(`/internal/accounting-command-centre/cash-posting/batches/${batchId}`);
     redirect(`/internal/accounting-command-centre/cash-posting/batches/${batchId}?error=${encodeURIComponent(message)}`);
   }
 
   revalidatePath("/internal/accounting-command-centre/cash-posting");
   revalidatePath(`/internal/accounting-command-centre/cash-posting/batches/${batchId}`);
-  redirect(`/internal/accounting-command-centre/cash-posting/batches/${batchId}?success=${encodeURIComponent(`Customer receipt Sage posting finished: ${result.posted} posted, ${result.failed} failed, ${result.needsReview} needs review, ${result.total} total. Endpoint ${result.endpoint}.`)}`);
+  redirect(`/internal/accounting-command-centre/cash-posting/batches/${batchId}?success=${encodeURIComponent(`Cash Sage posting finished: ${result.posted} posted, ${result.failed} failed, ${result.needsReview} needs review, ${result.total} total. Endpoint ${result.endpoint}.`)}`);
 }
 
 export async function postSelectedCashAllocationsAction(formData: FormData) {
