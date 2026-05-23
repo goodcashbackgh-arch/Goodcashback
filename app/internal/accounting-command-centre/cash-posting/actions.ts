@@ -8,14 +8,17 @@ import { postCustomerReceiptCashBatchToSage } from "@/lib/sage/cashPosting";
 import { postCustomerReceiptAllocationsToSage } from "@/lib/sage/cashAllocation";
 
 type FreezeResult = {
+  queue_row_id?: string | null;
   source_id?: string | null;
   snapshot_id?: string | null;
   freeze_status?: string | null;
   validation_status?: string | null;
   blocker?: string | null;
+  posting_category?: string | null;
 };
 
 type BatchResult = {
+  queue_row_id?: string | null;
   source_id?: string | null;
   snapshot_id?: string | null;
   batch_id?: string | null;
@@ -23,6 +26,7 @@ type BatchResult = {
   batch_status?: string | null;
   row_status?: string | null;
   blocker?: string | null;
+  posting_category?: string | null;
 };
 
 function formText(formData: FormData, key: string, fallback = "") {
@@ -88,18 +92,24 @@ async function requireAccountingAdminAccess() {
   return { supabase, staffId: String(staff.id) };
 }
 
+function selectedQueueRows(formData: FormData) {
+  const queueIds = asStringArray(formData.getAll("cash_queue_row_id"));
+  if (queueIds.length > 0) return queueIds;
+  return asStringArray(formData.getAll("cash_source_id")).map((id) => `cash:customer_receipt_on_account:${id}`);
+}
+
 export async function freezeSelectedCustomerReceiptCashRowsAction(formData: FormData) {
-  const selectedIds = asStringArray(formData.getAll("cash_source_id"));
+  const selectedIds = selectedQueueRows(formData);
 
   if (selectedIds.length === 0) {
-    redirect(cashReturnPath(formData, "error", "Select at least one ready customer/importer IN row to freeze"));
+    redirect(cashReturnPath(formData, "error", "Select at least one ready cash row to freeze"));
   }
 
   const { supabase } = await requireAccountingAdminAccess();
 
-  const { data, error } = await (supabase as any).rpc("internal_freeze_customer_receipt_cash_posting_v1", {
-    p_dva_reconciliation_ids: selectedIds,
-    p_notes: "Accounting Command Centre cash posting freeze selected customer/importer IN rows. No Sage API call.",
+  const { data, error } = await (supabase as any).rpc("internal_freeze_cash_posting_rows_v2", {
+    p_queue_row_ids: selectedIds,
+    p_notes: "Accounting Command Centre shared cash posting freeze. No Sage API call.",
   });
 
   if (error) redirect(cashReturnPath(formData, "error", error.message));
@@ -108,29 +118,30 @@ export async function freezeSelectedCustomerReceiptCashRowsAction(formData: Form
   const frozenCount = rows.filter((row) => row.freeze_status === "frozen" && row.snapshot_id).length;
   const alreadyFrozenCount = rows.filter((row) => row.freeze_status === "already_frozen").length;
   const blockedCount = rows.filter((row) => row.freeze_status !== "frozen" && row.freeze_status !== "already_frozen").length;
+  const categories = Array.from(new Set(rows.map((row) => row.posting_category).filter(Boolean)));
   const firstBlocker = rows.find((row) => row.blocker && row.freeze_status !== "already_frozen")?.blocker;
 
   revalidatePath("/internal/accounting-command-centre/cash-posting");
 
   const message = blockedCount > 0
-    ? `Customer IN cash freeze: frozen ${frozenCount}, already frozen ${alreadyFrozenCount}, blocked ${blockedCount}${firstBlocker ? ` — ${firstBlocker}` : ""}`
-    : `Customer IN cash freeze: frozen and validated ${frozenCount}; already frozen ${alreadyFrozenCount}. No Sage API call was made.`;
+    ? `Cash freeze: frozen ${frozenCount}, already frozen ${alreadyFrozenCount}, blocked ${blockedCount}${firstBlocker ? ` — ${firstBlocker}` : ""}`
+    : `Cash freeze: frozen and validated ${frozenCount}; already frozen ${alreadyFrozenCount}; categories ${categories.join(", ") || "cash"}. No Sage API call was made.`;
 
   redirect(cashReturnPath(formData, blockedCount > 0 ? "error" : "success", message));
 }
 
 export async function createCustomerReceiptCashBatchAction(formData: FormData) {
-  const selectedIds = asStringArray(formData.getAll("cash_source_id"));
+  const selectedIds = selectedQueueRows(formData);
 
   if (selectedIds.length === 0) {
-    redirect(cashReturnPath(formData, "error", "Select at least one frozen validated customer/importer IN row to batch"));
+    redirect(cashReturnPath(formData, "error", "Select at least one frozen validated cash row to batch"));
   }
 
   const { supabase } = await requireAccountingAdminAccess();
 
-  const { data, error } = await (supabase as any).rpc("internal_create_customer_receipt_cash_batch_v1", {
-    p_source_ids: selectedIds,
-    p_notes: "Accounting Command Centre customer/importer IN cash batch. No Sage API call.",
+  const { data, error } = await (supabase as any).rpc("internal_create_cash_batch_v2", {
+    p_queue_row_ids: selectedIds,
+    p_notes: "Accounting Command Centre shared cash batch. No Sage API call.",
   });
 
   if (error) redirect(cashReturnPath(formData, "error", error.message));
@@ -140,13 +151,14 @@ export async function createCustomerReceiptCashBatchAction(formData: FormData) {
   const alreadyBatchedCount = rows.filter((row) => row.row_status === "already_batched").length;
   const blockedCount = rows.filter((row) => row.row_status === "blocked" || row.row_status === "not_batched").length;
   const batchRefs = Array.from(new Set(rows.map((row) => row.batch_ref).filter(Boolean)));
+  const categories = Array.from(new Set(rows.map((row) => row.posting_category).filter(Boolean)));
   const firstBlocker = rows.find((row) => row.blocker)?.blocker;
 
   revalidatePath("/internal/accounting-command-centre/cash-posting");
 
   const message = blockedCount > 0
-    ? `Customer IN cash batch: batched ${batchedCount}, already batched ${alreadyBatchedCount}, blocked ${blockedCount}${firstBlocker ? ` — ${firstBlocker}` : ""}`
-    : `Customer IN cash batch created: ${batchRefs.join(", ") || "validated batch"}; rows ${batchedCount}; already batched ${alreadyBatchedCount}. No Sage API call was made.`;
+    ? `Cash batch: batched ${batchedCount}, already batched ${alreadyBatchedCount}, blocked ${blockedCount}${firstBlocker ? ` — ${firstBlocker}` : ""}`
+    : `Cash batch created: ${batchRefs.join(", ") || "validated batch"}; rows ${batchedCount}; already batched ${alreadyBatchedCount}; categories ${categories.join(", ") || "cash"}. No Sage API call was made.`;
 
   redirect(cashReturnPath(formData, blockedCount > 0 ? "error" : "success", message));
 }
