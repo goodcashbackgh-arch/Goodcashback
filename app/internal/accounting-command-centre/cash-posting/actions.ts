@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { headers } from "next/headers";
 import { createClient } from "@/utils/supabase/server";
 import { postCustomerReceiptCashBatchToSage } from "@/lib/sage/cashPosting";
+import { postCustomerReceiptAllocationsToSage } from "@/lib/sage/cashAllocation";
 
 type FreezeResult = {
   source_id?: string | null;
@@ -169,4 +170,26 @@ export async function postCustomerReceiptCashBatchAction(formData: FormData) {
   revalidatePath("/internal/accounting-command-centre/cash-posting");
   revalidatePath(`/internal/accounting-command-centre/cash-posting/batches/${batchId}`);
   redirect(`/internal/accounting-command-centre/cash-posting/batches/${batchId}?success=${encodeURIComponent(`Customer receipt Sage posting finished: ${result.posted} posted, ${result.failed} failed, ${result.needsReview} needs review, ${result.total} total. Endpoint ${result.endpoint}.`)}`);
+}
+
+export async function postSelectedCashAllocationsAction(formData: FormData) {
+  const selectedIds = asStringArray(formData.getAll("cash_allocation_row_id"));
+  if (selectedIds.length === 0) {
+    redirect(cashReturnPath(formData, "error", "Select at least one ready cash allocation row"));
+  }
+
+  const { staffId } = await requireAccountingAdminAccess();
+  const origin = await originFromHeaders();
+  let result: Awaited<ReturnType<typeof postCustomerReceiptAllocationsToSage>>;
+
+  try {
+    result = await postCustomerReceiptAllocationsToSage({ cashBatchRowIds: selectedIds, staffId, origin });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Cash allocation posting failed.";
+    revalidatePath("/internal/accounting-command-centre/cash-posting");
+    redirect(cashReturnPath(formData, "error", message));
+  }
+
+  revalidatePath("/internal/accounting-command-centre/cash-posting");
+  redirect(cashReturnPath(formData, "success", `Cash allocation posting finished: ${result.posted} allocated, ${result.failed} failed, ${result.total} total. Endpoint ${result.endpoint}.`));
 }
