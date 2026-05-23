@@ -150,21 +150,23 @@ function DetailTrace({ row }: { row: Row }) {
 
 function CashRowCheckbox({ row }: { row: Row }) {
   const id = text(row.source_id);
-  const category = text(row.category);
+  const queueRowId = text(row.queue_row_id) || `cash:${text(row.category)}:${id}`;
   const status = text(row.posting_status);
+  const category = text(row.category);
+  const enabledCategories = new Set(["customer_receipt_on_account", "supplier_invoice_payment", "shipper_invoice_payment"]);
   const selectableStatuses = new Set(["ready_to_freeze", "frozen_validated"]);
-  if (!bool(row.selectable) || !id || category !== "customer_receipt_on_account" || !selectableStatuses.has(status)) {
+  if (!bool(row.selectable) || !id || !enabledCategories.has(category) || !selectableStatuses.has(status)) {
     return <span className="text-xs text-slate-400">—</span>;
   }
   return (
     <input
       type="checkbox"
-      name="cash_source_id"
-      value={id}
+      name="cash_queue_row_id"
+      value={queueRowId}
       defaultChecked
       data-accounting-row-select="true"
       className="h-4 w-4 rounded border-slate-300"
-      aria-label={`Select customer cash row ${id}`}
+      aria-label={`Select cash row ${queueRowId}`}
     />
   );
 }
@@ -232,14 +234,15 @@ export default async function CashPostingWorkbenchPage({
     ? await (supabase as any).rpc("internal_cash_posting_batch_status_by_source_v1", { p_source_ids: sourceIds })
     : { data: [] };
 
-  const snapshotBySource = new Map<string, Row>();
-  ((snapshotData ?? []) as Row[]).forEach((row) => snapshotBySource.set(text(row.source_id), row));
-  const batchBySource = new Map<string, Row>();
-  ((batchData ?? []) as Row[]).forEach((row) => batchBySource.set(text(row.source_id), row));
+  const snapshotBySourceCategory = new Map<string, Row>();
+  ((snapshotData ?? []) as Row[]).forEach((row) => snapshotBySourceCategory.set(`${text(row.source_id)}:${text(row.posting_category)}`, row));
+  const batchBySourceCategory = new Map<string, Row>();
+  ((batchData ?? []) as Row[]).forEach((row) => batchBySourceCategory.set(`${text(row.source_id)}:${text(row.posting_category)}`, row));
 
   const rows = baseRows.map((row) => {
-    const snapshot = snapshotBySource.get(text(row.source_id));
-    const batch = batchBySource.get(text(row.source_id));
+    const lookupKey = `${text(row.source_id)}:${text(row.category)}`;
+    const snapshot = snapshotBySourceCategory.get(lookupKey);
+    const batch = batchBySourceCategory.get(lookupKey);
     const detail = asObject(row.detail_json);
     let merged: Row = row;
 
@@ -286,7 +289,8 @@ export default async function CashPostingWorkbenchPage({
   });
 
   const totalCount = rows.length > 0 ? Number(rows[0].total_count ?? 0) : 0;
-  const readyRows = rows.filter((row) => text(row.posting_status) === "ready_to_freeze" && text(row.category) === "customer_receipt_on_account");
+  const enabledCategories = new Set(["customer_receipt_on_account", "supplier_invoice_payment", "shipper_invoice_payment"]);
+  const readyRows = rows.filter((row) => text(row.posting_status) === "ready_to_freeze" && enabledCategories.has(text(row.category)));
   const frozenRows = rows.filter((row) => text(row.posting_status) === "frozen_validated");
   const batchedRows = rows.filter((row) => text(row.posting_status) === "batched_validated");
   const blockedRows = rows.filter((row) => text(row.posting_status).startsWith("blocked"));
@@ -313,7 +317,7 @@ export default async function CashPostingWorkbenchPage({
             <div>
               <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">Cash Posting Workbench</h1>
               <p className="mt-2 max-w-5xl text-sm leading-6 text-slate-600">
-                Controlled cash posting for DVA/card/bank IN and OUT movements. Customer/importer IN can now be frozen, validated and placed into a cash posting batch. No Sage API call is made in this phase.
+                One controlled cash workbench for DVA/card/bank IN and OUT movements. Customer IN and supplier/shipper OUT can use the same freeze, validate and batch flow. Posting remains controlled by category-specific Sage adapters.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700">
@@ -322,8 +326,8 @@ export default async function CashPostingWorkbenchPage({
             </div>
           </div>
           <div className="mt-4 flex flex-wrap gap-2 text-xs font-semibold">
-            <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-emerald-900">Customer IN freeze + batch wired</span>
-            <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-slate-700">No Sage cash call yet</span>
+            <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-emerald-900">Shared cash freeze + batch wired</span>
+            <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-slate-700">Customer IN · Supplier OUT · Shipper OUT</span>
             <span className="rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-violet-900">References: order ref · auth/ref · statement line · frozen payload · batch ref</span>
           </div>
           {success ? <p className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-900">{success}</p> : null}
@@ -335,7 +339,7 @@ export default async function CashPostingWorkbenchPage({
           <TabLink title="All" detail="All cash categories" href={pageHref({ ...baseParams, category: "all", page: 1 })} active={category === "all"} />
           <TabLink title="IN — customer" detail="Receipt/payment-on-account" href={pageHref({ ...baseParams, direction: "in", category: "customer_receipt_on_account", page: 1 })} active={category === "customer_receipt_on_account"} />
           <TabLink title="OUT — supplier" detail="Retailer AP payments" href={pageHref({ ...baseParams, direction: "out", category: "supplier_invoice_payment", page: 1 })} active={category === "supplier_invoice_payment"} />
-          <TabLink title="OUT — shipper" detail="Shipper AP payments later" href={pageHref({ ...baseParams, direction: "out", category: "shipper_invoice_payment", page: 1 })} active={category === "shipper_invoice_payment"} />
+          <TabLink title="OUT — shipper" detail="Shipper AP payments" href={pageHref({ ...baseParams, direction: "out", category: "shipper_invoice_payment", page: 1 })} active={category === "shipper_invoice_payment"} />
           <TabLink title="IN — refunds" detail="Endpoint prove required" href={pageHref({ ...baseParams, direction: "in", category: "retailer_refund_received", page: 1 })} active={category === "retailer_refund_received"} />
           <TabLink title="Residuals" detail="FX/card, bank fees, holds" href={pageHref({ ...baseParams, category: "fx_card_difference", page: 1 })} active={category === "fx_card_difference" || category === "bank_fee"} />
           <TabLink title="Blocked" detail="Missing mapping/target/proof" href={pageHref({ ...baseParams, status: "blocked", page: 1 })} active={status === "blocked"} />
@@ -343,9 +347,9 @@ export default async function CashPostingWorkbenchPage({
 
         <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
           <SummaryCard label="Visible rows" value={String(rows.length)} detail={`${totalCount} matching row(s)`} tone="review" />
-          <SummaryCard label="Ready customer IN" value={String(readyRows.length)} detail={gbp(selectedValue)} tone={readyRows.length > 0 ? "complete" : "muted"} />
+          <SummaryCard label="Ready enabled rows" value={String(readyRows.length)} detail={gbp(selectedValue)} tone={readyRows.length > 0 ? "complete" : "muted"} />
           <SummaryCard label="Frozen validated" value={String(frozenRows.length)} detail={`${gbp(frozenValue)} ready for batch`} tone={frozenRows.length > 0 ? "complete" : "muted"} />
-          <SummaryCard label="Batched" value={String(batchedRows.length)} detail="Ready for later Sage post phase" tone={batchedRows.length > 0 ? "complete" : "muted"} />
+          <SummaryCard label="Batched" value={String(batchedRows.length)} detail="Ready for Sage post phase" tone={batchedRows.length > 0 ? "complete" : "muted"} />
           <SummaryCard label="Blocked visible" value={String(blockedRows.length)} detail="Mapping, Sage target or endpoint proof" tone={blockedRows.length > 0 ? "blocked" : "complete"} />
         </section>
 
@@ -413,11 +417,11 @@ export default async function CashPostingWorkbenchPage({
             <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
               <div>
                 <h2 className="text-xl font-semibold">Cash posting rows</h2>
-                <p className="mt-1 text-sm text-slate-500">Freeze selected applies to ready customer/importer IN rows. Create batch applies to frozen validated customer/importer IN rows. Neither action calls Sage.</p>
+                <p className="mt-1 text-sm text-slate-500">Freeze selected applies to ready enabled cash rows. Create batch applies to frozen validated enabled rows. Neither action calls Sage.</p>
               </div>
               <div className="flex flex-wrap gap-2">
                 <span className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-[11px] font-bold text-amber-900">No Sage API call</span>
-                <button formAction={freezeSelectedCustomerReceiptCashRowsAction} className="rounded-lg bg-slate-950 px-3 py-1.5 text-[11px] font-bold text-white disabled:bg-slate-200 disabled:text-slate-500">Freeze + validate selected customer IN</button>
+                <button formAction={freezeSelectedCustomerReceiptCashRowsAction} className="rounded-lg bg-slate-950 px-3 py-1.5 text-[11px] font-bold text-white disabled:bg-slate-200 disabled:text-slate-500">Freeze + validate selected</button>
                 <button formAction={createCustomerReceiptCashBatchAction} className="rounded-lg bg-emerald-700 px-3 py-1.5 text-[11px] font-bold text-white disabled:bg-slate-200 disabled:text-slate-500">Create validated cash batch</button>
                 <button disabled className="rounded-lg bg-slate-200 px-3 py-1.5 text-[11px] font-bold text-slate-500">Post selected</button>
               </div>
@@ -481,7 +485,7 @@ export default async function CashPostingWorkbenchPage({
 
         <section className="rounded-3xl border border-violet-200 bg-violet-50 p-5 text-sm leading-6 text-violet-900">
           <h2 className="font-bold">Control position</h2>
-          <p className="mt-2">Customer IN can now be frozen, validated and batched into an immutable cash posting batch. The next build is the guarded Sage customer receipt post for batched customer IN rows. Supplier/retailer OUT remains visible but its freeze/post actions come after the customer IN receipt path is proven.</p>
+          <p className="mt-2">This is one cash bench, not separate category screens. Supplier/shipper OUT now follows the same freeze and batch path as customer IN. Live Sage OUT payment posting is the next adapter after these rows are frozen and batched.</p>
         </section>
       </div>
     </main>
