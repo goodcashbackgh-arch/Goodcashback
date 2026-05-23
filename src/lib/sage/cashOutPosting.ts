@@ -162,10 +162,9 @@ function extractPurchasePaymentPayload(row: CashRow) {
     allocationRequestBodyFor(paymentId: string) {
       return {
         allocation: {
-          purchase_payment_id: paymentId,
+          payment_id: paymentId,
           purchase_invoice_id: targetSageObjectId,
           amount: totalAmount,
-          reference,
         },
       };
     },
