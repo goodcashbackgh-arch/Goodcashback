@@ -2,7 +2,10 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 import SelectionControls from "../SelectionControls";
-import { freezeSelectedCustomerReceiptCashRowsAction } from "./actions";
+import {
+  createCustomerReceiptCashBatchAction,
+  freezeSelectedCustomerReceiptCashRowsAction,
+} from "./actions";
 
 type Row = Record<string, unknown>;
 type SearchParamsValue = Record<string, string | string[] | undefined>;
@@ -75,7 +78,7 @@ function toneClass(tone: Tone) {
 
 function statusTone(status: unknown): Tone {
   const raw = text(status).toLowerCase();
-  if (["ready_to_freeze", "ready", "frozen_validated", "posted"].includes(raw)) return "complete";
+  if (["ready_to_freeze", "ready", "frozen_validated", "batched_validated", "posted"].includes(raw)) return "complete";
   if (raw.includes("endpoint_prove") || raw.includes("requires_decision") || raw === "frozen") return "review";
   if (raw.startsWith("blocked") || raw.includes("failed")) return "blocked";
   return "muted";
@@ -136,7 +139,7 @@ function DetailTrace({ row }: { row: Row }) {
           <p className="font-extrabold uppercase tracking-wide text-slate-500">Sage target</p>
           <p>Contact: {short(row.sage_contact_name || row.sage_contact_id, 34)}</p>
           <p>Bank: {short(row.sage_bank_account_id, 34)}</p>
-          <p>Object: {short(row.target_sage_object_id || row.snapshot_id, 34)}</p>
+          <p>Batch/object: {short(row.batch_ref || row.target_sage_object_id || row.snapshot_id, 34)}</p>
         </div>
       </div>
       <pre className="mt-2 max-h-48 overflow-auto rounded-lg bg-white p-2 text-[10px] text-slate-600">{JSON.stringify(detail, null, 2)}</pre>
@@ -148,7 +151,8 @@ function CashRowCheckbox({ row }: { row: Row }) {
   const id = text(row.source_id);
   const category = text(row.category);
   const status = text(row.posting_status);
-  if (!bool(row.selectable) || !id || category !== "customer_receipt_on_account" || status !== "ready_to_freeze") {
+  const selectableStatuses = new Set(["ready_to_freeze", "frozen_validated"]);
+  if (!bool(row.selectable) || !id || category !== "customer_receipt_on_account" || !selectableStatuses.has(status)) {
     return <span className="text-xs text-slate-400">—</span>;
   }
   return (
@@ -223,36 +227,70 @@ export default async function CashPostingWorkbenchPage({
   const { data: snapshotData } = sourceIds.length > 0
     ? await (supabase as any).rpc("internal_cash_posting_snapshot_status_by_source_v1", { p_source_ids: sourceIds })
     : { data: [] };
+  const { data: batchData } = sourceIds.length > 0
+    ? await (supabase as any).rpc("internal_cash_posting_batch_status_by_source_v1", { p_source_ids: sourceIds })
+    : { data: [] };
 
   const snapshotBySource = new Map<string, Row>();
   ((snapshotData ?? []) as Row[]).forEach((row) => snapshotBySource.set(text(row.source_id), row));
+  const batchBySource = new Map<string, Row>();
+  ((batchData ?? []) as Row[]).forEach((row) => batchBySource.set(text(row.source_id), row));
 
   const rows = baseRows.map((row) => {
     const snapshot = snapshotBySource.get(text(row.source_id));
-    if (!snapshot) return row;
-    return {
-      ...row,
-      snapshot_id: snapshot.snapshot_id,
-      posting_status: snapshot.workbench_status || row.posting_status,
-      blocker: snapshot.blocker || row.blocker,
-      selectable: snapshot.selectable,
-      detail_json: {
-        ...asObject(row.detail_json),
-        frozen_snapshot: {
-          snapshot_id: snapshot.snapshot_id,
-          validation_status: snapshot.validation_status,
-          sage_posting_status: snapshot.sage_posting_status,
-          short_reference: snapshot.short_reference,
+    const batch = batchBySource.get(text(row.source_id));
+    const detail = asObject(row.detail_json);
+    let merged: Row = row;
+
+    if (snapshot) {
+      merged = {
+        ...merged,
+        snapshot_id: snapshot.snapshot_id,
+        posting_status: snapshot.workbench_status || merged.posting_status,
+        blocker: snapshot.blocker || merged.blocker,
+        selectable: snapshot.workbench_status === "frozen_validated" || snapshot.workbench_status === "ready_to_freeze" ? true : snapshot.selectable,
+        detail_json: {
+          ...detail,
+          frozen_snapshot: {
+            snapshot_id: snapshot.snapshot_id,
+            validation_status: snapshot.validation_status,
+            sage_posting_status: snapshot.sage_posting_status,
+            short_reference: snapshot.short_reference,
+          },
         },
-      },
-    };
+      };
+    }
+
+    if (batch) {
+      merged = {
+        ...merged,
+        batch_id: batch.batch_id,
+        batch_ref: batch.batch_ref,
+        posting_status: batch.batch_status === "posted" ? "posted" : "batched_validated",
+        blocker: `batch ${text(batch.batch_ref)} created; Sage post is next phase`,
+        selectable: false,
+        detail_json: {
+          ...asObject(merged.detail_json),
+          cash_batch: {
+            batch_id: batch.batch_id,
+            batch_ref: batch.batch_ref,
+            batch_status: batch.batch_status,
+            batch_row_status: batch.batch_row_status,
+          },
+        },
+      };
+    }
+
+    return merged;
   });
 
   const totalCount = rows.length > 0 ? Number(rows[0].total_count ?? 0) : 0;
   const readyRows = rows.filter((row) => text(row.posting_status) === "ready_to_freeze" && text(row.category) === "customer_receipt_on_account");
   const frozenRows = rows.filter((row) => text(row.posting_status) === "frozen_validated");
+  const batchedRows = rows.filter((row) => text(row.posting_status) === "batched_validated");
   const blockedRows = rows.filter((row) => text(row.posting_status).startsWith("blocked"));
   const selectedValue = readyRows.reduce((sum, row) => sum + num(row.amount_gbp), 0);
+  const frozenValue = frozenRows.reduce((sum, row) => sum + num(row.amount_gbp), 0);
   const hasPrev = page > 1;
   const hasNext = offset + rows.length < totalCount;
 
@@ -274,7 +312,7 @@ export default async function CashPostingWorkbenchPage({
             <div>
               <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">Cash Posting Workbench</h1>
               <p className="mt-2 max-w-5xl text-sm leading-6 text-slate-600">
-                Controlled cash posting for DVA/card/bank IN and OUT movements. Freeze is now enabled only for customer/importer IN receipts; it creates a frozen validated payload and makes no Sage API call.
+                Controlled cash posting for DVA/card/bank IN and OUT movements. Customer/importer IN can now be frozen, validated and placed into a cash posting batch. No Sage API call is made in this phase.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700">
@@ -283,9 +321,9 @@ export default async function CashPostingWorkbenchPage({
             </div>
           </div>
           <div className="mt-4 flex flex-wrap gap-2 text-xs font-semibold">
-            <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-emerald-900">Customer IN freeze/validation wired</span>
+            <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-emerald-900">Customer IN freeze + batch wired</span>
             <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-slate-700">No Sage cash call yet</span>
-            <span className="rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-violet-900">References: order ref · auth/ref · statement line · frozen payload</span>
+            <span className="rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-violet-900">References: order ref · auth/ref · statement line · frozen payload · batch ref</span>
           </div>
           {success ? <p className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-900">{success}</p> : null}
           {pageError ? <p className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900">{pageError}</p> : null}
@@ -302,10 +340,11 @@ export default async function CashPostingWorkbenchPage({
           <TabLink title="Blocked" detail="Missing mapping/target/proof" href={pageHref({ ...baseParams, status: "blocked", page: 1 })} active={status === "blocked"} />
         </section>
 
-        <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
           <SummaryCard label="Visible rows" value={String(rows.length)} detail={`${totalCount} matching row(s)`} tone="review" />
           <SummaryCard label="Ready customer IN" value={String(readyRows.length)} detail={gbp(selectedValue)} tone={readyRows.length > 0 ? "complete" : "muted"} />
-          <SummaryCard label="Frozen validated" value={String(frozenRows.length)} detail="Ready for later Sage post phase" tone={frozenRows.length > 0 ? "complete" : "muted"} />
+          <SummaryCard label="Frozen validated" value={String(frozenRows.length)} detail={`${gbp(frozenValue)} ready for batch`} tone={frozenRows.length > 0 ? "complete" : "muted"} />
+          <SummaryCard label="Batched" value={String(batchedRows.length)} detail="Ready for later Sage post phase" tone={batchedRows.length > 0 ? "complete" : "muted"} />
           <SummaryCard label="Blocked visible" value={String(blockedRows.length)} detail="Mapping, Sage target or endpoint proof" tone={blockedRows.length > 0 ? "blocked" : "complete"} />
         </section>
 
@@ -361,7 +400,7 @@ export default async function CashPostingWorkbenchPage({
           </form>
         </section>
 
-        <form action={freezeSelectedCustomerReceiptCashRowsAction} className="rounded-3xl border border-slate-200 bg-white shadow-sm">
+        <form className="rounded-3xl border border-slate-200 bg-white shadow-sm">
           <input type="hidden" name="cash_direction" value={direction} />
           <input type="hidden" name="cash_category" value={category} />
           <input type="hidden" name="cash_status" value={status} />
@@ -371,11 +410,12 @@ export default async function CashPostingWorkbenchPage({
             <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
               <div>
                 <h2 className="text-xl font-semibold">Cash posting rows</h2>
-                <p className="mt-1 text-sm text-slate-500">Freeze selected currently applies only to ready customer/importer IN rows. Supplier OUT, refunds and residuals remain read-only until their posting phases are added.</p>
+                <p className="mt-1 text-sm text-slate-500">Freeze selected applies to ready customer/importer IN rows. Create batch applies to frozen validated customer/importer IN rows. Neither action calls Sage.</p>
               </div>
               <div className="flex flex-wrap gap-2">
                 <span className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-[11px] font-bold text-amber-900">No Sage API call</span>
-                <button className="rounded-lg bg-slate-950 px-3 py-1.5 text-[11px] font-bold text-white disabled:bg-slate-200 disabled:text-slate-500">Freeze + validate selected customer IN</button>
+                <button formAction={freezeSelectedCustomerReceiptCashRowsAction} className="rounded-lg bg-slate-950 px-3 py-1.5 text-[11px] font-bold text-white disabled:bg-slate-200 disabled:text-slate-500">Freeze + validate selected customer IN</button>
+                <button formAction={createCustomerReceiptCashBatchAction} className="rounded-lg bg-emerald-700 px-3 py-1.5 text-[11px] font-bold text-white disabled:bg-slate-200 disabled:text-slate-500">Create validated cash batch</button>
                 <button disabled className="rounded-lg bg-slate-200 px-3 py-1.5 text-[11px] font-bold text-slate-500">Post selected</button>
               </div>
             </div>
@@ -438,7 +478,7 @@ export default async function CashPostingWorkbenchPage({
 
         <section className="rounded-3xl border border-violet-200 bg-violet-50 p-5 text-sm leading-6 text-violet-900">
           <h2 className="font-bold">Control position</h2>
-          <p className="mt-2">Customer IN can now be frozen and validated into an immutable payload. Supplier/retailer OUT is visible but its freeze/post actions come after the customer IN receipt path is proven. Refund IN, FX/card residuals, bank fees and holds remain blocked until the exact Sage endpoint and mapping treatment are proven.</p>
+          <p className="mt-2">Customer IN can now be frozen, validated and batched into an immutable cash posting batch. The next build is the guarded Sage customer receipt post for batched customer IN rows. Supplier/retailer OUT remains visible but its freeze/post actions come after the customer IN receipt path is proven.</p>
         </section>
       </div>
     </main>
