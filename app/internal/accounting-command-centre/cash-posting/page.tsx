@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 import SelectionControls from "../SelectionControls";
+import CashPostingBatchHistoryPanel from "./CashPostingBatchHistoryPanel";
 import {
   createCustomerReceiptCashBatchAction,
   freezeSelectedCustomerReceiptCashRowsAction,
@@ -347,6 +348,8 @@ export default async function CashPostingWorkbenchPage({
           <SummaryCard label="Batched" value={String(batchedRows.length)} detail="Ready for later Sage post phase" tone={batchedRows.length > 0 ? "complete" : "muted"} />
           <SummaryCard label="Blocked visible" value={String(blockedRows.length)} detail="Mapping, Sage target or endpoint proof" tone={blockedRows.length > 0 ? "blocked" : "complete"} />
         </section>
+
+        <CashPostingBatchHistoryPanel />
 
         <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
           <form action="/internal/accounting-command-centre/cash-posting" className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(220px,1fr)_150px_230px_150px_120px_auto] xl:items-end">
