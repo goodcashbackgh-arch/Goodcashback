@@ -156,15 +156,17 @@ export async function postCustomerReceiptCashBatchAction(formData: FormData) {
 
   const { staffId } = await requireAccountingAdminAccess();
   const origin = await originFromHeaders();
+  let result: Awaited<ReturnType<typeof postCustomerReceiptCashBatchToSage>>;
 
   try {
-    const result = await postCustomerReceiptCashBatchToSage({ batchId, staffId, origin });
-    revalidatePath("/internal/accounting-command-centre/cash-posting");
-    revalidatePath(`/internal/accounting-command-centre/cash-posting/batches/${batchId}`);
-    redirect(`/internal/accounting-command-centre/cash-posting/batches/${batchId}?success=${encodeURIComponent(`Customer receipt Sage posting finished: ${result.posted} posted, ${result.failed} failed, ${result.needsReview} needs review, ${result.total} total. Endpoint ${result.endpoint}.`)}`);
+    result = await postCustomerReceiptCashBatchToSage({ batchId, staffId, origin });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Customer receipt Sage posting failed.";
     revalidatePath(`/internal/accounting-command-centre/cash-posting/batches/${batchId}`);
     redirect(`/internal/accounting-command-centre/cash-posting/batches/${batchId}?error=${encodeURIComponent(message)}`);
   }
+
+  revalidatePath("/internal/accounting-command-centre/cash-posting");
+  revalidatePath(`/internal/accounting-command-centre/cash-posting/batches/${batchId}`);
+  redirect(`/internal/accounting-command-centre/cash-posting/batches/${batchId}?success=${encodeURIComponent(`Customer receipt Sage posting finished: ${result.posted} posted, ${result.failed} failed, ${result.needsReview} needs review, ${result.total} total. Endpoint ${result.endpoint}.`)}`);
 }
