@@ -9,6 +9,7 @@ type Params = { batch_id: string } | Promise<{ batch_id: string }>;
 type SearchParams = Record<string, string | string[] | undefined> | Promise<Record<string, string | string[] | undefined>>;
 
 const money = new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" });
+const outBatchCategories = ["supplier_invoice_payment", "shipper_invoice_payment", "out_purchase_payment"];
 
 function text(value: unknown) {
   if (Array.isArray(value)) return text(value[0]);
@@ -98,9 +99,16 @@ export default async function CashPostingBatchDetailPage({ params, searchParams 
   const { data, error } = await (supabase as any).rpc("internal_cash_posting_batch_detail_v1", { p_batch_id: batchId });
   const rows = (data ?? []) as Row[];
   const first = rows[0] ?? {};
-  const livePostingEnabled = process.env.SAGE_LIVE_CASH_POSTING_ENABLED === "true";
+  const batchCategory = text(first.batch_posting_category) || text(first.posting_category);
+  const isOutBatch = outBatchCategories.includes(batchCategory);
+  const livePostingEnabled = isOutBatch ? process.env.SAGE_LIVE_CASH_OUT_POSTING_ENABLED === "true" : process.env.SAGE_LIVE_CASH_POSTING_ENABLED === "true";
   const postableRows = rows.filter(isPostable);
   const canPost = livePostingEnabled && postableRows.length > 0 && ["validated", "failed", "partially_posted"].includes(text(first.batch_status));
+  const batchIntro = isOutBatch
+    ? "Posts supplier/shipper OUT payments to Sage, then allocates each payment to the matched posted purchase invoice."
+    : "Posts customer/importer IN receipts to Sage as customer receipts on account. Allocation to sales invoices is handled after the receipt exists.";
+  const endpointText = isOutBatch ? "POST /purchase_payments, then POST /allocations" : "POST /contact_payments";
+  const flagName = isOutBatch ? "SAGE_LIVE_CASH_OUT_POSTING_ENABLED" : "SAGE_LIVE_CASH_POSTING_ENABLED";
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-5 text-slate-950 sm:px-6 lg:px-8">
@@ -109,7 +117,11 @@ export default async function CashPostingBatchDetailPage({ params, searchParams 
           <Link href="/internal/accounting-command-centre/cash-posting" className="text-sm font-semibold text-sky-700">← Cash Posting Workbench</Link>
           <p className="mt-5 text-sm font-medium uppercase tracking-[0.2em] text-violet-500">Cash batch detail</p>
           <h1 className="mt-2 text-3xl font-semibold tracking-tight">{text(first.batch_ref) || "Cash batch"}</h1>
-          <p className="mt-2 text-sm leading-6 text-slate-600">Guarded customer receipt cash posting. The batch must already be frozen, validated and batched before any Sage call is allowed.</p>
+          <p className="mt-2 text-sm leading-6 text-slate-600">{batchIntro}</p>
+          <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-bold">
+            <span className="rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-violet-900">Category: {pretty(batchCategory)}</span>
+            <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-slate-700">Endpoint: {endpointText}</span>
+          </div>
           {success ? <p className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-900">{success}</p> : null}
           {pageError ? <p className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900">{pageError}</p> : null}
           {error ? <p className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">Batch detail unavailable: {error.message}. Run the latest cash batch detail migration.</p> : null}
@@ -132,7 +144,7 @@ export default async function CashPostingBatchDetailPage({ params, searchParams 
             <section className="rounded-3xl border border-slate-200 bg-white shadow-sm">
               <div className="border-b border-slate-100 px-4 py-3">
                 <h2 className="text-xl font-semibold">Batch rows</h2>
-                <p className="mt-1 text-sm text-slate-500">Posts customer/importer IN receipts to Sage via <span className="font-mono">POST /contact_payments</span> as CUSTOMER_RECEIPT. It does not allocate to a sales invoice in this phase.</p>
+                <p className="mt-1 text-sm text-slate-500">{batchIntro}</p>
                 <form action={postCustomerReceiptCashBatchAction} className="mt-3 flex flex-wrap items-center gap-2">
                   <input type="hidden" name="batch_id" value={batchId} />
                   <button
@@ -140,13 +152,13 @@ export default async function CashPostingBatchDetailPage({ params, searchParams 
                     disabled={!canPost}
                     className="rounded-lg bg-emerald-700 px-3 py-1.5 text-[11px] font-bold text-white disabled:bg-slate-200 disabled:text-slate-500"
                   >
-                    Post customer receipt batch to Sage
+                    {isOutBatch ? "Post supplier/shipper OUT batch to Sage" : "Post customer receipt batch to Sage"}
                   </button>
                   <span className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-[11px] font-bold text-slate-600">
                     {livePostingEnabled ? "Live Sage cash flag enabled" : "Live Sage cash flag disabled"}
                   </span>
                 </form>
-                {!livePostingEnabled ? <p className="mt-2 text-xs font-semibold text-amber-700">Set SAGE_LIVE_CASH_POSTING_ENABLED=true before live customer receipt posting.</p> : null}
+                {!livePostingEnabled ? <p className="mt-2 text-xs font-semibold text-amber-700">Set {flagName}=true before live posting this cash batch category.</p> : null}
               </div>
               <div className="overflow-x-auto">
                 <table className="min-w-[1320px] divide-y divide-slate-200 text-xs">
@@ -156,6 +168,7 @@ export default async function CashPostingBatchDetailPage({ params, searchParams 
                   <tbody className="divide-y divide-slate-100 bg-white">
                     {rows.map((row) => {
                       const refs = asObject(row.internal_reference_json);
+                      const rowIsOut = outBatchCategories.includes(text(row.posting_category));
                       return (
                         <tr key={text(row.batch_row_id)} className="align-top">
                           <td className="px-3 py-3"><Pill value={row.row_posting_status} /><p className="mt-1 text-[11px] text-slate-500">{pretty(row.row_validation_status)}</p>{text(row.error_message) ? <p className="mt-1 text-[11px] font-semibold text-rose-700">{short(row.error_message, 70)}</p> : null}</td>
@@ -165,7 +178,7 @@ export default async function CashPostingBatchDetailPage({ params, searchParams 
                           <td className="px-3 py-3 text-right font-bold">{money.format(amount(row.amount_gbp))}</td>
                           <td className="px-3 py-3"><p className="font-mono text-[11px]">{short(row.sage_contact_id, 34)}</p><p className="text-[11px] text-slate-500">{short(row.sage_contact_name, 34)}</p></td>
                           <td className="px-3 py-3 font-mono text-[11px]">{short(row.sage_bank_account_id, 34)}</td>
-                          <td className="px-3 py-3"><p className="font-mono text-[11px]">{short(row.sage_object_id, 34)}</p><p className="text-[11px] text-slate-500">POA {short(row.sage_payment_on_account_id, 28)}</p><p className="text-[11px] text-slate-500">{short(row.sage_reference, 32)}</p></td>
+                          <td className="px-3 py-3"><p className="font-mono text-[11px]">{short(row.sage_object_id, 34)}</p>{rowIsOut ? <p className="text-[11px] text-slate-500">Allocation {pretty(row.sage_allocation_status)} · {short(row.sage_allocation_id, 28)}</p> : <p className="text-[11px] text-slate-500">POA {short(row.sage_payment_on_account_id, 28)}</p>}<p className="text-[11px] text-slate-500">{short(row.sage_reference, 32)}</p></td>
                           <td className="px-3 py-3"><p className="font-mono text-[11px]">{short(row.statement_line_id, 34)}</p><p className="text-[11px] text-slate-500">{short(refs.auth_ref || refs.reference_raw, 34)}</p></td>
                         </tr>
                       );
@@ -178,6 +191,8 @@ export default async function CashPostingBatchDetailPage({ params, searchParams 
             <section className="grid gap-3 lg:grid-cols-2">
               {rows.map((row) => <PayloadBlock key={`${text(row.batch_row_id)}-payload`} title={`Frozen Sage payload · ${text(row.short_reference)}`} value={row.request_payload} />)}
               {rows.map((row) => <PayloadBlock key={`${text(row.batch_row_id)}-response`} title={`Sage response · ${text(row.short_reference)}`} value={row.sage_response_payload} />)}
+              {rows.map((row) => outBatchCategories.includes(text(row.posting_category)) ? <PayloadBlock key={`${text(row.batch_row_id)}-alloc-request`} title={`Allocation request · ${text(row.short_reference)}`} value={row.sage_allocation_request_payload} /> : null)}
+              {rows.map((row) => outBatchCategories.includes(text(row.posting_category)) ? <PayloadBlock key={`${text(row.batch_row_id)}-alloc-response`} title={`Allocation response · ${text(row.short_reference)}`} value={row.sage_allocation_response_payload} /> : null)}
               {rows.map((row) => <PayloadBlock key={`${text(row.batch_row_id)}-refs`} title={`Internal reference trace · ${text(row.short_reference)}`} value={row.internal_reference_json} />)}
             </section>
           </>
