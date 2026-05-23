@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
-import { postCustomerReceiptCashBatchAction } from "../actions";
+import { postCustomerReceiptCashBatchAction } from "../../actions";
 
 type Row = Record<string, unknown>;
 
