@@ -1,9 +1,17 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
+import SelectionControls from "../SelectionControls";
 
 type Row = Record<string, unknown>;
+type SearchParamsValue = Record<string, string | string[] | undefined>;
 type Tone = "complete" | "action" | "blocked" | "review" | "muted";
+
+const gbpFormatter = new Intl.NumberFormat("en-GB", {
+  style: "currency",
+  currency: "GBP",
+  minimumFractionDigits: 2,
+});
 
 function text(value: unknown) {
   if (Array.isArray(value)) return text(value[0]);
@@ -11,6 +19,20 @@ function text(value: unknown) {
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
   if (typeof value === "boolean") return value ? "true" : "false";
   return "";
+}
+
+function firstParam(value: unknown) {
+  if (Array.isArray(value)) return text(value[0]);
+  return text(value);
+}
+
+function num(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
 }
 
 function bool(value: unknown) {
@@ -27,9 +49,19 @@ function accessFromPermissions(value: unknown) {
   return bool(permissions.accounting_admin_testing) || bool(permissions.admin_testing);
 }
 
+function gbp(value: unknown) {
+  return gbpFormatter.format(num(value));
+}
+
 function pretty(value: unknown) {
   const raw = text(value);
   return raw ? raw.replaceAll("_", " ") : "—";
+}
+
+function short(value: unknown, max = 46) {
+  const raw = text(value);
+  if (!raw) return "—";
+  return raw.length > max ? `${raw.slice(0, max - 1)}…` : raw;
 }
 
 function toneClass(tone: Tone) {
@@ -40,63 +72,107 @@ function toneClass(tone: Tone) {
   return "border-slate-200 bg-slate-50 text-slate-700";
 }
 
-function TabLink({ title, detail, tone = "muted" }: { title: string; detail: string; tone?: Tone }) {
+function statusTone(status: unknown): Tone {
+  const raw = text(status).toLowerCase();
+  if (raw === "ready_to_freeze" || raw === "ready") return "complete";
+  if (raw.includes("endpoint_prove") || raw.includes("requires_decision")) return "review";
+  if (raw.startsWith("blocked")) return "blocked";
+  return "muted";
+}
+
+function Pill({ value }: { value: unknown }) {
+  return <span className={`inline-flex max-w-[190px] truncate rounded-full border px-2 py-0.5 text-[10px] font-bold leading-4 ${toneClass(statusTone(value))}`}>{pretty(value)}</span>;
+}
+
+function TabLink({ title, detail, href, active = false }: { title: string; detail: string; href: string; active?: boolean }) {
   return (
-    <div className={`rounded-2xl border p-3 shadow-sm ${toneClass(tone)}`}>
+    <Link href={href} className={`rounded-2xl border p-3 shadow-sm transition hover:bg-white ${toneClass(active ? "action" : "muted")}`}>
       <p className="text-[11px] font-bold uppercase tracking-wide opacity-70">{title}</p>
       <p className="mt-1 text-xs leading-5 opacity-90">{detail}</p>
+    </Link>
+  );
+}
+
+function SummaryCard({ label, value, detail, tone }: { label: string; value: string; detail: string; tone: Tone }) {
+  return (
+    <div className={`rounded-2xl border p-3 shadow-sm ${toneClass(tone)}`}>
+      <p className="text-[11px] font-bold uppercase tracking-wide opacity-70">{label}</p>
+      <p className="mt-1 text-2xl font-extrabold">{value}</p>
+      <p className="mt-1 text-xs leading-4 opacity-90">{detail}</p>
     </div>
   );
 }
 
-function FilterBox({ label, placeholder }: { label: string; placeholder?: string }) {
+function pageHref(params: Record<string, string | number | undefined>) {
+  const qp = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === "") continue;
+    qp.set(key, String(value));
+  }
+  const query = qp.toString();
+  return query ? `/internal/accounting-command-centre/cash-posting?${query}` : "/internal/accounting-command-centre/cash-posting";
+}
+
+function DetailTrace({ row }: { row: Row }) {
+  const detail = asObject(row.detail_json);
   return (
-    <label className="grid gap-1 text-xs font-bold uppercase tracking-wide text-slate-500">
-      {label}
-      <input disabled placeholder={placeholder ?? label} className="rounded-xl border border-slate-300 bg-slate-100 px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-500" />
-    </label>
+    <details className="rounded-xl border border-slate-200 bg-slate-50 p-2 text-[11px] leading-5 text-slate-700">
+      <summary className="cursor-pointer font-bold text-slate-900">Posting trace</summary>
+      <div className="mt-2 grid gap-2 md:grid-cols-3">
+        <div>
+          <p className="font-extrabold uppercase tracking-wide text-slate-500">Statement</p>
+          <p>Line: {short(row.statement_line_id, 30)}</p>
+          <p>Auth/ref: {short(row.auth_ref || row.reference_raw, 34)}</p>
+          <p>Date: {short(row.statement_date_text, 20)}</p>
+        </div>
+        <div>
+          <p className="font-extrabold uppercase tracking-wide text-slate-500">Match</p>
+          <p>Source: {pretty(row.source_type)}</p>
+          <p>Target: {short(row.matched_target_ref, 34)}</p>
+          <p>Order: {short(row.order_ref, 28)}</p>
+        </div>
+        <div>
+          <p className="font-extrabold uppercase tracking-wide text-slate-500">Sage target</p>
+          <p>Contact: {short(row.sage_contact_name || row.sage_contact_id, 34)}</p>
+          <p>Bank: {short(row.sage_bank_account_id, 34)}</p>
+          <p>Object: {short(row.target_sage_object_id, 34)}</p>
+        </div>
+      </div>
+      <pre className="mt-2 max-h-48 overflow-auto rounded-lg bg-white p-2 text-[10px] text-slate-600">{JSON.stringify(detail, null, 2)}</pre>
+    </details>
   );
 }
 
-const postingCategories = [
-  {
-    title: "Customer/importer IN",
-    code: "customer_receipt_on_account",
-    route: "DVA IN → customer receipt/payment-on-account",
-    endpoint: "POST /contact_payments · CUSTOMER_RECEIPT",
-    status: "first live lane",
-  },
-  {
-    title: "Supplier/retailer OUT",
-    code: "supplier_invoice_payment",
-    route: "confirmed supplier invoice allocation → posted purchase invoice",
-    endpoint: "POST /purchase_payments → POST /allocations",
-    status: "after customer IN",
-  },
-  {
-    title: "Shipper OUT",
-    code: "shipper_invoice_payment",
-    route: "confirmed shipper AP match → posted shipper purchase invoice",
-    endpoint: "POST /purchase_payments → POST /allocations",
-    status: "after supplier OUT",
-  },
-  {
-    title: "Retailer refund IN",
-    code: "retailer_refund_received",
-    route: "confirmed retailer refund allocation → posted supplier credit note",
-    endpoint: "endpoint-prove-required before live bulk posting",
-    status: "blocked first",
-  },
-  {
-    title: "Residuals",
-    code: "fx_card_difference / bank_fee / unmatched_hold",
-    route: "coded residual allocation only",
-    endpoint: "blocked until GL/bank transaction endpoint is proven",
-    status: "read-only first",
-  },
-];
+function CashRowCheckbox({ row }: { row: Row }) {
+  const id = text(row.source_id);
+  if (!bool(row.selectable) || !id) return <span className="text-xs text-slate-400">—</span>;
+  return (
+    <input
+      type="checkbox"
+      name="cash_source_id"
+      value={id}
+      defaultChecked
+      data-accounting-row-select="true"
+      className="h-4 w-4 rounded border-slate-300"
+      aria-label={`Select cash row ${id}`}
+    />
+  );
+}
 
-export default async function CashPostingWorkbenchPage() {
+export default async function CashPostingWorkbenchPage({
+  searchParams,
+}: {
+  searchParams?: SearchParamsValue | Promise<SearchParamsValue>;
+}) {
+  const qp = searchParams ? await Promise.resolve(searchParams) : {};
+  const direction = firstParam(qp.direction) || "all";
+  const category = firstParam(qp.category) || "all";
+  const status = firstParam(qp.status) || "all";
+  const search = firstParam(qp.q);
+  const pageSize = Math.min(Math.max(Number(firstParam(qp.page_size) || 100), 25), 300);
+  const page = Math.max(Number(firstParam(qp.page) || 1), 1);
+  const offset = (page - 1) * pageSize;
+
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
@@ -121,14 +197,35 @@ export default async function CashPostingWorkbenchPage() {
             <h1 className="mt-5 text-3xl font-bold tracking-tight">Cash Posting Workbench</h1>
             <p className="mt-3 text-sm leading-6 text-slate-600">This page is admin-accounting controlled. Your current staff role is {pretty(staff.role_type)}.</p>
           </section>
-          <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-900">
-            <h2 className="font-bold">Access required</h2>
-            <p className="mt-2">For testing, keep the user as supervisor and grant the narrow <code>accounting_admin_testing</code> flag in <code>staff.permissions_json</code>.</p>
-          </section>
         </div>
       </main>
     );
   }
+
+  const { data, error } = await (supabase as any).rpc("internal_cash_posting_workbench_rows_v1", {
+    p_direction: direction,
+    p_category: category,
+    p_status: status,
+    p_search: search || null,
+    p_limit: pageSize,
+    p_offset: offset,
+  });
+
+  const rows = ((data ?? []) as Row[]);
+  const totalCount = rows.length > 0 ? Number(rows[0].total_count ?? 0) : 0;
+  const readyRows = rows.filter((row) => text(row.posting_status) === "ready_to_freeze");
+  const blockedRows = rows.filter((row) => text(row.posting_status).startsWith("blocked"));
+  const selectedValue = readyRows.reduce((sum, row) => sum + num(row.amount_gbp), 0);
+  const hasPrev = page > 1;
+  const hasNext = offset + rows.length < totalCount;
+
+  const baseParams = {
+    direction,
+    category,
+    status,
+    q: search || undefined,
+    page_size: pageSize,
+  };
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-5 text-slate-950 sm:px-6 lg:px-8">
@@ -140,7 +237,7 @@ export default async function CashPostingWorkbenchPage() {
             <div>
               <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">Cash Posting Workbench</h1>
               <p className="mt-2 max-w-5xl text-sm leading-6 text-slate-600">
-                Read-only scaffold for DVA/card/bank IN and OUT posting. Rows must come from confirmed upstream reconciliations/allocations; this page must not infer customer, retailer, shipper, order or invoice from raw statement text at posting time.
+                Read-only cash posting control for DVA/card/bank IN and OUT movements. The row follows the upstream match: statement line → confirmed reconciliation/allocation → matched platform target → Sage target. This page does not infer the retailer, shipper, customer or order from raw statement text.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700">
@@ -149,101 +246,156 @@ export default async function CashPostingWorkbenchPage() {
             </div>
           </div>
           <div className="mt-4 flex flex-wrap gap-2 text-xs font-semibold">
-            <span className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-amber-900">Phase 1: route + read-only control shell</span>
-            <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-slate-700">No live Sage cash call on this scaffold</span>
-            <span className="rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-violet-900">Contract: CASH_POSTING_WORKBENCH_CONTRACT_v1</span>
+            <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-emerald-900">Read model wired</span>
+            <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-slate-700">Bulk posting buttons intentionally not live yet</span>
+            <span className="rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-violet-900">References: order ref · auth/ref · target invoice/CN · statement line</span>
           </div>
+          {error ? <p className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">Cash RPC unavailable: {error.message}. Run the latest Supabase migration before testing this page.</p> : null}
         </section>
 
-        <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
-          <TabLink title="All" detail="All cash posting categories" tone="review" />
-          <TabLink title="IN — Customer/importer" detail="DVA receipts/payment-on-account" tone="action" />
-          <TabLink title="OUT — Supplier/retailer" detail="Supplier AP payment allocations" />
-          <TabLink title="OUT — Shipper" detail="Shipper AP payment allocations" />
-          <TabLink title="Residuals" detail="FX/card, bank fee and holds" tone="blocked" />
+        <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-7">
+          <TabLink title="All" detail="All cash categories" href={pageHref({ ...baseParams, category: "all", page: 1 })} active={category === "all"} />
+          <TabLink title="IN — customer" detail="Receipt/payment-on-account" href={pageHref({ ...baseParams, direction: "in", category: "customer_receipt_on_account", page: 1 })} active={category === "customer_receipt_on_account"} />
+          <TabLink title="OUT — supplier" detail="Retailer AP payments" href={pageHref({ ...baseParams, direction: "out", category: "supplier_invoice_payment", page: 1 })} active={category === "supplier_invoice_payment"} />
+          <TabLink title="OUT — shipper" detail="Shipper AP payments later" href={pageHref({ ...baseParams, direction: "out", category: "shipper_invoice_payment", page: 1 })} active={category === "shipper_invoice_payment"} />
+          <TabLink title="IN — refunds" detail="Endpoint prove required" href={pageHref({ ...baseParams, direction: "in", category: "retailer_refund_received", page: 1 })} active={category === "retailer_refund_received"} />
+          <TabLink title="Residuals" detail="FX/card, bank fees, holds" href={pageHref({ ...baseParams, category: "fx_card_difference", page: 1 })} active={category === "fx_card_difference" || category === "bank_fee"} />
+          <TabLink title="Blocked" detail="Missing mapping/target/proof" href={pageHref({ ...baseParams, status: "blocked", page: 1 })} active={status === "blocked"} />
+        </section>
+
+        <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <SummaryCard label="Visible rows" value={String(rows.length)} detail={`${totalCount} matching row(s)`} tone="review" />
+          <SummaryCard label="Ready visible" value={String(readyRows.length)} detail={gbp(selectedValue)} tone={readyRows.length > 0 ? "complete" : "muted"} />
+          <SummaryCard label="Blocked visible" value={String(blockedRows.length)} detail="Mapping, Sage target or endpoint proof" tone={blockedRows.length > 0 ? "blocked" : "complete"} />
+          <SummaryCard label="Next live lane" value="Customer IN" detail="Freeze/validate/post after read model is proven" tone="action" />
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6 xl:items-end">
-            <FilterBox label="Search" placeholder="Order ref, auth/ref, counterparty" />
-            <FilterBox label="Customer/importer" />
-            <FilterBox label="Retailer/supplier" />
-            <FilterBox label="Shipper" />
-            <FilterBox label="Date range" />
-            <FilterBox label="Category" />
-          </div>
-          <div className="mt-3 flex flex-wrap gap-2">
-            <button disabled className="rounded-lg border border-slate-300 bg-slate-100 px-3 py-1.5 text-[11px] font-bold text-slate-500">Select all visible</button>
-            <button disabled className="rounded-lg border border-slate-300 bg-slate-100 px-3 py-1.5 text-[11px] font-bold text-slate-500">Unselect all</button>
-            <button disabled className="rounded-lg bg-slate-200 px-3 py-1.5 text-[11px] font-bold text-slate-500">Freeze selected</button>
-            <button disabled className="rounded-lg bg-slate-200 px-3 py-1.5 text-[11px] font-bold text-slate-500">Validate selected</button>
-            <button disabled className="rounded-lg bg-slate-200 px-3 py-1.5 text-[11px] font-bold text-slate-500">Post selected</button>
-          </div>
+          <form action="/internal/accounting-command-centre/cash-posting" className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(220px,1fr)_150px_230px_150px_120px_auto] xl:items-end">
+            <label className="grid gap-1 text-xs font-bold uppercase tracking-wide text-slate-500 md:col-span-2 xl:col-span-1">
+              Search
+              <input name="q" defaultValue={search} placeholder="Order ref, auth/ref, counterparty, invoice, blocker" className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-950" />
+            </label>
+            <label className="grid gap-1 text-xs font-bold uppercase tracking-wide text-slate-500">
+              Direction
+              <select name="direction" defaultValue={direction} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-950">
+                <option value="all">All</option>
+                <option value="in">IN</option>
+                <option value="out">OUT</option>
+              </select>
+            </label>
+            <label className="grid gap-1 text-xs font-bold uppercase tracking-wide text-slate-500">
+              Category
+              <select name="category" defaultValue={category} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-950">
+                <option value="all">All categories</option>
+                <option value="customer_receipt_on_account">Customer receipt on account</option>
+                <option value="supplier_invoice_payment">Supplier invoice payment</option>
+                <option value="shipper_invoice_payment">Shipper invoice payment</option>
+                <option value="retailer_refund_received">Retailer refund received</option>
+                <option value="fx_card_difference">FX/card difference</option>
+                <option value="bank_fee">Bank fee</option>
+                <option value="unmatched_hold">Unmatched/hold</option>
+              </select>
+            </label>
+            <label className="grid gap-1 text-xs font-bold uppercase tracking-wide text-slate-500">
+              Status
+              <select name="status" defaultValue={status} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-950">
+                <option value="all">All</option>
+                <option value="ready">Ready</option>
+                <option value="blocked">Blocked</option>
+                <option value="blocked_endpoint_prove_required">Endpoint prove required</option>
+              </select>
+            </label>
+            <label className="grid gap-1 text-xs font-bold uppercase tracking-wide text-slate-500">
+              Page size
+              <select name="page_size" defaultValue={String(pageSize)} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-950">
+                <option value="50">50</option>
+                <option value="100">100</option>
+                <option value="200">200</option>
+                <option value="300">300</option>
+              </select>
+            </label>
+            <div className="flex gap-2">
+              <button type="submit" className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white">Apply</button>
+              <Link href="/internal/accounting-command-centre/cash-posting" className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800">Reset</Link>
+            </div>
+          </form>
         </section>
 
-        <section className="rounded-3xl border border-slate-200 bg-white shadow-sm">
+        <form className="rounded-3xl border border-slate-200 bg-white shadow-sm">
           <div className="border-b border-slate-100 px-4 py-3">
-            <h2 className="text-xl font-semibold">Cash posting rows</h2>
-            <p className="mt-1 text-sm text-slate-500">Grid contract only. The next backend patch should add the read model feeding confirmed customer IN, supplier OUT, shipper OUT, refund IN and residual rows.</p>
+            <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <h2 className="text-xl font-semibold">Cash posting rows</h2>
+                <p className="mt-1 text-sm text-slate-500">Showing simple rows only. Open Posting trace for the matched statement line, upstream reconciliation/allocation and Sage target.</p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <span className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-[11px] font-bold text-amber-900">Freeze/validate/post actions next phase</span>
+                <button disabled className="rounded-lg bg-slate-200 px-3 py-1.5 text-[11px] font-bold text-slate-500">Freeze selected</button>
+                <button disabled className="rounded-lg bg-slate-200 px-3 py-1.5 text-[11px] font-bold text-slate-500">Validate selected</button>
+                <button disabled className="rounded-lg bg-slate-200 px-3 py-1.5 text-[11px] font-bold text-slate-500">Post selected</button>
+              </div>
+            </div>
+            <div className="mt-3">
+              <SelectionControls />
+            </div>
           </div>
+
           <div className="overflow-x-auto rounded-b-3xl">
-            <table className="min-w-[1180px] divide-y divide-slate-200 text-xs">
-              <thead className="bg-slate-100 text-[11px] uppercase tracking-wide text-slate-500">
+            <table className="min-w-[1240px] divide-y divide-slate-200 text-xs">
+              <thead className="sticky top-0 z-10 bg-slate-100 text-[11px] uppercase tracking-wide text-slate-500">
                 <tr>
                   <th className="px-3 py-2 text-left">Select</th>
                   <th className="px-3 py-2 text-left">Direction</th>
                   <th className="px-3 py-2 text-left">Category</th>
                   <th className="px-3 py-2 text-left">Date</th>
-                  <th className="px-3 py-2 text-left">Customer / retailer / shipper</th>
+                  <th className="px-3 py-2 text-left">Counterparty</th>
                   <th className="px-3 py-2 text-left">Order ref</th>
                   <th className="px-3 py-2 text-left">Auth/ref</th>
-                  <th className="px-3 py-2 text-right">GBP amount</th>
+                  <th className="px-3 py-2 text-right">GBP</th>
                   <th className="px-3 py-2 text-left">Matched target</th>
                   <th className="px-3 py-2 text-left">Status</th>
                   <th className="px-3 py-2 text-left">Details</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 bg-white">
-                <tr>
-                  <td colSpan={11} className="px-3 py-8 text-center text-sm text-slate-500">
-                    No live rows are queried yet. This shell intentionally has no posting buttons wired until the cash posting read model and mapping rows are added.
-                  </td>
-                </tr>
+                {rows.length === 0 ? (
+                  <tr>
+                    <td colSpan={11} className="px-3 py-8 text-center text-sm text-slate-500">
+                      No cash rows match this filter. If the RPC warning is shown above, run the Supabase migration first.
+                    </td>
+                  </tr>
+                ) : rows.map((row) => (
+                  <tr key={text(row.queue_row_id)} className="align-top hover:bg-slate-50">
+                    <td className="px-3 py-3"><CashRowCheckbox row={row} /></td>
+                    <td className="px-3 py-3 font-bold uppercase text-slate-900">{text(row.direction) || "—"}</td>
+                    <td className="px-3 py-3"><p className="max-w-[170px] truncate font-bold text-slate-950" title={text(row.category)}>{pretty(row.category)}</p><p className="mt-1 text-[11px] text-slate-500">{pretty(row.source_type)}</p></td>
+                    <td className="px-3 py-3 text-slate-700">{short(row.statement_date_text, 20)}</td>
+                    <td className="px-3 py-3"><p className="max-w-[170px] truncate font-semibold text-slate-900" title={text(row.counterparty_name)}>{text(row.counterparty_name) || "—"}</p><p className="mt-1 text-[11px] text-slate-500">{pretty(row.counterparty_type)}</p></td>
+                    <td className="px-3 py-3 font-mono text-[11px] font-bold text-slate-900">{short(row.order_ref, 28)}</td>
+                    <td className="px-3 py-3 font-mono text-[11px] text-slate-700" title={text(row.auth_ref) || text(row.reference_raw)}>{short(row.auth_ref || row.reference_raw, 28)}</td>
+                    <td className="px-3 py-3 text-right font-bold text-slate-950">{gbp(row.amount_gbp)}</td>
+                    <td className="px-3 py-3"><p className="max-w-[190px] truncate font-semibold text-slate-900" title={text(row.matched_target_ref)}>{short(row.matched_target_ref, 34)}</p><p className="mt-1 text-[11px] text-slate-500">{pretty(row.matched_target_type)}</p></td>
+                    <td className="px-3 py-3"><Pill value={row.posting_status} />{text(row.blocker) ? <p className="mt-1 max-w-[220px] text-[11px] leading-4 text-rose-700" title={text(row.blocker)}>{short(row.blocker, 90)}</p> : null}</td>
+                    <td className="px-3 py-3"><DetailTrace row={row} /></td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
-        </section>
 
-        <section className="grid gap-3 lg:grid-cols-2">
-          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-            <h2 className="text-lg font-bold">Posting categories locked by contract</h2>
-            <div className="mt-4 grid gap-3">
-              {postingCategories.map((item) => (
-                <div key={item.code} className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm">
-                  <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
-                    <div>
-                      <p className="font-bold text-slate-950">{item.title}</p>
-                      <p className="mt-1 font-mono text-[11px] text-slate-500">{item.code}</p>
-                    </div>
-                    <span className="w-fit rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-bold text-slate-700">{item.status}</span>
-                  </div>
-                  <p className="mt-2 text-xs leading-5 text-slate-600">{item.route}</p>
-                  <p className="mt-1 text-xs font-semibold leading-5 text-slate-800">{item.endpoint}</p>
-                </div>
-              ))}
+          <div className="flex flex-col gap-3 border-t border-slate-100 px-4 py-3 text-sm text-slate-600 lg:flex-row lg:items-center lg:justify-between">
+            <p>Page {page} · {rows.length} visible · {totalCount} matching</p>
+            <div className="flex gap-2">
+              {hasPrev ? <Link href={pageHref({ ...baseParams, page: page - 1 })} className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800">Previous</Link> : <span className="rounded-xl border border-slate-200 bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-400">Previous</span>}
+              {hasNext ? <Link href={pageHref({ ...baseParams, page: page + 1 })} className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800">Next</Link> : <span className="rounded-xl border border-slate-200 bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-400">Next</span>}
             </div>
           </div>
+        </form>
 
-          <div className="rounded-3xl border border-violet-200 bg-violet-50 p-5 text-sm leading-6 text-violet-900">
-            <h2 className="font-bold">Next backend build</h2>
-            <p className="mt-2">Add the read model behind this page before any posting action. It should expose simple rows plus a detail trace for statement line, match source, Sage target and payload preview.</p>
-            <div className="mt-4 grid gap-2 rounded-2xl border border-violet-200 bg-white/70 p-3 text-xs font-semibold leading-5">
-              <p>1. Add minimum mapping rows: DVA cash bank account, payment method defaults, FX gain/loss, bank fee and hold ledgers.</p>
-              <p>2. Add read-only cash posting rows from confirmed DVA funding and statement-line allocations.</p>
-              <p>3. Add detail drawer / Posting Trace.</p>
-              <p>4. Only then add customer IN freeze/validate/post.</p>
-            </div>
-          </div>
+        <section className="rounded-3xl border border-violet-200 bg-violet-50 p-5 text-sm leading-6 text-violet-900">
+          <h2 className="font-bold">Control position</h2>
+          <p className="mt-2">Supplier/retailer and customer rows are derived from confirmed upstream matches. Refund IN, FX/card residuals, bank fees and holds are visible but blocked until the exact Sage endpoint and mapping treatment are proven.</p>
         </section>
       </div>
     </main>
