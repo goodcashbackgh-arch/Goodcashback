@@ -2,7 +2,9 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { headers } from "next/headers";
 import { createClient } from "@/utils/supabase/server";
+import { postCustomerReceiptCashBatchToSage } from "@/lib/sage/cashPosting";
 
 type FreezeResult = {
   source_id?: string | null;
@@ -54,6 +56,13 @@ function cashReturnPath(formData: FormData, messageKey: "success" | "error", mes
   return `/internal/accounting-command-centre/cash-posting?${qp.toString()}`;
 }
 
+async function originFromHeaders() {
+  const headerStore = await headers();
+  const host = headerStore.get("x-forwarded-host") || headerStore.get("host") || "";
+  const proto = headerStore.get("x-forwarded-proto") || "https";
+  return host ? `${proto}://${host}` : "";
+}
+
 async function requireAccountingAdminAccess() {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -75,7 +84,7 @@ async function requireAccountingAdminAccess() {
     redirect("/internal/accounting-command-centre/cash-posting?error=Accounting admin access required");
   }
 
-  return supabase;
+  return { supabase, staffId: String(staff.id) };
 }
 
 export async function freezeSelectedCustomerReceiptCashRowsAction(formData: FormData) {
@@ -85,7 +94,7 @@ export async function freezeSelectedCustomerReceiptCashRowsAction(formData: Form
     redirect(cashReturnPath(formData, "error", "Select at least one ready customer/importer IN row to freeze"));
   }
 
-  const supabase = await requireAccountingAdminAccess();
+  const { supabase } = await requireAccountingAdminAccess();
 
   const { data, error } = await (supabase as any).rpc("internal_freeze_customer_receipt_cash_posting_v1", {
     p_dva_reconciliation_ids: selectedIds,
@@ -116,7 +125,7 @@ export async function createCustomerReceiptCashBatchAction(formData: FormData) {
     redirect(cashReturnPath(formData, "error", "Select at least one frozen validated customer/importer IN row to batch"));
   }
 
-  const supabase = await requireAccountingAdminAccess();
+  const { supabase } = await requireAccountingAdminAccess();
 
   const { data, error } = await (supabase as any).rpc("internal_create_customer_receipt_cash_batch_v1", {
     p_source_ids: selectedIds,
@@ -139,4 +148,23 @@ export async function createCustomerReceiptCashBatchAction(formData: FormData) {
     : `Customer IN cash batch created: ${batchRefs.join(", ") || "validated batch"}; rows ${batchedCount}; already batched ${alreadyBatchedCount}. No Sage API call was made.`;
 
   redirect(cashReturnPath(formData, blockedCount > 0 ? "error" : "success", message));
+}
+
+export async function postCustomerReceiptCashBatchAction(formData: FormData) {
+  const batchId = formText(formData, "batch_id");
+  if (!batchId) redirect("/internal/accounting-command-centre/cash-posting?error=Missing cash batch id");
+
+  const { staffId } = await requireAccountingAdminAccess();
+  const origin = await originFromHeaders();
+
+  try {
+    const result = await postCustomerReceiptCashBatchToSage({ batchId, staffId, origin });
+    revalidatePath("/internal/accounting-command-centre/cash-posting");
+    revalidatePath(`/internal/accounting-command-centre/cash-posting/batches/${batchId}`);
+    redirect(`/internal/accounting-command-centre/cash-posting/batches/${batchId}?success=${encodeURIComponent(`Customer receipt Sage posting finished: ${result.posted} posted, ${result.failed} failed, ${result.needsReview} needs review, ${result.total} total. Endpoint ${result.endpoint}.`)}`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Customer receipt Sage posting failed.";
+    revalidatePath(`/internal/accounting-command-centre/cash-posting/batches/${batchId}`);
+    redirect(`/internal/accounting-command-centre/cash-posting/batches/${batchId}?error=${encodeURIComponent(message)}`);
+  }
 }
