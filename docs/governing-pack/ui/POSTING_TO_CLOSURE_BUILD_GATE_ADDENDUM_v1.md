@@ -4,6 +4,8 @@
 
 This addendum links the current command-centre, Sage posting and cash posting contracts to `ACCOUNTING_CLOSURE_CONTROL_CONTRACT_v1.md`.
 
+After invoice/cash/credit posting routes are built, `ACCOUNTING_CLOSURE_CONTROL_CONTRACT_v1.md` governs the next build phase before further endpoint expansion.
+
 It applies to:
 
 - `COMMAND_CENTRES_AND_SAGE_CLOUD_ACCOUNTING_CONTRACT_v5.md`
@@ -15,7 +17,7 @@ It applies to:
 
 The next build phase is accounting closure control.
 
-The required sequence is:
+The sequence is:
 
 1. Posting routes built or proven.
 2. Read-only accounting closure proof pack.
@@ -24,13 +26,9 @@ The required sequence is:
 
 ## Gate
 
-Until the closure proof pack is built and tested on at least one real full order lifecycle, do not expand live posting into additional refund, residual, fee, hold, allocation or manual AP edge-case routes.
+Until the closure proof pack is built and tested on at least one real full order lifecycle, additional live posting expansion must stay paused.
 
 Those areas may remain visible as read-only or blocked diagnostic rows.
-
-## Reason
-
-The platform now has multiple posting paths for invoices, credit notes, receipts and payments. The immediate risk is no longer endpoint breadth. The immediate risk is posting without one closure view that proves platform source truth, frozen snapshot truth, Sage request and response truth, Sage object ids, allocation or settlement state, attachment state, idempotency, duplicates and outstanding items.
 
 ## Priority
 
