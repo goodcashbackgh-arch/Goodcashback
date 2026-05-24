@@ -31,6 +31,18 @@ type CashRow = {
   attempt_count: number | null;
 };
 
+type BuiltCashOutRow = {
+  row: CashRow;
+  refs: Row;
+  contactId: string;
+  bankAccountId: string;
+  date: string;
+  amount: number;
+  reference: string;
+  targetSageObjectId: string;
+  groupKey: string;
+};
+
 function asObject(value: unknown): Row {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Row : {};
 }
@@ -48,6 +60,10 @@ function num(value: unknown) {
     return Number.isFinite(parsed) ? parsed : 0;
   }
   return 0;
+}
+
+function round2(value: number) {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
 }
 
 function getPath(value: unknown, path: Array<string | number>) {
@@ -142,30 +158,62 @@ function extractPurchasePaymentPayload(row: CashRow) {
   if (!(totalAmount > 0)) throw new Error("Cash OUT payment amount must be positive.");
   if (!reference) throw new Error("Cash OUT payload missing short Sage reference.");
   if (!targetSageObjectId) throw new Error("Cash OUT allocation target Sage purchase invoice id is missing.");
-  if (Math.abs(totalAmount - num(row.amount_gbp)) > 0.01) throw new Error("Cash OUT payload amount does not match frozen batch row amount.");
-  if (Math.abs(allocationAmount - totalAmount) > 0.01) throw new Error("Cash OUT allocation amount does not match supplier payment amount.");
+  if (Math.abs(totalAmount - num(row.amount_gbp)) > 0.01) throw new Error("Cash OUT payload amount does not match frozen allocation-row amount.");
+  if (Math.abs(allocationAmount - totalAmount) > 0.01) throw new Error("Cash OUT allocation amount does not match allocation-row payment amount.");
 
   return {
-    paymentRequestBody: {
-      contact_payment: {
-        transaction_type_id: "VENDOR_PAYMENT",
-        contact_id: contactId,
-        bank_account_id: bankAccountId,
-        date,
-        total_amount: totalAmount,
-        reference,
-        allocated_artefacts: [
-          {
-            artefact_id: targetSageObjectId,
-            amount: totalAmount,
-          },
-        ],
-      },
-    },
+    contactId,
+    bankAccountId,
+    date,
     targetSageObjectId,
     amount: totalAmount,
     reference,
   };
+}
+
+function statementGroupKey(row: CashRow, built: ReturnType<typeof extractPurchasePaymentPayload>, refs: Row) {
+  const statementLineId = text(refs.statement_line_id) || text(refs.statementLineId) || `snapshot:${row.snapshot_id}`;
+  return [row.posting_category, built.contactId, built.bankAccountId, built.date, statementLineId].join("|");
+}
+
+function groupedReference(group: BuiltCashOutRow[]) {
+  if (group.length === 1) return group[0].reference;
+  const refs = group[0].refs;
+  const raw = text(refs.reference_raw) || text(refs.auth_ref) || text(refs.statement_line_id) || group[0].reference;
+  const cleaned = raw.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 24);
+  return `GCB-OUT-${cleaned || group[0].reference.slice(0, 18)}`;
+}
+
+function groupedPaymentRequestBody(group: BuiltCashOutRow[]) {
+  const first = group[0];
+  const totalAmount = round2(group.reduce((sum, item) => sum + item.amount, 0));
+  return {
+    contact_payment: {
+      transaction_type_id: "VENDOR_PAYMENT",
+      contact_id: first.contactId,
+      bank_account_id: first.bankAccountId,
+      date: first.date,
+      total_amount: totalAmount,
+      reference: groupedReference(group),
+      allocated_artefacts: group.map((item) => ({
+        artefact_id: item.targetSageObjectId,
+        amount: item.amount,
+      })),
+    },
+  };
+}
+
+async function snapshotReferenceMap(rows: CashRow[]) {
+  const snapshotIds = Array.from(new Set(rows.map((row) => row.snapshot_id).filter(Boolean)));
+  if (snapshotIds.length === 0) return new Map<string, Row>();
+
+  const { data, error } = await supabaseAdmin
+    .from("cash_posting_snapshots")
+    .select("id, internal_reference_json")
+    .in("id", snapshotIds);
+  if (error) throw new Error(error.message);
+
+  return new Map((data ?? []).map((row: Row) => [text(row.id), asObject(row.internal_reference_json)]));
 }
 
 async function activeSageContext(origin: string) {
@@ -352,11 +400,12 @@ export async function postSupplierOrShipperPaymentCashBatchToSage(params: { batc
   let posted = 0;
   let failed = 0;
   let needsReview = 0;
+  const refsBySnapshotId = await snapshotReferenceMap(rows);
+  const preparedRows: BuiltCashOutRow[] = [];
 
   for (const row of rows) {
     const attemptCount = (row.attempt_count ?? 0) + 1;
     const startedAt = new Date().toISOString();
-    const paymentEndpointPath = "/contact_payments";
 
     await supabaseAdmin.from("cash_posting_batch_rows").update({
       posting_status: "posting",
@@ -372,9 +421,15 @@ export async function postSupplierOrShipperPaymentCashBatchToSage(params: { batc
       updated_at: startedAt,
     }).eq("id", row.snapshot_id);
 
-    let built: ReturnType<typeof extractPurchasePaymentPayload>;
     try {
-      built = extractPurchasePaymentPayload(row);
+      const built = extractPurchasePaymentPayload(row);
+      const refs = refsBySnapshotId.get(row.snapshot_id) ?? {};
+      preparedRows.push({
+        row,
+        refs,
+        ...built,
+        groupKey: statementGroupKey(row, built, refs),
+      });
     } catch (error) {
       failed += 1;
       const message = error instanceof Error ? error.message : "Could not build cash OUT Sage payload.";
@@ -389,28 +444,40 @@ export async function postSupplierOrShipperPaymentCashBatchToSage(params: { batc
         sage_response_payload: { error: message },
         updated_at: new Date().toISOString(),
       }).eq("id", row.snapshot_id);
-      continue;
     }
+  }
+
+  const groups = new Map<string, BuiltCashOutRow[]>();
+  for (const item of preparedRows) groups.set(item.groupKey, [...(groups.get(item.groupKey) ?? []), item]);
+
+  for (const group of groups.values()) {
+    const paymentEndpointPath = "/contact_payments";
+    const paymentRequestBody = groupedPaymentRequestBody(group);
+    const groupTotal = num(getPath(paymentRequestBody, ["contact_payment", "total_amount"]));
+    const groupReference = text(getPath(paymentRequestBody, ["contact_payment", "reference"]));
+    const first = group[0];
+    const rowIds = group.map((item) => item.row.id);
+    const snapshotIds = group.map((item) => item.row.snapshot_id);
 
     const { data: paymentRequestLog } = await supabaseAdmin.from("sage_api_request_log").insert({
       connection_id: context.connectionId,
       sage_business_row_id: context.sageBusinessRowId,
       posting_batch_id: params.batchId,
-      posting_batch_row_id: row.id,
+      posting_batch_row_id: first.row.id,
       connection_event_type: "posting_batch",
-      request_kind: "cash_out_contact_payment",
+      request_kind: "cash_out_contact_payment_group",
       http_method: "POST",
       endpoint_path: paymentEndpointPath,
-      idempotency_key: row.idempotency_key,
-      request_payload_redacted: built.paymentRequestBody,
+      idempotency_key: `cash-out-group:${params.batchId}:${first.groupKey}`,
+      request_payload_redacted: paymentRequestBody,
       request_headers_redacted: { accept: "application/json", content_type: "application/json", x_business: context.sageBusinessId },
-      request_payload_hash: bodyHash(built.paymentRequestBody),
+      request_payload_hash: bodyHash(paymentRequestBody),
       created_by_staff_id: params.staffId,
     }).select("id").single();
 
-    const paymentResult = await sagePost(context, paymentEndpointPath, built.paymentRequestBody);
+    const paymentResult = await sagePost(context, paymentEndpointPath, paymentRequestBody);
     const paymentId = paymentResult.ok ? contactPaymentId(paymentResult.raw) : "";
-    const reference = paymentResult.ok ? contactPaymentReference(paymentResult.raw, built.reference) : "";
+    const reference = paymentResult.ok ? contactPaymentReference(paymentResult.raw, groupReference) : "";
     const paymentErr = paymentResult.ok && !paymentId ? "Sage returned success but no contact_payment id could be extracted." : errorMessage(paymentResult.raw);
 
     if (paymentRequestLog?.id) {
@@ -432,63 +499,67 @@ export async function postSupplierOrShipperPaymentCashBatchToSage(params: { batc
 
     const now = new Date().toISOString();
     if (paymentResult.ok && paymentId) {
-      posted += 1;
-      await supabaseAdmin.from("cash_posting_batch_rows").update({
-        posting_status: "posted",
-        sage_object_type: "contact_payment",
-        sage_object_id: paymentId,
-        sage_reference: reference || built.reference,
-        response_payload: { contact_payment: paymentResult.raw } as Row,
-        posted_at: now,
-        error_code: null,
-        error_message: null,
-        sage_allocation_status: "allocated_in_contact_payment",
-        sage_allocation_id: paymentId,
-        sage_allocation_amount_gbp: built.amount,
-        sage_allocation_target_object_id: built.targetSageObjectId,
-        sage_allocation_request_payload: built.paymentRequestBody,
-        sage_allocation_response_payload: paymentResult.raw as Row,
-        sage_allocation_error_code: null,
-        sage_allocation_error_message: null,
-        sage_allocation_posted_at: now,
-        updated_at: now,
-      }).eq("id", row.id);
-      await supabaseAdmin.from("cash_posting_snapshots").update({
-        sage_posting_status: "posted",
-        sage_object_id: paymentId,
-        sage_response_payload: { contact_payment: paymentResult.raw } as Row,
-        sage_allocation_status: "allocated_in_contact_payment",
-        sage_allocation_id: paymentId,
-        sage_allocation_amount_gbp: built.amount,
-        sage_allocation_target_object_id: built.targetSageObjectId,
-        sage_allocation_request_payload: built.paymentRequestBody,
-        sage_allocation_response_payload: paymentResult.raw as Row,
-        sage_allocation_error_code: null,
-        sage_allocation_error_message: null,
-        sage_allocation_posted_at: now,
-        updated_at: now,
-      }).eq("id", row.snapshot_id);
+      posted += group.length;
+      for (const item of group) {
+        await supabaseAdmin.from("cash_posting_batch_rows").update({
+          posting_status: "posted",
+          sage_object_type: "contact_payment",
+          sage_object_id: paymentId,
+          sage_reference: reference || groupReference,
+          response_payload: { contact_payment: paymentResult.raw, grouped_rows: rowIds, group_total_gbp: groupTotal } as Row,
+          posted_at: now,
+          error_code: null,
+          error_message: null,
+          sage_allocation_status: "allocated_in_contact_payment",
+          sage_allocation_id: paymentId,
+          sage_allocation_amount_gbp: item.amount,
+          sage_allocation_target_object_id: item.targetSageObjectId,
+          sage_allocation_request_payload: paymentRequestBody,
+          sage_allocation_response_payload: paymentResult.raw as Row,
+          sage_allocation_error_code: null,
+          sage_allocation_error_message: null,
+          sage_allocation_posted_at: now,
+          updated_at: now,
+        }).eq("id", item.row.id);
+      }
+      for (const item of group) {
+        await supabaseAdmin.from("cash_posting_snapshots").update({
+          sage_posting_status: "posted",
+          sage_object_id: paymentId,
+          sage_response_payload: { contact_payment: paymentResult.raw, grouped_rows: rowIds, group_total_gbp: groupTotal } as Row,
+          sage_allocation_status: "allocated_in_contact_payment",
+          sage_allocation_id: paymentId,
+          sage_allocation_amount_gbp: item.amount,
+          sage_allocation_target_object_id: item.targetSageObjectId,
+          sage_allocation_request_payload: paymentRequestBody,
+          sage_allocation_response_payload: paymentResult.raw as Row,
+          sage_allocation_error_code: null,
+          sage_allocation_error_message: null,
+          sage_allocation_posted_at: now,
+          updated_at: now,
+        }).eq("id", item.row.snapshot_id);
+      }
     } else {
-      failed += 1;
+      failed += group.length;
       const statusCode = paymentResult.response?.status ?? 0;
       const postingStatus = retryableStatus(statusCode) ? "failed_retryable" : "failed_terminal";
       await supabaseAdmin.from("cash_posting_batch_rows").update({
         posting_status: postingStatus,
-        response_payload: { contact_payment: paymentResult.raw } as Row,
+        response_payload: { contact_payment: paymentResult.raw, grouped_rows: rowIds, group_total_gbp: groupTotal } as Row,
         error_code: paymentResult.response ? `sage_http_${paymentResult.response.status}` : "sage_network_error",
         error_message: paymentErr,
         updated_at: now,
-      }).eq("id", row.id);
+      }).in("id", rowIds);
       await supabaseAdmin.from("cash_posting_snapshots").update({
         sage_posting_status: "posting_failed",
-        sage_response_payload: { contact_payment: paymentResult.raw } as Row,
+        sage_response_payload: { contact_payment: paymentResult.raw, grouped_rows: rowIds, group_total_gbp: groupTotal } as Row,
         updated_at: now,
-      }).eq("id", row.snapshot_id);
+      }).in("id", snapshotIds);
     }
   }
 
   await updateCashBatchCounts(params.batchId);
-  return { posted, failed, needsReview, total: rows.length, endpoint: "/contact_payments" };
+  return { posted, failed, needsReview, total: rows.length, endpoint: "/contact_payments", groupedPayments: groups.size };
 }
 
 export async function postCashBatchToSage(params: { batchId: string; staffId: string; origin: string }) {
