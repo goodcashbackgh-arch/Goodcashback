@@ -105,9 +105,9 @@ export default async function CashPostingBatchDetailPage({ params, searchParams 
   const postableRows = rows.filter(isPostable);
   const canPost = livePostingEnabled && postableRows.length > 0 && ["validated", "failed", "partially_posted"].includes(text(first.batch_status));
   const batchIntro = isOutBatch
-    ? "Posts supplier/shipper OUT payments to Sage, then allocates each payment to the matched posted purchase invoice."
+    ? "Posts supplier/shipper OUT payments to Sage as vendor payments and allocates each payment to the matched posted purchase invoice artefact."
     : "Posts customer/importer IN receipts to Sage as customer receipts on account. Allocation to sales invoices is handled after the receipt exists.";
-  const endpointText = isOutBatch ? "POST /purchase_payments, then POST /allocations" : "POST /contact_payments";
+  const endpointText = isOutBatch ? "POST /contact_payments · VENDOR_PAYMENT · allocated_artefacts[]" : "POST /contact_payments · CUSTOMER_RECEIPT";
   const flagName = isOutBatch ? "SAGE_LIVE_CASH_OUT_POSTING_ENABLED" : "SAGE_LIVE_CASH_POSTING_ENABLED";
 
   return (
@@ -152,7 +152,7 @@ export default async function CashPostingBatchDetailPage({ params, searchParams 
                     disabled={!canPost}
                     className="rounded-lg bg-emerald-700 px-3 py-1.5 text-[11px] font-bold text-white disabled:bg-slate-200 disabled:text-slate-500"
                   >
-                    {isOutBatch ? "Post supplier/shipper OUT batch to Sage" : "Post customer receipt batch to Sage"}
+                    {isOutBatch ? "Post supplier/shipper vendor payment to Sage" : "Post customer receipt batch to Sage"}
                   </button>
                   <span className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-[11px] font-bold text-slate-600">
                     {livePostingEnabled ? "Live Sage cash flag enabled" : "Live Sage cash flag disabled"}
@@ -178,7 +178,7 @@ export default async function CashPostingBatchDetailPage({ params, searchParams 
                           <td className="px-3 py-3 text-right font-bold">{money.format(amount(row.amount_gbp))}</td>
                           <td className="px-3 py-3"><p className="font-mono text-[11px]">{short(row.sage_contact_id, 34)}</p><p className="text-[11px] text-slate-500">{short(row.sage_contact_name, 34)}</p></td>
                           <td className="px-3 py-3 font-mono text-[11px]">{short(row.sage_bank_account_id, 34)}</td>
-                          <td className="px-3 py-3"><p className="font-mono text-[11px]">{short(row.sage_object_id, 34)}</p>{rowIsOut ? <p className="text-[11px] text-slate-500">Allocation {pretty(row.sage_allocation_status)} · {short(row.sage_allocation_id, 28)}</p> : <p className="text-[11px] text-slate-500">POA {short(row.sage_payment_on_account_id, 28)}</p>}<p className="text-[11px] text-slate-500">{short(row.sage_reference, 32)}</p></td>
+                          <td className="px-3 py-3"><p className="font-mono text-[11px]">{short(row.sage_object_id, 34)}</p>{rowIsOut ? <p className="text-[11px] text-slate-500">Allocated in vendor payment · {short(row.sage_allocation_id, 28)}</p> : <p className="text-[11px] text-slate-500">POA {short(row.sage_payment_on_account_id, 28)}</p>}<p className="text-[11px] text-slate-500">{short(row.sage_reference, 32)}</p></td>
                           <td className="px-3 py-3"><p className="font-mono text-[11px]">{short(row.statement_line_id, 34)}</p><p className="text-[11px] text-slate-500">{short(refs.auth_ref || refs.reference_raw, 34)}</p></td>
                         </tr>
                       );
@@ -191,8 +191,8 @@ export default async function CashPostingBatchDetailPage({ params, searchParams 
             <section className="grid gap-3 lg:grid-cols-2">
               {rows.map((row) => <PayloadBlock key={`${text(row.batch_row_id)}-payload`} title={`Frozen Sage payload · ${text(row.short_reference)}`} value={row.request_payload} />)}
               {rows.map((row) => <PayloadBlock key={`${text(row.batch_row_id)}-response`} title={`Sage response · ${text(row.short_reference)}`} value={row.sage_response_payload} />)}
-              {rows.map((row) => outBatchCategories.includes(text(row.posting_category)) ? <PayloadBlock key={`${text(row.batch_row_id)}-alloc-request`} title={`Allocation request · ${text(row.short_reference)}`} value={row.sage_allocation_request_payload} /> : null)}
-              {rows.map((row) => outBatchCategories.includes(text(row.posting_category)) ? <PayloadBlock key={`${text(row.batch_row_id)}-alloc-response`} title={`Allocation response · ${text(row.short_reference)}`} value={row.sage_allocation_response_payload} /> : null)}
+              {rows.map((row) => outBatchCategories.includes(text(row.posting_category)) ? <PayloadBlock key={`${text(row.batch_row_id)}-alloc-request`} title={`Vendor payment request · ${text(row.short_reference)}`} value={row.sage_allocation_request_payload} /> : null)}
+              {rows.map((row) => outBatchCategories.includes(text(row.posting_category)) ? <PayloadBlock key={`${text(row.batch_row_id)}-alloc-response`} title={`Vendor payment response · ${text(row.short_reference)}`} value={row.sage_allocation_response_payload} /> : null)}
               {rows.map((row) => <PayloadBlock key={`${text(row.batch_row_id)}-refs`} title={`Internal reference trace · ${text(row.short_reference)}`} value={row.internal_reference_json} />)}
             </section>
           </>
