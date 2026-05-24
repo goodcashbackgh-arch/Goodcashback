@@ -22,8 +22,14 @@ const flowLinks = [
   {
     href: "/internal/dva-reconciliation/workspace",
     step: "4",
-    label: "Matching workspace",
-    hint: "Allocate supplier, refund, FX/card, fee and hold items",
+    label: "Importer matching",
+    hint: "Importer DVA/card allocation for supplier, refund, FX/card, fee and hold items",
+  },
+  {
+    href: "/internal/dva-reconciliation/main-bank",
+    step: "4B",
+    label: "Main bank / shipper",
+    hint: "Main company bank OUT lines matched to posted shipper AP invoices",
   },
   {
     href: "/internal/funding",
@@ -58,14 +64,14 @@ export default function DvaSupervisorFlowNav() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-sky-600">Supervisor DVA/card flow</p>
-            <p className="mt-1 text-xs text-slate-500">Import statement truth → OCR/commit → control hub → match or fund → review/reverse → review pack → exception actions → pre-Sage readiness.</p>
+            <p className="mt-1 text-xs text-slate-500">Import statement truth → OCR/commit → control hub → importer match or main-bank shipper match → fund/review/reverse → review pack → exception actions → pre-Sage readiness.</p>
           </div>
           <Link href="/internal" className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50">
             Internal home
           </Link>
         </div>
 
-        <nav className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8" aria-label="DVA supervisor flow">
+        <nav className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5 xl:grid-cols-9" aria-label="DVA supervisor flow">
           {flowLinks.map((link) => (
             <Link
               key={link.href}
