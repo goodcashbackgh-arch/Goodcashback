@@ -24,6 +24,11 @@ function readString(formData: FormData, key: string) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function checked(formData: FormData, key: string) {
+  const value = formData.get(key);
+  return value === "on" || value === "true" || value === "1";
+}
+
 function safeExt(fileName: string) {
   const ext = fileName.includes(".") ? fileName.split(".").pop() : "bin";
   return (ext ?? "bin").toLowerCase().replace(/[^a-z0-9]/g, "") || "bin";
@@ -68,9 +73,14 @@ export async function createRealStatementImportBatchAction(formData: FormData) {
   const sourceBank = readString(formData, "source_bank") || "other";
   const statementPeriodFrom = readString(formData, "statement_period_from");
   const statementPeriodTo = readString(formData, "statement_period_to");
-  const localCcy = (readString(formData, "local_ccy") || "GBP").toUpperCase();
-  const defaultCardMarkupPct = readMoney(formData, "default_card_markup_pct", 0);
-  const fxSourceContext = readString(formData, "fx_source_context") || null;
+  const statementAlreadyGbp = checked(formData, "statement_already_gbp");
+  const rawLocalCcy = (readString(formData, "local_ccy") || "GBP").toUpperCase();
+  const localCcy = statementAlreadyGbp ? "GBP" : rawLocalCcy;
+  const defaultCardMarkupPct = statementAlreadyGbp ? 0 : readMoney(formData, "default_card_markup_pct", 0);
+  const rawFxSourceContext = readString(formData, "fx_source_context");
+  const fxSourceContext = statementAlreadyGbp
+    ? "GBP statement — no FX conversion or settlement-card markup applied."
+    : rawFxSourceContext || null;
   const notes = readString(formData, "notes") || null;
   const statementFile = formData.get("statement_file");
 
@@ -158,9 +168,10 @@ export async function createRealStatementImportBatchAction(formData: FormData) {
       ? String((batchResult as { parser_route?: unknown }).parser_route)
       : detectedFileType;
   const accountLabel = statementAccountContext === "main_company_bank_account" ? "Main company bank" : "Importer DVA/card";
+  const gbpNote = statementAlreadyGbp ? " No FX conversion was applied." : "";
 
   redirectWithResult({
-    import_success: `${accountLabel} statement uploaded and import batch created. Parser route: ${parserRoute}. Extraction is the next step.`,
+    import_success: `${accountLabel} statement uploaded and import batch created. Parser route: ${parserRoute}.${gbpNote} Extraction is the next step.`,
     batch_id: importBatchId,
   });
 }
