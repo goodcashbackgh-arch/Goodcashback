@@ -199,13 +199,21 @@ export default async function DvaStatementImportPage({
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold">Upload statement file</h2>
           <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-            Upload creates the batch. PDF OCR and row review happen after the batch exists. Daily FX is controlled on the FX rates page. A positive batch settlement markup override replaces daily settlement-card markups for every parsed row in this batch.
+            Upload creates the batch. PDF OCR and row review happen after the batch exists. Choose an importer DVA/card account for importer-controlled money, or the main company bank account for platform-level payments such as shipper invoices.
           </p>
           <form action={createRealStatementImportBatchAction} className="mt-5 grid gap-4 md:grid-cols-4">
             <div>
+              <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Statement account</label>
+              <select className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" name="statement_account_context" defaultValue="importer_dva_card_account">
+                <option value="importer_dva_card_account">Importer DVA/card account</option>
+                <option value="main_company_bank_account">Main company bank account</option>
+              </select>
+              <p className="mt-1 text-xs leading-5 text-slate-500">Main company bank is for shipper/platform payments and does not require an importer.</p>
+            </div>
+            <div>
               <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Importer</label>
-              <select className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" name="importer_id" required>
-                <option value="">Select importer</option>
+              <select className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" name="importer_id">
+                <option value="">Select importer only for importer DVA/card</option>
                 {importers.map((importer) => (
                   <option key={text(importer.id)} value={text(importer.id)}>{text(importer.trading_name) || text(importer.company_name) || text(importer.id)}</option>
                 ))}
