@@ -1,0 +1,233 @@
+"use client";
+
+import { useMemo, useState } from "react";
+import { allocateMainBankLineToShipperApAction } from "./actions";
+import { allocateMainBankFxFeeAction } from "./fxFeeActions";
+
+type Row = Record<string, unknown>;
+
+const gbpFormatter = new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" });
+
+function text(value: unknown) {
+  if (Array.isArray(value)) return text(value[0]);
+  if (typeof value === "string") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return "";
+}
+
+function num(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
+}
+
+function round2(value: number) {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+function gbp(value: unknown) {
+  return gbpFormatter.format(num(value));
+}
+
+function short(value: unknown, max = 56) {
+  const raw = text(value);
+  if (!raw) return "—";
+  return raw.length > max ? `${raw.slice(0, max - 1)}…` : raw;
+}
+
+function cardClass(selected: boolean, tone: "bank" | "target") {
+  if (!selected) return "border-slate-200 bg-white";
+  return tone === "bank" ? "border-sky-500 bg-sky-50 ring-2 ring-sky-200" : "border-emerald-500 bg-emerald-50 ring-2 ring-emerald-200";
+}
+
+function residualLabel(value: string) {
+  if (value === "fx_card_difference") return "FX/card difference";
+  if (value === "bank_fee") return "Bank fee";
+  return "Unmatched hold";
+}
+
+export default function MainBankAllocationController({
+  lines,
+  targets,
+  residualRows,
+}: {
+  lines: Row[];
+  targets: Row[];
+  residualRows: Row[];
+}) {
+  const firstLineId = text(lines[0]?.statement_line_id);
+  const [selectedLineId, setSelectedLineId] = useState(firstLineId);
+  const [selectedTargetIds, setSelectedTargetIds] = useState<string[]>([]);
+  const [residualType, setResidualType] = useState("fx_card_difference");
+  const [manualResidual, setManualResidual] = useState("");
+
+  const residualByLine = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const row of residualRows) {
+      const lineId = text(row.dva_statement_line_id);
+      map.set(lineId, round2((map.get(lineId) ?? 0) + num(row.allocated_gbp_amount)));
+    }
+    return map;
+  }, [residualRows]);
+
+  const residualByType = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const row of residualRows) {
+      const kind = text(row.allocation_type);
+      map.set(kind, round2((map.get(kind) ?? 0) + num(row.allocated_gbp_amount)));
+    }
+    return map;
+  }, [residualRows]);
+
+  const selectedLine = lines.find((row) => text(row.statement_line_id) === selectedLineId) ?? null;
+  const selectedResidualExisting = residualByLine.get(selectedLineId) ?? 0;
+  const selectedLineAvailable = Math.max(round2(num(selectedLine?.remaining_gbp) - selectedResidualExisting), 0);
+  const selectedTargets = targets.filter((row) => selectedTargetIds.includes(text(row.shipping_document_id)));
+  const selectedTargetTotal = round2(selectedTargets.reduce((sum, row) => sum + num(row.remaining_gbp), 0));
+  const residualAmount = round2(manualResidual ? Number(manualResidual) || 0 : Math.max(selectedLineAvailable - selectedTargetTotal, 0));
+  const explainedTotal = round2(selectedTargetTotal + residualAmount);
+  const gap = round2(selectedLineAvailable - explainedTotal);
+  const canConfirmAp = Boolean(selectedLineId && selectedTargetIds.length > 0 && selectedTargetTotal <= selectedLineAvailable + 0.01);
+  const canConfirmResidual = Boolean(selectedLineId && residualAmount > 0 && residualAmount <= selectedLineAvailable + 0.01);
+  const exact = Math.abs(gap) < 0.01;
+
+  function toggleTarget(id: string) {
+    setSelectedTargetIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
+  }
+
+  return (
+    <div className="space-y-5 pb-36">
+      <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-emerald-900 shadow-sm">
+          <p className="text-[11px] font-bold uppercase tracking-wide opacity-70">Main-bank lines</p>
+          <p className="mt-1 text-2xl font-extrabold">{lines.length}</p>
+          <p className="mt-1 text-xs leading-4">{gbp(lines.reduce((sum, row) => sum + Math.max(num(row.remaining_gbp) - (residualByLine.get(text(row.statement_line_id)) ?? 0), 0), 0))} available after residuals</p>
+        </div>
+        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-emerald-900 shadow-sm">
+          <p className="text-[11px] font-bold uppercase tracking-wide opacity-70">Open shipper AP</p>
+          <p className="mt-1 text-2xl font-extrabold">{targets.length}</p>
+          <p className="mt-1 text-xs leading-4">{gbp(targets.reduce((sum, row) => sum + num(row.remaining_gbp), 0))} visible remaining</p>
+        </div>
+        <div className="rounded-2xl border border-sky-200 bg-sky-50 p-3 text-sky-900 shadow-sm">
+          <p className="text-[11px] font-bold uppercase tracking-wide opacity-70">Selected AP</p>
+          <p className="mt-1 text-2xl font-extrabold">{gbp(selectedTargetTotal)}</p>
+          <p className="mt-1 text-xs leading-4">{selectedTargetIds.length} invoice(s) selected</p>
+        </div>
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-amber-900 shadow-sm">
+          <p className="text-[11px] font-bold uppercase tracking-wide opacity-70">Residual input</p>
+          <p className="mt-1 text-2xl font-extrabold">{gbp(residualAmount)}</p>
+          <p className="mt-1 text-xs leading-4">{residualLabel(residualType)}</p>
+        </div>
+        <div className={`rounded-2xl border p-3 shadow-sm ${exact ? "border-emerald-200 bg-emerald-50 text-emerald-900" : gap >= 0 ? "border-amber-200 bg-amber-50 text-amber-900" : "border-rose-200 bg-rose-50 text-rose-900"}`}>
+          <p className="text-[11px] font-bold uppercase tracking-wide opacity-70">Gap</p>
+          <p className="mt-1 text-2xl font-extrabold">{gbp(Math.abs(gap))}</p>
+          <p className="mt-1 text-xs leading-4">{exact ? "Ready / balanced" : gap > 0 ? "Still unexplained" : "Over-selected"}</p>
+        </div>
+      </section>
+
+      <section className="grid gap-4 xl:grid-cols-[1fr_1.2fr]">
+        <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+          <h2 className="text-xl font-semibold">1. Select one main bank line</h2>
+          <p className="mt-1 border-b border-slate-100 pb-3 text-sm text-slate-500">Click a bank line. The floating bar stays visible while you reconcile.</p>
+          <div className="mt-4 grid gap-3">
+            {lines.map((line) => {
+              const id = text(line.statement_line_id);
+              const residual = residualByLine.get(id) ?? 0;
+              const remaining = Math.max(num(line.remaining_gbp) - residual, 0);
+              return (
+                <button key={id} type="button" onClick={() => setSelectedLineId(id)} className={`rounded-2xl border p-4 text-left shadow-sm ${cardClass(id === selectedLineId, "bank")}`}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-lg font-bold text-slate-950">{short(line.reference_raw, 80)}</p>
+                      <p className="mt-1 text-sm text-slate-600">{text(line.statement_date)} · {text(line.direction).toUpperCase()} · {text(line.source_bank).toUpperCase()}</p>
+                    </div>
+                    <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-700">{remaining <= 0.01 ? "balanced" : text(line.match_status)}</span>
+                  </div>
+                  <div className="mt-3 grid gap-2 text-sm text-slate-700 sm:grid-cols-4">
+                    <p>Amount <span className="font-bold text-slate-950">{gbp(line.amount_gbp)}</span></p>
+                    <p>AP <span className="font-bold text-slate-950">{gbp(line.allocated_gbp)}</span></p>
+                    <p>FX/fee/hold <span className="font-bold text-slate-950">{gbp(residual)}</span></p>
+                    <p>Available <span className="font-bold text-slate-950">{gbp(remaining)}</span></p>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+          <h2 className="text-xl font-semibold">2. Tick shipper AP invoice(s)</h2>
+          <p className="mt-1 border-b border-slate-100 pb-3 text-sm text-slate-500">Tick one or more posted shipper AP invoices for the selected bank line.</p>
+          <div className="mt-4 grid gap-3">
+            {targets.map((target) => {
+              const id = text(target.shipping_document_id);
+              const selected = selectedTargetIds.includes(id);
+              return (
+                <label key={id} className={`block cursor-pointer rounded-2xl border p-4 shadow-sm transition hover:border-emerald-300 hover:bg-emerald-50 ${cardClass(selected, "target")}`}>
+                  <div className="flex items-start gap-3">
+                    <input className="mt-1 h-4 w-4 rounded border-slate-300" type="checkbox" checked={selected} onChange={() => toggleTarget(id)} />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <p className="text-lg font-bold text-slate-950">{short(target.shipper_invoice_ref, 80)}</p>
+                          <p className="mt-1 text-sm text-slate-600">{text(target.shipper_name)} · Sage posted</p>
+                        </div>
+                        <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-700">{text(target.target_status)}</span>
+                      </div>
+                      <div className="mt-3 grid gap-2 text-sm text-slate-700 sm:grid-cols-3">
+                        <p>Amount <span className="font-bold text-slate-950">{gbp(target.amount_gbp)}</span></p>
+                        <p>Allocated <span className="font-bold text-slate-950">{gbp(target.allocated_gbp)}</span></p>
+                        <p>Remaining <span className="font-bold text-slate-950">{gbp(target.remaining_gbp)}</span></p>
+                      </div>
+                      <p className="mt-2 break-all text-xs text-slate-500">Sage invoice: {short(target.sage_purchase_invoice_id, 42)}</p>
+                    </div>
+                  </div>
+                </label>
+              );
+            })}
+          </div>
+        </div>
+      </section>
+
+      <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+        <h2 className="text-xl font-semibold">Existing residuals</h2>
+        <p className="mt-2 text-sm text-slate-600">FX/card: {gbp(residualByType.get("fx_card_difference") ?? 0)} · Bank fee: {gbp(residualByType.get("bank_fee") ?? 0)} · Hold: {gbp(residualByType.get("unmatched_hold") ?? 0)}</p>
+      </section>
+
+      <div className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200 bg-white/95 px-4 py-3 shadow-[0_-10px_30px_rgba(15,23,42,0.12)] backdrop-blur">
+        <div className="mx-auto grid max-w-7xl gap-3 lg:grid-cols-[1fr_auto] lg:items-end">
+          <div className="space-y-1 text-sm text-slate-700">
+            <p className="font-bold text-slate-950">Bank selected: {selectedLine ? short(selectedLine.reference_raw, 54) : "none"} · available {gbp(selectedLineAvailable)}</p>
+            <p>Shipper AP selected: {selectedTargetIds.length} invoice(s) · {gbp(selectedTargetTotal)}</p>
+            <p>Residual selected: {gbp(residualAmount)} · {residualLabel(residualType)}</p>
+            <p className="font-bold text-slate-950">Gap: {gbp(gap)}</p>
+            <p className="text-xs font-semibold text-amber-700">{exact ? "Balanced — ready to submit AP and/or residual allocations." : gap > 0 ? "Still has unexplained amount. Add residual or select more AP." : "Over-selected. Untick AP or reduce residual."}</p>
+          </div>
+
+          <div className="grid gap-2 sm:grid-cols-2 lg:min-w-[34rem]">
+            <form action={allocateMainBankLineToShipperApAction} className="grid gap-2">
+              <input type="hidden" name="dva_statement_line_id" value={selectedLineId} />
+              {selectedTargetIds.map((id) => <input key={id} type="hidden" name="shipping_document_id" value={id} />)}
+              <input type="hidden" name="notes" value="Main bank payment matched to posted shipper AP invoice(s)." />
+              <button type="submit" disabled={!canConfirmAp} className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-bold text-white disabled:bg-slate-200 disabled:text-slate-500">Confirm shipper AP</button>
+            </form>
+
+            <form action={allocateMainBankFxFeeAction} className="grid gap-2">
+              <input type="hidden" name="dva_statement_line_id" value={selectedLineId} />
+              <select className="rounded-xl border border-slate-300 px-3 py-2 text-sm" name="residual_allocation_type" value={residualType} onChange={(event) => setResidualType(event.target.value)}>
+                <option value="fx_card_difference">FX/card difference</option>
+                <option value="bank_fee">Bank fee</option>
+              </select>
+              <input className="rounded-xl border border-slate-300 px-3 py-2 text-sm" name="residual_gbp_amount" value={manualResidual || (residualAmount > 0 ? residualAmount.toFixed(2) : "")} onChange={(event) => setManualResidual(event.target.value)} placeholder="Residual amount" />
+              <input type="hidden" name="notes" value="Main-bank residual allocated separately from shipper AP." />
+              <button type="submit" disabled={!canConfirmResidual} className="rounded-xl bg-amber-700 px-4 py-2 text-sm font-bold text-white disabled:bg-slate-200 disabled:text-slate-500">Save FX/fee residual</button>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
