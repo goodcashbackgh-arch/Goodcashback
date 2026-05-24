@@ -113,14 +113,27 @@ function filterHref(params: Record<string, string | number | undefined>) {
   return query ? `/internal/accounting-command-centre/closure?${query}` : "/internal/accounting-command-centre/closure";
 }
 
+function traceActionHref(row: Row) {
+  const trace = asObject(row.trace_json);
+  return text(trace.action_href);
+}
+
 function TraceDetails({ row }: { row: Row }) {
   const trace = asObject(row.trace_json);
+  const href = text(trace.action_href);
   const json = JSON.stringify(trace, null, 2);
   return (
-    <details className="mt-2 rounded-xl border border-slate-200 bg-slate-50 p-2">
-      <summary className="cursor-pointer text-[11px] font-bold text-slate-700">Posting trace</summary>
-      <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-white p-2 text-[10px] leading-4 text-slate-700">{json}</pre>
-    </details>
+    <div className="mt-2 space-y-2">
+      {href ? (
+        <Link href={href} className="inline-flex rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-[11px] font-bold text-slate-800 hover:bg-slate-100">
+          Open detail
+        </Link>
+      ) : null}
+      <details className="rounded-xl border border-slate-200 bg-slate-50 p-2">
+        <summary className="cursor-pointer text-[11px] font-bold text-slate-700">Posting trace</summary>
+        <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-white p-2 text-[10px] leading-4 text-slate-700">{json}</pre>
+      </details>
+    </div>
   );
 }
 
@@ -294,7 +307,7 @@ export default async function AccountingClosurePage({
                   <th className="px-2 py-2 text-left">Sage object</th>
                   <th className="px-2 py-2 text-left">Batch / posted</th>
                   <th className="px-2 py-2 text-left">Allocation</th>
-                  <th className="px-2 py-2 text-left">Blocker / trace</th>
+                  <th className="px-2 py-2 text-left">Why not closed / action / trace</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 bg-white">
@@ -309,7 +322,12 @@ export default async function AccountingClosurePage({
                     <td className="px-2 py-2"><p className="font-semibold text-slate-900">{pretty(row.sage_object_type)}</p><p className="mt-0.5 truncate font-mono text-[11px] text-slate-500" title={text(row.sage_object_id)}>{short(row.sage_object_id, 26)}</p><p className="mt-0.5 truncate text-[11px] text-slate-500" title={text(row.sage_reference)}>{short(row.sage_reference, 30)}</p></td>
                     <td className="px-2 py-2"><p className="truncate font-semibold text-slate-900" title={text(row.posting_batch_ref)}>{short(row.posting_batch_ref, 28)}</p><p className="mt-0.5 text-[11px] text-slate-500">{text(row.posted_at) ? new Date(text(row.posted_at)).toLocaleString("en-GB") : "Not posted"}</p></td>
                     <td className="px-2 py-2"><div className="grid gap-1"><MiniState label="Alloc" value={row.cash_or_credit_allocation_status} /><MiniState label="Attach" value={row.attachment_state} /></div><p className="mt-1 truncate font-mono text-[11px] text-slate-500" title={text(row.sage_target_artefact_id)}>{short(row.sage_target_artefact_id, 28)}</p></td>
-                    <td className="px-2 py-2"><p className="text-[11px] font-semibold leading-4 text-slate-700" title={text(row.blocker)}>{short(row.blocker || row.next_action, 115)}</p><TraceDetails row={row} /></td>
+                    <td className="px-2 py-2">
+                      <p className="text-[11px] font-semibold leading-4 text-slate-700" title={text(row.blocker)}>{short(row.blocker || row.next_action, 135)}</p>
+                      {text(row.next_action) && text(row.next_action) !== "No action" ? <p className="mt-1 text-[11px] font-bold text-violet-800">Next: {short(row.next_action, 80)}</p> : null}
+                      {!traceActionHref(row) && text(row.posting_batch_id) ? <p className="mt-1 text-[10px] font-semibold text-amber-700">Detail link missing from trace; apply Closure v2 SQL.</p> : null}
+                      <TraceDetails row={row} />
+                    </td>
                   </tr>
                 ))}
               </tbody>
