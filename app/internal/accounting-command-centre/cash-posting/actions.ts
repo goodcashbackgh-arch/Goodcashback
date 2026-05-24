@@ -98,6 +98,20 @@ function selectedQueueRows(formData: FormData) {
   return asStringArray(formData.getAll("cash_source_id")).map((id) => `cash:customer_receipt_on_account:${id}`);
 }
 
+function selectedCashCategories(selectedIds: string[]) {
+  return Array.from(new Set(selectedIds.map((id) => id.split(":")[1] || "").filter(Boolean)));
+}
+
+function mixedInOutSelectionError(selectedIds: string[]) {
+  const categories = selectedCashCategories(selectedIds);
+  const hasCustomerIn = categories.includes("customer_receipt_on_account");
+  const hasSupplierOrShipperOut = categories.some((category) => ["supplier_invoice_payment", "shipper_invoice_payment"].includes(category));
+  if (hasCustomerIn && hasSupplierOrShipperOut) {
+    return "Do not mix customer/importer IN receipts with supplier/shipper OUT payments in one cash batch. Filter to one lane and create separate batches.";
+  }
+  return "";
+}
+
 export async function freezeSelectedCustomerReceiptCashRowsAction(formData: FormData) {
   const selectedIds = selectedQueueRows(formData);
 
@@ -135,6 +149,11 @@ export async function createCustomerReceiptCashBatchAction(formData: FormData) {
 
   if (selectedIds.length === 0) {
     redirect(cashReturnPath(formData, "error", "Select at least one frozen validated cash row to batch"));
+  }
+
+  const mixedError = mixedInOutSelectionError(selectedIds);
+  if (mixedError) {
+    redirect(cashReturnPath(formData, "error", mixedError));
   }
 
   const { supabase } = await requireAccountingAdminAccess();
