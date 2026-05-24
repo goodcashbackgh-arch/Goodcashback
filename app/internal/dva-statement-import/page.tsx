@@ -245,6 +245,17 @@ export default async function DvaStatementImportPage({
               <input className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" name="default_card_markup_pct" type="number" min="0" step="0.001" defaultValue="0" />
               <p className="mt-1 text-xs leading-5 text-slate-500">Optional. Leave 0 to use daily settlement-card markup by transaction date. Enter a positive value only to override all daily markups in this batch.</p>
             </div>
+            <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 md:col-span-2">
+              <label className="flex items-start gap-3 text-sm font-semibold text-emerald-900">
+                <input className="mt-1 h-4 w-4 rounded border-emerald-300" name="statement_already_gbp" type="checkbox" />
+                <span>
+                  Statement already in GBP / sterling
+                  <span className="block pt-1 text-xs font-medium leading-5 text-emerald-800">
+                    Forces local currency to GBP, settlement markup to 0, and records that no FX conversion applies. Existing GHS/importer FX logic is unchanged when unticked.
+                  </span>
+                </span>
+              </label>
+            </div>
             <div className="md:col-span-2">
               <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Statement file</label>
               <input className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" name="statement_file" type="file" accept=".pdf,.csv,.xlsx,.xls,.txt,text/plain,application/pdf,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required />
