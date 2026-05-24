@@ -173,7 +173,7 @@ function extractPurchasePaymentPayload(row: CashRow) {
 
 function statementGroupKey(row: CashRow, built: ReturnType<typeof extractPurchasePaymentPayload>, refs: Row) {
   const statementLineId = text(refs.statement_line_id) || text(refs.statementLineId) || `snapshot:${row.snapshot_id}`;
-  return [row.posting_category, built.contactId, built.bankAccountId, built.date, statementLineId].join("|");
+  return ["vendor_payment", built.contactId, built.bankAccountId, built.date, statementLineId].join("|");
 }
 
 function groupedReference(group: BuiltCashOutRow[]) {
