@@ -118,6 +118,11 @@ function traceActionHref(row: Row) {
   return text(trace.action_href);
 }
 
+function traceAuditNote(row: Row) {
+  const trace = asObject(row.trace_json);
+  return text(trace.audit_note);
+}
+
 function TraceDetails({ row }: { row: Row }) {
   const trace = asObject(row.trace_json);
   const href = text(trace.action_href);
@@ -325,6 +330,7 @@ export default async function AccountingClosurePage({
                     <td className="px-2 py-2">
                       <p className="text-[11px] font-semibold leading-4 text-slate-700" title={text(row.blocker)}>{short(row.blocker || row.next_action, 135)}</p>
                       {text(row.next_action) && text(row.next_action) !== "No action" ? <p className="mt-1 text-[11px] font-bold text-violet-800">Next: {short(row.next_action, 80)}</p> : null}
+                      {traceAuditNote(row) ? <p className="mt-1 rounded-lg border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] font-semibold leading-4 text-amber-800">Audit note: {short(traceAuditNote(row), 110)}</p> : null}
                       {!traceActionHref(row) && text(row.posting_batch_id) ? <p className="mt-1 text-[10px] font-semibold text-amber-700">Detail link unavailable because no matching posted batch row was found. Use the posting trace.</p> : null}
                       <TraceDetails row={row} />
                     </td>
