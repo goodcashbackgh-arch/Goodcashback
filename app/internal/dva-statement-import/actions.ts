@@ -4,10 +4,10 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 
-const FALLBACK_INVOICE_ID = "09ed41d2-4a3f-44fa-b292-ed1bdcd92735";
 const STATEMENT_STORAGE_BUCKET = "invoice-evidence";
 const VALID_SOURCE_BANKS = new Set(["gcb", "firstbank", "zenith", "other"]);
 const VALID_FILE_TYPES = new Set(["pdf", "csv", "xlsx", "text", "unknown"]);
+const VALID_ACCOUNT_CONTEXTS = new Set(["importer_dva_card_account", "main_company_bank_account"]);
 
 function redirectWithResult(params: Record<string, string>): never {
   const query = new URLSearchParams(params);
@@ -52,35 +52,6 @@ function readMoney(formData: FormData, key: string, fallback = 0) {
   return Number.isFinite(value) && value >= 0 ? value : fallback;
 }
 
-async function resolveImporterId(supabase: Awaited<ReturnType<typeof createClient>>, formData: FormData) {
-  const importerId = readString(formData, "importer_id");
-  if (importerId) return importerId;
-
-  const invoiceId = readString(formData, "base_supplier_invoice_id") || FALLBACK_INVOICE_ID;
-
-  const { data: invoice, error: invoiceError } = await supabase
-    .from("supplier_invoices")
-    .select("order_id")
-    .eq("id", invoiceId)
-    .single();
-
-  if (invoiceError || !invoice?.order_id) {
-    throw new Error(invoiceError?.message || `Could not resolve order for supplier invoice ${invoiceId}`);
-  }
-
-  const { data: order, error: orderError } = await supabase
-    .from("orders")
-    .select("importer_id")
-    .eq("id", invoice.order_id)
-    .single();
-
-  if (orderError || !order?.importer_id) {
-    throw new Error(orderError?.message || `Could not resolve importer for order ${invoice.order_id}`);
-  }
-
-  return String(order.importer_id);
-}
-
 export async function createRealStatementImportBatchAction(formData: FormData) {
   const supabase = await createClient();
 
@@ -92,6 +63,7 @@ export async function createRealStatementImportBatchAction(formData: FormData) {
     redirectWithResult({ import_error: "Please sign in again before uploading a statement." });
   }
 
+  const statementAccountContext = readString(formData, "statement_account_context") || "importer_dva_card_account";
   const importerId = readString(formData, "importer_id");
   const sourceBank = readString(formData, "source_bank") || "other";
   const statementPeriodFrom = readString(formData, "statement_period_from");
@@ -102,7 +74,8 @@ export async function createRealStatementImportBatchAction(formData: FormData) {
   const notes = readString(formData, "notes") || null;
   const statementFile = formData.get("statement_file");
 
-  if (!importerId) redirectWithResult({ import_error: "Select an importer before uploading the statement." });
+  if (!VALID_ACCOUNT_CONTEXTS.has(statementAccountContext)) redirectWithResult({ import_error: "Unsupported statement account type." });
+  if (statementAccountContext === "importer_dva_card_account" && !importerId) redirectWithResult({ import_error: "Select an importer before uploading an importer DVA/card statement." });
   if (!VALID_SOURCE_BANKS.has(sourceBank)) redirectWithResult({ import_error: "Unsupported source bank." });
   if (!/^\d{4}-\d{2}-\d{2}$/.test(statementPeriodFrom)) redirectWithResult({ import_error: "Statement period from date is required." });
   if (!/^\d{4}-\d{2}-\d{2}$/.test(statementPeriodTo)) redirectWithResult({ import_error: "Statement period to date is required." });
@@ -114,7 +87,8 @@ export async function createRealStatementImportBatchAction(formData: FormData) {
   if (!VALID_FILE_TYPES.has(detectedFileType)) redirectWithResult({ import_error: "Unsupported statement file type." });
 
   const ext = safeExt(statementFile.name);
-  const objectPath = `statement-imports/${importerId}/${Date.now()}.${ext}`;
+  const statementAccountKey = statementAccountContext === "main_company_bank_account" ? "main-company-bank" : importerId;
+  const objectPath = `statement-imports/${statementAccountKey}/${Date.now()}.${ext}`;
 
   const { error: uploadError } = await supabase.storage
     .from(STATEMENT_STORAGE_BUCKET)
@@ -130,19 +104,40 @@ export async function createRealStatementImportBatchAction(formData: FormData) {
   const { data: publicUrlData } = supabase.storage.from(STATEMENT_STORAGE_BUCKET).getPublicUrl(objectPath);
   const sourceFileUrl = publicUrlData.publicUrl || objectPath;
 
-  const { data: batchResult, error: batchError } = await supabase.rpc("staff_create_dva_statement_import_batch", {
-    p_importer_id: importerId,
-    p_source_bank: sourceBank,
-    p_statement_period_from: statementPeriodFrom,
-    p_statement_period_to: statementPeriodTo,
-    p_local_ccy: localCcy,
-    p_source_file_url: sourceFileUrl,
-    p_original_filename: statementFile.name,
-    p_detected_file_type: detectedFileType,
-    p_default_card_markup_pct: defaultCardMarkupPct,
-    p_fx_source_context: fxSourceContext,
-    p_notes: notes,
-  });
+  const rpcName = statementAccountContext === "main_company_bank_account"
+    ? "staff_create_dva_statement_import_batch_with_context_v1"
+    : "staff_create_dva_statement_import_batch";
+
+  const rpcArgs = statementAccountContext === "main_company_bank_account"
+    ? {
+        p_statement_account_context: statementAccountContext,
+        p_importer_id: null,
+        p_source_bank: sourceBank,
+        p_statement_period_from: statementPeriodFrom,
+        p_statement_period_to: statementPeriodTo,
+        p_local_ccy: localCcy,
+        p_source_file_url: sourceFileUrl,
+        p_original_filename: statementFile.name,
+        p_detected_file_type: detectedFileType,
+        p_default_card_markup_pct: defaultCardMarkupPct,
+        p_fx_source_context: fxSourceContext,
+        p_notes: notes,
+      }
+    : {
+        p_importer_id: importerId,
+        p_source_bank: sourceBank,
+        p_statement_period_from: statementPeriodFrom,
+        p_statement_period_to: statementPeriodTo,
+        p_local_ccy: localCcy,
+        p_source_file_url: sourceFileUrl,
+        p_original_filename: statementFile.name,
+        p_detected_file_type: detectedFileType,
+        p_default_card_markup_pct: defaultCardMarkupPct,
+        p_fx_source_context: fxSourceContext,
+        p_notes: notes,
+      };
+
+  const { data: batchResult, error: batchError } = await supabase.rpc(rpcName, rpcArgs);
 
   if (batchError) {
     redirectWithResult({ import_error: batchError.message });
@@ -162,9 +157,10 @@ export async function createRealStatementImportBatchAction(formData: FormData) {
     "parser_route" in batchResult
       ? String((batchResult as { parser_route?: unknown }).parser_route)
       : detectedFileType;
+  const accountLabel = statementAccountContext === "main_company_bank_account" ? "Main company bank" : "Importer DVA/card";
 
   redirectWithResult({
-    import_success: `Statement uploaded and import batch created. Parser route: ${parserRoute}. Extraction is the next step.`,
+    import_success: `${accountLabel} statement uploaded and import batch created. Parser route: ${parserRoute}. Extraction is the next step.`,
     batch_id: importBatchId,
   });
 }
