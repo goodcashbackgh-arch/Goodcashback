@@ -119,7 +119,7 @@ export default async function StatementBalanceCheckCard({ importBatchId }: { imp
   const [batchResult, rowsResult] = await Promise.all([
     supabase
       .from("dva_statement_import_batches")
-      .select("id, original_filename, source_file_url, detected_file_type, local_ccy, status, row_count, clean_count, error_count, committed_count, committed_at, mindee_statement_raw_json")
+      .select("id, original_filename, source_file_url, detected_file_type, local_ccy, status, row_count, clean_count, error_count, committed_count, committed_at, statement_account_context, statement_account_label, mindee_statement_raw_json")
       .eq("id", selectedBatchId)
       .maybeSingle(),
     supabase
@@ -140,6 +140,12 @@ export default async function StatementBalanceCheckCard({ importBatchId }: { imp
   const batchCleanCount = num(batch.clean_count);
   const batchCommittedCount = num(batch.committed_count);
   const batchIsCommitted = batchStatus === "committed" || batchCommittedCount > 0 || Boolean(text(batch.committed_at));
+  const isMainCompanyBank = text(batch.statement_account_context) === "main_company_bank_account";
+  const matchingHref = isMainCompanyBank ? "/internal/dva-reconciliation/main-bank" : "/internal/dva-reconciliation/workspace";
+  const matchingButtonText = isMainCompanyBank ? "Open main-bank matching workspace" : "Open matching workspace";
+  const committedCopy = isMainCompanyBank
+    ? "This main company bank batch has already been committed. This card is now a post-commit review signal; matching work sits in the main-bank shipper allocation workspace."
+    : "This batch has already been committed. This card is now a post-commit review signal; matching work sits in the DVA/card workspace.";
   const openingBalance = numberValue(fieldValue(rawJson, "beginning_balance"));
   const endingBalance = numberValue(fieldValue(rawJson, "ending_balance"));
   const totalDebits = numberValue(fieldValue(rawJson, "total_debits"));
@@ -191,7 +197,7 @@ export default async function StatementBalanceCheckCard({ importBatchId }: { imp
           <h2 className="mt-2 text-2xl font-semibold tracking-tight">{batchIsCommitted ? "Committed control summary" : "Summary before commit"}</h2>
           <p className="mt-2 max-w-3xl text-sm leading-6 opacity-80">
             {batchIsCommitted
-              ? "This batch has already been committed. This card is now a post-commit review signal; matching work sits in the DVA/card workspace."
+              ? committedCopy
               : "Header, balance, and row-health summary only. Full transaction review sits in the staged rows section below."}
           </p>
         </div>
@@ -199,6 +205,7 @@ export default async function StatementBalanceCheckCard({ importBatchId }: { imp
       </div>
 
       <div className="mt-5 grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
+        <p><span className="block text-xs font-semibold uppercase tracking-wide opacity-70">Statement account</span><span className="font-semibold">{text(batch.statement_account_label) || (isMainCompanyBank ? "Goodcashback Main Company Bank Account" : "Importer DVA/card account")}</span></p>
         <p><span className="block text-xs font-semibold uppercase tracking-wide opacity-70">Account holder</span><span className="font-semibold">{accountHolder}</span></p>
         <p><span className="block text-xs font-semibold uppercase tracking-wide opacity-70">Account number</span><span className="font-semibold">{maskAccount(accountNumber)}</span></p>
         <p><span className="block text-xs font-semibold uppercase tracking-wide opacity-70">Extracted period</span><span className="font-semibold">{statementPeriodFrom || "—"} → {statementPeriodTo || "—"}</span></p>
@@ -223,8 +230,8 @@ export default async function StatementBalanceCheckCard({ importBatchId }: { imp
           Review staged rows
         </Link>
         {batchIsCommitted ? (
-          <Link className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white" href="/internal/dva-reconciliation/workspace">
-            Open matching workspace
+          <Link className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white" href={matchingHref}>
+            {matchingButtonText}
           </Link>
         ) : null}
       </div>
