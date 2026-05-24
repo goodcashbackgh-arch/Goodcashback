@@ -4,6 +4,8 @@
 
 This contract locks the next build phase after the core Sage invoice, credit note and cash posting routes have been built or proven.
 
+After invoice/cash/credit posting routes are built, `ACCOUNTING_CLOSURE_CONTROL_CONTRACT_v1.md` governs the next build phase before further endpoint expansion.
+
 It supplements:
 
 - `COMMAND_CENTRES_AND_SAGE_CLOUD_ACCOUNTING_CONTRACT_v5.md`
