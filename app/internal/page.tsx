@@ -24,10 +24,16 @@ const dvaFlowSteps: FlowStep[] = [
     description: "Start here for bank, card, DVA and statement uploads. Create the batch, parse/OCR, review, commit or void.",
   },
   {
-    step: "2",
-    title: "Match workspace",
+    step: "2A",
+    title: "Importer match workspace",
     href: "/internal/dva-reconciliation/workspace",
-    description: "Match committed statement lines to supplier invoices, refund exceptions, replacement holds and FX/card differences.",
+    description: "Use for importer DVA/card statement lines matched to supplier invoices, refunds, exceptions, holds and FX/card differences.",
+  },
+  {
+    step: "2B",
+    title: "Main bank / shipper match",
+    href: "/internal/dva-reconciliation/main-bank",
+    description: "Use for main company bank OUT lines matched to posted shipper AP invoices. This branch does not touch importer matching.",
   },
   {
     step: "3",
@@ -90,10 +96,16 @@ const cards: QueueCard[] = [
     proof: "Statement import → commit → matching",
   },
   {
-    title: "DVA/card matching workspace",
+    title: "DVA/card importer matching workspace",
     href: "/internal/dva-reconciliation/workspace",
-    description: "Two-pane supervisor workspace for matching committed statement lines to supplier invoices, refunds, exceptions, holds, and FX/card differences.",
-    proof: "Primary DVA/card matching page",
+    description: "Two-pane supervisor workspace for matching importer DVA/card statement lines to supplier invoices, refunds, exceptions, holds, and FX/card differences.",
+    proof: "Importer DVA/card matching page",
+  },
+  {
+    title: "Main bank / shipper matching",
+    href: "/internal/dva-reconciliation/main-bank",
+    description: "Separate branch for committed main company bank OUT lines. Match them to posted shipper AP invoices without changing the importer supplier/retailer workflow.",
+    proof: "Main bank → shipper AP branch",
   },
   {
     title: "Allocation review / reversal",
@@ -273,7 +285,7 @@ export default async function InternalPage() {
               <p className="text-xs font-bold uppercase tracking-[0.22em] text-sky-600">Start here for DVA/card statements</p>
               <h2 className="mt-2 text-2xl font-semibold tracking-tight">DVA/card statement workflow</h2>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-                This is the supervisor route for statement uploads, OCR/commit, matching, allocation review, reversal, and later grouped pre-Sage review.
+                This is the supervisor route for statement uploads, OCR/commit, matching, allocation review, reversal, and later grouped pre-Sage review. Main company bank shipper payments branch separately after commit.
               </p>
             </div>
             <Link href="/internal/dva-statement-import" className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-sky-700">
@@ -281,7 +293,7 @@ export default async function InternalPage() {
             </Link>
           </div>
 
-          <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
             {dvaFlowSteps.map((step) => (
               <Link
                 key={step.href}
