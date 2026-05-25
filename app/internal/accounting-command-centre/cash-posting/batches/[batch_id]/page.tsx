@@ -4,13 +4,12 @@ import { createClient } from "@/utils/supabase/server";
 import { postCustomerReceiptCashBatchAction } from "../../actions";
 
 type Row = Record<string, unknown>;
-
 type Params = { batch_id: string } | Promise<{ batch_id: string }>;
 type SearchParams = Record<string, string | string[] | undefined> | Promise<Record<string, string | string[] | undefined>>;
 
 const money = new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" });
 const outBatchCategories = ["supplier_invoice_payment", "shipper_invoice_payment", "out_purchase_payment"];
-const controlOnlyBatchCategories = ["retailer_refund_received", "bank_fee", "fx_card_difference", "unmatched_hold"];
+const residualControlCategories = ["bank_fee", "fx_card_difference", "unmatched_hold"];
 
 function text(value: unknown) {
   if (Array.isArray(value)) return text(value[0]);
@@ -27,20 +26,14 @@ function amount(value: unknown) {
 }
 
 function asObject(value: unknown): Row {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  return value as Row;
-}
-
-function hasAccountingAccess(value: unknown) {
-  const permissions = asObject(value);
-  return permissions.accounting_admin_testing === true || permissions.admin_testing === true;
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Row : {};
 }
 
 function pretty(value: unknown) {
   return text(value).replaceAll("_", " ") || "—";
 }
 
-function short(value: unknown, max = 48) {
+function short(value: unknown, max = 44) {
   const raw = text(value);
   if (!raw) return "—";
   return raw.length > max ? `${raw.slice(0, max - 1)}…` : raw;
@@ -50,8 +43,17 @@ function messageParam(searchParams: Record<string, string | string[] | undefined
   return text(searchParams[key]);
 }
 
-function isPostable(row: Row) {
+function hasAccountingAccess(value: unknown) {
+  const permissions = asObject(value);
+  return permissions.accounting_admin_testing === true || permissions.admin_testing === true;
+}
+
+function isStandardPostable(row: Row) {
   return text(row.row_validation_status) === "validated" && ["not_posted", "failed_retryable"].includes(text(row.row_posting_status));
+}
+
+function isRetailerRefundPostable(row: Row) {
+  return text(row.row_validation_status) === "validated" && ["blocked_endpoint_prove_required", "failed_retryable"].includes(text(row.row_posting_status));
 }
 
 function Pill({ value }: { value: unknown }) {
@@ -104,17 +106,29 @@ export default async function CashPostingBatchDetailPage({ params, searchParams 
   const first = rows[0] ?? {};
   const batchCategory = text(first.batch_posting_category) || text(first.posting_category);
   const isOutBatch = outBatchCategories.includes(batchCategory);
-  const isControlOnlyBatch = controlOnlyBatchCategories.includes(batchCategory);
-  const livePostingEnabled = isControlOnlyBatch ? false : isOutBatch ? process.env.SAGE_LIVE_CASH_OUT_POSTING_ENABLED === "true" : process.env.SAGE_LIVE_CASH_POSTING_ENABLED === "true";
-  const postableRows = isControlOnlyBatch ? [] : rows.filter(isPostable);
-  const canPost = !isControlOnlyBatch && livePostingEnabled && postableRows.length > 0 && ["validated", "failed", "partially_posted"].includes(text(first.batch_status));
-  const batchIntro = isControlOnlyBatch
-    ? "Control-only cash batch. These rows are frozen and batched for audit/control, but live Sage posting is blocked until the exact endpoint and allocation route are proven."
+  const isRetailerRefundBatch = batchCategory === "retailer_refund_received";
+  const isResidualControlBatch = residualControlCategories.includes(batchCategory);
+  const livePostingEnabled = isRetailerRefundBatch
+    ? process.env.SAGE_LIVE_RETAILER_REFUND_IN_POSTING_ENABLED === "true"
+    : isResidualControlBatch
+      ? false
+      : isOutBatch
+        ? process.env.SAGE_LIVE_CASH_OUT_POSTING_ENABLED === "true"
+        : process.env.SAGE_LIVE_CASH_POSTING_ENABLED === "true";
+  const postableRows = isRetailerRefundBatch ? rows.filter(isRetailerRefundPostable) : isResidualControlBatch ? [] : rows.filter(isStandardPostable);
+  const canPost = !isResidualControlBatch && livePostingEnabled && postableRows.length > 0 && ["validated", "failed", "partially_posted"].includes(text(first.batch_status));
+  const endpointText = isRetailerRefundBatch
+    ? "POST /contact_payments · VENDOR_REFUND · allocated_artefacts[]"
+    : isResidualControlBatch
+      ? "Control-only · endpoint proof required"
+      : isOutBatch
+        ? "POST /contact_payments · VENDOR_PAYMENT · allocated_artefacts[]"
+        : "POST /contact_payments · CUSTOMER_RECEIPT";
+  const flagName = isRetailerRefundBatch
+    ? "SAGE_LIVE_RETAILER_REFUND_IN_POSTING_ENABLED"
     : isOutBatch
-      ? "Posts supplier/shipper OUT payments to Sage as vendor payments and allocates each payment to the matched posted purchase invoice artefact."
-      : "Posts customer/importer IN receipts to Sage as customer receipts on account. Allocation to sales invoices is handled after the receipt exists.";
-  const endpointText = isControlOnlyBatch ? "Live Sage posting blocked · endpoint proof required" : isOutBatch ? "POST /contact_payments · VENDOR_PAYMENT · allocated_artefacts[]" : "POST /contact_payments · CUSTOMER_RECEIPT";
-  const flagName = isControlOnlyBatch ? "CONTROL_ONLY_BATCH_NO_LIVE_FLAG" : isOutBatch ? "SAGE_LIVE_CASH_OUT_POSTING_ENABLED" : "SAGE_LIVE_CASH_POSTING_ENABLED";
+      ? "SAGE_LIVE_CASH_OUT_POSTING_ENABLED"
+      : "SAGE_LIVE_CASH_POSTING_ENABLED";
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-5 text-slate-950 sm:px-6 lg:px-8">
@@ -123,20 +137,15 @@ export default async function CashPostingBatchDetailPage({ params, searchParams 
           <Link href="/internal/accounting-command-centre/cash-posting" className="text-sm font-semibold text-sky-700">← Cash Posting Workbench</Link>
           <p className="mt-5 text-sm font-medium uppercase tracking-[0.2em] text-violet-500">Cash batch detail</p>
           <h1 className="mt-2 text-3xl font-semibold tracking-tight">{text(first.batch_ref) || "Cash batch"}</h1>
-          <p className="mt-2 text-sm leading-6 text-slate-600">{batchIntro}</p>
+          <p className="mt-2 text-sm leading-6 text-slate-600">{isRetailerRefundBatch ? "Retailer refund IN posts as supplier-side cash received and allocates to the latest posted supplier-credit settlement artefact." : isResidualControlBatch ? "Residual cash control batch. Live Sage posting remains blocked." : "Controlled cash posting batch."}</p>
           <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-bold">
             <span className="rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-violet-900">Category: {pretty(batchCategory)}</span>
-            <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-slate-700">Endpoint: {endpointText}</span>
-            {isControlOnlyBatch ? <span className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-amber-900">Control-only · no Sage post</span> : null}
+            <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-slate-700">{endpointText}</span>
           </div>
           {success ? <p className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-900">{success}</p> : null}
           {pageError ? <p className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900">{pageError}</p> : null}
           {error ? <p className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">Batch detail unavailable: {error.message}. Run the latest cash batch detail migration.</p> : null}
         </section>
-
-        {rows.length === 0 && !error ? (
-          <section className="rounded-3xl border border-slate-200 bg-white p-6 text-sm text-slate-600 shadow-sm">No rows found for this cash batch.</section>
-        ) : null}
 
         {rows.length > 0 ? (
           <>
@@ -148,30 +157,20 @@ export default async function CashPostingBatchDetailPage({ params, searchParams 
               <div className="rounded-2xl border border-slate-200 bg-white p-3"><p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Created</p><p className="mt-1 text-xs font-bold">{text(first.batch_created_at)}</p><p className="text-[11px] text-slate-500">{text(first.batch_created_by_name)}</p></div>
             </section>
 
-            {isControlOnlyBatch ? (
-              <section className="rounded-3xl border border-amber-200 bg-amber-50 p-4 text-sm font-semibold leading-6 text-amber-900 shadow-sm">
-                This is a control-only batch. It is valid audit evidence for the cash workbench, but it must not be posted to Sage until the exact refund/GL endpoint route is proven and separately enabled.
-              </section>
-            ) : null}
+            {isRetailerRefundBatch ? <section className="rounded-3xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-semibold text-emerald-900">Refund-IN posting will post rows with a posted supplier-credit settlement artefact. Rows missing that artefact fail retryable until the supplier credit/equivalent is posted.</section> : null}
+            {isResidualControlBatch ? <section className="rounded-3xl border border-amber-200 bg-amber-50 p-4 text-sm font-semibold text-amber-900">Residual control-only batch. Do not post to Sage until the GL endpoint route is separately proven.</section> : null}
 
             <section className="rounded-3xl border border-slate-200 bg-white shadow-sm">
               <div className="border-b border-slate-100 px-4 py-3">
                 <h2 className="text-xl font-semibold">Batch rows</h2>
-                <p className="mt-1 text-sm text-slate-500">{batchIntro}</p>
                 <form action={postCustomerReceiptCashBatchAction} className="mt-3 flex flex-wrap items-center gap-2">
                   <input type="hidden" name="batch_id" value={batchId} />
-                  <button
-                    type="submit"
-                    disabled={!canPost}
-                    className="rounded-lg bg-emerald-700 px-3 py-1.5 text-[11px] font-bold text-white disabled:bg-slate-200 disabled:text-slate-500"
-                  >
-                    {isControlOnlyBatch ? "Control-only batch · Sage posting blocked" : isOutBatch ? "Post supplier/shipper vendor payment to Sage" : "Post customer receipt batch to Sage"}
+                  <button type="submit" disabled={!canPost} className="rounded-lg bg-emerald-700 px-3 py-1.5 text-[11px] font-bold text-white disabled:bg-slate-200 disabled:text-slate-500">
+                    {isRetailerRefundBatch ? "Post retailer refund IN to Sage" : isResidualControlBatch ? "Control-only batch · Sage posting blocked" : isOutBatch ? "Post supplier/shipper vendor payment to Sage" : "Post customer receipt batch to Sage"}
                   </button>
-                  <span className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-[11px] font-bold text-slate-600">
-                    {isControlOnlyBatch ? "Control-only: live Sage posting blocked" : livePostingEnabled ? "Live Sage cash flag enabled" : "Live Sage cash flag disabled"}
-                  </span>
+                  <span className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-[11px] font-bold text-slate-600">{livePostingEnabled ? "Live Sage cash flag enabled" : "Live Sage cash flag disabled"}</span>
                 </form>
-                {isControlOnlyBatch ? <p className="mt-2 text-xs font-semibold text-amber-700">No environment flag enables this category yet. Build and prove the exact refund/GL Sage adapter first.</p> : !livePostingEnabled ? <p className="mt-2 text-xs font-semibold text-amber-700">Set {flagName}=true before live posting this cash batch category.</p> : null}
+                {!livePostingEnabled && !isResidualControlBatch ? <p className="mt-2 text-xs font-semibold text-amber-700">Set {flagName}=true before live posting this cash batch category.</p> : null}
               </div>
               <div className="overflow-x-auto">
                 <table className="min-w-[1320px] divide-y divide-slate-200 text-xs">
@@ -183,17 +182,18 @@ export default async function CashPostingBatchDetailPage({ params, searchParams 
                       const refs = asObject(row.internal_reference_json);
                       const rowCategory = text(row.posting_category);
                       const rowIsOut = outBatchCategories.includes(rowCategory);
-                      const rowIsControlOnly = controlOnlyBatchCategories.includes(rowCategory);
+                      const rowIsRefund = rowCategory === "retailer_refund_received";
+                      const rowIsResidual = residualControlCategories.includes(rowCategory);
                       return (
                         <tr key={text(row.batch_row_id)} className="align-top">
-                          <td className="px-3 py-3"><Pill value={row.row_posting_status} /><p className="mt-1 text-[11px] text-slate-500">{pretty(row.row_validation_status)}</p>{text(row.error_message) ? <p className="mt-1 text-[11px] font-semibold text-rose-700">{short(row.error_message, 70)}</p> : null}</td>
+                          <td className="px-3 py-3"><Pill value={row.row_posting_status} /><p className="mt-1 text-[11px] text-slate-500">{pretty(row.row_validation_status)}</p>{text(row.error_message) ? <p className="mt-1 text-[11px] font-semibold text-rose-700">{short(row.error_message, 80)}</p> : null}</td>
                           <td className="px-3 py-3 font-mono text-[11px] font-bold">{short(row.order_ref, 32)}</td>
                           <td className="px-3 py-3"><p className="font-bold">{short(row.counterparty_name, 34)}</p><p className="text-[11px] text-slate-500">{pretty(row.counterparty_type)}</p></td>
                           <td className="px-3 py-3 font-mono text-[11px]">{short(row.short_reference, 42)}</td>
                           <td className="px-3 py-3 text-right font-bold">{money.format(amount(row.amount_gbp))}</td>
                           <td className="px-3 py-3"><p className="font-mono text-[11px]">{short(row.sage_contact_id, 34)}</p><p className="text-[11px] text-slate-500">{short(row.sage_contact_name, 34)}</p></td>
                           <td className="px-3 py-3 font-mono text-[11px]">{short(row.sage_bank_account_id, 34)}</td>
-                          <td className="px-3 py-3"><p className="font-mono text-[11px]">{short(row.sage_object_id, 34)}</p>{rowIsOut ? <p className="text-[11px] text-slate-500">Allocated in vendor payment · {short(row.sage_allocation_id, 28)}</p> : rowIsControlOnly ? <p className="text-[11px] font-semibold text-amber-700">Control-only · endpoint proof required</p> : <p className="text-[11px] text-slate-500">POA {short(row.sage_payment_on_account_id, 28)}</p>}<p className="text-[11px] text-slate-500">{short(row.sage_reference, 32)}</p></td>
+                          <td className="px-3 py-3"><p className="font-mono text-[11px]">{short(row.sage_object_id, 34)}</p>{rowIsOut ? <p className="text-[11px] text-slate-500">Allocated vendor payment · {short(row.sage_allocation_id, 28)}</p> : rowIsRefund ? <p className="text-[11px] font-semibold text-emerald-700">Refund IN · supplier settlement allocation</p> : rowIsResidual ? <p className="text-[11px] font-semibold text-amber-700">Control-only · endpoint proof required</p> : <p className="text-[11px] text-slate-500">POA {short(row.sage_payment_on_account_id, 28)}</p>}<p className="text-[11px] text-slate-500">{short(row.sage_reference, 32)}</p></td>
                           <td className="px-3 py-3"><p className="font-mono text-[11px]">{short(row.statement_line_id, 34)}</p><p className="text-[11px] text-slate-500">{short(refs.auth_ref || refs.reference_raw, 34)}</p></td>
                         </tr>
                       );
@@ -206,8 +206,8 @@ export default async function CashPostingBatchDetailPage({ params, searchParams 
             <section className="grid gap-3 lg:grid-cols-2">
               {rows.map((row) => <PayloadBlock key={`${text(row.batch_row_id)}-payload`} title={`Frozen Sage payload · ${text(row.short_reference)}`} value={row.request_payload} />)}
               {rows.map((row) => <PayloadBlock key={`${text(row.batch_row_id)}-response`} title={`Sage response · ${text(row.short_reference)}`} value={row.sage_response_payload} />)}
-              {rows.map((row) => outBatchCategories.includes(text(row.posting_category)) ? <PayloadBlock key={`${text(row.batch_row_id)}-alloc-request`} title={`Vendor payment request · ${text(row.short_reference)}`} value={row.sage_allocation_request_payload} /> : null)}
-              {rows.map((row) => outBatchCategories.includes(text(row.posting_category)) ? <PayloadBlock key={`${text(row.batch_row_id)}-alloc-response`} title={`Vendor payment response · ${text(row.short_reference)}`} value={row.sage_allocation_response_payload} /> : null)}
+              {rows.map((row) => outBatchCategories.includes(text(row.posting_category)) || text(row.posting_category) === "retailer_refund_received" ? <PayloadBlock key={`${text(row.batch_row_id)}-alloc-request`} title={`Cash allocation request · ${text(row.short_reference)}`} value={row.sage_allocation_request_payload} /> : null)}
+              {rows.map((row) => outBatchCategories.includes(text(row.posting_category)) || text(row.posting_category) === "retailer_refund_received" ? <PayloadBlock key={`${text(row.batch_row_id)}-alloc-response`} title={`Cash allocation response · ${text(row.short_reference)}`} value={row.sage_allocation_response_payload} /> : null)}
               {rows.map((row) => <PayloadBlock key={`${text(row.batch_row_id)}-refs`} title={`Internal reference trace · ${text(row.short_reference)}`} value={row.internal_reference_json} />)}
             </section>
           </>
