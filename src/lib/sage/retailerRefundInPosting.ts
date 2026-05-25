@@ -2,6 +2,8 @@ import crypto from "node:crypto";
 
 type Row = Record<string, any>;
 
+const RETAILER_REFUND_IN_TRANSACTION_TYPE_ID = "VENDOR_REFUND";
+
 export type RefundEvidenceMode = "credit_note" | "refund_proof_no_credit_note" | "no_document" | "unknown";
 
 export type RetailerRefundInRow = {
@@ -28,7 +30,10 @@ export type RetailerRefundInPayload = {
     date: string;
     total_amount: number;
     reference: string;
+    is_refund: boolean;
+    payment_type: string;
     allocated_artefacts: Array<{
+      artefact_type: string;
       artefact_id: string;
       amount: number;
     }>;
@@ -89,15 +94,6 @@ function refundMode(value: unknown): RefundEvidenceMode {
   return "unknown";
 }
 
-function verifiedRefundInTransactionTypeId() {
-  const value = text(process.env.SAGE_RETAILER_REFUND_IN_TRANSACTION_TYPE_ID);
-  const verified = text(process.env.SAGE_RETAILER_REFUND_IN_TRANSACTION_TYPE_VERIFIED) === "true";
-  if (!value || !verified) {
-    throw new Error("Retailer refund IN Sage transaction type is not verified. Set SAGE_RETAILER_REFUND_IN_TRANSACTION_TYPE_ID and SAGE_RETAILER_REFUND_IN_TRANSACTION_TYPE_VERIFIED=true only after confirming the accepted Sage contact payment transaction_type_id; no Sage call was made.");
-  }
-  return value;
-}
-
 export function retailerRefundInPayloadHash(value: unknown) {
   return crypto.createHash("sha256").update(JSON.stringify(value ?? {})).digest("hex");
 }
@@ -110,7 +106,7 @@ export function buildRetailerRefundInCandidatePayload(row: RetailerRefundInRow):
     throw new Error("Retailer refund IN row must be validated before posting.");
   }
   if (!["blocked_endpoint_prove_required", "not_posted", "failed_retryable"].includes(row.posting_status)) {
-    throw new Error(`Retailer refund IN row status ${row.posting_status} is not eligible for endpoint proof.`);
+    throw new Error(`Retailer refund IN row status ${row.posting_status} is not eligible for posting.`);
   }
 
   const payload = asObject(row.request_payload);
@@ -162,7 +158,6 @@ export function buildRetailerRefundInCandidatePayload(row: RetailerRefundInRow):
     ["internal_reference_json", "supplier_credit_note_sage_id"],
     ["internal_reference_json", "target_sage_object_id"],
   ]) || text(refs.supplier_credit_settlement_sage_id) || text(refs.supplier_credit_note_sage_id) || text(refs.target_sage_object_id);
-  const transactionTypeId = verifiedRefundInTransactionTypeId();
 
   if (!contactId) throw new Error("Retailer refund IN payload missing retailer/supplier Sage contact_id.");
   if (!bankAccountId) throw new Error("Retailer refund IN payload missing Sage bank_account_id.");
@@ -171,7 +166,7 @@ export function buildRetailerRefundInCandidatePayload(row: RetailerRefundInRow):
   if (!(amount > 0)) throw new Error("Retailer refund IN amount must be positive.");
   if (Math.abs(amount - num(row.amount_gbp)) > 0.01) throw new Error("Retailer refund IN payload amount does not match frozen batch row amount.");
   if (!settlementArtefactId) {
-    throw new Error("Retailer refund IN needs a posted Sage supplier-credit settlement artefact before live posting can be proven. This can come from credit_note, refund_proof_no_credit_note, or no_document.");
+    throw new Error("Retailer refund IN needs a posted Sage supplier-credit settlement artefact before live posting. This can come from credit_note, refund_proof_no_credit_note, or no_document.");
   }
 
   return {
@@ -180,18 +175,20 @@ export function buildRetailerRefundInCandidatePayload(row: RetailerRefundInRow):
     settlementKind: mode === "credit_note" ? "sage_purchase_credit_note" : "supplier_credit_equivalent",
     payload: {
       contact_payment: {
-        transaction_type_id: transactionTypeId,
+        transaction_type_id: RETAILER_REFUND_IN_TRANSACTION_TYPE_ID,
         contact_id: contactId,
         bank_account_id: bankAccountId,
         date,
         total_amount: amount,
         reference,
-        allocated_artefacts: [{ artefact_id: settlementArtefactId, amount }],
+        is_refund: true,
+        payment_type: "receipt",
+        allocated_artefacts: [{ artefact_type: "purchase_credit_note", artefact_id: settlementArtefactId, amount }],
       },
     },
   };
 }
 
 export function retailerRefundInEndpointProofRequiredMessage() {
-  return "Retailer refund IN is a hybrid cash/supplier-credit posting. Use IN bank receipt controls plus retailer_supplier contact and a posted supplier-credit settlement artefact. The settlement artefact may come from credit_note, refund_proof_no_credit_note, or no_document. Do not enable live posting until the exact Sage contact payment transaction_type_id has been verified and set in SAGE_RETAILER_REFUND_IN_TRANSACTION_TYPE_ID with SAGE_RETAILER_REFUND_IN_TRANSACTION_TYPE_VERIFIED=true.";
+  return "Retailer refund IN mirrors the October customer-refund pattern on the supplier side: POST /contact_payments, transaction_type_id VENDOR_REFUND, retailer_supplier contact, bank account, is_refund true, and allocated_artefacts pointing to the posted supplier-credit settlement artefact.";
 }
