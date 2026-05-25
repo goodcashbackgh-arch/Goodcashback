@@ -74,10 +74,6 @@ function displayOrderTitle(orderRef: string | null, fallbackId: string) {
   return `Order ${short}`;
 }
 
-function orderInitial(orderRef: string) {
-  return orderRef.replace(/^ORD-/i, "").slice(-2).toUpperCase() || "GC";
-}
-
 function goodsDescription(totalQty: unknown) {
   const qty = Number(totalQty ?? 0);
   if (Number.isFinite(qty) && qty > 0) return `Goods order · ${qty} ${qty === 1 ? "item" : "items"}`;
@@ -123,28 +119,23 @@ function customerStatus(orderStatus: string | null, funded: boolean, remainingCa
 
 function MobileOrderRow({ order, currencyCode }: { order: OrderSummary; currencyCode: string }) {
   return (
-    <Link href={`/customer/orders/${order.id}/operations`} className="group flex gap-3 rounded-3xl border border-slate-200 bg-white p-3 shadow-sm transition hover:border-sky-200 hover:bg-sky-50/40">
-      <div className="flex h-16 w-16 flex-none items-center justify-center rounded-2xl border border-sky-100 bg-gradient-to-br from-sky-50 to-emerald-50 text-sm font-black text-sky-700">
-        {orderInitial(order.orderRef)}
+    <Link href={`/customer/orders/${order.id}/operations`} className="group block rounded-3xl border border-slate-200 bg-white p-4 shadow-sm transition hover:border-sky-200 hover:bg-sky-50/40">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="truncate text-lg font-black text-slate-950">{order.title}</p>
+          <p className="mt-0.5 truncate text-sm font-semibold text-slate-600">{order.description}</p>
+        </div>
+        <span className="shrink-0 text-lg font-black text-slate-950">{gbp(order.declaredGbp)}</span>
       </div>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <p className="truncate text-base font-black text-slate-950">{order.title}</p>
-            <p className="mt-0.5 truncate text-sm font-semibold text-slate-600">{order.description}</p>
-          </div>
-          <span className="shrink-0 text-lg font-black text-slate-950">{gbp(order.declaredGbp)}</span>
-        </div>
-        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs font-bold">
-          <span className={`rounded-full px-2.5 py-1 ring-1 ${statusToneClass(order.statusTone)}`}>{order.statusLabel}</span>
-          <span className={order.remainingCashNeededGbp > 0.01 ? "text-amber-800" : "text-emerald-700"}>{order.remainingCashNeededGbp > 0.01 ? `${gbp(order.remainingCashNeededGbp)} due` : "Nothing due"}</span>
-        </div>
-        <div className="mt-2 flex items-center justify-between gap-3 text-xs text-slate-500">
-          <span className="truncate">{order.dateLabel}</span>
-          <span className="font-black text-sky-700 transition group-hover:translate-x-0.5">Open →</span>
-        </div>
-        {order.remainingCashNeededGbp > 0.01 ? <p className="mt-1 text-xs font-semibold text-slate-500">Local guide: {localAmount(order.remainingCashNeededLocal, currencyCode)}</p> : null}
+      <div className="mt-3 flex flex-wrap items-center gap-2 text-xs font-bold">
+        <span className={`rounded-full px-2.5 py-1 ring-1 ${statusToneClass(order.statusTone)}`}>{order.statusLabel}</span>
+        <span className={order.remainingCashNeededGbp > 0.01 ? "text-amber-800" : "text-emerald-700"}>{order.remainingCashNeededGbp > 0.01 ? `${gbp(order.remainingCashNeededGbp)} due` : "Nothing due"}</span>
       </div>
+      <div className="mt-3 flex items-center justify-between gap-3 text-xs text-slate-500">
+        <span className="truncate">{order.dateLabel}</span>
+        <span className="font-black text-sky-700 transition group-hover:translate-x-0.5">Open →</span>
+      </div>
+      {order.remainingCashNeededGbp > 0.01 ? <p className="mt-1 text-xs font-semibold text-slate-500">Local guide: {localAmount(order.remainingCashNeededLocal, currencyCode)}</p> : null}
     </Link>
   );
 }
