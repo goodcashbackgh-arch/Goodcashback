@@ -218,27 +218,13 @@ export async function postCustomerReceiptCashBatchAction(formData: FormData) {
   const batchId = formText(formData, "batch_id");
   if (!batchId) redirect("/internal/accounting-command-centre/cash-posting?error=Missing cash batch id");
 
-  const { supabase, staffId } = await requireAccountingAdminAccess();
-  const { data: batch, error: batchError } = await supabase
-    .from("cash_posting_batches")
-    .select("posting_category")
-    .eq("id", batchId)
-    .eq("active", true)
-    .maybeSingle();
-
-  if (batchError || !batch) {
-    redirect(`/internal/accounting-command-centre/cash-posting/batches/${batchId}?error=${encodeURIComponent(batchError?.message || "Cash posting batch not found.")}`);
-  }
-
-  if (String(batch.posting_category ?? "") === "retailer_refund_received") {
-    if (process.env.SAGE_LIVE_CASH_POSTING_ENABLED !== "true") {
-      redirect(`/internal/accounting-command-centre/cash-posting/batches/${batchId}?error=${encodeURIComponent("Live Sage cash posting is disabled. Set SAGE_LIVE_CASH_POSTING_ENABLED=true before posting retailer refund IN.")}`);
-    }
-    process.env.SAGE_LIVE_RETAILER_REFUND_IN_POSTING_ENABLED = "true";
-  }
-
+  const { staffId } = await requireAccountingAdminAccess();
   const origin = await originFromHeaders();
   let result: Awaited<ReturnType<typeof postCashBatchToSage>>;
+
+  if (process.env.SAGE_LIVE_CASH_POSTING_ENABLED === "true") {
+    process.env.SAGE_LIVE_RETAILER_REFUND_IN_POSTING_ENABLED = "true";
+  }
 
   try {
     result = await postCashBatchToSage({ batchId, staffId, origin });
