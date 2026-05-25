@@ -134,13 +134,22 @@ export async function reconcileDvaLineToOrderAction(formData: FormData) {
     });
   }
 
-  const { data, error } = await supabase.rpc("staff_reconcile_dva_line_to_order_customer_fx_gain_v1", {
-    p_dva_statement_line_id: dvaStatementLineId,
-    p_order_id: orderId,
-    p_reconciled_gbp_amount: reconciledAmount,
-    p_match_suggestion_id: matchSuggestionId,
-    p_notes: notes,
-  });
+  const { data, error } = exceedsGap
+    ? await supabase.rpc("staff_reconcile_dva_line_to_order_customer_fx_gain_v1", {
+        p_dva_statement_line_id: dvaStatementLineId,
+        p_order_id: orderId,
+        p_reconciled_gbp_amount: reconciledAmount,
+        p_match_suggestion_id: matchSuggestionId,
+        p_notes: notes,
+      })
+    : await supabase.rpc("staff_reconcile_dva_line_to_order", {
+        p_dva_statement_line_id: dvaStatementLineId,
+        p_order_id: orderId,
+        p_reconciled_gbp_amount: reconciledAmount,
+        p_allow_overfunding: false,
+        p_match_suggestion_id: matchSuggestionId,
+        p_notes: notes,
+      });
 
   if (error) {
     redirectWithFundingResult({
