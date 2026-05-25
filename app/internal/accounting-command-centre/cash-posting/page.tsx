@@ -167,7 +167,11 @@ function CashRowCheckbox({ row }: { row: Row }) {
   "frozen_validated",
   "blocked_endpoint_prove_required",
 ]);
-  if (!bool(row.selectable) || !id || !enabledCategories.has(category) || !selectableStatuses.has(status)) {
+    const controlSelectable =
+    ["retailer_refund_received", "bank_fee", "fx_card_difference", "unmatched_hold"].includes(category)
+    && status === "blocked_endpoint_prove_required";
+
+  if ((!bool(row.selectable) && !controlSelectable) || !id || !enabledCategories.has(category) || !selectableStatuses.has(status)) {
     return <span className="text-xs text-slate-400">—</span>;
   }
   return (
