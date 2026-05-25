@@ -109,7 +109,7 @@ export async function reconcileDvaLineToOrderAction(formData: FormData) {
   const parsedGap = Number(readString(formData, "gap_remaining_gbp"));
   const matchSuggestionId = readString(formData, "match_suggestion_id") || null;
   const notes = readString(formData, "notes") || null;
-  const fxGainConfirmed = readString(formData, "confirm_fx_gain") === "yes";
+  const fxGainConfirmed = readString(formData, "confirm_fx_gain") === "yes" || readString(formData, "confirm_overfunding") === "yes";
 
   if (!dvaStatementLineId || !orderId) {
     redirectWithFundingResult({
