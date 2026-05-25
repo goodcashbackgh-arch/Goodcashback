@@ -91,3 +91,17 @@ aside.fixed.inset-x-0.bottom-0.z-40 input {
     display: none !important;
   }
 }
+
+/* Funding page: existing checkbox name is retained for action compatibility, but the label now reflects the accounting treatment. */
+label:has(input[name="confirm_overfunding"]) {
+  font-size: 0 !important;
+}
+
+label:has(input[name="confirm_overfunding"]) input {
+  font-size: 0.75rem !important;
+}
+
+label:has(input[name="confirm_overfunding"])::after {
+  content: "Recognise surplus as FX gain";
+  font-size: 0.75rem !important;
+}
