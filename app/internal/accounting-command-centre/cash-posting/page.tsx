@@ -153,7 +153,15 @@ function CashRowCheckbox({ row }: { row: Row }) {
   const queueRowId = text(row.queue_row_id) || `cash:${text(row.category)}:${id}`;
   const status = text(row.posting_status);
   const category = text(row.category);
-  const enabledCategories = new Set(["customer_receipt_on_account", "supplier_invoice_payment", "shipper_invoice_payment"]);
+  const enabledCategories = new Set([
+  "customer_receipt_on_account",
+  "supplier_invoice_payment",
+  "shipper_invoice_payment",
+  "retailer_refund_received",
+  "bank_fee",
+  "fx_card_difference",
+  "unmatched_hold",
+]);
   const selectableStatuses = new Set(["ready_to_freeze", "frozen_validated"]);
   if (!bool(row.selectable) || !id || !enabledCategories.has(category) || !selectableStatuses.has(status)) {
     return <span className="text-xs text-slate-400">—</span>;
@@ -289,7 +297,15 @@ export default async function CashPostingWorkbenchPage({
   });
 
   const totalCount = rows.length > 0 ? Number(rows[0].total_count ?? 0) : 0;
-  const enabledCategories = new Set(["customer_receipt_on_account", "supplier_invoice_payment", "shipper_invoice_payment"]);
+  const enabledCategories = new Set([
+  "customer_receipt_on_account",
+  "supplier_invoice_payment",
+  "shipper_invoice_payment",
+  "retailer_refund_received",
+  "bank_fee",
+  "fx_card_difference",
+  "unmatched_hold",
+]);
   const readyRows = rows.filter((row) => text(row.posting_status) === "ready_to_freeze" && enabledCategories.has(text(row.category)));
   const frozenRows = rows.filter((row) => text(row.posting_status) === "frozen_validated");
   const batchedRows = rows.filter((row) => text(row.posting_status) === "batched_validated");
