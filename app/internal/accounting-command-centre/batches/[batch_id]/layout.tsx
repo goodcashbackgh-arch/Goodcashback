@@ -4,6 +4,8 @@ import { postSupplierCreditNoteBatchToSageV2Action } from "../../supplierCreditN
 
 type Row = Record<string, unknown>;
 
+type SupabaseClient = Awaited<ReturnType<typeof createClient>>;
+
 function text(value: unknown) {
   if (Array.isArray(value)) return text(value[0]);
   if (typeof value === "string") return value.trim();
@@ -55,6 +57,17 @@ function lineTaxId(line: Row) {
   return firstText(line, [["sage_tax_rate_id"], ["tax_rate_id"], ["resolved_tax_rate_id"]]);
 }
 
+function rowSourceId(row: Row) {
+  const payload = asObject(row.request_payload_json);
+  return text(row.source_id)
+    || firstText(payload, [["source_id"], ["refund_evidence_submission_id"], ["source_payload", "source_id"], ["source_payload", "refund_evidence_submission_id"]]);
+}
+
+function rowSourceTable(row: Row) {
+  const payload = asObject(row.request_payload_json);
+  return text(row.source_table) || firstText(payload, [["source_table"], ["source_payload", "source_table"]]);
+}
+
 function rowFacts(row: Row) {
   const payload = asObject(row.request_payload_json);
   const purchaseCreditNote = asObject(payload.purchase_credit_note);
@@ -66,14 +79,18 @@ function rowFacts(row: Row) {
     ["source_evidence", "file_url"],
     ["evidence", "credit_note_file_url"],
     ["evidence", "refund_proof_file_url"],
+    ["evidence", "internal_no_cn_memo_file_url"],
     ["evidence", "file_url"],
     ["credit_note_file_url"],
     ["refund_proof_file_url"],
+    ["internal_no_cn_memo_file_url"],
     ["source_payload", "evidence", "credit_note_file_url"],
     ["source_payload", "evidence", "refund_proof_file_url"],
+    ["source_payload", "evidence", "internal_no_cn_memo_file_url"],
     ["source_payload", "evidence", "file_url"],
     ["source_payload", "credit_note_file_url"],
     ["source_payload", "refund_proof_file_url"],
+    ["source_payload", "internal_no_cn_memo_file_url"],
   ]);
   const contactId = firstText(payload, [
     ["supplier_target", "sage_contact_id"],
@@ -96,6 +113,26 @@ function rowFacts(row: Row) {
   };
 }
 
+async function noCnMemoEligibleIds(supabase: SupabaseClient, rows: Row[]) {
+  const ids = Array.from(new Set(rows
+    .filter((row) => rowSourceTable(row) === "dispute_refund_evidence_submissions")
+    .map(rowSourceId)
+    .filter(Boolean)));
+
+  if (ids.length === 0) return new Set<string>();
+
+  const { data } = await supabase
+    .from("dispute_refund_evidence_submissions")
+    .select("id, document_mode, supplier_approval_status, supplier_control_status, amount_balance_status")
+    .in("id", ids)
+    .eq("document_mode", "refund_proof_no_credit_note")
+    .eq("supplier_approval_status", "approved_current")
+    .eq("supplier_control_status", "approved_current")
+    .eq("amount_balance_status", "balanced");
+
+  return new Set(((data ?? []) as Array<{ id: string }>).map((row) => row.id));
+}
+
 export default async function PostingBatchDetailLayout({
   children,
   params,
@@ -116,20 +153,22 @@ export default async function PostingBatchDetailLayout({
         const rows = ((data ?? []) as Row[]).filter((row) => text(row.batch_id));
         const includedRows = rows.filter((row) => text(row.posting_status) !== "excluded");
         const creditNoteRows = includedRows.filter((row) => text(row.document_lane) === "supplier_credit_note");
+        const memoEligible = await noCnMemoEligibleIds(supabase, includedRows);
         const liveFlag = process.env.SAGE_LIVE_POSTING_ENABLED === "true";
         const singleCreditNoteLane = creditNoteRows.length > 0 && creditNoteRows.length === includedRows.length;
         const dryRunOk = includedRows.length > 0 && includedRows.every((row) => text(row.payload_validation_status) === "dry_run_validated");
         const unposted = includedRows.every((row) => !text(row.sage_object_id) && text(row.posting_status) !== "posted" && !text(row.posted_at));
         const missingTargetRows = includedRows.filter((row) => !rowFacts(row).hasTargetFacts).length;
-        const missingSourceFileRows = includedRows.filter((row) => !rowFacts(row).sourceFile).length;
-        const canPost = liveFlag && singleCreditNoteLane && dryRunOk && unposted && missingTargetRows === 0 && missingSourceFileRows === 0;
+        const sourceFileBlockedRows = includedRows.filter((row) => !rowFacts(row).sourceFile && !memoEligible.has(rowSourceId(row))).length;
+        const noCnMemoRows = includedRows.filter((row) => !rowFacts(row).sourceFile && memoEligible.has(rowSourceId(row))).length;
+        const canPost = liveFlag && singleCreditNoteLane && dryRunOk && unposted && missingTargetRows === 0 && sourceFileBlockedRows === 0;
         const reasons: string[] = [];
         if (!liveFlag) reasons.push("live Sage posting flag is off");
         if (!singleCreditNoteLane) reasons.push("not a supplier credit note-only batch");
         if (!dryRunOk) reasons.push("dry-run validation is not complete");
         if (!unposted) reasons.push("one or more rows already posted");
         if (missingTargetRows > 0) reasons.push("Sage contact, ledger, tax or line facts are missing");
-        if (missingSourceFileRows > 0) reasons.push("credit note source file is missing");
+        if (sourceFileBlockedRows > 0) reasons.push("credit note source file is missing");
 
         if (singleCreditNoteLane) {
           control = (
@@ -139,7 +178,8 @@ export default async function PostingBatchDetailLayout({
                   <div>
                     <p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-700">Supplier credit note posting</p>
                     <h2 className="mt-1 text-xl font-bold text-emerald-950">Post purchase credit note to Sage</h2>
-                    <p className="mt-1 text-sm leading-5 text-emerald-900">Posts to /purchase_credit_notes, preserves the frozen resolver payload, then attaches the credit note PDF using the same transaction-based attachment pattern as supplier/shipper AP.</p>
+                    <p className="mt-1 text-sm leading-5 text-emerald-900">Posts to /purchase_credit_notes. For approved no-CN refund-proof rows without a file, the posting action generates an internal no-CN memo first and attaches that evidence.</p>
+                    {noCnMemoRows > 0 ? <p className="mt-2 text-xs font-bold text-emerald-900">No-CN memo will be generated for {noCnMemoRows} row(s).</p> : null}
                     {!canPost && reasons.length > 0 ? <p className="mt-2 text-xs font-bold text-amber-900">Blocked: {reasons.join("; ")}.</p> : null}
                   </div>
                   <form action={postSupplierCreditNoteBatchToSageV2Action} className="shrink-0">
@@ -148,7 +188,7 @@ export default async function PostingBatchDetailLayout({
                       type="submit"
                       disabled={!canPost}
                       className="rounded-2xl bg-emerald-700 px-5 py-3 text-sm font-extrabold text-white shadow-sm hover:bg-emerald-800 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-600"
-                      title={canPost ? "Post supplier purchase credit note to Sage and attach source PDF." : reasons.join("; ")}
+                      title={canPost ? "Post supplier purchase credit note to Sage and attach source evidence." : reasons.join("; ")}
                     >
                       Post supplier credit note to Sage
                     </button>
