@@ -30,6 +30,7 @@ type BatchResult = {
 };
 
 const outPaymentCategories = new Set(["supplier_invoice_payment", "shipper_invoice_payment"]);
+const controlCashCategories = new Set(["retailer_refund_received", "bank_fee", "fx_card_difference", "unmatched_hold"]);
 const singleCategoryOnly = new Set([
   "customer_receipt_on_account",
   "retailer_refund_received",
@@ -111,6 +112,11 @@ function selectedCashCategories(selectedIds: string[]) {
   return Array.from(new Set(selectedIds.map((id) => id.split(":")[1] || "").filter(Boolean)));
 }
 
+function selectedRowsAreControlOnly(selectedIds: string[]) {
+  const categories = selectedCashCategories(selectedIds);
+  return categories.length > 0 && categories.every((category) => controlCashCategories.has(category));
+}
+
 function mixedCashSelectionError(selectedIds: string[]) {
   const categories = selectedCashCategories(selectedIds);
   if (categories.length <= 1) return "";
@@ -134,11 +140,19 @@ export async function freezeSelectedCustomerReceiptCashRowsAction(formData: Form
     redirect(cashReturnPath(formData, "error", "Select at least one ready cash row to freeze"));
   }
 
-  const { supabase } = await requireAccountingAdminAccess();
+  const mixedError = mixedCashSelectionError(selectedIds);
+  if (mixedError) {
+    redirect(cashReturnPath(formData, "error", mixedError));
+  }
 
-  const { data, error } = await (supabase as any).rpc("internal_freeze_cash_posting_rows_v2", {
+  const { supabase } = await requireAccountingAdminAccess();
+  const useControlRpc = selectedRowsAreControlOnly(selectedIds);
+
+  const { data, error } = await (supabase as any).rpc(useControlRpc ? "internal_freeze_cash_control_rows_v1" : "internal_freeze_cash_posting_rows_v2", {
     p_queue_row_ids: selectedIds,
-    p_notes: "Accounting Command Centre shared cash posting freeze. No Sage API call.",
+    p_notes: useControlRpc
+      ? "Accounting Command Centre cash control freeze. No Sage API call. Live posting blocked until endpoint proof."
+      : "Accounting Command Centre shared cash posting freeze. No Sage API call.",
   });
 
   if (error) redirect(cashReturnPath(formData, "error", error.message));
@@ -172,10 +186,13 @@ export async function createCustomerReceiptCashBatchAction(formData: FormData) {
   }
 
   const { supabase } = await requireAccountingAdminAccess();
+  const useControlRpc = selectedRowsAreControlOnly(selectedIds);
 
-  const { data, error } = await (supabase as any).rpc("internal_create_cash_batch_v2", {
+  const { data, error } = await (supabase as any).rpc(useControlRpc ? "internal_create_cash_control_batch_v1" : "internal_create_cash_batch_v2", {
     p_queue_row_ids: selectedIds,
-    p_notes: "Accounting Command Centre shared cash batch. No Sage API call.",
+    p_notes: useControlRpc
+      ? "Accounting Command Centre cash control batch. No Sage API call. Live posting blocked until endpoint proof."
+      : "Accounting Command Centre shared cash batch. No Sage API call.",
   });
 
   if (error) redirect(cashReturnPath(formData, "error", error.message));
