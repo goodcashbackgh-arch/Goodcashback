@@ -29,6 +29,15 @@ type BatchResult = {
   posting_category?: string | null;
 };
 
+const outPaymentCategories = new Set(["supplier_invoice_payment", "shipper_invoice_payment"]);
+const singleCategoryOnly = new Set([
+  "customer_receipt_on_account",
+  "retailer_refund_received",
+  "bank_fee",
+  "fx_card_difference",
+  "unmatched_hold",
+]);
+
 function formText(formData: FormData, key: string, fallback = "") {
   return String(formData.get(key) ?? fallback).trim();
 }
@@ -102,14 +111,20 @@ function selectedCashCategories(selectedIds: string[]) {
   return Array.from(new Set(selectedIds.map((id) => id.split(":")[1] || "").filter(Boolean)));
 }
 
-function mixedInOutSelectionError(selectedIds: string[]) {
+function mixedCashSelectionError(selectedIds: string[]) {
   const categories = selectedCashCategories(selectedIds);
-  const hasCustomerIn = categories.includes("customer_receipt_on_account");
-  const hasSupplierOrShipperOut = categories.some((category) => ["supplier_invoice_payment", "shipper_invoice_payment"].includes(category));
-  if (hasCustomerIn && hasSupplierOrShipperOut) {
-    return "Do not mix customer/importer IN receipts with supplier/shipper OUT payments in one cash batch. Filter to one lane and create separate batches.";
+  if (categories.length <= 1) return "";
+
+  const allOutPayments = categories.every((category) => outPaymentCategories.has(category));
+  if (allOutPayments) return "";
+
+  const namedCategories = categories.map((category) => category.replaceAll("_", " ")).join(", ");
+  const hasSingleCategoryOnly = categories.some((category) => singleCategoryOnly.has(category));
+  if (hasSingleCategoryOnly) {
+    return `Do not mix ${namedCategories} in one cash batch. Filter to one category and create separate batches. Supplier/shipper OUT payments are the only supported mixed cash batch.`;
   }
-  return "";
+
+  return `Do not mix ${namedCategories} in one cash batch. Filter to one category and create separate batches.`;
 }
 
 export async function freezeSelectedCustomerReceiptCashRowsAction(formData: FormData) {
@@ -151,7 +166,7 @@ export async function createCustomerReceiptCashBatchAction(formData: FormData) {
     redirect(cashReturnPath(formData, "error", "Select at least one frozen validated cash row to batch"));
   }
 
-  const mixedError = mixedInOutSelectionError(selectedIds);
+  const mixedError = mixedCashSelectionError(selectedIds);
   if (mixedError) {
     redirect(cashReturnPath(formData, "error", mixedError));
   }
