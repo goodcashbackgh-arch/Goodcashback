@@ -91,8 +91,9 @@ function refundMode(value: unknown): RefundEvidenceMode {
 
 function verifiedRefundInTransactionTypeId() {
   const value = text(process.env.SAGE_RETAILER_REFUND_IN_TRANSACTION_TYPE_ID);
-  if (!value) {
-    throw new Error("Retailer refund IN Sage transaction type is not verified. Set SAGE_RETAILER_REFUND_IN_TRANSACTION_TYPE_ID only after confirming the accepted Sage contact payment transaction_type_id; no Sage call was made.");
+  const verified = text(process.env.SAGE_RETAILER_REFUND_IN_TRANSACTION_TYPE_VERIFIED) === "true";
+  if (!value || !verified) {
+    throw new Error("Retailer refund IN Sage transaction type is not verified. Set SAGE_RETAILER_REFUND_IN_TRANSACTION_TYPE_ID and SAGE_RETAILER_REFUND_IN_TRANSACTION_TYPE_VERIFIED=true only after confirming the accepted Sage contact payment transaction_type_id; no Sage call was made.");
   }
   return value;
 }
@@ -192,5 +193,5 @@ export function buildRetailerRefundInCandidatePayload(row: RetailerRefundInRow):
 }
 
 export function retailerRefundInEndpointProofRequiredMessage() {
-  return "Retailer refund IN is a hybrid cash/supplier-credit posting. Use IN bank receipt controls plus retailer_supplier contact and a posted supplier-credit settlement artefact. The settlement artefact may come from credit_note, refund_proof_no_credit_note, or no_document. Do not enable live posting until the exact Sage contact payment transaction_type_id has been verified and set in SAGE_RETAILER_REFUND_IN_TRANSACTION_TYPE_ID.";
+  return "Retailer refund IN is a hybrid cash/supplier-credit posting. Use IN bank receipt controls plus retailer_supplier contact and a posted supplier-credit settlement artefact. The settlement artefact may come from credit_note, refund_proof_no_credit_note, or no_document. Do not enable live posting until the exact Sage contact payment transaction_type_id has been verified and set in SAGE_RETAILER_REFUND_IN_TRANSACTION_TYPE_ID with SAGE_RETAILER_REFUND_IN_TRANSACTION_TYPE_VERIFIED=true.";
 }
