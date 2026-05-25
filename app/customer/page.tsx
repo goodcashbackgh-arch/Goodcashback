@@ -17,7 +17,6 @@ type OrderRow = {
 type CreditRow = { direction: string | null; amount_gbp: number | string | null };
 type CreditBalanceRow = { importer_id: string | null; available_credit_gbp: number | string | null };
 type FundingEventRow = { order_id: string | null; event_type: string | null; amount_gbp: number | string | null };
-type ScreenshotRow = { order_id: string | null; screenshot_url: string | null; display_order?: number | string | null };
 
 type CurrencyRelation = { currencies?: { code?: string | null }[] | { code?: string | null } | null }[] | { currencies?: { code?: string | null }[] | { code?: string | null } | null } | null;
 
@@ -36,7 +35,6 @@ type OrderSummary = {
   statusLabel: string;
   statusTone: "amber" | "sky" | "emerald" | "rose" | "slate";
   group: "attention" | "active" | "complete";
-  thumbnailUrl: string | null;
 };
 
 function gbp(value: unknown) {
@@ -74,6 +72,10 @@ function displayOrderTitle(orderRef: string | null, fallbackId: string) {
   const cleaned = ref.replace(/^ORD-/i, "");
   const short = cleaned.length > 6 ? cleaned.slice(-6) : cleaned;
   return `Order ${short}`;
+}
+
+function orderInitial(orderRef: string) {
+  return orderRef.replace(/^ORD-/i, "").slice(-2).toUpperCase() || "GC";
 }
 
 function goodsDescription(totalQty: unknown) {
@@ -122,8 +124,8 @@ function customerStatus(orderStatus: string | null, funded: boolean, remainingCa
 function MobileOrderRow({ order, currencyCode }: { order: OrderSummary; currencyCode: string }) {
   return (
     <Link href={`/customer/orders/${order.id}/operations`} className="group flex gap-3 rounded-3xl border border-slate-200 bg-white p-3 shadow-sm transition hover:border-sky-200 hover:bg-sky-50/40">
-      <div className="h-16 w-16 flex-none overflow-hidden rounded-2xl border border-slate-200 bg-gradient-to-br from-sky-50 to-emerald-50">
-        {order.thumbnailUrl ? <img src={order.thumbnailUrl} alt="" className="h-full w-full object-cover" /> : <div className="flex h-full w-full items-center justify-center text-xs font-black text-sky-700">GCB</div>}
+      <div className="flex h-16 w-16 flex-none items-center justify-center rounded-2xl border border-sky-100 bg-gradient-to-br from-sky-50 to-emerald-50 text-sm font-black text-sky-700">
+        {orderInitial(order.orderRef)}
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex items-start justify-between gap-3">
@@ -227,22 +229,6 @@ export default async function CustomerDashboardPage() {
     fundingByOrder.set(orderId, current);
   }
 
-  let screenshotRows: ScreenshotRow[] = [];
-  if (rows.length > 0) {
-    const { data } = await supabase
-      .from("order_screenshots")
-      .select("order_id, screenshot_url, display_order")
-      .in("order_id", rows.map((order) => order.id))
-      .order("display_order", { ascending: true });
-    screenshotRows = (data ?? []) as ScreenshotRow[];
-  }
-  const firstScreenshotByOrder = new Map<string, string>();
-  for (const row of screenshotRows) {
-    if (row.order_id && row.screenshot_url && !firstScreenshotByOrder.has(row.order_id)) {
-      firstScreenshotByOrder.set(row.order_id, row.screenshot_url);
-    }
-  }
-
   const fallbackCreditBalanceGbp = ((creditRows ?? []) as CreditRow[]).reduce((sum, row) => {
     const amount = Number(row.amount_gbp ?? 0);
     return sum + (row.direction === "credit" ? amount : -amount);
@@ -276,7 +262,6 @@ export default async function CustomerDashboardPage() {
       statusLabel: status.label,
       statusTone: status.tone,
       group: status.group,
-      thumbnailUrl: firstScreenshotByOrder.get(order.id) ?? null,
     };
   });
 
