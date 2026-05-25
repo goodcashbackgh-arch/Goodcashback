@@ -11,6 +11,7 @@ import {
   tokenRefreshRequired,
 } from "@/lib/sage/oauth";
 import { postCustomerReceiptCashBatchToSage } from "@/lib/sage/cashPosting";
+import { buildRetailerRefundInCandidatePayload } from "@/lib/sage/retailerRefundInPosting";
 
 type Row = Record<string, any>;
 
@@ -41,6 +42,13 @@ type BuiltCashOutRow = {
   reference: string;
   targetSageObjectId: string;
   groupKey: string;
+};
+
+type RetailerRefundSettlement = {
+  refundEvidenceSubmissionId: string;
+  documentMode: string;
+  settlementArtefactId: string;
+  settlementSnapshotId: string;
 };
 
 function asObject(value: unknown): Row {
@@ -216,6 +224,98 @@ async function snapshotReferenceMap(rows: CashRow[]) {
   return new Map((data ?? []).map((row: Row) => [text(row.id), asObject(row.internal_reference_json)]));
 }
 
+async function latestRetailerRefundSettlement(row: CashRow): Promise<RetailerRefundSettlement> {
+  const { data: allocation, error: allocationError } = await supabaseAdmin
+    .from("dva_statement_line_allocation_detail_vw")
+    .select("allocation_id, dispute_id")
+    .eq("allocation_id", row.source_id)
+    .maybeSingle();
+  if (allocationError) throw new Error(allocationError.message);
+  if (!allocation?.dispute_id) throw new Error("Retailer refund IN row is not linked to a dispute/refund allocation.");
+
+  const { data: submissionsRaw, error: submissionsError } = await supabaseAdmin
+    .from("dispute_refund_evidence_submissions")
+    .select("id, document_mode, supplier_approval_status, supplier_control_status, supplier_approved_at, created_at")
+    .eq("dispute_id", allocation.dispute_id)
+    .eq("supplier_approval_status", "approved_current")
+    .eq("supplier_control_status", "approved_current")
+    .order("supplier_approved_at", { ascending: false, nullsFirst: false })
+    .order("created_at", { ascending: false, nullsFirst: false });
+  if (submissionsError) throw new Error(submissionsError.message);
+
+  const submissions = (submissionsRaw ?? []) as Row[];
+  if (submissions.length === 0) throw new Error("No approved current refund evidence found for this retailer refund IN row.");
+
+  for (const submission of submissions) {
+    const submissionId = text(submission.id);
+    if (!submissionId) continue;
+    const { data: snapshot, error: snapshotError } = await supabaseAdmin
+      .from("sage_posting_snapshots")
+      .select("id, source_id, sage_invoice_id, sage_posted_at")
+      .eq("document_lane", "supplier_credit_note")
+      .eq("sage_posting_status", "posted")
+      .eq("source_id", submissionId)
+      .not("sage_invoice_id", "is", null)
+      .order("sage_posted_at", { ascending: false, nullsFirst: false })
+      .limit(1)
+      .maybeSingle();
+    if (snapshotError) throw new Error(snapshotError.message);
+    if (snapshot?.sage_invoice_id) {
+      return {
+        refundEvidenceSubmissionId: submissionId,
+        documentMode: text(submission.document_mode) || "unknown",
+        settlementArtefactId: text(snapshot.sage_invoice_id),
+        settlementSnapshotId: text(snapshot.id),
+      };
+    }
+  }
+
+  throw new Error("Approved current refund evidence exists, but its supplier credit/equivalent has not been posted to Sage yet.");
+}
+
+function buildRetailerRefundInRequest(row: CashRow, settlement: RetailerRefundSettlement) {
+  const payload = asObject(row.request_payload);
+  const enrichedRow: CashRow = {
+    ...row,
+    request_payload: {
+      ...payload,
+      document_mode: settlement.documentMode,
+      refund_evidence_mode: settlement.documentMode,
+      supplier_refund_candidate: {
+        ...asObject(payload.supplier_refund_candidate),
+        document_mode: settlement.documentMode,
+        refund_evidence_mode: settlement.documentMode,
+        supplier_credit_settlement_sage_id: settlement.settlementArtefactId,
+        supplier_credit_note_sage_id: settlement.settlementArtefactId,
+        refund_evidence_submission_id: settlement.refundEvidenceSubmissionId,
+      },
+      allocation_target: {
+        ...asObject(payload.allocation_target),
+        supplier_credit_settlement_sage_id: settlement.settlementArtefactId,
+        purchase_credit_note_id: settlement.settlementArtefactId,
+        refund_evidence_submission_id: settlement.refundEvidenceSubmissionId,
+      },
+      internal_reference_json: {
+        ...asObject(payload.internal_reference_json),
+        document_mode: settlement.documentMode,
+        refund_evidence_mode: settlement.documentMode,
+        supplier_credit_settlement_sage_id: settlement.settlementArtefactId,
+        supplier_credit_note_sage_id: settlement.settlementArtefactId,
+        refund_evidence_submission_id: settlement.refundEvidenceSubmissionId,
+        supplier_credit_settlement_snapshot_id: settlement.settlementSnapshotId,
+      },
+    },
+  };
+  const built = buildRetailerRefundInCandidatePayload(enrichedRow);
+  return {
+    ...built.payload,
+    contact_payment: {
+      ...built.payload.contact_payment,
+      transaction_type_id: process.env.SAGE_RETAILER_REFUND_IN_TRANSACTION_TYPE_ID || built.payload.contact_payment.transaction_type_id,
+    },
+  };
+}
+
 async function activeSageContext(origin: string) {
   const config = assertSageOAuthConfigured(origin);
   const { data: tokenRows, error: tokenError } = await supabaseAdmin
@@ -357,6 +457,185 @@ async function sagePost(context: Awaited<ReturnType<typeof activeSageContext>>, 
     raw = { error: error instanceof Error ? error.message : "Network error calling Sage." };
   }
   return { raw, response, durationMs: Date.now() - fetchStarted, ok: Boolean(response?.ok) };
+}
+
+export async function postRetailerRefundInCashBatchToSage(params: { batchId: string; staffId: string; origin: string }) {
+  if (process.env.SAGE_LIVE_RETAILER_REFUND_IN_POSTING_ENABLED !== "true") {
+    throw new Error("Live retailer refund IN posting is disabled. Set SAGE_LIVE_RETAILER_REFUND_IN_POSTING_ENABLED=true only after approving the first controlled retailer refund IN test.");
+  }
+
+  const { data: batch, error: batchError } = await supabaseAdmin
+    .from("cash_posting_batches")
+    .select("id, batch_ref, posting_category, batch_status")
+    .eq("id", params.batchId)
+    .eq("active", true)
+    .maybeSingle();
+  if (batchError) throw new Error(batchError.message);
+  if (!batch) throw new Error("Cash posting batch not found.");
+  if (text(batch.posting_category) !== "retailer_refund_received") throw new Error("Only retailer_refund_received cash batches are supported by this poster.");
+  if (!["validated", "failed", "partially_posted"].includes(text(batch.batch_status))) throw new Error(`Cash batch status ${batch.batch_status} is not postable.`);
+
+  const { data: rowsRaw, error: rowsError } = await supabaseAdmin
+    .from("cash_posting_batch_rows")
+    .select("*")
+    .eq("batch_id", params.batchId)
+    .eq("active", true)
+    .in("posting_status", ["blocked_endpoint_prove_required", "failed_retryable"]);
+  if (rowsError) throw new Error(rowsError.message);
+  const rows = (rowsRaw ?? []) as CashRow[];
+  if (rows.length === 0) throw new Error("No postable retailer refund IN cash rows found in this batch.");
+  if (rows.some((row) => row.posting_category !== "retailer_refund_received")) throw new Error("Cash posting batch contains a non-retailer-refund-IN row.");
+  if (rows.some((row) => row.validation_status !== "validated")) throw new Error("Every retailer refund IN cash row must be validated before posting.");
+  if (rows.some((row) => text(row.sage_object_id))) throw new Error("One or more retailer refund IN rows already have a Sage object id.");
+
+  const context = await activeSageContext(params.origin);
+  await supabaseAdmin.from("cash_posting_batches").update({
+    batch_status: "posting",
+    posting_started_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  }).eq("id", params.batchId);
+
+  let posted = 0;
+  let failed = 0;
+  let needsReview = 0;
+  const endpointPath = "/contact_payments";
+
+  for (const row of rows) {
+    const attemptCount = (row.attempt_count ?? 0) + 1;
+    const startedAt = new Date().toISOString();
+    await supabaseAdmin.from("cash_posting_batch_rows").update({
+      posting_status: "posting",
+      attempt_count: attemptCount,
+      last_attempt_at: startedAt,
+      error_code: null,
+      error_message: null,
+      updated_at: startedAt,
+    }).eq("id", row.id);
+    await supabaseAdmin.from("cash_posting_snapshots").update({
+      sage_posting_status: "posting_in_progress",
+      updated_at: startedAt,
+    }).eq("id", row.snapshot_id);
+
+    let requestBody: Row;
+    let settlement: RetailerRefundSettlement | null = null;
+    try {
+      settlement = await latestRetailerRefundSettlement(row);
+      requestBody = buildRetailerRefundInRequest(row, settlement);
+    } catch (error) {
+      failed += 1;
+      const message = error instanceof Error ? error.message : "Could not build retailer refund IN Sage payload.";
+      const missingSettlement = /not been posted to Sage yet|No approved current refund evidence/i.test(message);
+      await supabaseAdmin.from("cash_posting_batch_rows").update({
+        posting_status: missingSettlement ? "failed_retryable" : "failed_terminal",
+        error_code: "payload_builder_failed",
+        error_message: message,
+        updated_at: new Date().toISOString(),
+      }).eq("id", row.id);
+      await supabaseAdmin.from("cash_posting_snapshots").update({
+        sage_posting_status: "posting_failed",
+        sage_response_payload: { error: message },
+        updated_at: new Date().toISOString(),
+      }).eq("id", row.snapshot_id);
+      continue;
+    }
+
+    const { data: requestLog } = await supabaseAdmin.from("sage_api_request_log").insert({
+      connection_id: context.connectionId,
+      sage_business_row_id: context.sageBusinessRowId,
+      posting_batch_id: params.batchId,
+      posting_batch_row_id: row.id,
+      connection_event_type: "posting_batch",
+      request_kind: "retailer_refund_in_contact_payment",
+      http_method: "POST",
+      endpoint_path: endpointPath,
+      idempotency_key: row.idempotency_key,
+      request_payload_redacted: requestBody,
+      request_headers_redacted: { accept: "application/json", content_type: "application/json", x_business: context.sageBusinessId },
+      request_payload_hash: bodyHash(requestBody),
+      created_by_staff_id: params.staffId,
+    }).select("id").single();
+
+    const paymentResult = await sagePost(context, endpointPath, requestBody);
+    const paymentId = paymentResult.ok ? contactPaymentId(paymentResult.raw) : "";
+    const reference = paymentResult.ok ? contactPaymentReference(paymentResult.raw, text(requestBody.contact_payment?.reference)) : "";
+    const paymentErr = paymentResult.ok && !paymentId ? "Sage returned success but no contact_payment id could be extracted." : errorMessage(paymentResult.raw);
+
+    if (requestLog?.id) {
+      await supabaseAdmin.from("sage_api_response_log").insert({
+        request_log_id: requestLog.id,
+        connection_id: context.connectionId,
+        sage_business_row_id: context.sageBusinessRowId,
+        http_status: paymentResult.response?.status ?? null,
+        success_yn: paymentResult.ok && Boolean(paymentId),
+        sage_object_type: "contact_payment",
+        sage_object_id: paymentId || null,
+        sage_reference: reference || null,
+        response_payload_redacted: paymentResult.raw as Row,
+        error_code: paymentResult.ok && paymentId ? null : (paymentResult.response ? `sage_http_${paymentResult.response.status}` : "sage_network_error"),
+        error_message: paymentResult.ok && paymentId ? null : paymentErr,
+        duration_ms: paymentResult.durationMs,
+      });
+    }
+
+    const now = new Date().toISOString();
+    if (paymentResult.ok && paymentId) {
+      posted += 1;
+      await supabaseAdmin.from("cash_posting_batch_rows").update({
+        posting_status: "posted",
+        sage_object_type: "contact_payment",
+        sage_object_id: paymentId,
+        sage_reference: reference || text(requestBody.contact_payment?.reference),
+        response_payload: paymentResult.raw as Row,
+        posted_at: now,
+        error_code: null,
+        error_message: null,
+        sage_allocation_status: "allocated_in_contact_payment",
+        sage_allocation_id: paymentId,
+        sage_allocation_amount_gbp: num(row.amount_gbp),
+        sage_allocation_target_object_id: settlement?.settlementArtefactId || null,
+        sage_allocation_request_payload: requestBody,
+        sage_allocation_response_payload: paymentResult.raw as Row,
+        sage_allocation_error_code: null,
+        sage_allocation_error_message: null,
+        sage_allocation_posted_at: now,
+        updated_at: now,
+      }).eq("id", row.id);
+      await supabaseAdmin.from("cash_posting_snapshots").update({
+        sage_posting_status: "posted",
+        sage_object_id: paymentId,
+        sage_response_payload: paymentResult.raw as Row,
+        sage_allocation_status: "allocated_in_contact_payment",
+        sage_allocation_id: paymentId,
+        sage_allocation_amount_gbp: num(row.amount_gbp),
+        sage_allocation_target_object_id: settlement?.settlementArtefactId || null,
+        sage_allocation_request_payload: requestBody,
+        sage_allocation_response_payload: paymentResult.raw as Row,
+        sage_allocation_error_code: null,
+        sage_allocation_error_message: null,
+        sage_allocation_posted_at: now,
+        updated_at: now,
+      }).eq("id", row.snapshot_id);
+    } else {
+      failed += 1;
+      const statusCode = paymentResult.response?.status ?? 0;
+      const postingStatus = retryableStatus(statusCode) ? "failed_retryable" : "failed_terminal";
+      await supabaseAdmin.from("cash_posting_batch_rows").update({
+        posting_status: postingStatus,
+        response_payload: paymentResult.raw as Row,
+        error_code: paymentResult.response ? `sage_http_${paymentResult.response.status}` : "sage_network_error",
+        error_message: paymentErr,
+        updated_at: now,
+      }).eq("id", row.id);
+      await supabaseAdmin.from("cash_posting_snapshots").update({
+        sage_posting_status: "posting_failed",
+        sage_response_payload: paymentResult.raw as Row,
+        updated_at: now,
+      }).eq("id", row.snapshot_id);
+    }
+  }
+
+  await updateCashBatchCounts(params.batchId);
+  return { posted, failed, needsReview, total: rows.length, endpoint: endpointPath };
 }
 
 export async function postSupplierOrShipperPaymentCashBatchToSage(params: { batchId: string; staffId: string; origin: string }) {
@@ -574,6 +853,9 @@ export async function postCashBatchToSage(params: { batchId: string; staffId: st
 
   if (category === "customer_receipt_on_account") {
     return postCustomerReceiptCashBatchToSage(params);
+  }
+  if (category === "retailer_refund_received") {
+    return postRetailerRefundInCashBatchToSage(params);
   }
   return postSupplierOrShipperPaymentCashBatchToSage(params);
 }
