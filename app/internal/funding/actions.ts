@@ -109,7 +109,7 @@ export async function reconcileDvaLineToOrderAction(formData: FormData) {
   const parsedGap = Number(readString(formData, "gap_remaining_gbp"));
   const matchSuggestionId = readString(formData, "match_suggestion_id") || null;
   const notes = readString(formData, "notes") || null;
-  const overfundingConfirmed = readString(formData, "confirm_overfunding") === "yes";
+  const fxGainConfirmed = readString(formData, "confirm_fx_gain") === "yes";
 
   if (!dvaStatementLineId || !orderId) {
     redirectWithFundingResult({
@@ -126,20 +126,18 @@ export async function reconcileDvaLineToOrderAction(formData: FormData) {
 
   const exceedsGap =
     Number.isFinite(parsedGap) && parsedGap >= 0 && reconciledAmount > parsedGap;
-  const allowOverfunding = exceedsGap ? overfundingConfirmed : false;
 
-  if (exceedsGap && !overfundingConfirmed) {
+  if (exceedsGap && !fxGainConfirmed) {
     redirectWithFundingResult({
       dva_error:
-        "Amount exceeds remaining gap. Confirm overfunding before reconciliation.",
+        "Amount exceeds remaining gap. Confirm the surplus should be recognised as FX gain before reconciliation.",
     });
   }
 
-  const { data, error } = await supabase.rpc("staff_reconcile_dva_line_to_order", {
+  const { data, error } = await supabase.rpc("staff_reconcile_dva_line_to_order_customer_fx_gain_v1", {
     p_dva_statement_line_id: dvaStatementLineId,
     p_order_id: orderId,
     p_reconciled_gbp_amount: reconciledAmount,
-    p_allow_overfunding: allowOverfunding,
     p_match_suggestion_id: matchSuggestionId,
     p_notes: notes,
   });
@@ -151,16 +149,33 @@ export async function reconcileDvaLineToOrderAction(formData: FormData) {
   }
 
   revalidatePath("/internal/funding");
+  revalidatePath("/internal/accounting-command-centre/cash-posting");
+  revalidatePath("/internal/dva-reconciliation/workspace");
 
   const appliedAmount =
     typeof data === "object" &&
     data !== null &&
-    "reconciled_gbp_amount" in data
-      ? String((data as { reconciled_gbp_amount?: unknown }).reconciled_gbp_amount)
-      : reconciledAmount.toFixed(2);
+    "funding_amount_gbp" in data
+      ? String((data as { funding_amount_gbp?: unknown }).funding_amount_gbp)
+      : typeof data === "object" &&
+          data !== null &&
+          "reconciled_gbp_amount" in data
+        ? String((data as { reconciled_gbp_amount?: unknown }).reconciled_gbp_amount)
+        : reconciledAmount.toFixed(2);
+
+  const fxGainAmount =
+    typeof data === "object" &&
+    data !== null &&
+    "fx_gain_gbp" in data
+      ? Number((data as { fx_gain_gbp?: unknown }).fx_gain_gbp)
+      : 0;
+
+  const message = Number.isFinite(fxGainAmount) && fxGainAmount > 0
+    ? `Reconciled £${appliedAmount} DVA funding to order and routed £${fxGainAmount.toFixed(2)} surplus as FX gain.`
+    : `Reconciled £${appliedAmount} DVA funding to order.`;
 
   redirectWithFundingResult({
-    dva_success: `Reconciled £${appliedAmount} DVA funding to order.`,
+    dva_success: message,
   });
 }
 
