@@ -108,6 +108,8 @@ export default async function CashPostingBatchDetailPage({ params, searchParams 
   const isOutBatch = outBatchCategories.includes(batchCategory);
   const isRetailerRefundBatch = batchCategory === "retailer_refund_received";
   const isResidualControlBatch = residualControlCategories.includes(batchCategory);
+  const refundInTransactionTypeId = text(process.env.SAGE_RETAILER_REFUND_IN_TRANSACTION_TYPE_ID);
+  const refundInTransactionTypeVerified = !isRetailerRefundBatch || Boolean(refundInTransactionTypeId);
   const livePostingEnabled = isRetailerRefundBatch
     ? process.env.SAGE_LIVE_RETAILER_REFUND_IN_POSTING_ENABLED === "true"
     : isResidualControlBatch
@@ -115,10 +117,16 @@ export default async function CashPostingBatchDetailPage({ params, searchParams 
       : isOutBatch
         ? process.env.SAGE_LIVE_CASH_OUT_POSTING_ENABLED === "true"
         : process.env.SAGE_LIVE_CASH_POSTING_ENABLED === "true";
-  const postableRows = isRetailerRefundBatch ? rows.filter(isRetailerRefundPostable) : isResidualControlBatch ? [] : rows.filter(isStandardPostable);
-  const canPost = !isResidualControlBatch && livePostingEnabled && postableRows.length > 0 && ["validated", "failed", "partially_posted"].includes(text(first.batch_status));
+  const postableRows = isRetailerRefundBatch
+    ? (refundInTransactionTypeVerified ? rows.filter(isRetailerRefundPostable) : [])
+    : isResidualControlBatch
+      ? []
+      : rows.filter(isStandardPostable);
+  const canPost = !isResidualControlBatch && livePostingEnabled && refundInTransactionTypeVerified && postableRows.length > 0 && ["validated", "failed", "partially_posted"].includes(text(first.batch_status));
   const endpointText = isRetailerRefundBatch
-    ? "POST /contact_payments · VENDOR_REFUND · allocated_artefacts[]"
+    ? refundInTransactionTypeVerified
+      ? `POST /contact_payments · ${refundInTransactionTypeId} · allocated_artefacts[]`
+      : "POST /contact_payments · transaction type not verified · allocated_artefacts[]"
     : isResidualControlBatch
       ? "Control-only · endpoint proof required"
       : isOutBatch
@@ -158,6 +166,7 @@ export default async function CashPostingBatchDetailPage({ params, searchParams 
             </section>
 
             {isRetailerRefundBatch ? <section className="rounded-3xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-semibold text-emerald-900">Refund-IN posting will post rows with a posted supplier-credit settlement artefact. Rows missing that artefact fail retryable until the supplier credit/equivalent is posted.</section> : null}
+            {isRetailerRefundBatch && !refundInTransactionTypeVerified ? <section className="rounded-3xl border border-amber-200 bg-amber-50 p-4 text-sm font-semibold text-amber-900">Refund-IN Sage posting is blocked because the exact Sage contact payment transaction_type_id has not been verified. Set SAGE_RETAILER_REFUND_IN_TRANSACTION_TYPE_ID only after verification.</section> : null}
             {isResidualControlBatch ? <section className="rounded-3xl border border-amber-200 bg-amber-50 p-4 text-sm font-semibold text-amber-900">Residual control-only batch. Do not post to Sage until the GL endpoint route is separately proven.</section> : null}
 
             <section className="rounded-3xl border border-slate-200 bg-white shadow-sm">
@@ -166,9 +175,9 @@ export default async function CashPostingBatchDetailPage({ params, searchParams 
                 <form action={postCustomerReceiptCashBatchAction} className="mt-3 flex flex-wrap items-center gap-2">
                   <input type="hidden" name="batch_id" value={batchId} />
                   <button type="submit" disabled={!canPost} className="rounded-lg bg-emerald-700 px-3 py-1.5 text-[11px] font-bold text-white disabled:bg-slate-200 disabled:text-slate-500">
-                    {isRetailerRefundBatch ? "Post retailer refund IN to Sage" : isResidualControlBatch ? "Control-only batch · Sage posting blocked" : isOutBatch ? "Post supplier/shipper vendor payment to Sage" : "Post customer receipt batch to Sage"}
+                    {isRetailerRefundBatch ? refundInTransactionTypeVerified ? "Post retailer refund IN to Sage" : "Refund-IN transaction type not verified" : isResidualControlBatch ? "Control-only batch · Sage posting blocked" : isOutBatch ? "Post supplier/shipper vendor payment to Sage" : "Post customer receipt batch to Sage"}
                   </button>
-                  <span className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-[11px] font-bold text-slate-600">{livePostingEnabled ? "Live Sage cash flag enabled" : "Live Sage cash flag disabled"}</span>
+                  <span className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-[11px] font-bold text-slate-600">{isRetailerRefundBatch && !refundInTransactionTypeVerified ? "Refund-IN transaction type required" : livePostingEnabled ? "Live Sage cash flag enabled" : "Live Sage cash flag disabled"}</span>
                 </form>
                 {!livePostingEnabled && !isResidualControlBatch ? <p className="mt-2 text-xs font-semibold text-amber-700">Set {flagName}=true before live posting this cash batch category.</p> : null}
               </div>
