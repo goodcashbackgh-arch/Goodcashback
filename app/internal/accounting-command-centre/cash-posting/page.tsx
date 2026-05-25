@@ -162,7 +162,11 @@ function CashRowCheckbox({ row }: { row: Row }) {
   "fx_card_difference",
   "unmatched_hold",
 ]);
-  const selectableStatuses = new Set(["ready_to_freeze", "frozen_validated"]);
+  const selectableStatuses = new Set([
+  "ready_to_freeze",
+  "frozen_validated",
+  "blocked_endpoint_prove_required",
+]);
   if (!bool(row.selectable) || !id || !enabledCategories.has(category) || !selectableStatuses.has(status)) {
     return <span className="text-xs text-slate-400">—</span>;
   }
