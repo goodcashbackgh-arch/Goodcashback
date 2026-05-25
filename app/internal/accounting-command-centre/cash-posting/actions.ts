@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { headers } from "next/headers";
 import { createClient } from "@/utils/supabase/server";
 import { postCashBatchToSage } from "@/lib/sage/cashOutPosting";
+import { postBankGlControlCashBatchToSage } from "@/lib/sage/bankGlPosting";
 import { postCustomerReceiptAllocationsToSage } from "@/lib/sage/cashAllocation";
 
 type FreezeResult = {
@@ -38,6 +39,7 @@ const singleCategoryOnly = new Set([
   "fx_card_difference",
   "unmatched_hold",
 ]);
+const bankGlPostingCategories = new Set(["bank_fee", "fx_card_difference"]);
 
 function formText(formData: FormData, key: string, fallback = "") {
   return String(formData.get(key) ?? fallback).trim();
@@ -218,16 +220,28 @@ export async function postCustomerReceiptCashBatchAction(formData: FormData) {
   const batchId = formText(formData, "batch_id");
   if (!batchId) redirect("/internal/accounting-command-centre/cash-posting?error=Missing cash batch id");
 
-  const { staffId } = await requireAccountingAdminAccess();
+  const { supabase, staffId } = await requireAccountingAdminAccess();
   const origin = await originFromHeaders();
-  let result: Awaited<ReturnType<typeof postCashBatchToSage>>;
+  let result: Awaited<ReturnType<typeof postCashBatchToSage>> | Awaited<ReturnType<typeof postBankGlControlCashBatchToSage>>;
 
   if (process.env.SAGE_LIVE_CASH_POSTING_ENABLED === "true") {
     process.env.SAGE_LIVE_RETAILER_REFUND_IN_POSTING_ENABLED = "true";
   }
 
   try {
-    result = await postCashBatchToSage({ batchId, staffId, origin });
+    const { data: batch, error: batchError } = await supabase
+      .from("cash_posting_batches")
+      .select("posting_category")
+      .eq("id", batchId)
+      .eq("active", true)
+      .maybeSingle();
+
+    if (batchError) throw new Error(batchError.message);
+    const postingCategory = String((batch as { posting_category?: unknown } | null)?.posting_category ?? "").trim();
+
+    result = bankGlPostingCategories.has(postingCategory)
+      ? await postBankGlControlCashBatchToSage({ batchId, staffId, origin })
+      : await postCashBatchToSage({ batchId, staffId, origin });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Cash Sage posting failed.";
     revalidatePath(`/internal/accounting-command-centre/cash-posting/batches/${batchId}`);
