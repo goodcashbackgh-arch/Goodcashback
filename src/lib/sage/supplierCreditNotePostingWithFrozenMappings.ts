@@ -1,5 +1,6 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { postSupplierCreditNoteBatchToSage as postBaseSupplierCreditNoteBatchToSage } from "@/lib/sage/supplierCreditNotePosting";
+import { ensureNoCnSupplierCreditAdjustmentMemosForBatch } from "@/lib/sage/noCnSupplierCreditMemo";
 
 type Row = Record<string, any>;
 
@@ -23,14 +24,18 @@ function creditNoteSourceFileUrl(payload: Row) {
   return text(asObject(payload.source_evidence).file_url)
     || text(asObject(payload.evidence).credit_note_file_url)
     || text(asObject(payload.evidence).refund_proof_file_url)
+    || text(asObject(payload.evidence).internal_no_cn_memo_file_url)
     || text(asObject(payload.evidence).file_url)
     || text(payload.credit_note_file_url)
     || text(payload.refund_proof_file_url)
+    || text(payload.internal_no_cn_memo_file_url)
     || text(asObject(asObject(payload.source_payload).evidence).credit_note_file_url)
     || text(asObject(asObject(payload.source_payload).evidence).refund_proof_file_url)
+    || text(asObject(asObject(payload.source_payload).evidence).internal_no_cn_memo_file_url)
     || text(asObject(asObject(payload.source_payload).evidence).file_url)
     || text(asObject(payload.source_payload).credit_note_file_url)
-    || text(asObject(payload.source_payload).refund_proof_file_url);
+    || text(asObject(payload.source_payload).refund_proof_file_url)
+    || text(asObject(payload.source_payload).internal_no_cn_memo_file_url);
 }
 
 function withSourceEvidence(payload: Row) {
@@ -121,8 +126,9 @@ export async function postSupplierCreditNoteBatchToSage(params: {
   staffId: string;
   origin: string;
 }) {
+  const memoResult = await ensureNoCnSupplierCreditAdjustmentMemosForBatch(params.batchId);
   await applyFrozenApMappingsToSupplierCreditNoteRows(params.batchId);
   const result = await postBaseSupplierCreditNoteBatchToSage(params);
   const restoredPayloadRows = await restoreFrozenPayloadForPostedRows(params.batchId);
-  return { ...result, restoredPayloadRows };
+  return { ...result, restoredPayloadRows, noCnMemosGenerated: memoResult.generated };
 }
