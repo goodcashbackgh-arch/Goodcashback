@@ -18,6 +18,8 @@ type PickedItem = {
   kind: "statement" | "target";
   direction: Direction;
   targetType?: TargetType;
+  remainingAmount?: number;
+  selectable?: boolean;
 };
 
 type ClassifiedCard = PickedItem & {
@@ -38,6 +40,20 @@ function parseGbp(value: string) {
   const match = value.match(/£\s*([\d,]+(?:\.\d{1,2})?)/);
   if (!match) return 0;
   return Number(match[1].replace(/,/g, "")) || 0;
+}
+
+function parseLabeledGbp(body: string, label: string) {
+  const marker = `${label} £`;
+  const index = body.indexOf(marker);
+  if (index < 0) return null;
+  const raw = body
+    .slice(index + marker.length)
+    .trim()
+    .split(" ")[0]
+    ?.split("·")[0]
+    ?.replaceAll(",", "");
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : null;
 }
 
 function itemLabel(body: string) {
@@ -82,6 +98,14 @@ function hideServerSelectedBadges(anchor: HTMLAnchorElement) {
   }
 }
 
+function markUnavailable(anchor: HTMLAnchorElement) {
+  anchor.setAttribute("aria-disabled", "true");
+  anchor.setAttribute("data-balanced-selection-disabled", "true");
+  anchor.style.cursor = "not-allowed";
+  anchor.style.opacity = "0.72";
+  anchor.style.boxShadow = "none";
+}
+
 function classifyAnchor(anchor: HTMLAnchorElement): ClassifiedCard | null {
   const body = anchor.innerText.trim();
   if (!body) return null;
@@ -112,12 +136,18 @@ function classifyAnchor(anchor: HTMLAnchorElement): ClassifiedCard | null {
       kind: "target",
       direction,
       targetType,
+      selectable: true,
     };
   }
 
   if (lineId && !isTargetCard) {
     const direction: Direction = /\bIN\b/.test(body) ? "in" : /\bOUT\b/.test(body) ? "out" : "neutral";
     const amount = parseGbp(body);
+    const remainingAmount = parseLabeledGbp(body, "Remaining") ?? amount;
+    const isBalanced = body.toLowerCase().includes("balanced") || remainingAmount <= 0.009;
+
+    if (isBalanced) markUnavailable(anchor);
+
     return {
       anchor,
       id: lineId,
@@ -126,6 +156,8 @@ function classifyAnchor(anchor: HTMLAnchorElement): ClassifiedCard | null {
       signedAmount: signedAmount(direction, amount),
       kind: "statement",
       direction,
+      remainingAmount,
+      selectable: !isBalanced,
     };
   }
 
@@ -157,6 +189,8 @@ function resetCardVisual(anchor: HTMLAnchorElement) {
   anchor.style.borderWidth = "1px";
   anchor.style.backgroundColor = "#ffffff";
   anchor.style.boxShadow = "none";
+  anchor.style.opacity = "";
+  anchor.style.cursor = "";
 }
 
 function applyCardVisual(anchor: HTMLAnchorElement, item: PickedItem) {
@@ -224,7 +258,7 @@ export default function SafeWorkspaceSelectionController() {
     const initialTargetId = params.get("target_id") || "";
 
     if (initialLineId) {
-      const line = classified.find((card) => card.kind === "statement" && card.id === initialLineId);
+      const line = classified.find((card) => card.kind === "statement" && card.id === initialLineId && card.selectable !== false);
       if (line) setStatements(new Map([[line.id, { ...line, anchor: undefined } as unknown as PickedItem]]));
     }
 
@@ -242,6 +276,17 @@ export default function SafeWorkspaceSelectionController() {
         event.preventDefault();
         event.stopPropagation();
 
+        if (card.kind === "statement" && card.selectable === false) {
+          markUnavailable(card.anchor);
+          setStatements((current) => {
+            if (!current.has(card.id)) return current;
+            const next = new Map(current);
+            next.delete(card.id);
+            return next;
+          });
+          return;
+        }
+
         const item: PickedItem = {
           id: card.id,
           label: card.label,
@@ -250,6 +295,8 @@ export default function SafeWorkspaceSelectionController() {
           kind: card.kind,
           direction: card.direction,
           targetType: card.targetType,
+          remainingAmount: card.remainingAmount,
+          selectable: card.selectable,
         };
 
         if (card.kind === "statement") setStatements((current) => toggleMap(current, item));
@@ -267,6 +314,10 @@ export default function SafeWorkspaceSelectionController() {
     for (const card of cards) {
       hideServerSelectedBadges(card.anchor);
       resetCardVisual(card.anchor);
+      if (card.kind === "statement" && card.selectable === false) {
+        markUnavailable(card.anchor);
+        continue;
+      }
       const selected = card.kind === "statement" ? statements.get(card.id) : targets.get(card.id);
       if (selected) applyCardVisual(card.anchor, selected);
     }
@@ -284,9 +335,9 @@ export default function SafeWorkspaceSelectionController() {
   const canConfirmSupplier = Boolean(statement && target?.targetType === "invoice");
   const operationalType = operationalAllocationType(statement, target);
   const canConfirmOperational = Boolean(statement && target?.targetType === "exception" && operationalType);
-  const allocationAmount = Math.min(statement?.amount ?? 0, target?.amount ?? 0);
-  const fxResidualAmount = Math.abs(statement?.amount ?? 0);
-  const canAllocateFxResidual = Boolean(statement && !hasPrimaryTarget && fxResidualAmount > 0.009);
+  const allocationAmount = Math.min(statement?.remainingAmount ?? statement?.amount ?? 0, target?.amount ?? 0);
+  const fxResidualAmount = Math.abs(statement?.remainingAmount ?? statement?.amount ?? 0);
+  const canAllocateFxResidual = Boolean(statement && statement.selectable !== false && !hasPrimaryTarget && fxResidualAmount > 0.009);
 
   const selectedSummary = useMemo(() => message(statements, targets, netGap), [statements, targets, netGap]);
 
