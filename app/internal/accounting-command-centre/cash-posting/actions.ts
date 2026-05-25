@@ -244,9 +244,28 @@ export async function postCustomerReceiptCashBatchAction(formData: FormData) {
       .maybeSingle();
 
     if (batchError) throw new Error(batchError.message);
-    const postingCategory = String((batch as { posting_category?: unknown } | null)?.posting_category ?? "").trim();
 
-    if (bankGlPostingCategories.has(postingCategory)) {
+    const { data: batchRows, error: batchRowsError } = await supabase
+      .from("cash_posting_batch_rows")
+      .select("posting_category")
+      .eq("batch_id", batchId)
+      .eq("active", true);
+
+    if (batchRowsError) throw new Error(batchRowsError.message);
+
+    const batchCategory = String((batch as { posting_category?: unknown } | null)?.posting_category ?? "").trim();
+    const rowCategories = Array.from(new Set((batchRows ?? [])
+      .map((row: { posting_category?: unknown }) => String(row.posting_category ?? "").trim())
+      .filter(Boolean)));
+    const effectiveCategory = rowCategories.length === 1 ? rowCategories[0] : batchCategory;
+    const containsBankGlRows = rowCategories.some((category) => bankGlPostingCategories.has(category));
+    const containsNonBankGlRows = rowCategories.some((category) => !bankGlPostingCategories.has(category));
+
+    if (containsBankGlRows && containsNonBankGlRows) {
+      throw new Error(`Mixed bank/GL and non-bank/GL cash rows are not postable together. Row categories: ${rowCategories.join(", ")}.`);
+    }
+
+    if (bankGlPostingCategories.has(effectiveCategory) || (containsBankGlRows && !containsNonBankGlRows)) {
       const { postBankGlControlCashBatchToSage } = await import("@/lib/sage/bankGlPosting");
       result = await postBankGlControlCashBatchToSage({ batchId, staffId, origin });
     } else {
