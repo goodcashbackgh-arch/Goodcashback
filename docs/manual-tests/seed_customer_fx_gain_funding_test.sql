@@ -59,6 +59,9 @@ BEGIN
 
   INSERT INTO public.dva_statements (
     importer_id,
+    statement_account_context,
+    statement_account_key,
+    statement_account_label,
     source_bank,
     uploaded_by_staff_id,
     csv_url,
@@ -68,6 +71,9 @@ BEGIN
     parse_errors_json
   ) VALUES (
     v_order.importer_id,
+    'importer_dva_card_account',
+    v_order.importer_id::text,
+    'Importer DVA/card account',
     'gcb',
     v_staff_id,
     'manual://seed-customer-fx-gain-test',
