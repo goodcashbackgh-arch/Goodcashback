@@ -86,11 +86,13 @@ function categoryOptions(categories: SageCatalogCategory[], key: string): SageCa
 }
 
 function mappingCategory(row: Row) {
-  const text = `${row.mapping_code} ${row.display_name} ${row.description} ${row.value_kind}`.toLowerCase();
-  if (text.includes("bank") || text.includes("receipt") || text.includes("payment settlement")) return "bank_accounts";
   if (row.value_kind === "tax_rate_id") return "tax_rates";
   if (row.value_kind === "ledger_account_id") return "ledger_accounts";
   if (row.value_kind === "contact_id") return "contacts";
+
+  const text = `${row.mapping_code} ${row.display_name} ${row.description} ${row.value_kind}`.toLowerCase();
+  if (text.includes("bank") || text.includes("receipt") || text.includes("payment settlement")) return "bank_accounts";
+
   return "ledger_accounts";
 }
 
