@@ -32,12 +32,12 @@ type CashRow = {
 type BuiltBankGlRow = {
   row: CashRow;
   direction: "in" | "out";
-  endpointPath: string;
-  requestKind: string;
+  endpointPath: "/other_receipts" | "/other_payments";
+  requestKind: "bank_gl_other_receipt" | "bank_gl_other_payment";
   requestBody: Row;
   amount: number;
   reference: string;
-  sageObjectType: string;
+  sageObjectType: "other_receipt" | "other_payment";
 };
 
 function asObject(value: unknown): Row {
@@ -101,29 +101,27 @@ function errorMessage(raw: unknown) {
     }).filter(Boolean);
     if (messages.length > 0) return messages.join(" | ");
   }
-
   const root = asObject(raw);
   return text(root.message) || text(root.error_description) || text(root.error) || text(root.detail) || text(root.errors) || "Sage API request failed.";
 }
 
-function bankTransactionId(raw: unknown) {
+function postedObjectId(raw: unknown) {
   return firstText(raw, [
-    ["bank_transaction", "id"],
     ["other_receipt", "id"],
     ["other_payment", "id"],
-    ["transaction", "id"],
+    ["bank_transaction", "id"],
     ["id"],
     ["$items", 0, "id"],
     ["data", "id"],
   ]);
 }
 
-function bankTransactionReference(raw: unknown, fallback: string) {
+function postedReference(raw: unknown, fallback: string) {
   return firstText(raw, [
-    ["bank_transaction", "reference"],
-    ["bank_transaction", "displayed_as"],
     ["other_receipt", "reference"],
+    ["other_receipt", "displayed_as"],
     ["other_payment", "reference"],
+    ["other_payment", "displayed_as"],
     ["reference"],
     ["displayed_as"],
   ]) || fallback;
@@ -320,7 +318,8 @@ function buildDetailsLine(args: { ledgerAccountId: string; amount: number; refer
 
 function inferDirection(row: CashRow, payload: Row, refs: Row, allocationContext: Row): "in" | "out" {
   const direction = text(payload.direction)
-    || text(getPath(payload, ["bank_transaction", "direction"]))
+    || text(getPath(payload, ["other_receipt", "direction"]))
+    || text(getPath(payload, ["other_payment", "direction"]))
     || text(refs.direction)
     || text(getPath(refs, ["workbench_detail", "direction"]))
     || text(allocationContext.statement_direction);
@@ -336,26 +335,29 @@ function buildBankGlPayload(row: CashRow, refs: Row, allocationContext: Row): Bu
 
   const payload = asObject(row.request_payload);
   const snapshotPayload = asObject(refs.snapshot_request_payload);
-  const bankTransaction = asObject(payload.bank_transaction);
-  const snapshotBankTransaction = asObject(snapshotPayload.bank_transaction);
   const direction = inferDirection(row, payload, refs, allocationContext);
-  const amount = round2(num(getPath(bankTransaction, ["total_amount"])) || num(getPath(snapshotBankTransaction, ["total_amount"])) || num(row.amount_gbp));
-  const endpointPath = text(payload.endpoint) === "/bank_transactions" || text(snapshotPayload.endpoint) === "/bank_transactions" ? "/bank_transactions" : "/bank_transactions";
-  const bankAccountId = text(getPath(bankTransaction, ["bank_account_id"]))
-    || text(getPath(snapshotBankTransaction, ["bank_account_id"]))
+  const incomingRoot = direction === "in" ? asObject(payload.other_receipt) : asObject(payload.other_payment);
+  const snapshotRoot = direction === "in" ? asObject(snapshotPayload.other_receipt) : asObject(snapshotPayload.other_payment);
+  const legacyRoot = asObject(payload.bank_transaction);
+  const legacySnapshotRoot = asObject(snapshotPayload.bank_transaction);
+  const root = Object.keys(incomingRoot).length > 0 ? incomingRoot : legacyRoot;
+  const snapshotRootFinal = Object.keys(snapshotRoot).length > 0 ? snapshotRoot : legacySnapshotRoot;
+  const amount = round2(num(root.total_amount) || num(snapshotRootFinal.total_amount) || num(row.amount_gbp));
+  const bankAccountId = text(root.bank_account_id)
+    || text(snapshotRootFinal.bank_account_id)
     || text(refs.target_sage_bank_account_id)
     || text(getPath(refs, ["workbench_detail", "target_sage_bank_account_id"]));
-  const ledgerAccountId = text(getPath(bankTransaction, ["details", 0, "ledger_account_id"]))
-    || text(getPath(snapshotBankTransaction, ["details", 0, "ledger_account_id"]))
+  const ledgerAccountId = text(getPath(root, ["details", 0, "ledger_account_id"]))
+    || text(getPath(snapshotRootFinal, ["details", 0, "ledger_account_id"]))
     || text(refs.target_sage_ledger_account_id)
     || text(getPath(refs, ["workbench_detail", "target_sage_ledger_account_id"]));
-  const date = text(getPath(bankTransaction, ["date"]))
-    || text(getPath(snapshotBankTransaction, ["date"]))
+  const date = text(root.date)
+    || text(snapshotRootFinal.date)
     || text(allocationContext.statement_date)
     || text(allocationContext.transaction_date)
     || new Date().toISOString().slice(0, 10);
-  const reference = text(getPath(bankTransaction, ["reference"]))
-    || text(getPath(snapshotBankTransaction, ["reference"]))
+  const reference = text(root.reference)
+    || text(snapshotRootFinal.reference)
     || text(refs.short_reference)
     || text(getPath(refs, ["workbench_detail", "short_reference"]))
     || `GCB-${direction === "in" ? "FXIN" : "FXOUT"}-${row.source_id.slice(0, 12)}`;
@@ -365,23 +367,22 @@ function buildBankGlPayload(row: CashRow, refs: Row, allocationContext: Row): Bu
   if (!(amount > 0)) throw new Error("Bank/GL amount must be positive.");
   if (row.posting_category === "bank_fee" && direction !== "out") throw new Error("Bank fee rows must be OUT bank transactions.");
 
-  const transactionTypeId = direction === "in" ? "OTHER_RECEIPT" : "OTHER_PAYMENT";
   const detailsReference = row.posting_category === "fx_card_difference"
     ? `${direction === "in" ? "FX gain" : "FX/card loss"}${allocationContext.order_ref ? ` · ${allocationContext.order_ref}` : ""}`
     : `Bank/card fee${allocationContext.order_ref ? ` · ${allocationContext.order_ref}` : ""}`;
-
-  const requestBody = Object.keys(bankTransaction).length > 0 && text(payload.endpoint) === "/bank_transactions"
-    ? payload
-    : {
-        bank_transaction: {
-          transaction_type_id: transactionTypeId,
-          bank_account_id: bankAccountId,
-          date,
-          total_amount: amount,
-          reference,
-          details: [buildDetailsLine({ ledgerAccountId, amount, reference: detailsReference })],
-        },
-      };
+  const endpointPath = direction === "in" ? "/other_receipts" : "/other_payments";
+  const rootName = direction === "in" ? "other_receipt" : "other_payment";
+  const transactionTypeId = direction === "in" ? "OTHER_RECEIPT" : "OTHER_PAYMENT";
+  const requestBody = {
+    [rootName]: {
+      transaction_type_id: transactionTypeId,
+      bank_account_id: bankAccountId,
+      date,
+      total_amount: amount,
+      reference,
+      details: [buildDetailsLine({ ledgerAccountId, amount, reference: detailsReference })],
+    },
+  };
 
   return {
     row,
@@ -391,7 +392,7 @@ function buildBankGlPayload(row: CashRow, refs: Row, allocationContext: Row): Bu
     requestBody,
     amount,
     reference,
-    sageObjectType: "bank_transaction",
+    sageObjectType: direction === "in" ? "other_receipt" : "other_payment",
   };
 }
 
@@ -408,9 +409,6 @@ export async function postBankGlControlCashBatchToSage(params: { batchId: string
     .maybeSingle();
   if (batchError) throw new Error(batchError.message);
   if (!batch) throw new Error("Cash posting batch not found.");
-  if (!["bank_fee", "fx_card_difference"].includes(text(batch.posting_category))) {
-    throw new Error("Only bank_fee and fx_card_difference cash batches are supported by the bank/GL poster.");
-  }
   if (!["validated", "failed", "partially_posted"].includes(text(batch.batch_status))) throw new Error(`Cash batch status ${batch.batch_status} is not postable.`);
 
   const { data: rowsRaw, error: rowsError } = await supabaseAdmin
@@ -435,9 +433,10 @@ export async function postBankGlControlCashBatchToSage(params: { batchId: string
 
   let posted = 0;
   let failed = 0;
-  let needsReview = 0;
+  const needsReview = 0;
   const refsBySnapshotId = await snapshotReferenceMap(rows);
   const allocationBySourceId = await allocationContextMap(rows);
+  const endpointSet = new Set<string>();
 
   for (const row of rows) {
     const attemptCount = (row.attempt_count ?? 0) + 1;
@@ -458,6 +457,7 @@ export async function postBankGlControlCashBatchToSage(params: { batchId: string
     let built: BuiltBankGlRow;
     try {
       built = buildBankGlPayload(row, refsBySnapshotId.get(row.snapshot_id) ?? {}, allocationBySourceId.get(row.source_id) ?? {});
+      endpointSet.add(built.endpointPath);
     } catch (error) {
       failed += 1;
       const message = error instanceof Error ? error.message : "Could not build bank/GL Sage payload.";
@@ -492,9 +492,9 @@ export async function postBankGlControlCashBatchToSage(params: { batchId: string
     }).select("id").single();
 
     const result = await sagePost(context, built.endpointPath, built.requestBody);
-    const objectId = result.ok ? bankTransactionId(result.raw) : "";
-    const reference = result.ok ? bankTransactionReference(result.raw, built.reference) : "";
-    const resultErr = result.ok && !objectId ? "Sage returned success but no bank_transaction id could be extracted." : errorMessage(result.raw);
+    const objectId = result.ok ? postedObjectId(result.raw) : "";
+    const reference = result.ok ? postedReference(result.raw, built.reference) : "";
+    const resultErr = result.ok && !objectId ? "Sage returned success but no other_receipt/other_payment id could be extracted." : errorMessage(result.raw);
 
     if (requestLog?.id) {
       await supabaseAdmin.from("sage_api_response_log").insert({
@@ -552,5 +552,5 @@ export async function postBankGlControlCashBatchToSage(params: { batchId: string
   }
 
   await updateCashBatchCounts(params.batchId);
-  return { posted, failed, needsReview, total: rows.length, endpoint: "/bank_transactions" };
+  return { posted, failed, needsReview, total: rows.length, endpoint: Array.from(endpointSet).join(",") || "/other_receipts,/other_payments" };
 }
