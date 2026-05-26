@@ -253,16 +253,23 @@ export async function postCustomerReceiptCashBatchAction(formData: FormData) {
 
     if (batchRowsError) throw new Error(batchRowsError.message);
 
+    const { data: detailRows, error: detailError } = await (supabase as any).rpc("internal_cash_posting_batch_detail_v1", { p_batch_id: batchId });
+    if (detailError) throw new Error(detailError.message);
+
     const batchCategory = String((batch as { posting_category?: unknown } | null)?.posting_category ?? "").trim();
-    const rowCategories = Array.from(new Set((batchRows ?? [])
+    const directRowCategories = (batchRows ?? [])
       .map((row: { posting_category?: unknown }) => String(row.posting_category ?? "").trim())
-      .filter(Boolean)));
+      .filter(Boolean);
+    const detailRowCategories = ((detailRows ?? []) as Array<{ posting_category?: unknown; batch_posting_category?: unknown }>)
+      .map((row) => String(row.posting_category ?? row.batch_posting_category ?? "").trim())
+      .filter(Boolean);
+    const rowCategories = Array.from(new Set([...directRowCategories, ...detailRowCategories]));
     const effectiveCategory = rowCategories.length === 1 ? rowCategories[0] : batchCategory;
-    const containsBankGlRows = rowCategories.some((category) => bankGlPostingCategories.has(category));
+    const containsBankGlRows = rowCategories.some((category) => bankGlPostingCategories.has(category)) || bankGlPostingCategories.has(batchCategory);
     const containsNonBankGlRows = rowCategories.some((category) => !bankGlPostingCategories.has(category));
 
     if (containsBankGlRows && containsNonBankGlRows) {
-      throw new Error(`Mixed bank/GL and non-bank/GL cash rows are not postable together. Row categories: ${rowCategories.join(", ")}.`);
+      throw new Error(`Mixed bank/GL and non-bank/GL cash rows are not postable together. Batch category: ${batchCategory || "unknown"}. Row categories: ${rowCategories.join(", ") || "unknown"}.`);
     }
 
     if (bankGlPostingCategories.has(effectiveCategory) || (containsBankGlRows && !containsNonBankGlRows)) {
