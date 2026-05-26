@@ -58,18 +58,24 @@ const shippingFlowSteps: FlowStep[] = [
   },
   {
     step: "2",
+    title: "Delivery allocation / value apportionment",
+    href: "/internal/shipping-control?focus=delivery-allocation",
+    description: "Open the shipment batch, then use Review delivery allocation to allocate progressed invoice lines to packages and trigger delivery/discount apportionment.",
+  },
+  {
+    step: "3",
     title: "Review shipper docs",
     href: "/internal/shipping-control/shipper-documents",
     description: "Supervisor reviews uploaded shipper charge documents and accepts/rejects the current money source.",
   },
   {
-    step: "3",
+    step: "4",
     title: "Customer invoice release queue",
     href: "/internal/shipping-control/customer-invoice-release",
     description: "Create controlled customer sales invoice drafts from stable shipment/customer invoice intents.",
   },
   {
-    step: "4",
+    step: "5",
     title: "Accounting Command Centre",
     href: "/internal/accounting-command-centre",
     description: "Single accounting cockpit for live-ready rows, mapping signals, freeze, revalidation, frozen snapshots and posting readiness.",
@@ -130,6 +136,12 @@ const cards: QueueCard[] = [
     href: "/internal/shipping-control",
     description: "Supervisor spine for importer shipment batches, package receipt truth, allocation status, shipper invoice lane, customer invoice lane, master shipment lane and accounting-readiness placeholders.",
     proof: "Shipping control task room",
+  },
+  {
+    title: "Delivery allocation / value apportionment",
+    href: "/internal/shipping-control?focus=delivery-allocation-card",
+    description: "Route to the shipment batch detail, then use Review delivery allocation to allocate progressed invoice lines to packages and recalculate delivery/discount shares on adjusted net values.",
+    proof: "Shipping control → batch detail → Review delivery allocation",
   },
   {
     title: "Shipper invoice / receipt review",
@@ -326,7 +338,7 @@ export default async function InternalPage() {
             </Link>
           </div>
 
-          <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
             {shippingFlowSteps.map((step) => (
               <Link
                 key={`${step.step}-${step.href}-${step.title}`}
