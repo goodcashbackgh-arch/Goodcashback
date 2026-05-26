@@ -316,6 +316,20 @@ function buildDetailsLine(args: { ledgerAccountId: string; amount: number; refer
   return detail;
 }
 
+function buildPaymentLine(args: { ledgerAccountId: string; amount: number; reference: string }) {
+  const line: Row = {
+    ledger_account_id: args.ledgerAccountId,
+    details: args.reference,
+    net_amount: args.amount,
+    tax_amount: 0,
+  };
+
+  const taxRateId = process.env.SAGE_BANK_FEE_TAX_RATE_ID || process.env.SAGE_BANK_GL_TAX_RATE_ID || process.env.SAGE_NO_TAX_RATE_ID || "";
+  line.tax_rate_id = taxRateId || null;
+
+  return line;
+}
+
 function inferDirection(row: CashRow, payload: Row, refs: Row, allocationContext: Row): "in" | "out" {
   const direction = text(payload.direction)
     || text(getPath(payload, ["other_receipt", "direction"]))
@@ -352,7 +366,9 @@ function buildBankGlPayload(row: CashRow, refs: Row, allocationContext: Row): Bu
     || text(refs.target_sage_ledger_account_id)
     || text(getPath(refs, ["workbench_detail", "target_sage_ledger_account_id"]));
   const date = text(root.date)
+    || text(root.transaction_date)
     || text(snapshotRootFinal.date)
+    || text(snapshotRootFinal.transaction_date)
     || text(allocationContext.statement_date)
     || text(allocationContext.transaction_date)
     || new Date().toISOString().slice(0, 10);
@@ -373,15 +389,27 @@ function buildBankGlPayload(row: CashRow, refs: Row, allocationContext: Row): Bu
   const endpointPath = direction === "in" ? "/other_receipts" : "/other_payments";
   const rootName = direction === "in" ? "other_receipt" : "other_payment";
   const transactionTypeId = direction === "in" ? "OTHER_RECEIPT" : "OTHER_PAYMENT";
+  const requestRoot: Row = {
+    transaction_type_id: transactionTypeId,
+    bank_account_id: bankAccountId,
+    reference,
+  };
+
+  if (direction === "out") {
+    requestRoot.transaction_date = date;
+    requestRoot.total_amount = amount;
+    requestRoot.description = detailsReference;
+    requestRoot.payment_lines = [buildPaymentLine({ ledgerAccountId, amount, reference: detailsReference })];
+    const paymentMethodId = process.env.SAGE_BANK_FEE_PAYMENT_METHOD_ID || process.env.SAGE_BANK_GL_PAYMENT_METHOD_ID || "";
+    if (paymentMethodId) requestRoot.payment_method_id = paymentMethodId;
+  } else {
+    requestRoot.date = date;
+    requestRoot.total_amount = amount;
+    requestRoot.details = [buildDetailsLine({ ledgerAccountId, amount, reference: detailsReference })];
+  }
+
   const requestBody = {
-    [rootName]: {
-      transaction_type_id: transactionTypeId,
-      bank_account_id: bankAccountId,
-      date,
-      total_amount: amount,
-      reference,
-      details: [buildDetailsLine({ ledgerAccountId, amount, reference: detailsReference })],
-    },
+    [rootName]: requestRoot,
   };
 
   return {
