@@ -272,7 +272,10 @@ export async function postCustomerReceiptCashBatchAction(formData: FormData) {
       throw new Error(`Mixed bank/GL and non-bank/GL cash rows are not postable together. Batch category: ${batchCategory || "unknown"}. Row categories: ${rowCategories.join(", ") || "unknown"}.`);
     }
 
-    if (bankGlPostingCategories.has(effectiveCategory) || (containsBankGlRows && !containsNonBankGlRows)) {
+    if (effectiveCategory === "fx_card_difference") {
+      const { postFxJournalCashBatchToSage } = await import("@/lib/sage/fxJournalPosting");
+      result = await postFxJournalCashBatchToSage({ batchId, staffId, origin });
+    } else if (bankGlPostingCategories.has(effectiveCategory) || (containsBankGlRows && !containsNonBankGlRows)) {
       const { postBankGlControlCashBatchToSage } = await import("@/lib/sage/bankGlPosting");
       result = await postBankGlControlCashBatchToSage({ batchId, staffId, origin });
     } else {
