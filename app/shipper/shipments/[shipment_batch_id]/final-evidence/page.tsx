@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
-import { submitFinalExportEvidenceAction } from "../actions";
+import { submitFinalExportEvidenceAction } from "../../actions";
 
 type EvidenceDoc = {
   id: string;
