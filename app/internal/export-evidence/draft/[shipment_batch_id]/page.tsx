@@ -112,11 +112,11 @@ function last3(value: string | null | undefined) {
   return compact.length <= 3 ? compact : compact.slice(-3);
 }
 
-function traceSku(row: CustomerPreviewRow, description: string, supplierInvoiceRefByLineId: Map<string, string>) {
+function traceSku(row: CustomerPreviewRow, supplierInvoiceRefByLineId: Map<string, string>) {
   const orderPart = last3(row.order_ref ?? row.order_id);
   const supplierInvoiceRef = row.supplier_invoice_line_id ? supplierInvoiceRefByLineId.get(row.supplier_invoice_line_id) : null;
   const supplierPart = last3(supplierInvoiceRef ?? row.supplier_invoice_line_id);
-  return `${orderPart}/${supplierPart} ${description}`;
+  return `${orderPart}/${supplierPart}`;
 }
 
 export default async function DraftCosExportEvidencePage({ params }: { params: Promise<{ shipment_batch_id: string }> }) {
@@ -291,7 +291,7 @@ export default async function DraftCosExportEvidencePage({ params }: { params: P
                       <td className="px-3 py-2 font-semibold">{firstCustomer?.importer_name ?? firstBatch?.importer_name ?? "Customer"}</td>
                       <td className="px-3 py-2 text-slate-500">Pending Sage A/C ref</td>
                       <td className="px-3 py-2 text-slate-500">Pending sales invoice ref</td>
-                      <td className="px-3 py-2 font-mono text-xs">{traceSku(row, description, supplierInvoiceRefByLineId)}</td>
+                      <td className="px-3 py-2 font-mono text-xs">{traceSku(row, supplierInvoiceRefByLineId)}</td>
                       <td className="px-3 py-2">{description}</td>
                       <td className="px-3 py-2 text-right font-semibold">{qty(row.qty_allocated)}</td>
                       <td className="px-3 py-2 text-right">{money(unitValue)}</td>
