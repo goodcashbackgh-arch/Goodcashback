@@ -196,7 +196,7 @@ BEGIN
       al.completion_status,
       al.order_id,
       MAX(al.order_ref)::text AS order_ref,
-      MIN(al.supplier_invoice_line_id) AS supplier_invoice_line_id,
+      (ARRAY_AGG(al.supplier_invoice_line_id ORDER BY al.supplier_invoice_line_id::text))[1] AS supplier_invoice_line_id,
       MAX(al.supplier_invoice_ref)::text AS supplier_invoice_ref,
       STRING_AGG(DISTINCT al.raw_item_description, ' / ' ORDER BY al.raw_item_description)::text AS fallback_description,
       SUM(al.qty_allocated)::numeric AS fallback_qty,
@@ -223,7 +223,8 @@ BEGIN
         NULLIF(sales.sage_invoice_id, ''),
         sales.id::text
       ) AS display_sales_invoice_ref,
-      sales.commercial_payload,
+      sps.commercial_payload,
+      sps.resolved_payload,
       sales.amount_gbp AS sales_invoice_amount_gbp
     FROM allocation_summary a
     JOIN public.sales_invoices sales
@@ -239,6 +240,15 @@ BEGIN
       ORDER BY row.posted_at DESC NULLS LAST, row.id DESC
       LIMIT 1
     ) br ON true
+    LEFT JOIN LATERAL (
+      SELECT snap.*
+      FROM public.sage_posting_snapshots snap
+      WHERE snap.source_table = 'sales_invoices'
+        AND snap.source_id = sales.id
+        AND snap.sage_posting_status = 'posted'
+      ORDER BY snap.sage_posted_at DESC NULLS LAST, snap.approved_at DESC NULLS LAST, snap.id DESC
+      LIMIT 1
+    ) sps ON true
     ORDER BY a.order_id, sales.sage_posted_at DESC NULLS LAST, sales.created_at DESC, sales.id DESC
   ), posted_main_lines AS (
     SELECT
@@ -249,6 +259,7 @@ BEGIN
     LEFT JOIN LATERAL jsonb_array_elements(
       CASE
         WHEN jsonb_typeof(pm.commercial_payload -> 'lines') = 'array' THEN pm.commercial_payload -> 'lines'
+        WHEN jsonb_typeof(pm.resolved_payload -> 'resolved_lines') = 'array' THEN pm.resolved_payload -> 'resolved_lines'
         ELSE '[]'::jsonb
       END
     ) WITH ORDINALITY AS line_item(value, ordinality) ON true
