@@ -21,13 +21,19 @@ export default async function ShipperShipmentBatchLayout({
             Download draft COS + EEP pack
           </Link>
           <Link
+            href={`/shipper/shipments/${shipmentBatchId}/sales-invoices-zip`}
+            className="rounded-xl border border-sky-300 bg-sky-50 px-4 py-2 text-sm font-semibold text-sky-900 hover:bg-sky-100"
+          >
+            Download sales invoices ZIP
+          </Link>
+          <Link
             href={`/shipper/shipments/${shipmentBatchId}/final-evidence`}
             className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-900 hover:bg-amber-100"
           >
             Upload final evidence
           </Link>
           <span className="text-xs font-medium text-slate-600">
-            Create the draft pack first, then upload the completed final evidence.
+            Create the draft pack, download invoice evidence, then upload the completed final evidence.
           </span>
         </div>
       </div>
