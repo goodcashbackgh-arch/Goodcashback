@@ -165,6 +165,8 @@ export default async function InternalShippingControlPage({ searchParams }: { se
   const receiptIssues = allRows.filter((row) => row.receipt_status_summary === "receipt_issue").length;
   const readyForNext = allRows.filter((row) => row.next_action === "ready_for_sage_ap_readiness_review").length;
   const missingShipperInvoice = allRows.filter((row) => row.shipper_invoice_status === "not_started").length;
+  const draftCosRows = allRows.filter((row) => row.batch_status !== "voided" && n(row.package_count) > 0);
+  const draftCosCandidateRows = draftCosRows.filter((row) => row.allocation_status_summary === "contents_allocated");
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-6 text-slate-950 sm:px-6 sm:py-8">
@@ -217,11 +219,14 @@ export default async function InternalShippingControlPage({ searchParams }: { se
               <div className="rounded-2xl bg-slate-50 p-3"><p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Accepted</p><p className="mt-1 font-bold">{shipperDocumentAcceptedRows.length}</p></div>
             </div>
           </Link>
-          <div className="rounded-3xl border border-dashed border-slate-300 bg-slate-50 p-5 text-slate-500">
-            <p className="text-xs font-semibold uppercase tracking-wide">Later action queue</p>
-            <h2 className="mt-2 text-xl font-semibold">Draft COS / export pack</h2>
-            <p className="mt-2 text-sm leading-6">Kept separate from customer invoice release and Sage/AP readiness.</p>
-          </div>
+          <Link href={draftCosCandidateRows[0]?.shipment_batch_id ? `/internal/export-evidence/draft/${draftCosCandidateRows[0].shipment_batch_id}` : "/internal/shipping-control?status=allocation_missing"} className="rounded-3xl border border-indigo-200 bg-indigo-50 p-5 shadow-sm hover:bg-indigo-100">
+            <p className="text-xs font-semibold uppercase tracking-wide text-indigo-700">Focused review queue</p>
+            <h2 className="mt-2 text-xl font-semibold text-indigo-950">Draft COS / export pack</h2>
+            <p className="mt-2 text-sm leading-6 text-indigo-900">Review draft Certificate of Shipment basis, EEP / packing list rows and final evidence blockers before shipper completion.</p>
+            <p className="mt-3 text-2xl font-semibold text-indigo-950">{draftCosCandidateRows.length}</p>
+            <p className="text-xs font-semibold uppercase tracking-wide text-indigo-700">content-allocated candidate batches</p>
+            <div className="mt-4 text-sm font-semibold text-indigo-800">Open first candidate / filter →</div>
+          </Link>
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
@@ -246,7 +251,7 @@ export default async function InternalShippingControlPage({ searchParams }: { se
                   <td className="px-3 py-3 align-top"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.allocation_status_summary)}`}>{friendly(row.allocation_status_summary)}</span><p className="mt-2 text-xs text-slate-600">{n(row.allocated_package_count)} allocated · {n(row.unallocated_package_count)} missing</p></td>
                   <td className="px-3 py-3 align-top"><div className="space-y-1"><span className={`inline-block rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.shipper_invoice_status)}`}>Shipper invoice: {friendly(row.shipper_invoice_status)}</span><span className={`block w-fit rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.export_evidence_status)}`}>Export evidence: {friendly(row.export_evidence_status)}</span><span className={`block w-fit rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.master_shipment_status)}`}>Master shipment: {friendly(row.master_shipment_status)}</span><span className={`block w-fit rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.sage_readiness_status)}`}>AP/Sage: {friendly(row.sage_readiness_status)}</span></div></td>
                   <td className="px-3 py-3 align-top"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.next_action)}`}>{friendly(row.next_action)}</span></td>
-                  <td className="px-3 py-3 align-top"><div className="flex flex-col gap-2"><Link href={`/internal/shipping-control/${row.shipment_batch_id}`} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50">View batch detail</Link><Link href={`/internal/shipping-control/readiness/${row.shipment_batch_id}`} className="rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-900 hover:bg-emerald-100">Readiness / route preview</Link><Link href="/internal/shipping-control/shipper-documents" className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50">Review shipper docs</Link><span className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-500">Draft COS review later</span></div></td>
+                  <td className="px-3 py-3 align-top"><div className="flex flex-col gap-2"><Link href={`/internal/shipping-control/${row.shipment_batch_id}`} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50">View batch detail</Link><Link href={`/internal/shipping-control/readiness/${row.shipment_batch_id}`} className="rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-900 hover:bg-emerald-100">Readiness / route preview</Link><Link href="/internal/shipping-control/shipper-documents" className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50">Review shipper docs</Link><Link href={`/internal/export-evidence/draft/${row.shipment_batch_id}`} className="rounded-xl border border-indigo-300 bg-indigo-50 px-3 py-2 text-xs font-semibold text-indigo-900 hover:bg-indigo-100">Review export basis / draft COS</Link></div></td>
                 </tr>
               ))}
             </tbody></table></div>
