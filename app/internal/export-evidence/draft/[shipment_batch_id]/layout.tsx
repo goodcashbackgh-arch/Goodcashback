@@ -11,6 +11,11 @@ export default async function InternalDraftExportEvidenceLayout({
 
   return (
     <>
+      <style>{`
+        main button:disabled {
+          display: none !important;
+        }
+      `}</style>
       {children}
       <div className="fixed inset-x-0 bottom-4 z-40 flex justify-center px-4 print:hidden">
         <div className="flex max-w-4xl flex-wrap items-center justify-center gap-3 rounded-2xl border border-sky-200 bg-white/95 p-3 shadow-lg backdrop-blur">
