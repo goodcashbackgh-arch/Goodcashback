@@ -26,7 +26,6 @@ type ShippingControlRow = {
   allocation_status_summary: string | null;
   shipper_invoice_status: string | null;
   export_evidence_status: string | null;
-  master_shipment_status: string | null;
   sage_readiness_status: string | null;
   next_action: string | null;
 };
@@ -84,9 +83,10 @@ function statusClass(status: string | null | undefined) {
     "allocation_missing",
     "mixed_or_missing_receipt",
     "not_started",
-    "not_grouped",
     "not_ready",
     "uploaded_pending_ocr",
+    "uploaded_pending_review",
+    "submitted_for_review",
     "queued",
     "processing",
     "shipping_apportionment_pending",
@@ -94,7 +94,7 @@ function statusClass(status: string | null | undefined) {
     "shipping_document_uploaded_needs_supervisor_processing",
   ].includes(status)) return "bg-amber-100 text-amber-800";
   if (["receipt_issue", "check_empty_batch", "rejected_resubmit_required"].includes(status)) return "bg-rose-100 text-rose-800";
-  if (["voided_no_action", "voided"].includes(status)) return "bg-slate-200 text-slate-700";
+  if (["voided_no_action", "voided", "not_applicable"].includes(status)) return "bg-slate-200 text-slate-700";
   return "bg-slate-100 text-slate-700";
 }
 
@@ -177,7 +177,7 @@ export default async function InternalShippingControlPage({ searchParams }: { se
           <div className="mt-2 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
             <div>
               <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Shipping control centre</h1>
-              <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">Read-only supervisor overview of shipment batches, package receipt truth, content allocation, shipper documents, apportionment, customer invoice release readiness, draft COS, master shipment and Sage/AP readiness. Action work belongs in focused child queues.</p>
+              <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">Read-only supervisor overview of shipment batches, package receipt truth, content allocation, shipper documents, apportionment, customer invoice release readiness, draft COS/export evidence and Sage/AP readiness. Action work belongs in focused child queues.</p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700"><div className="font-medium text-slate-950">{staff.full_name}</div><div>{staff.role_type}</div></div>
           </div>
@@ -249,7 +249,7 @@ export default async function InternalShippingControlPage({ searchParams }: { se
                   <td className="px-3 py-3 text-right align-top"><p className="font-semibold">{n(row.package_count)} package{n(row.package_count) === 1 ? "" : "s"}</p><p className="mt-1 text-xs text-slate-600">{qty(row.item_qty)} unit{n(row.item_qty) === 1 ? "" : "s"}</p><p className="mt-2 text-xs text-slate-500">{truncate(row.package_refs_preview, 52)}</p></td>
                   <td className="px-3 py-3 align-top"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.receipt_status_summary)}`}>{friendly(row.receipt_status_summary)}</span>{n(row.receipt_issue_count) > 0 ? <p className="mt-2 text-xs font-semibold text-rose-700">{n(row.receipt_issue_count)} issue(s)</p> : null}</td>
                   <td className="px-3 py-3 align-top"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.allocation_status_summary)}`}>{friendly(row.allocation_status_summary)}</span><p className="mt-2 text-xs text-slate-600">{n(row.allocated_package_count)} allocated · {n(row.unallocated_package_count)} missing</p></td>
-                  <td className="px-3 py-3 align-top"><div className="space-y-1"><span className={`inline-block rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.shipper_invoice_status)}`}>Shipper invoice: {friendly(row.shipper_invoice_status)}</span><span className={`block w-fit rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.export_evidence_status)}`}>Export evidence: {friendly(row.export_evidence_status)}</span><span className={`block w-fit rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.master_shipment_status)}`}>Master shipment: {friendly(row.master_shipment_status)}</span><span className={`block w-fit rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.sage_readiness_status)}`}>AP/Sage: {friendly(row.sage_readiness_status)}</span></div></td>
+                  <td className="px-3 py-3 align-top"><div className="space-y-1"><span className={`inline-block rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.shipper_invoice_status)}`}>Shipper invoice: {friendly(row.shipper_invoice_status)}</span><span className={`block w-fit rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.export_evidence_status)}`}>Export evidence: {friendly(row.export_evidence_status)}</span><span className={`block w-fit rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.sage_readiness_status)}`}>AP/Sage: {friendly(row.sage_readiness_status)}</span></div></td>
                   <td className="px-3 py-3 align-top"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.next_action)}`}>{friendly(row.next_action)}</span></td>
                   <td className="px-3 py-3 align-top"><div className="flex flex-col gap-2"><Link href={`/internal/shipping-control/${row.shipment_batch_id}`} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50">View batch detail</Link><Link href={`/internal/shipping-control/readiness/${row.shipment_batch_id}`} className="rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-900 hover:bg-emerald-100">Readiness / route preview</Link><Link href="/internal/shipping-control/shipper-documents" className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50">Review shipper docs</Link><Link href={`/internal/export-evidence/draft/${row.shipment_batch_id}`} className="rounded-xl border border-indigo-300 bg-indigo-50 px-3 py-2 text-xs font-semibold text-indigo-900 hover:bg-indigo-100">Review export basis / draft COS</Link></div></td>
                 </tr>
