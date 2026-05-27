@@ -21,6 +21,15 @@ function readNullableDateTime(formData: FormData, key: string) {
   return value || null;
 }
 
+function readNullableDate(formData: FormData, key: string) {
+  const value = readString(formData, key);
+  return value || null;
+}
+
+function readBoolean(formData: FormData, key: string) {
+  return formData.get(key) === "on" || formData.get(key) === "true";
+}
+
 export async function createShipmentBatchAction(formData: FormData) {
   const supabase = await createClient();
   const importerId = readString(formData, "importer_id");
@@ -86,4 +95,37 @@ export async function updateShipmentBatchHeaderAction(formData: FormData) {
   revalidatePath("/shipper/shipments");
   revalidatePath(`/shipper/shipments/${shipmentBatchId}`);
   redirect(`/shipper/shipments/${shipmentBatchId}?success=${encodeURIComponent("Shipment batch header updated")}`);
+}
+
+export async function saveExportEvidenceCompletionFieldsAction(formData: FormData) {
+  const supabase = await createClient();
+  const shipmentBatchId = readString(formData, "shipment_batch_id");
+
+  if (!shipmentBatchId) redirect("/shipper/shipments?error=Missing%20shipment%20batch%20id.");
+
+  const { error } = await (supabase as any).rpc("shipper_save_export_evidence_completion_fields_v1", {
+    p_shipment_batch_id: shipmentBatchId,
+    p_mbl_bol_sea_waybill_ref: readString(formData, "mbl_bol_sea_waybill_ref") || null,
+    p_container_number: readString(formData, "container_number") || null,
+    p_seal_number: readString(formData, "seal_number") || null,
+    p_vessel_voyage: readString(formData, "vessel_voyage") || null,
+    p_port_of_loading: readString(formData, "port_of_loading") || null,
+    p_port_of_discharge: readString(formData, "port_of_discharge") || null,
+    p_place_of_delivery: readString(formData, "place_of_delivery") || null,
+    p_export_shipment_date: readNullableDate(formData, "export_shipment_date"),
+    p_final_package_confirmation: readString(formData, "final_package_confirmation") || null,
+    p_authorised_name: readString(formData, "authorised_name") || null,
+    p_signature_stamp_confirmation_yn: readBoolean(formData, "signature_stamp_confirmation_yn"),
+    p_notes: readString(formData, "export_evidence_notes") || null,
+  });
+
+  if (error) {
+    redirect(`/shipper/shipments/${shipmentBatchId}?error=${encodeURIComponent(error.message)}`);
+  }
+
+  revalidatePath("/shipper");
+  revalidatePath("/shipper/shipments");
+  revalidatePath(`/shipper/shipments/${shipmentBatchId}`);
+  revalidatePath(`/internal/export-evidence/draft/${shipmentBatchId}`);
+  redirect(`/shipper/shipments/${shipmentBatchId}?success=${encodeURIComponent("Export evidence completion fields saved")}`);
 }
