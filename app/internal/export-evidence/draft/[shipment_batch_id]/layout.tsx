@@ -5,6 +5,11 @@ type ApRow = {
   blocker?: string | null;
 };
 
+type CustomerRow = {
+  sales_invoice_state?: string | null;
+  blocker?: string | null;
+};
+
 type FinalEvidenceRow = {
   review_status?: string | null;
 };
@@ -25,6 +30,17 @@ function pill(status: "ready" | "review" | "blocked" | "muted") {
   return "border-slate-200 bg-white text-slate-700";
 }
 
+function isMissingSalesInvoice(state: string | null | undefined) {
+  const value = state ?? "";
+  return (
+    value.includes("no_main_sales_invoice") ||
+    value.includes("no_sales_invoice") ||
+    value.includes("sales_invoice_table_not_available") ||
+    value.includes("sales_invoice_state_not_found") ||
+    value.includes("sales_invoice_state_not_resolved")
+  );
+}
+
 export default async function InternalDraftExportEvidenceLayout({
   children,
   params,
@@ -35,23 +51,35 @@ export default async function InternalDraftExportEvidenceLayout({
   const { shipment_batch_id: shipmentBatchId } = await params;
   const supabase = await createClient();
 
-  const [apResult, finalEvidenceResult, completionResult] = await Promise.all([
+  const [apResult, customerResult, finalEvidenceResult, completionResult] = await Promise.all([
     (supabase as any).rpc("internal_shipping_ap_recharge_readiness_preview_v1", { p_shipment_batch_id: shipmentBatchId }),
+    (supabase as any).rpc("internal_shipping_customer_invoice_readiness_preview_v1", { p_shipment_batch_id: shipmentBatchId }),
     (supabase as any).rpc("internal_final_export_evidence_documents_v1", { p_shipment_batch_id: shipmentBatchId }),
     (supabase as any).rpc("internal_shipment_export_evidence_completion_fields_v1", { p_shipment_batch_id: shipmentBatchId }),
   ]);
 
   const apRows = ((apResult.data ?? []) as ApRow[]);
+  const customerRows = ((customerResult.data ?? []) as CustomerRow[]);
   const finalRows = ((finalEvidenceResult.data ?? []) as FinalEvidenceRow[]);
   const completionRows = ((completionResult.data ?? []) as CompletionRow[]);
   const apBlockers = Array.from(new Set(apRows.map((row) => row.blocker).filter(Boolean))) as string[];
+  const customerBlockers = Array.from(new Set(customerRows.map((row) => row.blocker).filter(Boolean))) as string[];
+  const invoiceStates = Array.from(new Set(customerRows.map((row) => row.sales_invoice_state).filter(Boolean))) as string[];
+  const invoiceMissing = customerRows.length === 0 || invoiceStates.some((state) => isMissingSalesInvoice(state));
   const completionStatus = completionRows[0]?.completion_status ?? null;
   const completionReady = completionStatus === "completion_fields_ready";
   const hasFinalAccepted = finalRows.some((row) => row.review_status === "accepted_current");
   const hasFinalSubmitted = finalRows.some((row) => row.review_status === "submitted_for_review");
   const hasFinalRejected = finalRows.some((row) => row.review_status === "rejected_resubmit_required");
 
-  const draftStatusTone = completionReady && apBlockers.length === 0 ? "ready" : "blocked";
+  const draftBlockers = [
+    invoiceMissing ? "customer sales invoice is missing" : null,
+    !completionReady ? "shipper completion fields are not ready" : null,
+    ...customerBlockers,
+    ...apBlockers,
+  ].filter(Boolean) as string[];
+
+  const draftStatusTone = draftBlockers.length === 0 ? "ready" : "blocked";
   const draftStatusText = draftStatusTone === "ready" ? "Draft pack basis ready" : "Draft pack basis blocked";
   const finalTone = hasFinalAccepted ? "ready" : hasFinalSubmitted ? "review" : hasFinalRejected ? "blocked" : "muted";
   const finalText = hasFinalAccepted
@@ -62,9 +90,9 @@ export default async function InternalDraftExportEvidenceLayout({
         ? "Final evidence rejected / resubmission required"
         : "Final evidence not uploaded yet";
 
-  const blockerText = apBlockers.length > 0
-    ? apBlockers.map((blocker) => blocker === "shipper_document_requires_supervisor_acceptance" ? "Shipping AP document requires supervisor acceptance" : friendly(blocker)).join("; ")
-    : completionReady ? "No shipping-document blocker detected" : friendly(completionStatus ?? "shipper completion fields not ready");
+  const blockerText = draftBlockers.length > 0
+    ? draftBlockers.map((blocker) => blocker === "shipper_document_requires_supervisor_acceptance" ? "Shipping AP document requires supervisor acceptance" : friendly(blocker)).join("; ")
+    : "All draft COS / EEP gates passed";
 
   return (
     <>
