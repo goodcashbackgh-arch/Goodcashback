@@ -97,6 +97,8 @@ function cleanGoodsDescription(value: string | null | undefined) {
   if (!raw) return "Assorted retail goods";
   return raw
     .replace(/^export\s+sale\s*-\s*/i, "")
+    .replace(/^export\s+sale\s+goods\s+charge\s*-\s*/i, "")
+    .replace(/^supplementary\s+export\s+sale\s+shipping\s+charge\s*-\s*/i, "")
     .replace(/\s*-\s*ord[-\s_]*[a-z0-9-]+\s*$/i, "")
     .replace(/\s*-\s*ord[-\s_]*[a-z0-9-]+\s*-\s*booking\s+[a-z0-9-]+\s*$/i, "")
     .replace(/\s*-\s*booking\s+[a-z0-9-]+\s*$/i, "")
@@ -104,8 +106,17 @@ function cleanGoodsDescription(value: string | null | undefined) {
     .trim() || "Assorted retail goods";
 }
 
-function traceSku(index: number) {
-  return `EEP-L${String(index + 1).padStart(3, "0")}`;
+function last3(value: string | null | undefined) {
+  const compact = (value ?? "").replace(/[^a-z0-9]/gi, "");
+  if (!compact) return "REF";
+  return compact.length <= 3 ? compact : compact.slice(-3);
+}
+
+function traceSku(row: CustomerPreviewRow, description: string, supplierInvoiceRefByLineId: Map<string, string>) {
+  const orderPart = last3(row.order_ref ?? row.order_id);
+  const supplierInvoiceRef = row.supplier_invoice_line_id ? supplierInvoiceRefByLineId.get(row.supplier_invoice_line_id) : null;
+  const supplierPart = last3(supplierInvoiceRef ?? row.supplier_invoice_line_id);
+  return `${orderPart}/${supplierPart} ${description}`;
 }
 
 export default async function DraftCosExportEvidencePage({ params }: { params: Promise<{ shipment_batch_id: string }> }) {
@@ -132,6 +143,21 @@ export default async function DraftCosExportEvidencePage({ params }: { params: P
   const batchRows = ((batchResult.data ?? []) as BatchDetailRow[]);
   const customerRows = ((customerPreviewResult.data ?? []) as CustomerPreviewRow[]);
   const apRows = ((apPreviewResult.data ?? []) as ShippingApPreviewRow[]);
+
+  const supplierLineIds = Array.from(new Set(customerRows.map((row) => row.supplier_invoice_line_id).filter(Boolean))) as string[];
+  const supplierInvoiceRefByLineId = new Map<string, string>();
+  if (supplierLineIds.length > 0) {
+    const { data: supplierLineRefs } = await supabase
+      .from("supplier_invoice_lines")
+      .select("id, supplier_invoices(invoice_ref)")
+      .in("id", supplierLineIds);
+
+    for (const line of (supplierLineRefs ?? []) as any[]) {
+      const invoice = Array.isArray(line.supplier_invoices) ? line.supplier_invoices[0] : line.supplier_invoices;
+      if (line.id && invoice?.invoice_ref) supplierInvoiceRefByLineId.set(line.id, String(invoice.invoice_ref));
+    }
+  }
+
   const firstBatch = batchRows[0] ?? null;
   const firstCustomer = customerRows[0] ?? null;
   const packageRows = batchRows.filter((row) => row.package_link_id);
@@ -242,8 +268,6 @@ export default async function DraftCosExportEvidencePage({ params }: { params: P
                   <th className="px-3 py-2 text-left">Customer</th>
                   <th className="px-3 py-2 text-left">Sage A/C ref</th>
                   <th className="px-3 py-2 text-left">Sales invoice ref</th>
-                  <th className="px-3 py-2 text-left">Order</th>
-                  <th className="px-3 py-2 text-left">Supplier invoice ref</th>
                   <th className="px-3 py-2 text-left">Trace SKU</th>
                   <th className="px-3 py-2 text-left">Description</th>
                   <th className="px-3 py-2 text-right">Qty</th>
@@ -255,7 +279,7 @@ export default async function DraftCosExportEvidencePage({ params }: { params: P
               </thead>
               <tbody className="divide-y divide-slate-100 bg-white">
                 {customerRows.length === 0 ? (
-                  <tr><td colSpan={12} className="px-3 py-4 text-slate-600">No delivery allocation/customer invoice basis rows found for this shipment batch.</td></tr>
+                  <tr><td colSpan={10} className="px-3 py-4 text-slate-600">No delivery allocation/customer invoice basis rows found for this shipment batch.</td></tr>
                 ) : customerRows.map((row, index) => {
                   const rowQty = n(row.qty_allocated);
                   const rowGoodsValue = n(row.goods_amount_gbp);
@@ -266,9 +290,7 @@ export default async function DraftCosExportEvidencePage({ params }: { params: P
                       <td className="px-3 py-2 font-semibold">{firstCustomer?.importer_name ?? firstBatch?.importer_name ?? "Customer"}</td>
                       <td className="px-3 py-2 text-slate-500">Pending Sage A/C ref</td>
                       <td className="px-3 py-2 text-slate-500">Pending sales invoice ref</td>
-                      <td className="px-3 py-2">{row.order_ref ?? row.order_id ?? "—"}</td>
-                      <td className="px-3 py-2 text-slate-500">Pending supplier invoice ref</td>
-                      <td className="px-3 py-2 font-mono text-xs">{traceSku(index)}</td>
+                      <td className="px-3 py-2 font-mono text-xs">{traceSku(row, description, supplierInvoiceRefByLineId)}</td>
                       <td className="px-3 py-2">{description}</td>
                       <td className="px-3 py-2 text-right font-semibold">{qty(row.qty_allocated)}</td>
                       <td className="px-3 py-2 text-right">{money(unitValue)}</td>
