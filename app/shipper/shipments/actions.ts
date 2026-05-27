@@ -4,6 +4,8 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 
+const EVIDENCE_BUCKET = "invoice-evidence";
+
 function readString(formData: FormData, key: string) {
   const value = formData.get(key);
   return typeof value === "string" ? value.trim() : "";
@@ -28,6 +30,30 @@ function readNullableDate(formData: FormData, key: string) {
 
 function readBoolean(formData: FormData, key: string) {
   return formData.get(key) === "on" || formData.get(key) === "true";
+}
+
+function safeExt(fileName: string) {
+  const ext = fileName.includes(".") ? fileName.split(".").pop() : "bin";
+  return (ext ?? "bin").toLowerCase().replace(/[^a-z0-9]/g, "") || "bin";
+}
+
+async function uploadFinalExportEvidence(params: {
+  supabase: Awaited<ReturnType<typeof createClient>>;
+  shipmentBatchId: string;
+  documentKind: string;
+  file: File;
+}) {
+  const objectPath = `shipper-final-export-evidence/${params.shipmentBatchId}/${params.documentKind}/${Date.now()}.${safeExt(params.file.name)}`;
+  const { error } = await params.supabase.storage
+    .from(EVIDENCE_BUCKET)
+    .upload(objectPath, params.file, { upsert: false });
+
+  if (error) {
+    throw new Error(`Final export evidence upload failed. Ensure bucket '${EVIDENCE_BUCKET}' exists and is writable. ${error.message}`);
+  }
+
+  const { data } = params.supabase.storage.from(EVIDENCE_BUCKET).getPublicUrl(objectPath);
+  return data.publicUrl || objectPath;
 }
 
 export async function createShipmentBatchAction(formData: FormData) {
@@ -128,4 +154,43 @@ export async function saveExportEvidenceCompletionFieldsAction(formData: FormDat
   revalidatePath(`/shipper/shipments/${shipmentBatchId}`);
   revalidatePath(`/internal/export-evidence/draft/${shipmentBatchId}`);
   redirect(`/shipper/shipments/${shipmentBatchId}?success=${encodeURIComponent("Export evidence completion fields saved")}`);
+}
+
+export async function submitFinalExportEvidenceAction(formData: FormData) {
+  const supabase = await createClient();
+  const shipmentBatchId = readString(formData, "shipment_batch_id");
+  const documentKind = readString(formData, "document_kind");
+  const documentRef = readString(formData, "document_ref") || null;
+  const notes = readString(formData, "notes") || null;
+  const file = formData.get("final_export_evidence_file");
+
+  if (!shipmentBatchId) redirect("/shipper/shipments?error=Missing%20shipment%20batch%20id.");
+  if (!(file instanceof File) || file.size === 0) {
+    redirect(`/shipper/shipments/${shipmentBatchId}/final-evidence?error=${encodeURIComponent("Upload the completed COS/final export evidence file.")}`);
+  }
+
+  let fileUrl: string;
+  try {
+    fileUrl = await uploadFinalExportEvidence({ supabase, shipmentBatchId, documentKind, file });
+  } catch (error) {
+    redirect(`/shipper/shipments/${shipmentBatchId}/final-evidence?error=${encodeURIComponent(error instanceof Error ? error.message : "Final export evidence upload failed")}`);
+  }
+
+  const { error } = await (supabase as any).rpc("shipper_submit_final_export_evidence_v1", {
+    p_shipment_batch_id: shipmentBatchId,
+    p_document_kind: documentKind,
+    p_document_ref: documentRef,
+    p_file_url: fileUrl,
+    p_notes: notes,
+  });
+
+  if (error) {
+    redirect(`/shipper/shipments/${shipmentBatchId}/final-evidence?error=${encodeURIComponent(error.message)}`);
+  }
+
+  revalidatePath("/shipper");
+  revalidatePath(`/shipper/shipments/${shipmentBatchId}`);
+  revalidatePath(`/shipper/shipments/${shipmentBatchId}/final-evidence`);
+  revalidatePath(`/internal/export-evidence/draft/${shipmentBatchId}`);
+  redirect(`/shipper/shipments/${shipmentBatchId}/final-evidence?success=${encodeURIComponent("Final export evidence uploaded for supervisor review")}`);
 }
