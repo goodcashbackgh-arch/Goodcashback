@@ -21,7 +21,6 @@ type PackRow = {
   completion_status: string | null;
   order_ref: string | null;
   sales_invoice_ref: string | null;
-  sage_account_ref: string | null;
   supplier_invoice_ref: string | null;
   item_description: string | null;
   qty_allocated: number | string | null;
@@ -116,7 +115,6 @@ export async function GET(_request: Request, { params }: { params: Promise<{ shi
   const itemRows = rows.map((row) => `
     <tr>
       <td>${esc(display(row.customer_name, "Customer"))}</td>
-      <td>${esc(display(row.sage_account_ref, "Pending Sage A/C ref"))}</td>
       <td>${esc(display(row.sales_invoice_ref, "Pending sales invoice ref"))}</td>
       <td class="mono">${esc(traceSku(row))}</td>
       <td>${esc(display(row.item_description, "Assorted retail goods"))}</td>
@@ -217,7 +215,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ shi
   <section class="sheet eep-sheet">
     <h1>Export Evidence Pack / Packing List</h1>
     <div class="summary-row"><div class="summary-card"><span>EEP ref</span><strong>${esc(eepRef)}</strong></div><div class="summary-card"><span>Shipment / booking ref</span><strong>${esc(display(first.booking_ref, shipmentBatchId))}</strong></div><div class="summary-card"><span>Package / box</span><strong>${esc(display(first.package_box_ref, eepRef))}</strong></div><div class="summary-card"><span>Destination</span><strong>${esc(display(first.destination, "Ghana"))}</strong></div></div>
-    <table><thead><tr><th>Customer</th><th>Sage A/C ref</th><th>Sales invoice ref</th><th>Trace SKU</th><th>Description</th><th class="num">Qty</th><th class="num">Unit export value</th><th class="num">Total export value</th><th>Package / box</th><th>Destination</th></tr></thead><tbody>${itemRows}</tbody></table>
+    <table><thead><tr><th>Customer</th><th>Sales invoice ref</th><th>Trace SKU</th><th>Description</th><th class="num">Qty</th><th class="num">Unit export value</th><th class="num">Total export value</th><th>Package / box</th><th>Destination</th></tr></thead><tbody>${itemRows}</tbody></table>
     <div class="totals"><span>Total Qty: ${esc(qty(totalQty))}</span><span>Total Value: GBP ${esc(money(totalValue))}</span></div>
     <div class="footer-note">This EEP / packing list is the detailed goods schedule referenced by the Certificate of Shipment. It is intended to support the shipment/export evidence pack and avoid placing every detailed line directly on the short certificate page.</div>
   </section>
