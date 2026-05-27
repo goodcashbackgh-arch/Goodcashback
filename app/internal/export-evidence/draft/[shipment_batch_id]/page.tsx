@@ -162,6 +162,7 @@ export default async function DraftCosExportEvidencePage({ params }: { params: P
   const firstCustomer = customerRows[0] ?? null;
   const packageRows = batchRows.filter((row) => row.package_link_id);
   const eepRef = `EEP-${(firstBatch?.booking_ref ?? shipmentBatchId).replace(/[^a-z0-9-]/gi, "").slice(0, 24)}`;
+  const shipmentPackageRef = firstBatch?.booking_ref ?? eepRef;
   const totalPackages = n(firstBatch?.box_count) || packageRows.length;
   const totalQty = customerRows.reduce((sum, row) => sum + n(row.qty_allocated), 0);
   const totalGoodsValue = customerRows.reduce((sum, row) => sum + n(row.goods_amount_gbp), 0);
@@ -295,7 +296,7 @@ export default async function DraftCosExportEvidencePage({ params }: { params: P
                       <td className="px-3 py-2 text-right font-semibold">{qty(row.qty_allocated)}</td>
                       <td className="px-3 py-2 text-right">{money(unitValue)}</td>
                       <td className="px-3 py-2 text-right font-semibold">{money(row.goods_amount_gbp)}</td>
-                      <td className="px-3 py-2">{row.tracking_ref ?? row.tracking_submission_id ?? "Batch package"}</td>
+                      <td className="px-3 py-2">{shipmentPackageRef}</td>
                       <td className="px-3 py-2">Ghana</td>
                     </tr>
                   );
