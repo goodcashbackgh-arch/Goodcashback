@@ -107,10 +107,11 @@ export async function GET(_request: Request, { params }: { params: Promise<{ shi
 
   const itemRows = rows.map((row) => `
     <tr>
+      <td>${esc(display(row.customer_name, "Customer"))}</td>
+      <td>${esc(display(row.sage_account_ref, "Pending Sage A/C ref"))}</td>
       <td>${esc(display(row.sales_invoice_ref, "Pending sales invoice ref"))}</td>
       <td class="mono">${esc(traceSku(row))}</td>
       <td>${esc(display(row.item_description, "Assorted retail goods"))}</td>
-      <td class="center">GBP</td>
       <td class="num">${esc(qty(row.qty_allocated))}</td>
       <td class="num">${esc(money(row.unit_export_value_gbp))}</td>
       <td class="num">${esc(money(row.total_export_value_gbp))}</td>
@@ -126,12 +127,14 @@ export async function GET(_request: Request, { params }: { params: Promise<{ shi
   <title>${esc(eepRef)} Draft COS + EEP</title>
   <style>
     @page { size: A4 portrait; margin: 14mm; }
+    @page eep { size: A4 landscape; margin: 12mm; }
     * { box-sizing: border-box; }
     body { margin: 0; background: #f3f4f6; color: #111827; font-family: "Times New Roman", Times, serif; }
     .toolbar { position: sticky; top: 0; z-index: 10; display: flex; gap: 10px; align-items: center; justify-content: center; padding: 10px; background: #111827; color: white; font-family: Arial, Helvetica, sans-serif; }
     .toolbar button { border: 0; border-radius: 10px; padding: 9px 14px; font-weight: 700; cursor: pointer; }
     .sheet { width: 210mm; min-height: 297mm; margin: 18px auto; padding: 11mm 13mm; background: white; box-shadow: 0 12px 40px rgba(15, 23, 42, 0.18); page-break-after: always; }
     .sheet:last-child { page-break-after: auto; }
+    .eep-sheet { page: eep; width: 297mm; min-height: 210mm; }
     .draft-banner { border: 1px solid #111827; padding: 6px; margin-bottom: 10px; text-align: center; font-family: Arial, Helvetica, sans-serif; font-size: 11px; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase; }
     h1 { margin: 0 0 10px; text-align: center; font-size: 24px; text-decoration: underline; }
     h2 { margin: 12px 0 8px; font-size: 15px; font-family: Arial, Helvetica, sans-serif; }
@@ -140,7 +143,6 @@ export async function GET(_request: Request, { params }: { params: Promise<{ shi
     .right-panel { border-left: 1px solid #6b7280; }
     .field { border-bottom: 1px solid #9ca3af; min-height: 20mm; padding: 6px 8px; }
     .right-panel .field { min-height: 16mm; }
-    .field.small { min-height: 13mm; }
     .field-label { font-size: 10px; font-weight: 700; text-transform: uppercase; color: #374151; letter-spacing: 0.05em; }
     .field-value { margin-top: 4px; font-size: 13px; font-weight: 700; line-height: 1.25; white-space: pre-wrap; }
     .field-value.multiline { min-height: 38px; }
@@ -156,18 +158,19 @@ export async function GET(_request: Request, { params }: { params: Promise<{ shi
     .summary-card { border: 1px solid #d1d5db; padding: 8px; border-radius: 8px; }
     .summary-card span { display: block; font-size: 9px; text-transform: uppercase; color: #6b7280; letter-spacing: .06em; }
     .summary-card strong { display: block; margin-top: 4px; font-size: 13px; }
-    table { width: 100%; border-collapse: collapse; font-family: Arial, Helvetica, sans-serif; font-size: 10px; }
-    th, td { border: 1px solid #9ca3af; padding: 5px 6px; vertical-align: top; }
-    th { background: #f3f4f6; font-size: 9px; text-transform: uppercase; letter-spacing: 0.04em; }
+    table { width: 100%; border-collapse: collapse; font-family: Arial, Helvetica, sans-serif; font-size: 9px; table-layout: fixed; }
+    th, td { border: 1px solid #9ca3af; padding: 5px 5px; vertical-align: top; overflow-wrap: anywhere; }
+    th { background: #f3f4f6; font-size: 8px; text-transform: uppercase; letter-spacing: 0.04em; }
     .num { text-align: right; white-space: nowrap; }
-    .center { text-align: center; }
     .mono { font-family: "Courier New", Courier, monospace; font-weight: 700; }
     .totals { display: flex; justify-content: flex-end; gap: 18px; margin-top: 10px; font-family: Arial, Helvetica, sans-serif; font-size: 12px; font-weight: 800; }
     .footer-note { margin-top: 16px; font-size: 11px; line-height: 1.35; color: #374151; }
     @media print {
       body { background: white; }
       .toolbar { display: none; }
-      .sheet { margin: 0; box-shadow: none; width: auto; min-height: auto; }
+      .sheet { margin: 0; box-shadow: none; }
+      .sheet:not(.eep-sheet) { width: auto; min-height: auto; }
+      .eep-sheet { width: auto; min-height: auto; }
     }
   </style>
 </head>
@@ -227,7 +230,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ shi
     <div class="company-stamp">${esc(display(first.shipper_name, "SHIPPER"))}</div>
   </section>
 
-  <section class="sheet">
+  <section class="sheet eep-sheet">
     <h1>Export Evidence Pack / Packing List</h1>
     <div class="summary-row">
       <div class="summary-card"><span>EEP ref</span><strong>${esc(eepRef)}</strong></div>
@@ -238,10 +241,11 @@ export async function GET(_request: Request, { params }: { params: Promise<{ shi
     <table>
       <thead>
         <tr>
+          <th>Customer</th>
+          <th>Sage A/C ref</th>
           <th>Sales invoice ref</th>
           <th>Trace SKU</th>
           <th>Description</th>
-          <th>Currency</th>
           <th class="num">Qty</th>
           <th class="num">Unit export value</th>
           <th class="num">Total export value</th>
