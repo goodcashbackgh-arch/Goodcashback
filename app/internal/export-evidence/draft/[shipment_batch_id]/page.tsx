@@ -92,13 +92,20 @@ function statusClass(status: string | null | undefined) {
   return "bg-amber-100 text-amber-800";
 }
 
-function last3(value: string | null | undefined) {
-  const compact = (value ?? "").replace(/[^a-z0-9]/gi, "");
-  return compact.length <= 3 ? compact || "REF" : compact.slice(-3);
+function cleanGoodsDescription(value: string | null | undefined) {
+  const raw = (value ?? "").trim();
+  if (!raw) return "Assorted retail goods";
+  return raw
+    .replace(/^export\s+sale\s*-\s*/i, "")
+    .replace(/\s*-\s*ord[-\s_]*[a-z0-9-]+\s*$/i, "")
+    .replace(/\s*-\s*ord[-\s_]*[a-z0-9-]+\s*-\s*booking\s+[a-z0-9-]+\s*$/i, "")
+    .replace(/\s*-\s*booking\s+[a-z0-9-]+\s*$/i, "")
+    .replace(/\s+/g, " ")
+    .trim() || "Assorted retail goods";
 }
 
-function traceSku(row: CustomerPreviewRow) {
-  return `${last3(row.order_ref ?? row.order_id)}/${last3(row.supplier_invoice_line_id)} ${row.item_description ?? "Assorted retail goods"}`;
+function traceSku(index: number) {
+  return `EEP-L${String(index + 1).padStart(3, "0")}`;
 }
 
 export default async function DraftCosExportEvidencePage({ params }: { params: Promise<{ shipment_batch_id: string }> }) {
@@ -166,7 +173,7 @@ export default async function DraftCosExportEvidencePage({ params }: { params: P
             <div>
               <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Draft COS / Export Evidence Pack review</h1>
               <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
-                Read-only first pass. GCB prepares a draft Certificate of Shipment plus an EEP / packing list. The shipper downloads, completes shipment facts, signs/stamps/authenticates, and uploads the final COS/export evidence. Supervisors can view and download the final pack once uploaded.
+                Read-only first pass. GCB prepares a draft Certificate of Shipment plus an EEP / packing list. The shipper enters final shipment facts on the shipper side, downloads the draft in their letterhead/template format, signs/stamps/authenticates it, and uploads the final COS/export evidence. Supervisors can view and download the final pack once uploaded.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700"><div className="font-medium text-slate-950">{(staff as any).full_name}</div><div>{(staff as any).role_type}</div></div>
@@ -195,7 +202,7 @@ export default async function DraftCosExportEvidencePage({ params }: { params: P
 
         <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-900 shadow-sm">
           <h2 className="font-semibold">Final evidence remains shipper-side</h2>
-          <p className="mt-2">The shipper completes and uploads the signed/stamped COS plus final export evidence. Accepted upload types: completed COS, final EEP / packing list if amended, MBL/BOL/sea waybill, container/seal evidence, and export date/departure evidence. Supervisor access is view/download only after upload.</p>
+          <p className="mt-2">The shipper enters MBL/BOL, container, seal, vessel/route, ports, export date and final package confirmation on the shipper side, then downloads the draft in their letterhead/template format and uploads the signed/stamped COS plus final export evidence. Accepted upload types: completed COS, final EEP / packing list if amended, MBL/BOL/sea waybill, container/seal evidence, and export date/departure evidence. Supervisor access is view/download only after upload.</p>
           <div className="mt-4 flex flex-wrap gap-3">
             <button disabled className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-500">Download draft COS + EEP pack — next</button>
             <button disabled className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-500">Upload completed COS / final export evidence — shipper side next</button>
@@ -253,6 +260,7 @@ export default async function DraftCosExportEvidencePage({ params }: { params: P
                   const rowQty = n(row.qty_allocated);
                   const rowGoodsValue = n(row.goods_amount_gbp);
                   const unitValue = rowQty > 0 ? rowGoodsValue / rowQty : 0;
+                  const description = cleanGoodsDescription(row.item_description);
                   return (
                     <tr key={`${row.order_id}-${row.tracking_submission_id}-${row.supplier_invoice_line_id}-${index}`}>
                       <td className="px-3 py-2 font-semibold">{firstCustomer?.importer_name ?? firstBatch?.importer_name ?? "Customer"}</td>
@@ -260,8 +268,8 @@ export default async function DraftCosExportEvidencePage({ params }: { params: P
                       <td className="px-3 py-2 text-slate-500">Pending sales invoice ref</td>
                       <td className="px-3 py-2">{row.order_ref ?? row.order_id ?? "—"}</td>
                       <td className="px-3 py-2 text-slate-500">Pending supplier invoice ref</td>
-                      <td className="px-3 py-2 font-mono text-xs">{traceSku(row)}</td>
-                      <td className="px-3 py-2">{row.item_description ?? "Assorted retail goods"}</td>
+                      <td className="px-3 py-2 font-mono text-xs">{traceSku(index)}</td>
+                      <td className="px-3 py-2">{description}</td>
                       <td className="px-3 py-2 text-right font-semibold">{qty(row.qty_allocated)}</td>
                       <td className="px-3 py-2 text-right">{money(unitValue)}</td>
                       <td className="px-3 py-2 text-right font-semibold">{money(row.goods_amount_gbp)}</td>
