@@ -12,7 +12,8 @@ export default async function InternalDraftExportEvidenceLayout({
   return (
     <>
       <style>{`
-        main button:disabled {
+        main button:disabled,
+        main section.border-amber-200.bg-amber-50 {
           display: none !important;
         }
       `}</style>
