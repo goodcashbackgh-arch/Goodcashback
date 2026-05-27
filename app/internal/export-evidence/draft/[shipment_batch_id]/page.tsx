@@ -141,9 +141,6 @@ export default async function DraftCosExportEvidencePage({ params }: { params: P
   const totalBoxes = n(firstPack?.total_boxes) || n(firstBatch?.box_count) || packageRows.length;
   const totalQty = packRows.reduce((sum, row) => sum + n(row.qty_allocated), 0);
   const invoiceValue = packRows.reduce((sum, row) => sum + n(row.total_export_value_gbp), 0);
-  const invoiceRefs = Array.from(new Set(packRows.map((row) => row.sales_invoice_ref).filter(Boolean))) as string[];
-  const basisLabel = invoiceRefs.length > 0 ? "Posted customer sales invoice" : "Delivery allocation fallback";
-  const basisTone = invoiceRefs.length > 0 ? "border-emerald-200 bg-emerald-50" : "border-amber-200 bg-amber-50";
   const receiptIssue = packageRows.some((row) => row.latest_receipt_status && row.latest_receipt_status !== "received_clean");
   const completionStatus = completion?.completion_status ?? firstPack?.completion_status ?? null;
   const blockers = [
@@ -182,22 +179,21 @@ export default async function DraftCosExportEvidencePage({ params }: { params: P
             <div>
               <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Draft COS / Export Evidence Pack review</h1>
               <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
-                COS/EEP values follow the posted customer export sales invoice where one exists. Delivery allocation is used only as a fallback where no posted customer invoice exists. Supplementary shipping-only invoices are excluded from this goods schedule.
+                COS/EEP is the shipment goods schedule. Each line carries its own invoice reference and invoice-backed export value where a posted customer invoice exists. Supplementary shipping-only invoices are excluded from this goods schedule.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700"><div className="font-medium text-slate-950">{(staff as any).full_name}</div><div>{(staff as any).role_type}</div></div>
           </div>
           {batchResult.error ? <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">Batch detail unavailable: {batchResult.error.message}</p> : null}
           {completionResult.error ? <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">Completion fields unavailable: {completionResult.error.message}</p> : null}
-          {packResult.error ? <p className="mt-4 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-900">COS/EEP invoice basis unavailable: {packResult.error.message}</p> : null}
+          {packResult.error ? <p className="mt-4 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-900">COS/EEP line schedule unavailable: {packResult.error.message}</p> : null}
         </section>
 
-        <section className="grid gap-4 md:grid-cols-5">
+        <section className="grid gap-4 md:grid-cols-4">
           <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">EEP ref</p><p className="mt-1 text-xl font-semibold">{eepRef}</p></div>
           <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Packages / boxes</p><p className="mt-1 text-xl font-semibold">{totalBoxes || "—"}</p></div>
           <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Allocated qty</p><p className="mt-1 text-xl font-semibold">{qty(totalQty)}</p></div>
           <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Invoice export value</p><p className="mt-1 text-xl font-semibold">{money(invoiceValue)}</p></div>
-          <div className={`rounded-3xl border p-4 shadow-sm ${blockers.length === 0 ? "border-emerald-200 bg-emerald-50" : "border-rose-200 bg-rose-50"}`}><p className="text-xs uppercase tracking-wide text-slate-500">Draft pack</p><p className="mt-1 text-xl font-semibold">{blockers.length === 0 ? "Ready" : "Blocked"}</p></div>
         </section>
 
         {blockers.length > 0 ? (
@@ -206,16 +202,6 @@ export default async function DraftCosExportEvidencePage({ params }: { params: P
             <ul className="mt-2 list-disc space-y-1 pl-5">{blockers.map((blocker) => <li key={blocker}>{friendly(blocker)}</li>)}</ul>
           </section>
         ) : null}
-
-        <section className={`rounded-3xl border p-5 shadow-sm ${basisTone}`}>
-          <h2 className="text-xl font-semibold">Sales invoice basis</h2>
-          <div className="mt-4 grid gap-3 md:grid-cols-4">
-            <div className="rounded-2xl bg-white/70 p-4"><p className="text-xs uppercase tracking-wide text-slate-500">Basis</p><p className="mt-1 font-semibold">{basisLabel}</p></div>
-            <div className="rounded-2xl bg-white/70 p-4"><p className="text-xs uppercase tracking-wide text-slate-500">Invoice ref</p><p className="mt-1 font-semibold">{invoiceRefs.length > 0 ? invoiceRefs.join(", ") : "—"}</p></div>
-            <div className="rounded-2xl bg-white/70 p-4"><p className="text-xs uppercase tracking-wide text-slate-500">COS/EEP invoice value</p><p className="mt-1 font-semibold">{money(invoiceValue)}</p></div>
-            <div className="rounded-2xl bg-white/70 p-4"><p className="text-xs uppercase tracking-wide text-slate-500">Supplementary shipping</p><p className="mt-1 font-semibold">Excluded from COS/EEP</p></div>
-          </div>
-        </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
           <h2 className="text-xl font-semibold">EEP / packing list line preview</h2>
