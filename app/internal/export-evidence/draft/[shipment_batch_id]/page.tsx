@@ -83,6 +83,41 @@ type CompletionFieldsRow = {
   updated_at: string | null;
 };
 
+type ExportEvidencePackRow = {
+  shipment_batch_id: string;
+  booking_ref: string | null;
+  eep_ref: string | null;
+  shipper_id: string | null;
+  shipper_name: string | null;
+  importer_id: string | null;
+  customer_name: string | null;
+  package_box_ref: string | null;
+  total_boxes: number | string | null;
+  mbl_bol_sea_waybill_ref: string | null;
+  container_number: string | null;
+  seal_number: string | null;
+  vessel_voyage: string | null;
+  port_of_loading: string | null;
+  port_of_discharge: string | null;
+  place_of_delivery: string | null;
+  export_shipment_date: string | null;
+  final_package_confirmation: string | null;
+  authorised_name: string | null;
+  signature_stamp_confirmation_yn: boolean | null;
+  completion_status: string | null;
+  order_id: string | null;
+  order_ref: string | null;
+  sales_invoice_ref: string | null;
+  sage_account_ref: string | null;
+  supplier_invoice_ref: string | null;
+  supplier_invoice_line_id: string | null;
+  item_description: string | null;
+  qty_allocated: number | string | null;
+  unit_export_value_gbp: number | string | null;
+  total_export_value_gbp: number | string | null;
+  destination: string | null;
+};
+
 function n(value: number | string | null | undefined) {
   const parsed = Number(value ?? 0);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -134,9 +169,12 @@ function last3(value: string | null | undefined) {
   return compact.length <= 3 ? compact : compact.slice(-3);
 }
 
-function traceSku(row: CustomerPreviewRow, supplierInvoiceRefByLineId: Map<string, string>) {
+function traceSku(
+  row: { order_ref: string | null; order_id: string | null; supplier_invoice_ref?: string | null; supplier_invoice_line_id: string | null },
+  supplierInvoiceRefByLineId: Map<string, string>,
+) {
   const orderPart = last3(row.order_ref ?? row.order_id);
-  const supplierInvoiceRef = row.supplier_invoice_line_id ? supplierInvoiceRefByLineId.get(row.supplier_invoice_line_id) : null;
+  const supplierInvoiceRef = row.supplier_invoice_ref ?? (row.supplier_invoice_line_id ? supplierInvoiceRefByLineId.get(row.supplier_invoice_line_id) : null);
   const supplierPart = last3(supplierInvoiceRef ?? row.supplier_invoice_line_id);
   return `${orderPart}/${supplierPart}`;
 }
@@ -166,19 +204,24 @@ export default async function DraftCosExportEvidencePage({ params }: { params: P
 
   if (!staff) redirect("/auth/check");
 
-  const [batchResult, customerPreviewResult, apPreviewResult, completionFieldsResult] = await Promise.all([
+  const [batchResult, customerPreviewResult, apPreviewResult, completionFieldsResult, exportPackResult] = await Promise.all([
     (supabase as any).rpc("internal_shipping_batch_detail_v1", { p_shipment_batch_id: shipmentBatchId }),
     (supabase as any).rpc("internal_shipping_customer_invoice_readiness_preview_v1", { p_shipment_batch_id: shipmentBatchId }),
     (supabase as any).rpc("internal_shipping_ap_recharge_readiness_preview_v1", { p_shipment_batch_id: shipmentBatchId }),
     (supabase as any).rpc("internal_shipment_export_evidence_completion_fields_v1", { p_shipment_batch_id: shipmentBatchId }),
+    (supabase as any).rpc("shipper_export_evidence_pack_preview_v1", { p_shipment_batch_id: shipmentBatchId }),
   ]);
 
   const batchRows = ((batchResult.data ?? []) as BatchDetailRow[]);
   const customerRows = ((customerPreviewResult.data ?? []) as CustomerPreviewRow[]);
   const apRows = ((apPreviewResult.data ?? []) as ShippingApPreviewRow[]);
+  const exportPackRows = ((exportPackResult.data ?? []) as ExportEvidencePackRow[]);
   const completionFields = (((completionFieldsResult.data ?? []) as CompletionFieldsRow[])[0]) ?? null;
 
-  const supplierLineIds = Array.from(new Set(customerRows.map((row) => row.supplier_invoice_line_id).filter(Boolean))) as string[];
+  const supplierLineIds = Array.from(new Set([
+    ...exportPackRows.map((row) => row.supplier_invoice_line_id),
+    ...customerRows.map((row) => row.supplier_invoice_line_id),
+  ].filter(Boolean))) as string[];
   const supplierInvoiceRefByLineId = new Map<string, string>();
   if (supplierLineIds.length > 0) {
     const { data: supplierLineRefs } = await supabase
@@ -194,46 +237,49 @@ export default async function DraftCosExportEvidencePage({ params }: { params: P
 
   const firstBatch = batchRows[0] ?? null;
   const firstCustomer = customerRows[0] ?? null;
+  const firstExportRow = exportPackRows[0] ?? null;
   const packageRows = batchRows.filter((row) => row.package_link_id);
-  const eepRef = `EEP-${(firstBatch?.booking_ref ?? shipmentBatchId).replace(/[^a-z0-9-]/gi, "").slice(0, 24)}`;
-  const shipmentPackageRef = firstBatch?.booking_ref ?? eepRef;
-  const totalPackages = n(firstBatch?.box_count) || packageRows.length;
-  const totalQty = customerRows.reduce((sum, row) => sum + n(row.qty_allocated), 0);
-  const totalGoodsValue = customerRows.reduce((sum, row) => sum + n(row.goods_amount_gbp), 0);
+  const eepRef = firstExportRow?.eep_ref ?? `EEP-${(firstBatch?.booking_ref ?? shipmentBatchId).replace(/[^a-z0-9-]/gi, "").slice(0, 24)}`;
+  const shipmentPackageRef = firstExportRow?.package_box_ref ?? firstBatch?.booking_ref ?? eepRef;
+  const totalPackages = n(firstExportRow?.total_boxes) || n(firstBatch?.box_count) || packageRows.length;
+  const totalQty = exportPackRows.reduce((sum, row) => sum + n(row.qty_allocated), 0);
+  const totalGoodsValue = exportPackRows.reduce((sum, row) => sum + n(row.total_export_value_gbp), 0);
   const totalCustomerCharge = customerRows.reduce((sum, row) => sum + n(row.total_line_amount_gbp), 0);
   const totalShipping = customerRows.reduce((sum, row) => sum + n(row.shipping_amount_gbp), 0);
   const apBlockers = Array.from(new Set(apRows.map((row) => row.blocker).filter(Boolean))) as string[];
   const customerBlockers = Array.from(new Set(customerRows.map((row) => row.blocker).filter(Boolean))) as string[];
   const missingReceiptRows = packageRows.filter((row) => row.latest_receipt_status && row.latest_receipt_status !== "received_clean");
-  const completionStatus = completionFields?.completion_status ?? null;
+  const completionStatus = completionFields?.completion_status ?? firstExportRow?.completion_status ?? null;
 
   const blockers = [
     packageRows.length === 0 ? "no_packages_selected_into_shipment_batch" : null,
-    customerRows.length === 0 ? "no_customer_invoice_basis_or_delivery_allocation_lines" : null,
+    exportPackResult.error ? "export_evidence_pack_preview_unavailable" : null,
+    exportPackRows.length === 0 ? "no_export_evidence_pack_allocation_lines" : null,
     totalQty <= 0 ? "no_allocated_quantity" : null,
     totalGoodsValue <= 0 ? "missing_adjusted_goods_value" : null,
     completionStatus !== "completion_fields_ready" ? "shipper_completed_fields_missing_or_draft" : null,
-    ...customerBlockers,
     missingReceiptRows.length > 0 ? "receipt_issue_or_non_clean_package_in_batch" : null,
   ].filter(Boolean) as string[];
 
   const warnings = [
+    ...customerBlockers.map((blocker) => `customer_invoice_route: ${blocker}`),
     ...apBlockers.map((blocker) => `shipping_apportionment: ${blocker}`),
+    "COS / EEP goods values use delivery allocation adjusted net value, not supplementary invoice value",
     "final COS / MBL / container / seal / export date will be completed and uploaded by shipper",
   ];
 
   const shipperCompletedFields = [
-    ["MBL / BOL / sea waybill", completionFields?.mbl_bol_sea_waybill_ref],
-    ["Container number", completionFields?.container_number],
-    ["Seal number", completionFields?.seal_number],
-    ["Vessel / voyage", completionFields?.vessel_voyage],
-    ["Port of loading", completionFields?.port_of_loading],
-    ["Port of discharge", completionFields?.port_of_discharge],
-    ["Place of delivery", completionFields?.place_of_delivery],
-    ["Date of export / shipment", shortDate(completionFields?.export_shipment_date)],
-    ["Final package confirmation", completionFields?.final_package_confirmation],
-    ["Authorised name", completionFields?.authorised_name],
-    ["Signature / stamp confirmation", completionFields?.signature_stamp_confirmation_yn],
+    ["MBL / BOL / sea waybill", completionFields?.mbl_bol_sea_waybill_ref ?? firstExportRow?.mbl_bol_sea_waybill_ref],
+    ["Container number", completionFields?.container_number ?? firstExportRow?.container_number],
+    ["Seal number", completionFields?.seal_number ?? firstExportRow?.seal_number],
+    ["Vessel / voyage", completionFields?.vessel_voyage ?? firstExportRow?.vessel_voyage],
+    ["Port of loading", completionFields?.port_of_loading ?? firstExportRow?.port_of_loading],
+    ["Port of discharge", completionFields?.port_of_discharge ?? firstExportRow?.port_of_discharge],
+    ["Place of delivery", completionFields?.place_of_delivery ?? firstExportRow?.place_of_delivery],
+    ["Date of export / shipment", shortDate(completionFields?.export_shipment_date ?? firstExportRow?.export_shipment_date)],
+    ["Final package confirmation", completionFields?.final_package_confirmation ?? firstExportRow?.final_package_confirmation],
+    ["Authorised name", completionFields?.authorised_name ?? firstExportRow?.authorised_name],
+    ["Signature / stamp confirmation", completionFields?.signature_stamp_confirmation_yn ?? firstExportRow?.signature_stamp_confirmation_yn],
     ["Notes", completionFields?.notes],
   ] as const;
 
@@ -260,6 +306,7 @@ export default async function DraftCosExportEvidencePage({ params }: { params: P
           {customerPreviewResult.error ? <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">Customer invoice basis unavailable: {customerPreviewResult.error.message}</p> : null}
           {apPreviewResult.error ? <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">Shipping apportionment preview unavailable: {apPreviewResult.error.message}</p> : null}
           {completionFieldsResult.error ? <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">Shipper completion fields unavailable: {completionFieldsResult.error.message}. Apply the latest Supabase migration before testing this section.</p> : null}
+          {exportPackResult.error ? <p className="mt-4 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-900">Export evidence pack preview unavailable: {exportPackResult.error.message}</p> : null}
         </section>
 
         <section className="grid gap-4 md:grid-cols-5">
@@ -293,11 +340,11 @@ export default async function DraftCosExportEvidencePage({ params }: { params: P
             <h2 className="text-xl font-semibold">Draft COS header preview</h2>
             <div className="mt-4 grid gap-3 text-sm md:grid-cols-2">
               <div className="rounded-2xl bg-slate-50 p-3"><span className="text-slate-500">Exporter / supplier</span><p className="font-semibold">Goodcashback / tenant exporter</p><p className="text-xs text-slate-500">Dummy UK address · Dummy VAT number</p></div>
-              <div className="rounded-2xl bg-slate-50 p-3"><span className="text-slate-500">Freight forwarder / packer</span><p className="font-semibold">{firstBatch?.shipper_name ?? completionFields?.shipper_name ?? "Shipper to complete"}</p></div>
+              <div className="rounded-2xl bg-slate-50 p-3"><span className="text-slate-500">Freight forwarder / packer</span><p className="font-semibold">{firstExportRow?.shipper_name ?? firstBatch?.shipper_name ?? completionFields?.shipper_name ?? "Shipper to complete"}</p></div>
               <div className="rounded-2xl bg-slate-50 p-3"><span className="text-slate-500">Consignee</span><p className="font-semibold">Ghana jurisdiction hub / tenant destination hub</p><p className="text-xs text-slate-500">Dummy Ghana address</p></div>
-              <div className="rounded-2xl bg-slate-50 p-3"><span className="text-slate-500">Customer reference</span><p className="font-semibold">{firstBatch?.booking_ref ?? completionFields?.booking_ref ?? shipmentBatchId}</p></div>
+              <div className="rounded-2xl bg-slate-50 p-3"><span className="text-slate-500">Customer reference</span><p className="font-semibold">{firstExportRow?.booking_ref ?? firstBatch?.booking_ref ?? completionFields?.booking_ref ?? shipmentBatchId}</p></div>
               <div className="rounded-2xl bg-slate-50 p-3"><span className="text-slate-500">Description</span><p className="font-semibold">Assorted retail consumer goods as per attached {eepRef}</p></div>
-              <div className="rounded-2xl bg-slate-50 p-3"><span className="text-slate-500">Destination</span><p className="font-semibold">Ghana / destination hub</p></div>
+              <div className="rounded-2xl bg-slate-50 p-3"><span className="text-slate-500">Destination</span><p className="font-semibold">{firstExportRow?.destination ?? "Ghana / destination hub"}</p></div>
             </div>
           </article>
 
@@ -322,7 +369,7 @@ export default async function DraftCosExportEvidencePage({ params }: { params: P
 
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
           <h2 className="text-xl font-semibold">EEP / packing list line preview</h2>
-          <p className="mt-2 text-sm leading-6 text-slate-600">Detailed goods schedule. The short COS references this frozen EEP instead of carrying every line on the certificate itself.</p>
+          <p className="mt-2 text-sm leading-6 text-slate-600">Detailed goods schedule. The short COS references this frozen EEP instead of carrying every line on the certificate itself. Values come from delivery allocation adjusted net value, not from supplementary shipping-invoice amounts.</p>
           <div className="mt-4 overflow-x-auto rounded-2xl border border-slate-200">
             <table className="min-w-full divide-y divide-slate-200 text-sm">
               <thead className="bg-slate-100 text-xs uppercase tracking-wide text-slate-500">
@@ -340,25 +387,22 @@ export default async function DraftCosExportEvidencePage({ params }: { params: P
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 bg-white">
-                {customerRows.length === 0 ? (
-                  <tr><td colSpan={10} className="px-3 py-4 text-slate-600">No delivery allocation/customer invoice basis rows found for this shipment batch.</td></tr>
-                ) : customerRows.map((row, index) => {
-                  const rowQty = n(row.qty_allocated);
-                  const rowGoodsValue = n(row.goods_amount_gbp);
-                  const unitValue = rowQty > 0 ? rowGoodsValue / rowQty : 0;
+                {exportPackRows.length === 0 ? (
+                  <tr><td colSpan={10} className="px-3 py-4 text-slate-600">No export evidence pack rows found for this shipment batch. Check delivery allocations and the pack preview RPC.</td></tr>
+                ) : exportPackRows.map((row, index) => {
                   const description = cleanGoodsDescription(row.item_description);
                   return (
-                    <tr key={`${row.order_id}-${row.tracking_submission_id}-${row.supplier_invoice_line_id}-${index}`}>
-                      <td className="px-3 py-2 font-semibold">{firstCustomer?.importer_name ?? firstBatch?.importer_name ?? "Customer"}</td>
-                      <td className="px-3 py-2 text-slate-500">Pending Sage A/C ref</td>
-                      <td className="px-3 py-2 text-slate-500">Pending sales invoice ref</td>
+                    <tr key={`${row.order_id}-${row.supplier_invoice_line_id}-${index}`}>
+                      <td className="px-3 py-2 font-semibold">{row.customer_name ?? firstCustomer?.importer_name ?? firstBatch?.importer_name ?? "Customer"}</td>
+                      <td className="px-3 py-2 text-slate-500">{row.sage_account_ref ?? "Pending Sage A/C ref"}</td>
+                      <td className="px-3 py-2 text-slate-500">{row.sales_invoice_ref ?? "Pending sales invoice ref"}</td>
                       <td className="px-3 py-2 font-mono text-xs">{traceSku(row, supplierInvoiceRefByLineId)}</td>
                       <td className="px-3 py-2">{description}</td>
                       <td className="px-3 py-2 text-right font-semibold">{qty(row.qty_allocated)}</td>
-                      <td className="px-3 py-2 text-right">{money(unitValue)}</td>
-                      <td className="px-3 py-2 text-right font-semibold">{money(row.goods_amount_gbp)}</td>
-                      <td className="px-3 py-2">{shipmentPackageRef}</td>
-                      <td className="px-3 py-2">Ghana</td>
+                      <td className="px-3 py-2 text-right">{money(row.unit_export_value_gbp)}</td>
+                      <td className="px-3 py-2 text-right font-semibold">{money(row.total_export_value_gbp)}</td>
+                      <td className="px-3 py-2">{row.package_box_ref ?? shipmentPackageRef}</td>
+                      <td className="px-3 py-2">{row.destination ?? "Ghana"}</td>
                     </tr>
                   );
                 })}
@@ -371,7 +415,7 @@ export default async function DraftCosExportEvidencePage({ params }: { params: P
           <h2 className="text-xl font-semibold">Customer invoice and shipping sanity</h2>
           <div className="mt-4 grid gap-3 md:grid-cols-4">
             <div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs uppercase tracking-wide text-slate-500">Customer invoice route</p><p className="mt-1 font-semibold">{friendly(firstCustomer?.customer_recharge_route)}</p></div>
-            <div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs uppercase tracking-wide text-slate-500">Goods value</p><p className="mt-1 font-semibold">{money(totalGoodsValue)}</p></div>
+            <div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs uppercase tracking-wide text-slate-500">COS/EEP goods value</p><p className="mt-1 font-semibold">{money(totalGoodsValue)}</p></div>
             <div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs uppercase tracking-wide text-slate-500">Apportioned shipping</p><p className="mt-1 font-semibold">{money(totalShipping)}</p></div>
             <div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs uppercase tracking-wide text-slate-500">Customer charge</p><p className="mt-1 font-semibold">{money(totalCustomerCharge)}</p></div>
           </div>
