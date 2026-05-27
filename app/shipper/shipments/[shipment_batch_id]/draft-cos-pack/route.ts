@@ -97,6 +97,14 @@ export async function GET(_request: Request, { params }: { params: Promise<{ shi
   const rows = (data ?? []) as PackRow[];
   if (rows.length === 0) return new NextResponse("No EEP lines found for this shipment batch.", { status: 404 });
 
+  const missingSalesInvoiceRows = rows.filter((row) => !String(row.sales_invoice_ref ?? "").trim());
+  if (missingSalesInvoiceRows.length > 0) {
+    return new NextResponse(
+      "Draft COS / EEP pack blocked: customer sales invoice is missing for one or more export lines. Create/approve the customer sales invoice before generating export evidence.",
+      { status: 409 },
+    );
+  }
+
   const first = rows[0];
   const eepRef = first.eep_ref || `EEP-${safeFile(first.booking_ref || shipmentBatchId)}`;
   const totalQty = rows.reduce((sum, row) => sum + n(row.qty_allocated), 0);
@@ -137,7 +145,6 @@ export async function GET(_request: Request, { params }: { params: Promise<{ shi
     .eep-sheet { page: eep; width: 297mm; min-height: 210mm; }
     .draft-banner { border: 1px solid #111827; padding: 6px; margin-bottom: 10px; text-align: center; font-family: Arial, Helvetica, sans-serif; font-size: 11px; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase; }
     h1 { margin: 0 0 10px; text-align: center; font-size: 24px; text-decoration: underline; }
-    h2 { margin: 12px 0 8px; font-size: 15px; font-family: Arial, Helvetica, sans-serif; }
     .certificate-grid { display: grid; grid-template-columns: 1.15fr 1fr; border: 1px solid #6b7280; }
     .left-panel, .right-panel { min-height: 90mm; }
     .right-panel { border-left: 1px solid #6b7280; }
@@ -175,11 +182,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ shi
   </style>
 </head>
 <body>
-  <div class="toolbar">
-    <button onclick="window.print()">Print / Save as PDF</button>
-    <span>Draft COS + EEP Pack · ${esc(eepRef)}</span>
-  </div>
-
+  <div class="toolbar"><button onclick="window.print()">Print / Save as PDF</button><span>Draft COS + EEP Pack · ${esc(eepRef)}</span></div>
   <section class="sheet">
     <div class="draft-banner">Draft only — shipper to place on letterhead/template, sign/stamp, and upload final evidence</div>
     <h1>Certificate Of Shipment</h1>
@@ -200,68 +203,23 @@ export async function GET(_request: Request, { params }: { params: Promise<{ shi
         </div>
       </div>
       <div class="right-panel">
-        <div class="mini-grid">
-          ${headerCell("Date Issued", issuedDate)}
-          ${headerCell("Customer Reference", display(first.booking_ref, shipmentBatchId))}
-        </div>
+        <div class="mini-grid">${headerCell("Date Issued", issuedDate)}${headerCell("Customer Reference", display(first.booking_ref, shipmentBatchId))}</div>
         ${headerCell("Bill of lading", display(first.mbl_bol_sea_waybill_ref))}
         <div class="logo-box">${esc(display(first.shipper_name, "SHIPPER"))}</div>
-        ${headerCell("Internal document / EEP ref", eepRef)}
-        ${headerCell("Boxes / Packages", boxes)}
-        ${headerCell("Completion status", completionStatus)}
+        ${headerCell("Internal document / EEP ref", eepRef)}${headerCell("Boxes / Packages", boxes)}${headerCell("Completion status", completionStatus)}
       </div>
     </div>
-
-    <div class="goods-note">
-      GOODS SHIPPED AS PER OUR INTERNAL DOCUMENT NO.: ${esc(eepRef)}<br />
-      DATE: ${esc(display(first.export_shipment_date, issuedDate))}<br />
-      BOXES: ${esc(boxes)}<br /><br />
-      Description of goods: Assorted retail consumer goods as per attached EEP / packing list ${esc(eepRef)}.
-    </div>
-
-    <p class="small-text">
-      We hereby certify that the above-mentioned goods covered by the invoice/reference number(s) and detailed in the attached EEP / packing list were shipped as part of a consolidated shipment.
-    </p>
-
-    <div class="signature-area">
-      <div class="sig-line">Authorised name: ${esc(display(first.authorised_name))}</div>
-      <div class="sig-line">Signature / stamp / date</div>
-    </div>
+    <div class="goods-note">GOODS SHIPPED AS PER OUR INTERNAL DOCUMENT NO.: ${esc(eepRef)}<br />DATE: ${esc(display(first.export_shipment_date, issuedDate))}<br />BOXES: ${esc(boxes)}<br /><br />Description of goods: Assorted retail consumer goods as per attached EEP / packing list ${esc(eepRef)}.</div>
+    <p class="small-text">We hereby certify that the above-mentioned goods covered by the invoice/reference number(s) and detailed in the attached EEP / packing list were shipped as part of a consolidated shipment.</p>
+    <div class="signature-area"><div class="sig-line">Authorised name: ${esc(display(first.authorised_name))}</div><div class="sig-line">Signature / stamp / date</div></div>
     <div class="company-stamp">${esc(display(first.shipper_name, "SHIPPER"))}</div>
   </section>
-
   <section class="sheet eep-sheet">
     <h1>Export Evidence Pack / Packing List</h1>
-    <div class="summary-row">
-      <div class="summary-card"><span>EEP ref</span><strong>${esc(eepRef)}</strong></div>
-      <div class="summary-card"><span>Shipment / booking ref</span><strong>${esc(display(first.booking_ref, shipmentBatchId))}</strong></div>
-      <div class="summary-card"><span>Package / box</span><strong>${esc(display(first.package_box_ref, eepRef))}</strong></div>
-      <div class="summary-card"><span>Destination</span><strong>${esc(display(first.destination, "Ghana"))}</strong></div>
-    </div>
-    <table>
-      <thead>
-        <tr>
-          <th>Customer</th>
-          <th>Sage A/C ref</th>
-          <th>Sales invoice ref</th>
-          <th>Trace SKU</th>
-          <th>Description</th>
-          <th class="num">Qty</th>
-          <th class="num">Unit export value</th>
-          <th class="num">Total export value</th>
-          <th>Package / box</th>
-          <th>Destination</th>
-        </tr>
-      </thead>
-      <tbody>${itemRows}</tbody>
-    </table>
-    <div class="totals">
-      <span>Total Qty: ${esc(qty(totalQty))}</span>
-      <span>Total Value: GBP ${esc(money(totalValue))}</span>
-    </div>
-    <div class="footer-note">
-      This EEP / packing list is the detailed goods schedule referenced by the Certificate of Shipment. It is intended to support the shipment/export evidence pack and avoid placing every detailed line directly on the short certificate page.
-    </div>
+    <div class="summary-row"><div class="summary-card"><span>EEP ref</span><strong>${esc(eepRef)}</strong></div><div class="summary-card"><span>Shipment / booking ref</span><strong>${esc(display(first.booking_ref, shipmentBatchId))}</strong></div><div class="summary-card"><span>Package / box</span><strong>${esc(display(first.package_box_ref, eepRef))}</strong></div><div class="summary-card"><span>Destination</span><strong>${esc(display(first.destination, "Ghana"))}</strong></div></div>
+    <table><thead><tr><th>Customer</th><th>Sage A/C ref</th><th>Sales invoice ref</th><th>Trace SKU</th><th>Description</th><th class="num">Qty</th><th class="num">Unit export value</th><th class="num">Total export value</th><th>Package / box</th><th>Destination</th></tr></thead><tbody>${itemRows}</tbody></table>
+    <div class="totals"><span>Total Qty: ${esc(qty(totalQty))}</span><span>Total Value: GBP ${esc(money(totalValue))}</span></div>
+    <div class="footer-note">This EEP / packing list is the detailed goods schedule referenced by the Certificate of Shipment. It is intended to support the shipment/export evidence pack and avoid placing every detailed line directly on the short certificate page.</div>
   </section>
 </body>
 </html>`;
