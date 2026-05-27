@@ -1,21 +1,13 @@
 import Link from "next/link";
 import { createClient } from "@/utils/supabase/server";
 
-type ApRow = {
-  blocker?: string | null;
-};
-
-type CustomerRow = {
-  sales_invoice_state?: string | null;
-  blocker?: string | null;
-};
-
 type FinalEvidenceRow = {
   review_status?: string | null;
 };
 
-type CompletionRow = {
-  completion_status?: string | null;
+type ExportPackRow = {
+  total_export_value_gbp?: string | number | null;
+  qty_allocated?: string | number | null;
 };
 
 function friendly(value: string | null | undefined) {
@@ -30,15 +22,9 @@ function pill(status: "ready" | "review" | "blocked" | "muted") {
   return "border-slate-200 bg-white text-slate-700";
 }
 
-function isMissingSalesInvoice(state: string | null | undefined) {
-  const value = state ?? "";
-  return (
-    value.includes("no_main_sales_invoice") ||
-    value.includes("no_sales_invoice") ||
-    value.includes("sales_invoice_table_not_available") ||
-    value.includes("sales_invoice_state_not_found") ||
-    value.includes("sales_invoice_state_not_resolved")
-  );
+function n(value: string | number | null | undefined) {
+  const parsed = Number(value ?? 0);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 export default async function InternalDraftExportEvidenceLayout({
@@ -51,32 +37,24 @@ export default async function InternalDraftExportEvidenceLayout({
   const { shipment_batch_id: shipmentBatchId } = await params;
   const supabase = await createClient();
 
-  const [apResult, customerResult, finalEvidenceResult, completionResult] = await Promise.all([
-    (supabase as any).rpc("internal_shipping_ap_recharge_readiness_preview_v1", { p_shipment_batch_id: shipmentBatchId }),
-    (supabase as any).rpc("internal_shipping_customer_invoice_readiness_preview_v1", { p_shipment_batch_id: shipmentBatchId }),
+  const [packResult, finalEvidenceResult] = await Promise.all([
+    (supabase as any).rpc("shipper_export_evidence_pack_preview_v1", { p_shipment_batch_id: shipmentBatchId }),
     (supabase as any).rpc("internal_final_export_evidence_documents_v1", { p_shipment_batch_id: shipmentBatchId }),
-    (supabase as any).rpc("internal_shipment_export_evidence_completion_fields_v1", { p_shipment_batch_id: shipmentBatchId }),
   ]);
 
-  const apRows = ((apResult.data ?? []) as ApRow[]);
-  const customerRows = ((customerResult.data ?? []) as CustomerRow[]);
+  const packRows = ((packResult.data ?? []) as ExportPackRow[]);
   const finalRows = ((finalEvidenceResult.data ?? []) as FinalEvidenceRow[]);
-  const completionRows = ((completionResult.data ?? []) as CompletionRow[]);
-  const apBlockers = Array.from(new Set(apRows.map((row) => row.blocker).filter(Boolean))) as string[];
-  const customerBlockers = Array.from(new Set(customerRows.map((row) => row.blocker).filter(Boolean))) as string[];
-  const invoiceStates = Array.from(new Set(customerRows.map((row) => row.sales_invoice_state).filter(Boolean))) as string[];
-  const invoiceMissing = customerRows.length === 0 || invoiceStates.some((state) => isMissingSalesInvoice(state));
-  const completionStatus = completionRows[0]?.completion_status ?? null;
-  const completionReady = completionStatus === "completion_fields_ready";
+  const totalQty = packRows.reduce((sum, row) => sum + n(row.qty_allocated), 0);
+  const totalValue = packRows.reduce((sum, row) => sum + n(row.total_export_value_gbp), 0);
   const hasFinalAccepted = finalRows.some((row) => row.review_status === "accepted_current");
   const hasFinalSubmitted = finalRows.some((row) => row.review_status === "submitted_for_review");
   const hasFinalRejected = finalRows.some((row) => row.review_status === "rejected_resubmit_required");
 
   const draftBlockers = [
-    invoiceMissing ? "customer sales invoice is missing" : null,
-    !completionReady ? "shipper completion fields are not ready" : null,
-    ...customerBlockers,
-    ...apBlockers,
+    packResult.error ? "COS/EEP pack preview unavailable" : null,
+    packRows.length === 0 ? "COS/EEP line schedule is empty" : null,
+    totalQty <= 0 ? "COS/EEP quantity is missing" : null,
+    totalValue <= 0 ? "COS/EEP invoice export value is missing" : null,
   ].filter(Boolean) as string[];
 
   const draftStatusTone = draftBlockers.length === 0 ? "ready" : "blocked";
@@ -91,20 +69,11 @@ export default async function InternalDraftExportEvidenceLayout({
         : "Final evidence not uploaded yet";
 
   const blockerText = draftBlockers.length > 0
-    ? draftBlockers.map((blocker) => blocker === "shipper_document_requires_supervisor_acceptance" ? "Shipping AP document requires supervisor acceptance" : friendly(blocker)).join("; ")
-    : "All draft COS / EEP gates passed";
+    ? draftBlockers.map((blocker) => friendly(blocker)).join("; ")
+    : "COS / EEP line schedule has invoice-backed quantity and value";
 
   return (
     <>
-      <style>{`
-        main button:disabled,
-        main section.border-amber-200.bg-amber-50,
-        main section.border-rose-300.bg-rose-50,
-        main div.border-rose-200.bg-rose-50 {
-          display: none !important;
-        }
-      `}</style>
-
       <section className="bg-slate-50 px-4 pt-4 sm:px-6">
         <div className="mx-auto grid max-w-7xl gap-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm md:grid-cols-2">
           <div className={`rounded-2xl border p-4 ${pill(draftStatusTone)}`}>
