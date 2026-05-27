@@ -61,6 +61,28 @@ type ShippingApPreviewRow = {
   allocated_shipping_amount: number | string | null;
 };
 
+type CompletionFieldsRow = {
+  id: string | null;
+  shipment_batch_id: string | null;
+  booking_ref: string | null;
+  shipper_id: string | null;
+  shipper_name: string | null;
+  mbl_bol_sea_waybill_ref: string | null;
+  container_number: string | null;
+  seal_number: string | null;
+  vessel_voyage: string | null;
+  port_of_loading: string | null;
+  port_of_discharge: string | null;
+  place_of_delivery: string | null;
+  export_shipment_date: string | null;
+  final_package_confirmation: string | null;
+  authorised_name: string | null;
+  signature_stamp_confirmation_yn: boolean | null;
+  notes: string | null;
+  completion_status: string | null;
+  updated_at: string | null;
+};
+
 function n(value: number | string | null | undefined) {
   const parsed = Number(value ?? 0);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -87,7 +109,7 @@ function friendly(value: string | null | undefined) {
 
 function statusClass(status: string | null | undefined) {
   if (!status) return "bg-slate-100 text-slate-700";
-  if (status.startsWith("ready") || ["received_clean", "contents_allocated", "accepted_current", "approved"].includes(status)) return "bg-emerald-100 text-emerald-800";
+  if (status.startsWith("ready") || ["received_clean", "contents_allocated", "accepted_current", "approved", "completion_fields_ready"].includes(status)) return "bg-emerald-100 text-emerald-800";
   if (status.startsWith("blocked") || status.includes("missing") || status.includes("issue")) return "bg-rose-100 text-rose-800";
   return "bg-amber-100 text-amber-800";
 }
@@ -119,6 +141,16 @@ function traceSku(row: CustomerPreviewRow, supplierInvoiceRefByLineId: Map<strin
   return `${orderPart}/${supplierPart}`;
 }
 
+function completedField(value: string | boolean | null | undefined) {
+  if (typeof value === "boolean") return value ? "Confirmed" : "Not confirmed";
+  return value && value.trim().length > 0 ? value : "Not entered";
+}
+
+function fieldTone(value: string | boolean | null | undefined) {
+  if (typeof value === "boolean") return value ? "border-emerald-200 bg-emerald-50 text-emerald-900" : "border-amber-200 bg-amber-50 text-amber-900";
+  return value && value.trim().length > 0 ? "border-emerald-200 bg-emerald-50 text-emerald-900" : "border-amber-200 bg-amber-50 text-amber-900";
+}
+
 export default async function DraftCosExportEvidencePage({ params }: { params: Promise<{ shipment_batch_id: string }> }) {
   const { shipment_batch_id: shipmentBatchId } = await params;
   const supabase = await createClient();
@@ -134,15 +166,17 @@ export default async function DraftCosExportEvidencePage({ params }: { params: P
 
   if (!staff) redirect("/auth/check");
 
-  const [batchResult, customerPreviewResult, apPreviewResult] = await Promise.all([
+  const [batchResult, customerPreviewResult, apPreviewResult, completionFieldsResult] = await Promise.all([
     (supabase as any).rpc("internal_shipping_batch_detail_v1", { p_shipment_batch_id: shipmentBatchId }),
     (supabase as any).rpc("internal_shipping_customer_invoice_readiness_preview_v1", { p_shipment_batch_id: shipmentBatchId }),
     (supabase as any).rpc("internal_shipping_ap_recharge_readiness_preview_v1", { p_shipment_batch_id: shipmentBatchId }),
+    (supabase as any).rpc("internal_shipment_export_evidence_completion_fields_v1", { p_shipment_batch_id: shipmentBatchId }),
   ]);
 
   const batchRows = ((batchResult.data ?? []) as BatchDetailRow[]);
   const customerRows = ((customerPreviewResult.data ?? []) as CustomerPreviewRow[]);
   const apRows = ((apPreviewResult.data ?? []) as ShippingApPreviewRow[]);
+  const completionFields = (((completionFieldsResult.data ?? []) as CompletionFieldsRow[])[0]) ?? null;
 
   const supplierLineIds = Array.from(new Set(customerRows.map((row) => row.supplier_invoice_line_id).filter(Boolean))) as string[];
   const supplierInvoiceRefByLineId = new Map<string, string>();
@@ -171,12 +205,14 @@ export default async function DraftCosExportEvidencePage({ params }: { params: P
   const apBlockers = Array.from(new Set(apRows.map((row) => row.blocker).filter(Boolean))) as string[];
   const customerBlockers = Array.from(new Set(customerRows.map((row) => row.blocker).filter(Boolean))) as string[];
   const missingReceiptRows = packageRows.filter((row) => row.latest_receipt_status && row.latest_receipt_status !== "received_clean");
+  const completionStatus = completionFields?.completion_status ?? null;
 
   const blockers = [
     packageRows.length === 0 ? "no_packages_selected_into_shipment_batch" : null,
     customerRows.length === 0 ? "no_customer_invoice_basis_or_delivery_allocation_lines" : null,
     totalQty <= 0 ? "no_allocated_quantity" : null,
     totalGoodsValue <= 0 ? "missing_adjusted_goods_value" : null,
+    completionStatus !== "completion_fields_ready" ? "shipper_completed_fields_missing_or_draft" : null,
     ...customerBlockers,
     missingReceiptRows.length > 0 ? "receipt_issue_or_non_clean_package_in_batch" : null,
   ].filter(Boolean) as string[];
@@ -185,6 +221,21 @@ export default async function DraftCosExportEvidencePage({ params }: { params: P
     ...apBlockers.map((blocker) => `shipping_apportionment: ${blocker}`),
     "final COS / MBL / container / seal / export date will be completed and uploaded by shipper",
   ];
+
+  const shipperCompletedFields = [
+    ["MBL / BOL / sea waybill", completionFields?.mbl_bol_sea_waybill_ref],
+    ["Container number", completionFields?.container_number],
+    ["Seal number", completionFields?.seal_number],
+    ["Vessel / voyage", completionFields?.vessel_voyage],
+    ["Port of loading", completionFields?.port_of_loading],
+    ["Port of discharge", completionFields?.port_of_discharge],
+    ["Place of delivery", completionFields?.place_of_delivery],
+    ["Date of export / shipment", shortDate(completionFields?.export_shipment_date)],
+    ["Final package confirmation", completionFields?.final_package_confirmation],
+    ["Authorised name", completionFields?.authorised_name],
+    ["Signature / stamp confirmation", completionFields?.signature_stamp_confirmation_yn],
+    ["Notes", completionFields?.notes],
+  ] as const;
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-6 text-slate-950 sm:px-6 sm:py-8">
@@ -208,6 +259,7 @@ export default async function DraftCosExportEvidencePage({ params }: { params: P
           {batchResult.error ? <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">Batch detail unavailable: {batchResult.error.message}</p> : null}
           {customerPreviewResult.error ? <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">Customer invoice basis unavailable: {customerPreviewResult.error.message}</p> : null}
           {apPreviewResult.error ? <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">Shipping apportionment preview unavailable: {apPreviewResult.error.message}</p> : null}
+          {completionFieldsResult.error ? <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">Shipper completion fields unavailable: {completionFieldsResult.error.message}. Apply the latest Supabase migration before testing this section.</p> : null}
         </section>
 
         <section className="grid gap-4 md:grid-cols-5">
@@ -241,19 +293,28 @@ export default async function DraftCosExportEvidencePage({ params }: { params: P
             <h2 className="text-xl font-semibold">Draft COS header preview</h2>
             <div className="mt-4 grid gap-3 text-sm md:grid-cols-2">
               <div className="rounded-2xl bg-slate-50 p-3"><span className="text-slate-500">Exporter / supplier</span><p className="font-semibold">Goodcashback / tenant exporter</p><p className="text-xs text-slate-500">Dummy UK address · Dummy VAT number</p></div>
-              <div className="rounded-2xl bg-slate-50 p-3"><span className="text-slate-500">Freight forwarder / packer</span><p className="font-semibold">{firstBatch?.shipper_name ?? "Shipper to complete"}</p></div>
+              <div className="rounded-2xl bg-slate-50 p-3"><span className="text-slate-500">Freight forwarder / packer</span><p className="font-semibold">{firstBatch?.shipper_name ?? completionFields?.shipper_name ?? "Shipper to complete"}</p></div>
               <div className="rounded-2xl bg-slate-50 p-3"><span className="text-slate-500">Consignee</span><p className="font-semibold">Ghana jurisdiction hub / tenant destination hub</p><p className="text-xs text-slate-500">Dummy Ghana address</p></div>
-              <div className="rounded-2xl bg-slate-50 p-3"><span className="text-slate-500">Customer reference</span><p className="font-semibold">{firstBatch?.booking_ref ?? shipmentBatchId}</p></div>
+              <div className="rounded-2xl bg-slate-50 p-3"><span className="text-slate-500">Customer reference</span><p className="font-semibold">{firstBatch?.booking_ref ?? completionFields?.booking_ref ?? shipmentBatchId}</p></div>
               <div className="rounded-2xl bg-slate-50 p-3"><span className="text-slate-500">Description</span><p className="font-semibold">Assorted retail consumer goods as per attached {eepRef}</p></div>
               <div className="rounded-2xl bg-slate-50 p-3"><span className="text-slate-500">Destination</span><p className="font-semibold">Ghana / destination hub</p></div>
             </div>
           </article>
 
           <article className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-            <h2 className="text-xl font-semibold">Shipper-completed fields</h2>
+            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+              <div>
+                <h2 className="text-xl font-semibold">Shipper-completed fields</h2>
+                <p className="mt-1 text-sm text-slate-600">Supervisor view only. These values are saved by the shipper on the shipper-side shipment page.</p>
+              </div>
+              <span className={`w-fit rounded-full px-3 py-1 text-xs font-semibold ${statusClass(completionStatus ?? undefined)}`}>{friendly(completionStatus ?? "completion_fields_draft")}</span>
+            </div>
             <div className="mt-4 grid gap-2 text-sm md:grid-cols-2">
-              {["MBL / BOL / sea waybill", "Container number", "Seal number", "Vessel / voyage", "Port of loading", "Port of discharge", "Place of delivery", "Date of export / shipment", "Final package confirmation", "Authorised name / signature / stamp"].map((field) => (
-                <div key={field} className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-3 text-slate-600">{field}</div>
+              {shipperCompletedFields.map(([label, value]) => (
+                <div key={label} className={`rounded-2xl border p-3 ${fieldTone(value as any)}`}>
+                  <span className="text-xs font-semibold uppercase tracking-wide opacity-70">{label}</span>
+                  <p className="mt-1 font-semibold">{completedField(value as any)}</p>
+                </div>
               ))}
             </div>
           </article>
