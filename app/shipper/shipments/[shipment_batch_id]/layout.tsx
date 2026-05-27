@@ -20,8 +20,14 @@ export default async function ShipperShipmentBatchLayout({
           >
             Download draft COS + EEP pack
           </Link>
+          <Link
+            href={`/shipper/shipments/${shipmentBatchId}/final-evidence`}
+            className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-900 hover:bg-amber-100"
+          >
+            Upload final evidence
+          </Link>
           <span className="text-xs font-medium text-slate-600">
-            Uses saved shipper fields and platform packing-list data.
+            Create the draft pack first, then upload the completed final evidence.
           </span>
         </div>
       </div>
