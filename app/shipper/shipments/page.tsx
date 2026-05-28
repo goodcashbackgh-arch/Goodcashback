@@ -51,6 +51,8 @@ function statusLabel(status: string | null | undefined) {
   if (status === "upload_shipping_charge_document") return "Upload shipping charge document";
   if (status === "awaiting_supervisor_shipping_document_review") return "Awaiting supervisor document review";
   if (status === "awaiting_supervisor_shipping_apportionment") return "Awaiting supervisor apportionment";
+  if (status === "awaiting_supervisor_final_export_evidence_review") return "Awaiting supervisor final evidence review";
+  if (status === "awaiting_supervisor_pod_review") return "Awaiting supervisor POD review";
   if (status === "upload_final_export_evidence") return "Upload final export evidence";
   if (status === "upload_pod_or_delivery_evidence") return "Upload POD / delivery evidence";
   if (status === "shipment_controls_complete") return "Shipment controls complete";
@@ -63,7 +65,7 @@ function statusLabel(status: string | null | undefined) {
 function statusClass(status: string | null | undefined) {
   if (!status || status === "not_started" || status === "not_ready") return "bg-amber-100 text-amber-800";
   if (["accepted_current", "shipping_apportionment_approved", "pod_delivery_evidence_accepted", "shipment_controls_complete"].includes(status)) return "bg-emerald-100 text-emerald-800";
-  if (["submitted_for_review", "uploaded_pending_ocr", "queued", "processing", "upload_final_export_evidence", "upload_pod_or_delivery_evidence", "awaiting_supervisor_shipping_document_review", "awaiting_supervisor_shipping_apportionment", "pod_delivery_evidence_submitted_for_review"].includes(status)) return "bg-amber-100 text-amber-800";
+  if (["submitted_for_review", "uploaded_pending_ocr", "queued", "processing", "upload_final_export_evidence", "upload_pod_or_delivery_evidence", "awaiting_supervisor_shipping_document_review", "awaiting_supervisor_shipping_apportionment", "awaiting_supervisor_final_export_evidence_review", "awaiting_supervisor_pod_review", "pod_delivery_evidence_submitted_for_review"].includes(status)) return "bg-amber-100 text-amber-800";
   if (["rejected_resubmit_required"].includes(status)) return "bg-rose-100 text-rose-800";
   if (["voided", "voided_no_action"].includes(status)) return "bg-slate-200 text-slate-700";
   return "bg-slate-100 text-slate-700";
