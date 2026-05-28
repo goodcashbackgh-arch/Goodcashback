@@ -69,11 +69,11 @@ function statusClass(status: string | null | undefined) {
   return "bg-slate-100 text-slate-700";
 }
 
-function primaryAction(batch: BatchRow, progress: ProgressRow | null) {
+function taskAction(batch: BatchRow, progress: ProgressRow | null) {
   const action = progress?.next_action;
   if (action === "upload_shipping_charge_document") return { href: `/shipper/shipping-documents/new?batch=${batch.id}`, label: "Upload charge doc", tone: "sky" };
   if (action === "upload_final_export_evidence" || action === "upload_pod_or_delivery_evidence") return { href: `/shipper/shipments/${batch.id}/final-evidence`, label: action === "upload_pod_or_delivery_evidence" ? "Upload POD" : "Upload final evidence", tone: "amber" };
-  return { href: `/shipper/shipments/${batch.id}`, label: "View detail", tone: "slate" };
+  return null;
 }
 
 function buttonClass(tone: string) {
@@ -180,7 +180,7 @@ export default async function ShipperShipmentsPage() {
                 <tbody className="divide-y divide-slate-100 bg-white">
                   {rows.map((batch) => {
                     const progress = progressByBatch.get(batch.id) ?? null;
-                    const action = primaryAction(batch, progress);
+                    const task = taskAction(batch, progress);
                     return (
                       <tr key={batch.id}>
                         <td className="px-3 py-2 font-semibold">{batch.booking_ref ?? batch.id}</td>
@@ -198,7 +198,7 @@ export default async function ShipperShipmentsPage() {
                         </td>
                         <td className="px-3 py-2">
                           <div className="flex flex-col gap-2">
-                            <Link href={action.href} className={buttonClass(action.tone)}>{action.label}</Link>
+                            {task ? <Link href={task.href} className={buttonClass(task.tone)}>{task.label}</Link> : null}
                             <Link href={`/shipper/shipments/${batch.id}`} className={buttonClass("slate")}>View detail</Link>
                           </div>
                         </td>
