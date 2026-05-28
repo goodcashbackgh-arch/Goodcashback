@@ -1,14 +1,15 @@
 import { NextResponse } from "next/server";
+import { supabaseAdmin } from "@/lib/supabase/admin";
+import { sageApiFetch } from "@/lib/sage/server-token";
 import { createClient } from "@/utils/supabase/server";
 
 type PackRow = {
+  shipment_batch_id: string | null;
   booking_ref: string | null;
   eep_ref: string | null;
-  customer_name: string | null;
-  package_box_ref: string | null;
+  order_id: string | null;
   order_ref: string | null;
   sales_invoice_ref: string | null;
-  supplier_invoice_ref: string | null;
   item_description: string | null;
   qty_allocated: number | string | null;
   unit_export_value_gbp: number | string | null;
@@ -16,33 +17,16 @@ type PackRow = {
   destination: string | null;
 };
 
-function n(value: number | string | null | undefined) {
-  const parsed = Number(value ?? 0);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function money(value: number | string | null | undefined) {
-  return n(value).toFixed(2);
-}
-
-function qty(value: number | string | null | undefined) {
-  const parsed = n(value);
-  return parsed % 1 === 0 ? String(Math.trunc(parsed)) : parsed.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
-}
-
-function esc(value: unknown) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}
-
-function display(value: unknown, fallback = "—") {
-  const raw = String(value ?? "").trim();
-  return raw.length > 0 ? raw : fallback;
-}
+type SalesInvoiceRow = {
+  id: string;
+  order_id: string | null;
+  sage_invoice_id: string | null;
+  sage_reference: string | null;
+  sage_status: string | null;
+  invoice_type: string | null;
+  sage_posted_at: string | null;
+  created_at: string | null;
+};
 
 function safeName(value: string | null | undefined) {
   return (value || "sales-invoice")
@@ -51,16 +35,12 @@ function safeName(value: string | null | undefined) {
     .replace(/^-|-$/g, "") || "sales-invoice";
 }
 
-function cleanDescription(value: string | null | undefined) {
-  return display(value, "Assorted retail goods")
-    .replace(/^export\s+sale\s*-\s*/i, "")
-    .replace(/^export\s+sale\s+goods\s+charge\s*-\s*/i, "")
-    .replace(/^supplementary\s+export\s+sale\s+shipping\s+charge\s*-\s*/i, "")
-    .replace(/\s*-\s*ord[-\s_]*[a-z0-9-]+\s*$/i, "")
-    .replace(/\s*-\s*ord[-\s_]*[a-z0-9-]+\s*-\s*booking\s+[a-z0-9-]+\s*$/i, "")
-    .replace(/\s*-\s*booking\s+[a-z0-9-]+\s*$/i, "")
-    .replace(/\s+/g, " ")
-    .trim() || "Assorted retail goods";
+function normalize(value: string | null | undefined) {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function unique(values: Array<string | null | undefined>) {
+  return Array.from(new Set(values.map((value) => String(value ?? "").trim()).filter(Boolean)));
 }
 
 const crcTable = (() => {
@@ -125,56 +105,48 @@ function zip(files: { name: string; content: string | Buffer }[]) {
   return Buffer.concat([...localParts, centralDirectory, end]);
 }
 
-function invoiceHtml(invoiceRef: string, rows: PackRow[]) {
-  const first = rows[0];
-  const totalQty = rows.reduce((sum, row) => sum + n(row.qty_allocated), 0);
-  const totalValue = rows.reduce((sum, row) => sum + n(row.total_export_value_gbp), 0);
-  const lineRows = rows.map((row) => `
-    <tr>
-      <td>${esc(cleanDescription(row.item_description))}</td>
-      <td>${esc(display(row.order_ref))}</td>
-      <td class="num">${esc(qty(row.qty_allocated))}</td>
-      <td class="num">${esc(money(row.unit_export_value_gbp))}</td>
-      <td class="num">${esc(money(row.total_export_value_gbp))}</td>
-    </tr>`).join("");
+function pickInvoiceForGroup(ref: string, rows: PackRow[], invoices: SalesInvoiceRow[]) {
+  const orderIds = new Set(unique(rows.map((row) => row.order_id)));
+  const candidates = invoices.filter((invoice) => invoice.order_id && orderIds.has(invoice.order_id));
+  const wantedRef = normalize(ref);
 
-  return `<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <title>${esc(invoiceRef)} sales invoice evidence</title>
-  <style>
-    body { font-family: Arial, Helvetica, sans-serif; color: #111827; margin: 28px; }
-    h1 { margin: 0 0 8px; font-size: 22px; }
-    .meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 16px 0; }
-    .box { border: 1px solid #d1d5db; border-radius: 8px; padding: 10px; }
-    .label { color: #6b7280; font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
-    .value { margin-top: 4px; font-weight: 700; }
-    table { width: 100%; border-collapse: collapse; margin-top: 18px; font-size: 12px; }
-    th, td { border: 1px solid #9ca3af; padding: 8px; vertical-align: top; }
-    th { background: #f3f4f6; text-align: left; text-transform: uppercase; font-size: 10px; letter-spacing: .05em; }
-    .num { text-align: right; white-space: nowrap; }
-    .totals { margin-top: 12px; display: flex; justify-content: flex-end; gap: 20px; font-weight: 800; }
-    .note { margin-top: 16px; color: #4b5563; font-size: 12px; line-height: 1.5; }
-  </style>
-</head>
-<body>
-  <h1>Sales invoice evidence</h1>
-  <div class="meta">
-    <div class="box"><div class="label">Sales invoice ref</div><div class="value">${esc(invoiceRef)}</div></div>
-    <div class="box"><div class="label">Shipment / booking ref</div><div class="value">${esc(display(first.booking_ref))}</div></div>
-    <div class="box"><div class="label">Customer</div><div class="value">${esc(display(first.customer_name))}</div></div>
-    <div class="box"><div class="label">Destination</div><div class="value">${esc(display(first.destination, "Ghana"))}</div></div>
-  </div>
-  <table><thead><tr><th>Description</th><th>Order ref</th><th class="num">Qty</th><th class="num">Unit value GBP</th><th class="num">Total value GBP</th></tr></thead><tbody>${lineRows}</tbody></table>
-  <div class="totals"><span>Total Qty: ${esc(qty(totalQty))}</span><span>Total Value: GBP ${esc(money(totalValue))}</span></div>
-  <p class="note">Generated from the same posted customer sales invoice values used by the COS / EEP pack. Supplementary shipping-only invoices are excluded from this goods schedule.</p>
-</body>
-</html>`;
+  const matchingRef = candidates.find((invoice) => normalize(invoice.sage_reference) === wantedRef);
+  if (matchingRef) return matchingRef;
+
+  const matchingSageId = candidates.find((invoice) => normalize(invoice.sage_invoice_id) === wantedRef);
+  if (matchingSageId) return matchingSageId;
+
+  if (candidates.length === 1) return candidates[0];
+
+  return candidates
+    .slice()
+    .sort((a, b) => String(b.sage_posted_at ?? b.created_at ?? "").localeCompare(String(a.sage_posted_at ?? a.created_at ?? "")))[0] ?? null;
 }
 
-export async function GET(_request: Request, { params }: { params: Promise<{ shipment_batch_id: string }> }) {
+async function fetchSageInvoicePdf(sageInvoiceId: string, origin: string) {
+  const response = await sageApiFetch(`/sales_invoices/${encodeURIComponent(sageInvoiceId)}`, {
+    method: "GET",
+    headers: { Accept: "application/pdf" },
+  }, { origin });
+
+  const contentType = response.headers.get("content-type") ?? "";
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(`Sage PDF fetch failed (${response.status} ${response.statusText}): ${body.slice(0, 300)}`);
+  }
+
+  if (!contentType.toLowerCase().includes("application/pdf")) {
+    const body = await response.text().catch(() => "");
+    throw new Error(`Sage returned ${contentType || "unknown content-type"}, not application/pdf. Invoice may not be posted. Body: ${body.slice(0, 300)}`);
+  }
+
+  return Buffer.from(await response.arrayBuffer());
+}
+
+export async function GET(request: Request, { params }: { params: Promise<{ shipment_batch_id: string }> }) {
   const { shipment_batch_id: shipmentBatchId } = await params;
+  const origin = new URL(request.url).origin;
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return new NextResponse("Unauthenticated", { status: 401 });
@@ -191,26 +163,70 @@ export async function GET(_request: Request, { params }: { params: Promise<{ shi
     return new NextResponse("No posted customer sales invoice references found for this shipment batch.", { status: 404 });
   }
 
+  const orderIds = unique(invoiceRows.map((row) => row.order_id));
+  if (orderIds.length === 0) {
+    return new NextResponse("No order ids were returned for the posted invoice evidence rows.", { status: 404 });
+  }
+
+  const { data: invoiceData, error: invoiceError } = await supabaseAdmin
+    .from("sales_invoices")
+    .select("id, order_id, sage_invoice_id, sage_reference, sage_status, invoice_type, sage_posted_at, created_at")
+    .in("order_id", orderIds)
+    .eq("invoice_type", "main")
+    .eq("sage_status", "posted");
+
+  if (invoiceError) {
+    return new NextResponse(`Unable to resolve Sage invoice ids for sales invoice ZIP: ${invoiceError.message}`, { status: 400 });
+  }
+
+  const invoices = (invoiceData ?? []) as SalesInvoiceRow[];
   const grouped = new Map<string, PackRow[]>();
   for (const row of invoiceRows) {
     const ref = String(row.sales_invoice_ref).trim();
     grouped.set(ref, [...(grouped.get(ref) ?? []), row]);
   }
 
-  const files = Array.from(grouped.entries()).map(([ref, groupRows]) => ({
-    name: `sales-invoices/${safeName(ref)}.html`,
-    content: invoiceHtml(ref, groupRows),
-  }));
+  const files: { name: string; content: string | Buffer }[] = [];
+  const failures: string[] = [];
+
+  for (const [ref, groupRows] of grouped.entries()) {
+    const invoice = pickInvoiceForGroup(ref, groupRows, invoices);
+    const sageInvoiceId = String(invoice?.sage_invoice_id ?? "").trim();
+
+    if (!invoice || !sageInvoiceId) {
+      failures.push(`${ref}: no posted Sage invoice id found for order(s) ${unique(groupRows.map((row) => row.order_ref)).join(", ") || "unknown"}.`);
+      continue;
+    }
+
+    try {
+      const pdf = await fetchSageInvoicePdf(sageInvoiceId, origin);
+      files.push({
+        name: `sales-invoices/${safeName(ref)}.pdf`,
+        content: pdf,
+      });
+    } catch (error) {
+      failures.push(`${ref}: ${error instanceof Error ? error.message : "Sage PDF fetch failed."}`);
+    }
+  }
+
+  if (files.length === 0) {
+    return new NextResponse([
+      "No Sage sales invoice PDFs could be added to the ZIP.",
+      "",
+      ...failures,
+    ].join("\n"), { status: 502 });
+  }
 
   files.unshift({
     name: "README.txt",
     content: [
-      "Sales invoice evidence ZIP",
+      "Sales invoice ZIP",
       `Shipment batch: ${shipmentBatchId}`,
-      `Invoice files: ${files.length}`,
+      `PDF files: ${files.length}`,
       "",
-      "Each HTML file contains the posted customer sales invoice line values used by the COS / EEP pack.",
-      "Supplementary shipping-only invoices are intentionally excluded.",
+      "PDF files are fetched from Sage Accounting using GET /sales_invoices/{id} with Accept: application/pdf.",
+      "Supplementary shipping-only invoices are intentionally excluded from this COS / EEP sales invoice pack.",
+      ...(failures.length > 0 ? ["", "Fetch warnings:", ...failures] : []),
     ].join("\n"),
   });
 
