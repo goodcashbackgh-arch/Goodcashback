@@ -187,6 +187,34 @@ function money2(value: number) {
   return Number(value.toFixed(2));
 }
 
+function keyList(row: AnyRow | undefined) {
+  return Object.keys(row ?? {}).sort().slice(0, 80);
+}
+
+function lineArrayDiagnostics(row: AnyRow | undefined) {
+  return Object.entries(row ?? {})
+    .filter(([, value]) => Array.isArray(value))
+    .map(([name, value]) => {
+      const rows = value as unknown[];
+      const first = rows.find((item) => item && typeof item === "object" && !Array.isArray(item)) as AnyRow | undefined;
+      return {
+        name,
+        count: rows.length,
+        first_keys: keyList(first).slice(0, 50),
+      };
+    })
+    .slice(0, 20);
+}
+
+function shapeDiagnostic(rows: AnyRow[]) {
+  const first = rows[0];
+  return {
+    count: rows.length,
+    top_level_keys: keyList(first),
+    array_fields: lineArrayDiagnostics(first),
+  };
+}
+
 async function fetchSageVatDocs(periodStart: string, periodEnd: string) {
   const params = new URLSearchParams({ from_date: periodStart, to_date: periodEnd, items_per_page: "200" });
   const [si, scn, pi, pcn] = await Promise.all([
@@ -284,8 +312,23 @@ export async function reconstructSageVatDraftBackendCheckAction(vatReturnRunId: 
       purchase_invoice_count: docs.pi.length,
       purchase_credit_note_count: docs.pcn.length,
       source_counts: { sales_invoices: docs.si.length, sales_credit_notes: docs.scn.length, purchase_invoices: docs.pi.length, purchase_credit_notes: docs.pcn.length },
-      source_summary: { sales_tax: money2(salesTax), sales_credit_tax: money2(salesCreditTax), purchase_tax: money2(purchaseTax), purchase_credit_tax: money2(purchaseCreditTax), sales_net: money2(salesNet), sales_credit_net: money2(salesCreditNet), purchase_net: money2(purchaseNet), purchase_credit_net: money2(purchaseCreditNet) },
-      warning_notes: "Read-only Sage reconstruction from posted invoices and credit notes only. Manual VAT journals and cash-accounting payment timing are not included in this backend pass.",
+      source_summary: {
+        sales_tax: money2(salesTax),
+        sales_credit_tax: money2(salesCreditTax),
+        purchase_tax: money2(purchaseTax),
+        purchase_credit_tax: money2(purchaseCreditTax),
+        sales_net: money2(salesNet),
+        sales_credit_net: money2(salesCreditNet),
+        purchase_net: money2(purchaseNet),
+        purchase_credit_net: money2(purchaseCreditNet),
+        sage_shape_diagnostic: {
+          sales_invoice: shapeDiagnostic(docs.si),
+          sales_credit_note: shapeDiagnostic(docs.scn),
+          purchase_invoice: shapeDiagnostic(docs.pi),
+          purchase_credit_note: shapeDiagnostic(docs.pcn),
+        },
+      },
+      warning_notes: "Read-only Sage reconstruction from posted invoices and credit notes only. Manual VAT journals and cash-accounting payment timing are not included in this backend pass. Source summary includes safe Sage field-shape diagnostics only: keys and array names, not customer details or full payloads.",
       created_by_staff_id: staff.id,
     })
     .select("id")
