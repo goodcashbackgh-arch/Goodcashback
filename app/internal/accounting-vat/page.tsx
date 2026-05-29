@@ -181,7 +181,15 @@ export default async function InternalAccountingVatPage() {
     customerSalesSnapshots,
     postedCustomerSalesSnapshots,
     vatReturnRuns,
+    vatReturnRunLines,
     vatAdjustmentJournals,
+    vatAdjustmentJournalLines,
+    vatMatchEvidence,
+    vatBlockers,
+    openVatBlockers,
+    recentVatRuns,
+    recentVatBlockers,
+    recentVatJournals,
     recentSalesInvoices,
     recentFundingEvents,
     recentReceipts,
@@ -196,15 +204,24 @@ export default async function InternalAccountingVatPage() {
     safeCount(db, "sage_posting_snapshots", (q) => q.eq("document_lane", "customer_sales").eq("active", true)),
     safeCount(db, "sage_posting_snapshots", (q) => q.eq("document_lane", "customer_sales").eq("active", true).eq("sage_posting_status", "posted")),
     safeCount(db, "vat_return_runs"),
+    safeCount(db, "vat_return_run_lines"),
     safeCount(db, "vat_return_adjustment_journals"),
+    safeCount(db, "vat_return_adjustment_journal_lines"),
+    safeCount(db, "vat_return_sage_match_evidence"),
+    safeCount(db, "vat_return_blockers"),
+    safeCount(db, "vat_return_blockers", (q) => q.eq("status", "open")),
+    safeRows(db, "vat_return_runs", "id, run_ref, return_period_label, period_start_date, period_end_date, status, expected_box1_gbp, expected_box4_gbp, expected_box6_gbp, expected_box7_gbp, locked_at, created_at", (q) => q.order("created_at", { ascending: false }).limit(8)),
+    safeRows(db, "vat_return_blockers", "id, blocker_code, severity, status, source_table, source_ref, message, required_action, created_at", (q) => q.order("created_at", { ascending: false }).limit(8)),
+    safeRows(db, "vat_return_adjustment_journals", "id, adjustment_type, target_box, direction, amount_gbp, status, sage_journal_ref, posted_at, created_at", (q) => q.order("created_at", { ascending: false }).limit(8)),
     safeRows(db, "sales_invoices", "id, invoice_type, amount_gbp, sage_status, consideration_received_date, sage_invoice_date, tax_point_period, sage_invoice_period, zero_rating_deadline_date, zero_rating_status, sage_invoice_id, sage_posted_at, created_at", (q) => q.order("created_at", { ascending: false }).limit(8)),
     safeRows(db, "order_funding_events", "id, event_type, amount_gbp, source_ref, source_entity_type, created_at", (q) => q.order("created_at", { ascending: false }).limit(8)),
     safeRows(db, "cash_posting_snapshots", "id, order_ref, amount_gbp, posting_date, sage_posting_status, sage_payment_on_account_id, created_at", (q) => q.eq("posting_category", "customer_receipt_on_account").order("created_at", { ascending: false }).limit(8)),
     safeRows(db, "sage_posting_snapshots", "id, document_type, order_ref, amount_gbp, sage_posting_status, sage_invoice_id, sage_posted_at, created_at", (q) => q.eq("document_lane", "customer_sales").eq("active", true).order("created_at", { ascending: false }).limit(8)),
   ]);
 
-  const runTablesReady = !vatReturnRuns.error && !vatAdjustmentJournals.error;
-  const openFoundationGaps = [vatReturnRuns.error, vatAdjustmentJournals.error].filter(Boolean).length;
+  const foundationObjects = [vatReturnRuns, vatReturnRunLines, vatAdjustmentJournals, vatAdjustmentJournalLines, vatMatchEvidence, vatBlockers];
+  const foundationReady = foundationObjects.every((item) => !item.error);
+  const openFoundationGaps = foundationObjects.filter((item) => item.error).length;
 
   return (
     <main className="min-h-screen bg-slate-50 px-6 py-8 text-slate-950">
@@ -216,7 +233,7 @@ export default async function InternalAccountingVatPage() {
             <div>
               <h1 className="text-3xl font-semibold tracking-tight">VAT return control dashboard</h1>
               <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
-                Read-only foundation view for the VAT contract. This checks source facts before we add VAT return run snapshots, blockers, Sage VAT journal queues, and match/lock controls. No Sage posting buttons are exposed here.
+                Read-only foundation view for the VAT contract. This now checks the VAT return run tables, blockers, journal queue, match evidence and existing source facts. No Sage posting buttons are exposed here.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700">
@@ -228,13 +245,17 @@ export default async function InternalAccountingVatPage() {
 
         <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           <Card label="Contract gate" value="Admin only" detail="Supervisor and test override access must not control VAT returns." tone="ok" />
-          <Card label="Return run layer" value={runTablesReady ? "Present" : "Missing"} detail={runTablesReady ? "VAT return run objects are visible." : "Next migration must add vat_return_runs and VAT journal queue objects."} tone={runTablesReady ? "ok" : "warn"} />
+          <Card label="Foundation layer" value={foundationReady ? "Present" : "Missing"} detail={foundationReady ? "Run, line, blocker, journal and match tables are visible." : "Apply the VAT foundation migration in Supabase before generating return packs."} tone={foundationReady ? "ok" : "warn"} />
+          <Card label="Return runs" value={String(vatReturnRuns.count)} detail={vatReturnRuns.error ?? "VAT return run header records."} tone={vatReturnRuns.error ? "block" : "info"} />
+          <Card label="Run lines" value={String(vatReturnRunLines.count)} detail={vatReturnRunLines.error ?? "Source-linked Box 1/4/6/7 snapshot rows."} tone={vatReturnRunLines.error ? "block" : "info"} />
+          <Card label="Adjustment journals" value={String(vatAdjustmentJournals.count)} detail={vatAdjustmentJournals.error ?? `${vatAdjustmentJournalLines.count} journal lines in the queue layer.`} tone={vatAdjustmentJournals.error || vatAdjustmentJournalLines.error ? "block" : "info"} />
+          <Card label="Match evidence" value={String(vatMatchEvidence.count)} detail={vatMatchEvidence.error ?? "Sage/HMRC submitted box evidence records."} tone={vatMatchEvidence.error ? "block" : "info"} />
+          <Card label="Open blockers" value={String(openVatBlockers.count)} detail={vatBlockers.error ?? `${vatBlockers.count} blocker records total.`} tone={openVatBlockers.count > 0 ? "warn" : vatBlockers.error ? "block" : "ok"} />
+          <Card label="Foundation gaps" value={String(openFoundationGaps)} detail="Missing/blocked foundation-table reads only. Source-data blockers come next." tone={openFoundationGaps > 0 ? "warn" : "ok"} />
           <Card label="Sales invoices" value={String(salesInvoices.count)} detail={`${draftSalesInvoices.count} draft, ${postedSalesInvoices.count} posted. ${salesInvoices.error ?? "Existing source table readable."}`} tone={salesInvoices.error ? "block" : "info"} />
           <Card label="Funding events" value={String(fundingEvents.count)} detail={fundingEvents.error ?? "Funding events are the Box 6 prepayment source spine."} tone={fundingEvents.error ? "block" : "info"} />
           <Card label="Customer receipts" value={String(receiptSnapshots.count)} detail={`${postedReceiptSnapshots.count} posted/needing review in cash snapshots.`} tone={receiptSnapshots.error ? "block" : "info"} />
           <Card label="Sage sales snapshots" value={String(customerSalesSnapshots.count)} detail={`${postedCustomerSalesSnapshots.count} customer sales snapshots posted to Sage.`} tone={customerSalesSnapshots.error ? "block" : "info"} />
-          <Card label="Open foundation gaps" value={String(openFoundationGaps)} detail="Counts missing return-run and VAT journal queue foundations only. Source-data blockers come next." tone={openFoundationGaps > 0 ? "warn" : "ok"} />
-          <Card label="Posting controls" value="Disabled" detail="Sage VAT journal posting starts only after read-only pack and blockers are correct." tone="muted" />
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -242,11 +263,11 @@ export default async function InternalAccountingVatPage() {
             <div>
               <h2 className="text-xl font-semibold tracking-tight">Workflow preview</h2>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-                Current stage is read-only. The next backend patch should create immutable VAT return run/source-line objects before any journal approval or Sage posting is wired.
+                Current stage is read-only. The next backend step is a controlled generator RPC that creates a draft return run and source-line snapshot. Journal approval and Sage posting remain disabled.
               </p>
             </div>
             <button disabled className="rounded-xl bg-slate-200 px-4 py-2 text-sm font-semibold text-slate-500">
-              Generate VAT Return Pack — not wired yet
+              Generate VAT Return Pack — disabled until RPC exists
             </button>
           </div>
           <div className="mt-5 grid gap-3 md:grid-cols-3 xl:grid-cols-6">
@@ -260,19 +281,65 @@ export default async function InternalAccountingVatPage() {
         </section>
 
         <section className="grid gap-4 md:grid-cols-2">
-          <div className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-900">
-            <h2 className="font-semibold">Confirmed current gap</h2>
+          <div className="rounded-3xl border border-emerald-200 bg-emerald-50 p-5 text-sm leading-6 text-emerald-900">
+            <h2 className="font-semibold">Foundation now wired</h2>
             <p className="mt-2">
-              The canonical VAT contract requires VAT return run lines, journal headers, journal lines, match evidence and blockers. If the cards show the run layer as missing, the first SQL patch must be additive and read-only first.
+              This dashboard reads the new VAT return run, line, blocker, adjustment journal, journal-line and match-evidence tables. If the migration has been applied, the cards will show the foundation as present.
             </p>
           </div>
           <div className="rounded-3xl border border-sky-200 bg-sky-50 p-5 text-sm leading-6 text-sky-900">
-            <h2 className="font-semibold">Source spine already visible</h2>
+            <h2 className="font-semibold">Source spine still visible</h2>
             <p className="mt-2">
-              Existing source objects expose customer sales invoices, funding events, customer receipt-on-account snapshots, and Sage sales posting snapshots. These are the first facts to snapshot into VAT return lines.
+              Customer sales invoices, funding events, customer receipt-on-account snapshots, and Sage sales posting snapshots remain visible because these are the first facts to snapshot into VAT return lines.
             </p>
           </div>
         </section>
+
+        <MiniTable
+          title="Recent VAT return runs"
+          rows={recentVatRuns.rows}
+          error={recentVatRuns.error}
+          columns={[
+            { label: "Run", render: (row) => short(row.run_ref) },
+            { label: "Period", render: (row) => short(row.return_period_label) },
+            { label: "Start", render: (row) => formatDate(row.period_start_date) },
+            { label: "End", render: (row) => formatDate(row.period_end_date) },
+            { label: "Status", render: (row) => pretty(row.status) },
+            { label: "Box 1", render: (row) => gbp(row.expected_box1_gbp) },
+            { label: "Box 4", render: (row) => gbp(row.expected_box4_gbp) },
+            { label: "Box 6", render: (row) => gbp(row.expected_box6_gbp) },
+            { label: "Box 7", render: (row) => gbp(row.expected_box7_gbp) },
+          ]}
+        />
+
+        <MiniTable
+          title="Recent VAT blockers"
+          rows={recentVatBlockers.rows}
+          error={recentVatBlockers.error}
+          columns={[
+            { label: "Severity", render: (row) => pretty(row.severity) },
+            { label: "Status", render: (row) => pretty(row.status) },
+            { label: "Code", render: (row) => short(row.blocker_code, 42) },
+            { label: "Source", render: (row) => short(row.source_table) },
+            { label: "Message", render: (row) => short(row.message, 72) },
+            { label: "Required action", render: (row) => short(row.required_action, 72) },
+          ]}
+        />
+
+        <MiniTable
+          title="Recent VAT adjustment journals"
+          rows={recentVatJournals.rows}
+          error={recentVatJournals.error}
+          columns={[
+            { label: "Type", render: (row) => pretty(row.adjustment_type) },
+            { label: "Box", render: (row) => short(row.target_box) },
+            { label: "Direction", render: (row) => pretty(row.direction) },
+            { label: "Amount", render: (row) => gbp(row.amount_gbp) },
+            { label: "Status", render: (row) => pretty(row.status) },
+            { label: "Sage ref", render: (row) => short(row.sage_journal_ref) },
+            { label: "Posted", render: (row) => formatDate(row.posted_at) },
+          ]}
+        />
 
         <MiniTable
           title="Recent sales invoices"
