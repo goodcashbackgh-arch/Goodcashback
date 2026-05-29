@@ -148,3 +148,24 @@ export async function generateNextSageVatDraftRunAction() {
   revalidatePath("/internal/accounting-vat");
   redirect(`/internal/accounting-vat?tab=runs&vatGenerated=${encodeURIComponent(runId ?? "1")}`);
 }
+
+export async function reconstructSageVatDraftBackendCheckAction(vatReturnRunId: string) {
+  const runId = String(vatReturnRunId ?? "").trim();
+  if (!runId) throw new Error("VAT return run id is required.");
+
+  const { supabase } = await requireAdmin();
+  const { data: run, error } = await supabase
+    .from("vat_return_runs")
+    .select("id, period_start_date, period_end_date")
+    .eq("id", runId)
+    .maybeSingle();
+
+  if (error || !run) throw new Error(error?.message ?? "VAT return run not found.");
+
+  return {
+    vatReturnRunId: runId,
+    periodStart: readSageText((run as Record<string, unknown>).period_start_date),
+    periodEnd: readSageText((run as Record<string, unknown>).period_end_date),
+    status: "backend_check_ready",
+  };
+}
