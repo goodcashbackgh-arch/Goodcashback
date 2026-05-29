@@ -10,12 +10,12 @@ type AnyRow = Record<string, unknown>;
 
 type VatRunResult = { vat_return_run_id?: string } | null;
 
-function redirectWithError(message: string) {
+function redirectWithError(message: string): never {
   redirect(`/internal/accounting-vat?tab=runs&vatError=${encodeURIComponent(message)}`);
 }
 
-function redirectReconstructionWithError(message: string) {
-  redirect(`/internal/accounting-vat/sage-reconstruction?vatError=${encodeURIComponent(message)}`);
+function redirectReconstructionWithError(message: string): never {
+  redirect(`/internal/accounting-vat?tab=sage&vatError=${encodeURIComponent(message)}`);
 }
 
 function isoDate(date: Date) {
@@ -336,6 +336,5 @@ export async function reconstructSageVatDraftForRunAction(formData: FormData) {
   }
 
   revalidatePath("/internal/accounting-vat");
-  revalidatePath("/internal/accounting-vat/sage-reconstruction");
-  redirect(`/internal/accounting-vat/sage-reconstruction?vatReconstructed=${encodeURIComponent(String(inserted?.id ?? "1"))}`);
+  redirect(`/internal/accounting-vat?tab=sage&vatReconstructed=${encodeURIComponent(String(inserted?.id ?? "1"))}`);
 }
