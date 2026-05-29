@@ -81,9 +81,19 @@ async function fetchSageFinancialSettings() {
   return raw;
 }
 
+function readSageText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const row = value as Record<string, unknown>;
+    return readSageText(row.displayed_as ?? row.name ?? row.description ?? row.id ?? row.code ?? "");
+  }
+  return "";
+}
+
 function readTaxScheme(settings: unknown) {
   const root = settings && typeof settings === "object" ? settings as Record<string, unknown> : {};
-  return String(root.tax_scheme ?? root.taxScheme ?? root.vat_scheme ?? root.vatScheme ?? "").trim();
+  return readSageText(root.tax_scheme ?? root.taxScheme ?? root.vat_scheme ?? root.vatScheme).trim();
 }
 
 async function detectNextMonthlyVatPeriod(supabase: Awaited<ReturnType<typeof createClient>>) {
