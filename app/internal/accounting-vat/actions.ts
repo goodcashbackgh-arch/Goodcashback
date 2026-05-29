@@ -3,7 +3,7 @@
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/utils/supabase/server";
-import { sageApiFetch } from "@/lib/sage/server-token";
+import { getValidSageAccessToken, sageApiFetch } from "@/lib/sage/server-token";
 
 type StaffRow = { id: string; role_type: string; active: boolean };
 type AnyRow = Record<string, unknown>;
@@ -243,6 +243,8 @@ export async function reconstructSageVatDraftBackendCheckAction(vatReturnRunId: 
 
   const periodStart = readSageText((run as AnyRow).period_start_date);
   const periodEnd = readSageText((run as AnyRow).period_end_date);
+
+  await getValidSageAccessToken({ forceRefresh: true });
   const docs = await fetchSageVatDocs(periodStart, periodEnd);
 
   const salesTax = total(docs.si, ["tax_amount", "total_tax_amount", "tax_total", "total_tax", "vat_amount"]);
