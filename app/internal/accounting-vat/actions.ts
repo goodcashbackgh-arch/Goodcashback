@@ -188,7 +188,7 @@ function money2(value: number) {
 }
 
 async function fetchSageVatDocs(periodStart: string, periodEnd: string) {
-  const params = new URLSearchParams({ from_date: periodStart, to_date: periodEnd, items_per_page: "200", status_id: "POSTED" });
+  const params = new URLSearchParams({ from_date: periodStart, to_date: periodEnd, items_per_page: "200" });
   const [si, scn, pi, pcn] = await Promise.all([
     sageAll(`/sales_invoices?${params.toString()}`),
     sageAll(`/sales_credit_notes?${params.toString()}`),
