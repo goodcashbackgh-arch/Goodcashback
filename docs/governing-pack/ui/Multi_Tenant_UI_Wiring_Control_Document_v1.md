@@ -34,9 +34,10 @@ Clarification addendums that override older wording where relevant:
 14. VAT Timing & Export Evidence Addendum v1.
 15. Progressive Commercial Release & Replacement Invoicing Addendum v1.
 16. Day 6/8 Accounting Release and VAT Reporting Clarification Addendum v1.
+17. VAT_RETURN_WORKBENCH_AND_SAGE_JOURNAL_CONTRACT_v1.md — controlling source for `/internal/accounting-vat`, VAT return calculation, Sage VAT adjustment journals, export evidence breach/reinstatement, Sage return match/lock, and admin-only VAT controls.
 
 ### Conflict rule
-If a role matrix adds detail and does not conflict, use it. If it conflicts with the authority stack, the authority stack wins.
+If a role matrix adds detail and does not conflict, use it. If it conflicts with the authority stack, the authority stack wins. For the VAT Return Workbench, `VAT_RETURN_WORKBENCH_AND_SAGE_JOURNAL_CONTRACT_v1.md` controls over older VAT/accounting wording in this document.
 
 ---
 
@@ -96,6 +97,7 @@ The following areas are proven by live regression:
 18. Sage posting is queue-driven only; no browser direct-to-Sage posting.
 19. Idempotency keys must prevent duplicate Sage postings.
 20. Portal access must obey RLS and role boundaries.
+21. VAT Return Workbench live controls are admin-only and governed by `VAT_RETURN_WORKBENCH_AND_SAGE_JOURNAL_CONTRACT_v1.md`.
 
 ---
 
@@ -130,20 +132,22 @@ Does:
 - approve routine refund path;
 - preserve ready-for-shipment handoff;
 - create/confirm shipping quote;
-- oversee accounting/VAT readiness.
+- oversee operational/accounting readiness indicators outside the live VAT Return Workbench.
 
 Does not:
 - create importer orders normally;
 - upload importer evidence normally;
 - bypass refund gate;
 - convert unresolved child exceptions into false clearance;
-- block evidence just because funding is late.
+- block evidence just because funding is late;
+- generate, approve, post, submit evidence for, reopen, or lock VAT returns.
 
 ### Admin
 Does:
 - own governance/escalation;
 - approve high-risk overrides;
 - govern VAT/accounting release;
+- own the VAT Return Workbench and Sage VAT adjustment journal controls;
 - control historical audit/reopen;
 - handle non-routine liability/credit/payout decisions.
 
@@ -233,11 +237,12 @@ Reads: shipping_quotes, shipping_quote_orders, order_tracking_submissions, order
 Writes: booking_ref, hub received, dispatched, evidence uploads, Ghana delivered, POD, shipper dispute response.
 Rules: shipper only sees their lane and only progressed shipment-ready work.
 
-### /internal/accounting-vat — Accounting/VAT release queue
-Actor: admin/finance supervisor.
-Reads: sales_invoices, sage_postings, vat_sales_invoice_reporting_vw, vat_return_workings, vat_return_adjustments, export_deadline_breach_report_vw.
-Writes/functions: release_sales_invoice_for_order_subset, post_to_vat_return_workings, post_to_vat_return_workings_for_period, queue Sage posting, mark zero-rating evidence checkpoint.
-Rules: stable subset can invoice; late replacement supplementary invoice on parent; VAT timing prepayment-first; released invoices drive Box 6; breach creates Box 1 adjustment.
+### /internal/accounting-vat — VAT Return Workbench
+Actor: admin only.
+Controlling contract: `docs/governing-pack/ui/VAT_RETURN_WORKBENCH_AND_SAGE_JOURNAL_CONTRACT_v1.md`.
+Reads/writes/functions/rules: governed by the controlling VAT Return Workbench contract.
+Purpose: admin selects VAT period, generates platform VAT return pack, reviews Box 1/4/6/7, approves Sage VAT adjustment journals, posts approved `/journals`, records Sage submitted return evidence, matches and locks the return.
+Rules: older VAT wording in this UI wiring document is overridden by `VAT_RETURN_WORKBENCH_AND_SAGE_JOURNAL_CONTRACT_v1.md`. Supervisors must not access live VAT return controls.
 
 ### /importer/orders and child pages — Importer portal
 Actor: importer/operator.
@@ -271,7 +276,7 @@ Replacement child order tracks the item. It has no fresh customer funding and do
 Customer pays more than order gap. Gap funds order; excess becomes importer credit. Credit can be applied later under control.
 
 ### VAT timing
-Known quoted goods paid in advance: VAT timing is the prepayment date. Released sales invoices drive Box 6. Evidence supports zero-rating. If evidence/export deadline breaches, Box 1 adjustment is reported in breach period.
+Known quoted goods paid in advance: VAT timing is the prepayment date. Released sales invoices drive Box 6. Evidence supports zero-rating. If evidence/export deadline breaches, Box 1 adjustment is reported in breach period. Detailed VAT return workbench, Sage journal, matching and lock rules are controlled by `VAT_RETURN_WORKBENCH_AND_SAGE_JOURNAL_CONTRACT_v1.md`.
 
 ---
 
@@ -291,7 +296,8 @@ Never:
 - trust UI-only validation for funding, refunds, VAT, replacement, or shipping scope;
 - let shipper see unresolved child value as shippable;
 - let replacement child create its own customer invoice;
-- duplicate VAT Box 6 on final invoice after prepayment reporting.
+- duplicate VAT Box 6 on final invoice after prepayment reporting;
+- expose live VAT return controls to supervisors.
 
 ---
 
@@ -318,6 +324,7 @@ At the start of any future UI/API build chat, paste this section:
 - Final functions file: closure_v2_functions_final_day6_8_clarified.sql.
 - Do not change backend SQL unless a UI/integration test exposes a real defect.
 - Use the authority stack and role matrices listed in this document.
+- For VAT Return Workbench work, first check `docs/governing-pack/ui/VAT_RETURN_WORKBENCH_AND_SAGE_JOURNAL_CONTRACT_v1.md`.
 - Stable subset invoicing is allowed; final whole-order closure waits for unresolved children.
 - VAT is prepayment-first and sales-invoice based; not dispatch-only.
 - Replacement child is operational tracking, not a new customer-funded order.
