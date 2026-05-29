@@ -6,6 +6,7 @@ import { createClient } from "@/utils/supabase/server";
 import { sageApiFetch } from "@/lib/sage/server-token";
 
 type StaffRow = { id: string; role_type: string; active: boolean };
+type AnyRow = Record<string, unknown>;
 
 type VatRunResult = { vat_return_run_id?: string } | null;
 
@@ -119,6 +120,84 @@ async function detectNextMonthlyVatPeriod(supabase: Awaited<ReturnType<typeof cr
   };
 }
 
+async function sageJson(path: string) {
+  const response = await sageApiFetch(path, { method: "GET" });
+  const raw = await response.json().catch(async () => ({ non_json_body: await response.text().catch(() => null) }));
+  if (!response.ok) {
+    const message = raw && typeof raw === "object" ? readSageText((raw as AnyRow).message ?? (raw as AnyRow).error) : "";
+    throw new Error(`Sage read failed (${response.status}): ${message || path}`);
+  }
+  return raw;
+}
+
+function sageRows(raw: unknown): AnyRow[] {
+  const root = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as AnyRow : {};
+  const rows = [root.$items, root.items, root.data, raw].find(Array.isArray) as unknown[] | undefined;
+  return (rows ?? []).map((row) => row && typeof row === "object" ? row as AnyRow : {});
+}
+
+function sageNext(raw: unknown): string | null {
+  const root = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as AnyRow : {};
+  const next = readSageText(root.$next ?? root.next).trim();
+  if (!next) return null;
+  if (next.includes("://")) {
+    const parsed = new URL(next);
+    return `${parsed.pathname}${parsed.search}`;
+  }
+  return next;
+}
+
+async function sageAll(path: string) {
+  const all: AnyRow[] = [];
+  let next: string | null = path;
+  let guard = 0;
+  while (next && guard < 25) {
+    guard += 1;
+    const raw = await sageJson(next);
+    all.push(...sageRows(raw));
+    next = sageNext(raw);
+  }
+  if (next) throw new Error(`Sage pagination limit reached for ${path}.`);
+  return all;
+}
+
+function num(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value.replace(/,/g, ""));
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
+}
+
+function pickAmount(row: AnyRow, fields: string[]) {
+  for (const field of fields) {
+    const value = row[field];
+    const parsed = num(value);
+    if (parsed !== 0 || value === 0 || value === "0" || value === "0.00") return parsed;
+  }
+  return 0;
+}
+
+function total(rows: AnyRow[], fields: string[]) {
+  return rows.reduce((sum, row) => sum + pickAmount(row, fields), 0);
+}
+
+function money2(value: number) {
+  return Number(value.toFixed(2));
+}
+
+async function fetchSageVatDocs(periodStart: string, periodEnd: string) {
+  const params = new URLSearchParams({ from_date: periodStart, to_date: periodEnd, items_per_page: "200", status_id: "POSTED" });
+  const [si, scn, pi, pcn] = await Promise.all([
+    sageAll(`/sales_invoices?${params.toString()}`),
+    sageAll(`/sales_credit_notes?${params.toString()}`),
+    sageAll(`/purchase_invoices?${params.toString()}`),
+    sageAll(`/purchase_credit_notes?${params.toString()}`),
+  ]);
+  return { si, scn, pi, pcn };
+}
+
 export async function generateNextSageVatDraftRunAction() {
   const { supabase } = await requireAdmin();
 
@@ -153,7 +232,7 @@ export async function reconstructSageVatDraftBackendCheckAction(vatReturnRunId: 
   const runId = String(vatReturnRunId ?? "").trim();
   if (!runId) throw new Error("VAT return run id is required.");
 
-  const { supabase } = await requireAdmin();
+  const { supabase, staff } = await requireAdmin();
   const { data: run, error } = await supabase
     .from("vat_return_runs")
     .select("id, period_start_date, period_end_date")
@@ -162,10 +241,58 @@ export async function reconstructSageVatDraftBackendCheckAction(vatReturnRunId: 
 
   if (error || !run) throw new Error(error?.message ?? "VAT return run not found.");
 
-  return {
-    vatReturnRunId: runId,
-    periodStart: readSageText((run as Record<string, unknown>).period_start_date),
-    periodEnd: readSageText((run as Record<string, unknown>).period_end_date),
-    status: "backend_check_ready",
-  };
+  const periodStart = readSageText((run as AnyRow).period_start_date);
+  const periodEnd = readSageText((run as AnyRow).period_end_date);
+  const docs = await fetchSageVatDocs(periodStart, periodEnd);
+
+  const salesTax = total(docs.si, ["tax_amount", "total_tax_amount", "tax_total", "total_tax", "vat_amount"]);
+  const salesCreditTax = total(docs.scn, ["tax_amount", "total_tax_amount", "tax_total", "total_tax", "vat_amount"]);
+  const purchaseTax = total(docs.pi, ["tax_amount", "total_tax_amount", "tax_total", "total_tax", "vat_amount"]);
+  const purchaseCreditTax = total(docs.pcn, ["tax_amount", "total_tax_amount", "tax_total", "total_tax", "vat_amount"]);
+  const salesNet = total(docs.si, ["net_amount", "total_net_amount", "net_total", "total_net", "subtotal"]);
+  const salesCreditNet = total(docs.scn, ["net_amount", "total_net_amount", "net_total", "total_net", "subtotal"]);
+  const purchaseNet = total(docs.pi, ["net_amount", "total_net_amount", "net_total", "total_net", "subtotal"]);
+  const purchaseCreditNet = total(docs.pcn, ["net_amount", "total_net_amount", "net_total", "total_net", "subtotal"]);
+
+  const box1 = money2(salesTax - salesCreditTax);
+  const box2 = 0;
+  const box3 = money2(box1 + box2);
+  const box4 = money2(purchaseTax - purchaseCreditTax);
+  const box5 = money2(box3 - box4);
+  const box6 = money2(salesNet - salesCreditNet);
+  const box7 = money2(purchaseNet - purchaseCreditNet);
+
+  const { data: snapshot, error: insertError } = await supabase
+    .from("vat_return_sage_reconstruction_snapshots")
+    .insert({
+      vat_return_run_id: runId,
+      period_start_date: periodStart,
+      period_end_date: periodEnd,
+      status: "reconstructed",
+      source_basis: "sage_posted_documents",
+      box1_gbp: box1,
+      box2_gbp: box2,
+      box3_gbp: box3,
+      box4_gbp: box4,
+      box5_gbp: box5,
+      box6_gbp: box6,
+      box7_gbp: box7,
+      box8_gbp: 0,
+      box9_gbp: 0,
+      sales_invoice_count: docs.si.length,
+      sales_credit_note_count: docs.scn.length,
+      purchase_invoice_count: docs.pi.length,
+      purchase_credit_note_count: docs.pcn.length,
+      source_counts: { sales_invoices: docs.si.length, sales_credit_notes: docs.scn.length, purchase_invoices: docs.pi.length, purchase_credit_notes: docs.pcn.length },
+      source_summary: { sales_tax: money2(salesTax), sales_credit_tax: money2(salesCreditTax), purchase_tax: money2(purchaseTax), purchase_credit_tax: money2(purchaseCreditTax), sales_net: money2(salesNet), sales_credit_net: money2(salesCreditNet), purchase_net: money2(purchaseNet), purchase_credit_net: money2(purchaseCreditNet) },
+      warning_notes: "Read-only Sage reconstruction from posted invoices and credit notes only. Manual VAT journals and cash-accounting payment timing are not included in this backend pass.",
+      created_by_staff_id: staff.id,
+    })
+    .select("id")
+    .single();
+
+  if (insertError) throw new Error(insertError.message || "Could not save Sage VAT reconstruction snapshot.");
+
+  revalidatePath("/internal/accounting-vat");
+  return { snapshotId: String(snapshot?.id ?? ""), boxes: { box1, box2, box3, box4, box5, box6, box7, box8: 0, box9: 0 } };
 }
