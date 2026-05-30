@@ -37,6 +37,20 @@ function date(value: unknown): string {
 function shape(summary: Row, key: string): Row {
   return object(object(summary.sage_shape_diagnostic)[key]);
 }
+function audit(summary: Row, key: string): Row {
+  return object(object(summary.document_status_audit)[key]);
+}
+function count(value: unknown, fallback: unknown = 0): string {
+  return text(value) || text(fallback) || "0";
+}
+function excludedReasons(value: Row): string {
+  const reasons = array(value.excluded_documents)
+    .map(object)
+    .map((row) => text(row.exclusion_reason) || text(row.displayed_as) || text(row.document_number))
+    .filter(Boolean);
+  return reasons.length ? reasons.join("; ") : "—";
+}
+
 function ShapeCard({ title, value }: { title: string; value: Row }) {
   const arrays = array(value.array_fields).map(object);
   return <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -60,10 +74,10 @@ function ShapeCard({ title, value }: { title: string; value: Row }) {
 
 function SourceBreakdown({ snapshot, summary }: { snapshot: Row; summary: Row }) {
   const rows = [
-    { label: "Sales invoices", count: snapshot.sales_invoice_count, net: summary.sales_net, tax: summary.sales_tax, box: "Box 1 + / Box 6 +" },
-    { label: "Sales credit notes", count: snapshot.sales_credit_note_count, net: summary.sales_credit_net, tax: summary.sales_credit_tax, box: "Box 1 - / Box 6 -" },
-    { label: "Purchase invoices", count: snapshot.purchase_invoice_count, net: summary.purchase_net, tax: summary.purchase_tax, box: "Box 4 + / Box 7 +" },
-    { label: "Purchase credit notes", count: snapshot.purchase_credit_note_count, net: summary.purchase_credit_net, tax: summary.purchase_credit_tax, box: "Box 4 - / Box 7 -" },
+    { label: "Sales invoices", audit: audit(summary, "sales_invoices"), fallbackCount: snapshot.sales_invoice_count, net: summary.sales_net, tax: summary.sales_tax, box: "Box 1 + / Box 6 +" },
+    { label: "Sales credit notes", audit: audit(summary, "sales_credit_notes"), fallbackCount: snapshot.sales_credit_note_count, net: summary.sales_credit_net, tax: summary.sales_credit_tax, box: "Box 1 - / Box 6 -" },
+    { label: "Purchase invoices", audit: audit(summary, "purchase_invoices"), fallbackCount: snapshot.purchase_invoice_count, net: summary.purchase_net, tax: summary.purchase_tax, box: "Box 4 + / Box 7 +" },
+    { label: "Purchase credit notes", audit: audit(summary, "purchase_credit_notes"), fallbackCount: snapshot.purchase_credit_note_count, net: summary.purchase_credit_net, tax: summary.purchase_credit_tax, box: "Box 4 - / Box 7 -" },
   ];
   return <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
     <div className="flex flex-wrap items-start justify-between gap-3">
@@ -74,18 +88,45 @@ function SourceBreakdown({ snapshot, summary }: { snapshot: Row; summary: Row })
       <Link href="/internal/accounting-vat?tab=sage" className="rounded-full border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700">Sage Coverage</Link>
     </div>
     <div className="mt-5 overflow-x-auto">
-      <table className="w-full min-w-[760px] text-left text-sm">
+      <table className="w-full min-w-[920px] text-left text-sm">
         <thead className="text-xs uppercase tracking-wide text-slate-500">
-          <tr><th className="border-b border-slate-200 py-3 pr-4">Source</th><th className="border-b border-slate-200 py-3 pr-4">Docs</th><th className="border-b border-slate-200 py-3 pr-4">Net</th><th className="border-b border-slate-200 py-3 pr-4">VAT/tax</th><th className="border-b border-slate-200 py-3 pr-4">Box treatment</th></tr>
+          <tr><th className="border-b border-slate-200 py-3 pr-4">Source</th><th className="border-b border-slate-200 py-3 pr-4">Returned</th><th className="border-b border-slate-200 py-3 pr-4">Included</th><th className="border-b border-slate-200 py-3 pr-4">Excluded</th><th className="border-b border-slate-200 py-3 pr-4">Net included</th><th className="border-b border-slate-200 py-3 pr-4">VAT/tax included</th><th className="border-b border-slate-200 py-3 pr-4">Box treatment</th></tr>
         </thead>
         <tbody>
-          {rows.map((row) => <tr key={row.label} className="text-slate-800"><td className="border-b border-slate-100 py-3 pr-4 font-semibold">{row.label}</td><td className="border-b border-slate-100 py-3 pr-4">{text(row.count) || "0"}</td><td className="border-b border-slate-100 py-3 pr-4">{money(row.net)}</td><td className="border-b border-slate-100 py-3 pr-4">{money(row.tax)}</td><td className="border-b border-slate-100 py-3 pr-4">{row.box}</td></tr>)}
+          {rows.map((row) => <tr key={row.label} className="text-slate-800"><td className="border-b border-slate-100 py-3 pr-4 font-semibold">{row.label}</td><td className="border-b border-slate-100 py-3 pr-4">{count(row.audit.returned_count, row.fallbackCount)}</td><td className="border-b border-slate-100 py-3 pr-4">{count(row.audit.included_count, row.fallbackCount)}</td><td className="border-b border-slate-100 py-3 pr-4">{count(row.audit.excluded_count, 0)}</td><td className="border-b border-slate-100 py-3 pr-4">{money(row.net)}</td><td className="border-b border-slate-100 py-3 pr-4">{money(row.tax)}</td><td className="border-b border-slate-100 py-3 pr-4">{row.box}</td></tr>)}
         </tbody>
       </table>
     </div>
     <div className="mt-5 grid gap-3 md:grid-cols-2">
-      <div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Sage formula</p><p className="mt-2 text-sm text-slate-700">Box 1 = sales invoice VAT - sales credit VAT. Box 4 = purchase invoice VAT - purchase credit VAT.</p></div>
-      <div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Net formula</p><p className="mt-2 text-sm text-slate-700">Box 6 = sales invoice net - sales credit net. Box 7 = purchase invoice net - purchase credit net.</p></div>
+      <div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Sage formula</p><p className="mt-2 text-sm text-slate-700">Box 1 = included sales invoice VAT - included sales credit VAT. Box 4 = included purchase invoice VAT - included purchase credit VAT.</p></div>
+      <div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Net formula</p><p className="mt-2 text-sm text-slate-700">Box 6 = included sales invoice net - included sales credit net. Box 7 = included purchase invoice net - included purchase credit net.</p></div>
+    </div>
+  </section>;
+}
+
+function DocumentStatusAudit({ summary }: { summary: Row }) {
+  const rows = [
+    { label: "Sales invoices", value: audit(summary, "sales_invoices") },
+    { label: "Sales credit notes", value: audit(summary, "sales_credit_notes") },
+    { label: "Purchase invoices", value: audit(summary, "purchase_invoices") },
+    { label: "Purchase credit notes", value: audit(summary, "purchase_credit_notes") },
+  ];
+  return <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+    <div className="flex flex-wrap items-start justify-between gap-3">
+      <div>
+        <h2 className="text-lg font-semibold tracking-tight">Sage document status audit</h2>
+        <p className="mt-1 text-sm leading-6 text-slate-600">Each Sage document is now audited before it reaches the VAT box totals. Deleted, voided, cancelled, draft and unposted documents are excluded.</p>
+      </div>
+    </div>
+    <div className="mt-5 overflow-x-auto">
+      <table className="w-full min-w-[920px] text-left text-sm">
+        <thead className="text-xs uppercase tracking-wide text-slate-500">
+          <tr><th className="border-b border-slate-200 py-3 pr-4">Source</th><th className="border-b border-slate-200 py-3 pr-4">Returned</th><th className="border-b border-slate-200 py-3 pr-4">Included</th><th className="border-b border-slate-200 py-3 pr-4">Excluded</th><th className="border-b border-slate-200 py-3 pr-4">Included net</th><th className="border-b border-slate-200 py-3 pr-4">Excluded net</th><th className="border-b border-slate-200 py-3 pr-4">Excluded reason</th></tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => <tr key={row.label} className="text-slate-800"><td className="border-b border-slate-100 py-3 pr-4 font-semibold">{row.label}</td><td className="border-b border-slate-100 py-3 pr-4">{count(row.value.returned_count)}</td><td className="border-b border-slate-100 py-3 pr-4">{count(row.value.included_count)}</td><td className="border-b border-slate-100 py-3 pr-4">{count(row.value.excluded_count)}</td><td className="border-b border-slate-100 py-3 pr-4">{money(row.value.included_net)}</td><td className="border-b border-slate-100 py-3 pr-4">{money(row.value.excluded_net)}</td><td className="border-b border-slate-100 py-3 pr-4">{excludedReasons(row.value)}</td></tr>)}
+        </tbody>
+      </table>
     </div>
   </section>;
 }
@@ -125,14 +166,18 @@ export default async function SageVatDiagnosticsPage() {
 
   const snapshot = object(data);
   const summary = object(snapshot.source_summary);
+  const siAudit = audit(summary, "sales_invoices");
+  const scnAudit = audit(summary, "sales_credit_notes");
+  const piAudit = audit(summary, "purchase_invoices");
+  const pcnAudit = audit(summary, "purchase_credit_notes");
 
   return <main className="min-h-screen bg-slate-50 px-6 py-8 text-slate-950">
     <div className="mx-auto flex max-w-7xl flex-col gap-6">
       <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
         <Link href="/internal/accounting-vat?tab=sage" className="text-sm font-semibold text-sky-600">← Back to Sage Coverage</Link>
         <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Sage VAT reconstruction diagnostics</p>
-        <h1 className="mt-2 text-3xl font-semibold tracking-tight">Latest safe Sage field-shape keys</h1>
-        <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-600">This route is dynamic and reads the latest saved snapshot. It shows keys, array names, source totals and timing guardrails, not customer data or full Sage payloads.</p>
+        <h1 className="mt-2 text-3xl font-semibold tracking-tight">Latest Sage document status audit</h1>
+        <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-600">This route is dynamic and reads the latest saved snapshot. It shows returned, included and excluded Sage documents, source totals, safe field keys and timing guardrails.</p>
       </section>
 
       {error ? <section className="rounded-3xl border border-rose-200 bg-rose-50 p-5 text-sm font-semibold text-rose-900">Read error: {error.message}</section> : null}
@@ -143,9 +188,10 @@ export default async function SageVatDiagnosticsPage() {
           <div className="rounded-2xl border border-slate-200 bg-white p-4"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Snapshot</p><p className="mt-2 text-sm font-semibold">{text(snapshot.id)}</p><p className="mt-2 text-xs text-slate-600">{date(snapshot.created_at)}</p></div>
           <div className="rounded-2xl border border-slate-200 bg-white p-4"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Period</p><p className="mt-2 text-sm font-semibold">{date(snapshot.period_start_date)} – {date(snapshot.period_end_date)}</p><p className="mt-2 text-xs text-slate-600">{text(snapshot.status)}</p></div>
           <div className="rounded-2xl border border-slate-200 bg-white p-4"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Boxes</p><p className="mt-2 text-sm font-semibold">B1 {money(snapshot.box1_gbp)} · B4 {money(snapshot.box4_gbp)}</p><p className="mt-2 text-xs text-slate-600">B6 {money(snapshot.box6_gbp)} · B7 {money(snapshot.box7_gbp)}</p></div>
-          <div className="rounded-2xl border border-slate-200 bg-white p-4"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Docs</p><p className="mt-2 text-sm font-semibold">{text(snapshot.sales_invoice_count)} SI / {text(snapshot.sales_credit_note_count)} SCN</p><p className="mt-2 text-xs text-slate-600">{text(snapshot.purchase_invoice_count)} PI / {text(snapshot.purchase_credit_note_count)} PCN</p></div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Included docs</p><p className="mt-2 text-sm font-semibold">{count(siAudit.included_count, snapshot.sales_invoice_count)} SI / {count(scnAudit.included_count, snapshot.sales_credit_note_count)} SCN</p><p className="mt-2 text-xs text-slate-600">{count(piAudit.included_count, snapshot.purchase_invoice_count)} PI / {count(pcnAudit.included_count, snapshot.purchase_credit_note_count)} PCN</p></div>
         </section>
-        <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="text-lg font-semibold tracking-tight">Current parser source totals</h2><div className="mt-4 grid gap-3 md:grid-cols-4"><div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Sales tax</p><p className="mt-2 font-semibold">{money(summary.sales_tax)}</p></div><div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Purchase tax</p><p className="mt-2 font-semibold">{money(summary.purchase_tax)}</p></div><div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Sales net</p><p className="mt-2 font-semibold">{money(summary.sales_net)}</p></div><div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Purchase net</p><p className="mt-2 font-semibold">{money(summary.purchase_net)}</p></div></div></section>
+        <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="text-lg font-semibold tracking-tight">Current included parser source totals</h2><div className="mt-4 grid gap-3 md:grid-cols-4"><div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Sales tax</p><p className="mt-2 font-semibold">{money(summary.sales_tax)}</p></div><div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Purchase tax</p><p className="mt-2 font-semibold">{money(summary.purchase_tax)}</p></div><div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Sales net</p><p className="mt-2 font-semibold">{money(summary.sales_net)}</p></div><div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Purchase net</p><p className="mt-2 font-semibold">{money(summary.purchase_net)}</p></div></div></section>
+        <DocumentStatusAudit summary={summary} />
         <SourceBreakdown snapshot={snapshot} summary={summary} />
         <TimingGuardrails />
         <div className="grid gap-4 xl:grid-cols-2"><ShapeCard title="Sales invoice shape" value={shape(summary, "sales_invoice")} /><ShapeCard title="Sales credit note shape" value={shape(summary, "sales_credit_note")} /><ShapeCard title="Purchase invoice shape" value={shape(summary, "purchase_invoice")} /><ShapeCard title="Purchase credit note shape" value={shape(summary, "purchase_credit_note")} /></div>
