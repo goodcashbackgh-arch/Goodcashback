@@ -1,7 +1,7 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import { reconstructSageVatDraftBackendCheckAction } from "./actions";
+import { reconstructSageVatDraftWithSingleContextAction } from "./sageVatReadReconstructionAction";
 
 export async function runVatReconstructionForRunAction(formData: FormData) {
   const runId = String(formData.get("vat_return_run_id") ?? "").trim();
@@ -11,7 +11,7 @@ export async function runVatReconstructionForRunAction(formData: FormData) {
 
   let snapshotId = "1";
   try {
-    const result = await reconstructSageVatDraftBackendCheckAction(runId);
+    const result = await reconstructSageVatDraftWithSingleContextAction(runId);
     snapshotId = result.snapshotId || "1";
   } catch (error) {
     const message = error instanceof Error ? error.message : "VAT reconstruction failed.";
