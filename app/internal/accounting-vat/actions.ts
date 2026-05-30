@@ -9,8 +9,22 @@ type StaffRow = { id: string; role_type: string; active: boolean };
 type AnyRow = Record<string, unknown>;
 type VatRunResult = { vat_return_run_id?: string } | null;
 
+const ACTIVE_VAT_RUN_STATUSES = [
+  "draft",
+  "calculated",
+  "admin_review_required",
+  "blocked",
+  "admin_approved",
+  "sage_adjustment_journals_pending",
+  "sage_adjustment_journals_posted",
+  "sage_return_review_required",
+  "sage_return_submitted",
+  "mismatch_needs_admin_review",
+  "reopened_for_correction",
+];
+
 function redirectWithError(message: string): never {
-  redirect(`/internal/accounting-vat?tab=runs&vatError=${encodeURIComponent(message)}`);
+  redirect(`/internal/accounting-vat?vatError=${encodeURIComponent(message)}`);
 }
 
 function text(value: unknown): string {
@@ -104,7 +118,7 @@ async function detectNextEligibleMonthlyVatPeriod(supabase: Awaited<ReturnType<t
   const { data: openRun, error: openRunError } = await supabase
     .from("vat_return_runs")
     .select("id, return_period_label, period_start_date, period_end_date, status, created_at")
-    .neq("status", "matched_to_sage_locked")
+    .in("status", ACTIVE_VAT_RUN_STATUSES)
     .order("period_start_date", { ascending: true })
     .order("created_at", { ascending: true })
     .limit(1)
