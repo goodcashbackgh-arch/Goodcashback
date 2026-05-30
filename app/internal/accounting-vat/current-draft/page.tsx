@@ -42,8 +42,8 @@ export default async function CurrentVatDraftRedirectPage({ searchParams }: any 
     .from("vat_return_runs")
     .select("id")
     .neq("status", "matched_to_sage_locked")
-    .order("period_end_date", { ascending: false })
-    .order("created_at", { ascending: false })
+    .order("period_start_date", { ascending: true })
+    .order("created_at", { ascending: true })
     .limit(1)
     .maybeSingle();
 
