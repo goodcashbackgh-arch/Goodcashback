@@ -418,5 +418,6 @@ export async function reconstructSageVatDraftBackendCheckAction(vatReturnRunId: 
   if (insertError) throw new Error(insertError.message || "Could not save Sage VAT reconstruction snapshot.");
 
   revalidatePath("/internal/accounting-vat");
+  revalidatePath("/internal/accounting-vat/sage-diagnostics");
   return { snapshotId: String(snapshot?.id ?? ""), boxes: { box1, box2, box3, box4, box5, box6, box7, box8: 0, box9: 0 } };
 }
