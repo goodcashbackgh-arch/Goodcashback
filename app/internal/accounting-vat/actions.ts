@@ -10,6 +10,11 @@ type AnyRow = Record<string, unknown>;
 
 type VatRunResult = { vat_return_run_id?: string } | null;
 
+const TAX_FIELDS = ["tax_amount", "total_tax_amount", "tax_total", "total_tax", "vat_amount", "total_vat_amount"];
+const NET_FIELDS = ["net_amount", "total_net_amount", "net_total", "total_net", "subtotal", "sub_total", "goods_value"];
+const GROSS_FIELDS = ["total_amount", "gross_amount", "total", "amount", "amount_gbp", "value"];
+const LINE_ARRAY_FIELDS = ["line_items", "invoice_lines", "lines", "items", "sales_invoice_lines", "purchase_invoice_lines", "credit_note_lines", "sales_credit_note_lines", "purchase_credit_note_lines"];
+
 function redirectWithError(message: string) {
   redirect(`/internal/accounting-vat?tab=runs&vatError=${encodeURIComponent(message)}`);
 }
@@ -86,14 +91,14 @@ function readSageText(value: unknown): string {
   if (typeof value === "string") return value;
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
   if (value && typeof value === "object" && !Array.isArray(value)) {
-    const row = value as Record<string, unknown>;
-    return readSageText(row.displayed_as ?? row.name ?? row.description ?? row.id ?? row.code ?? "");
+    const row = value as AnyRow;
+    return readSageText(row.displayed_as ?? row.name ?? row.description ?? row.amount ?? row.value ?? row.id ?? row.code ?? "");
   }
   return "";
 }
 
 function readTaxScheme(settings: unknown) {
-  const root = settings && typeof settings === "object" ? settings as Record<string, unknown> : {};
+  const root = settings && typeof settings === "object" ? settings as AnyRow : {};
   return readSageText(root.tax_scheme ?? root.taxScheme ?? root.vat_scheme ?? root.vatScheme).trim();
 }
 
@@ -136,15 +141,19 @@ function sageRows(raw: unknown): AnyRow[] {
   return (rows ?? []).map((row) => row && typeof row === "object" ? row as AnyRow : {});
 }
 
-function sageNext(raw: unknown): string | null {
-  const root = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as AnyRow : {};
-  const next = readSageText(root.$next ?? root.next).trim();
-  if (!next) return null;
-  if (next.includes("://")) {
-    const parsed = new URL(next);
+function normalizeSagePath(value: unknown): string | null {
+  const path = readSageText(value).trim();
+  if (!path) return null;
+  if (path.includes("://")) {
+    const parsed = new URL(path);
     return `${parsed.pathname}${parsed.search}`;
   }
-  return next;
+  return path;
+}
+
+function sageNext(raw: unknown): string | null {
+  const root = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as AnyRow : {};
+  return normalizeSagePath(root.$next ?? root.next);
 }
 
 async function sageAll(path: string) {
@@ -161,11 +170,22 @@ async function sageAll(path: string) {
   return all;
 }
 
-function num(value: unknown) {
+function parseMoneyText(value: string): number {
+  const cleaned = value.replace(/,/g, "").replace(/[^0-9.\-]/g, "");
+  if (!cleaned || cleaned === "-" || cleaned === ".") return 0;
+  const parsed = Number(cleaned);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function num(value: unknown): number {
   if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string" && value.trim()) {
-    const parsed = Number(value.replace(/,/g, ""));
-    return Number.isFinite(parsed) ? parsed : 0;
+  if (typeof value === "string" && value.trim()) return parseMoneyText(value);
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const row = value as AnyRow;
+    for (const key of ["amount", "value", "total", "net_amount", "gross_amount", "displayed_as"]) {
+      const parsed = num(row[key]);
+      if (parsed !== 0 || row[key] === 0 || row[key] === "0" || row[key] === "0.00") return parsed;
+    }
   }
   return 0;
 }
@@ -179,8 +199,49 @@ function pickAmount(row: AnyRow, fields: string[]) {
   return 0;
 }
 
-function total(rows: AnyRow[], fields: string[]) {
+function lineRows(row: AnyRow): AnyRow[] {
+  const rows: AnyRow[] = [];
+  for (const field of LINE_ARRAY_FIELDS) {
+    const value = row[field];
+    if (Array.isArray(value)) {
+      rows.push(...value.filter((item) => item && typeof item === "object" && !Array.isArray(item)) as AnyRow[]);
+    }
+  }
+  return rows;
+}
+
+function sumRows(rows: AnyRow[], fields: string[]) {
   return rows.reduce((sum, row) => sum + pickAmount(row, fields), 0);
+}
+
+function documentTax(row: AnyRow) {
+  const top = pickAmount(row, TAX_FIELDS);
+  if (top !== 0) return top;
+  return sumRows(lineRows(row), TAX_FIELDS);
+}
+
+function documentGross(row: AnyRow) {
+  const top = pickAmount(row, GROSS_FIELDS);
+  if (top !== 0) return top;
+  return sumRows(lineRows(row), GROSS_FIELDS);
+}
+
+function documentNet(row: AnyRow) {
+  const top = pickAmount(row, NET_FIELDS);
+  if (top !== 0) return top;
+  const lineNet = sumRows(lineRows(row), NET_FIELDS);
+  if (lineNet !== 0) return lineNet;
+  const gross = documentGross(row);
+  if (gross !== 0) return gross - documentTax(row);
+  return 0;
+}
+
+function totalTax(rows: AnyRow[]) {
+  return rows.reduce((sum, row) => sum + documentTax(row), 0);
+}
+
+function totalNet(rows: AnyRow[]) {
+  return rows.reduce((sum, row) => sum + documentNet(row), 0);
 }
 
 function money2(value: number) {
@@ -215,14 +276,34 @@ function shapeDiagnostic(rows: AnyRow[]) {
   };
 }
 
+async function hydrateSageRows(rows: AnyRow[]) {
+  const hydrated = await Promise.all(rows.map(async (row) => {
+    const detailPath = normalizeSagePath(row.$path ?? row.path ?? row.href ?? row.url);
+    if (!detailPath) return row;
+    const raw = await sageJson(detailPath);
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw as AnyRow;
+    const detailedRows = sageRows(raw);
+    return detailedRows[0] ?? row;
+  }));
+  return hydrated;
+}
+
 async function fetchSageVatDocs(periodStart: string, periodEnd: string) {
   const params = new URLSearchParams({ from_date: periodStart, to_date: periodEnd, items_per_page: "200" });
-  const [si, scn, pi, pcn] = await Promise.all([
+  const [siRefs, scnRefs, piRefs, pcnRefs] = await Promise.all([
     sageAll(`/sales_invoices?${params.toString()}`),
     sageAll(`/sales_credit_notes?${params.toString()}`),
     sageAll(`/purchase_invoices?${params.toString()}`),
     sageAll(`/purchase_credit_notes?${params.toString()}`),
   ]);
+
+  const [si, scn, pi, pcn] = await Promise.all([
+    hydrateSageRows(siRefs),
+    hydrateSageRows(scnRefs),
+    hydrateSageRows(piRefs),
+    hydrateSageRows(pcnRefs),
+  ]);
+
   return { si, scn, pi, pcn };
 }
 
@@ -273,14 +354,14 @@ export async function reconstructSageVatDraftBackendCheckAction(vatReturnRunId: 
   const periodEnd = readSageText((run as AnyRow).period_end_date);
   const docs = await fetchSageVatDocs(periodStart, periodEnd);
 
-  const salesTax = total(docs.si, ["tax_amount", "total_tax_amount", "tax_total", "total_tax", "vat_amount"]);
-  const salesCreditTax = total(docs.scn, ["tax_amount", "total_tax_amount", "tax_total", "total_tax", "vat_amount"]);
-  const purchaseTax = total(docs.pi, ["tax_amount", "total_tax_amount", "tax_total", "total_tax", "vat_amount"]);
-  const purchaseCreditTax = total(docs.pcn, ["tax_amount", "total_tax_amount", "tax_total", "total_tax", "vat_amount"]);
-  const salesNet = total(docs.si, ["net_amount", "total_net_amount", "net_total", "total_net", "subtotal"]);
-  const salesCreditNet = total(docs.scn, ["net_amount", "total_net_amount", "net_total", "total_net", "subtotal"]);
-  const purchaseNet = total(docs.pi, ["net_amount", "total_net_amount", "net_total", "total_net", "subtotal"]);
-  const purchaseCreditNet = total(docs.pcn, ["net_amount", "total_net_amount", "net_total", "total_net", "subtotal"]);
+  const salesTax = totalTax(docs.si);
+  const salesCreditTax = totalTax(docs.scn);
+  const purchaseTax = totalTax(docs.pi);
+  const purchaseCreditTax = totalTax(docs.pcn);
+  const salesNet = totalNet(docs.si);
+  const salesCreditNet = totalNet(docs.scn);
+  const purchaseNet = totalNet(docs.pi);
+  const purchaseCreditNet = totalNet(docs.pcn);
 
   const box1 = money2(salesTax - salesCreditTax);
   const box2 = 0;
@@ -297,7 +378,7 @@ export async function reconstructSageVatDraftBackendCheckAction(vatReturnRunId: 
       period_start_date: periodStart,
       period_end_date: periodEnd,
       status: "reconstructed",
-      source_basis: "sage_posted_documents",
+      source_basis: "sage_hydrated_posted_documents",
       box1_gbp: box1,
       box2_gbp: box2,
       box3_gbp: box3,
@@ -328,7 +409,7 @@ export async function reconstructSageVatDraftBackendCheckAction(vatReturnRunId: 
           purchase_credit_note: shapeDiagnostic(docs.pcn),
         },
       },
-      warning_notes: "Read-only Sage reconstruction from posted invoices and credit notes only. Manual VAT journals and cash-accounting payment timing are not included in this backend pass. Source summary includes safe Sage field-shape diagnostics only: keys and array names, not customer details or full payloads.",
+      warning_notes: "Read-only Sage reconstruction from hydrated invoice and credit-note documents. Manual VAT journals and cash-accounting payment timing are not included in this backend pass. Source summary includes safe Sage field-shape diagnostics only: keys and array names, not customer details or full payloads.",
       created_by_staff_id: staff.id,
     })
     .select("id")
