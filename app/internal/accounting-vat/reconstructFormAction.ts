@@ -1,6 +1,7 @@
 "use server";
 
 import { redirect } from "next/navigation";
+import { recoverSageConnectionStatusForVatRead } from "./sageVatConnectionRecovery";
 import { reconstructSageVatDraftWithSingleContextAction } from "./sageVatReadReconstructionAction";
 
 export async function runVatReconstructionForRunAction(formData: FormData) {
@@ -11,6 +12,7 @@ export async function runVatReconstructionForRunAction(formData: FormData) {
 
   let snapshotId = "1";
   try {
+    await recoverSageConnectionStatusForVatRead();
     const result = await reconstructSageVatDraftWithSingleContextAction(runId);
     snapshotId = result.snapshotId || "1";
   } catch (error) {
