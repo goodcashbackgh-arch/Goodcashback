@@ -31,10 +31,41 @@ type SageReadContext = {
   accessToken: string;
 };
 
+type SageDocumentAuditRow = {
+  id: string;
+  document_number: string;
+  displayed_as: string;
+  status: string;
+  status_displayed_as: string;
+  deleted_at: string;
+  void_reason: string;
+  net: number;
+  tax: number;
+  total: number;
+  inclusion_decision: "included" | "excluded";
+  exclusion_reason: string;
+};
+
+type SageDocumentAudit = {
+  returned_count: number;
+  included_count: number;
+  excluded_count: number;
+  included_net: number;
+  included_tax: number;
+  included_total: number;
+  excluded_net: number;
+  excluded_tax: number;
+  excluded_total: number;
+  documents: SageDocumentAuditRow[];
+  excluded_documents: SageDocumentAuditRow[];
+  includedRows: AnyRow[];
+};
+
 const TAX_FIELDS = ["tax_amount", "total_tax_amount", "tax_total", "total_tax", "vat_amount", "total_vat_amount", "base_currency_tax_amount"];
 const NET_FIELDS = ["net_amount", "total_net_amount", "net_total", "total_net", "subtotal", "sub_total", "goods_value", "base_currency_net_amount"];
 const GROSS_FIELDS = ["total_amount", "gross_amount", "total", "amount", "amount_gbp", "value", "base_currency_total_amount"];
 const LINE_ARRAY_FIELDS = ["line_items", "invoice_lines", "credit_note_lines", "lines", "items", "sales_invoice_lines", "purchase_invoice_lines", "sales_credit_note_lines", "purchase_credit_note_lines"];
+const SAGE_EXCLUDED_STATUS_WORDS = ["voided", "deleted", "cancelled", "canceled", "draft", "unposted"];
 
 function text(value: unknown): string {
   if (typeof value === "string") return value.trim();
@@ -128,6 +159,10 @@ function totalNet(rows: AnyRow[]) {
   return rows.reduce((sum, row) => sum + documentNet(row), 0);
 }
 
+function totalGross(rows: AnyRow[]) {
+  return rows.reduce((sum, row) => sum + documentGross(row), 0);
+}
+
 function money2(value: number) {
   return Number(value.toFixed(2));
 }
@@ -150,6 +185,100 @@ function lineArrayDiagnostics(row: AnyRow | undefined) {
 function shapeDiagnostic(rows: AnyRow[]) {
   const first = rows[0];
   return { count: rows.length, top_level_keys: keyList(first), array_fields: lineArrayDiagnostics(first) };
+}
+
+function documentLabel(row: AnyRow): string {
+  return text(
+    row.document_number
+      ?? row.invoice_number
+      ?? row.reference
+      ?? row.number
+      ?? row.displayed_as
+      ?? row.id
+      ?? "document"
+  ) || "document";
+}
+
+function sageDocumentDecision(row: AnyRow): SageDocumentAuditRow {
+  const statusRow = object(row.status);
+  const status = text(row.status ?? row.status_name ?? row.state);
+  const statusDisplayed = text(statusRow.displayed_as ?? row.status_displayed_as ?? row.displayed_status ?? row.state_displayed_as);
+  const deletedAt = text(row.deleted_at);
+  const voidReason = text(row.void_reason);
+  const documentNumber = text(row.document_number ?? row.invoice_number ?? row.reference ?? row.number ?? row.id);
+  const displayedAs = text(row.displayed_as ?? row.document_displayed_as ?? row.reference ?? row.invoice_number ?? row.number ?? row.id);
+  const label = documentNumber || displayedAs || documentLabel(row);
+
+  let inclusionDecision: "included" | "excluded" = "included";
+  let exclusionReason = "";
+
+  if (deletedAt) {
+    inclusionDecision = "excluded";
+    exclusionReason = `deleted ${label}`;
+  } else if (voidReason) {
+    inclusionDecision = "excluded";
+    exclusionReason = `voided ${label}`;
+  } else {
+    const statusBlob = `${status} ${statusDisplayed}`.toLowerCase();
+    const blockedStatus = SAGE_EXCLUDED_STATUS_WORDS.find((word) => statusBlob.includes(word));
+    if (blockedStatus) {
+      inclusionDecision = "excluded";
+      const normalizedStatus = blockedStatus === "canceled" ? "cancelled" : blockedStatus;
+      exclusionReason = `${normalizedStatus} ${label}`;
+    }
+  }
+
+  return {
+    id: text(row.id),
+    document_number: documentNumber,
+    displayed_as: displayedAs,
+    status,
+    status_displayed_as: statusDisplayed,
+    deleted_at: deletedAt,
+    void_reason: voidReason,
+    net: money2(documentNet(row)),
+    tax: money2(documentTax(row)),
+    total: money2(documentGross(row)),
+    inclusion_decision: inclusionDecision,
+    exclusion_reason: exclusionReason,
+  };
+}
+
+function auditSageDocuments(rows: AnyRow[]): SageDocumentAudit {
+  const documents = rows.map(sageDocumentDecision);
+  const includedRows = rows.filter((_, index) => documents[index]?.inclusion_decision === "included");
+  const excludedDocuments = documents.filter((doc) => doc.inclusion_decision === "excluded");
+
+  return {
+    returned_count: rows.length,
+    included_count: includedRows.length,
+    excluded_count: excludedDocuments.length,
+    included_net: money2(totalNet(includedRows)),
+    included_tax: money2(totalTax(includedRows)),
+    included_total: money2(totalGross(includedRows)),
+    excluded_net: money2(excludedDocuments.reduce((sum, row) => sum + row.net, 0)),
+    excluded_tax: money2(excludedDocuments.reduce((sum, row) => sum + row.tax, 0)),
+    excluded_total: money2(excludedDocuments.reduce((sum, row) => sum + row.total, 0)),
+    documents,
+    excluded_documents: excludedDocuments,
+    includedRows,
+  };
+}
+
+function serializableAudit(audit: SageDocumentAudit) {
+  return {
+    returned_count: audit.returned_count,
+    included_count: audit.included_count,
+    excluded_count: audit.excluded_count,
+    included_net: audit.included_net,
+    included_tax: audit.included_tax,
+    included_total: audit.included_total,
+    excluded_net: audit.excluded_net,
+    excluded_tax: audit.excluded_tax,
+    excluded_total: audit.excluded_total,
+    documents: audit.documents,
+    excluded_documents: audit.excluded_documents,
+  };
 }
 
 function normalizeSagePath(value: unknown): string | null {
@@ -334,15 +463,19 @@ export async function reconstructSageVatDraftWithSingleContextAction(vatReturnRu
   const periodEnd = text((run as AnyRow).period_end_date);
   const context = await buildSageReadContext();
   const docs = await fetchSageVatDocs(context, periodStart, periodEnd);
+  const siAudit = auditSageDocuments(docs.si);
+  const scnAudit = auditSageDocuments(docs.scn);
+  const piAudit = auditSageDocuments(docs.pi);
+  const pcnAudit = auditSageDocuments(docs.pcn);
 
-  const salesTax = totalTax(docs.si);
-  const salesCreditTax = totalTax(docs.scn);
-  const purchaseTax = totalTax(docs.pi);
-  const purchaseCreditTax = totalTax(docs.pcn);
-  const salesNet = totalNet(docs.si);
-  const salesCreditNet = totalNet(docs.scn);
-  const purchaseNet = totalNet(docs.pi);
-  const purchaseCreditNet = totalNet(docs.pcn);
+  const salesTax = totalTax(siAudit.includedRows);
+  const salesCreditTax = totalTax(scnAudit.includedRows);
+  const purchaseTax = totalTax(piAudit.includedRows);
+  const purchaseCreditTax = totalTax(pcnAudit.includedRows);
+  const salesNet = totalNet(siAudit.includedRows);
+  const salesCreditNet = totalNet(scnAudit.includedRows);
+  const purchaseNet = totalNet(piAudit.includedRows);
+  const purchaseCreditNet = totalNet(pcnAudit.includedRows);
 
   const box1 = money2(salesTax - salesCreditTax);
   const box2 = 0;
@@ -359,7 +492,7 @@ export async function reconstructSageVatDraftWithSingleContextAction(vatReturnRu
       period_start_date: periodStart,
       period_end_date: periodEnd,
       status: "reconstructed",
-      source_basis: "sage_single_context_hydrated_documents",
+      source_basis: "sage_single_context_hydrated_documents_status_filtered",
       box1_gbp: box1,
       box2_gbp: box2,
       box3_gbp: box3,
@@ -369,11 +502,11 @@ export async function reconstructSageVatDraftWithSingleContextAction(vatReturnRu
       box7_gbp: box7,
       box8_gbp: 0,
       box9_gbp: 0,
-      sales_invoice_count: docs.si.length,
-      sales_credit_note_count: docs.scn.length,
-      purchase_invoice_count: docs.pi.length,
-      purchase_credit_note_count: docs.pcn.length,
-      source_counts: { sales_invoices: docs.si.length, sales_credit_notes: docs.scn.length, purchase_invoices: docs.pi.length, purchase_credit_notes: docs.pcn.length },
+      sales_invoice_count: siAudit.included_count,
+      sales_credit_note_count: scnAudit.included_count,
+      purchase_invoice_count: piAudit.included_count,
+      purchase_credit_note_count: pcnAudit.included_count,
+      source_counts: { sales_invoices: siAudit.returned_count, sales_credit_notes: scnAudit.returned_count, purchase_invoices: piAudit.returned_count, purchase_credit_notes: pcnAudit.returned_count },
       source_summary: {
         sales_tax: money2(salesTax),
         sales_credit_tax: money2(salesCreditTax),
@@ -383,6 +516,12 @@ export async function reconstructSageVatDraftWithSingleContextAction(vatReturnRu
         sales_credit_net: money2(salesCreditNet),
         purchase_net: money2(purchaseNet),
         purchase_credit_net: money2(purchaseCreditNet),
+        document_status_audit: {
+          sales_invoices: serializableAudit(siAudit),
+          sales_credit_notes: serializableAudit(scnAudit),
+          purchase_invoices: serializableAudit(piAudit),
+          purchase_credit_notes: serializableAudit(pcnAudit),
+        },
         sage_shape_diagnostic: {
           sales_invoice: shapeDiagnostic(docs.si),
           sales_credit_note: shapeDiagnostic(docs.scn),
@@ -390,7 +529,7 @@ export async function reconstructSageVatDraftWithSingleContextAction(vatReturnRu
           purchase_credit_note: shapeDiagnostic(docs.pcn),
         },
       },
-      warning_notes: "Read-only Sage reconstruction using one operation-level Sage token context. Sage documents are hydrated before parsing. Manual VAT journals, cash-accounting timing, void/deleted document exclusion, and platform VAT timing overlays remain separate controls.",
+      warning_notes: "Read-only Sage reconstruction using one operation-level Sage token context. Sage documents are hydrated, status-audited, and excluded when deleted_at/void_reason exist or status/displayed_as says voided, deleted, cancelled, draft, or unposted. Manual VAT journals, cash-accounting timing, and platform VAT timing overlays remain separate controls.",
       created_by_staff_id: staff.id,
     })
     .select("id")
