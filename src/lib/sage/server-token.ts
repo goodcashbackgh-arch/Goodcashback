@@ -30,7 +30,7 @@ async function loadActiveToken(connectionId?: string): Promise<ActiveTokenRow | 
     .from("sage_oauth_tokens")
     .select("id, connection_id, access_token_encrypted, refresh_token_encrypted, expires_at")
     .eq("status", "active")
-    .order("expires_at", { ascending: true })
+    .order("expires_at", { ascending: false })
     .limit(1);
 
   if (connectionId) query = query.eq("connection_id", connectionId);
