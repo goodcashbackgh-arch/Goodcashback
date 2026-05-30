@@ -9,11 +9,14 @@ export async function runVatReconstructionForRunAction(formData: FormData) {
     redirect("/internal/accounting-vat?tab=sage&vatError=Choose%20a%20VAT%20return%20run%20first");
   }
 
+  let snapshotId = "1";
   try {
     const result = await reconstructSageVatDraftBackendCheckAction(runId);
-    redirect(`/internal/accounting-vat?tab=sage&vatReconstructed=${encodeURIComponent(result.snapshotId || "1")}`);
+    snapshotId = result.snapshotId || "1";
   } catch (error) {
     const message = error instanceof Error ? error.message : "VAT reconstruction failed.";
     redirect(`/internal/accounting-vat?tab=sage&vatError=${encodeURIComponent(message)}`);
   }
+
+  redirect(`/internal/accounting-vat?tab=sage&vatReconstructed=${encodeURIComponent(snapshotId)}`);
 }
