@@ -6,13 +6,23 @@ export const revalidate = 0;
 
 type Row = Record<string, unknown>;
 
+const allowedTabs = new Set(["summary", "source", "box6", "box1", "purchases", "journals", "submission"]);
+
 function text(value: unknown): string {
   if (typeof value === "string") return value.trim();
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
   return "";
 }
 
-export default async function CurrentVatDraftRedirectPage() {
+function first(value: unknown): string {
+  return Array.isArray(value) ? text(value[0]) : text(value);
+}
+
+export default async function CurrentVatDraftRedirectPage({ searchParams }: any = {}) {
+  const queryParams = searchParams ? await searchParams : {};
+  const requestedTab = first(queryParams?.tab);
+  const tabSuffix = allowedTabs.has(requestedTab) ? `?tab=${encodeURIComponent(requestedTab)}` : "";
+
   const supabase = await createClient();
   const db = supabase as any;
   const { data: { user } } = await supabase.auth.getUser();
@@ -39,5 +49,5 @@ export default async function CurrentVatDraftRedirectPage() {
 
   const runId = text((run as Row | null)?.id);
   if (!runId) redirect("/internal/accounting-vat?tab=runs&vatError=No%20open%20VAT%20draft%20or%20review%20run%20found");
-  redirect(`/internal/accounting-vat/returns/${runId}`);
+  redirect(`/internal/accounting-vat/returns/${runId}${tabSuffix}`);
 }
