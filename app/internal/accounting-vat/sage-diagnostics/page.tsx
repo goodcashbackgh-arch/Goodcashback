@@ -58,6 +58,50 @@ function ShapeCard({ title, value }: { title: string; value: Row }) {
   </section>;
 }
 
+function SourceBreakdown({ snapshot, summary }: { snapshot: Row; summary: Row }) {
+  const rows = [
+    { label: "Sales invoices", count: snapshot.sales_invoice_count, net: summary.sales_net, tax: summary.sales_tax, box: "Box 1 + / Box 6 +" },
+    { label: "Sales credit notes", count: snapshot.sales_credit_note_count, net: summary.sales_credit_net, tax: summary.sales_credit_tax, box: "Box 1 - / Box 6 -" },
+    { label: "Purchase invoices", count: snapshot.purchase_invoice_count, net: summary.purchase_net, tax: summary.purchase_tax, box: "Box 4 + / Box 7 +" },
+    { label: "Purchase credit notes", count: snapshot.purchase_credit_note_count, net: summary.purchase_credit_net, tax: summary.purchase_credit_tax, box: "Box 4 - / Box 7 -" },
+  ];
+  return <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+    <div className="flex flex-wrap items-start justify-between gap-3">
+      <div>
+        <h2 className="text-lg font-semibold tracking-tight">Sage source breakdown</h2>
+        <p className="mt-1 text-sm leading-6 text-slate-600">This is the Sage extraction layer only. It explains the Box 1/4/6/7 movement before platform VAT timing adjustments.</p>
+      </div>
+      <Link href="/internal/accounting-vat?tab=sage" className="rounded-full border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700">Sage Coverage</Link>
+    </div>
+    <div className="mt-5 overflow-x-auto">
+      <table className="w-full min-w-[760px] text-left text-sm">
+        <thead className="text-xs uppercase tracking-wide text-slate-500">
+          <tr><th className="border-b border-slate-200 py-3 pr-4">Source</th><th className="border-b border-slate-200 py-3 pr-4">Docs</th><th className="border-b border-slate-200 py-3 pr-4">Net</th><th className="border-b border-slate-200 py-3 pr-4">VAT/tax</th><th className="border-b border-slate-200 py-3 pr-4">Box treatment</th></tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => <tr key={row.label} className="text-slate-800"><td className="border-b border-slate-100 py-3 pr-4 font-semibold">{row.label}</td><td className="border-b border-slate-100 py-3 pr-4">{text(row.count) || "0"}</td><td className="border-b border-slate-100 py-3 pr-4">{money(row.net)}</td><td className="border-b border-slate-100 py-3 pr-4">{money(row.tax)}</td><td className="border-b border-slate-100 py-3 pr-4">{row.box}</td></tr>)}
+        </tbody>
+      </table>
+    </div>
+    <div className="mt-5 grid gap-3 md:grid-cols-2">
+      <div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Sage formula</p><p className="mt-2 text-sm text-slate-700">Box 1 = sales invoice VAT - sales credit VAT. Box 4 = purchase invoice VAT - purchase credit VAT.</p></div>
+      <div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Net formula</p><p className="mt-2 text-sm text-slate-700">Box 6 = sales invoice net - sales credit net. Box 7 = purchase invoice net - purchase credit net.</p></div>
+    </div>
+  </section>;
+}
+
+function TimingGuardrails() {
+  return <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 shadow-sm">
+    <h2 className="text-lg font-semibold tracking-tight text-amber-950">Platform VAT timing guardrails</h2>
+    <p className="mt-2 text-sm leading-6 text-amber-900">Do not treat the Sage extraction as final VAT return authority. The final VAT preview must overlay the platform VAT workings before sign-off.</p>
+    <div className="mt-4 grid gap-3 lg:grid-cols-3">
+      <div className="rounded-2xl bg-white/70 p-4"><p className="text-xs font-bold uppercase tracking-wide text-amber-700">Prepayment tax point</p><p className="mt-2 text-sm text-amber-950">Qualifying known-goods prepayments drive Box 6 timing to the extent covered by the payment. Dispatch is fallback only where no qualifying prepayment exists.</p></div>
+      <div className="rounded-2xl bg-white/70 p-4"><p className="text-xs font-bold uppercase tracking-wide text-amber-700">Anti-duplication</p><p className="mt-2 text-sm text-amber-950">Later final invoices must not duplicate Box 6 values already reported from an earlier prepayment period. Carry-in/carry-out adjustments must be visible.</p></div>
+      <div className="rounded-2xl bg-white/70 p-4"><p className="text-xs font-bold uppercase tracking-wide text-amber-700">Evidence deadline</p><p className="mt-2 text-sm text-amber-950">The 3-month export/evidence window runs from the tax point. Missing evidence blocks zero-rating clearance; deadline breach creates a Box 1 adjustment, later evidence creates a reversal.</p></div>
+    </div>
+  </section>;
+}
+
 export default async function SageVatDiagnosticsPage() {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -88,7 +132,7 @@ export default async function SageVatDiagnosticsPage() {
         <Link href="/internal/accounting-vat?tab=sage" className="text-sm font-semibold text-sky-600">← Back to Sage Coverage</Link>
         <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Sage VAT reconstruction diagnostics</p>
         <h1 className="mt-2 text-3xl font-semibold tracking-tight">Latest safe Sage field-shape keys</h1>
-        <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-600">This route is dynamic and reads the latest saved snapshot. It shows keys and array names only, not customer data or full Sage payloads.</p>
+        <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-600">This route is dynamic and reads the latest saved snapshot. It shows keys, array names, source totals and timing guardrails, not customer data or full Sage payloads.</p>
       </section>
 
       {error ? <section className="rounded-3xl border border-rose-200 bg-rose-50 p-5 text-sm font-semibold text-rose-900">Read error: {error.message}</section> : null}
@@ -102,6 +146,8 @@ export default async function SageVatDiagnosticsPage() {
           <div className="rounded-2xl border border-slate-200 bg-white p-4"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Docs</p><p className="mt-2 text-sm font-semibold">{text(snapshot.sales_invoice_count)} SI / {text(snapshot.sales_credit_note_count)} SCN</p><p className="mt-2 text-xs text-slate-600">{text(snapshot.purchase_invoice_count)} PI / {text(snapshot.purchase_credit_note_count)} PCN</p></div>
         </section>
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="text-lg font-semibold tracking-tight">Current parser source totals</h2><div className="mt-4 grid gap-3 md:grid-cols-4"><div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Sales tax</p><p className="mt-2 font-semibold">{money(summary.sales_tax)}</p></div><div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Purchase tax</p><p className="mt-2 font-semibold">{money(summary.purchase_tax)}</p></div><div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Sales net</p><p className="mt-2 font-semibold">{money(summary.sales_net)}</p></div><div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Purchase net</p><p className="mt-2 font-semibold">{money(summary.purchase_net)}</p></div></div></section>
+        <SourceBreakdown snapshot={snapshot} summary={summary} />
+        <TimingGuardrails />
         <div className="grid gap-4 xl:grid-cols-2"><ShapeCard title="Sales invoice shape" value={shape(summary, "sales_invoice")} /><ShapeCard title="Sales credit note shape" value={shape(summary, "sales_credit_note")} /><ShapeCard title="Purchase invoice shape" value={shape(summary, "purchase_invoice")} /><ShapeCard title="Purchase credit note shape" value={shape(summary, "purchase_credit_note")} /></div>
       </> : null}
     </div>
