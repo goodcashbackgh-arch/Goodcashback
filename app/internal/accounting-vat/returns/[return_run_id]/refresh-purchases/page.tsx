@@ -14,7 +14,7 @@ function text(value: unknown): string {
   return "";
 }
 
-export default async function VatPurchaseRefreshPage({ params }: any) {
+export default async function VatSourceSnapshotRefreshPage({ params }: any) {
   const routeParams = params ? await params : {};
   const runId = text(routeParams?.return_run_id);
   if (!runId) redirect("/internal/accounting-vat");
@@ -36,7 +36,7 @@ export default async function VatPurchaseRefreshPage({ params }: any) {
 
   const { data: run, error } = await db
     .from("vat_return_runs")
-    .select("id, run_ref, return_period_label, period_start_date, period_end_date, status, expected_box4_gbp, expected_box7_gbp")
+    .select("id, run_ref, return_period_label, period_start_date, period_end_date, status, expected_box1_gbp, expected_box4_gbp, expected_box6_gbp, expected_box7_gbp")
     .eq("id", runId)
     .maybeSingle();
 
@@ -46,11 +46,11 @@ export default async function VatPurchaseRefreshPage({ params }: any) {
     <main className="min-h-screen bg-slate-50 px-6 py-8 text-slate-950">
       <div className="mx-auto flex max-w-3xl flex-col gap-6">
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-          <Link href={`/internal/accounting-vat/returns/${runId}?tab=purchases`} className="text-sm font-semibold text-sky-600">← Back to purchases tab</Link>
-          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">VAT purchase source refresh</p>
-          <h1 className="mt-2 text-3xl font-semibold tracking-tight">Refresh Box 4 and Box 7 from supplier coding</h1>
+          <Link href={`/internal/accounting-vat/returns/${runId}`} className="text-sm font-semibold text-sky-600">← Back to VAT pack</Link>
+          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">VAT source snapshot refresh</p>
+          <h1 className="mt-2 text-3xl font-semibold tracking-tight">Refresh platform source snapshot</h1>
           <p className="mt-3 text-sm leading-6 text-slate-600">
-            This uses the supplier reconciliation/coding totals already saved on the supplier rec page. It does not call Sage, approve journals, post journals, submit to HMRC, or lock the return.
+            This refreshes the platform VAT source snapshot for the selected existing period and recalculates platform Boxes 1–9 from active source lines. It does not call Sage, approve journals, post journals, submit to HMRC, or lock the return.
           </p>
         </section>
 
@@ -61,13 +61,15 @@ export default async function VatPurchaseRefreshPage({ params }: any) {
           <div className="mt-4 grid gap-3 text-sm md:grid-cols-2">
             <div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Period</p><p className="mt-1 font-semibold text-slate-900">{text(row.return_period_label) || text(row.run_ref) || runId}</p></div>
             <div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Status</p><p className="mt-1 font-semibold text-slate-900">{text(row.status) || "—"}</p></div>
+            <div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Current platform Box 1</p><p className="mt-1 font-semibold text-slate-900">£{Number(row.expected_box1_gbp ?? 0).toFixed(2)}</p></div>
             <div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Current platform Box 4</p><p className="mt-1 font-semibold text-slate-900">£{Number(row.expected_box4_gbp ?? 0).toFixed(2)}</p></div>
+            <div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Current platform Box 6</p><p className="mt-1 font-semibold text-slate-900">£{Number(row.expected_box6_gbp ?? 0).toFixed(2)}</p></div>
             <div className="rounded-2xl bg-slate-50 p-4"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Current platform Box 7</p><p className="mt-1 font-semibold text-slate-900">£{Number(row.expected_box7_gbp ?? 0).toFixed(2)}</p></div>
           </div>
 
           <form action={refreshVatPurchaseSourceLinesAction} className="mt-5">
             <input type="hidden" name="vat_return_run_id" value={runId} />
-            <button className="rounded-xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white">Refresh Box 4 / Box 7 from supplier coding</button>
+            <button className="rounded-xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white">Refresh platform source snapshot</button>
           </form>
         </section>
       </div>
