@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 import { runVatReconstructionForRunAction } from "../../reconstructFormAction";
+import { refreshVatPurchaseSourceLinesAction as refreshVatSourceSnapshotAction } from "./purchaseRefreshAction";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -21,6 +22,17 @@ const tabs: Array<{ key: TabKey; label: string; hint: string }> = [
   { key: "journals", label: "Sage Adjustment Journals", hint: "Gap only" },
   { key: "submission", label: "Submission Evidence", hint: "Sage/MTD lock" },
 ];
+
+const SOURCE_REFRESH_BLOCKED_STATUSES = new Set([
+  "admin_approved",
+  "sage_adjustment_journals_pending",
+  "sage_adjustment_journals_posted",
+  "sage_return_review_required",
+  "sage_return_submitted",
+  "matched_to_sage_locked",
+  "mismatch_needs_admin_review",
+  "superseded",
+]);
 
 function text(value: unknown): string {
   if (typeof value === "string") return value.trim();
@@ -65,6 +77,10 @@ function sourceName(row: Row): string {
   if (kind === "funding_event_source_fact") return "Funding event";
   if (kind === "sage_customer_receipt_source_fact") return "Sage receipt";
   if (kind === "sage_customer_sales_coverage_source_fact") return "Sage sales coverage";
+  if (kind === "supplier_purchase_invoice_box4_vat") return "Supplier purchase VAT";
+  if (kind === "supplier_purchase_invoice_box7_net") return "Supplier purchase net";
+  if (kind === "supplier_credit_note_box4_decrease") return "Supplier credit note VAT";
+  if (kind === "supplier_credit_note_box7_decrease") return "Supplier credit note net";
   return pretty(row.source_table || kind);
 }
 function sourceReference(row: Row): string {
@@ -101,7 +117,7 @@ function VatWorkspace({ run, recon }: { run: Row; recon: Row }) {
     [8, "EU dispatches"],
     [9, "EU acquisitions"],
   ];
-  return <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-xl font-semibold tracking-tight">VAT return workspace</h2><p className="mt-1 text-sm leading-6 text-slate-600">Platform draft is compared with Sage natural VAT. Difference shows the potential Sage-gap adjustment still to be reviewed.</p></div><span className={`rounded-full px-3 py-1 text-xs font-bold ${hasRecon ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>{hasRecon ? "Sage reconstruction available" : "Run Sage reconstruction"}</span></div><div className="mt-5 overflow-x-auto"><table className="min-w-full divide-y divide-slate-200 text-left text-sm"><thead className="text-xs uppercase tracking-wide text-slate-500"><tr><th className="px-3 py-2">Box</th><th className="px-3 py-2">What it means</th><th className="px-3 py-2">Platform draft</th><th className="px-3 py-2">Sage natural</th><th className="px-3 py-2">Difference</th></tr></thead><tbody className="divide-y divide-slate-100">{rows.map(([box, meaning]) => { const p = platformBox(run, Number(box)); const s = hasRecon ? sageBox(recon, Number(box)) : 0; const gap = p - s; return <tr key={String(box)}><td className="whitespace-nowrap px-3 py-2 font-bold text-slate-950">Box {box}</td><td className="whitespace-nowrap px-3 py-2 text-slate-600">{meaning}</td><td className="whitespace-nowrap px-3 py-2 font-semibold text-slate-800">{gbp(p)}</td><td className="whitespace-nowrap px-3 py-2 font-semibold text-slate-800">{hasRecon ? gbp(s) : "—"}</td><td className={`whitespace-nowrap px-3 py-2 font-bold ${Math.abs(gap) > 0.005 ? "text-amber-700" : "text-emerald-700"}`}>{hasRecon ? gbp(gap) : "—"}</td></tr>; })}</tbody></table></div><p className="mt-3 text-xs leading-5 text-slate-600">Box 4 and Box 7 here come from Sage natural reconstruction until the platform purchase-source engine is built.</p></section>;
+  return <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-xl font-semibold tracking-tight">VAT return workspace</h2><p className="mt-1 text-sm leading-6 text-slate-600">Platform draft is compared with Sage natural VAT. Difference shows the potential Sage-gap adjustment still to be reviewed.</p></div><span className={`rounded-full px-3 py-1 text-xs font-bold ${hasRecon ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>{hasRecon ? "Sage reconstruction available" : "Run Sage reconstruction"}</span></div><div className="mt-5 overflow-x-auto"><table className="min-w-full divide-y divide-slate-200 text-left text-sm"><thead className="text-xs uppercase tracking-wide text-slate-500"><tr><th className="px-3 py-2">Box</th><th className="px-3 py-2">What it means</th><th className="px-3 py-2">Platform draft</th><th className="px-3 py-2">Sage natural</th><th className="px-3 py-2">Difference</th></tr></thead><tbody className="divide-y divide-slate-100">{rows.map(([box, meaning]) => { const p = platformBox(run, Number(box)); const s = hasRecon ? sageBox(recon, Number(box)) : 0; const gap = p - s; return <tr key={String(box)}><td className="whitespace-nowrap px-3 py-2 font-bold text-slate-950">Box {box}</td><td className="whitespace-nowrap px-3 py-2 text-slate-600">{meaning}</td><td className="whitespace-nowrap px-3 py-2 font-semibold text-slate-800">{gbp(p)}</td><td className="whitespace-nowrap px-3 py-2 font-semibold text-slate-800">{hasRecon ? gbp(s) : "—"}</td><td className={`whitespace-nowrap px-3 py-2 font-bold ${Math.abs(gap) > 0.005 ? "text-amber-700" : "text-emerald-700"}`}>{hasRecon ? gbp(gap) : "—"}</td></tr>; })}</tbody></table></div><p className="mt-3 text-xs leading-5 text-slate-600">Platform Box 4 and Box 7 are sourced from supplier reconciliation/coding totals when the platform source snapshot is refreshed.</p></section>;
 }
 function Tabs({ runId, active }: { runId: string; active: TabKey }) {
   return <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><div className="flex gap-2 overflow-x-auto pb-1">{tabs.map((tab) => <Link key={tab.key} href={href(runId, tab.key)} className={`min-w-fit rounded-2xl border px-4 py-3 text-sm ${tab.key === active ? "border-sky-300 bg-sky-50 text-sky-900" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"}`}><span className="block font-bold">{tab.label}</span><span className="mt-1 block text-xs opacity-75">{tab.hint}</span></Link>)}</div></section>;
@@ -166,6 +182,8 @@ export default async function VatReturnPackDetailPage({ params, searchParams }: 
   const box1Rows = lines.rows.filter((row) => num(row.box_number) === 1);
   const purchaseRows = lines.rows.filter((row) => [4, 7].includes(num(row.box_number)));
   const openBlockers = blockers.rows.filter((row) => text(row.status) === "open").length;
+  const runStatus = text(run.status);
+  const sourceRefreshBlocked = Boolean(run.locked_at) || SOURCE_REFRESH_BLOCKED_STATUSES.has(runStatus);
 
   return <main className="min-h-screen bg-slate-50 px-6 py-8 text-slate-950"><div className="mx-auto flex max-w-7xl flex-col gap-6">
     <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm"><Link href="/internal/accounting-vat" className="text-sm font-semibold text-sky-600">← Back to VAT dashboard</Link><p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">VAT return pack</p><div className="mt-3 flex flex-col gap-3 md:flex-row md:items-end md:justify-between"><div><h1 className="text-3xl font-semibold tracking-tight">{cut(run.return_period_label || run.run_ref || run.id, 80)}</h1><p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">Review the VAT draft, compare Sage natural VAT, then investigate exceptions and blockers.</p></div><div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700"><div className="font-medium text-slate-950">{text((staff as Row).full_name) || "Admin"}</div><div>{text((staff as Row).role_type)}</div></div></div></section>
@@ -173,13 +191,13 @@ export default async function VatReturnPackDetailPage({ params, searchParams }: 
     <Workflow />
     <VatWorkspace run={run} recon={latestRecon} />
     <section className="grid gap-4 md:grid-cols-3"><Metric label="Open blockers" value={String(openBlockers)} note={`${blockers.count} blocker row(s)`} warn={openBlockers > 0} /><Metric label="Source lines" value={String(lines.count)} note="Audit trail rows" /><Metric label="Locked" value={run.locked_at ? "Yes" : "No"} note={run.locked_at ? date(run.locked_at) : "Return is not locked"} /></section>
-    <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><form action={runVatReconstructionForRunAction}><input type="hidden" name="vat_return_run_id" value={runId} /><button className="rounded-xl border border-sky-200 bg-sky-50 px-4 py-2 text-sm font-bold text-sky-800">Run read-only Sage reconstruction</button></form><p className="mt-3 text-xs leading-5 text-slate-600">Use this to refresh Sage natural VAT coverage. No posting is exposed here.</p></section>
+    <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><div className="flex flex-wrap gap-3"><form action={refreshVatSourceSnapshotAction}><input type="hidden" name="vat_return_run_id" value={runId} /><button disabled={sourceRefreshBlocked} className={`rounded-xl px-4 py-2 text-sm font-bold ${sourceRefreshBlocked ? "cursor-not-allowed border border-slate-200 bg-slate-100 text-slate-400" : "border border-slate-300 bg-slate-950 text-white hover:bg-slate-800"}`}>Refresh platform source snapshot</button></form><form action={runVatReconstructionForRunAction}><input type="hidden" name="vat_return_run_id" value={runId} /><button className="rounded-xl border border-sky-200 bg-sky-50 px-4 py-2 text-sm font-bold text-sky-800">Run read-only Sage reconstruction</button></form></div><p className="mt-3 text-xs leading-5 text-slate-600">Refresh platform source snapshot recalculates the platform boxes from active platform source lines for this existing period. Sage reconstruction refreshes the read-only Sage natural comparison. No posting is exposed here.</p>{sourceRefreshBlocked ? <p className="mt-2 text-xs font-semibold text-amber-700">Platform source refresh is blocked because this return is locked or has moved into approval, journal, submission, mismatch or superseded status.</p> : null}</section>
     <Tabs runId={runId} active={activeTab} />
     {activeTab === "summary" ? <div className="grid gap-4"><Table title="Sage natural VAT reconstruction history" data={recon} columns={reconCols} /><Table title="Exceptions / blockers" data={blockers} columns={blockerCols} empty="No blockers found." /></div> : null}
     {activeTab === "source" ? <Table title="Source audit trail" data={lines} columns={sourceCols} empty="No source lines exist yet." /> : null}
     {activeTab === "box6" ? <div className="grid gap-4"><Box6Control rows={box6Rows} /><Table title="Box 6 audit trail" data={{ ...lines, rows: box6Rows }} columns={sourceCols} empty="No Box 6 source lines captured." /><Table title="Sales invoice tax-point evidence" data={salesInvoices} columns={invoiceCols} /></div> : null}
     {activeTab === "box1" ? <div className="grid gap-4"><section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-900"><h2 className="font-semibold">Export evidence / Box 1</h2><p className="mt-2">Review only evidence deadline breaches or reinstatements. Normal lines stay in the audit trail.</p></section><Table title="Box 1 exceptions" data={{ ...lines, rows: box1Rows }} columns={sourceCols} empty="No Box 1 source lines or exceptions captured." /></div> : null}
-    {activeTab === "purchases" ? <div className="grid gap-4"><section className="rounded-3xl border border-slate-200 bg-white p-5 text-sm leading-6 text-slate-700"><h2 className="font-semibold text-slate-950">Box 4 / Box 7 Purchases</h2><p className="mt-2">Sage natural Box 4 and Box 7 are visible in Summary. Platform purchase-source lines will appear here once the purchase-source engine is built.</p></section><Table title="Box 4 / Box 7 source lines" data={{ ...lines, rows: purchaseRows }} columns={sourceCols} empty="No platform Box 4 or Box 7 source lines captured yet." /><Table title="Supplier invoice evidence" data={purchaseInvoices} columns={purchaseCols} /></div> : null}
+    {activeTab === "purchases" ? <div className="grid gap-4"><section className="rounded-3xl border border-slate-200 bg-white p-5 text-sm leading-6 text-slate-700"><h2 className="font-semibold text-slate-950">Box 4 / Box 7 Purchases</h2><p className="mt-2">Platform Box 4 and Box 7 source lines are created from supplier reconciliation/coding totals and approved supplier credit-note evidence when the platform source snapshot is refreshed.</p></section><Table title="Box 4 / Box 7 source lines" data={{ ...lines, rows: purchaseRows }} columns={sourceCols} empty="No platform Box 4 or Box 7 source lines captured yet." /><Table title="Supplier invoice evidence" data={purchaseInvoices} columns={purchaseCols} /></div> : null}
     {activeTab === "journals" ? <div className="grid gap-4"><section className="rounded-3xl border border-rose-200 bg-rose-50 p-5 text-sm leading-6 text-rose-900"><h2 className="font-semibold">Sage adjustment journals</h2><p className="mt-2">Journal only the Sage gap after statutory values and Sage natural coverage agree.</p></section><Table title="Adjustment journals" data={journals} columns={journalCols} /><Table title="Journal lines" data={journalLines} columns={journalLineCols} /></div> : null}
     {activeTab === "submission" ? <Table title="Submission evidence" data={matchEvidence} columns={matchCols} empty="No Sage submission evidence captured yet." /> : null}
   </div></main>;
