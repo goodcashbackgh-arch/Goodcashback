@@ -130,7 +130,7 @@ function VatWorkspace({ run, recon }: { run: Row; recon: Row }) {
 }
 
 function Tabs({ runId, active }: { runId: string; active: TabKey }) {
-  return <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7">{tabs.map((tab) => <Link key={tab.key} href={href(runId, tab.key)} className={`rounded-2xl border px-4 py-3 text-sm ${tab.key === active ? "border-sky-300 bg-sky-50 text-sky-900" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"}`}><span className="block font-bold">{tab.label}</span><span className="mt-1 block text-xs opacity-75">{tab.hint}</span></Link>)}</div></section>;
+  return <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><div className="flex gap-2 overflow-x-auto pb-1">{tabs.map((tab) => <Link key={tab.key} href={href(runId, tab.key)} className={`min-w-fit rounded-2xl border px-4 py-3 text-sm ${tab.key === active ? "border-sky-300 bg-sky-50 text-sky-900" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"}`}><span className="block font-bold">{tab.label}</span><span className="mt-1 block text-xs opacity-75">{tab.hint}</span></Link>)}</div></section>;
 }
 
 function Workflow({ run, recon, blockers, journals, matchEvidence }: { run: Row; recon: Row; blockers: DataSet; journals: DataSet; matchEvidence: DataSet }) {
