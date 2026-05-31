@@ -39,11 +39,15 @@ async function requireVatPostingAdmin() {
 export async function postVatAdjustmentJournalToSageAction(formData: FormData) {
   const journalId = formText(formData, "journal_id");
   const returnRunId = formText(formData, "return_run_id");
+  const confirmLivePost = formText(formData, "confirm_live_sage_post");
   const redirectBase = journalId
     ? `/internal/accounting-vat/journals/${journalId}`
     : "/internal/accounting-vat";
 
   if (!journalId) redirect(`/internal/accounting-vat?error=${encodeURIComponent("Missing VAT adjustment journal id")}`);
+  if (confirmLivePost !== "yes") {
+    redirect(`${redirectBase}?error=${encodeURIComponent("Confirm controlled live Sage posting before posting this VAT adjustment journal.")}`);
+  }
 
   const { staffId } = await requireVatPostingAdmin();
   let redirectTo = redirectBase;
