@@ -81,9 +81,13 @@ export default async function VatJournalDetailPage({ params, searchParams }: any
           <p className="mt-2 text-sm leading-6 text-slate-600">This action calls Sage /journals server-side using the existing OAuth token-refresh path. It remains blocked unless the live VAT journal posting environment flag is enabled.</p>
           {journal.last_error ? <p className="mt-4 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900">Last error: {text(journal.last_error)}</p> : null}
           {canPost ? (
-            <form action={postVatAdjustmentJournalToSageAction} className="mt-5">
+            <form action={postVatAdjustmentJournalToSageAction} className="mt-5 space-y-4 rounded-2xl border border-amber-200 bg-amber-50 p-4">
               <input type="hidden" name="journal_id" value={journalId} />
               <input type="hidden" name="return_run_id" value={runId} />
+              <label className="flex gap-3 text-sm font-semibold leading-6 text-amber-950">
+                <input className="mt-1 h-4 w-4" type="checkbox" name="confirm_live_sage_post" value="yes" />
+                I confirm this is the controlled live Sage /journals posting step for this admin-approved VAT adjustment journal.
+              </label>
               <button className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-bold text-white hover:bg-slate-800">Post approved VAT journal to Sage</button>
             </form>
           ) : (
