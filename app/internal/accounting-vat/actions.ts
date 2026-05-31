@@ -189,6 +189,14 @@ export async function generateNextSageVatDraftRunAction() {
   const runId = result?.vat_return_run_id;
   if (!runId) redirectWithError("VAT draft run generation did not return a run id.");
 
+  const { error: purchaseRefreshError } = await (supabase as any).rpc("staff_refresh_vat_purchase_source_lines_v1", {
+    p_vat_return_run_id: runId,
+  });
+
+  if (purchaseRefreshError) {
+    redirectWithError(purchaseRefreshError.message || "VAT draft run was created but purchase Box 4/7 refresh failed.");
+  }
+
   revalidatePath("/internal/accounting-vat");
   revalidatePath(`/internal/accounting-vat/returns/${runId}`);
   redirect(`/internal/accounting-vat/returns/${runId}`);
