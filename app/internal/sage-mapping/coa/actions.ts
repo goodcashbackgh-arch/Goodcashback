@@ -232,6 +232,8 @@ function coaRedirect(message: string, kind: "success" | "error") {
 
 export async function syncFullSageLedgerAccountsAction() {
   const { staffId } = await requireAccountingStaff();
+  let successMessage = "";
+
   try {
     const context = await activeSageContext();
     const result = await fetchAllLedgerAccounts(context.config.apiBaseUrl, context.accessToken, context.businessId);
@@ -261,10 +263,12 @@ export async function syncFullSageLedgerAccountsAction() {
 
     revalidatePath("/internal/sage-mapping");
     revalidatePath("/internal/sage-mapping/coa");
-    coaRedirect(`Full Sage ledger sync saved ${result.items.length} account(s) from ${result.pages} page(s).`, "success");
+    successMessage = `Full Sage ledger sync saved ${result.items.length} account(s) from ${result.pages} page(s).`;
   } catch (error) {
     coaRedirect(error instanceof Error ? error.message : "Full Sage ledger sync failed.", "error");
   }
+
+  coaRedirect(successMessage || "Full Sage ledger sync completed.", "success");
 }
 
 export async function saveCoaSageMappingAction(formData: FormData) {
