@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
+import { supabaseAdmin } from "@/lib/supabase/admin";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -108,6 +109,7 @@ export default async function VatSageEvidencePackPage({ params }: any) {
 
   const supabase = await createClient();
   const db = supabase as any;
+  const logDb = supabaseAdmin as any;
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
@@ -148,7 +150,7 @@ export default async function VatSageEvidencePackPage({ params }: any) {
 
   let requestLogs: Row[] = [];
   if (idempotencyKeys.length > 0) {
-    const { data: requestRows } = await db
+    const { data: requestRows } = await logDb
       .from("sage_api_request_log")
       .select("id, idempotency_key, endpoint_path, http_method, request_kind, request_payload_hash, created_at")
       .in("idempotency_key", idempotencyKeys)
@@ -156,7 +158,7 @@ export default async function VatSageEvidencePackPage({ params }: any) {
     requestLogs = requestLogs.concat((requestRows ?? []) as Row[]);
   }
   if (payloadHashes.length > 0) {
-    const { data: hashRows } = await db
+    const { data: hashRows } = await logDb
       .from("sage_api_request_log")
       .select("id, idempotency_key, endpoint_path, http_method, request_kind, request_payload_hash, created_at")
       .in("request_payload_hash", payloadHashes)
@@ -168,7 +170,7 @@ export default async function VatSageEvidencePackPage({ params }: any) {
   const requestLogIds = requestLogs.map((row) => text(row.id)).filter(Boolean);
   let responseLogs: Row[] = [];
   if (requestLogIds.length > 0) {
-    const { data: responseRows } = await db
+    const { data: responseRows } = await logDb
       .from("sage_api_response_log")
       .select("id, request_log_id, http_status, success_yn, sage_object_type, sage_object_id, sage_reference, error_code, error_message, duration_ms, created_at")
       .in("request_log_id", requestLogIds)
@@ -176,7 +178,7 @@ export default async function VatSageEvidencePackPage({ params }: any) {
     responseLogs = responseLogs.concat((responseRows ?? []) as Row[]);
   }
   if (sageJournalIds.length > 0) {
-    const { data: byObjectRows } = await db
+    const { data: byObjectRows } = await logDb
       .from("sage_api_response_log")
       .select("id, request_log_id, http_status, success_yn, sage_object_type, sage_object_id, sage_reference, error_code, error_message, duration_ms, created_at")
       .in("sage_object_id", sageJournalIds)
@@ -184,7 +186,7 @@ export default async function VatSageEvidencePackPage({ params }: any) {
     responseLogs = responseLogs.concat((byObjectRows ?? []) as Row[]);
   }
   if (sageJournalRefs.length > 0) {
-    const { data: byReferenceRows } = await db
+    const { data: byReferenceRows } = await logDb
       .from("sage_api_response_log")
       .select("id, request_log_id, http_status, success_yn, sage_object_type, sage_object_id, sage_reference, error_code, error_message, duration_ms, created_at")
       .in("sage_reference", sageJournalRefs)
@@ -197,7 +199,7 @@ export default async function VatSageEvidencePackPage({ params }: any) {
   const knownRequestIds = new Set(requestLogs.map((row) => text(row.id)).filter(Boolean));
   const missingRequestIds = responseRequestIds.filter((id) => !knownRequestIds.has(id));
   if (missingRequestIds.length > 0) {
-    const { data: extraRequestRows } = await db
+    const { data: extraRequestRows } = await logDb
       .from("sage_api_request_log")
       .select("id, idempotency_key, endpoint_path, http_method, request_kind, request_payload_hash, created_at")
       .in("id", missingRequestIds)
