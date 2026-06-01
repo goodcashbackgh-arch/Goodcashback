@@ -40,6 +40,23 @@ function pretty(value: unknown): string {
   return raw ? raw.replaceAll("_", " ") : "—";
 }
 
+function cleanLabel(value: unknown): string {
+  return text(value)
+    .replace(/\(\s*\[object Object\]\s*\)/gi, "")
+    .replace(/\[object Object\]/gi, "")
+    .replace(/\(\s*\)/g, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+function displayPeriod(run: Row): string {
+  const label = cleanLabel(run.return_period_label);
+  if (label) return label;
+  const start = text(run.period_start_date);
+  const end = text(run.period_end_date);
+  return start && end ? `${start} → ${end}` : "—";
+}
+
 function dateTime(value: unknown): string {
   const raw = text(value);
   if (!raw) return "—";
@@ -62,6 +79,15 @@ function badge(status: string) {
   if (POSTED_STATUSES.has(status)) return "border-emerald-200 bg-emerald-50 text-emerald-800";
   if (UNFINISHED_STATUSES.has(status)) return "border-amber-200 bg-amber-50 text-amber-800";
   return "border-slate-200 bg-slate-50 text-slate-700";
+}
+
+function uniqueById(rows: Row[]) {
+  const map = new Map<string, Row>();
+  for (const row of rows) {
+    const id = text(row.id);
+    if (id) map.set(id, row);
+  }
+  return Array.from(map.values());
 }
 
 function Metric({ label, value, note, tone = "neutral" }: { label: string; value: string; note: string; tone?: "neutral" | "ok" | "warn" }) {
@@ -106,6 +132,9 @@ export default async function VatSageEvidencePackPage({ params }: any) {
   const journals = (journalsRaw ?? []) as Row[];
   const journalIds = journals.map((journal) => text(journal.id)).filter(Boolean);
   const idempotencyKeys = journals.map((journal) => text(journal.idempotency_key)).filter(Boolean);
+  const payloadHashes = journals.map((journal) => text(journal.payload_hash)).filter(Boolean);
+  const sageJournalIds = journals.map((journal) => text(journal.sage_journal_id)).filter(Boolean);
+  const sageJournalRefs = journals.map((journal) => text(journal.sage_journal_ref)).filter(Boolean);
 
   let lines: Row[] = [];
   if (journalIds.length > 0) {
@@ -124,8 +153,17 @@ export default async function VatSageEvidencePackPage({ params }: any) {
       .select("id, idempotency_key, endpoint_path, http_method, request_kind, request_payload_hash, created_at")
       .in("idempotency_key", idempotencyKeys)
       .order("created_at", { ascending: false });
-    requestLogs = (requestRows ?? []) as Row[];
+    requestLogs = requestLogs.concat((requestRows ?? []) as Row[]);
   }
+  if (payloadHashes.length > 0) {
+    const { data: hashRows } = await db
+      .from("sage_api_request_log")
+      .select("id, idempotency_key, endpoint_path, http_method, request_kind, request_payload_hash, created_at")
+      .in("request_payload_hash", payloadHashes)
+      .order("created_at", { ascending: false });
+    requestLogs = requestLogs.concat((hashRows ?? []) as Row[]);
+  }
+  requestLogs = uniqueById(requestLogs);
 
   const requestLogIds = requestLogs.map((row) => text(row.id)).filter(Boolean);
   let responseLogs: Row[] = [];
@@ -135,7 +173,36 @@ export default async function VatSageEvidencePackPage({ params }: any) {
       .select("id, request_log_id, http_status, success_yn, sage_object_type, sage_object_id, sage_reference, error_code, error_message, duration_ms, created_at")
       .in("request_log_id", requestLogIds)
       .order("created_at", { ascending: false });
-    responseLogs = (responseRows ?? []) as Row[];
+    responseLogs = responseLogs.concat((responseRows ?? []) as Row[]);
+  }
+  if (sageJournalIds.length > 0) {
+    const { data: byObjectRows } = await db
+      .from("sage_api_response_log")
+      .select("id, request_log_id, http_status, success_yn, sage_object_type, sage_object_id, sage_reference, error_code, error_message, duration_ms, created_at")
+      .in("sage_object_id", sageJournalIds)
+      .order("created_at", { ascending: false });
+    responseLogs = responseLogs.concat((byObjectRows ?? []) as Row[]);
+  }
+  if (sageJournalRefs.length > 0) {
+    const { data: byReferenceRows } = await db
+      .from("sage_api_response_log")
+      .select("id, request_log_id, http_status, success_yn, sage_object_type, sage_object_id, sage_reference, error_code, error_message, duration_ms, created_at")
+      .in("sage_reference", sageJournalRefs)
+      .order("created_at", { ascending: false });
+    responseLogs = responseLogs.concat((byReferenceRows ?? []) as Row[]);
+  }
+  responseLogs = uniqueById(responseLogs);
+
+  const responseRequestIds = responseLogs.map((row) => text(row.request_log_id)).filter(Boolean);
+  const knownRequestIds = new Set(requestLogs.map((row) => text(row.id)).filter(Boolean));
+  const missingRequestIds = responseRequestIds.filter((id) => !knownRequestIds.has(id));
+  if (missingRequestIds.length > 0) {
+    const { data: extraRequestRows } = await db
+      .from("sage_api_request_log")
+      .select("id, idempotency_key, endpoint_path, http_method, request_kind, request_payload_hash, created_at")
+      .in("id", missingRequestIds)
+      .order("created_at", { ascending: false });
+    requestLogs = uniqueById(requestLogs.concat((extraRequestRows ?? []) as Row[]));
   }
 
   const activeJournals = journals.filter((journal) => text(journal.status) !== "reversed");
@@ -157,9 +224,21 @@ export default async function VatSageEvidencePackPage({ params }: any) {
     linesByJournal.set(id, [...(linesByJournal.get(id) ?? []), line]);
   }
   const requestByKey = new Map<string, Row>();
-  for (const row of requestLogs) requestByKey.set(text(row.idempotency_key), row);
+  const requestByHash = new Map<string, Row>();
+  const requestById = new Map<string, Row>();
+  for (const row of requestLogs) {
+    requestById.set(text(row.id), row);
+    requestByKey.set(text(row.idempotency_key), row);
+    requestByHash.set(text(row.request_payload_hash), row);
+  }
   const responseByRequest = new Map<string, Row>();
-  for (const row of responseLogs) responseByRequest.set(text(row.request_log_id), row);
+  const responseBySageId = new Map<string, Row>();
+  const responseBySageRef = new Map<string, Row>();
+  for (const row of responseLogs) {
+    responseByRequest.set(text(row.request_log_id), row);
+    responseBySageId.set(text(row.sage_object_id), row);
+    responseBySageRef.set(text(row.sage_reference), row);
+  }
 
   return (
     <main className="min-h-screen bg-slate-50 px-6 py-8 text-slate-950">
@@ -171,7 +250,7 @@ export default async function VatSageEvidencePackPage({ params }: any) {
           <p className="mt-2 text-sm leading-6 text-slate-600">Admin-only control pack showing platform adjustment journals, Sage /journals evidence, VAT-box inclusion, balancing-line exclusion, and return close readiness.</p>
           <div className="mt-4 flex flex-wrap gap-2 text-xs font-semibold text-slate-600">
             <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1">Run: {text(run.run_ref) || short(run.id)}</span>
-            <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1">Period: {text(run.return_period_label) || `${text(run.period_start_date)} → ${text(run.period_end_date)}`}</span>
+            <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1">Period: {displayPeriod(run)}</span>
             <span className={`rounded-full border px-3 py-1 ${badge(text(run.status))}`}>Status: {pretty(run.status)}</span>
           </div>
         </section>
@@ -212,17 +291,20 @@ export default async function VatSageEvidencePackPage({ params }: any) {
               <thead className="text-xs uppercase tracking-wide text-slate-500"><tr><th className="px-3 py-2">Journal</th><th className="px-3 py-2">Status</th><th className="px-3 py-2">Box / direction</th><th className="px-3 py-2">Amount</th><th className="px-3 py-2">Sage ref</th><th className="px-3 py-2">Posted</th><th className="px-3 py-2">API evidence</th></tr></thead>
               <tbody className="divide-y divide-slate-100">
                 {journals.map((journal) => {
-                  const request = requestByKey.get(text(journal.idempotency_key));
-                  const response = request ? responseByRequest.get(text(request.id)) : undefined;
+                  const sageId = text(journal.sage_journal_id);
+                  const sageRef = text(journal.sage_journal_ref);
+                  const response = responseBySageId.get(sageId) || responseBySageRef.get(sageRef) || responseByRequest.get(text(requestByKey.get(text(journal.idempotency_key))?.id)) || responseByRequest.get(text(requestByHash.get(text(journal.payload_hash))?.id));
+                  const request = requestByKey.get(text(journal.idempotency_key)) || requestByHash.get(text(journal.payload_hash)) || requestById.get(text(response?.request_log_id));
+                  const finalResponse = response || (request ? responseByRequest.get(text(request.id)) : undefined);
                   return (
                     <tr key={text(journal.id)}>
                       <td className="px-3 py-2"><Link href={`/internal/accounting-vat/journals/${text(journal.id)}`} className="font-semibold text-sky-700 hover:underline">{short(journal.id)}</Link><p className="mt-1 text-xs text-slate-500">{pretty(journal.adjustment_type)}</p></td>
                       <td className="px-3 py-2"><span className={`rounded-full border px-2 py-1 text-xs font-bold ${badge(text(journal.status))}`}>{pretty(journal.status)}</span></td>
                       <td className="px-3 py-2">Box {text(journal.target_box) || "—"}<p className="text-xs text-slate-500">{pretty(journal.direction)}</p></td>
                       <td className="px-3 py-2 font-semibold">{gbp(journal.amount_gbp)}</td>
-                      <td className="px-3 py-2"><p className="break-all font-semibold">{text(journal.sage_journal_ref) || "—"}</p><p className="mt-1 break-all text-xs text-slate-500">{text(journal.sage_journal_id) || "No Sage ID"}</p></td>
+                      <td className="px-3 py-2"><p className="break-all font-semibold">{sageRef || "—"}</p><p className="mt-1 break-all text-xs text-slate-500">{sageId || "No Sage ID"}</p></td>
                       <td className="px-3 py-2">{dateTime(journal.posted_at)}</td>
-                      <td className="px-3 py-2"><p className="text-xs">Request: {request ? "yes" : "—"}</p><p className="text-xs">Response: {response ? `${text(response.http_status)} / ${text(response.success_yn)}` : "—"}</p></td>
+                      <td className="px-3 py-2"><p className="text-xs">Request: {request ? "yes" : "—"}</p><p className="text-xs">Response: {finalResponse ? `${text(finalResponse.http_status)} / ${text(finalResponse.success_yn)}` : "—"}</p></td>
                     </tr>
                   );
                 })}
