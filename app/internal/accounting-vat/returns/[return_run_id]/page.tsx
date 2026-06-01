@@ -1,1 +1,6 @@
-export { default, dynamic, revalidate } from "./VatReturnPackDetailPage";
+import VatReturnPackDetailPage from "./VatReturnPackDetailPage";
+
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
+export default VatReturnPackDetailPage;
