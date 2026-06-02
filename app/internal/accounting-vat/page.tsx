@@ -16,19 +16,27 @@ function text(value: unknown): string {
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
   return "";
 }
+function cleanDisplay(value: unknown): string {
+  return text(value)
+    .replaceAll("([object Object])", "")
+    .replaceAll("[object Object]", "")
+    .replace(/\s+—\s*$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 function amount(value: unknown): string {
-  const parsed = Number(text(value).replace(/,/g, ""));
+  const parsed = Number(cleanDisplay(value).replace(/,/g, ""));
   return money.format(Number.isFinite(parsed) ? parsed : 0);
 }
 function date(value: unknown): string {
-  const raw = text(value);
+  const raw = cleanDisplay(value);
   if (!raw) return "—";
   const parsed = new Date(raw);
   if (Number.isNaN(parsed.getTime())) return raw;
   return new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "short", year: "numeric" }).format(parsed);
 }
 function label(value: unknown, max = 58): string {
-  const raw = text(value);
+  const raw = cleanDisplay(value);
   if (!raw) return "—";
   return raw.length > max ? `${raw.slice(0, max - 1)}…` : raw;
 }
@@ -75,7 +83,7 @@ export default async function VatDashboardPage({ searchParams }: any = {}) {
               <h1 className="text-3xl font-semibold tracking-tight">VAT control dashboard</h1>
               <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">Control room for active VAT return packs. Superseded packs are hidden from this active list.</p>
             </div>
-            <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700"><div className="font-medium text-slate-950">{text((staff as Row).full_name) || "Admin"}</div><div>{text((staff as Row).role_type)}</div></div>
+            <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700"><div className="font-medium text-slate-950">{label((staff as Row).full_name) || "Admin"}</div><div>{label((staff as Row).role_type)}</div></div>
           </div>
         </section>
 
