@@ -79,18 +79,19 @@ function colIndex(ref: string) {
   return Math.max(0, n - 1);
 }
 
-function cellValue(attrs: string, body: string, strings: string[]) {
+function cellValue(attrs: string, body: string | undefined, strings: string[]) {
+  const safeBody = body ?? "";
   const type = attrs.match(/\bt="([^"]+)"/)?.[1] ?? "";
-  if (type === "s") return s(strings[Number(body.match(/<v>([\s\S]*?)<\/v>/)?.[1] ?? "")]);
-  if (type === "inlineStr") return Array.from(body.matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)).map(m => xmlDecode(m[1])).join("");
-  return xmlDecode(body.match(/<v>([\s\S]*?)<\/v>/)?.[1] ?? "");
+  if (type === "s") return s(strings[Number(safeBody.match(/<v>([\s\S]*?)<\/v>/)?.[1] ?? "")]);
+  if (type === "inlineStr") return Array.from(safeBody.matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)).map(m => xmlDecode(m[1])).join("");
+  return xmlDecode(safeBody.match(/<v>([\s\S]*?)<\/v>/)?.[1] ?? "");
 }
 
 function sheetText(xml: string, strings: string[]) {
   const lines: string[] = [];
   for (const r of xml.matchAll(/<row\b[\s\S]*?<\/row>/g)) {
     const cells: string[] = [];
-    for (const c of r[0].matchAll(/<c\b([^>]*)>([\s\S]*?)<\/c>/g)) {
+    for (const c of r[0].matchAll(/<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
       const ref = c[1].match(/\br="([A-Z]+\d+)"/)?.[1] ?? "";
       cells[ref ? colIndex(ref) : cells.length] = cellValue(c[1], c[2], strings);
     }
@@ -170,7 +171,7 @@ async function readUpload(value: FormDataEntryValue | null) {
   const xlsx = isXlsx(value);
   return {
     uploadedText: xlsx ? xlsxText(buffer) : buffer.toString("utf8"),
-    uploadedFileSummary: { name: value.name, type: value.type || "unknown", size_bytes: value.size, sha256: createHash("sha256").update(buffer).digest("hex"), parser: xlsx ? "xlsx_strict_total_for_box_v2" : "text_strict_total_for_box_v2" },
+    uploadedFileSummary: { name: value.name, type: value.type || "unknown", size_bytes: value.size, sha256: createHash("sha256").update(buffer).digest("hex"), parser: xlsx ? "xlsx_strict_total_for_box_v3" : "text_strict_total_for_box_v3" },
   };
 }
 
@@ -228,11 +229,11 @@ export async function importSageDraftVatReturnTotalsAction(formData: FormData) {
       period_start_date: s((run as Row).period_start_date),
       period_end_date: s((run as Row).period_end_date),
       status: "reconstructed",
-      source_basis: "sage_draft_vat_return_totals_import_strict_total_for_box_v2",
+      source_basis: "sage_draft_vat_return_totals_import_strict_total_for_box_v3",
       box1_gbp: boxes[1], box2_gbp: boxes[2], box3_gbp: boxes[3], box4_gbp: boxes[4], box5_gbp: boxes[5], box6_gbp: boxes[6], box7_gbp: boxes[7], box8_gbp: boxes[8], box9_gbp: boxes[9],
       sales_invoice_count: 0, sales_credit_note_count: 0, purchase_invoice_count: 0, purchase_credit_note_count: 0,
       source_counts: { source_mode: sourceMode, hydrated_sage_documents: 0 },
-      source_summary: { version: "sage_draft_vat_return_totals_import_strict_total_for_box_v2", purpose: "Use Sage draft VAT return totals as the Sage pre-adjustment comparator. Extraction is fail-closed and only accepts exact Total for Box rows.", source_mode: sourceMode, uploaded_file: upload.uploadedFileSummary, extracted_boxes: extracted, manual_overrides: overrides, final_boxes: boxes, calculation_warnings: warnings },
+      source_summary: { version: "sage_draft_vat_return_totals_import_strict_total_for_box_v3", purpose: "Use Sage draft VAT return totals as the Sage pre-adjustment comparator. Extraction is fail-closed and only accepts exact Total for Box rows.", source_mode: sourceMode, uploaded_file: upload.uploadedFileSummary, extracted_boxes: extracted, manual_overrides: overrides, final_boxes: boxes, calculation_warnings: warnings },
       warning_notes: ["Sage draft VAT totals imported without invoice hydration.", "Parser is fail-closed: upload extraction only accepts exact Total for Box rows; otherwise admin must enter boxes manually.", ...warnings].join(" "),
       created_by_staff_id: staff.id,
     }).select("id").single();
