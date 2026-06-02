@@ -6,12 +6,15 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 
-type BoxTotals = Partial<Record<1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9, number>>;
+type BoxNo = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
+type BoxTotals = Partial<Record<BoxNo, number>>;
 type Row = Record<string, unknown>;
 type ZipEntry = { name: string; data: Buffer };
+type UploadedReadResult = { uploadedText: string; uploadedFileSummary: Row | null };
 
-const REQUIRED_BOXES: Array<keyof BoxTotals> = [1, 4, 6, 7];
-const OPTIONAL_ZERO_BOXES: Array<keyof BoxTotals> = [2, 8, 9];
+const ALL_BOXES: BoxNo[] = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+const REQUIRED_BOXES: BoxNo[] = [1, 4, 6, 7];
+const OPTIONAL_ZERO_BOXES: BoxNo[] = [2, 8, 9];
 const MAX_UPLOAD_BYTES = 2_000_000;
 
 function text(value: unknown): string {
@@ -198,7 +201,7 @@ function isXlsxFile(file: File): boolean {
   return name.endsWith(".xlsx") || file.type === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 }
 
-function aliasBox(joined: string): keyof BoxTotals | null {
+function aliasBox(joined: string): BoxNo | null {
   if (/\bbox\s*1\b/.test(joined) || joined.includes("vat due on sales") || joined.includes("vat on sales") || joined.includes("sales and other outputs") || joined.includes("sales outputs")) return 1;
   if (/\bbox\s*2\b/.test(joined) || joined.includes("acquisitions from other ec") || joined.includes("acquisitions from other eu")) return 2;
   if (/\bbox\s*3\b/.test(joined) || joined.includes("total vat due") || joined.includes("total output tax")) return 3;
@@ -211,19 +214,19 @@ function aliasBox(joined: string): keyof BoxTotals | null {
   return null;
 }
 
-function detectBox(cells: string[]): keyof BoxTotals | null {
+function detectBox(cells: string[]): BoxNo | null {
   const joined = normalise(cells.join(" "));
   const explicit = joined.match(/\bbox\s*([1-9])\b/);
-  if (explicit) return Number(explicit[1]) as keyof BoxTotals;
+  if (explicit) return Number(explicit[1]) as BoxNo;
 
   const numericBox = cells.map(normalise).find((cell) => /^[1-9]$/.test(cell));
   const aliased = aliasBox(joined);
-  if (numericBox && aliased) return Number(numericBox) as keyof BoxTotals;
+  if (numericBox && aliased) return Number(numericBox) as BoxNo;
 
   return aliased;
 }
 
-function moneyCandidateFromText(raw: string, box: keyof BoxTotals): number | null {
+function moneyCandidateFromText(raw: string, box: BoxNo): number | null {
   const value = raw.trim();
   if (!value) return null;
   const simplified = normalise(value);
@@ -240,7 +243,7 @@ function moneyCandidateFromText(raw: string, box: keyof BoxTotals): number | nul
   return null;
 }
 
-function moneyCandidateFromRow(row: string[], box: keyof BoxTotals): number | null {
+function moneyCandidateFromRow(row: string[], box: BoxNo): number | null {
   const candidates = [...row].reverse();
   for (const cell of candidates) {
     const amount = moneyCandidateFromText(cell, box);
@@ -279,46 +282,80 @@ function extractBoxTotalsFromText(input: string): BoxTotals {
 
 function manualBoxOverrides(formData: FormData): BoxTotals {
   const overrides: BoxTotals = {};
-  for (let box = 1; box <= 9; box += 1) {
+  for (const box of ALL_BOXES) {
     const raw = text(formData.get(`box${box}_gbp`));
     if (!raw) continue;
     const parsed = parseMoney(raw);
     if (parsed === null) throw new Error(`Box ${box} manual amount is not a valid GBP value.`);
-    overrides[box as keyof BoxTotals] = parsed;
+    overrides[box] = parsed;
   }
   return overrides;
 }
 
-function buildFinalBoxes(extracted: BoxTotals, overrides: BoxTotals) {
-  const boxes: BoxTotals = { ...extracted, ...overrides };
-  const warnings: string[] = [];
+function applyDerivedBoxes(input: BoxTotals): BoxTotals {
+  const boxes: BoxTotals = { ...input };
 
   for (const box of OPTIONAL_ZERO_BOXES) {
     if (boxes[box] === undefined || boxes[box] === null) boxes[box] = 0;
   }
 
-  for (const box of REQUIRED_BOXES) {
-    if (boxes[box] === undefined || boxes[box] === null) {
-      throw new Error(`Missing Box ${box}. Upload a Sage draft export with that box or enter it manually.`);
-    }
+  if ((boxes[3] === undefined || boxes[3] === null) && boxes[1] !== undefined && boxes[2] !== undefined) {
+    boxes[3] = money2((boxes[1] ?? 0) + (boxes[2] ?? 0));
+  }
+
+  if ((boxes[5] === undefined || boxes[5] === null) && boxes[3] !== undefined && boxes[4] !== undefined) {
+    boxes[5] = money2((boxes[3] ?? 0) - (boxes[4] ?? 0));
+  }
+
+  return boxes;
+}
+
+function missingRequiredBoxes(boxes: BoxTotals): BoxNo[] {
+  return REQUIRED_BOXES.filter((box) => boxes[box] === undefined || boxes[box] === null);
+}
+
+function buildFinalBoxes(extracted: BoxTotals, overrides: BoxTotals) {
+  const boxes = applyDerivedBoxes({ ...extracted, ...overrides });
+  const warnings: string[] = [];
+
+  const missing = missingRequiredBoxes(boxes);
+  if (missing.length) {
+    throw new Error(`Missing Box ${missing.join(", ")}. Upload a Sage draft export with those boxes or enter them manually.`);
   }
 
   const computedBox3 = money2((boxes[1] ?? 0) + (boxes[2] ?? 0));
   const computedBox5 = money2(computedBox3 - (boxes[4] ?? 0));
 
-  if (boxes[3] === undefined || boxes[3] === null) {
-    boxes[3] = computedBox3;
-  } else if (Math.abs((boxes[3] ?? 0) - computedBox3) > 0.01) {
+  if (boxes[3] !== undefined && Math.abs((boxes[3] ?? 0) - computedBox3) > 0.01) {
     warnings.push(`Extracted Box 3 ${boxes[3]} does not equal Box 1 + Box 2 ${computedBox3}. Sage value was preserved.`);
   }
 
-  if (boxes[5] === undefined || boxes[5] === null) {
-    boxes[5] = computedBox5;
-  } else if (Math.abs((boxes[5] ?? 0) - computedBox5) > 0.01) {
+  if (boxes[5] !== undefined && Math.abs((boxes[5] ?? 0) - computedBox5) > 0.01) {
     warnings.push(`Extracted Box 5 ${boxes[5]} does not equal Box 3 - Box 4 ${computedBox5}. Sage value was preserved.`);
   }
 
   return { boxes: boxes as Required<BoxTotals>, warnings };
+}
+
+async function readUploadedFile(uploaded: FormDataEntryValue | null): Promise<UploadedReadResult> {
+  let uploadedText = "";
+  let uploadedFileSummary: Row | null = null;
+
+  if (uploaded instanceof File && uploaded.size > 0) {
+    if (uploaded.size > MAX_UPLOAD_BYTES) throw new Error("Sage draft file is too large. Export a simple VAT return XLSX/CSV/text file under 2MB.");
+    const buffer = Buffer.from(await uploaded.arrayBuffer());
+    const xlsx = isXlsxFile(uploaded);
+    uploadedText = xlsx ? xlsxToText(buffer) : buffer.toString("utf8");
+    uploadedFileSummary = {
+      name: uploaded.name,
+      type: uploaded.type || "unknown",
+      size_bytes: uploaded.size,
+      sha256: createHash("sha256").update(buffer).digest("hex"),
+      parser: xlsx ? "xlsx_openxml_minimal_v1" : "text_csv_tsv_v1",
+    };
+  }
+
+  return { uploadedText, uploadedFileSummary };
 }
 
 async function requireAdminStaff() {
@@ -329,6 +366,39 @@ async function requireAdminStaff() {
   if (error) throw new Error(error.message);
   if (!staff || text((staff as Row).role_type) !== "admin") throw new Error("Admin-only VAT import access required.");
   return { supabase, staff: staff as { id: string; role_type: string } };
+}
+
+export async function previewSageDraftVatReturnTotalsAction(formData: FormData) {
+  const runId = text(formData.get("vat_return_run_id"));
+  if (!runId) redirect("/internal/accounting-vat?vatError=Missing%20VAT%20return%20run%20id");
+
+  try {
+    await requireAdminStaff();
+    const { uploadedText, uploadedFileSummary } = await readUploadedFile(formData.get("sage_draft_file"));
+    const extractedBoxes = uploadedText ? extractBoxTotalsFromText(uploadedText) : {};
+    const overrides = manualBoxOverrides(formData);
+    const previewBoxes = applyDerivedBoxes({ ...extractedBoxes, ...overrides });
+
+    if (!uploadedText && Object.keys(overrides).length === 0) throw new Error("Upload the Sage draft VAT export or enter the Sage boxes manually.");
+
+    const params = new URLSearchParams();
+    params.set("preview", "1");
+    params.set("source_mode", uploadedText ? "upload_preview" : "manual_preview");
+    if (uploadedFileSummary?.name) params.set("file_name", text(uploadedFileSummary.name));
+
+    for (const box of ALL_BOXES) {
+      const value = previewBoxes[box];
+      if (value !== undefined && value !== null) params.set(`box${box}`, value.toFixed(2));
+    }
+
+    const missing = missingRequiredBoxes(previewBoxes);
+    if (missing.length) params.set("missing", missing.join(","));
+
+    redirect(`/internal/accounting-vat/returns/${runId}/sage-draft-import?${params.toString()}`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Sage draft VAT preview failed.";
+    redirect(`/internal/accounting-vat/returns/${runId}/sage-draft-import?vatError=${encodeURIComponent(message)}`);
+  }
 }
 
 export async function importSageDraftVatReturnTotalsAction(formData: FormData) {
@@ -348,23 +418,7 @@ export async function importSageDraftVatReturnTotalsAction(formData: FormData) {
     if (runError) throw new Error(runError.message);
     if (!run) throw new Error("VAT return run not found.");
 
-    const uploaded = formData.get("sage_draft_file");
-    let uploadedText = "";
-    let uploadedFileSummary: Row | null = null;
-
-    if (uploaded instanceof File && uploaded.size > 0) {
-      if (uploaded.size > MAX_UPLOAD_BYTES) throw new Error("Sage draft file is too large. Export a simple VAT return XLSX/CSV/text file under 2MB.");
-      const buffer = Buffer.from(await uploaded.arrayBuffer());
-      uploadedText = isXlsxFile(uploaded) ? xlsxToText(buffer) : buffer.toString("utf8");
-      uploadedFileSummary = {
-        name: uploaded.name,
-        type: uploaded.type || "unknown",
-        size_bytes: uploaded.size,
-        sha256: createHash("sha256").update(buffer).digest("hex"),
-        parser: isXlsxFile(uploaded) ? "xlsx_openxml_minimal_v1" : "text_csv_tsv_v1",
-      };
-    }
-
+    const { uploadedText, uploadedFileSummary } = await readUploadedFile(formData.get("sage_draft_file"));
     const extractedBoxes = uploadedText ? extractBoxTotalsFromText(uploadedText) : {};
     const overrides = manualBoxOverrides(formData);
     if (!uploadedText && Object.keys(overrides).length === 0) throw new Error("Upload the Sage draft VAT export or enter the Sage boxes manually.");
