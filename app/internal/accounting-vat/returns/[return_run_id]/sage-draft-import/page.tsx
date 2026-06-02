@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
-import { importSageDraftVatReturnTotalsAction } from "./actions";
+import { importSageDraftVatReturnTotalsAction, previewSageDraftVatReturnTotalsAction } from "./actions";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -12,6 +12,18 @@ function text(value: unknown): string {
   if (typeof value === "string") return value.trim();
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
   return "";
+}
+
+function num(value: unknown): number | null {
+  const raw = text(value);
+  if (!raw) return null;
+  const parsed = Number(raw.replace(/,/g, ""));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function amount(value: unknown): string {
+  const parsed = num(value) ?? 0;
+  return new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP", minimumFractionDigits: 2 }).format(parsed);
 }
 
 function date(value: unknown): string {
@@ -26,6 +38,10 @@ function label(value: unknown, max = 80): string {
   const raw = text(value);
   if (!raw) return "—";
   return raw.length > max ? `${raw.slice(0, max - 1)}…` : raw;
+}
+
+function queryFirst(value: unknown): string {
+  return Array.isArray(value) ? text(value[0]) : text(value);
 }
 
 const BOXES = [
@@ -44,8 +60,17 @@ export default async function SageDraftVatImportPage({ params, searchParams }: a
   const routeParams = params ? await params : {};
   const queryParams = searchParams ? await searchParams : {};
   const runId = text(routeParams?.return_run_id);
-  const vatError = text(queryParams?.vatError);
+  const vatError = queryFirst(queryParams?.vatError);
+  const showPreview = queryFirst(queryParams?.preview) === "1";
+  const missingBoxes = queryFirst(queryParams?.missing).split(",").map((item) => item.trim()).filter(Boolean);
+  const fileName = queryFirst(queryParams?.file_name);
   if (!runId) redirect("/internal/accounting-vat");
+
+  const previewValues: Record<number, string> = {};
+  for (const item of BOXES) {
+    const value = queryFirst(queryParams?.[`box${item.box}`]);
+    if (value) previewValues[item.box] = value;
+  }
 
   const supabase = await createClient();
   const db = supabase as any;
@@ -85,10 +110,35 @@ export default async function SageDraftVatImportPage({ params, searchParams }: a
 
         {vatError ? <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm font-semibold text-rose-900">Import failed: {vatError}</div> : null}
 
+        {showPreview ? (
+          <section className={`rounded-3xl border p-5 shadow-sm ${missingBoxes.length ? "border-amber-200 bg-amber-50 text-amber-950" : "border-emerald-200 bg-emerald-50 text-emerald-950"}`}>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className="text-xl font-semibold tracking-tight">Preview extracted Sage boxes</h2>
+                <p className="mt-1 text-sm leading-6 opacity-90">
+                  Check these against the Sage draft before saving to the reconciliation page. {fileName ? `Source file: ${fileName}.` : "Source: manual values."}
+                </p>
+              </div>
+              <span className={`rounded-full px-3 py-1 text-xs font-bold ${missingBoxes.length ? "bg-amber-100 text-amber-800" : "bg-emerald-100 text-emerald-800"}`}>
+                {missingBoxes.length ? `Missing Box ${missingBoxes.join(", ")}` : "Ready to save"}
+              </span>
+            </div>
+            <div className="mt-4 overflow-x-auto rounded-2xl border border-white/70 bg-white">
+              <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
+                <thead className="text-xs uppercase tracking-wide text-slate-500"><tr><th className="px-3 py-2">Box</th><th className="px-3 py-2">Meaning</th><th className="px-3 py-2">Preview value</th></tr></thead>
+                <tbody className="divide-y divide-slate-100">
+                  {BOXES.map((item) => <tr key={item.box}><td className="px-3 py-2 font-bold text-slate-950">Box {item.box}</td><td className="px-3 py-2 text-slate-600">{item.label}</td><td className="px-3 py-2 font-semibold text-slate-900">{previewValues[item.box] !== undefined ? amount(previewValues[item.box]) : "—"}</td></tr>)}
+                </tbody>
+              </table>
+            </div>
+            <p className="mt-3 text-xs leading-5 opacity-90">The values have been copied into the manual boxes below. If they are correct, press Save confirmed snapshot. The browser clears file uploads after preview, so reselect the file before saving only if you need its hash recorded in the snapshot; otherwise it saves as confirmed manual Sage totals.</p>
+          </section>
+        ) : null}
+
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold tracking-tight">Upload Sage draft VAT return export</h2>
           <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-            Best source is a Sage draft VAT return XLSX/CSV/text export. The parser extracts the VAT boxes only. If the export format changes, enter the boxes manually below and the uploaded file still acts as evidence.
+            Best source is a Sage draft VAT return XLSX/CSV/text export. First preview the extracted boxes. Then save only after the values match Sage.
           </p>
 
           <form action={importSageDraftVatReturnTotalsAction} className="mt-6 grid gap-5">
@@ -103,7 +153,7 @@ export default async function SageDraftVatImportPage({ params, searchParams }: a
             <section className="rounded-2xl border border-slate-200 bg-white p-4">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
-                  <h3 className="font-semibold text-slate-950">Manual override / fallback</h3>
+                  <h3 className="font-semibold text-slate-950">Manual override / confirmation</h3>
                   <p className="mt-1 text-xs leading-5 text-slate-600">Required boxes are 1, 4, 6 and 7. Optional boxes can be left blank unless Sage shows a value. Box 3 and Box 5 are calculated if blank.</p>
                 </div>
                 <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-800">Admin must check against Sage</span>
@@ -114,17 +164,20 @@ export default async function SageDraftVatImportPage({ params, searchParams }: a
                   <label key={item.box} className="grid gap-1 text-sm">
                     <span className="font-medium text-slate-800">Box {item.box}{item.optional ? " (optional)" : ""}</span>
                     <span className="text-xs text-slate-500">{item.label}</span>
-                    <input name={`box${item.box}_gbp`} inputMode="decimal" placeholder="0.00" className="rounded-xl border border-slate-200 px-3 py-2 text-sm" />
+                    <input name={`box${item.box}_gbp`} inputMode="decimal" defaultValue={previewValues[item.box] ?? ""} placeholder="0.00" className="rounded-xl border border-slate-200 px-3 py-2 text-sm" />
                   </label>
                 ))}
               </div>
             </section>
 
             <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm leading-6 text-sky-900">
-              The result is saved into the existing Sage reconstruction snapshot history, so the current VAT return workspace continues to compare platform draft vs Sage natural totals, then adjustment journals deal with the remaining gap.
+              The confirmed result is saved into the existing Sage reconstruction snapshot history, so the current VAT return workspace continues to compare platform draft vs Sage natural totals, then adjustment journals deal with the remaining gap.
             </div>
 
-            <button className="w-fit rounded-xl bg-slate-950 px-5 py-3 text-sm font-bold text-white hover:bg-slate-800">Save Sage draft totals snapshot</button>
+            <div className="flex flex-wrap gap-3">
+              <button formAction={previewSageDraftVatReturnTotalsAction} className="rounded-xl border border-sky-200 bg-sky-50 px-5 py-3 text-sm font-bold text-sky-800 hover:bg-sky-100">Preview extracted boxes</button>
+              <button className="rounded-xl bg-slate-950 px-5 py-3 text-sm font-bold text-white hover:bg-slate-800">Save confirmed snapshot</button>
+            </div>
           </form>
         </section>
       </div>
