@@ -372,6 +372,8 @@ export async function previewSageDraftVatReturnTotalsAction(formData: FormData) 
   const runId = text(formData.get("vat_return_run_id"));
   if (!runId) redirect("/internal/accounting-vat?vatError=Missing%20VAT%20return%20run%20id");
 
+  let target = "";
+
   try {
     await requireAdminStaff();
     const { uploadedText, uploadedFileSummary } = await readUploadedFile(formData.get("sage_draft_file"));
@@ -394,11 +396,13 @@ export async function previewSageDraftVatReturnTotalsAction(formData: FormData) 
     const missing = missingRequiredBoxes(previewBoxes);
     if (missing.length) params.set("missing", missing.join(","));
 
-    redirect(`/internal/accounting-vat/returns/${runId}/sage-draft-import?${params.toString()}`);
+    target = `/internal/accounting-vat/returns/${runId}/sage-draft-import?${params.toString()}`;
   } catch (error) {
     const message = error instanceof Error ? error.message : "Sage draft VAT preview failed.";
     redirect(`/internal/accounting-vat/returns/${runId}/sage-draft-import?vatError=${encodeURIComponent(message)}`);
   }
+
+  redirect(target);
 }
 
 export async function importSageDraftVatReturnTotalsAction(formData: FormData) {
