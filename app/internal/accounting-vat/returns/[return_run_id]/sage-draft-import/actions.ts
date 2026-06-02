@@ -199,13 +199,13 @@ function isXlsxFile(file: File): boolean {
 }
 
 function aliasBox(joined: string): keyof BoxTotals | null {
-  if (/\bbox\s*1\b/.test(joined) || (joined.includes("vat due") && (joined.includes("sales") || joined.includes("outputs")))) return 1;
+  if (/\bbox\s*1\b/.test(joined) || joined.includes("vat due on sales") || joined.includes("vat on sales") || joined.includes("sales and other outputs") || joined.includes("sales outputs")) return 1;
   if (/\bbox\s*2\b/.test(joined) || joined.includes("acquisitions from other ec") || joined.includes("acquisitions from other eu")) return 2;
-  if (/\bbox\s*3\b/.test(joined) || joined.includes("total vat due")) return 3;
-  if (/\bbox\s*4\b/.test(joined) || joined.includes("vat reclaimed") || joined.includes("vat reclaimable") || joined.includes("purchases and other inputs")) return 4;
-  if (/\bbox\s*5\b/.test(joined) || joined.includes("net vat to pay") || joined.includes("net vat due")) return 5;
-  if (/\bbox\s*6\b/.test(joined) || joined.includes("total value of sales") || joined.includes("value of all sales")) return 6;
-  if (/\bbox\s*7\b/.test(joined) || joined.includes("total value of purchases") || joined.includes("value of all purchases")) return 7;
+  if (/\bbox\s*3\b/.test(joined) || joined.includes("total vat due") || joined.includes("total output tax")) return 3;
+  if (/\bbox\s*4\b/.test(joined) || joined.includes("vat reclaimed") || joined.includes("vat reclaimable") || joined.includes("vat on purchases") || joined.includes("purchases and other inputs") || joined.includes("input tax")) return 4;
+  if (/\bbox\s*5\b/.test(joined) || joined.includes("net vat to pay") || joined.includes("net vat due") || joined.includes("amount due to hmrc") || joined.includes("amount due from hmrc")) return 5;
+  if (/\bbox\s*6\b/.test(joined) || joined.includes("total value of sales") || joined.includes("value of all sales") || joined.includes("net sales")) return 6;
+  if (/\bbox\s*7\b/.test(joined) || joined.includes("total value of purchases") || joined.includes("value of all purchases") || joined.includes("net purchases")) return 7;
   if (/\bbox\s*8\b/.test(joined) || joined.includes("supplies of goods") || joined.includes("dispatches")) return 8;
   if (/\bbox\s*9\b/.test(joined) || joined.includes("acquisitions of goods")) return 9;
   return null;
@@ -240,21 +240,37 @@ function moneyCandidateFromText(raw: string, box: keyof BoxTotals): number | nul
   return null;
 }
 
+function moneyCandidateFromRow(row: string[], box: keyof BoxTotals): number | null {
+  const candidates = [...row].reverse();
+  for (const cell of candidates) {
+    const amount = moneyCandidateFromText(cell, box);
+    if (amount !== null) return amount;
+  }
+  return moneyCandidateFromText(row.join(" "), box);
+}
+
 function extractBoxTotalsFromText(input: string): BoxTotals {
   const totals: BoxTotals = {};
   const rows = parseCsvRows(input);
 
-  for (const row of rows) {
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index];
     const box = detectBox(row);
     if (!box) continue;
 
-    const candidates = [...row].reverse();
-    let amount: number | null = null;
-    for (const cell of candidates) {
-      amount = moneyCandidateFromText(cell, box);
-      if (amount !== null) break;
+    let amount = moneyCandidateFromRow(row, box);
+
+    if (amount === null) {
+      for (let offset = 1; offset <= 3; offset += 1) {
+        const nextRow = rows[index + offset];
+        if (!nextRow) break;
+        const nextBox = detectBox(nextRow);
+        if (nextBox && nextBox !== box) break;
+        amount = moneyCandidateFromRow(nextRow, box);
+        if (amount !== null) break;
+      }
     }
-    if (amount === null) amount = moneyCandidateFromText(row.join(" "), box);
+
     if (amount !== null) totals[box] = amount;
   }
 
