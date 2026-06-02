@@ -14,6 +14,15 @@ function text(value: unknown): string {
   return "";
 }
 
+function cleanDisplay(value: unknown): string {
+  return text(value)
+    .replaceAll("([object Object])", "")
+    .replaceAll("[object Object]", "")
+    .replace(/\s+—\s*$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function num(value: unknown): number | null {
   const raw = text(value);
   if (!raw) return null;
@@ -27,7 +36,7 @@ function amount(value: unknown): string {
 }
 
 function date(value: unknown): string {
-  const raw = text(value);
+  const raw = cleanDisplay(value);
   if (!raw) return "—";
   const parsed = new Date(raw);
   if (Number.isNaN(parsed.getTime())) return raw;
@@ -35,7 +44,7 @@ function date(value: unknown): string {
 }
 
 function label(value: unknown, max = 80): string {
-  const raw = text(value);
+  const raw = cleanDisplay(value);
   if (!raw) return "—";
   return raw.length > max ? `${raw.slice(0, max - 1)}…` : raw;
 }
