@@ -252,12 +252,44 @@ function moneyCandidateFromRow(row: string[], box: BoxNo): number | null {
   return moneyCandidateFromText(row.join(" "), box);
 }
 
-function extractBoxTotalsFromText(input: string): BoxTotals {
+function moneyCandidateAfterLabel(row: string[], labelIndex: number): number | null {
+  for (let index = labelIndex + 1; index < row.length; index += 1) {
+    const raw = text(row[index]);
+    if (!raw) continue;
+    const parsed = parseMoney(raw);
+    if (parsed !== null) return parsed;
+  }
+  return null;
+}
+
+function extractTotalForBoxRows(rows: string[][]): BoxTotals {
   const totals: BoxTotals = {};
+
+  for (const row of rows) {
+    const labelIndex = row.findIndex((cell) => /\btotal\s+for\s+box\s+[1-9]\b/.test(normalise(cell)));
+    if (labelIndex < 0) continue;
+
+    const label = normalise(row[labelIndex]);
+    const match = label.match(/\btotal\s+for\s+box\s+([1-9])\b/);
+    if (!match) continue;
+
+    const amount = moneyCandidateAfterLabel(row, labelIndex);
+    if (amount !== null) totals[Number(match[1]) as BoxNo] = amount;
+  }
+
+  return totals;
+}
+
+function extractBoxTotalsFromText(input: string): BoxTotals {
   const rows = parseCsvRows(input);
+  const totalRows = extractTotalForBoxRows(rows);
+  const fallbackTotals: BoxTotals = {};
 
   for (let index = 0; index < rows.length; index += 1) {
     const row = rows[index];
+    const joined = normalise(row.join(" "));
+    if (joined.includes("total for box")) continue;
+
     const box = detectBox(row);
     if (!box) continue;
 
@@ -267,6 +299,8 @@ function extractBoxTotalsFromText(input: string): BoxTotals {
       for (let offset = 1; offset <= 3; offset += 1) {
         const nextRow = rows[index + offset];
         if (!nextRow) break;
+        const nextJoined = normalise(nextRow.join(" "));
+        if (nextJoined.includes("total for box")) break;
         const nextBox = detectBox(nextRow);
         if (nextBox && nextBox !== box) break;
         amount = moneyCandidateFromRow(nextRow, box);
@@ -274,10 +308,10 @@ function extractBoxTotalsFromText(input: string): BoxTotals {
       }
     }
 
-    if (amount !== null) totals[box] = amount;
+    if (amount !== null) fallbackTotals[box] = amount;
   }
 
-  return totals;
+  return { ...fallbackTotals, ...totalRows };
 }
 
 function manualBoxOverrides(formData: FormData): BoxTotals {
