@@ -43,12 +43,7 @@ BEGIN
 
   UPDATE public.vat_return_sage_reconstruction_snapshots r
   SET source_summary = COALESCE(r.source_summary, '{}'::jsonb)
-        || jsonb_build_object('purchase_vat_line_review', v_review),
-      warning_notes = CASE
-        WHEN COALESCE(r.warning_notes, ARRAY[]::text[]) @> ARRAY['purchase_vat_line_review copied from latest diagnostic Sage reconstruction for UI display']::text[]
-          THEN r.warning_notes
-        ELSE COALESCE(r.warning_notes, ARRAY[]::text[]) || ARRAY['purchase_vat_line_review copied from latest diagnostic Sage reconstruction for UI display']::text[]
-      END
+        || jsonb_build_object('purchase_vat_line_review', v_review)
   WHERE r.id = v_imported_id;
 
   RETURN NEW;
@@ -85,12 +80,7 @@ latest_imported AS (
 )
 UPDATE public.vat_return_sage_reconstruction_snapshots imported
 SET source_summary = COALESCE(imported.source_summary, '{}'::jsonb)
-      || jsonb_build_object('purchase_vat_line_review', latest_diagnostic.review),
-    warning_notes = CASE
-      WHEN COALESCE(imported.warning_notes, ARRAY[]::text[]) @> ARRAY['purchase_vat_line_review copied from latest diagnostic Sage reconstruction for UI display']::text[]
-        THEN imported.warning_notes
-      ELSE COALESCE(imported.warning_notes, ARRAY[]::text[]) || ARRAY['purchase_vat_line_review copied from latest diagnostic Sage reconstruction for UI display']::text[]
-    END
+      || jsonb_build_object('purchase_vat_line_review', latest_diagnostic.review)
 FROM latest_imported
 JOIN latest_diagnostic USING (vat_return_run_id)
 WHERE imported.id = latest_imported.id
