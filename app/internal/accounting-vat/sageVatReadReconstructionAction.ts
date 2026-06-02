@@ -61,11 +61,29 @@ type SageDocumentAudit = {
   includedRows: AnyRow[];
 };
 
+type PurchaseReviewLine = {
+  source_type: "purchase_invoice" | "purchase_credit_note";
+  sage_document_id: string;
+  document_label: string;
+  platform_controlled: boolean;
+  bucket: string;
+  ledger_account: string;
+  tax_rate: string;
+  net_amount: number;
+  vat_amount: number;
+  effective_box4_amount: number;
+  effective_box7_amount: number;
+  vat_rate_ratio: number | null;
+  reason: string;
+};
+
 const TAX_FIELDS = ["tax_amount", "total_tax_amount", "tax_total", "total_tax", "vat_amount", "total_vat_amount", "base_currency_tax_amount"];
 const NET_FIELDS = ["net_amount", "total_net_amount", "net_total", "total_net", "subtotal", "sub_total", "goods_value", "base_currency_net_amount"];
 const GROSS_FIELDS = ["total_amount", "gross_amount", "total", "amount", "amount_gbp", "value", "base_currency_total_amount"];
 const LINE_ARRAY_FIELDS = ["line_items", "invoice_lines", "credit_note_lines", "lines", "items", "sales_invoice_lines", "purchase_invoice_lines", "sales_credit_note_lines", "purchase_credit_note_lines"];
 const SAGE_EXCLUDED_STATUS_WORDS = ["voided", "deleted", "cancelled", "canceled", "draft", "unposted"];
+const STANDARD_VAT_RATE = 0.2;
+const STANDARD_VAT_TOLERANCE = 0.015;
 
 function text(value: unknown): string {
   if (typeof value === "string") return value.trim();
@@ -80,10 +98,6 @@ function text(value: unknown): string {
 
 function object(value: unknown): AnyRow {
   return value && typeof value === "object" && !Array.isArray(value) ? value as AnyRow : {};
-}
-
-function array(value: unknown): unknown[] {
-  return Array.isArray(value) ? value : [];
 }
 
 function parseMoneyText(value: string): number {
@@ -197,6 +211,146 @@ function documentLabel(row: AnyRow): string {
       ?? row.id
       ?? "document"
   ) || "document";
+}
+
+function sageDocumentId(row: AnyRow): string {
+  return text(row.id ?? row.$uuid ?? row.uuid ?? row.sage_invoice_id ?? row.sage_credit_note_id);
+}
+
+function taxRateLabel(row: AnyRow): string {
+  const taxRate = object(row.tax_rate ?? row.tax_rate_id ?? row.vat_rate ?? row.tax_code ?? row.tax_code_id);
+  return text(
+    row.tax_rate_name
+      ?? row.tax_rate
+      ?? row.tax_code
+      ?? row.tax_code_name
+      ?? row.vat_rate
+      ?? taxRate.displayed_as
+      ?? taxRate.name
+      ?? taxRate.id
+  );
+}
+
+function ledgerLabel(row: AnyRow): string {
+  const ledger = object(row.ledger_account ?? row.ledger_account_id ?? row.nominal_code ?? row.account);
+  return text(
+    row.ledger_account_displayed_as
+      ?? row.ledger_account_name
+      ?? row.account_name
+      ?? row.nominal_name
+      ?? row.nominal_code
+      ?? ledger.displayed_as
+      ?? ledger.name
+      ?? ledger.id
+  );
+}
+
+function purchaseLineRows(row: AnyRow): AnyRow[] {
+  const rows = lineRows(row);
+  return rows.length ? rows : [row];
+}
+
+function isReverseChargeTaxRate(label: string): boolean {
+  return /reverse\s*charge|domestic\s*reverse|\brc\b/i.test(label);
+}
+
+function classifyPurchaseLine(input: {
+  doc: AnyRow;
+  line: AnyRow;
+  sourceType: "purchase_invoice" | "purchase_credit_note";
+  platformControlled: boolean;
+}): PurchaseReviewLine {
+  const { doc, line, sourceType, platformControlled } = input;
+  const directionMultiplier = sourceType === "purchase_credit_note" ? -1 : 1;
+  const rawNet = Math.abs(pickAmount(line, NET_FIELDS) || (purchaseLineRows(doc).length === 1 ? documentNet(doc) : 0));
+  const rawTax = Math.abs(pickAmount(line, TAX_FIELDS) || (purchaseLineRows(doc).length === 1 ? documentTax(doc) : 0));
+  const net = money2(rawNet);
+  const tax = money2(rawTax);
+  const rateRatio = net > 0 ? tax / net : null;
+  const taxRate = taxRateLabel(line) || taxRateLabel(doc);
+  const ledger = ledgerLabel(line) || ledgerLabel(doc);
+
+  let bucket = "review_unknown_tax_treatment";
+  let reason = "Could not safely classify Sage purchase VAT treatment from line values.";
+
+  if (isReverseChargeTaxRate(taxRate)) {
+    bucket = "review_reverse_charge";
+    reason = "Reverse charge tax rate needs explicit Box 1/4/7 treatment check.";
+  } else if (tax > 0 && rateRatio !== null && Math.abs(rateRatio - STANDARD_VAT_RATE) <= STANDARD_VAT_TOLERANCE) {
+    bucket = platformControlled ? "platform_controlled_standard_20" : "sage_only_standard_20_auto";
+    reason = platformControlled
+      ? "Platform-controlled Sage purchase line already belongs to platform posting flow."
+      : "Sage-only posted purchase line has VAT close to 20%; include as overhead/general input VAT rec candidate.";
+  } else if (tax > 0) {
+    bucket = "review_non_20_vat_rate";
+    reason = "VAT exists but is not close to 20%; review tax rate before Box 4/7 inclusion.";
+  } else if (/zero|0%|no\s*vat|exempt|outside|out\s*of\s*scope|exempt/i.test(taxRate)) {
+    bucket = "review_zero_exempt_out_of_scope";
+    reason = "No VAT amount. Tax rate indicates zero/exempt/out-of-scope style treatment; review Box 7 policy.";
+  } else {
+    bucket = "review_zero_vat_unknown_rate";
+    reason = "No VAT amount and tax rate text is not enough to auto-classify.";
+  }
+
+  return {
+    source_type: sourceType,
+    sage_document_id: sageDocumentId(doc),
+    document_label: documentLabel(doc),
+    platform_controlled: platformControlled,
+    bucket,
+    ledger_account: ledger,
+    tax_rate: taxRate,
+    net_amount: net,
+    vat_amount: tax,
+    effective_box4_amount: money2(directionMultiplier * tax),
+    effective_box7_amount: money2(directionMultiplier * net),
+    vat_rate_ratio: rateRatio === null ? null : Number(rateRatio.toFixed(4)),
+    reason,
+  };
+}
+
+function summarizePurchaseVatLines(piRows: AnyRow[], pcnRows: AnyRow[], platformControlledSageIds: Set<string>) {
+  const allLines: PurchaseReviewLine[] = [];
+  for (const doc of piRows) {
+    const docId = sageDocumentId(doc);
+    const platformControlled = docId ? platformControlledSageIds.has(docId) : false;
+    for (const line of purchaseLineRows(doc)) {
+      allLines.push(classifyPurchaseLine({ doc, line, sourceType: "purchase_invoice", platformControlled }));
+    }
+  }
+  for (const doc of pcnRows) {
+    const docId = sageDocumentId(doc);
+    const platformControlled = docId ? platformControlledSageIds.has(docId) : false;
+    for (const line of purchaseLineRows(doc)) {
+      allLines.push(classifyPurchaseLine({ doc, line, sourceType: "purchase_credit_note", platformControlled }));
+    }
+  }
+
+  const buckets: Record<string, { count: number; box4: number; box7: number }> = {};
+  for (const line of allLines) {
+    const current = buckets[line.bucket] ?? { count: 0, box4: 0, box7: 0 };
+    current.count += 1;
+    current.box4 = money2(current.box4 + line.effective_box4_amount);
+    current.box7 = money2(current.box7 + line.effective_box7_amount);
+    buckets[line.bucket] = current;
+  }
+
+  const sageOnlyStandard20 = allLines.filter((line) => line.bucket === "sage_only_standard_20_auto");
+  const reviewLines = allLines.filter((line) => line.bucket.startsWith("review_"));
+  const platformControlled = allLines.filter((line) => line.platform_controlled);
+
+  return {
+    version: "sage_purchase_vat_line_review_v1",
+    purpose: "Classifies Sage purchase-side VAT lines so Sage-only 20% overhead/general costs can be reconciled without silently pulling zero/exempt/out-of-scope/reverse-charge lines into Box 4/7.",
+    total_lines_reviewed: allLines.length,
+    platform_controlled_line_count: platformControlled.length,
+    sage_only_standard_20_line_count: sageOnlyStandard20.length,
+    review_line_count: reviewLines.length,
+    sage_only_standard_20_box4_gbp: money2(sageOnlyStandard20.reduce((sum, line) => sum + line.effective_box4_amount, 0)),
+    sage_only_standard_20_box7_gbp: money2(sageOnlyStandard20.reduce((sum, line) => sum + line.effective_box7_amount, 0)),
+    buckets,
+    review_sample: reviewLines.slice(0, 25),
+  };
 }
 
 function sageDocumentDecision(row: AnyRow): SageDocumentAuditRow {
@@ -447,6 +601,19 @@ async function fetchSageVatDocs(context: SageReadContext, periodStart: string, p
   return { si, scn, pi, pcn };
 }
 
+async function platformControlledPurchaseSageIds() {
+  const { data } = await supabaseAdmin
+    .from("sage_posting_snapshots")
+    .select("sage_invoice_id, document_lane")
+    .eq("active", true)
+    .eq("sage_posting_status", "posted")
+    .in("document_lane", ["supplier_goods_ap", "shipper_ap", "supplier_credit_note"])
+    .not("sage_invoice_id", "is", null)
+    .limit(5000);
+
+  return new Set((data ?? []).map((row: AnyRow) => text(row.sage_invoice_id)).filter(Boolean));
+}
+
 export async function reconstructSageVatDraftWithSingleContextAction(vatReturnRunId: string) {
   const runId = String(vatReturnRunId ?? "").trim();
   if (!runId) throw new Error("VAT return run id is required.");
@@ -463,10 +630,12 @@ export async function reconstructSageVatDraftWithSingleContextAction(vatReturnRu
   const periodEnd = text((run as AnyRow).period_end_date);
   const context = await buildSageReadContext();
   const docs = await fetchSageVatDocs(context, periodStart, periodEnd);
+  const platformPurchaseIds = await platformControlledPurchaseSageIds();
   const siAudit = auditSageDocuments(docs.si);
   const scnAudit = auditSageDocuments(docs.scn);
   const piAudit = auditSageDocuments(docs.pi);
   const pcnAudit = auditSageDocuments(docs.pcn);
+  const purchaseVatLineReview = summarizePurchaseVatLines(piAudit.includedRows, pcnAudit.includedRows, platformPurchaseIds);
 
   const salesTax = totalTax(siAudit.includedRows);
   const salesCreditTax = totalTax(scnAudit.includedRows);
@@ -492,7 +661,7 @@ export async function reconstructSageVatDraftWithSingleContextAction(vatReturnRu
       period_start_date: periodStart,
       period_end_date: periodEnd,
       status: "reconstructed",
-      source_basis: "sage_single_context_hydrated_documents_status_filtered",
+      source_basis: "sage_single_context_hydrated_documents_status_filtered_purchase_line_review_v1",
       box1_gbp: box1,
       box2_gbp: box2,
       box3_gbp: box3,
@@ -516,6 +685,7 @@ export async function reconstructSageVatDraftWithSingleContextAction(vatReturnRu
         sales_credit_net: money2(salesCreditNet),
         purchase_net: money2(purchaseNet),
         purchase_credit_net: money2(purchaseCreditNet),
+        purchase_vat_line_review: purchaseVatLineReview,
         document_status_audit: {
           sales_invoices: serializableAudit(siAudit),
           sales_credit_notes: serializableAudit(scnAudit),
@@ -529,7 +699,7 @@ export async function reconstructSageVatDraftWithSingleContextAction(vatReturnRu
           purchase_credit_note: shapeDiagnostic(docs.pcn),
         },
       },
-      warning_notes: "Read-only Sage reconstruction using one operation-level Sage token context. Sage documents are hydrated, status-audited, and excluded when deleted_at/void_reason exist or status/displayed_as says voided, deleted, cancelled, draft, or unposted. Manual VAT journals, cash-accounting timing, and platform VAT timing overlays remain separate controls.",
+      warning_notes: "Read-only Sage reconstruction using one operation-level Sage token context. Sage documents are hydrated, status-audited, and excluded when deleted_at/void_reason exist or status/displayed_as says voided, deleted, cancelled, draft, or unposted. Purchase-side lines are now classified into platform-controlled, Sage-only 20% auto bucket, and review buckets for reverse charge, zero/exempt/out-of-scope or unknown VAT treatment. Manual VAT journals, cash-accounting timing, and platform VAT timing overlays remain separate controls.",
       created_by_staff_id: staff.id,
     })
     .select("id")
