@@ -88,7 +88,7 @@ export default async function SageDraftVatImportPage({ params, searchParams }: a
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold tracking-tight">Upload Sage draft VAT return export</h2>
           <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-            Best source is a Sage draft VAT return CSV/text export. The parser extracts the VAT boxes only. If the export format changes, enter the boxes manually below and the uploaded file still acts as evidence.
+            Best source is a Sage draft VAT return XLSX/CSV/text export. The parser extracts the VAT boxes only. If the export format changes, enter the boxes manually below and the uploaded file still acts as evidence.
           </p>
 
           <form action={importSageDraftVatReturnTotalsAction} className="mt-6 grid gap-5">
@@ -96,8 +96,8 @@ export default async function SageDraftVatImportPage({ params, searchParams }: a
 
             <label className="grid gap-2 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
               <span className="font-semibold text-slate-950">Sage draft file</span>
-              <span className="text-xs leading-5 text-slate-600">CSV, TSV or plain-text export preferred. Keep it under 2MB.</span>
-              <input name="sage_draft_file" type="file" accept=".csv,.tsv,.txt,text/csv,text/plain" className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" />
+              <span className="text-xs leading-5 text-slate-600">XLSX, CSV, TSV or plain-text export. Keep it under 2MB.</span>
+              <input name="sage_draft_file" type="file" accept=".xlsx,.csv,.tsv,.txt,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv,text/plain" className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" />
             </label>
 
             <section className="rounded-2xl border border-slate-200 bg-white p-4">
