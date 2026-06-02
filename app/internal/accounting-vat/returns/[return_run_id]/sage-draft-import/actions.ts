@@ -1,12 +1,14 @@
 "use server";
 
 import { createHash } from "node:crypto";
+import { inflateRawSync } from "node:zlib";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 
 type BoxTotals = Partial<Record<1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9, number>>;
 type Row = Record<string, unknown>;
+type ZipEntry = { name: string; data: Buffer };
 
 const REQUIRED_BOXES: Array<keyof BoxTotals> = [1, 4, 6, 7];
 const OPTIONAL_ZERO_BOXES: Array<keyof BoxTotals> = [2, 8, 9];
@@ -78,6 +80,122 @@ function parseCsvRows(input: string): string[][] {
   row.push(cell.trim());
   if (row.some(Boolean)) rows.push(row);
   return rows;
+}
+
+function decodeXml(value: string): string {
+  return value
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_match, code) => String.fromCharCode(Number(code)))
+    .replace(/&#x([0-9a-f]+);/gi, (_match, code) => String.fromCharCode(parseInt(code, 16)));
+}
+
+function unzipEntries(buffer: Buffer): ZipEntry[] {
+  let eocd = -1;
+  const minOffset = Math.max(0, buffer.length - 65_557);
+  for (let i = buffer.length - 22; i >= minOffset; i -= 1) {
+    if (buffer.readUInt32LE(i) === 0x06054b50) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0) throw new Error("Could not read XLSX file. Please upload a valid .xlsx file or enter the boxes manually.");
+
+  const entryCount = buffer.readUInt16LE(eocd + 10);
+  const centralOffset = buffer.readUInt32LE(eocd + 16);
+  const entries: ZipEntry[] = [];
+  let pointer = centralOffset;
+
+  for (let index = 0; index < entryCount; index += 1) {
+    if (buffer.readUInt32LE(pointer) !== 0x02014b50) break;
+    const method = buffer.readUInt16LE(pointer + 10);
+    const compressedSize = buffer.readUInt32LE(pointer + 20);
+    const fileNameLength = buffer.readUInt16LE(pointer + 28);
+    const extraLength = buffer.readUInt16LE(pointer + 30);
+    const commentLength = buffer.readUInt16LE(pointer + 32);
+    const localHeaderOffset = buffer.readUInt32LE(pointer + 42);
+    const name = buffer.subarray(pointer + 46, pointer + 46 + fileNameLength).toString("utf8");
+
+    const localFileNameLength = buffer.readUInt16LE(localHeaderOffset + 26);
+    const localExtraLength = buffer.readUInt16LE(localHeaderOffset + 28);
+    const dataStart = localHeaderOffset + 30 + localFileNameLength + localExtraLength;
+    const raw = buffer.subarray(dataStart, dataStart + compressedSize);
+
+    if (method === 0) {
+      entries.push({ name, data: raw });
+    } else if (method === 8) {
+      entries.push({ name, data: inflateRawSync(raw) });
+    }
+
+    pointer += 46 + fileNameLength + extraLength + commentLength;
+  }
+
+  return entries;
+}
+
+function parseSharedStrings(xml: string): string[] {
+  const strings: string[] = [];
+  for (const si of xml.matchAll(/<si[\s\S]*?<\/si>/g)) {
+    const textParts = Array.from(si[0].matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)).map((match) => decodeXml(match[1]));
+    strings.push(textParts.join(""));
+  }
+  return strings;
+}
+
+function columnIndex(ref: string): number {
+  const letters = ref.replace(/[^A-Z]/g, "");
+  let total = 0;
+  for (const letter of letters) total = total * 26 + (letter.charCodeAt(0) - 64);
+  return Math.max(0, total - 1);
+}
+
+function cellText(attrs: string, body: string, sharedStrings: string[]): string {
+  const type = attrs.match(/\bt="([^"]+)"/)?.[1] ?? "";
+  if (type === "s") {
+    const index = Number(body.match(/<v>([\s\S]*?)<\/v>/)?.[1] ?? "");
+    return Number.isFinite(index) ? text(sharedStrings[index]) : "";
+  }
+  if (type === "inlineStr") {
+    return Array.from(body.matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)).map((match) => decodeXml(match[1])).join("");
+  }
+  return decodeXml(body.match(/<v>([\s\S]*?)<\/v>/)?.[1] ?? "");
+}
+
+function sheetXmlToText(xml: string, sharedStrings: string[]): string {
+  const lines: string[] = [];
+  for (const rowMatch of xml.matchAll(/<row\b[\s\S]*?<\/row>/g)) {
+    const cells: string[] = [];
+    for (const cellMatch of rowMatch[0].matchAll(/<c\b([^>]*)>([\s\S]*?)<\/c>/g)) {
+      const attrs = cellMatch[1];
+      const ref = attrs.match(/\br="([A-Z]+\d+)"/)?.[1] ?? "";
+      const index = ref ? columnIndex(ref) : cells.length;
+      cells[index] = cellText(attrs, cellMatch[2], sharedStrings);
+    }
+    if (cells.some((cell) => text(cell))) lines.push(cells.map((cell) => cell ?? "").join("\t"));
+  }
+  return lines.join("\n");
+}
+
+function xlsxToText(buffer: Buffer): string {
+  const entries = unzipEntries(buffer);
+  const byName = new Map(entries.map((entry) => [entry.name, entry.data]));
+  const sharedStrings = byName.has("xl/sharedStrings.xml") ? parseSharedStrings(byName.get("xl/sharedStrings.xml")!.toString("utf8")) : [];
+  const sheetTexts = entries
+    .filter((entry) => /^xl\/worksheets\/sheet\d+\.xml$/i.test(entry.name))
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((entry) => sheetXmlToText(entry.data.toString("utf8"), sharedStrings))
+    .filter(Boolean);
+
+  if (!sheetTexts.length) throw new Error("Could not find readable worksheets in the XLSX file. Enter the Sage boxes manually or export CSV from Sage.");
+  return sheetTexts.join("\n");
+}
+
+function isXlsxFile(file: File): boolean {
+  const name = file.name.toLowerCase();
+  return name.endsWith(".xlsx") || file.type === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 }
 
 function aliasBox(joined: string): keyof BoxTotals | null {
@@ -219,13 +337,15 @@ export async function importSageDraftVatReturnTotalsAction(formData: FormData) {
     let uploadedFileSummary: Row | null = null;
 
     if (uploaded instanceof File && uploaded.size > 0) {
-      if (uploaded.size > MAX_UPLOAD_BYTES) throw new Error("Sage draft file is too large. Export a simple VAT return CSV/text file under 2MB.");
-      uploadedText = await uploaded.text();
+      if (uploaded.size > MAX_UPLOAD_BYTES) throw new Error("Sage draft file is too large. Export a simple VAT return XLSX/CSV/text file under 2MB.");
+      const buffer = Buffer.from(await uploaded.arrayBuffer());
+      uploadedText = isXlsxFile(uploaded) ? xlsxToText(buffer) : buffer.toString("utf8");
       uploadedFileSummary = {
         name: uploaded.name,
         type: uploaded.type || "unknown",
         size_bytes: uploaded.size,
-        sha256: createHash("sha256").update(uploadedText).digest("hex"),
+        sha256: createHash("sha256").update(buffer).digest("hex"),
+        parser: isXlsxFile(uploaded) ? "xlsx_openxml_minimal_v1" : "text_csv_tsv_v1",
       };
     }
 
