@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { EMPTY_PURCHASE_VAT_FILTERS, filterPurchaseVatRows, PurchaseVatSectionFilters, type PurchaseVatFilters } from "./PurchaseVatSectionFilters";
 
 type Row = Record<string, unknown>;
 
@@ -49,13 +50,16 @@ function date(value: unknown): string {
   return new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "short", year: "numeric" }).format(parsed);
 }
 
-function searchable(row: Row): string {
-  return [row.document_label, row.sage_document_id, row.supplier_contact, row.document_date, row.document_status, row.tax_profile_summary, row.classification_summary, row.reason_summary].map(text).join(" ").toLowerCase();
+function statusForAcceptedRow(): string[] {
+  return ["Accepted", "Sage covered", "No journal"];
 }
 
-function filterRows(rows: Row[], query: string): Row[] {
-  const needle = query.trim().toLowerCase();
-  return needle ? rows.filter((row) => searchable(row).includes(needle)) : rows;
+function statusForPlatformRow(): string[] {
+  return ["Already platform-controlled", "Sage covered"];
+}
+
+function statusForReviewRow(): string[] {
+  return ["Needs review"];
 }
 
 function Badge({ children, tone = "emerald" }: { children: string; tone?: "emerald" | "sky" | "slate" | "amber" }) {
@@ -76,10 +80,19 @@ function SummaryCard({ label, value, note }: { label: string; value: string; not
   </div>;
 }
 
+function ResultsPager({ shown, total, onShowMore, tone = "slate" }: { shown: number; total: number; onShowMore: () => void; tone?: "slate" | "emerald" }) {
+  if (total <= PAGE_SIZE) return null;
+  const buttonClass = tone === "emerald" ? "border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100" : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50";
+  return <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+    <p className="text-sm font-semibold text-slate-700">Showing {Math.min(shown, total)} of {total}</p>
+    {shown < total ? <button type="button" onClick={onShowMore} className={`rounded-xl border px-4 py-2 text-sm font-bold ${buttonClass}`}>Show more</button> : null}
+  </div>;
+}
+
 export function AcceptedDirectSagePostings({ rows }: AcceptedProps) {
-  const [query, setQuery] = useState("");
+  const [filters, setFilters] = useState<PurchaseVatFilters>(EMPTY_PURCHASE_VAT_FILTERS);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
-  const filteredRows = useMemo(() => filterRows(rows, query), [rows, query]);
+  const filteredRows = useMemo(() => filterPurchaseVatRows(rows, filters, statusForAcceptedRow), [rows, filters]);
   const visibleRows = filteredRows.slice(0, visibleCount);
   const box4Accepted = rows.reduce((sum, row) => sum + num(row.effective_box4_amount), 0);
   const box7Accepted = rows.reduce((sum, row) => sum + num(row.effective_box7_amount), 0);
@@ -101,10 +114,7 @@ export function AcceptedDirectSagePostings({ rows }: AcceptedProps) {
       <SummaryCard label="No Sage journals required" value="Yes" note="No adjustment journal for these accepted rows" />
     </div> : null}
 
-    {rows.length ? <div className="mt-4">
-      <label className="text-xs font-bold uppercase tracking-wide text-slate-500" htmlFor="accepted-direct-sage-search">Filter accepted documents</label>
-      <input id="accepted-direct-sage-search" value={query} onChange={(event) => { setQuery(event.target.value); setVisibleCount(PAGE_SIZE); }} placeholder="Search supplier, ref or date" className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-emerald-400" />
-    </div> : null}
+    {rows.length ? <PurchaseVatSectionFilters rows={rows} filters={filters} setFilters={setFilters} sectionId="accepted-direct-sage" label="Filter accepted register" includeTaxProfile={false} includeLedger={false} statusForRow={statusForAcceptedRow} onChange={() => setVisibleCount(PAGE_SIZE)} /> : null}
 
     <div className="mt-4 overflow-x-auto">
       <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
@@ -120,44 +130,44 @@ export function AcceptedDirectSagePostings({ rows }: AcceptedProps) {
             <td className="whitespace-nowrap px-3 py-2 font-semibold text-slate-700">{gbp(row.effective_box4_amount)}</td>
             <td className="whitespace-nowrap px-3 py-2 font-semibold text-slate-700">{gbp(row.effective_box7_amount)}</td>
             <td className="min-w-56 px-3 py-2"><div className="flex flex-wrap gap-1.5"><Badge>Accepted</Badge><Badge tone="sky">Sage covered</Badge><Badge tone="slate">No journal</Badge></div></td>
-          </tr>) : <tr><td className="px-3 py-5 text-sm text-slate-500" colSpan={9}>No accepted direct Sage purchase postings have been included in this platform VAT return yet.</td></tr>}
+          </tr>) : <tr><td className="px-3 py-5 text-sm text-slate-500" colSpan={9}>No accepted direct Sage purchase postings match the current filters.</td></tr>}
         </tbody>
       </table>
     </div>
 
-    {filteredRows.length > visibleRows.length ? <div className="mt-4 flex justify-center"><button type="button" onClick={() => setVisibleCount((count) => count + PAGE_SIZE)} className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-bold text-emerald-800 hover:bg-emerald-100">Show more accepted documents ({filteredRows.length - visibleRows.length} remaining)</button></div> : null}
+    <ResultsPager shown={visibleRows.length} total={filteredRows.length} onShowMore={() => setVisibleCount((count) => count + PAGE_SIZE)} tone="emerald" />
   </section>;
 }
 
 export function PurchaseDocumentGroupsTable({ title, rows, empty, tone = "default", collapseWhenHigh = false }: ReviewTableProps) {
-  const startsCollapsed = collapseWhenHigh && rows.length > PAGE_SIZE;
+  const startsCollapsed = collapseWhenHigh && rows.length > 10;
   const [collapsed, setCollapsed] = useState(startsCollapsed);
-  const [query, setQuery] = useState("");
+  const [filters, setFilters] = useState<PurchaseVatFilters>(EMPTY_PURCHASE_VAT_FILTERS);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
-  const filteredRows = useMemo(() => filterRows(rows, query), [rows, query]);
-  const visibleRows = filteredRows.slice(0, visibleCount);
-  const showSearch = rows.length > PAGE_SIZE;
   const isReview = tone === "review";
-  const shell = isReview ? "border-amber-300 bg-amber-50" : tone === "platform" ? "border-sky-200 bg-white" : "border-slate-200 bg-white";
+  const isPlatform = tone === "platform";
+  const statusForRow = isReview ? statusForReviewRow : isPlatform ? statusForPlatformRow : undefined;
+  const filteredRows = useMemo(() => filterPurchaseVatRows(rows, filters, statusForRow), [rows, filters, statusForRow]);
+  const visibleRows = filteredRows.slice(0, visibleCount);
+  const shell = isReview ? "border-amber-300 bg-amber-50" : isPlatform ? "border-sky-200 bg-white" : "border-slate-200 bg-white";
   const badge = isReview ? "border-amber-300 bg-amber-100 text-amber-900" : "border-slate-200 bg-slate-50 text-slate-600";
 
   return <section className={`rounded-3xl border p-5 shadow-sm ${shell}`}>
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div>
         <h2 className="text-lg font-semibold tracking-tight text-slate-950">{title}</h2>
-        {isReview ? <p className="mt-1 text-sm font-semibold text-amber-900">Review-required postings need investigation before VAT treatment is accepted.</p> : null}
+        {isReview && rows.length ? <p className="mt-1 text-sm font-semibold text-amber-900">Review-required postings need investigation before VAT treatment is accepted.</p> : null}
+        {isReview && !rows.length ? <p className="mt-1 text-sm font-semibold text-emerald-800">No review-required purchase postings in this snapshot.</p> : null}
+        {isPlatform ? <p className="mt-1 text-sm font-semibold text-sky-900">{rows.length} platform-controlled document groups already covered by platform flow.</p> : null}
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <span className={`rounded-full border px-3 py-1 text-xs font-bold ${badge}`}>{rows.length} document group(s)</span>
-        {startsCollapsed ? <button type="button" onClick={() => setCollapsed((value) => !value)} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50">{collapsed ? "Show platform-controlled details" : "Collapse platform-controlled details"}</button> : null}
+        {startsCollapsed ? <button type="button" onClick={() => setCollapsed((value) => !value)} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50">{collapsed ? "Show platform-controlled evidence" : "Collapse platform-controlled evidence"}</button> : null}
       </div>
     </div>
 
-    {collapsed ? <p className="mt-4 rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm font-semibold text-sky-900">Platform-controlled document rows are collapsed because the count is high. Audit/source evidence remains available; expand only when you need document-level details.</p> : <>
-      {showSearch ? <div className="mt-4">
-        <label className="text-xs font-bold uppercase tracking-wide text-slate-500" htmlFor={`${title.replace(/\W+/g, "-").toLowerCase()}-search`}>Filter document groups</label>
-        <input id={`${title.replace(/\W+/g, "-").toLowerCase()}-search`} value={query} onChange={(event) => { setQuery(event.target.value); setVisibleCount(PAGE_SIZE); }} placeholder="Search supplier, ref or date" className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-sky-400" />
-      </div> : null}
+    {collapsed ? <p className="mt-4 rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm font-semibold text-sky-900">{rows.length} platform-controlled document groups already covered by platform flow.</p> : <>
+      {rows.length ? <PurchaseVatSectionFilters rows={rows} filters={filters} setFilters={setFilters} sectionId={title.replace(/\W+/g, "-").toLowerCase()} statusForRow={statusForRow} onChange={() => setVisibleCount(PAGE_SIZE)} /> : null}
 
       <div className="mt-4 overflow-x-auto">
         <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
@@ -179,12 +189,12 @@ export function PurchaseDocumentGroupsTable({ title, rows, empty, tone = "defaul
               <td className="whitespace-nowrap px-3 py-2 font-semibold text-slate-700">{num(row.line_count)}</td>
               <td className="min-w-48 px-3 py-2 text-slate-700">{cut(row.reason_summary, 70)}</td>
               <td className="min-w-44 px-3 py-2 text-slate-700">Copy ref / open Sage manually</td>
-            </tr>) : <tr><td className="px-3 py-5 text-sm text-slate-500" colSpan={15}>{empty}</td></tr>}
+            </tr>) : <tr><td className="px-3 py-5 text-sm text-slate-500" colSpan={15}>{rows.length ? "No document groups match the current filters." : empty}</td></tr>}
           </tbody>
         </table>
       </div>
 
-      {filteredRows.length > visibleRows.length ? <div className="mt-4 flex justify-center"><button type="button" onClick={() => setVisibleCount((count) => count + PAGE_SIZE)} className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50">Show more document groups ({filteredRows.length - visibleRows.length} remaining)</button></div> : null}
+      <ResultsPager shown={visibleRows.length} total={filteredRows.length} onShowMore={() => setVisibleCount((count) => count + PAGE_SIZE)} />
     </>}
   </section>;
 }
