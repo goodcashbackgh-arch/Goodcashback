@@ -220,6 +220,32 @@ function documentLabel(row: AnyRow): string {
   ) || "document";
 }
 
+function isGenericDocumentLabel(label: string): boolean {
+  const normalized = label.trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
+  return !normalized || new Set([
+    "document",
+    "invoice",
+    "purchase invoice",
+    "credit note",
+    "purchase credit note",
+    "bill",
+    "unknown",
+  ]).has(normalized);
+}
+
+function directSageDocumentLabel(input: { doc: AnyRow; supplierContact: string; documentDate: string; grossAmount: number }): string {
+  const existingLabel = documentLabel(input.doc);
+  if (!isGenericDocumentLabel(existingLabel)) return existingLabel;
+
+  const parts = [input.supplierContact || "Sage purchase document"];
+  const normalizedDate = input.documentDate.match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? "";
+  if (normalizedDate) parts.push(normalizedDate);
+  if (Math.abs(input.grossAmount) > 0.005) parts.push(`£${Math.abs(input.grossAmount).toFixed(2)}`);
+
+  const fallback = parts.join(" — ");
+  return isGenericDocumentLabel(fallback) ? "Sage purchase document" : fallback;
+}
+
 function sageDocumentId(row: AnyRow): string {
   return text(row.id ?? row.$uuid ?? row.uuid ?? row.sage_invoice_id ?? row.sage_credit_note_id);
 }
@@ -353,13 +379,16 @@ function classifyPurchaseLine(input: {
         ? "review_required_purchase_posting"
         : "review_required_purchase_posting";
 
+  const supplierContact = supplierContactLabel(doc);
+  const docDate = documentDate(doc);
+
   return {
     source_type: sourceType,
     sage_document_id: sageDocumentId(doc),
     sage_api_path: sageDocumentPath(doc),
-    document_label: documentLabel(doc),
-    supplier_contact: supplierContactLabel(doc),
-    document_date: documentDate(doc),
+    document_label: directSageDocumentLabel({ doc, supplierContact, documentDate: docDate, grossAmount: gross }),
+    supplier_contact: supplierContact,
+    document_date: docDate,
     document_status: documentStatusLabel(doc),
     line_description: lineDescription(line) || lineDescription(doc),
     platform_controlled: platformControlled,

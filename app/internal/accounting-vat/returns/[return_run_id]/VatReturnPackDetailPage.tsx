@@ -50,7 +50,11 @@ function directionLabel(row: Row): string { const raw = direction(row); if (raw 
 
 async function listRows(db: any, table: string, cols: string, configure?: (query: any) => any): Promise<DataSet> { let query = db.from(table).select(cols, { count: "exact" }); if (configure) query = configure(query); const { data, error, count } = await query.limit(100); return { rows: (data ?? []) as Row[], error: error?.message ? String(error.message) : null, count: count ?? 0 }; }
 function sourceName(row: Row): string { const kind = text(row.line_kind); if (kind === "sales_invoice_box6_candidate" && isDecrease(row)) return "Sales credit note"; if (kind === "sales_invoice_box6_candidate") return "Sales invoice"; if (kind === "funding_event_source_fact") return "Funding event"; if (kind === "sage_customer_receipt_source_fact") return "Sage receipt"; if (kind === "sage_customer_sales_coverage_source_fact") return "Sage sales coverage"; if (kind === "supplier_purchase_invoice_box4_vat") return "Supplier purchase VAT"; if (kind === "supplier_purchase_invoice_box7_net") return "Supplier purchase net"; if (kind === "supplier_credit_note_box4_decrease") return "Supplier credit note VAT"; if (kind === "supplier_credit_note_box7_decrease") return "Supplier credit note net"; if (kind === "shipper_ap_box7_net") return "Shipper AP net"; if (kind === "direct_sage_purchase_posting_not_via_platform_box4") return "Accepted direct Sage posting VAT"; if (kind === "direct_sage_purchase_posting_not_via_platform_box7") return "Accepted direct Sage posting net"; return pretty(row.source_table || kind); }
-function sourceReference(row: Row): string { const source = obj(row.source_json); const lineage = obj(row.source_lineage_json); const chosen = [source.order_ref, lineage.order_ref, source.sage_invoice_id, lineage.sage_invoice_id, source.sage_payment_on_account_id, lineage.sage_payment_on_account_id, source.source_ref, lineage.source_ref, row.source_ref, row.source_id].map(text).find(Boolean); if (!chosen) return "—"; if (/^[0-9a-f-]{30,}$/i.test(chosen)) return `ref ${shortId(chosen)}`; return clean(chosen); }
+function isGenericDocumentLabel(labelValue: string): boolean { const normalized = labelValue.trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " "); return !normalized || new Set(["document", "invoice", "purchase invoice", "credit note", "purchase credit note", "bill", "unknown"]).has(normalized); }
+function directSageFallbackLabel(input: { documentLabel?: unknown; sourceRef?: unknown; supplierContact?: unknown; documentDate?: unknown; grossAmount?: unknown }): string { const existing = text(input.documentLabel); if (existing && !isGenericDocumentLabel(existing)) return existing; const sourceRef = text(input.sourceRef); if (sourceRef && !isGenericDocumentLabel(sourceRef)) return sourceRef; const parts = [text(input.supplierContact) || "Sage purchase document"]; const rawDate = text(input.documentDate).match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? ""; if (rawDate) parts.push(rawDate); const gross = num(input.grossAmount); if (Math.abs(gross) > 0.005) parts.push(`£${Math.abs(gross).toFixed(2)}`); return parts.join(" — "); }
+function directSageLineEvidence(row: Row): Row { return { ...obj(row.source_json), ...obj(row.source_lineage_json) }; }
+function directSageLineLabel(row: Row): string { const source = obj(row.source_json); const evidence = directSageLineEvidence(row); return directSageFallbackLabel({ documentLabel: source.document_label, sourceRef: row.source_ref, supplierContact: evidence.supplier_contact, documentDate: evidence.document_date, grossAmount: evidence.gross_amount }); }
+function sourceReference(row: Row): string { const source = obj(row.source_json); const lineage = obj(row.source_lineage_json); if (["direct_sage_purchase_posting_not_via_platform_box4", "direct_sage_purchase_posting_not_via_platform_box7"].includes(text(row.line_kind))) return directSageLineLabel(row); const chosen = [source.order_ref, lineage.order_ref, source.sage_invoice_id, lineage.sage_invoice_id, source.sage_payment_on_account_id, lineage.sage_payment_on_account_id, source.source_ref, lineage.source_ref, row.source_ref, row.source_id].map(text).find(Boolean); if (!chosen) return "—"; if (/^[0-9a-f-]{30,}$/i.test(chosen)) return `ref ${shortId(chosen)}`; return clean(chosen); }
 function invoiceRef(row: Row): string { return cut(row.ocr_invoice_ref || row.invoice_ref || row.reference_text || row.sage_invoice_id || row.id, 42); }
 function sourceDisplay(row: Row): string { return `${sourceName(row)} · ${sourceReference(row)}`; }
 function boxEffect(row: Row): string { return text(row.box_number) ? `${boxLabel(row.box_number)} · ${directionLabel(row)}` : "No VAT-box effect"; }
@@ -91,7 +95,7 @@ function purchaseDocumentGroups(rows: Row[], options: { selectable?: boolean; re
       group_key: key,
       source_type: text(groupRows[0]?.source_type),
       sage_document_id: text(groupRows[0]?.sage_document_id),
-      document_label: text(groupRows[0]?.document_label) || text(groupRows[0]?.sage_document_id) || "Sage document",
+      document_label: directSageFallbackLabel({ documentLabel: groupRows[0]?.document_label, sourceRef: groupRows[0]?.sage_document_id, supplierContact: groupRows[0]?.supplier_contact, documentDate: groupRows[0]?.document_date, grossAmount: groupRows.reduce((sum, row) => sum + num(row.gross_amount), 0) }),
       supplier_contact: summary(groupRows.map((row) => row.supplier_contact), "Mixed contacts"),
       document_date: text(groupRows[0]?.document_date),
       document_status: summary(groupRows.map((row) => row.document_status), "Mixed statuses"),
@@ -107,6 +111,44 @@ function purchaseDocumentGroups(rows: Row[], options: { selectable?: boolean; re
       line_count: groupRows.length,
       selected_line_indexes: groupRows.map((row) => text(row.__direct_line_index) ? num(row.__direct_line_index) : -1).filter((index) => Number.isInteger(index) && index >= 0),
       selectable,
+    };
+  });
+}
+
+function acceptedDirectSagePostingGroups(rows: Row[]): Row[] {
+  const groups = new Map<string, Row[]>();
+  for (const row of rows.filter(active)) {
+    const source = obj(row.source_json);
+    const lineage = obj(row.source_lineage_json);
+    const label = directSageLineLabel(row);
+    const key = [text(source.sage_document_id), text(lineage.sage_document_id), text(row.source_id), isGenericDocumentLabel(text(row.source_ref)) ? label : text(row.source_ref)].filter(Boolean).join("|") || label;
+    groups.set(key, [...(groups.get(key) ?? []), row]);
+  }
+
+  return [...groups.entries()].map(([key, groupRows]) => {
+    const first = groupRows[0] ?? {};
+    const evidenceRows = [...new Map(groupRows.map((row) => {
+      const lineage = obj(row.source_lineage_json);
+      const source = obj(row.source_json);
+      const evidenceKey = [lineage.selected_line_index, source.sage_document_id, source.line_description, source.ledger_account].map(text).join("|");
+      return [evidenceKey || text(row.id), source] as const;
+    })).values()];
+    const box4Effect = groupRows.filter((row) => num(row.box_number) === 4).reduce((sum, row) => sum + signedAmount(row), 0);
+    const box7Effect = groupRows.filter((row) => num(row.box_number) === 7).reduce((sum, row) => sum + signedAmount(row), 0);
+    const net = evidenceRows.reduce((sum, row) => sum + num(row.net_amount), 0) || box7Effect;
+    const vat = evidenceRows.reduce((sum, row) => sum + num(row.vat_amount), 0) || box4Effect;
+    const grossFromEvidence = evidenceRows.reduce((sum, row) => sum + num(row.gross_amount), 0);
+    return {
+      group_key: key,
+      document_label: directSageLineLabel(first),
+      supplier_contact: summary(evidenceRows.map((row) => row.supplier_contact), "Mixed contacts"),
+      document_date: text(evidenceRows[0]?.document_date),
+      net_amount: net,
+      vat_amount: vat,
+      gross_amount: grossFromEvidence || net + vat,
+      effective_box4_amount: box4Effect,
+      effective_box7_amount: box7Effect,
+      status_control_result: "Accepted direct Sage posting · Naturally covered by Sage · No adjustment journal required",
     };
   });
 }
@@ -137,7 +179,8 @@ function SagePurchaseVatReview({ runId, run, recon, purchaseRows }: { runId: str
     { label: "Reason summary", render: (row) => cut(row.reason_summary, 70) },
     { label: "Action/help text", render: () => "Copy ref / open Sage manually" },
   ];
-  const directApprovedRows = purchaseRows.filter((row) => ["direct_sage_purchase_posting_not_via_platform_box4", "direct_sage_purchase_posting_not_via_platform_box7"].includes(text(row.line_kind)));
+  const directApprovedRows = purchaseRows.filter((row) => active(row) && ["direct_sage_purchase_posting_not_via_platform_box4", "direct_sage_purchase_posting_not_via_platform_box7"].includes(text(row.line_kind)));
+  const acceptedDirectGroups = acceptedDirectSagePostingGroups(directApprovedRows);
   const acceptedDirectLineIndexes = new Set(directApprovedRows.filter((row) => text(row.source_id) === text(recon.id) && text(obj(row.source_lineage_json).selected_line_index)).map((row) => num(obj(row.source_lineage_json).selected_line_index)));
   const actionDirectRows = directRows.map((row, index) => ({ ...row, __direct_line_index: index })).filter((_, index) => !acceptedDirectLineIndexes.has(index));
   const directDocumentGroups = purchaseDocumentGroups(actionDirectRows, { selectable: true, reasonSummary: "Direct Sage posting not linked to platform", allRows: allReviewRows });
@@ -159,7 +202,7 @@ function SagePurchaseVatReview({ runId, run, recon, purchaseRows }: { runId: str
     {hasReview ? <Table title="Platform-controlled Sage postings — read-only/excluded from action" data={{ rows: platformDocumentGroups, error: null, count: platformDocumentGroups.length }} columns={documentCols} empty="No platform-controlled Sage purchase postings found in this review." /> : null}
     {hasReview && reviewRequiredLineCount > reviewRows.length ? <p className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm font-semibold text-amber-900">Showing document groups built from first {reviewRows.length} of {reviewRequiredLineCount} review-required lines.</p> : null}
     {hasReview ? <Table title="Review-required postings — read-only/needs investigation" data={{ rows: reviewDocumentGroups, error: null, count: reviewDocumentGroups.length }} columns={documentCols} empty="No review-required Sage purchase postings found in this review." /> : null}
-    {directApprovedRows.length ? <Table title="Accepted direct Sage postings already included in platform VAT return" data={{ rows: directApprovedRows, error: null, count: directApprovedRows.length }} columns={[{ label: "Source", render: (row) => sourceDisplay(row) }, { label: "Box effect", render: (row) => boxEffect(row) }, { label: "Amount", render: (row) => gbp(signedAmount(row)) }, { label: "Sage", render: (row) => yes(row.natural_sage_covered) ? "Naturally covered" : "Not covered" }, { label: "Adjustment", render: (row) => yes(row.adjustment_required) ? "Needs journal" : "No Sage journal" }]} /> : null}
+    <Table title="Accepted direct Sage postings — included in platform VAT return" data={{ rows: acceptedDirectGroups, error: null, count: acceptedDirectGroups.length }} columns={[{ label: "Document/ref", render: (row) => cut(row.document_label, 42) }, { label: "Supplier/contact", render: (row) => cut(row.supplier_contact, 34) }, { label: "Document date", render: (row) => date(row.document_date) }, { label: "Net", render: (row) => gbp(row.net_amount) }, { label: "VAT", render: (row) => gbp(row.vat_amount) }, { label: "Gross", render: (row) => gbp(row.gross_amount) }, { label: "Box 4 effect", render: (row) => gbp(row.effective_box4_amount) }, { label: "Box 7 effect", render: (row) => gbp(row.effective_box7_amount) }, { label: "Status / control result", render: (row) => row.status_control_result }]} empty="No accepted direct Sage purchase postings have been included in this platform VAT return yet." />
   </div>;
 }
 
