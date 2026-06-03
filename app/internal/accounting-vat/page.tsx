@@ -277,7 +277,7 @@ function Runs({ rows }: { rows: Row[] }) {
                         className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-800"
                         href={`/internal/accounting-vat/returns/${text(row.id)}/sage-draft-import`}
                       >
-                        Import Sage draft
+                        Upload Sage VAT file
                       </Link>
                     </div>
                   </td>
