@@ -50,17 +50,22 @@ function date(value: unknown): string {
   return new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "short", year: "numeric" }).format(parsed);
 }
 
-function lineIsReviewRequired(row: Row): boolean {
-  return yes(row.review_required) || text(row.classification).toLowerCase() === "review_required_purchase_posting" || text(row.reason).toLowerCase().includes("review required");
+function lineIndexes(row: Row): number[] {
+  const value = row.selected_line_indexes;
+  const indexes = Array.isArray(value) ? value : text(value).split(",");
+  return indexes.map((item) => Number(text(item))).filter((item) => Number.isInteger(item) && item >= 0);
 }
 
-function lineCanBeSelected(row: Row): boolean {
-  return text(row.classification) === "direct_sage_purchase_posting_not_on_platform" && !yes(row.platform_controlled) && !lineIsReviewRequired(row);
+function groupCanBeSelected(row: Row): boolean {
+  return yes(row.selectable) && lineIndexes(row).length > 0;
 }
 
-function originalIndex(row: Row, fallback: number): number {
-  const parsed = num(row.__direct_line_index);
-  return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
+function taxProfile(row: Row): string {
+  return text(row.tax_profile_summary) || "—";
+}
+
+function searchText(row: Row): string {
+  return [row.document_label, row.sage_document_id, row.supplier_contact, row.document_status, row.tax_profile_summary].map(text).join(" ").toLowerCase();
 }
 
 function nil(value: number): boolean {
@@ -68,27 +73,30 @@ function nil(value: number): boolean {
 }
 
 export function DirectSagePurchasePostingSelector({ runId, snapshotId, rows, platformBox4, platformBox7, sageBox4, sageBox7 }: Props) {
-  const [selected, setSelected] = useState<Set<number>>(new Set());
-  const selectableIndexes = useMemo(() => rows.map((row, index) => lineCanBeSelected(row) ? originalIndex(row, index) : -1).filter((index) => index >= 0), [rows]);
-  const selectedRows = rows.filter((row, index) => selected.has(originalIndex(row, index)));
+  const [selectedGroupKeys, setSelectedGroupKeys] = useState<Set<string>>(new Set());
+  const [query, setQuery] = useState("");
+  const selectableKeys = useMemo(() => rows.filter(groupCanBeSelected).map((row, index) => text(row.group_key) || String(index)), [rows]);
+  const selectedRows = rows.filter((row, index) => selectedGroupKeys.has(text(row.group_key) || String(index)));
   const selectedBox4 = selectedRows.reduce((sum, row) => sum + num(row.effective_box4_amount), 0);
   const selectedBox7 = selectedRows.reduce((sum, row) => sum + num(row.effective_box7_amount), 0);
   const remainingBox4 = platformBox4 + selectedBox4 - sageBox4;
   const remainingBox7 = platformBox7 + selectedBox7 - sageBox7;
-  const invalidSelection = selectedRows.some((row) => !lineCanBeSelected(row));
-  const canProceed = selected.size > 0 && nil(remainingBox4) && nil(remainingBox7) && !invalidSelection;
-  const selectedIndexes = Array.from(selected as Set<number>).sort((a, b) => a - b);
+  const invalidSelection = selectedRows.some((row) => !groupCanBeSelected(row));
+  const canProceed = selectedGroupKeys.size > 0 && nil(remainingBox4) && nil(remainingBox7) && !invalidSelection;
+  const selectedIndexes = selectedRows.flatMap(lineIndexes).sort((a, b) => a - b);
   const approvalUrl = `/internal/accounting-vat/returns/${runId}/sage-only-purchase-approval?sage_snapshot_id=${encodeURIComponent(snapshotId)}&selected_line_indexes=${encodeURIComponent(selectedIndexes.join(","))}`;
+  const showSearch = rows.length > 100;
+  const visibleRows = query.trim() ? rows.filter((row) => searchText(row).includes(query.trim().toLowerCase())) : rows;
 
   return <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
     <div className="flex flex-wrap items-start justify-between gap-4">
       <div>
         <h2 className="text-lg font-semibold">Direct Sage postings not on platform</h2>
-        <p className="mt-1 text-sm leading-6 text-slate-600">Select the exact Sage purchase-side posting lines that explain the remaining Box 4 / Box 7 difference. Platform-controlled or review-required lines are shown but cannot be selected.</p>
+        <p className="mt-1 text-sm leading-6 text-slate-600">Select Sage purchase-side documents that explain the remaining Box 4 / Box 7 difference. Each visible row is a document group; approval still submits the hidden line indexes for audit and RPC validation.</p>
       </div>
       <div className="flex flex-wrap gap-2">
-        <button type="button" onClick={() => setSelected(new Set(selectableIndexes))} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50">Select all direct postings</button>
-        <button type="button" onClick={() => setSelected(new Set())} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50">Unselect all</button>
+        <button type="button" onClick={() => setSelectedGroupKeys(new Set(selectableKeys))} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50">Select all direct documents</button>
+        <button type="button" onClick={() => setSelectedGroupKeys(new Set())} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50">Unselect all</button>
       </div>
     </div>
 
@@ -99,37 +107,40 @@ export function DirectSagePurchasePostingSelector({ runId, snapshotId, rows, pla
       <div className={`rounded-2xl border p-4 ${nil(remainingBox7) ? "border-emerald-200 bg-emerald-50 text-emerald-900" : "border-amber-200 bg-amber-50 text-amber-900"}`}><p className="text-xs font-bold uppercase opacity-70">Remaining Box 7 difference</p><p className="mt-1 text-xl font-extrabold">{gbp(remainingBox7)}</p></div>
     </div>
 
+    {showSearch ? <div className="mt-4"><label className="text-xs font-bold uppercase tracking-wide text-slate-500" htmlFor="direct-sage-document-search">Filter document groups</label><input id="direct-sage-document-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search ref, supplier, status or tax profile" className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-sky-400" /></div> : null}
+
     <div className="mt-5 overflow-x-auto">
       <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
-        <thead className="text-xs uppercase tracking-wide text-slate-500"><tr><th className="px-3 py-2">Select</th><th className="px-3 py-2">Document/ref</th><th className="px-3 py-2">Supplier/contact</th><th className="px-3 py-2">Document date</th><th className="px-3 py-2">Status</th><th className="px-3 py-2">Ledger</th><th className="px-3 py-2">Tax rate</th><th className="px-3 py-2">Description</th><th className="px-3 py-2">Net</th><th className="px-3 py-2">VAT</th><th className="px-3 py-2">Gross</th><th className="px-3 py-2">Box 4 effect</th><th className="px-3 py-2">Box 7 effect</th><th className="px-3 py-2">Reason</th><th className="px-3 py-2">Action/help text</th></tr></thead>
+        <thead className="text-xs uppercase tracking-wide text-slate-500"><tr><th className="px-3 py-2">Select</th><th className="px-3 py-2">Document/ref</th><th className="px-3 py-2">Supplier/contact</th><th className="px-3 py-2">Document date</th><th className="px-3 py-2">Status</th><th className="px-3 py-2">Ledger summary</th><th className="px-3 py-2">Tax profile</th><th className="px-3 py-2">Classification</th><th className="px-3 py-2">Net</th><th className="px-3 py-2">VAT</th><th className="px-3 py-2">Gross</th><th className="px-3 py-2">Box 4 effect</th><th className="px-3 py-2">Box 7 effect</th><th className="px-3 py-2">Lines</th><th className="px-3 py-2">Reason summary</th><th className="px-3 py-2">Action/help text</th></tr></thead>
         <tbody className="divide-y divide-slate-100">
-          {rows.length ? rows.map((row, index) => {
-            const sourceIndex = originalIndex(row, index);
-            const selectable = lineCanBeSelected(row);
-            return <tr key={`${sourceIndex}-${text(row.sage_document_id) || text(row.document_label)}`} className={selectable ? "bg-white" : "bg-slate-50 text-slate-500"}>
-              <td className="whitespace-nowrap px-3 py-2"><input type="checkbox" checked={selected.has(sourceIndex)} disabled={!selectable} aria-label={`Select ${text(row.document_label) || `line ${index + 1}`}`} onChange={(event) => setSelected((prev) => { const next = new Set(prev); if (event.target.checked) next.add(sourceIndex); else next.delete(sourceIndex); return next; })} /></td>
+          {visibleRows.length ? visibleRows.map((row, index) => {
+            const groupKey = text(row.group_key) || String(index);
+            const selectable = groupCanBeSelected(row);
+            return <tr key={groupKey} className={selectable ? "bg-white" : "bg-slate-50 text-slate-500"}>
+              <td className="whitespace-nowrap px-3 py-2"><input type="checkbox" checked={selectedGroupKeys.has(groupKey)} disabled={!selectable} aria-label={`Select ${text(row.document_label) || `document ${index + 1}`}`} onChange={(event) => setSelectedGroupKeys((prev) => { const next = new Set(prev); if (event.target.checked) next.add(groupKey); else next.delete(groupKey); return next; })} /></td>
               <td className="whitespace-nowrap px-3 py-2 font-semibold">{cut(row.document_label || row.sage_document_id, 34)}</td>
               <td className="whitespace-nowrap px-3 py-2">{cut(row.supplier_contact, 34)}</td>
               <td className="whitespace-nowrap px-3 py-2">{date(row.document_date)}</td>
               <td className="whitespace-nowrap px-3 py-2">{cut(row.document_status, 24)}</td>
-              <td className="whitespace-nowrap px-3 py-2">{cut(row.ledger_account, 34)}</td>
-              <td className="whitespace-nowrap px-3 py-2">{cut(row.tax_rate, 28)}</td>
-              <td className="min-w-48 px-3 py-2">{cut(row.line_description, 60)}</td>
+              <td className="whitespace-nowrap px-3 py-2">{cut(row.ledger_summary, 34)}</td>
+              <td className="whitespace-nowrap px-3 py-2">{cut(taxProfile(row), 28)}</td>
+              <td className="whitespace-nowrap px-3 py-2">{cut(row.classification_summary, 36)}</td>
               <td className="whitespace-nowrap px-3 py-2 font-semibold">{gbp(row.net_amount)}</td>
               <td className="whitespace-nowrap px-3 py-2 font-semibold">{gbp(row.vat_amount)}</td>
               <td className="whitespace-nowrap px-3 py-2 font-semibold">{gbp(row.gross_amount)}</td>
               <td className="whitespace-nowrap px-3 py-2 font-semibold">{gbp(row.effective_box4_amount)}</td>
               <td className="whitespace-nowrap px-3 py-2 font-semibold">{gbp(row.effective_box7_amount)}</td>
-              <td className="min-w-56 px-3 py-2">{cut(row.reason, 90)}</td>
+              <td className="whitespace-nowrap px-3 py-2 font-semibold">{num(row.line_count)}</td>
+              <td className="min-w-48 px-3 py-2">{cut(row.reason_summary, 70)}</td>
               <td className="min-w-44 px-3 py-2">Copy ref / open Sage manually</td>
             </tr>;
-          }) : <tr><td className="px-3 py-6 text-center text-slate-500" colSpan={15}>No direct Sage postings not on platform found in the latest review snapshot.</td></tr>}
+          }) : <tr><td className="px-3 py-6 text-center text-slate-500" colSpan={16}>No direct Sage document groups not on platform found in the latest review snapshot.</td></tr>}
         </tbody>
       </table>
     </div>
 
     <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-      <p className="text-sm font-semibold text-slate-700">{canProceed ? "Ready to proceed: selected lines reconcile Box 4 and Box 7 to nil." : "Select direct Sage posting lines until both remaining differences are £0.00 within £0.01."}</p>
+      <p className="text-sm font-semibold text-slate-700">{canProceed ? "Ready to proceed: selected document groups reconcile Box 4 and Box 7 to nil." : "Select direct Sage document groups until both remaining differences are £0.00 within £0.01."}</p>
       {canProceed ? <a href={approvalUrl} className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-bold text-white hover:bg-slate-800">Proceed to final approval</a> : <button type="button" disabled className="cursor-not-allowed rounded-xl bg-slate-200 px-4 py-2 text-sm font-bold text-slate-500">Proceed to final approval</button>}
     </div>
   </section>;

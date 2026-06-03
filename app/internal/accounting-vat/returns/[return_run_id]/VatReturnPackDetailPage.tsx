@@ -70,37 +70,83 @@ function Workflow({ run, recon, blockers, journals, matchEvidence }: { run: Row;
 function Table({ title, data, columns, empty = "No rows to show yet." }: { title: string; data: DataSet; columns: Col[]; empty?: string }) { return <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-semibold tracking-tight">{title}</h2>{data.error ? <p className="mt-1 text-xs font-semibold text-rose-700">Read error: {data.error}</p> : null}</div><span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-bold text-slate-600">{data.rows.length} shown</span></div><div className="mt-4 overflow-x-auto"><table className="min-w-full divide-y divide-slate-200 text-left text-sm"><thead className="text-xs uppercase tracking-wide text-slate-500"><tr>{columns.map((column) => <th key={column.label} className="whitespace-nowrap px-3 py-2 font-bold">{column.label}</th>)}</tr></thead><tbody className="divide-y divide-slate-100">{data.rows.length === 0 ? <tr><td className="px-3 py-5 text-sm text-slate-500" colSpan={columns.length}>{empty}</td></tr> : data.rows.map((row, index) => <tr key={`${title}-${text(row.id) || index}`}>{columns.map((column) => <td key={column.label} className="whitespace-nowrap px-3 py-2 text-slate-700">{column.render(row) as any}</td>)}</tr>)}</tbody></table></div></section>; }
 function ExceptionCard({ row }: { row: Row }) { return <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-semibold text-slate-950">{sourceDisplay(row)}</p><p className="mt-1 text-xs font-bold uppercase tracking-wide text-amber-700">{boxEffect(row)} · {gbp(signedAmount(row))}</p></div><span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-800">Review</span></div><p className="mt-3 text-sm leading-6 text-slate-700">{cut(row.adjustment_reason || "Sage does not appear to naturally cover this VAT line.", 140)}</p></div>; }
 function Box6Control({ activeRows, allRows, expectedBox6Gbp }: { activeRows: Row[]; allRows: Row[]; expectedBox6Gbp: number }) { const activeTotal = signedTotal(activeRows); const exceptions = activeRows.filter((row) => yes(row.adjustment_required) || !yes(row.natural_sage_covered)); const reviewTotal = signedTotal(exceptions); const variance = activeTotal - expectedBox6Gbp; const supersededCount = allRows.filter((row) => text(row.status) === "superseded").length; return <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-semibold tracking-tight">Box 6 review</h2><p className="mt-1 text-sm leading-6 text-slate-600">Summary uses active Box 6 rows only. Superseded rows stay in the audit trail below. Decrease rows are shown as negative values.</p></div><span className={`rounded-full px-3 py-1 text-xs font-bold ${exceptions.length ? "bg-amber-100 text-amber-800" : "bg-emerald-100 text-emerald-800"}`}>{exceptions.length} active exception(s)</span></div><div className="mt-4 grid gap-3 md:grid-cols-4"><Metric label="Active signed Box 6" value={gbp(activeTotal)} note={`${activeRows.length} active row(s); ${supersededCount} superseded audit row(s)`} /><Metric label="Expected Box 6" value={gbp(expectedBox6Gbp)} note="vat_return_runs.expected_box6_gbp" /><Metric label="Variance" value={gbp(variance)} note="Active signed total minus expected Box 6" warn={Math.abs(variance) > 0.005} /><Metric label="Needs review" value={gbp(reviewTotal)} note="Possible Sage gap from active rows only" warn={exceptions.length > 0} /></div>{exceptions.length ? <div className="mt-4 grid gap-3">{exceptions.map((row, index) => <ExceptionCard key={`${text(row.id)}-${index}`} row={row} />)}</div> : <p className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-semibold text-emerald-900">No active Box 6 timing exceptions found. Matched active lines and superseded rows are kept in the audit trail below.</p>}</section>; }
+
+function lineIsReviewRequired(row: Row): boolean { return yes(row.review_required) || text(row.classification).toLowerCase() === "review_required_purchase_posting" || text(row.reason).toLowerCase().includes("review required") || text(row.tax_profile_summary).toLowerCase() === "review required"; }
+function lineCanBeSelected(row: Row): boolean { return text(row.classification) === "direct_sage_purchase_posting_not_on_platform" && !yes(row.platform_controlled) && !lineIsReviewRequired(row); }
+function groupKey(row: Row): string { const primary = [row.source_type, row.sage_document_id, row.sage_api_path, row.document_label].map(text); if (primary.slice(1).some(Boolean)) return `primary:${primary.join("|")}`; return `fallback:${[row.source_type, row.document_label, row.supplier_contact, row.document_date].map(text).join("|")}`; }
+function uniqueClean(values: unknown[]): string[] { return [...new Set(values.map(clean).filter((value) => value && value !== "—"))]; }
+function summary(values: unknown[], mixed = "Mixed"): string { const unique = uniqueClean(values); if (unique.length === 0) return "—"; return unique.length === 1 ? unique[0] : mixed; }
+function taxProfileForLine(row: Row): string { const raw = `${text(row.tax_rate)} ${text(row.tax_rate_name)} ${text(row.tax_code)}`.toLowerCase(); const netAmount = Math.abs(num(row.net_amount)); const vatAmount = Math.abs(num(row.vat_amount)); if (lineIsReviewRequired(row)) return "Review required"; if (raw.includes("20") || (netAmount > 0 && Math.abs((vatAmount / netAmount) - 0.2) <= 0.01)) return "Standard 20%"; if (vatAmount <= 0.005 || raw.includes("zero") || raw.includes("exempt") || raw.includes("outside") || raw.includes("out of scope")) return "Zero/exempt/out-of-scope"; return clean(row.tax_rate) || "Mixed"; }
+function taxProfileSummary(rows: Row[]): string { const profiles = uniqueClean(rows.map(taxProfileForLine)); if (profiles.includes("Review required")) return "Review required"; if (profiles.length === 0) return "—"; return profiles.length === 1 ? profiles[0] : "Mixed"; }
+function purchaseDocumentGroups(rows: Row[], options: { selectable?: boolean; reasonSummary: string; allRows?: Row[] } ): Row[] {
+  const allRows = options.allRows ?? rows;
+  const allByGroup = new Map<string, Row[]>();
+  for (const row of allRows) { const key = groupKey(row); allByGroup.set(key, [...(allByGroup.get(key) ?? []), row]); }
+  const groups = new Map<string, Row[]>();
+  for (const row of rows) { const key = groupKey(row); groups.set(key, [...(groups.get(key) ?? []), row]); }
+  return [...groups.entries()].map(([key, groupRows]) => {
+    const relatedRows = allByGroup.get(key) ?? groupRows;
+    const selectable = Boolean(options.selectable) && relatedRows.length === groupRows.length && relatedRows.every(lineCanBeSelected) && groupRows.every(lineCanBeSelected);
+    return {
+      group_key: key,
+      source_type: text(groupRows[0]?.source_type),
+      sage_document_id: text(groupRows[0]?.sage_document_id),
+      document_label: text(groupRows[0]?.document_label) || text(groupRows[0]?.sage_document_id) || "Sage document",
+      supplier_contact: summary(groupRows.map((row) => row.supplier_contact), "Mixed contacts"),
+      document_date: text(groupRows[0]?.document_date),
+      document_status: summary(groupRows.map((row) => row.document_status), "Mixed statuses"),
+      ledger_summary: summary(groupRows.map((row) => row.ledger_account), "Mixed ledgers"),
+      tax_profile_summary: taxProfileSummary(relatedRows),
+      classification_summary: summary(relatedRows.map((row) => row.classification), "Mixed classifications"),
+      reason_summary: selectable ? options.reasonSummary : taxProfileSummary(relatedRows) === "Review required" || relatedRows.some(lineIsReviewRequired) ? "Needs VAT treatment review" : relatedRows.some((row) => yes(row.platform_controlled)) ? "Already covered by platform" : options.reasonSummary,
+      net_amount: groupRows.reduce((sum, row) => sum + num(row.net_amount), 0),
+      vat_amount: groupRows.reduce((sum, row) => sum + num(row.vat_amount), 0),
+      gross_amount: groupRows.reduce((sum, row) => sum + num(row.gross_amount), 0),
+      effective_box4_amount: groupRows.reduce((sum, row) => sum + num(row.effective_box4_amount), 0),
+      effective_box7_amount: groupRows.reduce((sum, row) => sum + num(row.effective_box7_amount), 0),
+      line_count: groupRows.length,
+      selected_line_indexes: groupRows.map((row) => text(row.__direct_line_index) ? num(row.__direct_line_index) : -1).filter((index) => Number.isInteger(index) && index >= 0),
+      selectable,
+    };
+  });
+}
+
 function SagePurchaseVatReview({ runId, run, recon, purchaseRows }: { runId: string; run: Row; recon: Row; purchaseRows: Row[] }) {
   const review = purchaseVatReview(recon);
   const hasReview = Boolean(text(review.version));
   const directRows = directSagePostingRows(review);
   const platformRows = platformControlledPostingRows(review);
   const reviewRows = reviewRequiredPostingRows(review);
+  const allReviewRows = [...directRows, ...platformRows, ...reviewRows];
   const platformControlledLineCount = num(review.platform_controlled_line_count);
   const reviewRequiredLineCount = num(review.review_line_count);
-  const postingCols: Col[] = [
+  const documentCols: Col[] = [
     { label: "Document/ref", render: (row) => cut(row.document_label || row.sage_document_id, 36) },
     { label: "Supplier/contact", render: (row) => cut(row.supplier_contact, 34) },
     { label: "Document date", render: (row) => date(row.document_date) },
     { label: "Status", render: (row) => cut(row.document_status, 24) },
-    { label: "Ledger", render: (row) => cut(row.ledger_account, 34) },
-    { label: "Tax rate", render: (row) => cut(row.tax_rate, 28) },
-    { label: "Description", render: (row) => cut(row.line_description, 60) },
+    { label: "Ledger summary", render: (row) => cut(row.ledger_summary, 34) },
+    { label: "Tax profile", render: (row) => cut(row.tax_profile_summary, 28) },
+    { label: "Classification", render: (row) => cut(row.classification_summary, 42) },
     { label: "Net", render: (row) => gbp(row.net_amount) },
     { label: "VAT", render: (row) => gbp(row.vat_amount) },
     { label: "Gross", render: (row) => gbp(row.gross_amount) },
     { label: "Box 4 effect", render: (row) => gbp(row.effective_box4_amount) },
     { label: "Box 7 effect", render: (row) => gbp(row.effective_box7_amount) },
-    { label: "Reason", render: (row) => cut(row.reason, 80) },
+    { label: "Lines", render: (row) => num(row.line_count) },
+    { label: "Reason summary", render: (row) => cut(row.reason_summary, 70) },
     { label: "Action/help text", render: () => "Copy ref / open Sage manually" },
   ];
   const directApprovedRows = purchaseRows.filter((row) => ["direct_sage_purchase_posting_not_via_platform_box4", "direct_sage_purchase_posting_not_via_platform_box7"].includes(text(row.line_kind)));
   const acceptedDirectLineIndexes = new Set(directApprovedRows.filter((row) => text(row.source_id) === text(recon.id) && text(obj(row.source_lineage_json).selected_line_index)).map((row) => num(obj(row.source_lineage_json).selected_line_index)));
   const actionDirectRows = directRows.map((row, index) => ({ ...row, __direct_line_index: index })).filter((_, index) => !acceptedDirectLineIndexes.has(index));
+  const directDocumentGroups = purchaseDocumentGroups(actionDirectRows, { selectable: true, reasonSummary: "Direct Sage posting not linked to platform", allRows: allReviewRows });
+  const platformDocumentGroups = purchaseDocumentGroups(platformRows, { reasonSummary: "Already covered by platform" });
+  const reviewDocumentGroups = purchaseDocumentGroups(reviewRows, { reasonSummary: "Needs VAT treatment review" });
   return <div className="grid gap-4">
     <section className={`rounded-3xl border p-5 text-sm leading-6 ${hasReview ? "border-sky-200 bg-sky-50 text-sky-900" : "border-amber-200 bg-amber-50 text-amber-900"}`}>
       <h2 className="font-semibold">Direct Sage purchase posting review</h2>
-      <p className="mt-2">Line-level workbench for direct Sage purchase-side postings not on platform. Platform-controlled Sage postings are excluded from action candidates, review-required postings stay visible, and approval creates platform VAT source lines only for selected direct Sage posting lines.</p>
+      <p className="mt-2">Document-level workbench for direct Sage purchase-side postings not on platform. Underlying line-level Sage evidence remains in the reconstruction snapshot and selected line indexes are still submitted for approval/audit.</p>
       {!hasReview ? <p className="mt-2 font-semibold">Run the Sage reconstruction again to populate this review.</p> : null}
     </section>
     {hasReview ? <section className="grid gap-4 md:grid-cols-3">
@@ -108,11 +154,11 @@ function SagePurchaseVatReview({ runId, run, recon, purchaseRows }: { runId: str
       <Metric label="Sage natural Box 4 / Box 7" value={`${gbp(sageBox(recon, 4))} / ${gbp(sageBox(recon, 7))}`} note="Latest Sage natural purchase totals" />
       <Metric label="Current difference" value={`${gbp(platformBox(run, 4) - sageBox(recon, 4))} / ${gbp(platformBox(run, 7) - sageBox(recon, 7))}`} note="Platform minus Sage before selection" warn={Math.abs(platformBox(run, 4) - sageBox(recon, 4)) > 0.01 || Math.abs(platformBox(run, 7) - sageBox(recon, 7)) > 0.01} />
     </section> : null}
-    {hasReview ? <DirectSagePurchasePostingSelector runId={runId} snapshotId={text(recon.id)} rows={actionDirectRows} platformBox4={platformBox(run, 4)} platformBox7={platformBox(run, 7)} sageBox4={sageBox(recon, 4)} sageBox7={sageBox(recon, 7)} /> : null}
-    {hasReview && platformControlledLineCount > platformRows.length ? <p className="rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm font-semibold text-sky-900">Showing first {platformRows.length} of {platformControlledLineCount} platform-controlled lines.</p> : null}
-    {hasReview ? <Table title="Platform-controlled Sage postings — read-only/excluded from action" data={{ rows: platformRows, error: null, count: platformRows.length }} columns={postingCols} empty="No platform-controlled Sage purchase postings found in this review." /> : null}
-    {hasReview && reviewRequiredLineCount > reviewRows.length ? <p className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm font-semibold text-amber-900">Showing first {reviewRows.length} of {reviewRequiredLineCount} review-required lines.</p> : null}
-    {hasReview ? <Table title="Review-required postings — read-only/needs investigation" data={{ rows: reviewRows, error: null, count: reviewRows.length }} columns={postingCols} empty="No review-required Sage purchase postings found in this review." /> : null}
+    {hasReview ? <DirectSagePurchasePostingSelector runId={runId} snapshotId={text(recon.id)} rows={directDocumentGroups} platformBox4={platformBox(run, 4)} platformBox7={platformBox(run, 7)} sageBox4={sageBox(recon, 4)} sageBox7={sageBox(recon, 7)} /> : null}
+    {hasReview && platformControlledLineCount > platformRows.length ? <p className="rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm font-semibold text-sky-900">Showing document groups built from first {platformRows.length} of {platformControlledLineCount} platform-controlled lines.</p> : null}
+    {hasReview ? <Table title="Platform-controlled Sage postings — read-only/excluded from action" data={{ rows: platformDocumentGroups, error: null, count: platformDocumentGroups.length }} columns={documentCols} empty="No platform-controlled Sage purchase postings found in this review." /> : null}
+    {hasReview && reviewRequiredLineCount > reviewRows.length ? <p className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm font-semibold text-amber-900">Showing document groups built from first {reviewRows.length} of {reviewRequiredLineCount} review-required lines.</p> : null}
+    {hasReview ? <Table title="Review-required postings — read-only/needs investigation" data={{ rows: reviewDocumentGroups, error: null, count: reviewDocumentGroups.length }} columns={documentCols} empty="No review-required Sage purchase postings found in this review." /> : null}
     {directApprovedRows.length ? <Table title="Accepted direct Sage postings already included in platform VAT return" data={{ rows: directApprovedRows, error: null, count: directApprovedRows.length }} columns={[{ label: "Source", render: (row) => sourceDisplay(row) }, { label: "Box effect", render: (row) => boxEffect(row) }, { label: "Amount", render: (row) => gbp(signedAmount(row)) }, { label: "Sage", render: (row) => yes(row.natural_sage_covered) ? "Naturally covered" : "Not covered" }, { label: "Adjustment", render: (row) => yes(row.adjustment_required) ? "Needs journal" : "No Sage journal" }]} /> : null}
   </div>;
 }
