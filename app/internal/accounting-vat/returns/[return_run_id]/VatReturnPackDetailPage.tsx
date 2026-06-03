@@ -59,8 +59,8 @@ function sageBox(recon: Row, box: number): number { if (box === 3) return sageBo
 function purchaseVatReview(recon: Row): Row { return obj(obj(recon.source_summary).purchase_vat_line_review); }
 function purchaseReviewSampleRows(review: Row): Row[] { return Array.isArray(review.review_sample) ? (review.review_sample as Row[]) : []; }
 function directSagePostingRows(review: Row): Row[] { return Array.isArray(review.direct_sage_purchase_postings_not_on_platform) ? (review.direct_sage_purchase_postings_not_on_platform as Row[]) : []; }
-function platformControlledPostingRows(review: Row): Row[] { return Array.isArray(review.platform_controlled_sage_purchase_postings) ? (review.platform_controlled_sage_purchase_postings as Row[]) : Array.isArray(review.platform_controlled_purchase_postings) ? (review.platform_controlled_purchase_postings as Row[]) : []; }
-function reviewRequiredPostingRows(review: Row): Row[] { return Array.isArray(review.review_required_purchase_postings) ? (review.review_required_purchase_postings as Row[]) : purchaseReviewSampleRows(review).filter((row) => text(row.classification) === "review_required_purchase_posting" || text(row.bucket).startsWith("review")); }
+function platformControlledPostingRows(review: Row): Row[] { return Array.isArray(review.platform_controlled_purchase_lines) ? (review.platform_controlled_purchase_lines as Row[]) : Array.isArray(review.platform_controlled_sage_purchase_postings) ? (review.platform_controlled_sage_purchase_postings as Row[]) : Array.isArray(review.platform_controlled_purchase_postings) ? (review.platform_controlled_purchase_postings as Row[]) : []; }
+function reviewRequiredPostingRows(review: Row): Row[] { return Array.isArray(review.review_required_purchase_lines) ? (review.review_required_purchase_lines as Row[]) : Array.isArray(review.review_required_purchase_postings) ? (review.review_required_purchase_postings as Row[]) : purchaseReviewSampleRows(review).filter((row) => text(row.classification) === "review_required_purchase_posting" || text(row.bucket).startsWith("review")); }
 function totalsOnlySageDraftImport(row: Row): boolean { const sourceSummary = obj(row.source_summary); return text(row.source_basis).startsWith("sage_draft_vat_return_totals_import") || Boolean(text(sourceSummary.source_mode)) || text(sourceSummary.version).startsWith("sage_draft_vat_return_totals_import"); }
 
 function Metric({ label, value, note, warn = false }: { label: string; value: string; note: string; warn?: boolean }) { return <div className={`rounded-2xl border p-4 ${warn ? "border-amber-200 bg-amber-50 text-amber-900" : "border-slate-200 bg-slate-50 text-slate-800"}`}><p className="text-xs font-bold uppercase tracking-wide opacity-70">{label}</p><p className="mt-1 text-2xl font-extrabold">{value}</p><p className="mt-2 text-xs leading-5 opacity-90">{note}</p></div>; }
@@ -76,6 +76,8 @@ function SagePurchaseVatReview({ runId, run, recon, purchaseRows }: { runId: str
   const directRows = directSagePostingRows(review);
   const platformRows = platformControlledPostingRows(review);
   const reviewRows = reviewRequiredPostingRows(review);
+  const platformControlledLineCount = num(review.platform_controlled_line_count);
+  const reviewRequiredLineCount = num(review.review_line_count);
   const postingCols: Col[] = [
     { label: "Document/ref", render: (row) => cut(row.document_label || row.sage_document_id, 36) },
     { label: "Supplier/contact", render: (row) => cut(row.supplier_contact, 34) },
@@ -107,7 +109,9 @@ function SagePurchaseVatReview({ runId, run, recon, purchaseRows }: { runId: str
       <Metric label="Current difference" value={`${gbp(platformBox(run, 4) - sageBox(recon, 4))} / ${gbp(platformBox(run, 7) - sageBox(recon, 7))}`} note="Platform minus Sage before selection" warn={Math.abs(platformBox(run, 4) - sageBox(recon, 4)) > 0.01 || Math.abs(platformBox(run, 7) - sageBox(recon, 7)) > 0.01} />
     </section> : null}
     {hasReview ? <DirectSagePurchasePostingSelector runId={runId} snapshotId={text(recon.id)} rows={actionDirectRows} platformBox4={platformBox(run, 4)} platformBox7={platformBox(run, 7)} sageBox4={sageBox(recon, 4)} sageBox7={sageBox(recon, 7)} /> : null}
+    {hasReview && platformControlledLineCount > platformRows.length ? <p className="rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm font-semibold text-sky-900">Showing first {platformRows.length} of {platformControlledLineCount} platform-controlled lines.</p> : null}
     {hasReview ? <Table title="Platform-controlled Sage postings — read-only/excluded from action" data={{ rows: platformRows, error: null, count: platformRows.length }} columns={postingCols} empty="No platform-controlled Sage purchase postings found in this review." /> : null}
+    {hasReview && reviewRequiredLineCount > reviewRows.length ? <p className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm font-semibold text-amber-900">Showing first {reviewRows.length} of {reviewRequiredLineCount} review-required lines.</p> : null}
     {hasReview ? <Table title="Review-required postings — read-only/needs investigation" data={{ rows: reviewRows, error: null, count: reviewRows.length }} columns={postingCols} empty="No review-required Sage purchase postings found in this review." /> : null}
     {directApprovedRows.length ? <Table title="Accepted direct Sage postings already included in platform VAT return" data={{ rows: directApprovedRows, error: null, count: directApprovedRows.length }} columns={[{ label: "Source", render: (row) => sourceDisplay(row) }, { label: "Box effect", render: (row) => boxEffect(row) }, { label: "Amount", render: (row) => gbp(signedAmount(row)) }, { label: "Sage", render: (row) => yes(row.natural_sage_covered) ? "Naturally covered" : "Not covered" }, { label: "Adjustment", render: (row) => yes(row.adjustment_required) ? "Needs journal" : "No Sage journal" }]} /> : null}
   </div>;
