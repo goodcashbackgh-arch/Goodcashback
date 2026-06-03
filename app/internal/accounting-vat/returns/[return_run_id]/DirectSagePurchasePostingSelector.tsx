@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { EMPTY_PURCHASE_VAT_FILTERS, filterPurchaseVatRows, PurchaseVatSectionFilters, type PurchaseVatFilters } from "./PurchaseVatSectionFilters";
 
 type Row = Record<string, unknown>;
 
@@ -80,8 +81,8 @@ function taxProfile(row: Row): string {
   return text(row.tax_profile_summary) || "—";
 }
 
-function searchText(row: Row): string {
-  return [directSageDisplayLabel(row), row.sage_document_id, row.supplier_contact, row.document_date, row.document_status, row.tax_profile_summary].map(text).join(" ").toLowerCase();
+function statusForDirectRow(): string[] {
+  return ["Direct unresolved"];
 }
 
 function nil(value: number): boolean {
@@ -90,7 +91,7 @@ function nil(value: number): boolean {
 
 export function DirectSagePurchasePostingSelector({ runId, snapshotId, rows, platformBox4, platformBox7, sageBox4, sageBox7 }: Props) {
   const [selectedGroupKeys, setSelectedGroupKeys] = useState<Set<string>>(new Set());
-  const [query, setQuery] = useState("");
+  const [filters, setFilters] = useState<PurchaseVatFilters>(EMPTY_PURCHASE_VAT_FILTERS);
   const [showResolvedDetails, setShowResolvedDetails] = useState(false);
   const [visibleCount, setVisibleCount] = useState(50);
   const selectableKeys = useMemo(() => rows.filter(groupCanBeSelected).map((row, index) => text(row.group_key) || String(index)), [rows]);
@@ -103,8 +104,7 @@ export function DirectSagePurchasePostingSelector({ runId, snapshotId, rows, pla
   const canProceed = selectedGroupKeys.size > 0 && nil(remainingBox4) && nil(remainingBox7) && !invalidSelection;
   const selectedIndexes = selectedRows.flatMap(lineIndexes).sort((a, b) => a - b);
   const approvalUrl = `/internal/accounting-vat/returns/${runId}/sage-only-purchase-approval?sage_snapshot_id=${encodeURIComponent(snapshotId)}&selected_line_indexes=${encodeURIComponent(selectedIndexes.join(","))}`;
-  const showSearch = rows.length > 50;
-  const filteredRows = query.trim() ? rows.filter((row) => searchText(row).includes(query.trim().toLowerCase())) : rows;
+  const filteredRows = filterPurchaseVatRows(rows, filters, statusForDirectRow);
   const visibleRows = filteredRows.slice(0, visibleCount);
   const fullyReconciled = rows.length === 0 && nil(remainingBox4) && nil(remainingBox7);
 
@@ -140,7 +140,7 @@ export function DirectSagePurchasePostingSelector({ runId, snapshotId, rows, pla
       <div className={`rounded-2xl border p-4 ${nil(remainingBox7) ? "border-emerald-200 bg-emerald-50 text-emerald-900" : "border-amber-200 bg-amber-50 text-amber-900"}`}><p className="text-xs font-bold uppercase opacity-70">Remaining Box 7 difference</p><p className="mt-1 text-xl font-extrabold">{gbp(remainingBox7)}</p></div>
     </div>
 
-    {showSearch ? <div className="mt-4"><label className="text-xs font-bold uppercase tracking-wide text-slate-500" htmlFor="direct-sage-document-search">Filter document groups</label><input id="direct-sage-document-search" value={query} onChange={(event) => { setQuery(event.target.value); setVisibleCount(50); }} placeholder="Search supplier, ref, date, status or tax profile" className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-sky-400" /></div> : null}
+    {rows.length ? <PurchaseVatSectionFilters rows={rows} filters={filters} setFilters={setFilters} sectionId="direct-sage-unresolved" statusForRow={statusForDirectRow} onChange={() => setVisibleCount(50)} /> : null}
 
     <div className="mt-5 overflow-x-auto">
       <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
@@ -167,12 +167,12 @@ export function DirectSagePurchasePostingSelector({ runId, snapshotId, rows, pla
               <td className="min-w-48 px-3 py-2">{cut(row.reason_summary, 70)}</td>
               <td className="min-w-44 px-3 py-2">Copy ref / open Sage manually</td>
             </tr>;
-          }) : <tr><td className="px-3 py-6 text-center text-slate-500" colSpan={16}>No direct Sage document groups not on platform found in the latest review snapshot.</td></tr>}
+          }) : <tr><td className="px-3 py-6 text-center text-slate-500" colSpan={16}>{rows.length ? "No direct Sage document groups match the current filters." : "No direct Sage document groups not on platform found in the latest review snapshot."}</td></tr>}
         </tbody>
       </table>
     </div>
 
-    {filteredRows.length > visibleRows.length ? <div className="mt-4 flex justify-center"><button type="button" onClick={() => setVisibleCount((count) => count + 50)} className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50">Show more direct Sage documents ({filteredRows.length - visibleRows.length} remaining)</button></div> : null}
+    {filteredRows.length > 50 ? <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3"><p className="text-sm font-semibold text-slate-700">Showing {Math.min(visibleRows.length, filteredRows.length)} of {filteredRows.length}</p>{visibleRows.length < filteredRows.length ? <button type="button" onClick={() => setVisibleCount((count) => count + 50)} className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50">Show more</button> : null}</div> : null}
 
     {!fullyReconciled ? <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
       <p className="text-sm font-semibold text-slate-700">{canProceed ? "Ready to proceed: selected document groups reconcile Box 4 and Box 7 to nil." : "Select direct Sage document groups until both remaining differences are £0.00 within £0.01."}</p>
