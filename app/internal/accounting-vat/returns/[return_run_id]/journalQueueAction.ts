@@ -38,7 +38,7 @@ export async function materialiseVatAdjustmentJournalQueueAction(formData: FormD
   const createdCount = jsonNumber(result?.created_count);
   const status = value(result?.status) || "completed";
   const message = createdCount > 0
-    ? `Created ${createdCount} VAT adjustment journal(s). Open each journal to dry-run validate and approve.`
+    ? `Created ${createdCount} VAT adjustment journal(s). Continue below: dry-run validate → approve → post.`
     : `No VAT adjustment journal created: ${status}.`;
 
   redirect(`/internal/accounting-vat/returns/${runId}?tab=journals&vatSuccess=${encodeURIComponent(message)}`);

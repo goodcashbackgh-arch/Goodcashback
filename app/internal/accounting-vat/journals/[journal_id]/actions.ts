@@ -36,13 +36,33 @@ async function requireVatPostingAdmin() {
   return { supabase, staffId: String((staff as any).id) };
 }
 
-function journalRedirect(journalId: string, message: string, kind: "success" | "error") {
+function journalRedirect(
+  journalId: string,
+  returnRunId: string,
+  message: string,
+  kind: "success" | "error",
+) {
+  if (returnRunId) {
+    const vatParam = kind === "success" ? "vatSuccess" : "vatError";
+    redirect(
+      `/internal/accounting-vat/returns/${returnRunId}?tab=journals&${vatParam}=${encodeURIComponent(message)}`,
+    );
+  }
+
   redirect(`/internal/accounting-vat/journals/${journalId}?${kind}=${encodeURIComponent(message)}`);
 }
 
 export async function dryRunVatAdjustmentJournalAction(formData: FormData) {
   const journalId = formText(formData, "journal_id");
-  if (!journalId) redirect(`/internal/accounting-vat?error=${encodeURIComponent("Missing VAT adjustment journal id")}`);
+  const returnRunId = formText(formData, "return_run_id");
+  if (!journalId) {
+    if (returnRunId) {
+      redirect(
+        `/internal/accounting-vat/returns/${returnRunId}?tab=journals&vatError=${encodeURIComponent("Missing VAT adjustment journal id")}`,
+      );
+    }
+    redirect(`/internal/accounting-vat?error=${encodeURIComponent("Missing VAT adjustment journal id")}`);
+  }
 
   const { supabase } = await requireVatPostingAdmin();
   const { data, error } = await (supabase as any).rpc("staff_validate_vat_adjustment_journal_dry_run_v1", {
@@ -50,30 +70,66 @@ export async function dryRunVatAdjustmentJournalAction(formData: FormData) {
   });
 
   revalidatePath("/internal/accounting-vat");
+  if (returnRunId) revalidatePath(`/internal/accounting-vat/returns/${returnRunId}`);
   revalidatePath(`/internal/accounting-vat/journals/${journalId}`);
 
-  if (error) journalRedirect(journalId, error.message || "VAT journal dry-run validation failed.", "error");
+  if (error) {
+    journalRedirect(
+      journalId,
+      returnRunId,
+      error.message || "VAT journal dry-run validation failed.",
+      "error",
+    );
+  }
   const valid = Boolean((data as any)?.valid);
   const status = String((data as any)?.status ?? "dry-run complete");
-  journalRedirect(journalId, valid ? `Dry-run validated: ${status}` : `Dry-run completed with issues: ${status}`, valid ? "success" : "error");
+  journalRedirect(
+    journalId,
+    returnRunId,
+    valid
+      ? `Dry-run validated: ${status}`
+      : `Dry-run completed with issues: ${status}`,
+    valid ? "success" : "error",
+  );
 }
 
 export async function approveVatAdjustmentJournalAction(formData: FormData) {
   const journalId = formText(formData, "journal_id");
-  if (!journalId) redirect(`/internal/accounting-vat?error=${encodeURIComponent("Missing VAT adjustment journal id")}`);
+  const formReturnRunId = formText(formData, "return_run_id");
+  if (!journalId) {
+    if (formReturnRunId) {
+      redirect(
+        `/internal/accounting-vat/returns/${formReturnRunId}?tab=journals&vatError=${encodeURIComponent("Missing VAT adjustment journal id")}`,
+      );
+    }
+    redirect(`/internal/accounting-vat?error=${encodeURIComponent("Missing VAT adjustment journal id")}`);
+  }
 
   const { supabase } = await requireVatPostingAdmin();
   const { data, error } = await (supabase as any).rpc("staff_approve_vat_adjustment_journal_v1", {
     p_vat_return_adjustment_journal_id: journalId,
   });
 
-  const returnRunId = String((data as any)?.vat_return_run_id ?? "");
+  const rpcReturnRunId = String((data as any)?.vat_return_run_id ?? "");
+  const returnRunId = formReturnRunId || rpcReturnRunId;
   revalidatePath("/internal/accounting-vat");
   if (returnRunId) revalidatePath(`/internal/accounting-vat/returns/${returnRunId}`);
   revalidatePath(`/internal/accounting-vat/journals/${journalId}`);
 
-  if (error) journalRedirect(journalId, error.message || "VAT journal admin approval failed.", "error");
-  journalRedirect(journalId, "VAT adjustment journal admin approved.", "success");
+  if (error) {
+    journalRedirect(
+      journalId,
+      formReturnRunId,
+      error.message || "VAT journal admin approval failed.",
+      "error",
+    );
+  }
+  journalRedirect(
+    journalId,
+    formReturnRunId,
+    "VAT adjustment journal admin approved.",
+    "success",
+  );
 }
 
 export async function postVatAdjustmentJournalToSageAction(formData: FormData) {
@@ -84,9 +140,21 @@ export async function postVatAdjustmentJournalToSageAction(formData: FormData) {
     ? `/internal/accounting-vat/journals/${journalId}`
     : "/internal/accounting-vat";
 
-  if (!journalId) redirect(`/internal/accounting-vat?error=${encodeURIComponent("Missing VAT adjustment journal id")}`);
+  if (!journalId) {
+    if (returnRunId) {
+      redirect(
+        `/internal/accounting-vat/returns/${returnRunId}?tab=journals&vatError=${encodeURIComponent("Missing VAT adjustment journal id")}`,
+      );
+    }
+    redirect(`/internal/accounting-vat?error=${encodeURIComponent("Missing VAT adjustment journal id")}`);
+  }
   if (confirmLivePost !== "yes") {
-    redirect(`${redirectBase}?error=${encodeURIComponent("Confirm controlled live Sage posting before posting this VAT adjustment journal.")}`);
+    journalRedirect(
+      journalId,
+      returnRunId,
+      "Confirm controlled live Sage posting before posting this VAT adjustment journal.",
+      "error",
+    );
   }
 
   const { staffId } = await requireVatPostingAdmin();
@@ -100,13 +168,21 @@ export async function postVatAdjustmentJournalToSageAction(formData: FormData) {
     });
 
     if (result.failed > 0) {
-      redirectTo = `${redirectBase}?error=${encodeURIComponent(result.error || "VAT journal Sage posting failed")}`;
+      const message = result.error || "VAT journal Sage posting failed";
+      redirectTo = returnRunId
+        ? `/internal/accounting-vat/returns/${returnRunId}?tab=journals&vatError=${encodeURIComponent(message)}`
+        : `${redirectBase}?error=${encodeURIComponent(message)}`;
     } else {
-      redirectTo = `${redirectBase}?success=${encodeURIComponent(`VAT adjustment journal posted to Sage: ${result.sageReference || result.sageJournalId}`)}`;
+      const message = `VAT adjustment journal posted to Sage: ${result.sageReference || result.sageJournalId}`;
+      redirectTo = returnRunId
+        ? `/internal/accounting-vat/returns/${returnRunId}?tab=journals&vatSuccess=${encodeURIComponent(message)}`
+        : `${redirectBase}?success=${encodeURIComponent(message)}`;
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : "VAT adjustment journal Sage posting failed.";
-    redirectTo = `${redirectBase}?error=${encodeURIComponent(message)}`;
+    redirectTo = returnRunId
+      ? `/internal/accounting-vat/returns/${returnRunId}?tab=journals&vatError=${encodeURIComponent(message)}`
+      : `${redirectBase}?error=${encodeURIComponent(message)}`;
   }
 
   revalidatePath("/internal/accounting-vat");

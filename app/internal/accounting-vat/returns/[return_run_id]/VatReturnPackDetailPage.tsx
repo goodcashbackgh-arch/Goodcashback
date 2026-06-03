@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 import { runVatReconstructionForRunAction } from "../../reconstructFormAction";
 import { refreshVatPurchaseSourceLinesAction as refreshVatSourceSnapshotAction } from "./purchaseRefreshAction";
+import { materialiseVatAdjustmentJournalQueueAction } from "./journalQueueAction";
 import { DirectSagePurchasePostingSelector } from "./DirectSagePurchasePostingSelector";
 import {
   AcceptedDirectSagePostings,
@@ -1312,17 +1313,21 @@ export default async function VatReturnPackDetailPage({
           status === "platform_calculated" || status === "dry_run_failed";
         const canApprove = status === "dry_run_validated";
         const canPost = status === "admin_approved";
+        const isPosted =
+          status === "posted_to_sage" || status === "included_in_sage_return";
+        const sageReference = text(row.sage_journal_ref) || text(row.sage_journal_id);
         return (
           <div className="flex min-w-48 flex-wrap gap-2">
             <Link
               href={`/internal/accounting-vat/journals/${journalId}`}
-              className="rounded-lg border border-sky-200 bg-sky-50 px-2 py-1 text-xs font-bold text-sky-800 hover:bg-sky-100"
+              className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-bold text-slate-700 hover:bg-slate-50"
             >
-              Open detail
+              Audit detail
             </Link>
             {canDryRun ? (
               <form action={dryRunVatAdjustmentJournalAction}>
                 <input type="hidden" name="journal_id" value={journalId} />
+                <input type="hidden" name="return_run_id" value={runId} />
                 <button className="rounded-lg border border-indigo-200 bg-indigo-50 px-2 py-1 text-xs font-bold text-indigo-800 hover:bg-indigo-100">
                   Dry-run / validate
                 </button>
@@ -1331,10 +1336,16 @@ export default async function VatReturnPackDetailPage({
             {canApprove ? (
               <form action={approveVatAdjustmentJournalAction}>
                 <input type="hidden" name="journal_id" value={journalId} />
+                <input type="hidden" name="return_run_id" value={runId} />
                 <button className="rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs font-bold text-emerald-800 hover:bg-emerald-100">
                   Approve
                 </button>
               </form>
+            ) : null}
+            {isPosted ? (
+              <span className="rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs font-bold text-emerald-800">
+                Posted{sageReference ? ` · ${sageReference}` : ""}
+              </span>
             ) : null}
             {canPost ? (
               <form
@@ -1353,7 +1364,7 @@ export default async function VatReturnPackDetailPage({
                   Confirm
                 </label>
                 <button className="rounded-lg border border-slate-950 bg-slate-950 px-2 py-1 text-xs font-bold text-white hover:bg-slate-800">
-                  Post to Sage
+                  Confirm + Post to Sage
                 </button>
               </form>
             ) : null}
@@ -1669,39 +1680,48 @@ export default async function VatReturnPackDetailPage({
                   <ol className="mt-3 list-decimal space-y-1 pl-5 text-sm">
                     <li>Create the Sage-gap journal queue for this return.</li>
                     <li>
-                      Use the table below to open each journal, dry-run
-                      validate, approve and post to Sage in sequence.
+                      Continue in this Journals tab to dry-run validate, approve
+                      and post to Sage in sequence.
                     </li>
                     <li>
-                      Use the evidence pack as the secondary audit trail after
-                      posting.
+                      Use the evidence pack as a secondary audit trail after
+                      operational posting is complete.
                     </li>
                   </ol>
                   {hasAdjustmentJournals ? (
                     <p className="mt-3 rounded-2xl border border-rose-200 bg-white/70 p-3 font-semibold">
-                      Journal queue already created. Continue with validation,
-                      approval and posting below.
+                      Journal queue created. Continue below: dry-run validate →
+                      approve → post.
                     </p>
-                  ) : !canCreateJournalQueue ? (
+                  ) : canCreateJournalQueue ? (
+                    <p className="mt-3 rounded-2xl border border-rose-200 bg-white/70 p-3 font-semibold">
+                      Create the journal queue for the Sage gap, then validate,
+                      approve and post below.
+                    </p>
+                  ) : (
                     <p className="mt-3 rounded-2xl border border-rose-200 bg-white/70 p-3 font-semibold">
                       Journal queue creation is unavailable because this return
                       is locked, blocked by status, or has already moved beyond
                       queue creation.
                     </p>
-                  ) : null}
+                  )}
                 </div>
                 <div className="flex flex-wrap gap-3">
                   {canCreateJournalQueue ? (
-                    <Link
-                      href={`/internal/accounting-vat/returns/${runId}/journal-queue`}
-                      className="rounded-xl border border-slate-950 bg-slate-950 px-4 py-2 text-sm font-bold text-white hover:bg-slate-800"
-                    >
-                      Create Sage-gap journal queue
-                    </Link>
+                    <form action={materialiseVatAdjustmentJournalQueueAction}>
+                      <input
+                        type="hidden"
+                        name="vat_return_run_id"
+                        value={runId}
+                      />
+                      <button className="rounded-xl border border-slate-950 bg-slate-950 px-4 py-2 text-sm font-bold text-white hover:bg-slate-800">
+                        Create Sage-gap journal queue
+                      </button>
+                    </form>
                   ) : null}
                   <Link
                     href={`/internal/accounting-vat/returns/${runId}/sage-evidence`}
-                    className="rounded-xl border border-sky-200 bg-white px-4 py-2 text-sm font-bold text-sky-800 hover:bg-sky-50"
+                    className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50"
                   >
                     View Sage posting evidence pack
                   </Link>
