@@ -610,6 +610,14 @@ function Workflow({
         ))}
       </div>
       <p className="mt-3 text-xs leading-5 text-slate-600">{message}</p>
+      <div className="mt-4 flex flex-wrap gap-3">
+        <Link
+          href={`/internal/accounting-vat/returns/${text(run.id)}/sage-draft-import`}
+          className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-bold text-emerald-800 hover:bg-emerald-100"
+        >
+          Upload Sage VAT file
+        </Link>
+      </div>
     </section>
   );
 }
@@ -1741,12 +1749,30 @@ export default async function VatReturnPackDetailPage({
           </div>
         ) : null}
         {activeTab === "submission" ? (
-          <Table
-            title="Submission evidence"
-            data={matchEvidence}
-            columns={matchCols}
-            empty="No Sage submission evidence captured yet."
-          />
+          <div className="grid gap-4">
+            <section className="rounded-3xl border border-emerald-200 bg-emerald-50 p-5 text-sm leading-6 text-emerald-900">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h2 className="text-lg font-semibold text-emerald-950">Upload Sage VAT file</h2>
+                  <p className="mt-2">
+                    Use Sage VAT upload to record final submitted Sage values. The return only locks if Sage submitted Boxes 1–9 match platform expected Boxes 1–9.
+                  </p>
+                </div>
+                <Link
+                  href={`/internal/accounting-vat/returns/${runId}/sage-draft-import`}
+                  className="rounded-xl border border-emerald-700 bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-700"
+                >
+                  Upload Sage VAT file
+                </Link>
+              </div>
+            </section>
+            <Table
+              title="Submission evidence"
+              data={matchEvidence}
+              columns={matchCols}
+              empty="No Sage submission evidence captured yet."
+            />
+          </div>
         ) : null}
       </div>
     </main>

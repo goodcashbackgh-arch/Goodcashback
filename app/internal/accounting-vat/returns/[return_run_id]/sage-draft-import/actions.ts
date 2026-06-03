@@ -175,6 +175,25 @@ async function readUpload(value: FormDataEntryValue | null) {
   };
 }
 
+
+function uploadPurpose(formData: FormData): "draft_reconciliation" | "final_submission_evidence" {
+  return s(formData.get("upload_purpose")) === "final_submission_evidence" ? "final_submission_evidence" : "draft_reconciliation";
+}
+
+function finalSubmissionTimestamp(value: unknown): string {
+  const raw = s(value);
+  if (!raw) return new Date().toISOString();
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) throw new Error("Sage submission timestamp is not a valid date/time.");
+  return parsed.toISOString();
+}
+
+function rpcMatched(data: unknown): boolean {
+  if (typeof data === "boolean") return data;
+  if (data && typeof data === "object" && "matched" in data) return Boolean((data as Row).matched);
+  return false;
+}
+
 async function requireAdminStaff() {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -194,16 +213,21 @@ export async function previewSageDraftVatReturnTotalsAction(formData: FormData) 
     const upload = await readUpload(formData.get("sage_draft_file"));
     const extracted = upload.uploadedText ? extractBoxTotalsFromText(upload.uploadedText) : {};
     const overrides = manualOverrides(formData);
-    if (!upload.uploadedText && Object.keys(overrides).length === 0) throw new Error("Upload the Sage draft VAT export or enter the Sage boxes manually.");
+    if (!upload.uploadedText && Object.keys(overrides).length === 0) throw new Error("Upload the Sage VAT file or enter the Sage boxes manually.");
     const preview = withDerived({ ...extracted, ...overrides });
-    const params = new URLSearchParams({ preview: "1", source_mode: upload.uploadedText ? "upload_preview" : "manual_preview" });
+    const purpose = uploadPurpose(formData);
+    const params = new URLSearchParams({ preview: "1", source_mode: upload.uploadedText ? "upload_preview" : "manual_preview", upload_purpose: purpose });
+    const sageReturnReference = s(formData.get("sage_return_reference"));
+    const sageSubmissionTimestamp = s(formData.get("sage_submission_timestamp"));
+    if (sageReturnReference) params.set("sage_return_reference", sageReturnReference);
+    if (sageSubmissionTimestamp) params.set("sage_submission_timestamp", sageSubmissionTimestamp);
     if (upload.uploadedFileSummary?.name) params.set("file_name", s(upload.uploadedFileSummary.name));
     for (const box of ALL) if (preview[box] !== undefined && preview[box] !== null) params.set(`box${box}`, preview[box]!.toFixed(2));
     const missing = missingRequired(preview);
     if (missing.length) params.set("missing", missing.join(","));
     target = `/internal/accounting-vat/returns/${runId}/sage-draft-import?${params.toString()}`;
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Sage draft VAT preview failed.";
+    const message = error instanceof Error ? error.message : "Sage VAT preview failed.";
     redirect(`/internal/accounting-vat/returns/${runId}/sage-draft-import?vatError=${encodeURIComponent(message)}`);
   }
   redirect(target);
@@ -246,4 +270,59 @@ export async function importSageDraftVatReturnTotalsAction(formData: FormData) {
   revalidatePath("/internal/accounting-vat");
   revalidatePath(`/internal/accounting-vat/returns/${runId}`);
   redirect(`/internal/accounting-vat/returns/${runId}?tab=summary&sageSnapshot=${encodeURIComponent(snapshotId)}`);
+}
+
+export async function recordFinalSageVatSubmissionEvidenceAction(formData: FormData) {
+  const runId = s(formData.get("vat_return_run_id"));
+  if (!runId) redirect("/internal/accounting-vat?vatError=Missing%20VAT%20return%20run%20id");
+  let target = "";
+  try {
+    const { supabase } = await requireAdminStaff();
+    const sageReturnReference = s(formData.get("sage_return_reference"));
+    if (!sageReturnReference) throw new Error("Enter the Sage return reference before recording final submission evidence.");
+    const confirmed = s(formData.get("confirm_final_sage_submission")) === "yes";
+    if (!confirmed) throw new Error("Confirm this is the final submitted Sage VAT return evidence before locking can be attempted.");
+    const sageSubmissionTimestamp = finalSubmissionTimestamp(formData.get("sage_submission_timestamp"));
+    const upload = await readUpload(formData.get("sage_draft_file"));
+    const extracted = upload.uploadedText ? extractBoxTotalsFromText(upload.uploadedText) : {};
+    const overrides = manualOverrides(formData);
+    if (!upload.uploadedText && Object.keys(overrides).length === 0) throw new Error("Upload the final Sage VAT return evidence or enter the submitted Sage boxes manually.");
+    const { boxes, warnings } = finalBoxes(extracted, overrides);
+    const { data, error } = await (supabase as any).rpc("staff_record_vat_sage_submission_and_lock_v1", {
+      p_vat_return_run_id: runId,
+      p_sage_return_reference: sageReturnReference,
+      p_sage_submitted_box1_gbp: boxes[1],
+      p_sage_submitted_box2_gbp: boxes[2],
+      p_sage_submitted_box3_gbp: boxes[3],
+      p_sage_submitted_box4_gbp: boxes[4],
+      p_sage_submitted_box5_gbp: boxes[5],
+      p_sage_submitted_box6_gbp: boxes[6],
+      p_sage_submitted_box7_gbp: boxes[7],
+      p_sage_submitted_box8_gbp: boxes[8],
+      p_sage_submitted_box9_gbp: boxes[9],
+      p_sage_submission_timestamp: sageSubmissionTimestamp,
+      p_evidence_url: null,
+      p_evidence_json: {
+        upload_purpose: "final_submission_evidence",
+        uploaded_file: upload.uploadedFileSummary,
+        extracted_boxes: extracted,
+        manual_overrides: overrides,
+        final_boxes: boxes,
+        calculation_warnings: warnings,
+        confirmation: "admin_confirmed_final_sage_submission_evidence",
+      },
+      p_tolerance_gbp: 0.01,
+      p_notes: "Final Sage VAT submission evidence uploaded through Sage VAT upload page.",
+    });
+    if (error) throw new Error(error.message || "Could not record final Sage VAT submission evidence.");
+    revalidatePath("/internal/accounting-vat");
+    revalidatePath(`/internal/accounting-vat/returns/${runId}`);
+    target = rpcMatched(data)
+      ? `/internal/accounting-vat/returns/${runId}?tab=submission&vatSuccess=Final%20Sage%20submission%20matched%20and%20return%20locked`
+      : `/internal/accounting-vat/returns/${runId}?tab=submission&vatError=Final%20Sage%20submission%20does%20not%20match%20platform%20expected%20boxes`;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Final Sage VAT submission evidence failed.";
+    redirect(`/internal/accounting-vat/returns/${runId}/sage-draft-import?upload_purpose=final_submission_evidence&vatError=${encodeURIComponent(message)}`);
+  }
+  redirect(target);
 }
