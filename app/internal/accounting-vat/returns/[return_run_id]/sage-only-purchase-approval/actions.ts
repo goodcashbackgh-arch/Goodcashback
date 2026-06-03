@@ -28,7 +28,7 @@ export async function approveDirectSagePurchasePostingLinesAction(formData: Form
   }
 
   const supabase = await createClient();
-  const { error } = await (supabase as any).rpc("staff_approve_direct_sage_purchase_posting_lines_into_vat_return_v1", {
+  const { error } = await (supabase as any).rpc("staff_approve_direct_sage_purchase_lines_v1", {
     p_vat_return_run_id: runId,
     p_sage_snapshot_id: snapshotId,
     p_selected_line_indexes: indexes,
