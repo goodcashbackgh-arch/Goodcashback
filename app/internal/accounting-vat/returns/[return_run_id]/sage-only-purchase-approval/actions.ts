@@ -8,33 +8,39 @@ function text(value: unknown): string {
   return typeof value === "string" ? value.trim() : typeof value === "number" && Number.isFinite(value) ? String(value) : "";
 }
 
-export async function approveSageOnlyPurchaseBucketsAction(formData: FormData) {
+function selectedLineIndexes(formData: FormData): number[] {
+  return formData.getAll("selected_line_indexes").flatMap((value) => text(value).split(",")).map((value) => Number(value.trim())).filter((value) => Number.isInteger(value) && value >= 0);
+}
+
+export async function approveDirectSagePurchasePostingLinesAction(formData: FormData) {
   const runId = text(formData.get("vat_return_run_id"));
   const snapshotId = text(formData.get("sage_snapshot_id"));
-  const bucketKeys = formData.getAll("bucket_keys").map(text).filter(Boolean);
+  const indexes = selectedLineIndexes(formData);
 
   if (!runId) redirect("/internal/accounting-vat?vatError=Missing%20VAT%20return%20run%20id");
 
   const base = `/internal/accounting-vat/returns/${runId}/sage-only-purchase-approval`;
+  const selectedParam = indexes.join(",");
+  const retryUrl = `${base}?sage_snapshot_id=${encodeURIComponent(snapshotId)}&selected_line_indexes=${encodeURIComponent(selectedParam)}`;
 
-  if (!snapshotId || bucketKeys.length === 0) {
-    redirect(`${base}?vatError=${encodeURIComponent("Select at least one Sage-only bucket to approve.")}`);
+  if (!snapshotId || indexes.length === 0) {
+    redirect(`${base}?vatError=${encodeURIComponent("Select at least one direct Sage posting line to approve.")}`);
   }
 
   const supabase = await createClient();
-  const { error } = await (supabase as any).rpc("staff_approve_sage_only_purchase_buckets_into_vat_return_v1", {
+  const { error } = await (supabase as any).rpc("staff_approve_direct_sage_purchase_posting_lines_into_vat_return_v1", {
     p_vat_return_run_id: runId,
     p_sage_snapshot_id: snapshotId,
-    p_bucket_keys: bucketKeys,
+    p_selected_line_indexes: indexes,
   });
 
   if (error) {
-    redirect(`${base}?vatError=${encodeURIComponent(error.message || "Sage-only purchase approval failed.")}`);
+    redirect(`${retryUrl}&vatError=${encodeURIComponent(error.message || "Direct Sage posting line approval failed.")}`);
   }
 
   revalidatePath("/internal/accounting-vat");
   revalidatePath(`/internal/accounting-vat/returns/${runId}`);
   revalidatePath(base);
 
-  redirect(`/internal/accounting-vat/returns/${runId}?tab=purchases&sageOnlyApproved=1`);
+  redirect(`/internal/accounting-vat/returns/${runId}?tab=purchases&directSageApproved=1`);
 }
