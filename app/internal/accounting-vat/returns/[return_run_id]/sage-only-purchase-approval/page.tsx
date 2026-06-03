@@ -17,7 +17,8 @@ function label(v: unknown): string { const s = text(v).replaceAll("[object Objec
 function review(s: Row): Row { return obj(obj(s.source_summary).purchase_vat_line_review); }
 function buckets(r: Row): Row[] { return Object.entries(obj(r.buckets)).map(([bucket, value]) => ({ bucket, ...obj(value) })); }
 function ok(n: number): boolean { return Math.abs(n) <= 0.01; }
-function auditDocs(s: Row): Row[] { const audit = obj(obj(s.source_summary).document_status_audit); return [...(Array.isArray(obj(obj(audit.purchase_invoices).documents)) ? [] : []), ...((obj(obj(audit.purchase_invoices)).documents as Row[] | undefined) ?? []), ...((obj(obj(audit.purchase_credit_notes)).documents as Row[] | undefined) ?? [])].filter(Boolean); }
+function auditDocs(s: Row): Row[] { const audit = obj(obj(s.source_summary).document_status_audit); return [...((obj(audit.purchase_invoices).documents as Row[] | undefined) ?? []), ...((obj(audit.purchase_credit_notes).documents as Row[] | undefined) ?? [])].filter(Boolean); }
+function hasAudit(s: Row): boolean { return auditDocs(s).length > 0; }
 
 export default async function SageOnlyPurchaseApprovalPage({ params, searchParams }: any) {
   const runId = text((params ? await params : {})?.return_run_id);
@@ -36,7 +37,8 @@ export default async function SageOnlyPurchaseApprovalPage({ params, searchParam
   ]);
   if (!run) redirect("/internal/accounting-vat");
 
-  const snap = ((snapshots ?? []) as Row[]).find((s) => text(review(s).version));
+  const snapshotRows = (snapshots ?? []) as Row[];
+  const snap = snapshotRows.find((s) => text(review(s).version) && hasAudit(s)) ?? snapshotRows.find((s) => text(review(s).version));
   const rows = snap ? buckets(review(snap)).filter((b) => text(b.bucket).startsWith("sage_only")) : [];
   const docs = snap ? auditDocs(snap).filter((d) => Math.abs(num(d.tax)) > 0 || Math.abs(num(d.net)) > 0).slice(0, 12) : [];
   const add4 = rows.reduce((s, r) => s + num(r.box4), 0);
