@@ -81,7 +81,7 @@ function taxProfile(row: Row): string {
 }
 
 function searchText(row: Row): string {
-  return [directSageDisplayLabel(row), row.sage_document_id, row.supplier_contact, row.document_status, row.tax_profile_summary].map(text).join(" ").toLowerCase();
+  return [directSageDisplayLabel(row), row.sage_document_id, row.supplier_contact, row.document_date, row.document_status, row.tax_profile_summary].map(text).join(" ").toLowerCase();
 }
 
 function nil(value: number): boolean {
@@ -91,6 +91,8 @@ function nil(value: number): boolean {
 export function DirectSagePurchasePostingSelector({ runId, snapshotId, rows, platformBox4, platformBox7, sageBox4, sageBox7 }: Props) {
   const [selectedGroupKeys, setSelectedGroupKeys] = useState<Set<string>>(new Set());
   const [query, setQuery] = useState("");
+  const [showResolvedDetails, setShowResolvedDetails] = useState(false);
+  const [visibleCount, setVisibleCount] = useState(50);
   const selectableKeys = useMemo(() => rows.filter(groupCanBeSelected).map((row, index) => text(row.group_key) || String(index)), [rows]);
   const selectedRows = rows.filter((row, index) => selectedGroupKeys.has(text(row.group_key) || String(index)));
   const selectedBox4 = selectedRows.reduce((sum, row) => sum + num(row.effective_box4_amount), 0);
@@ -101,8 +103,22 @@ export function DirectSagePurchasePostingSelector({ runId, snapshotId, rows, pla
   const canProceed = selectedGroupKeys.size > 0 && nil(remainingBox4) && nil(remainingBox7) && !invalidSelection;
   const selectedIndexes = selectedRows.flatMap(lineIndexes).sort((a, b) => a - b);
   const approvalUrl = `/internal/accounting-vat/returns/${runId}/sage-only-purchase-approval?sage_snapshot_id=${encodeURIComponent(snapshotId)}&selected_line_indexes=${encodeURIComponent(selectedIndexes.join(","))}`;
-  const showSearch = rows.length > 100;
-  const visibleRows = query.trim() ? rows.filter((row) => searchText(row).includes(query.trim().toLowerCase())) : rows;
+  const showSearch = rows.length > 50;
+  const filteredRows = query.trim() ? rows.filter((row) => searchText(row).includes(query.trim().toLowerCase())) : rows;
+  const visibleRows = filteredRows.slice(0, visibleCount);
+  const fullyReconciled = rows.length === 0 && nil(remainingBox4) && nil(remainingBox7);
+
+  if (fullyReconciled && !showResolvedDetails) {
+    return <section className="rounded-3xl border border-emerald-200 bg-emerald-50 p-5 text-emerald-950 shadow-sm">
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <h2 className="text-lg font-semibold">No unresolved direct Sage postings</h2>
+          <p className="mt-1 text-sm leading-6">Direct Sage postings not on platform are 0, and the remaining Box 4 / Box 7 difference is £0.00.</p>
+        </div>
+        <button type="button" onClick={() => setShowResolvedDetails(true)} className="rounded-xl border border-emerald-300 bg-white px-4 py-2 text-sm font-bold text-emerald-800 hover:bg-emerald-100">Show resolved workbench details</button>
+      </div>
+    </section>;
+  }
 
   return <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
     <div className="flex flex-wrap items-start justify-between gap-4">
@@ -111,8 +127,9 @@ export function DirectSagePurchasePostingSelector({ runId, snapshotId, rows, pla
         <p className="mt-1 text-sm leading-6 text-slate-600">Select Sage purchase-side documents that explain the remaining Box 4 / Box 7 difference. Each visible row is a document group; approval still submits the hidden line indexes for audit and RPC validation.</p>
       </div>
       <div className="flex flex-wrap gap-2">
-        <button type="button" onClick={() => setSelectedGroupKeys(new Set(selectableKeys))} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50">Select all direct documents</button>
-        <button type="button" onClick={() => setSelectedGroupKeys(new Set())} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50">Unselect all</button>
+        {fullyReconciled ? <button type="button" onClick={() => setShowResolvedDetails(false)} className="rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-800 hover:bg-emerald-100">Hide resolved workbench details</button> : null}
+        {rows.length ? <button type="button" onClick={() => setSelectedGroupKeys(new Set(selectableKeys))} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50">Select all direct documents</button> : null}
+        {rows.length ? <button type="button" onClick={() => setSelectedGroupKeys(new Set())} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50">Unselect all</button> : null}
       </div>
     </div>
 
@@ -123,7 +140,7 @@ export function DirectSagePurchasePostingSelector({ runId, snapshotId, rows, pla
       <div className={`rounded-2xl border p-4 ${nil(remainingBox7) ? "border-emerald-200 bg-emerald-50 text-emerald-900" : "border-amber-200 bg-amber-50 text-amber-900"}`}><p className="text-xs font-bold uppercase opacity-70">Remaining Box 7 difference</p><p className="mt-1 text-xl font-extrabold">{gbp(remainingBox7)}</p></div>
     </div>
 
-    {showSearch ? <div className="mt-4"><label className="text-xs font-bold uppercase tracking-wide text-slate-500" htmlFor="direct-sage-document-search">Filter document groups</label><input id="direct-sage-document-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search ref, supplier, status or tax profile" className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-sky-400" /></div> : null}
+    {showSearch ? <div className="mt-4"><label className="text-xs font-bold uppercase tracking-wide text-slate-500" htmlFor="direct-sage-document-search">Filter document groups</label><input id="direct-sage-document-search" value={query} onChange={(event) => { setQuery(event.target.value); setVisibleCount(50); }} placeholder="Search supplier, ref, date, status or tax profile" className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-sky-400" /></div> : null}
 
     <div className="mt-5 overflow-x-auto">
       <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
@@ -155,9 +172,11 @@ export function DirectSagePurchasePostingSelector({ runId, snapshotId, rows, pla
       </table>
     </div>
 
-    <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+    {filteredRows.length > visibleRows.length ? <div className="mt-4 flex justify-center"><button type="button" onClick={() => setVisibleCount((count) => count + 50)} className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50">Show more direct Sage documents ({filteredRows.length - visibleRows.length} remaining)</button></div> : null}
+
+    {!fullyReconciled ? <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
       <p className="text-sm font-semibold text-slate-700">{canProceed ? "Ready to proceed: selected document groups reconcile Box 4 and Box 7 to nil." : "Select direct Sage document groups until both remaining differences are £0.00 within £0.01."}</p>
       {canProceed ? <a href={approvalUrl} className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-bold text-white hover:bg-slate-800">Proceed to final approval</a> : <button type="button" disabled className="cursor-not-allowed rounded-xl bg-slate-200 px-4 py-2 text-sm font-bold text-slate-500">Proceed to final approval</button>}
-    </div>
+    </div> : null}
   </section>;
 }

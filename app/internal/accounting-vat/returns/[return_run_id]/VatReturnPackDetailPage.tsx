@@ -4,6 +4,7 @@ import { createClient } from "@/utils/supabase/server";
 import { runVatReconstructionForRunAction } from "../../reconstructFormAction";
 import { refreshVatPurchaseSourceLinesAction as refreshVatSourceSnapshotAction } from "./purchaseRefreshAction";
 import { DirectSagePurchasePostingSelector } from "./DirectSagePurchasePostingSelector";
+import { AcceptedDirectSagePostings, PurchaseDocumentGroupsTable } from "./SagePurchaseReviewTables";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -162,23 +163,6 @@ function SagePurchaseVatReview({ runId, run, recon, purchaseRows }: { runId: str
   const allReviewRows = [...directRows, ...platformRows, ...reviewRows];
   const platformControlledLineCount = num(review.platform_controlled_line_count);
   const reviewRequiredLineCount = num(review.review_line_count);
-  const documentCols: Col[] = [
-    { label: "Document/ref", render: (row) => cut(row.document_label || row.sage_document_id, 36) },
-    { label: "Supplier/contact", render: (row) => cut(row.supplier_contact, 34) },
-    { label: "Document date", render: (row) => date(row.document_date) },
-    { label: "Status", render: (row) => cut(row.document_status, 24) },
-    { label: "Ledger summary", render: (row) => cut(row.ledger_summary, 34) },
-    { label: "Tax profile", render: (row) => cut(row.tax_profile_summary, 28) },
-    { label: "Classification", render: (row) => cut(row.classification_summary, 42) },
-    { label: "Net", render: (row) => gbp(row.net_amount) },
-    { label: "VAT", render: (row) => gbp(row.vat_amount) },
-    { label: "Gross", render: (row) => gbp(row.gross_amount) },
-    { label: "Box 4 effect", render: (row) => gbp(row.effective_box4_amount) },
-    { label: "Box 7 effect", render: (row) => gbp(row.effective_box7_amount) },
-    { label: "Lines", render: (row) => num(row.line_count) },
-    { label: "Reason summary", render: (row) => cut(row.reason_summary, 70) },
-    { label: "Action/help text", render: () => "Copy ref / open Sage manually" },
-  ];
   const directApprovedRows = purchaseRows.filter((row) => active(row) && ["direct_sage_purchase_posting_not_via_platform_box4", "direct_sage_purchase_posting_not_via_platform_box7"].includes(text(row.line_kind)));
   const acceptedDirectGroups = acceptedDirectSagePostingGroups(directApprovedRows);
   const acceptedDirectLineIndexes = new Set(directApprovedRows.filter((row) => text(row.source_id) === text(recon.id) && text(obj(row.source_lineage_json).selected_line_index)).map((row) => num(obj(row.source_lineage_json).selected_line_index)));
@@ -199,10 +183,10 @@ function SagePurchaseVatReview({ runId, run, recon, purchaseRows }: { runId: str
     </section> : null}
     {hasReview ? <DirectSagePurchasePostingSelector runId={runId} snapshotId={text(recon.id)} rows={directDocumentGroups} platformBox4={platformBox(run, 4)} platformBox7={platformBox(run, 7)} sageBox4={sageBox(recon, 4)} sageBox7={sageBox(recon, 7)} /> : null}
     {hasReview && platformControlledLineCount > platformRows.length ? <p className="rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm font-semibold text-sky-900">Showing document groups built from first {platformRows.length} of {platformControlledLineCount} platform-controlled lines.</p> : null}
-    {hasReview ? <Table title="Platform-controlled Sage postings — read-only/excluded from action" data={{ rows: platformDocumentGroups, error: null, count: platformDocumentGroups.length }} columns={documentCols} empty="No platform-controlled Sage purchase postings found in this review." /> : null}
+    {hasReview ? <PurchaseDocumentGroupsTable title="Platform-controlled Sage postings — read-only/excluded from action" rows={platformDocumentGroups} tone="platform" collapseWhenHigh empty="No platform-controlled Sage purchase postings found in this review." /> : null}
     {hasReview && reviewRequiredLineCount > reviewRows.length ? <p className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm font-semibold text-amber-900">Showing document groups built from first {reviewRows.length} of {reviewRequiredLineCount} review-required lines.</p> : null}
-    {hasReview ? <Table title="Review-required postings — read-only/needs investigation" data={{ rows: reviewDocumentGroups, error: null, count: reviewDocumentGroups.length }} columns={documentCols} empty="No review-required Sage purchase postings found in this review." /> : null}
-    <Table title="Accepted direct Sage postings — included in platform VAT return" data={{ rows: acceptedDirectGroups, error: null, count: acceptedDirectGroups.length }} columns={[{ label: "Document/ref", render: (row) => cut(row.document_label, 42) }, { label: "Supplier/contact", render: (row) => cut(row.supplier_contact, 34) }, { label: "Document date", render: (row) => date(row.document_date) }, { label: "Net", render: (row) => gbp(row.net_amount) }, { label: "VAT", render: (row) => gbp(row.vat_amount) }, { label: "Gross", render: (row) => gbp(row.gross_amount) }, { label: "Box 4 effect", render: (row) => gbp(row.effective_box4_amount) }, { label: "Box 7 effect", render: (row) => gbp(row.effective_box7_amount) }, { label: "Status / control result", render: (row) => row.status_control_result }]} empty="No accepted direct Sage purchase postings have been included in this platform VAT return yet." />
+    {hasReview ? <PurchaseDocumentGroupsTable title="Review-required postings — read-only/needs investigation" rows={reviewDocumentGroups} tone="review" empty="No review-required Sage purchase postings found in this review." /> : null}
+    <AcceptedDirectSagePostings rows={acceptedDirectGroups} />
   </div>;
 }
 
