@@ -50,6 +50,22 @@ function date(value: unknown): string {
   return new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "short", year: "numeric" }).format(parsed);
 }
 
+function isGenericDocumentLabel(label: string): boolean {
+  const normalized = label.trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
+  return !normalized || new Set(["document", "invoice", "purchase invoice", "credit note", "purchase credit note", "bill", "unknown"]).has(normalized);
+}
+
+function directSageDisplayLabel(row: Row): string {
+  const existing = text(row.document_label);
+  if (existing && !isGenericDocumentLabel(existing)) return existing;
+  const parts = [text(row.supplier_contact) || "Sage purchase document"];
+  const rawDate = text(row.document_date).match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? "";
+  if (rawDate) parts.push(rawDate);
+  const gross = num(row.gross_amount);
+  if (Math.abs(gross) > 0.005) parts.push(`£${Math.abs(gross).toFixed(2)}`);
+  return parts.join(" — ");
+}
+
 function lineIndexes(row: Row): number[] {
   const value = row.selected_line_indexes;
   const indexes = Array.isArray(value) ? value : text(value).split(",");
@@ -65,7 +81,7 @@ function taxProfile(row: Row): string {
 }
 
 function searchText(row: Row): string {
-  return [row.document_label, row.sage_document_id, row.supplier_contact, row.document_status, row.tax_profile_summary].map(text).join(" ").toLowerCase();
+  return [directSageDisplayLabel(row), row.sage_document_id, row.supplier_contact, row.document_status, row.tax_profile_summary].map(text).join(" ").toLowerCase();
 }
 
 function nil(value: number): boolean {
@@ -117,8 +133,8 @@ export function DirectSagePurchasePostingSelector({ runId, snapshotId, rows, pla
             const groupKey = text(row.group_key) || String(index);
             const selectable = groupCanBeSelected(row);
             return <tr key={groupKey} className={selectable ? "bg-white" : "bg-slate-50 text-slate-500"}>
-              <td className="whitespace-nowrap px-3 py-2"><input type="checkbox" checked={selectedGroupKeys.has(groupKey)} disabled={!selectable} aria-label={`Select ${text(row.document_label) || `document ${index + 1}`}`} onChange={(event) => setSelectedGroupKeys((prev) => { const next = new Set(prev); if (event.target.checked) next.add(groupKey); else next.delete(groupKey); return next; })} /></td>
-              <td className="whitespace-nowrap px-3 py-2 font-semibold">{cut(row.document_label || row.sage_document_id, 34)}</td>
+              <td className="whitespace-nowrap px-3 py-2"><input type="checkbox" checked={selectedGroupKeys.has(groupKey)} disabled={!selectable} aria-label={`Select ${directSageDisplayLabel(row) || `document ${index + 1}`}`} onChange={(event) => setSelectedGroupKeys((prev) => { const next = new Set(prev); if (event.target.checked) next.add(groupKey); else next.delete(groupKey); return next; })} /></td>
+              <td className="whitespace-nowrap px-3 py-2 font-semibold">{cut(directSageDisplayLabel(row) || row.sage_document_id, 34)}</td>
               <td className="whitespace-nowrap px-3 py-2">{cut(row.supplier_contact, 34)}</td>
               <td className="whitespace-nowrap px-3 py-2">{date(row.document_date)}</td>
               <td className="whitespace-nowrap px-3 py-2">{cut(row.document_status, 24)}</td>
