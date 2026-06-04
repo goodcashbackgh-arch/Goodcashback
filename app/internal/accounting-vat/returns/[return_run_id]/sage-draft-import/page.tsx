@@ -133,7 +133,8 @@ export default async function SageVatUploadPage({ params, searchParams }: any) {
   const allActiveJournalsFinal = activeJournals.length > 0 && activeJournals.every((journal) => ["posted_to_sage", "included_in_sage_return"].includes(text(journal.status)));
   const openBlockerCount = ((blockers ?? []) as Row[]).length;
   const noAdjustmentJournalsRequired = activeJournals.length === 0 && openBlockerCount === 0 && platformMatchesRecon(run as Row, ((reconRows ?? []) as Row[])[0] ?? {});
-  const defaultPurpose: UploadPurpose = allActiveJournalsFinal || noAdjustmentJournalsRequired ? "final_submission_evidence" : "draft_reconciliation";
+  const suggestedPurpose: UploadPurpose = allActiveJournalsFinal || noAdjustmentJournalsRequired ? "final_submission_evidence" : "draft_reconciliation";
+  const defaultPurpose: UploadPurpose = "draft_reconciliation";
   const uploadPurpose = selectedPurpose ?? defaultPurpose;
 
   return (
@@ -162,6 +163,7 @@ export default async function SageVatUploadPage({ params, searchParams }: any) {
           runId={runId}
           uploadPurpose={uploadPurpose}
           defaultPurpose={defaultPurpose}
+          suggestedPurpose={suggestedPurpose}
           previewValues={previewValues}
           sageReturnReference={sageReturnReference}
           sageSubmissionTimestamp={sageSubmissionTimestamp}
