@@ -654,16 +654,21 @@ function Workflow({
       </div>
       <p className="mt-3 text-xs leading-5 text-slate-600">{message}</p>
       <div className="mt-4 flex flex-wrap gap-3">
-        <Link
-          href={
-            locked
-              ? `/internal/accounting-vat/returns/${text(run.id)}?tab=submission`
-              : `/internal/accounting-vat/returns/${text(run.id)}/sage-draft-import`
-          }
-          className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-bold text-emerald-800 hover:bg-emerald-100"
-        >
-          {locked ? "View submission evidence" : "Upload Sage VAT file"}
-        </Link>
+        {locked ? (
+          <a
+            href={`/internal/accounting-vat/returns/${text(run.id)}?tab=submission#submission-evidence`}
+            className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-bold text-emerald-800 hover:bg-emerald-100"
+          >
+            View submission evidence
+          </a>
+        ) : (
+          <Link
+            href={`/internal/accounting-vat/returns/${text(run.id)}/sage-draft-import`}
+            className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-bold text-emerald-800 hover:bg-emerald-100"
+          >
+            Upload Sage VAT file
+          </Link>
+        )}
       </div>
     </section>
   );
@@ -673,14 +678,19 @@ function Table({
   data,
   columns,
   empty = "No rows to show yet.",
+  id,
 }: {
   title: string;
   data: DataSet;
   columns: Col[];
   empty?: string;
+  id?: string;
 }) {
   return (
-    <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+    <section
+      id={id}
+      className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"
+    >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-lg font-semibold tracking-tight">{title}</h2>
@@ -1886,6 +1896,7 @@ export default async function VatReturnPackDetailPage({
               </section>
             )}
             <Table
+              id={locked ? "submission-evidence" : undefined}
               title="Submission evidence"
               data={matchEvidence}
               columns={matchCols}
