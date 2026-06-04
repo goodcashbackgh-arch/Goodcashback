@@ -9,6 +9,7 @@ type SageVatUploadFormProps = {
   runId: string;
   uploadPurpose: UploadPurpose;
   defaultPurpose: UploadPurpose;
+  suggestedPurpose: UploadPurpose;
   previewValues: Record<number, string>;
   sageReturnReference: string;
   sageSubmissionTimestamp: string;
@@ -38,6 +39,7 @@ export default function SageVatUploadForm({
   runId,
   uploadPurpose,
   defaultPurpose,
+  suggestedPurpose,
   previewValues,
   sageReturnReference,
   sageSubmissionTimestamp,
@@ -83,7 +85,7 @@ export default function SageVatUploadForm({
       <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
         <h2 className="text-xl font-semibold tracking-tight">Upload Sage VAT return export</h2>
         <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-          Upload a Sage VAT return XLSX/CSV/text export, or enter Boxes 1–9 manually. Draft mode saves a reconstruction snapshot; final mode records submitted values and asks the match/lock RPC to lock only when the submitted boxes match the platform expected boxes.
+          Upload a Sage VAT return XLSX/CSV/text export, or enter Boxes 1–9 manually. The safe default is always draft reconciliation; final evidence must be deliberately selected and confirmed.
         </p>
 
         <form action={isFinal ? recordFinalSageVatSubmissionEvidenceAction : importSageDraftVatReturnTotalsAction} className="mt-6 grid gap-5">
@@ -91,7 +93,7 @@ export default function SageVatUploadForm({
 
           <section className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
             <h3 className="font-semibold text-slate-950">Upload purpose</h3>
-            <p className="mt-1 text-xs leading-5 text-slate-600">The default follows the return state, but admins can switch purpose manually. Choosing final requires an explicit confirmation and calls the Sage match/lock RPC.</p>
+            <p className="mt-1 text-xs leading-5 text-slate-600">The safe default is Draft reconciliation check. If this is the actual submitted Sage return, manually choose Final submitted Sage VAT return evidence and confirm before lock is attempted.</p>
             <div className="mt-3 grid gap-3 md:grid-cols-2">
               <label className="flex gap-3 rounded-2xl border border-slate-200 bg-white p-4 text-sm">
                 <input type="radio" name="upload_purpose" value="draft_reconciliation" checked={!isFinal} onChange={() => setSelectedPurpose("draft_reconciliation")} />
@@ -102,7 +104,7 @@ export default function SageVatUploadForm({
                 <span><span className="block font-bold text-slate-950">Final submitted Sage VAT return evidence</span><span className="mt-1 block text-xs leading-5 text-slate-600">Record final Sage values and lock only if the RPC match rules pass.</span></span>
               </label>
             </div>
-            <p className="mt-3 text-xs font-semibold text-slate-600">Current default: {defaultPurpose === "final_submission_evidence" ? "Final submission evidence" : "Draft reconciliation"}.</p>
+            <p className="mt-3 text-xs font-semibold text-slate-600">Default selected: {defaultPurpose === "final_submission_evidence" ? "Final submission evidence" : "Draft reconciliation"}. Platform suggested next purpose: {suggestedPurpose === "final_submission_evidence" ? "Final submission evidence" : "Draft reconciliation"}.</p>
           </section>
 
           {isFinal ? (
