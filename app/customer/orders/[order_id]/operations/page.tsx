@@ -5,6 +5,24 @@ import { createClient } from "@/utils/supabase/server";
 type ScreenshotRow = { id: string; screenshot_url: string };
 type ReviewLinkRow = { customer_review_path: string | null };
 type CreditBalanceRow = { importer_id: string | null; available_credit_gbp: number | string | null };
+type TrackingRow = {
+  id: string;
+  tracking_ref?: string | null;
+  tracking_date?: string | null;
+  tracking_screenshot_url?: string | null;
+  is_final_delivery_yn?: boolean | null;
+  couriers?: { name?: string | null } | null;
+};
+type SalesInvoiceRow = {
+  id: string;
+  amount_gbp?: number | string | null;
+  invoice_type?: string | null;
+  sage_invoice_date?: string | null;
+  sage_invoice_id?: string | null;
+  sage_posted_at?: string | null;
+  sage_reference?: string | null;
+  sage_status?: string | null;
+};
 
 type Tone = "action" | "ready" | "complete" | "review" | "muted";
 
@@ -19,6 +37,13 @@ function localAmount(value: unknown, code = "Local") {
 function friendly(value: string | null | undefined) {
   if (!value) return "—";
   return value.replaceAll("_", " ").replace(/^./, (first) => first.toUpperCase());
+}
+
+function formatDate(value: string | null | undefined) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "short", year: "numeric" }).format(date);
 }
 
 function shortOrderTitle(orderRef: string | null | undefined, fallbackId: string) {
@@ -49,20 +74,25 @@ function customerStatusLabel({
   lifecycleStatus,
   thresholdMet,
   reviewHref,
+  trackingCount,
+  finalInvoiceIssued,
+  deliveryConfirmed,
 }: {
   rawStatus: string | null | undefined;
   lifecycleStatus: string | null | undefined;
   thresholdMet: boolean;
   reviewHref: string | null;
+  trackingCount: number;
+  finalInvoiceIssued: boolean;
+  deliveryConfirmed: boolean;
 }) {
   const status = String(lifecycleStatus ?? rawStatus ?? "").toLowerCase();
   if (reviewHref) return "Ready for your review";
   if (!thresholdMet) return "Payment required";
+  if (deliveryConfirmed || ["completed", "archived"].includes(status)) return "Delivered";
+  if (finalInvoiceIssued || trackingCount > 0 || ["ready_for_shipment", "shipment_booked", "shipment_dispatched", "awaiting_importer_receipt"].includes(status)) return "Shipment arranged";
   if (["pending_dva_funding", "funding_pending", "draft"].includes(status)) return "Payment received; processing";
-  if (["reconciling", "partially_progressed", "invoice_reconciled_tracking_open"].includes(status)) return "Order being prepared";
-  if (["ready_for_shipment", "shipment_booked"].includes(status)) return "Preparing for shipment";
-  if (["shipment_dispatched", "awaiting_importer_receipt"].includes(status)) return "Shipment in progress";
-  if (["completed", "archived"].includes(status)) return "Completed";
+  if (["reconciling", "partially_progressed", "invoice_reconciled_tracking_open"].includes(status)) return "Order in progress";
   if (["discrepancy_open", "awaiting_financial_closure"].includes(status)) return "Under review";
   return friendly(lifecycleStatus ?? rawStatus);
 }
@@ -71,9 +101,21 @@ function statusTone({ statusLabel, thresholdMet, reviewHref }: { statusLabel: st
   const normalised = statusLabel.toLowerCase();
   if (reviewHref) return "ready";
   if (!thresholdMet || normalised.includes("payment required")) return "action";
-  if (normalised.includes("completed")) return "complete";
+  if (normalised.includes("delivered") || normalised.includes("completed")) return "complete";
   if (normalised.includes("review")) return "review";
   return "muted";
+}
+
+function ProgressStep({ done, label, note }: { done: boolean; label: string; note?: string }) {
+  return (
+    <div className="flex gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-black ${done ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-500"}`}>{done ? "✓" : ""}</div>
+      <div>
+        <p className="font-black text-slate-950">{label}</p>
+        {note ? <p className="mt-1 text-sm leading-5 text-slate-600">{note}</p> : null}
+      </div>
+    </div>
+  );
 }
 
 export default async function CustomerOrderOperationsPage({
@@ -116,13 +158,15 @@ export default async function CustomerOrderOperationsPage({
   if (!access) redirect("/customer");
 
   const today = new Date().toISOString().slice(0, 10);
-  const [fundingRes, screenshotsRes, stateRes, reviewRes, creditBalanceRes, fxRes] = await Promise.all([
+  const [fundingRes, screenshotsRes, stateRes, reviewRes, creditBalanceRes, fxRes, trackingRes, salesInvoiceRes] = await Promise.all([
     supabase.from("order_funding_position_vw").select("*").eq("order_id", orderId).maybeSingle(),
     supabase.from("order_screenshots").select("id, screenshot_url").eq("order_id", orderId).order("display_order"),
     supabase.from("order_state_vw").select("lifecycle_status").eq("id", orderId).maybeSingle(),
     (supabase as any).rpc("customer_active_order_review_link_v1", { p_order_id: orderId }).maybeSingle(),
     supabase.rpc("customer_importer_credit_balance_v1"),
     supabase.from("fx_rates").select("quote_rate, quote_card_markup_pct, rate_date").eq("country_id", order.importers?.country_id).lte("rate_date", today).order("rate_date", { ascending: false }).limit(1).maybeSingle(),
+    supabase.from("order_tracking_submissions").select("id, tracking_ref, tracking_date, tracking_screenshot_url, is_final_delivery_yn, couriers(name)").eq("order_id", orderId).order("submitted_at", { ascending: false }),
+    supabase.from("sales_invoices").select("id, amount_gbp, invoice_type, sage_invoice_date, sage_invoice_id, sage_posted_at, sage_reference, sage_status").eq("order_id", orderId).eq("sage_status", "posted").not("sage_invoice_id", "is", null).in("invoice_type", ["main", "supplementary"]).order("sage_posted_at", { ascending: false }),
   ]);
 
   const funding = fundingRes.data;
@@ -130,6 +174,12 @@ export default async function CustomerOrderOperationsPage({
   const state = stateRes.data;
   const reviewLink = reviewRes.data as ReviewLinkRow | null;
   const reviewHref = reviewLink?.customer_review_path ?? null;
+  const trackingRows = ((trackingRes.data ?? []) as unknown as TrackingRow[]);
+  const latestTracking = trackingRows[0] ?? null;
+  const finalDeliveryConfirmed = trackingRows.some((row) => Boolean(row.is_final_delivery_yn));
+  const salesInvoices = ((salesInvoiceRes.data ?? []) as unknown as SalesInvoiceRow[]);
+  const finalInvoice = salesInvoices.find((invoice) => invoice.invoice_type === "main") ?? salesInvoices[0] ?? null;
+  const finalInvoiceIssued = Boolean(finalInvoice?.sage_invoice_id);
   const thresholdMet = Boolean(funding?.threshold_met_yn);
   const currencyCode = order.importers?.countries?.currencies?.code ?? "Local";
   const rate = Number(fxRes.data?.quote_rate ?? 0);
@@ -155,16 +205,35 @@ export default async function CustomerOrderOperationsPage({
     lifecycleStatus: state?.lifecycle_status,
     thresholdMet,
     reviewHref,
+    trackingCount: trackingRows.length,
+    finalInvoiceIssued,
+    deliveryConfirmed: finalDeliveryConfirmed,
   });
   const tone = statusTone({ statusLabel, thresholdMet, reviewHref });
   const orderTitle = shortOrderTitle(order.order_ref, orderId);
   const itemLabel = Number.isFinite(totalQty) && totalQty > 0 ? `${totalQty} ${totalQty === 1 ? "item" : "items"}` : "Goods order";
-  const nextActionTitle = reviewHref ? "Review items before shipment" : !thresholdMet ? "Payment required" : "No action needed right now";
+  const nextActionTitle = reviewHref
+    ? "Review items before shipment"
+    : !thresholdMet
+      ? "Payment required"
+      : finalDeliveryConfirmed
+        ? "Delivery confirmed"
+        : finalInvoiceIssued
+          ? "Waiting for delivery confirmation"
+          : trackingRows.length > 0
+            ? "Shipment arranged"
+            : "No action needed right now";
   const nextActionBody = reviewHref
     ? "Check the order before shipment and request a hold if anything should not be sent."
     : !thresholdMet
       ? "The remaining amount needs to be paid before this order can continue."
-      : "We are processing this order. You can return here to check progress.";
+      : finalDeliveryConfirmed
+        ? "Your delivery confirmation has been received."
+        : finalInvoiceIssued
+          ? "Your final invoice is available below. We will update this page once delivery confirmation is received."
+          : trackingRows.length > 0
+            ? "Tracking has been added and the shipment is being handled."
+            : "We are processing this order. You can return here to check progress.";
 
   return (
     <main className="min-h-screen bg-gradient-to-b from-sky-50 via-white to-slate-50 p-4 pb-24 text-slate-950 xl:p-6 xl:pb-10">
@@ -200,6 +269,88 @@ export default async function CustomerOrderOperationsPage({
         </div>
       </section>
 
+      <section className="mt-5 rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
+        <h2 className="text-xl font-black">Progress</h2>
+        <p className="mt-1 text-sm text-slate-600">A simple view of what has happened and what is still pending.</p>
+        <div className="mt-4 grid gap-3 xl:grid-cols-2">
+          <ProgressStep done label="Order received" note={formatDate(order.created_at)} />
+          <ProgressStep done={thresholdMet} label="Payment received" note={thresholdMet ? "Payment has been received for this order." : "Payment is still required before the order can continue."} />
+          <ProgressStep done={trackingRows.length > 0 || finalInvoiceIssued} label="Items confirmed" note={trackingRows.length > 0 || finalInvoiceIssued ? "Your items are confirmed in the order flow." : "We will update this once the order moves forward."} />
+          <ProgressStep done={trackingRows.length > 0} label="Tracking added" note={trackingRows.length > 0 ? `${trackingRows.length} tracking update${trackingRows.length === 1 ? "" : "s"} available.` : "Tracking will appear here when available."} />
+          <ProgressStep done={trackingRows.length > 0 || finalInvoiceIssued} label="Shipment arranged" note={trackingRows.length > 0 || finalInvoiceIssued ? "The shipment has been arranged for this order." : "Shipment details are not available yet."} />
+          <ProgressStep done={finalInvoiceIssued} label="Final invoice issued" note={finalInvoiceIssued ? "Your final invoice is available below." : "Your final invoice will appear once issued."} />
+          <ProgressStep done={finalDeliveryConfirmed} label="Delivery confirmation" note={finalDeliveryConfirmed ? "Delivery confirmation has been received." : "Delivery confirmation is pending."} />
+        </div>
+      </section>
+
+      <section className="mt-5 grid gap-4 xl:grid-cols-2">
+        <section className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
+          <h2 className="text-xl font-black">Tracking</h2>
+          {trackingRows.length === 0 ? <p className="mt-3 rounded-xl bg-slate-50 p-4 text-sm text-slate-600">Tracking is not available yet.</p> : null}
+          <div className="mt-4 grid gap-3">
+            {trackingRows.map((row) => (
+              <article key={row.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="font-black text-slate-950">{row.couriers?.name ?? "Tracking update"}</p>
+                  {row.is_final_delivery_yn ? <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-bold text-emerald-800 ring-1 ring-emerald-200">Delivery confirmation</span> : <span className="rounded-full bg-sky-100 px-3 py-1 text-xs font-bold text-sky-800 ring-1 ring-sky-200">Tracking added</span>}
+                </div>
+                <p className="mt-2 text-slate-700">Reference: <span className="font-black text-slate-950">{row.tracking_ref ?? "—"}</span></p>
+                <p className="mt-1 text-slate-600">Date: {formatDate(row.tracking_date)}</p>
+                {row.tracking_screenshot_url ? <a href={row.tracking_screenshot_url} target="_blank" rel="noreferrer" className="mt-3 inline-flex rounded-xl bg-slate-950 px-3 py-2 text-xs font-black text-white">Open tracking evidence</a> : null}
+              </article>
+            ))}
+          </div>
+        </section>
+
+        <section className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
+          <h2 className="text-xl font-black">Final invoice</h2>
+          {finalInvoiceIssued ? (
+            <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-950">
+              <p className="text-xs font-black uppercase tracking-wide text-emerald-700">Issued</p>
+              <p className="mt-2 text-lg font-black">{finalInvoice?.sage_reference ?? "Final invoice"}</p>
+              <p className="mt-1">Date: {formatDate(finalInvoice?.sage_invoice_date ?? finalInvoice?.sage_posted_at)}</p>
+              <p className="mt-1">Amount: <span className="font-black">{money(finalInvoice?.amount_gbp)}</span></p>
+              <a href={`/customer/orders/${orderId}/final-invoice`} className="mt-4 inline-flex rounded-xl bg-slate-950 px-4 py-2 text-sm font-black text-white">Get invoice</a>
+            </div>
+          ) : (
+            <p className="mt-3 rounded-xl bg-slate-50 p-4 text-sm text-slate-600">Your final invoice is not available yet.</p>
+          )}
+        </section>
+      </section>
+
+      <section className="mt-5 grid gap-4 xl:grid-cols-2">
+        <section className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
+          <h2 className="text-xl font-black">Delivery status</h2>
+          {finalDeliveryConfirmed ? (
+            <p className="mt-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-semibold text-emerald-900">Delivery confirmation has been received.</p>
+          ) : (
+            <p className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm font-semibold text-amber-900">Delivery confirmation is pending.</p>
+          )}
+        </section>
+
+        <section className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
+          <h2 className="text-xl font-black">Payment summary</h2>
+          <div className="mt-4 grid gap-3 text-sm text-slate-700">
+            <p>Required amount: <span className="font-black text-slate-950">{money(funding?.purchase_funding_threshold_gbp ?? order.order_total_gbp_declared)}</span></p>
+            <p>Confirmed payment: <span className="font-black text-slate-950">{money(confirmedPaymentGbp)}</span></p>
+            <p>Applied credit: <span className="font-black text-slate-950">{money(appliedCreditGbp)}</span></p>
+            <p>Amount still due: <span className="font-black text-slate-950">{money(currentNetPayableGbp)}</span></p>
+          </div>
+        </section>
+      </section>
+
+      <section className="mt-5 rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
+        <h2 className="text-xl font-black">Documents</h2>
+        <p className="mt-3 text-sm leading-6 text-slate-600">Your order evidence and key documents are available here.</p>
+        <div className="mt-4 flex flex-wrap gap-2">
+          {screenshots.length === 0 ? <p className="text-sm text-slate-600">No order screenshots uploaded.</p> : null}
+          {screenshots.map((row, index) => <a key={row.id} href={row.screenshot_url} target="_blank" rel="noreferrer" className="rounded-xl bg-slate-950 px-3 py-2 text-xs font-black text-white">Open order evidence {index + 1}</a>)}
+          {finalInvoiceIssued ? <a href={`/customer/orders/${orderId}/final-invoice`} className="rounded-xl bg-sky-700 px-3 py-2 text-xs font-black text-white">Get final invoice</a> : <span className="rounded-xl bg-slate-100 px-3 py-2 text-xs font-bold text-slate-600">Final invoice not available yet</span>}
+          {latestTracking?.tracking_screenshot_url ? <a href={latestTracking.tracking_screenshot_url} target="_blank" rel="noreferrer" className="rounded-xl bg-slate-800 px-3 py-2 text-xs font-black text-white">Open tracking evidence</a> : null}
+          {finalDeliveryConfirmed ? <span className="rounded-xl bg-emerald-100 px-3 py-2 text-xs font-bold text-emerald-800">Delivery confirmation received</span> : <span className="rounded-xl bg-amber-100 px-3 py-2 text-xs font-bold text-amber-800">Delivery confirmation pending</span>}
+        </div>
+      </section>
+
       <section className="mt-5 grid grid-cols-2 gap-3 xl:grid-cols-4">
         <div className="rounded-[1.5rem] border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs font-black uppercase tracking-wide text-slate-500">Order value</p><p className="mt-2 text-2xl font-black">{money(orderGbp)}</p></div>
         <div className="rounded-[1.5rem] border border-amber-100 bg-amber-50/70 p-4 shadow-sm"><p className="text-xs font-black uppercase tracking-wide text-amber-700">Still due</p><p className="mt-2 text-2xl font-black text-amber-950">{money(currentNetPayableGbp)}</p><p className="mt-1 text-xs font-bold text-amber-800">{effectiveRate ? localAmount(currentNetPayableLocal, currencyCode) : "No FX rate"}</p></div>
@@ -208,7 +359,7 @@ export default async function CustomerOrderOperationsPage({
       </section>
 
       <details className="mt-5 rounded-[1.75rem] border border-cyan-100 bg-cyan-50/70 p-5 shadow-sm" open={currentNetPayableGbp > 0.01}>
-        <summary className="cursor-pointer list-none text-xl font-black text-cyan-950">Credit and FX details</summary>
+        <summary className="cursor-pointer list-none text-xl font-black text-cyan-950">Payment calculation</summary>
         <p className="mt-2 text-sm leading-6 text-slate-700">The order closes in GBP. Local figures are payment-stage guidance using the current/latest FX rate.</p>
         <div className="mt-4 grid gap-3 xl:grid-cols-4">
           <div className="rounded-2xl bg-white p-4 ring-1 ring-cyan-100"><p className="text-xs font-black uppercase text-cyan-700">Applied credit</p><p className="mt-1 text-xl font-black">{money(appliedCreditGbp)}</p></div>
@@ -217,27 +368,6 @@ export default async function CustomerOrderOperationsPage({
           <div className="rounded-2xl bg-white p-4 ring-1 ring-cyan-100"><p className="text-xs font-black uppercase text-cyan-700">FX used</p><p className="mt-1 text-xl font-black">{effectiveRate ? effectiveRate.toFixed(4) : "—"}</p><p className="mt-1 text-xs font-semibold text-slate-500">{fxLabel}</p></div>
         </div>
       </details>
-
-      <section className="mt-5 grid gap-4 xl:grid-cols-2">
-        <details className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
-          <summary className="cursor-pointer list-none text-xl font-black">Payment details</summary>
-          <div className="mt-4 grid gap-3 text-sm text-slate-700">
-            <p>Required amount: <span className="font-black text-slate-950">{money(funding?.purchase_funding_threshold_gbp ?? order.order_total_gbp_declared)}</span></p>
-            <p>Confirmed payment: <span className="font-black text-slate-950">{money(confirmedPaymentGbp)}</span></p>
-            <p>Applied credit: <span className="font-black text-slate-950">{money(appliedCreditGbp)}</span></p>
-            <p>Amount still due: <span className="font-black text-slate-950">{money(currentNetPayableGbp)}</span></p>
-          </div>
-        </details>
-
-        <details className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
-          <summary className="cursor-pointer list-none text-xl font-black">Order evidence</summary>
-          <p className="mt-3 text-sm leading-6 text-slate-600">Original order screenshots are available. Internal procurement and warehouse tracking details are hidden.</p>
-          <div className="mt-4 flex flex-wrap gap-2">
-            {screenshots.length === 0 ? <p className="text-sm text-slate-600">No screenshots uploaded.</p> : null}
-            {screenshots.map((row, index) => <a key={row.id} href={row.screenshot_url} target="_blank" rel="noreferrer" className="rounded-xl bg-slate-950 px-3 py-2 text-xs font-black text-white">Open screenshot {index + 1}</a>)}
-          </div>
-        </details>
-      </section>
     </main>
   );
 }
