@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
+import { supabaseAdmin } from "@/lib/supabase/admin";
 
 type ScreenshotRow = { id: string; screenshot_url: string };
 type ReviewLinkRow = { customer_review_path: string | null };
@@ -125,19 +126,15 @@ export default async function CustomerOrderOperationsPage({ params, searchParams
     (supabase as any).rpc("customer_active_order_review_link_v1", { p_order_id: orderId }).maybeSingle(),
     supabase.rpc("customer_importer_credit_balance_v1"),
     supabase.from("fx_rates").select("quote_rate, quote_card_markup_pct, rate_date").eq("country_id", order.importers?.country_id).lte("rate_date", today).order("rate_date", { ascending: false }).limit(1).maybeSingle(),
-    (supabase as any).from("shipper_shipment_batch_packages").select("shipment_batch_id").eq("order_id", orderId).eq("active", true),
-    (supabase as any).from("sales_invoices").select("id, amount_gbp, invoice_type, sage_invoice_id, sage_invoice_date, sage_posted_at").eq("order_id", orderId).eq("sage_status", "posted").not("sage_invoice_id", "is", null).in("invoice_type", ["main", "supplementary"]),
+    (supabaseAdmin as any).from("shipper_shipment_batch_packages").select("shipment_batch_id").eq("order_id", orderId).eq("active", true),
+    (supabaseAdmin as any).from("sales_invoices").select("id, amount_gbp, invoice_type, sage_invoice_id, sage_invoice_date, sage_posted_at").eq("order_id", orderId).eq("sage_status", "posted").not("sage_invoice_id", "is", null).in("invoice_type", ["main", "supplementary"]),
   ]);
 
   const shipmentPackages = (shipmentPackageRes.data ?? []) as ShipmentPackageRow[];
   const shipmentBatchIds = Array.from(new Set(shipmentPackages.map((row) => row.shipment_batch_id).filter(Boolean) as string[]));
   const [{ data: shipmentBatchData }, { data: evidenceData }] = await Promise.all([
-    shipmentBatchIds.length > 0
-      ? (supabase as any).from("shipper_shipment_batches").select("id, booking_ref, dispatched_at, shipment_cutoff_at").in("id", shipmentBatchIds).order("dispatched_at", { ascending: false })
-      : Promise.resolve({ data: [] }),
-    shipmentBatchIds.length > 0
-      ? (supabase as any).from("shipper_final_export_evidence_documents").select("document_kind, review_status").in("shipment_batch_id", shipmentBatchIds)
-      : Promise.resolve({ data: [] }),
+    shipmentBatchIds.length > 0 ? (supabaseAdmin as any).from("shipper_shipment_batches").select("id, booking_ref, dispatched_at, shipment_cutoff_at").in("id", shipmentBatchIds).order("dispatched_at", { ascending: false }) : Promise.resolve({ data: [] }),
+    shipmentBatchIds.length > 0 ? (supabaseAdmin as any).from("shipper_final_export_evidence_documents").select("document_kind, review_status").in("shipment_batch_id", shipmentBatchIds) : Promise.resolve({ data: [] }),
   ]);
 
   const shipmentBatches = (shipmentBatchData ?? []) as ShipmentBatchRow[];
