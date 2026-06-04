@@ -1,8 +1,8 @@
 # Portal and Order Operations Addendum v1
 
-Status: locked addendum for portal role split, order operations, invoice intake, delivery/discount adjustments, final invoice draft preparation, and post-progressed refund/return handling.
+Status: locked addendum for portal role split, order operations, invoice intake, delivery/discount adjustments, final invoice draft preparation, customer order detail visibility, customer-safe final invoice documents, and post-progressed refund/return handling.
 
-This addendum must be checked before changing Create Order, order operations, invoice upload, reconciliation, final invoice preparation, refund/return handling, shipper handoff, or Sage invoice generation.
+This addendum must be checked before changing Create Order, customer dashboard/order cards, customer order details, customer review-before-shipment flows, order operations, invoice upload, reconciliation, final invoice preparation, customer final invoice download, refund/return handling, shipper handoff, or Sage invoice generation.
 
 ## 1. Current naming reality
 
@@ -360,7 +360,182 @@ If approved return/refund changes shipment scope before final shipping quote, ma
 
 If shipping quote already exists, the quote should be refreshed or superseded before final invoice draft approval.
 
-## 14. Bulk approval rule
+## 14. Customer dashboard and order cards rule
+
+The customer dashboard is the scan layer, not the full audit layer.
+
+It should remain mobile-first and show only simple, confidence-building information:
+
+```text
+orders grouped by attention / in progress / completed
+order reference / short order title
+order value
+item count
+customer-friendly status
+payment state
+amount due / nothing due
+open action
+```
+
+The dashboard may add small chips for customer-safe milestones:
+
+```text
+review needed
+tracking available
+invoice issued
+delivery pending / delivered
+```
+
+The dashboard must not show detailed tracking records, Sage invoice IDs, VAT status, AP posting status, cash posting status, OCR status, internal adjustment mechanics, or supervisor-only blockers.
+
+Detailed evidence and documents belong on the customer order details page.
+
+## 15. Customer order details page rule
+
+The customer order details page is the customer confidence page.
+
+Its purpose is to answer:
+
+```text
+where is my order?
+have you received my payment?
+has the item been purchased/matched?
+is there tracking?
+has it been shipped or delivered?
+is my final invoice available?
+do I need to do anything?
+```
+
+The recommended page order is:
+
+```text
+header with order ref, item count, and customer-friendly status
+next step
+progress timeline
+tracking
+final invoice
+delivery / POD status
+payment summary
+documents
+credit and FX details
+```
+
+Customer-safe milestone mapping:
+
+```text
+orders.created_at -> Order created
+order_funding_position_vw.threshold_met_yn -> Payment received
+approved/current supplier invoice or progressed supplier lines -> Retailer purchase confirmed
+supplier_invoice_lines.eligible_for_invoice_yn = 'Y' -> Invoice matched
+order_tracking_submissions exists -> Tracking received
+shipment batch package allocation exists -> Shipment arranged
+sales_invoices.sage_status = 'posted' -> Final invoice issued
+accepted final export/POD evidence exists -> Delivery evidence received / Delivered
+```
+
+The page must not expose the following labels or concepts to the customer:
+
+```text
+Sage object IDs
+VAT return runs
+cash posting rows
+supplier AP posting rows
+OCR pass/fail internals
+shipping cost apportionment
+margin/VAT recovery logic
+internal DVA reconciliation labels
+supervisor threshold rules
+```
+
+Customer wording must be customer-safe. For example:
+
+```text
+Sage sales invoice posted -> Final invoice issued
+tracking submission -> Tracking received
+shipment batch exists -> Shipment arranged
+final export/POD accepted -> Delivery evidence received
+```
+
+## 16. Review-before-shipment gating rule
+
+The customer review-before-shipment action is a narrow pre-shipment/customer-hold control.
+
+It should surface only when:
+
+```text
+customer_review_ready_line_count > 0
+AND no main/supplementary sales invoice is draft or posted
+AND an active review link exists or the customer-active review-link RPC can create one
+```
+
+The review action should use customer wording:
+
+```text
+Review items before shipment
+```
+
+It should not be called final pro forma unless a later commercial decision changes the flow.
+
+The review page may allow the customer/importer to:
+
+```text
+request whole-order hold
+request package hold
+request item hold
+view hold request history
+```
+
+The review page must not expose supplier invoices, internal retailer-to-warehouse tracking mechanics, OCR controls, VAT/margin logic, Sage state, or supervisor decision mechanics.
+
+Existing active review links should not continue to surface if the order no longer has review-ready lines or if a main/supplementary sales invoice has entered draft or posted status. Any RPC returning customer review links must re-check those gating conditions before returning a link.
+
+## 17. Customer-safe final invoice document rule
+
+The customer-facing invoice is called the final invoice, not the Sage invoice.
+
+The customer order details page may show a final invoice action only when:
+
+```text
+sales_invoices.sage_status = 'posted'
+AND sales_invoices.sage_invoice_id IS NOT NULL
+```
+
+Display fields should be customer-safe:
+
+```text
+Final invoice issued
+Invoice ref
+Invoice date
+Final amount
+Get invoice / Download invoice
+```
+
+The customer must not see Sage access tokens, Sage API paths, Sage object IDs, posting payloads, posting errors, ledger accounts, VAT code internals, or accounting command centre state.
+
+Final invoice PDF access must be server-side and access-controlled:
+
+```text
+verify authenticated customer/operator has access to the order/importer
+verify the invoice belongs to that order
+serve only posted final/supplementary customer invoices that are customer-visible
+```
+
+Preferred persistence model:
+
+```text
+1. customer clicks Get invoice
+2. server checks access and posted sales invoice state
+3. if a stored platform PDF exists, serve it
+4. if no stored PDF exists, fetch the PDF from Sage server-side
+5. store the PDF in platform storage / document evidence under the order or sales invoice
+6. save the storage path / document reference
+7. serve the PDF to the customer
+8. future clicks serve the stored platform copy
+```
+
+This avoids relying on live Sage availability for repeat customer downloads and preserves the customer document as part of the order evidence pack.
+
+## 18. Bulk approval rule
 
 Supervisor can bulk approve final invoice drafts only when each draft is clean:
 
@@ -375,7 +550,7 @@ no blocking open supervisor review flags remain
 
 Bulk approval must not bypass required supervisor review flags.
 
-## 15. Build sequencing rule
+## 19. Build sequencing rule
 
 To avoid damaging the working MVP spine, build in this order:
 
@@ -389,12 +564,15 @@ To avoid damaging the working MVP spine, build in this order:
 8. Add post-progressed refund/return flow.
 9. Add shipper return/collection task and requote handling.
 10. Add Sage posting from approved final invoice drafts.
+11. Add customer order detail confidence view: timeline, tracking, final invoice, delivery/POD status, documents.
+12. Add persistent customer final invoice PDF storage/download after posted sales invoice exists.
 
-## 16. Non-negotiable principle
+## 20. Non-negotiable principle
 
 ```text
 Reconciliation proves what was bought.
 Finalisation decides what gets billed.
 Shipping/handoff sees only physical goods.
 Sage sees only approved final invoice drafts.
+Customer sees only customer-safe order progress, payment, tracking, final invoice, delivery status, and documents.
 ```
