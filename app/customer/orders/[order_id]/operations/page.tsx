@@ -3,7 +3,6 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 
 type ReviewLinkRow = { customer_review_path: string | null };
-
 type ScreenshotRow = { id: string; screenshot_url: string };
 
 function money(value: unknown) {
@@ -58,9 +57,14 @@ export default async function CustomerOrderOperationsPage({ params }: { params: 
   const funding = fundingRes.data;
   const reviewHref = ((reviewRes.data as ReviewLinkRow | null)?.customer_review_path ?? null);
   const screenshots = (screenshotsRes.data ?? []) as ScreenshotRow[];
-  const trackingRows = (trackingRes.data ?? []) as Array<{ id: string; tracking_ref?: string | null; tracking_date?: string | null; tracking_screenshot_url?: string | null; is_final_delivery_yn?: boolean | null }>;
-  const invoices = (invoiceRes.data ?? []) as Array<{ id: string; amount_gbp?: number | string | null; invoice_type?: string | null; sage_invoice_date?: string | null; sage_posted_at?: string | null; sage_invoice_id?: string | null }>;
+  const trackingRows = (trackingRes.data ?? []) as Array<{ id: string; tracking_ref?: string | null; is_final_delivery_yn?: boolean | null }>;
+  const invoices = (invoiceRes.data ?? []) as Array<{ id: string; amount_gbp?: number | string | null; invoice_type?: string | null; sage_invoice_id?: string | null }>;
   const finalInvoice = invoices.find((row) => row.invoice_type === "main") ?? invoices[0] ?? null;
+
+  const orderGbp = Number(order.order_total_gbp_declared ?? 0);
+  const confirmedPaymentGbp = Number(funding?.confirmed_dva_funding_gbp ?? 0);
+  const appliedCreditGbp = Number(funding?.applied_credit_gbp ?? 0);
+  const dueGbp = Math.max(Number(funding?.gap_remaining_gbp ?? (orderGbp - confirmedPaymentGbp - appliedCreditGbp)), 0);
   const thresholdMet = Boolean(funding?.threshold_met_yn);
   const deliveryConfirmed = trackingRows.some((row) => Boolean(row.is_final_delivery_yn));
   const finalInvoiceIssued = Boolean(finalInvoice?.sage_invoice_id);
@@ -124,12 +128,10 @@ export default async function CustomerOrderOperationsPage({ params }: { params: 
       <details className="mt-5 rounded-[1.75rem] border border-cyan-100 bg-cyan-50/70 p-5 shadow-sm">
         <summary className="cursor-pointer list-none text-xl font-black text-cyan-950">Payment calculation</summary>
         <div className="mt-4 grid gap-3 xl:grid-cols-4">
-          <p className="rounded-2xl bg-white p-4 font-bold">Order value: {money(order.order_total_gbp_declared)}</p>
+          <p className="rounded-2xl bg-white p-4 font-bold">Order value: {money(orderGbp)}</p>
           <p className="rounded-2xl bg-white p-4 font-bold">Confirmed: {money(confirmedPaymentGbp)}</p>
           <p className="rounded-2xl bg-white p-4 font-bold">Credit: {money(appliedCreditGbp)}</p>
-          <p className="rounded-2xl bg-white p-4 font-bold">Due: {money(currentNetPayableGbp)} {effectiveRate ? `(${localAmount(currentNetPayableLocal, order.importers?.countries?.currencies?.code ?? "Local")})` : ""}</p>
-          <p className="rounded-2xl bg-white p-4 font-bold">Available credit: {money(availableCreditGbp)} {effectiveRate ? `(${localAmount(availableCreditLocal, order.importers?.countries?.currencies?.code ?? "Local")})` : ""}</p>
-          <p className="rounded-2xl bg-white p-4 font-bold">FX: {fxLabel}</p>
+          <p className="rounded-2xl bg-white p-4 font-bold">Due: {money(dueGbp)}</p>
         </div>
       </details>
     </main>
