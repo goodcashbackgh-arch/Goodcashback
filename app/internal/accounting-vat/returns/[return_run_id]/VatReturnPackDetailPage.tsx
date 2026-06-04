@@ -294,6 +294,9 @@ function sageBox(recon: Row, box: number): number {
   if (box === 5) return sageBox(recon, 3) - sageBox(recon, 4);
   return num(recon[`box${box}_gbp`]);
 }
+function sageSubmittedBox(evidence: Row, box: number): number {
+  return num(evidence[`sage_submitted_box${box}_gbp`]);
+}
 function purchaseVatReview(recon: Row): Row {
   return obj(obj(recon.source_summary).purchase_vat_line_review);
 }
@@ -361,8 +364,21 @@ function Metric({
     </div>
   );
 }
-function VatWorkspace({ run, recon }: { run: Row; recon: Row }) {
+function VatWorkspace({
+  run,
+  recon,
+  matchEvidence,
+  locked,
+}: {
+  run: Row;
+  recon: Row;
+  matchEvidence: Row;
+  locked: boolean;
+}) {
   const hasRecon = Boolean(text(recon.id));
+  const hasSubmissionEvidence = Boolean(text(matchEvidence.id));
+  const useSubmissionEvidence = locked && hasSubmissionEvidence;
+  const hasComparison = locked ? hasSubmissionEvidence || hasRecon : hasRecon;
   const rows: Array<[number, string]> = [
     [1, "VAT due on sales/outputs"],
     [2, "VAT due on acquisitions"],
@@ -379,19 +395,28 @@ function VatWorkspace({ run, recon }: { run: Row; recon: Row }) {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-xl font-semibold tracking-tight">
-            VAT return workspace
+            {locked ? "Locked VAT return comparison" : "VAT return workspace"}
           </h2>
           <p className="mt-1 text-sm leading-6 text-slate-600">
-            Platform draft is compared with Sage natural VAT. Difference shows
-            the possible Sage-gap adjustment still to be reviewed.
+            {locked
+              ? "Locked platform boxes are compared with Sage submitted values. Differences should remain nil after match/lock."
+              : "Platform draft is compared with Sage natural VAT. Difference shows the possible Sage-gap adjustment still to be reviewed."}
           </p>
+          {locked && !hasSubmissionEvidence ? (
+            <p className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">
+              Sage submitted evidence is missing; showing latest Sage
+              reconstruction.
+            </p>
+          ) : null}
         </div>
         <span
-          className={`rounded-full px-3 py-1 text-xs font-bold ${hasRecon ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}
+          className={`rounded-full px-3 py-1 text-xs font-bold ${hasComparison ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}
         >
-          {hasRecon
-            ? "Sage reconstruction available"
-            : "Run Sage reconstruction"}
+          {useSubmissionEvidence
+            ? "Sage submission evidence available"
+            : hasRecon
+              ? "Sage reconstruction available"
+              : "Run Sage reconstruction"}
         </span>
       </div>
       <div className="mt-5 overflow-x-auto">
@@ -400,15 +425,23 @@ function VatWorkspace({ run, recon }: { run: Row; recon: Row }) {
             <tr>
               <th className="px-3 py-2">Box</th>
               <th className="px-3 py-2">What it means</th>
-              <th className="px-3 py-2">Platform draft</th>
-              <th className="px-3 py-2">Sage natural</th>
+              <th className="px-3 py-2">
+                {locked ? "Locked platform" : "Platform draft"}
+              </th>
+              <th className="px-3 py-2">
+                {locked ? "Sage submitted" : "Sage natural"}
+              </th>
               <th className="px-3 py-2">Difference</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
             {rows.map(([box, meaning]) => {
               const platform = platformBox(run, box);
-              const sage = hasRecon ? sageBox(recon, box) : 0;
+              const sage = useSubmissionEvidence
+                ? sageSubmittedBox(matchEvidence, box)
+                : hasRecon
+                  ? sageBox(recon, box)
+                  : 0;
               const gap = platform - sage;
               return (
                 <tr key={box}>
@@ -422,12 +455,12 @@ function VatWorkspace({ run, recon }: { run: Row; recon: Row }) {
                     {gbp(platform)}
                   </td>
                   <td className="whitespace-nowrap px-3 py-2 font-semibold text-slate-800">
-                    {hasRecon ? gbp(sage) : "—"}
+                    {hasComparison ? gbp(sage) : "—"}
                   </td>
                   <td
                     className={`whitespace-nowrap px-3 py-2 font-bold ${Math.abs(gap) > 0.005 ? "text-amber-700" : "text-emerald-700"}`}
                   >
-                    {hasRecon ? gbp(gap) : "—"}
+                    {hasComparison ? gbp(gap) : "—"}
                   </td>
                 </tr>
               );
@@ -438,7 +471,15 @@ function VatWorkspace({ run, recon }: { run: Row; recon: Row }) {
     </section>
   );
 }
-function Tabs({ runId, activeTab }: { runId: string; activeTab: TabKey }) {
+function Tabs({
+  runId,
+  activeTab,
+  locked,
+}: {
+  runId: string;
+  activeTab: TabKey;
+  locked: boolean;
+}) {
   return (
     <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
       <div className="flex gap-2 overflow-x-auto pb-1">
@@ -449,7 +490,9 @@ function Tabs({ runId, activeTab }: { runId: string; activeTab: TabKey }) {
             className={`min-w-fit rounded-2xl border px-4 py-3 text-sm ${tab.key === activeTab ? "border-sky-300 bg-sky-50 text-sky-900" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"}`}
           >
             <span className="block font-bold">{tab.label}</span>
-            <span className="mt-1 block text-xs opacity-75">{tab.hint}</span>
+            <span className="mt-1 block text-xs opacity-75">
+              {locked && tab.key === "summary" ? "Locked return" : tab.hint}
+            </span>
           </Link>
         ))}
       </div>
@@ -612,10 +655,14 @@ function Workflow({
       <p className="mt-3 text-xs leading-5 text-slate-600">{message}</p>
       <div className="mt-4 flex flex-wrap gap-3">
         <Link
-          href={`/internal/accounting-vat/returns/${text(run.id)}/sage-draft-import`}
+          href={
+            locked
+              ? `/internal/accounting-vat/returns/${text(run.id)}?tab=submission`
+              : `/internal/accounting-vat/returns/${text(run.id)}/sage-draft-import`
+          }
           className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-bold text-emerald-800 hover:bg-emerald-100"
         >
-          Upload Sage VAT file
+          {locked ? "View submission evidence" : "Upload Sage VAT file"}
         </Link>
       </div>
     </section>
@@ -1259,6 +1306,10 @@ export default async function VatReturnPackDetailPage({
     ),
   ]);
   const latestRecon = recon.rows[0] ?? {};
+  const latestMatchEvidence = matchEvidence.rows[0] ?? {};
+  const runStatus = text(run.status);
+  const locked =
+    Boolean(text(run.locked_at)) || runStatus === "matched_to_sage_locked";
   const currentJournalIds = journals.rows
     .map((row) => text(row.id))
     .filter(Boolean);
@@ -1318,12 +1369,14 @@ export default async function VatReturnPackDetailPage({
         const journalId = text(row.id);
         const status = text(row.status);
         const canDryRun =
-          status === "platform_calculated" || status === "dry_run_failed";
-        const canApprove = status === "dry_run_validated";
-        const canPost = status === "admin_approved";
+          !locked &&
+          (status === "platform_calculated" || status === "dry_run_failed");
+        const canApprove = !locked && status === "dry_run_validated";
+        const canPost = !locked && status === "admin_approved";
         const isPosted =
           status === "posted_to_sage" || status === "included_in_sage_return";
-        const sageReference = text(row.sage_journal_ref) || text(row.sage_journal_id);
+        const sageReference =
+          text(row.sage_journal_ref) || text(row.sage_journal_id);
         return (
           <div className="flex min-w-48 flex-wrap gap-2">
             <Link
@@ -1466,13 +1519,12 @@ export default async function VatReturnPackDetailPage({
   const openBlockers = blockers.rows.filter(
     (row) => text(row.status) === "open",
   ).length;
-  const runStatus = text(run.status);
   const sourceRefreshBlocked =
-    Boolean(run.locked_at) || SOURCE_REFRESH_BLOCKED_STATUSES.has(runStatus);
+    locked || SOURCE_REFRESH_BLOCKED_STATUSES.has(runStatus);
   const hasAdjustmentJournals = journals.count > 0 || journals.rows.length > 0;
   const canCreateJournalQueue =
     !journals.error &&
-    !run.locked_at &&
+    !locked &&
     !JOURNAL_QUEUE_CREATE_BLOCKED_STATUSES.has(runStatus) &&
     !hasAdjustmentJournals;
   return (
@@ -1494,8 +1546,9 @@ export default async function VatReturnPackDetailPage({
                 {cut(run.return_period_label || run.run_ref || run.id, 80)}
               </h1>
               <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
-                Review the VAT draft, compare Sage natural VAT, then investigate
-                exceptions and blockers.
+                {locked
+                  ? "Review the locked platform return, Sage submission evidence and audit trail."
+                  : "Review the VAT draft, compare Sage natural VAT, then investigate exceptions and blockers."}
               </p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700">
@@ -1511,6 +1564,38 @@ export default async function VatReturnPackDetailPage({
             VAT run read error: {runError.message}
           </div>
         ) : null}
+        {locked ? (
+          <section className="rounded-3xl border border-emerald-200 bg-emerald-50 p-5 text-emerald-950 shadow-sm">
+            <h2 className="text-xl font-semibold">Matched and locked</h2>
+            <p className="mt-2 text-sm leading-6 text-emerald-900">
+              Sage submission evidence has been recorded and matched to the
+              platform VAT return. Further changes require a correction/reopen
+              flow.
+            </p>
+            <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
+              <div>
+                <dt className="font-bold text-emerald-700">Sage ref</dt>
+                <dd className="mt-1">
+                  {cut(latestMatchEvidence.sage_return_reference)}
+                </dd>
+              </div>
+              <div>
+                <dt className="font-bold text-emerald-700">Matched date</dt>
+                <dd className="mt-1">{date(latestMatchEvidence.matched_at)}</dd>
+              </div>
+              <div>
+                <dt className="font-bold text-emerald-700">Locked date</dt>
+                <dd className="mt-1">
+                  {date(latestMatchEvidence.locked_at || run.locked_at)}
+                </dd>
+              </div>
+              <div>
+                <dt className="font-bold text-emerald-700">Open blockers</dt>
+                <dd className="mt-1">{openBlockers}</dd>
+              </div>
+            </dl>
+          </section>
+        ) : null}
         <Workflow
           run={run}
           recon={latestRecon}
@@ -1518,7 +1603,12 @@ export default async function VatReturnPackDetailPage({
           journals={journals}
           matchEvidence={matchEvidence}
         />
-        <VatWorkspace run={run} recon={latestRecon} />
+        <VatWorkspace
+          run={run}
+          recon={latestRecon}
+          matchEvidence={latestMatchEvidence}
+          locked={locked}
+        />
         <section className="grid gap-4 md:grid-cols-3">
           <Metric
             label="Open blockers"
@@ -1533,8 +1623,12 @@ export default async function VatReturnPackDetailPage({
           />
           <Metric
             label="Locked"
-            value={run.locked_at ? "Yes" : "No"}
-            note={run.locked_at ? date(run.locked_at) : "Return is not locked"}
+            value={locked ? "Yes" : "No"}
+            note={
+              locked
+                ? date(run.locked_at || latestMatchEvidence.locked_at)
+                : "Return is not locked"
+            }
           />
         </section>
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -1563,15 +1657,15 @@ export default async function VatReturnPackDetailPage({
           </p>
           {sourceRefreshBlocked ? (
             <p
-              className={`mt-2 text-xs font-semibold ${run.locked_at ? "text-emerald-700" : "text-amber-700"}`}
+              className={`mt-2 text-xs font-semibold ${locked ? "text-emerald-700" : "text-amber-700"}`}
             >
-              {run.locked_at
-                ? "Platform source refresh is blocked because this return is locked to Sage submission. Future changes must use correction/reopen flow."
+              {locked
+                ? "Locked to Sage submission. Use correction/reopen flow for later discoveries."
                 : "Platform source refresh is blocked because this return has moved into approval, journal, submission, mismatch or superseded status."}
             </p>
           ) : null}
         </section>
-        <Tabs runId={runId} activeTab={activeTab} />
+        <Tabs runId={runId} activeTab={activeTab} locked={locked} />
         {activeTab === "summary" ? (
           <div className="grid gap-4">
             <Table
@@ -1671,71 +1765,80 @@ export default async function VatReturnPackDetailPage({
         ) : null}
         {activeTab === "journals" ? (
           <div className="grid gap-4">
-            <section className="rounded-3xl border border-rose-200 bg-rose-50 p-5 text-sm leading-6 text-rose-900">
-              <div className="flex flex-wrap items-start justify-between gap-4">
-                <div>
-                  <p className="text-xs font-bold uppercase tracking-[0.18em] text-rose-700">
-                    Guided Sage-gap journal workflow
-                  </p>
-                  <h2 className="mt-1 text-lg font-semibold">
-                    Sage adjustment journals
-                  </h2>
-                  <p className="mt-2">
-                    Journal only the Sage gap after statutory values and Sage
-                    natural coverage are compared. If the gap is zero, approval
-                    and posting are not required for this return.
-                  </p>
-                  <ol className="mt-3 list-decimal space-y-1 pl-5 text-sm">
-                    <li>Create the Sage-gap journal queue for this return.</li>
-                    <li>
-                      Continue in this Journals tab to dry-run validate, approve
-                      and post to Sage in sequence.
-                    </li>
-                    <li>
-                      Use the evidence pack as a secondary audit trail after
-                      operational posting is complete.
-                    </li>
-                  </ol>
-                  {hasAdjustmentJournals ? (
-                    <p className="mt-3 rounded-2xl border border-rose-200 bg-white/70 p-3 font-semibold">
-                      Journal queue created. Continue below: dry-run validate →
-                      approve → post.
+            {locked ? (
+              <section className="rounded-3xl border border-emerald-200 bg-emerald-50 p-5 text-sm font-semibold text-emerald-900">
+                Return locked. Journal actions are disabled; this tab is
+                audit-only.
+              </section>
+            ) : (
+              <section className="rounded-3xl border border-rose-200 bg-rose-50 p-5 text-sm leading-6 text-rose-900">
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div>
+                    <p className="text-xs font-bold uppercase tracking-[0.18em] text-rose-700">
+                      Guided Sage-gap journal workflow
                     </p>
-                  ) : canCreateJournalQueue ? (
-                    <p className="mt-3 rounded-2xl border border-rose-200 bg-white/70 p-3 font-semibold">
-                      Create the journal queue for the Sage gap, then validate,
-                      approve and post below.
+                    <h2 className="mt-1 text-lg font-semibold">
+                      Sage adjustment journals
+                    </h2>
+                    <p className="mt-2">
+                      Journal only the Sage gap after statutory values and Sage
+                      natural coverage are compared. If the gap is zero,
+                      approval and posting are not required for this return.
                     </p>
-                  ) : (
-                    <p className="mt-3 rounded-2xl border border-rose-200 bg-white/70 p-3 font-semibold">
-                      Journal queue creation is unavailable because this return
-                      is locked, blocked by status, or has already moved beyond
-                      queue creation.
-                    </p>
-                  )}
+                    <ol className="mt-3 list-decimal space-y-1 pl-5 text-sm">
+                      <li>
+                        Create the Sage-gap journal queue for this return.
+                      </li>
+                      <li>
+                        Continue in this Journals tab to dry-run validate,
+                        approve and post to Sage in sequence.
+                      </li>
+                      <li>
+                        Use the evidence pack as a secondary audit trail after
+                        operational posting is complete.
+                      </li>
+                    </ol>
+                    {hasAdjustmentJournals ? (
+                      <p className="mt-3 rounded-2xl border border-rose-200 bg-white/70 p-3 font-semibold">
+                        Journal queue created. Continue below: dry-run validate
+                        → approve → post.
+                      </p>
+                    ) : canCreateJournalQueue ? (
+                      <p className="mt-3 rounded-2xl border border-rose-200 bg-white/70 p-3 font-semibold">
+                        Create the journal queue for the Sage gap, then
+                        validate, approve and post below.
+                      </p>
+                    ) : (
+                      <p className="mt-3 rounded-2xl border border-rose-200 bg-white/70 p-3 font-semibold">
+                        Journal queue creation is unavailable because this
+                        return is locked, blocked by status, or has already
+                        moved beyond queue creation.
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap gap-3">
+                    {canCreateJournalQueue ? (
+                      <form action={materialiseVatAdjustmentJournalQueueAction}>
+                        <input
+                          type="hidden"
+                          name="vat_return_run_id"
+                          value={runId}
+                        />
+                        <button className="rounded-xl border border-slate-950 bg-slate-950 px-4 py-2 text-sm font-bold text-white hover:bg-slate-800">
+                          Create Sage-gap journal queue
+                        </button>
+                      </form>
+                    ) : null}
+                    <Link
+                      href={`/internal/accounting-vat/returns/${runId}/sage-evidence`}
+                      className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50"
+                    >
+                      View Sage posting evidence pack
+                    </Link>
+                  </div>
                 </div>
-                <div className="flex flex-wrap gap-3">
-                  {canCreateJournalQueue ? (
-                    <form action={materialiseVatAdjustmentJournalQueueAction}>
-                      <input
-                        type="hidden"
-                        name="vat_return_run_id"
-                        value={runId}
-                      />
-                      <button className="rounded-xl border border-slate-950 bg-slate-950 px-4 py-2 text-sm font-bold text-white hover:bg-slate-800">
-                        Create Sage-gap journal queue
-                      </button>
-                    </form>
-                  ) : null}
-                  <Link
-                    href={`/internal/accounting-vat/returns/${runId}/sage-evidence`}
-                    className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50"
-                  >
-                    View Sage posting evidence pack
-                  </Link>
-                </div>
-              </div>
-            </section>
+              </section>
+            )}
             <Table
               title="Adjustment journals"
               data={journals}
@@ -1750,22 +1853,38 @@ export default async function VatReturnPackDetailPage({
         ) : null}
         {activeTab === "submission" ? (
           <div className="grid gap-4">
-            <section className="rounded-3xl border border-emerald-200 bg-emerald-50 p-5 text-sm leading-6 text-emerald-900">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <h2 className="text-lg font-semibold text-emerald-950">Upload Sage VAT file</h2>
-                  <p className="mt-2">
-                    Use Sage VAT upload to record final submitted Sage values. The return only locks if Sage submitted Boxes 1–9 match platform expected Boxes 1–9.
-                  </p>
+            {locked ? (
+              <section className="rounded-3xl border border-emerald-200 bg-emerald-50 p-5 text-sm leading-6 text-emerald-900">
+                <h2 className="text-lg font-semibold text-emerald-950">
+                  Return locked to Sage submission
+                </h2>
+                <p className="mt-2">
+                  The rows below are the audit evidence used to lock this VAT
+                  return.
+                </p>
+              </section>
+            ) : (
+              <section className="rounded-3xl border border-emerald-200 bg-emerald-50 p-5 text-sm leading-6 text-emerald-900">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h2 className="text-lg font-semibold text-emerald-950">
+                      Upload Sage VAT file
+                    </h2>
+                    <p className="mt-2">
+                      Use Sage VAT upload to record final submitted Sage values.
+                      The return only locks if Sage submitted Boxes 1–9 match
+                      platform expected Boxes 1–9.
+                    </p>
+                  </div>
+                  <Link
+                    href={`/internal/accounting-vat/returns/${runId}/sage-draft-import`}
+                    className="rounded-xl border border-emerald-700 bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-700"
+                  >
+                    Upload Sage VAT file
+                  </Link>
                 </div>
-                <Link
-                  href={`/internal/accounting-vat/returns/${runId}/sage-draft-import`}
-                  className="rounded-xl border border-emerald-700 bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-700"
-                >
-                  Upload Sage VAT file
-                </Link>
-              </div>
-            </section>
+              </section>
+            )}
             <Table
               title="Submission evidence"
               data={matchEvidence}
