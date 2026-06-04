@@ -24,6 +24,7 @@ const activeStatuses = [
   "sage_return_review_required",
   "sage_return_submitted",
   "mismatch_needs_admin_review",
+  "matched_to_sage_locked",
   "reopened_for_correction",
 ];
 
@@ -83,7 +84,7 @@ export default async function VatDashboardPage({ searchParams }: any = {}) {
   const { data: runsData, error: runsError } = await db
     .from("vat_return_runs")
     .select(
-      "id, run_ref, return_period_label, period_start_date, period_end_date, status, expected_box6_gbp",
+      "id, run_ref, return_period_label, period_start_date, period_end_date, status, expected_box6_gbp, locked_at",
     )
     .in("status", activeStatuses)
     .not("run_ref", "like", "VAT-JOURNAL-TEST-%")
@@ -255,34 +256,51 @@ function Runs({ rows }: { rows: Row[] }) {
                 </td>
               </tr>
             ) : (
-              rows.map((row) => (
-                <tr key={text(row.id)}>
-                  <td className="px-3 py-2">{label(row.run_ref, 24)}</td>
-                  <td className="px-3 py-2">
-                    {label(row.return_period_label)}
-                  </td>
-                  <td className="px-3 py-2">{date(row.period_start_date)}</td>
-                  <td className="px-3 py-2">{date(row.period_end_date)}</td>
-                  <td className="px-3 py-2">{label(row.status, 28)}</td>
-                  <td className="px-3 py-2">{amount(row.expected_box6_gbp)}</td>
-                  <td className="px-3 py-2">
-                    <div className="flex flex-wrap gap-2">
-                      <Link
-                        className="rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-bold text-sky-800"
-                        href={`/internal/accounting-vat/returns/${text(row.id)}`}
-                      >
-                        Open pack
-                      </Link>
-                      <Link
-                        className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-800"
-                        href={`/internal/accounting-vat/returns/${text(row.id)}/sage-draft-import`}
-                      >
-                        Upload Sage VAT file
-                      </Link>
-                    </div>
-                  </td>
-                </tr>
-              ))
+              rows.map((row) => {
+                const locked =
+                  Boolean(text(row.locked_at)) ||
+                  text(row.status) === "matched_to_sage_locked";
+                return (
+                  <tr key={text(row.id)}>
+                    <td className="px-3 py-2">{label(row.run_ref, 24)}</td>
+                    <td className="px-3 py-2">
+                      {label(row.return_period_label)}
+                    </td>
+                    <td className="px-3 py-2">{date(row.period_start_date)}</td>
+                    <td className="px-3 py-2">{date(row.period_end_date)}</td>
+                    <td className="px-3 py-2">
+                      {locked ? (
+                        <span className="inline-flex rounded-full border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs font-bold text-emerald-800">
+                          Matched to Sage / locked
+                        </span>
+                      ) : (
+                        label(row.status, 28)
+                      )}
+                    </td>
+                    <td className="px-3 py-2">
+                      {amount(row.expected_box6_gbp)}
+                    </td>
+                    <td className="px-3 py-2">
+                      <div className="flex flex-wrap gap-2">
+                        <Link
+                          className="rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-bold text-sky-800"
+                          href={`/internal/accounting-vat/returns/${text(row.id)}`}
+                        >
+                          {locked ? "View locked return" : "Open pack"}
+                        </Link>
+                        {!locked ? (
+                          <Link
+                            className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-800"
+                            href={`/internal/accounting-vat/returns/${text(row.id)}/sage-draft-import`}
+                          >
+                            Upload Sage VAT file
+                          </Link>
+                        ) : null}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })
             )}
           </tbody>
         </table>
