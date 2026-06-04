@@ -512,6 +512,23 @@ Get invoice / Download invoice
 
 The customer must not see Sage access tokens, Sage API paths, Sage object IDs, posting payloads, posting errors, ledger accounts, VAT code internals, or accounting command centre state.
 
+Existing Sage PDF retrieval pattern:
+
+```text
+/shipper/shipments/[shipment_batch_id]/sales-invoices-zip
+```
+
+The platform already has a server-side Sage PDF retrieval pattern in the shipper shipment sales invoice ZIP route. That route resolves posted `sales_invoices` rows, checks `sage_status = 'posted'`, uses `sage_invoice_id`, calls Sage with:
+
+```text
+GET /sales_invoices/{id}
+Accept: application/pdf
+```
+
+and returns the PDFs inside a ZIP for shipment/COS/export-evidence pack use.
+
+This shipper ZIP route must not be reused directly as the customer final invoice route because the customer route needs single-order customer access checks, one-order document behaviour, and customer-safe persistence.
+
 Final invoice PDF access must be server-side and access-controlled:
 
 ```text
@@ -520,13 +537,19 @@ verify the invoice belongs to that order
 serve only posted final/supplementary customer invoices that are customer-visible
 ```
 
+Preferred customer route:
+
+```text
+/customer/orders/[order_id]/final-invoice
+```
+
 Preferred persistence model:
 
 ```text
 1. customer clicks Get invoice
 2. server checks access and posted sales invoice state
 3. if a stored platform PDF exists, serve it
-4. if no stored PDF exists, fetch the PDF from Sage server-side
+4. if no stored PDF exists, fetch the PDF from Sage server-side using the existing Accept: application/pdf pattern
 5. store the PDF in platform storage / document evidence under the order or sales invoice
 6. save the storage path / document reference
 7. serve the PDF to the customer
