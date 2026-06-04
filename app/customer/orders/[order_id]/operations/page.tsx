@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 
+// Restored original customer order operations page. No UI change in this commit.
 type ScreenshotRow = { id: string; screenshot_url: string };
 type ReviewLinkRow = { customer_review_path: string | null };
 type CreditBalanceRow = { importer_id: string | null; available_credit_gbp: number | string | null };
