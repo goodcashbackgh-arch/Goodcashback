@@ -19,21 +19,19 @@ type InvoiceSummaryRow = { supplier_invoice_id: string; invoice_total_gbp: numbe
 type AdjustmentRow = { id: string; supplier_invoice_id: string | null; adjustment_type: string; amount_gbp: number; approval_status: string; requires_supervisor_approval: boolean | null };
 type ReviewFlagRow = { id: string; supplier_invoice_id: string; flag_type: string; message: string; status: string; created_at: string };
 
+const retiredInvoiceStatuses = new Set(["rejected_resubmit_required", "superseded", "duplicate_blocked"]);
+const cardClass = "rounded-2xl border border-slate-200 bg-white p-4 shadow-sm";
+const inputClass = "rounded-xl border border-slate-300 bg-white p-3 text-sm shadow-sm";
+const secondaryButtonClass = "inline-flex min-h-9 items-center justify-center rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm hover:border-sky-300 hover:bg-sky-50 hover:text-sky-800";
+
 function money(value: number | string | null | undefined, currency = "GBP") {
   const n = Number(value ?? 0);
-  return new Intl.NumberFormat("en-GB", {
-    style: "currency",
-    currency,
-    minimumFractionDigits: 2,
-  }).format(n);
+  return new Intl.NumberFormat("en-GB", { style: "currency", currency, minimumFractionDigits: 2 }).format(n);
 }
 
 function localAmount(value: number | string | null | undefined, currencyCode?: string | null) {
   const n = Number(value ?? 0);
-  return `${currencyCode ?? "Local"} ${new Intl.NumberFormat("en-GB", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(n)}`;
+  return `${currencyCode ?? "Local"} ${new Intl.NumberFormat("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n)}`;
 }
 
 function formatDate(value: string | null | undefined) {
@@ -57,7 +55,7 @@ function flagLabel(type: string) {
 }
 
 function invoiceStatusLabel(status: string | null | undefined) {
-  if (status === "rejected_resubmit_required") return "Rejected — resubmission required";
+  if (status === "rejected_resubmit_required") return "Rejected — audit only";
   if (status === "approved_current" || status === "ref_corrected_approved") return "Approved current";
   if (status === "duplicate_blocked") return "Duplicate blocked";
   if (status === "superseded") return "Superseded";
@@ -80,6 +78,7 @@ function friendlyValue(value: string | null | undefined) {
   if (!value) return "—";
   if (value === "partially_progressed") return "Invoice reconciled; tracking open";
   if (value === "pending_dva_funding") return "Payment pending";
+  if (value === "reconcilling" || value === "reconciling") return "Reconciling";
   return value.replaceAll("_", " ").replace(/^./, (first) => first.toUpperCase());
 }
 
@@ -93,24 +92,22 @@ function isProgressed(value: string | null | undefined) {
   return ["y", "yes", "true", "1"].includes((value ?? "").trim().toLowerCase());
 }
 
-function operationalStatusLabel(args: {
-  thresholdMet: boolean;
-  orderHasResubmissionRequired: boolean;
-  invoiceRows: InvoiceRow[];
-  invoiceLineRows: InvoiceLineTotalRow[];
-  finalTrackingExists: boolean;
-}) {
+function isRetiredInvoice(invoice: InvoiceRow) {
+  return retiredInvoiceStatuses.has(invoice.review_status ?? "");
+}
+
+function operationalStatusLabel(args: { thresholdMet: boolean; orderHasResubmissionRequired: boolean; liveInvoiceRows: InvoiceRow[]; invoiceLineRows: InvoiceLineTotalRow[]; finalTrackingExists: boolean }) {
   if (args.orderHasResubmissionRequired) return "Invoice resubmission required";
   if (!args.thresholdMet) return "Funding required";
-  if (args.invoiceRows.length === 0) return "Awaiting supplier invoice";
+  if (args.liveInvoiceRows.length === 0) return "Awaiting supplier invoice";
   if (args.invoiceLineRows.length > 0 && args.invoiceLineRows.every((line) => isProgressed(line.eligible_for_invoice_yn))) {
     return args.finalTrackingExists ? "Importer reconciliation complete" : "Invoice reconciled; tracking open";
   }
-  return "Invoice reconciliation open";
+  return "Invoice review / reconciliation open";
 }
 
-export default async function OrderOperationsPage({params,searchParams}:{params: Promise<{order_id:string}>, searchParams: Promise<{success?:string;order_ref?:string;auth_ref?:string;error?:string}>}) {
-  const {order_id:orderId} = await params;
+export default async function OrderOperationsPage({ params, searchParams }: { params: Promise<{ order_id: string }>; searchParams: Promise<{ success?: string; order_ref?: string; auth_ref?: string; error?: string }> }) {
+  const { order_id: orderId } = await params;
   const qp = await searchParams;
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -118,20 +115,21 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
   const { data: operator } = await supabase.from("operators").select("id").eq("auth_user_id", user.id).eq("active", true).maybeSingle();
   if (!operator) return <main className="p-6">Operator account required.</main>;
 
-  const [{data:order},{data:screenshots},{data:tracking},{data:funding},{data:invoices},{data:couriers},{data:adjustments},{data:invoiceLines},{data:invoiceSummaries},{data:reviewFlags}] = await Promise.all([
-    supabase.from("orders").select("*, importers(countries(currencies(code))), retailers(name)").eq("id",orderId).maybeSingle(),
-    supabase.from("order_screenshots").select("*").eq("order_id",orderId).order("display_order"),
-    supabase.from("order_tracking_submissions").select("*, couriers(name)").eq("order_id",orderId).order("submitted_at",{ascending:false}),
-    supabase.from("order_funding_position_vw").select("*").eq("order_id",orderId).maybeSingle(),
-    supabase.from("supplier_invoices").select("id, invoice_ref, review_status, review_notes, uploaded_at").eq("order_id",orderId).order("uploaded_at", { ascending: false }),
+  const [{ data: order }, { data: screenshots }, { data: tracking }, { data: funding }, { data: invoices }, { data: couriers }, { data: adjustments }, { data: invoiceLines }, { data: invoiceSummaries }, { data: reviewFlags }] = await Promise.all([
+    supabase.from("orders").select("*, importers(countries(currencies(code))), retailers(name)").eq("id", orderId).maybeSingle(),
+    supabase.from("order_screenshots").select("*").eq("order_id", orderId).order("display_order"),
+    supabase.from("order_tracking_submissions").select("*, couriers(name)").eq("order_id", orderId).order("submitted_at", { ascending: false }),
+    supabase.from("order_funding_position_vw").select("*").eq("order_id", orderId).maybeSingle(),
+    supabase.from("supplier_invoices").select("id, invoice_ref, review_status, review_notes, uploaded_at").eq("order_id", orderId).order("uploaded_at", { ascending: false }),
     supabase.from("couriers").select("id, name").order("name"),
-    supabase.from("order_value_adjustments").select("id, supplier_invoice_id, adjustment_type, amount_gbp, approval_status, requires_supervisor_approval").eq("order_id",orderId).order("created_at", { ascending: false }),
+    supabase.from("order_value_adjustments").select("id, supplier_invoice_id, adjustment_type, amount_gbp, approval_status, requires_supervisor_approval").eq("order_id", orderId).order("created_at", { ascending: false }),
     supabase.from("supplier_invoice_lines").select("supplier_invoice_id, qty, amount_inc_vat_gbp, eligible_for_invoice_yn, supplier_invoices!inner(order_id)").eq("supplier_invoices.order_id", orderId),
     supabase.from("supplier_invoice_financial_summary").select("supplier_invoice_id, invoice_total_gbp, supplier_invoices!inner(order_id)").eq("supplier_invoices.order_id", orderId),
     supabase.from("supplier_invoice_review_flags").select("id, supplier_invoice_id, flag_type, message, status, created_at").eq("order_id", orderId).order("created_at", { ascending: false }),
   ]);
 
   if (!order) return <main className="p-6">Order not found.</main>;
+
   const trackingRows = (tracking ?? []) as TrackingRow[];
   const finalTrackingExists = trackingRows.some((t) => t.is_final_delivery_yn);
   const currencyCode = order.importers?.countries?.currencies?.code ?? null;
@@ -139,20 +137,17 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
   const adjustmentRows = (adjustments ?? []) as AdjustmentRow[];
   const invoiceRows = (invoices ?? []) as InvoiceRow[];
   const invoiceLineRows = (invoiceLines ?? []) as InvoiceLineTotalRow[];
-  const liveInvoiceIds = new Set(invoiceRows.filter((invoice) => invoice.review_status !== "rejected_resubmit_required" && invoice.review_status !== "superseded" && invoice.review_status !== "duplicate_blocked").map((invoice) => invoice.id));
+  const liveInvoiceRows = invoiceRows.filter((invoice) => !isRetiredInvoice(invoice));
+  const liveInvoiceIds = new Set(liveInvoiceRows.map((invoice) => invoice.id));
   const activeAdjustmentRows = adjustmentRows.filter((a) => a.approval_status !== "rejected" && (!a.supplier_invoice_id || liveInvoiceIds.has(a.supplier_invoice_id)));
   const rejectedInvoices = invoiceRows.filter((invoice) => invoice.review_status === "rejected_resubmit_required");
-  const orderHasResubmissionRequired = rejectedInvoices.length > 0 && !invoiceRows.some((invoice) => {
-    if (invoice.review_status === "rejected_resubmit_required") return false;
-    const latestRejectedAt = rejectedInvoices[0]?.uploaded_at ? new Date(rejectedInvoices[0].uploaded_at).getTime() : 0;
-    const uploadedAt = invoice.uploaded_at ? new Date(invoice.uploaded_at).getTime() : 0;
-    return uploadedAt > latestRejectedAt;
-  });
+  const orderHasResubmissionRequired = rejectedInvoices.length > 0 && liveInvoiceRows.length === 0;
+  const showInvoiceUploadForm = liveInvoiceRows.length === 0;
   const reviewFlagRows = (reviewFlags ?? []) as ReviewFlagRow[];
   const orderGoodsBaseline = Number(order.order_total_gbp_declared ?? 0);
   const fundingStatus = funding?.status as string | null | undefined;
   const thresholdMet = Boolean(funding?.threshold_met_yn);
-  const operationalStatus = operationalStatusLabel({ thresholdMet, orderHasResubmissionRequired, invoiceRows, invoiceLineRows, finalTrackingExists });
+  const operationalStatus = operationalStatusLabel({ thresholdMet, orderHasResubmissionRequired, liveInvoiceRows, invoiceLineRows, finalTrackingExists });
 
   const lineTotalsByInvoice = new Map<string, { qty: number; amount: number }>();
   for (const line of invoiceLineRows) {
@@ -163,9 +158,7 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
   }
 
   const summaryByInvoice = new Map<string, InvoiceSummaryRow>();
-  for (const summary of (invoiceSummaries ?? []) as InvoiceSummaryRow[]) {
-    summaryByInvoice.set(summary.supplier_invoice_id, summary);
-  }
+  for (const summary of (invoiceSummaries ?? []) as InvoiceSummaryRow[]) summaryByInvoice.set(summary.supplier_invoice_id, summary);
 
   const reviewFlagsByInvoice = new Map<string, ReviewFlagRow[]>();
   for (const flag of reviewFlagRows) {
@@ -174,167 +167,92 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
     reviewFlagsByInvoice.set(flag.supplier_invoice_id, current);
   }
 
-  return <main className="p-6 space-y-6">
-    <Link href="/importer" className="text-sky-600">← Back</Link>
-    <h1 className="text-2xl font-semibold">Order operations: {order.order_ref ?? orderId}</h1>
-
-    {qp.error && <div className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-700">{qp.error}</div>}
-    {qp.success && <div className="rounded border border-emerald-300 bg-emerald-50 p-3 text-sm">
-      <p className="font-semibold">{qp.success}</p>
-      <p>This estimate is based on the goods value you submitted. Shipping is not included at this stage.</p>
-      <div className="mt-2 grid gap-1 md:grid-cols-4">
-        <p><span className="font-medium">Order ref:</span> {order.order_ref ?? qp.order_ref ?? "—"}</p>
-        <p><span className="font-medium">Order ID:</span> {order.id}</p>
-        <p><span className="font-medium">Auth ref:</span> {order.payment_auth_id ?? qp.auth_ref ?? "—"}</p>
-        <p><span className="font-medium">Retailer:</span> {orderRetailerName}</p>
+  return <main className="min-h-screen space-y-6 bg-slate-50 p-4 md:p-6">
+    <header className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm md:p-6">
+      <Link href="/importer" className="text-sm font-semibold text-sky-700 hover:underline">← Back to importer dashboard</Link>
+      <div className="mt-4 flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-sky-700">Order operations</p>
+          <h1 className="mt-2 break-words text-2xl font-semibold tracking-tight text-slate-950 md:text-3xl">{order.order_ref ?? orderId}</h1>
+          <p className="mt-1 break-all text-sm text-slate-500">{order.id}</p>
+        </div>
+        <span className={`w-fit rounded-full px-3 py-1 text-xs font-semibold ${orderHasResubmissionRequired ? "bg-rose-100 text-rose-800" : "bg-slate-100 text-slate-700"}`}>{operationalStatus}</span>
       </div>
-    </div>}
+    </header>
 
-    {orderHasResubmissionRequired ? <section className="rounded border border-rose-300 bg-rose-50 p-4 text-sm text-rose-900">
+    {qp.error ? <div className="rounded-2xl border border-red-300 bg-red-50 p-3 text-sm text-red-700">{qp.error}</div> : null}
+    {qp.success ? <div className="rounded-2xl border border-emerald-300 bg-emerald-50 p-3 text-sm text-emerald-900"><p className="font-semibold">{qp.success}</p><p>This estimate is based on the goods value you submitted. Shipping is not included at this stage.</p></div> : null}
+
+    {orderHasResubmissionRequired ? <section className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-900 shadow-sm">
       <h2 className="font-semibold">Invoice rejected — upload corrected invoice</h2>
-      <p className="mt-1">Supervisor has rejected the latest invoice evidence for this order. Upload the correct invoice below using the normal invoice upload form.</p>
+      <p className="mt-1">There is no live supplier invoice for this order. Upload the corrected invoice below.</p>
       {rejectedInvoices[0]?.review_notes ? <p className="mt-2"><span className="font-semibold">Supervisor note:</span> {rejectedInvoices[0].review_notes}</p> : null}
+    </section> : rejectedInvoices.length > 0 ? <section className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-700 shadow-sm">
+      <h2 className="font-semibold text-slate-950">Rejected invoice kept for audit</h2>
+      <p className="mt-1">A previous invoice was rejected, but a current invoice is already present. Continue review/reconciliation on the current invoice.</p>
     </section> : null}
 
-    <section className="rounded border p-4">
-      <h2 className="font-semibold">Summary</h2>
-      <div className="mt-2 grid gap-2 md:grid-cols-5 text-sm">
-        <div><div className="text-slate-500">Retailer</div><div className="font-medium">{orderRetailerName}</div></div>
-        <div><div className="text-slate-500">Quantity</div><div className="font-medium">{order.total_qty_declared}</div></div>
-        <div><div className="text-slate-500">Goods amount</div><div className="font-medium">{money(order.order_total_gbp_declared)}</div></div>
-        <div><div className="text-slate-500">Local quote amount</div><div className="font-medium">{localAmount(order.quote_total_ghs, currencyCode)}</div></div>
-        <div><div className="text-slate-500">Status</div><div className="font-medium">{operationalStatus}</div><div className="text-xs text-slate-500">System: {friendlyValue(order.status)}</div></div>
+    <section className={cardClass}>
+      <h2 className="text-lg font-semibold text-slate-950">Summary</h2>
+      <div className="mt-4 grid gap-3 text-sm md:grid-cols-5">
+        <div className="rounded-xl bg-slate-50 p-3"><div className="text-xs text-slate-500">Retailer</div><div className="font-semibold text-slate-950">{orderRetailerName}</div></div>
+        <div className="rounded-xl bg-slate-50 p-3"><div className="text-xs text-slate-500">Quantity</div><div className="font-semibold text-slate-950">{order.total_qty_declared}</div></div>
+        <div className="rounded-xl bg-slate-50 p-3"><div className="text-xs text-slate-500">Goods amount</div><div className="font-semibold text-slate-950">{money(order.order_total_gbp_declared)}</div></div>
+        <div className="rounded-xl bg-slate-50 p-3"><div className="text-xs text-slate-500">Local quote</div><div className="font-semibold text-slate-950">{localAmount(order.quote_total_ghs, currencyCode)}</div></div>
+        <div className="rounded-xl bg-slate-50 p-3"><div className="text-xs text-slate-500">System</div><div className="font-semibold text-slate-950">{friendlyValue(order.status)}</div></div>
       </div>
     </section>
 
-    <section className="rounded border p-4">
+    <section className={cardClass}>
       <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
-        <div>
-          <h2 className="font-semibold">Funding</h2>
-          <p className="mt-1 text-xs text-slate-500">Purchase funding threshold excludes shipping. Confirmed DVA funding and applied credit count toward the threshold.</p>
-        </div>
-        <span className={`w-fit rounded-full px-3 py-1 text-xs font-semibold ${fundingStatusClass(fundingStatus, thresholdMet)}`}>
-          {thresholdMet ? "Threshold reached" : friendlyValue(fundingStatus)}
-        </span>
+        <div><h2 className="text-lg font-semibold text-slate-950">Funding</h2><p className="mt-1 text-xs text-slate-500">Purchase funding threshold excludes shipping. Confirmed DVA funding and applied credit count toward the threshold.</p></div>
+        <span className={`w-fit rounded-full px-3 py-1 text-xs font-semibold ${fundingStatusClass(fundingStatus, thresholdMet)}`}>{thresholdMet ? "Threshold reached" : friendlyValue(fundingStatus)}</span>
       </div>
-
       <div className="mt-4 grid gap-3 text-sm md:grid-cols-3 lg:grid-cols-6">
-        <div className="rounded border border-slate-200 bg-slate-50 p-3">
-          <div className="text-xs uppercase tracking-wide text-slate-500">Funding threshold</div>
-          <div className="mt-1 font-semibold">{money(funding?.purchase_funding_threshold_gbp ?? order.order_total_gbp_declared)}</div>
-        </div>
-        <div className="rounded border border-slate-200 bg-slate-50 p-3">
-          <div className="text-xs uppercase tracking-wide text-slate-500">Confirmed DVA</div>
-          <div className="mt-1 font-semibold">{money(funding?.confirmed_dva_funding_gbp)}</div>
-        </div>
-        <div className="rounded border border-slate-200 bg-slate-50 p-3">
-          <div className="text-xs uppercase tracking-wide text-slate-500">Applied credit</div>
-          <div className="mt-1 font-semibold">{money(funding?.applied_credit_gbp)}</div>
-        </div>
-        <div className="rounded border border-slate-200 bg-slate-50 p-3">
-          <div className="text-xs uppercase tracking-wide text-slate-500">Funded total</div>
-          <div className="mt-1 font-semibold">{money(funding?.funded_total_gbp)}</div>
-        </div>
-        <div className="rounded border border-slate-200 bg-slate-50 p-3">
-          <div className="text-xs uppercase tracking-wide text-slate-500">Gap remaining</div>
-          <div className="mt-1 font-semibold">{money(funding?.gap_remaining_gbp)}</div>
-        </div>
-        <div className="rounded border border-slate-200 bg-slate-50 p-3">
-          <div className="text-xs uppercase tracking-wide text-slate-500">Auth ref</div>
-          <div className="mt-1 break-words font-semibold">{funding?.payment_auth_id ?? order.payment_auth_id ?? "—"}</div>
-        </div>
-      </div>
-
-      <details className="mt-3 rounded border border-slate-200 bg-slate-50 p-3">
-        <summary className="cursor-pointer text-xs font-semibold text-slate-600">Show funding diagnostic JSON</summary>
-        <pre className="mt-2 overflow-x-auto rounded bg-white p-2 text-xs">{JSON.stringify(funding ?? {}, null, 2)}</pre>
-      </details>
-    </section>
-
-    <section>
-      <h2 className="font-semibold">Screenshots</h2>
-      <div className="flex gap-3 flex-wrap">
-        {((screenshots??[]) as ScreenshotRow[]).map((s)=> (
-          <a key={s.id} href={s.screenshot_url} target="_blank" className="block rounded border bg-white p-1">
-            <img src={s.screenshot_url} alt="Screenshot" style={{ width: 160, height: 120, objectFit: "contain" }} />
-          </a>
-        ))}
+        <div className="rounded-xl bg-slate-50 p-3"><div className="text-xs uppercase tracking-wide text-slate-500">Funding threshold</div><div className="mt-1 font-semibold">{money(funding?.purchase_funding_threshold_gbp ?? order.order_total_gbp_declared)}</div></div>
+        <div className="rounded-xl bg-slate-50 p-3"><div className="text-xs uppercase tracking-wide text-slate-500">Confirmed DVA</div><div className="mt-1 font-semibold">{money(funding?.confirmed_dva_funding_gbp)}</div></div>
+        <div className="rounded-xl bg-slate-50 p-3"><div className="text-xs uppercase tracking-wide text-slate-500">Applied credit</div><div className="mt-1 font-semibold">{money(funding?.applied_credit_gbp)}</div></div>
+        <div className="rounded-xl bg-slate-50 p-3"><div className="text-xs uppercase tracking-wide text-slate-500">Funded total</div><div className="mt-1 font-semibold">{money(funding?.funded_total_gbp)}</div></div>
+        <div className="rounded-xl bg-slate-50 p-3"><div className="text-xs uppercase tracking-wide text-slate-500">Gap remaining</div><div className="mt-1 font-semibold">{money(funding?.gap_remaining_gbp)}</div></div>
+        <div className="rounded-xl bg-slate-50 p-3"><div className="text-xs uppercase tracking-wide text-slate-500">Auth ref</div><div className="mt-1 break-words font-semibold">{funding?.payment_auth_id ?? order.payment_auth_id ?? "—"}</div></div>
       </div>
     </section>
 
-    <section id="tracking" className="space-y-3 rounded border p-4">
-      <h2 className="font-semibold">Tracking</h2>
-      {finalTrackingExists ? <p className="text-sm text-amber-700">Final delivery has already been marked. Add more tracking only if this was done in error.</p> : null}
-      <form action={addTrackingSubmissionAction} className="grid gap-2 md:grid-cols-2">
+    <section className={cardClass}>
+      <h2 className="text-lg font-semibold text-slate-950">Screenshots</h2>
+      <div className="mt-3 flex flex-wrap gap-3">{((screenshots ?? []) as ScreenshotRow[]).map((s) => <a key={s.id} href={s.screenshot_url} target="_blank" className="block rounded-xl border bg-white p-1 shadow-sm"><img src={s.screenshot_url} alt="Screenshot" style={{ width: 160, height: 120, objectFit: "contain" }} /></a>)}</div>
+    </section>
+
+    <section id="tracking" className={cardClass}>
+      <h2 className="text-lg font-semibold text-slate-950">Tracking</h2>
+      {finalTrackingExists ? <p className="mt-2 text-sm text-amber-700">Final delivery has already been marked. Add more tracking only if this was done in error.</p> : null}
+      <form action={addTrackingSubmissionAction} className="mt-4 grid gap-3 md:grid-cols-2">
         <input type="hidden" name="order_id" value={orderId} />
-        <select name="courier_id" required className="border p-2">
-          <option value="">Courier</option>
-          {(couriers??[]).map(c=> <option key={c.id} value={c.id}>{c.name}</option>)}
-        </select>
-        <input name="tracking_ref" required className="border p-2" placeholder="Tracking ref"/>
-        <input name="tracking_date" type="date" required className="border p-2"/>
-        <input name="tracking_screenshot_url" className="border p-2" placeholder="Tracking URL / courier tracking link"/>
-        <input name="tracking_evidence_file" type="file" accept=".pdf,image/*,.png,.jpg,.jpeg,.webp" className="border p-2" />
-        <input name="note" className="border p-2" placeholder="Note"/>
-        <label className="text-sm flex items-center gap-2"><input type="checkbox" name="is_final_delivery_yn"/>This completes delivery for this order</label>
+        <select name="courier_id" required className={inputClass}><option value="">Courier</option>{(couriers ?? []).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
+        <input name="tracking_ref" required className={inputClass} placeholder="Tracking ref" />
+        <input name="tracking_date" type="date" required className={inputClass} />
+        <input name="tracking_screenshot_url" className={inputClass} placeholder="Tracking URL / courier tracking link" />
+        <input name="tracking_evidence_file" type="file" accept=".pdf,image/*,.png,.jpg,.jpeg,.webp" className={inputClass} />
+        <input name="note" className={inputClass} placeholder="Note" />
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" name="is_final_delivery_yn" />This completes delivery for this order</label>
         <p className="text-xs text-slate-500 md:col-span-2">Use the retailer/courier tracking URL as the main live tracking source. Upload a dispatch screenshot, PDF, or delivery note as supporting evidence where useful.</p>
-        <button className="bg-sky-600 text-white px-4 py-2 rounded w-fit">Add tracking</button>
+        <button className="w-fit rounded-full bg-sky-600 px-4 py-2 text-sm font-semibold text-white shadow-sm">Add tracking</button>
       </form>
-      {trackingRows.length === 0 ? (
-        <p className="rounded bg-slate-50 p-3 text-sm text-slate-600">No tracking submitted yet.</p>
-      ) : (
-        <div className="space-y-2 text-sm">
-          {trackingRows.map(t=> (
-            <details key={t.id} className="rounded border border-slate-200 bg-slate-50 p-3">
-              <summary className="cursor-pointer list-none">
-                <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-semibold">{t.couriers?.name ?? "Courier"} · {t.tracking_ref}</span>
-                    <span className="text-slate-500">·</span>
-                    <span>{formatDate(t.tracking_date)}</span>
-                    {t.is_final_delivery_yn ? <span className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-semibold text-emerald-800">Final delivery</span> : null}
-                  </div>
-                  <span className="font-semibold text-sky-700 underline">View details</span>
-                </div>
-              </summary>
-              <div className="mt-3 rounded border border-slate-200 bg-white p-3">
-                <div className="grid gap-2 text-xs text-slate-700 md:grid-cols-4">
-                  <p><span className="font-medium text-slate-900">Courier:</span> {t.couriers?.name ?? "—"}</p>
-                  <p><span className="font-medium text-slate-900">Tracking ref:</span> {t.tracking_ref}</p>
-                  <p><span className="font-medium text-slate-900">Tracking date:</span> {formatDate(t.tracking_date)}</p>
-                  <p><span className="font-medium text-slate-900">Submitted:</span> {formatDate(t.submitted_at)}</p>
-                  <p><span className="font-medium text-slate-900">Final delivery:</span> {t.is_final_delivery_yn ? "Yes" : "No"}</p>
-                  <p className="md:col-span-3"><span className="font-medium text-slate-900">Tracking URL / evidence:</span> {t.tracking_screenshot_url ? <a href={t.tracking_screenshot_url} target="_blank" rel="noreferrer" className="ml-1 font-semibold text-sky-700 underline">Open</a> : "—"}</p>
-                </div>
-                {t.note ? <p className="mt-3 rounded bg-slate-50 p-2 text-xs text-slate-700"><span className="font-medium">Note:</span> {t.note}</p> : null}
-              </div>
-            </details>
-          ))}
-        </div>
-      )}
+      {trackingRows.length === 0 ? <p className="mt-4 rounded-xl bg-slate-50 p-3 text-sm text-slate-600">No tracking submitted yet.</p> : <div className="mt-4 space-y-2 text-sm">{trackingRows.map((t) => <details key={t.id} className="rounded-xl border border-slate-200 bg-slate-50 p-3"><summary className="cursor-pointer list-none"><div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between"><div className="flex flex-wrap items-center gap-2"><span className="font-semibold">{t.couriers?.name ?? "Courier"} · {t.tracking_ref}</span><span className="text-slate-500">·</span><span>{formatDate(t.tracking_date)}</span>{t.is_final_delivery_yn ? <span className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-semibold text-emerald-800">Final delivery</span> : null}</div><span className="font-semibold text-sky-700 underline">View details</span></div></summary>{t.note ? <p className="mt-3 rounded bg-white p-2 text-xs text-slate-700"><span className="font-medium">Note:</span> {t.note}</p> : null}</details>)}</div>}
     </section>
 
-    <section id="invoice" className="space-y-2 rounded border p-4">
-      <h2 className="font-semibold">Invoice / evidence</h2>
-      <p className="text-xs text-slate-500">Order retailer expected for invoice matching: <span className="font-semibold text-slate-700">{orderRetailerName}</span></p>
-      {orderHasResubmissionRequired ? <p className="rounded border border-rose-200 bg-rose-50 p-2 text-sm text-rose-900">Resubmission required: upload a corrected invoice here. The rejected invoice remains visible below for audit.</p> : null}
-      <form action={submitInvoiceEvidenceAction} className="grid gap-2 md:grid-cols-3">
-        <input type="hidden" name="order_id" value={orderId} />
-        <input name="invoice_ref" placeholder="Invoice ref" className="border p-2" required />
-        <input name="invoice_total_gbp" type="number" min="0.01" step="0.01" placeholder="Final invoice total GBP" className="border p-2" required />
-        <input name="invoice_file" type="file" accept=".pdf,image/*,.png,.jpg,.jpeg,.webp" className="border p-2" required />
-        <input name="retailer_delivery_gbp" type="number" min="0" step="0.01" placeholder="Optional delivery charge GBP" className="border p-2" />
-        <input name="retailer_discount_gbp" type="number" min="0" step="0.01" placeholder="Optional discount GBP" className="border p-2" />
-        <p className="text-xs text-slate-500 md:col-span-3">Final invoice total is checked against: original order goods amount + delivery - discount. Item lines remain a separate reconciliation check.</p>
-        <button className="bg-green-600 text-white px-4 py-2 rounded w-fit">Upload invoice</button>
-      </form>
+    <section id="invoice" className={cardClass}>
+      <h2 className="text-lg font-semibold text-slate-950">Invoice / evidence</h2>
+      <p className="mt-1 text-xs text-slate-500">Order retailer expected for invoice matching: <span className="font-semibold text-slate-700">{orderRetailerName}</span></p>
+      {showInvoiceUploadForm ? <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className={orderHasResubmissionRequired ? "mb-3 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-900" : "mb-3 text-sm text-slate-600"}>{orderHasResubmissionRequired ? "Upload a corrected invoice here. Rejected invoices remain visible below for audit only." : "No supplier invoice has been uploaded for this order yet."}</p><form action={submitInvoiceEvidenceAction} className="grid gap-3 md:grid-cols-3"><input type="hidden" name="order_id" value={orderId} /><input name="invoice_ref" placeholder="Invoice ref" className={inputClass} required /><input name="invoice_total_gbp" type="number" min="0.01" step="0.01" placeholder="Final invoice total GBP" className={inputClass} required /><input name="invoice_file" type="file" accept=".pdf,image/*,.png,.jpg,.jpeg,.webp" className={inputClass} required /><input name="retailer_delivery_gbp" type="number" min="0" step="0.01" placeholder="Optional delivery charge GBP" className={inputClass} /><input name="retailer_discount_gbp" type="number" min="0" step="0.01" placeholder="Optional discount GBP" className={inputClass} /><p className="text-xs text-slate-500 md:col-span-3">Final invoice total is checked against: original order goods amount + delivery - discount. Item lines remain a separate reconciliation check.</p><button className="w-fit rounded-full bg-emerald-700 px-4 py-2 text-sm font-semibold text-white shadow-sm">{orderHasResubmissionRequired ? "Upload corrected invoice" : "Upload invoice"}</button></form></div> : <p className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900">A current supplier invoice is already present. Continue review/reconciliation below instead of uploading another invoice.</p>}
 
-      <div className="space-y-2 text-sm">
-        {invoiceRows.map((invoice)=> {
+      <div className="mt-4 space-y-3 text-sm">
+        {invoiceRows.map((invoice) => {
           const goods = lineTotalsByInvoice.get(invoice.id) ?? { qty: 0, amount: 0 };
           const invoiceAdjustments = adjustmentRows.filter((a) => a.supplier_invoice_id === invoice.id);
           const invoiceFlags = reviewFlagsByInvoice.get(invoice.id) ?? [];
-          const hasOpenFlag = invoiceFlags.some((flag) => ["open", "under_review"].includes(flag.status));
+          const activeFlags = invoiceFlags.filter((flag) => ["open", "under_review"].includes(flag.status));
+          const auditFlags = invoiceFlags.filter((flag) => !["open", "under_review"].includes(flag.status));
           const deliveryTotal = invoiceAdjustments.filter((a) => a.adjustment_type === "retailer_delivery" && a.approval_status !== "rejected").reduce((sum, a) => sum + Number(a.amount_gbp ?? 0), 0);
           const discountTotal = invoiceAdjustments.filter((a) => a.adjustment_type === "retailer_discount" && a.approval_status !== "rejected").reduce((sum, a) => sum + Number(a.amount_gbp ?? 0), 0);
           const expectedInvoiceTotal = orderGoodsBaseline + deliveryTotal - discountTotal;
@@ -342,68 +260,19 @@ export default async function OrderOperationsPage({params,searchParams}:{params:
           const invoiceTotal = Number(summary?.invoice_total_gbp ?? 0);
           const variance = expectedInvoiceTotal - invoiceTotal;
           const matched = summary && Math.abs(variance) < 0.01;
-          const rejected = invoice.review_status === "rejected_resubmit_required";
+          const retired = isRetiredInvoice(invoice);
 
-          return (
-            <div key={invoice.id} className={`rounded p-3 ${rejected ? "border border-rose-200 bg-rose-50" : "bg-slate-50"}`}>
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  {invoice.invoice_ref}
-                  {!rejected ? <Link className="ml-2 text-sky-700 underline" href={`/importer/reconciliation/${orderId}`}>Reconcile</Link> : <span className="ml-2 rounded bg-white px-2 py-1 text-xs font-medium text-rose-800">Audit only</span>}
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <span className={`rounded px-2 py-1 text-xs font-medium ${invoiceStatusClass(invoice.review_status)}`}>{invoiceStatusLabel(invoice.review_status)}</span>
-                  {summary ? <span className={`rounded px-2 py-1 text-xs font-medium ${matched ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>{matched ? "Invoice total matched" : "Invoice total variance"}</span> : <span className="rounded bg-slate-200 px-2 py-1 text-xs">No invoice total captured</span>}
-                  {hasOpenFlag ? <span className="rounded bg-rose-100 px-2 py-1 text-xs font-medium text-rose-800">Flagged for review</span> : null}
-                </div>
-              </div>
-              {rejected ? <p className="mt-2 rounded border border-rose-200 bg-white p-2 text-xs text-rose-900"><span className="font-semibold">Rejected by supervisor.</span> {invoice.review_notes ? `Reason: ${invoice.review_notes}` : "Upload a corrected invoice using the form above."}</p> : null}
-              {summary ? <div className="mt-2 grid gap-2 md:grid-cols-7 text-xs">
-                <div><span className="text-slate-500">Goods qty</span><div className="font-medium">{goods.qty}</div></div>
-                <div><span className="text-slate-500">Item lines</span><div className="font-medium">{money(goods.amount)}</div></div>
-                <div><span className="text-slate-500">Order goods baseline</span><div className="font-medium">{money(orderGoodsBaseline)}</div></div>
-                <div><span className="text-slate-500">Delivery</span><div className="font-medium">{money(deliveryTotal)}</div></div>
-                <div><span className="text-slate-500">Discount</span><div className="font-medium">-{money(discountTotal)}</div></div>
-                <div><span className="text-slate-500">Expected final total</span><div className="font-medium">{money(expectedInvoiceTotal)}</div></div>
-                <div><span className="text-slate-500">Variance</span><div className="font-medium">{signedMoney(variance)}</div></div>
-              </div> : null}
-
-              {invoiceFlags.length > 0 ? <div className="mt-3 space-y-1">
-                <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Review flags</h4>
-                {invoiceFlags.map((flag) => (
-                  <div key={flag.id} className="rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900">
-                    <span className="font-semibold">{flagLabel(flag.flag_type)} · {flag.status}</span> — {flag.message}
-                  </div>
-                ))}
-              </div> : null}
-
-              {!rejected ? <form action={flagSupplierInvoiceForReviewAction} className="mt-3 grid gap-2 md:grid-cols-[220px_1fr_auto]">
-                <input type="hidden" name="order_id" value={orderId} />
-                <input type="hidden" name="supplier_invoice_id" value={invoice.id} />
-                <select name="flag_type" className="rounded border border-slate-300 p-2 text-xs" defaultValue="invoice_total_mismatch">
-                  <option value="invoice_total_mismatch">Invoice total mismatch</option>
-                  <option value="ocr_unclear">OCR unclear</option>
-                  <option value="wrong_invoice">Wrong invoice</option>
-                  <option value="delivery_discount_query">Delivery/discount query</option>
-                  <option value="manual_line_needed">Manual line needed</option>
-                  <option value="other">Other</option>
-                </select>
-                <input name="message" className="rounded border border-slate-300 p-2 text-xs" placeholder="Explain what supervisor should check" required />
-                <button className="rounded bg-amber-700 px-3 py-2 text-xs font-semibold text-white">Flag for review</button>
-              </form> : null}
-            </div>
-          );
+          return <div key={invoice.id} className={`rounded-2xl border p-4 ${retired ? "border-rose-100 bg-rose-50/70" : "border-slate-200 bg-slate-50"}`}>
+            <div className="flex flex-wrap items-center justify-between gap-2"><div className="flex flex-wrap items-center gap-2"><span className="text-base font-semibold text-slate-950">{invoice.invoice_ref}</span>{!retired ? <Link className={secondaryButtonClass} href={`/importer/reconciliation/${orderId}`}>Reconcile</Link> : <span className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-rose-800">Audit only</span>}</div><div className="flex flex-wrap gap-2"><span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${invoiceStatusClass(invoice.review_status)}`}>{invoiceStatusLabel(invoice.review_status)}</span>{!retired && summary ? <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${matched ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>{matched ? "Invoice total matched" : "Invoice total variance"}</span> : null}{!retired && activeFlags.length > 0 ? <span className="rounded-full bg-rose-100 px-2.5 py-1 text-xs font-semibold text-rose-800">Flagged for review</span> : null}</div></div>
+            {retired ? <div className="mt-3 rounded-xl border border-rose-100 bg-white p-3 text-xs text-rose-900"><span className="font-semibold">Rejected/retired from current workflow.</span> {invoice.review_notes ? `Reason: ${invoice.review_notes}` : "Kept for audit only."}</div> : summary ? <div className="mt-3 grid gap-2 text-xs md:grid-cols-7"><div><span className="text-slate-500">Goods qty</span><div className="font-medium">{goods.qty}</div></div><div><span className="text-slate-500">Item lines</span><div className="font-medium">{money(goods.amount)}</div></div><div><span className="text-slate-500">Order goods baseline</span><div className="font-medium">{money(orderGoodsBaseline)}</div></div><div><span className="text-slate-500">Delivery</span><div className="font-medium">{money(deliveryTotal)}</div></div><div><span className="text-slate-500">Discount</span><div className="font-medium">-{money(discountTotal)}</div></div><div><span className="text-slate-500">Expected final total</span><div className="font-medium">{money(expectedInvoiceTotal)}</div></div><div><span className="text-slate-500">Variance</span><div className="font-medium">{signedMoney(variance)}</div></div></div> : null}
+            {!retired && activeFlags.length > 0 ? <div className="mt-3 space-y-1"><h4 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Open review flags</h4>{activeFlags.map((flag) => <div key={flag.id} className="rounded-xl border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900"><span className="font-semibold">{flagLabel(flag.flag_type)} · {flag.status}</span> — {flag.message}</div>)}</div> : null}
+            {auditFlags.length > 0 ? <details className="mt-3 rounded-xl border border-slate-200 bg-white p-3"><summary className="cursor-pointer text-xs font-semibold text-slate-600">Show resolved/audit flags</summary><div className="mt-2 space-y-1">{auditFlags.map((flag) => <div key={flag.id} className="rounded-lg bg-slate-50 p-2 text-xs text-slate-600"><span className="font-semibold">{flagLabel(flag.flag_type)} · {flag.status}</span> — {flag.message}</div>)}</div></details> : null}
+            {!retired ? <form action={flagSupplierInvoiceForReviewAction} className="mt-3 grid gap-2 md:grid-cols-[220px_1fr_auto]"><input type="hidden" name="order_id" value={orderId} /><input type="hidden" name="supplier_invoice_id" value={invoice.id} /><select name="flag_type" className={inputClass} defaultValue="invoice_total_mismatch"><option value="invoice_total_mismatch">Invoice total mismatch</option><option value="ocr_unclear">OCR unclear</option><option value="wrong_invoice">Wrong invoice</option><option value="delivery_discount_query">Delivery/discount query</option><option value="manual_line_needed">Manual line needed</option><option value="other">Other</option></select><input name="message" className={inputClass} placeholder="Explain what supervisor should check" required /><button className="rounded-full bg-amber-700 px-3 py-2 text-xs font-semibold text-white shadow-sm">Flag for review</button></form> : null}
+          </div>;
         })}
       </div>
 
-      {activeAdjustmentRows.length > 0 ? <div className="space-y-1 text-sm">
-        <h3 className="font-medium">Active financial adjustments for current invoice</h3>
-        {activeAdjustmentRows.map((a)=> (
-          <div key={a.id} className="rounded bg-slate-50 p-2">
-            {adjustmentLabel(a.adjustment_type)} — {money(a.amount_gbp)} — {a.approval_status}
-          </div>
-        ))}
-      </div> : null}
+      {activeAdjustmentRows.length > 0 ? <div className="mt-4 space-y-1 text-sm"><h3 className="font-medium">Active financial adjustments for current invoice</h3>{activeAdjustmentRows.map((a) => <div key={a.id} className="rounded-xl bg-slate-50 p-2">{adjustmentLabel(a.adjustment_type)} — {money(a.amount_gbp)} — {a.approval_status}</div>)}</div> : null}
     </section>
-  </main>
+  </main>;
 }
