@@ -57,6 +57,8 @@ function previewMessage(value: string | null | undefined, max = 72) {
 
 function friendlyStatus(value: string | null | undefined) {
   if (!value) return "In progress";
+  const normal = value.trim().toLowerCase();
+  if (normal === "reconcilling" || normal === "reconciling") return "Reconciling";
   return value.replaceAll("_", " ").replace(/^./, (first) => first.toUpperCase());
 }
 
@@ -106,6 +108,18 @@ function importerStatusLabel(
   if (order.lifecycle_status) return friendlyStatus(order.lifecycle_status);
   return order.funded_at ? "Funded" : "Open";
 }
+
+function statusPillClass(needsInvoiceResubmission: boolean, hasOpenEvidenceQuery: boolean, importerStatus: string) {
+  if (needsInvoiceResubmission) return "border-rose-200 bg-rose-50 text-rose-800";
+  if (hasOpenEvidenceQuery) return "border-amber-200 bg-amber-50 text-amber-800";
+  if (importerStatus.includes("complete")) return "border-emerald-200 bg-emerald-50 text-emerald-800";
+  return "border-slate-200 bg-slate-50 text-slate-700";
+}
+
+const primaryActionClass = "inline-flex min-h-9 items-center justify-center rounded-full bg-slate-950 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-slate-800";
+const secondaryActionClass = "inline-flex min-h-9 items-center justify-center rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm hover:border-sky-300 hover:bg-sky-50 hover:text-sky-800";
+const warningActionClass = "inline-flex min-h-9 items-center justify-center rounded-full bg-rose-700 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-rose-800";
+const successActionClass = "inline-flex min-h-9 items-center justify-center rounded-full bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-emerald-800";
 
 export default async function ImporterPage() {
   const supabase = await createClient();
@@ -261,165 +275,222 @@ export default async function ImporterPage() {
     reconciliationByOrderId.set(orderId, current);
   }
 
+  const dashboardViewRows = dashboardRows.map((order) => {
+    const hasTracking = trackingSet.has(order.id);
+    const orderInvoices = invoicesByOrderId.get(order.id) ?? [];
+    const hasInvoice = orderInvoices.length > 0;
+    const needsInvoiceResubmission = latestRejectedNeedsResubmission(orderInvoices);
+    const screenshotCount = screenshotCounts.get(order.id) ?? 0;
+    const openQuerySummary = openEvidenceQueryByOrderId.get(order.id);
+    const hasOpenEvidenceQuery = (openQuerySummary?.count ?? 0) > 0;
+    const reconciliationSummary = reconciliationByOrderId.get(order.id) ?? (hasInvoice ? { unresolvedCount: 0, unresolvedNonExceptionCount: 0 } : undefined);
+    const importerNextAction = nextAction(order, hasOpenEvidenceQuery, needsInvoiceResubmission, reconciliationSummary);
+    const importerStatus = importerStatusLabel(order, hasOpenEvidenceQuery, needsInvoiceResubmission, reconciliationSummary);
+    const operationsHref = `/importer/orders/${order.id}/operations`;
+
+    return {
+      order,
+      hasTracking,
+      hasInvoice,
+      needsInvoiceResubmission,
+      screenshotCount,
+      openQuerySummary,
+      hasOpenEvidenceQuery,
+      importerNextAction,
+      importerStatus,
+      operationsHref,
+    };
+  });
+
+  const resubmissionCount = dashboardViewRows.filter((row) => row.needsInvoiceResubmission).length;
+  const openQueryCount = dashboardViewRows.filter((row) => row.hasOpenEvidenceQuery).length;
+
   return (
-    <main className="min-h-screen p-6 space-y-6">
-      <header className="space-y-2">
-        <h1 className="text-2xl font-semibold">Goodcashback Importer</h1>
-        <p className="text-sm text-slate-600">
-          Welcome: {operator.full_name}
-        </p>
-        <div className="rounded-xl border bg-slate-50 p-4 text-sm text-slate-700">
-          Manage orders, upload invoices, add tracking, and continue reconciliation from one dashboard.
-          <div className="mt-3">
-            <Link href="/importer/exceptions" className="font-semibold text-sky-700 underline">View active exception cases</Link>
-            <span className="mx-2">·</span>
-            <Link href="/importer/orders/new" className="font-semibold text-sky-700 underline">Create new order</Link>
+    <main className="min-h-screen space-y-6 bg-slate-50 p-4 md:p-6">
+      <header className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
+        <div className="border-b border-slate-100 bg-gradient-to-br from-sky-50 via-white to-slate-50 p-5 md:p-6">
+          <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.22em] text-sky-700">Importer workspace</p>
+              <h1 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950 md:text-3xl">Goodcashback Importer</h1>
+              <p className="mt-2 text-sm text-slate-600">Welcome, {operator.full_name}. Manage orders, invoice evidence, tracking and reconciliation from one control view.</p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Link href="/importer/exceptions" className={secondaryActionClass}>Active exceptions</Link>
+              <Link href="/importer/orders/new" className={primaryActionClass}>Create order</Link>
+            </div>
           </div>
         </div>
       </header>
 
       {canOpenCustomerPortal ? (
-        <section className="rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm text-slate-800">
+        <section className="rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm text-slate-800 shadow-sm">
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div>
               <h2 className="text-base font-semibold text-slate-950">Customer lane available</h2>
               <p className="mt-1 text-slate-600">Open the customer dashboard to view ledger balance, order status, pro forma values and final invoice readiness.</p>
             </div>
-            <Link href="/customer" className="rounded-lg bg-sky-600 px-4 py-2 text-center font-semibold text-white">Open Customer Portal</Link>
+            <Link href="/customer" className="inline-flex min-h-10 items-center justify-center rounded-full bg-sky-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-sky-700">Open Customer Portal</Link>
           </div>
         </section>
       ) : null}
 
-      <section className="grid gap-4 md:grid-cols-4">
-        <div className="rounded-2xl border p-4">
-          <div className="text-sm text-slate-500">Total orders</div>
-          <div className="mt-2 text-2xl font-semibold">{orders?.length ?? 0}</div>
+      <section className="grid gap-3 md:grid-cols-5">
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="text-xs font-medium uppercase tracking-wide text-slate-500">Total orders</div>
+          <div className="mt-2 text-2xl font-semibold text-slate-950">{orders?.length ?? 0}</div>
         </div>
-        <div className="rounded-2xl border p-4">
-          <div className="text-sm text-slate-500">Funded</div>
-          <div className="mt-2 text-2xl font-semibold">
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="text-xs font-medium uppercase tracking-wide text-slate-500">Funded</div>
+          <div className="mt-2 text-2xl font-semibold text-slate-950">
             {dashboardRows.filter((order) => !!order.funded_at).length}
           </div>
         </div>
-        <div className="rounded-2xl border p-4">
-          <div className="text-sm text-slate-500">Tracking submitted</div>
-          <div className="mt-2 text-2xl font-semibold">{trackingSet.size}</div>
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="text-xs font-medium uppercase tracking-wide text-slate-500">Tracking submitted</div>
+          <div className="mt-2 text-2xl font-semibold text-slate-950">{trackingSet.size}</div>
         </div>
-        <div className="rounded-2xl border p-4">
-          <div className="text-sm text-slate-500">Invoices submitted</div>
-          <div className="mt-2 text-2xl font-semibold">{invoiceSet.size}</div>
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="text-xs font-medium uppercase tracking-wide text-slate-500">Invoices submitted</div>
+          <div className="mt-2 text-2xl font-semibold text-slate-950">{invoiceSet.size}</div>
+        </div>
+        <div className={`rounded-2xl border p-4 shadow-sm ${resubmissionCount > 0 ? "border-rose-200 bg-rose-50" : "border-emerald-200 bg-emerald-50"}`}>
+          <div className={`text-xs font-medium uppercase tracking-wide ${resubmissionCount > 0 ? "text-rose-700" : "text-emerald-700"}`}>Needs action</div>
+          <div className={`mt-2 text-2xl font-semibold ${resubmissionCount > 0 ? "text-rose-900" : "text-emerald-900"}`}>{resubmissionCount + openQueryCount}</div>
         </div>
       </section>
 
-      <section className="rounded-2xl border p-4">
-        <div className="flex items-center justify-between gap-4">
+      <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm md:p-5">
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>
-            <h2 className="text-lg font-semibold">Orders</h2>
-            <p className="text-sm text-slate-600">
-              Current importer order state and the next importer action.
-            </p>
+            <h2 className="text-lg font-semibold text-slate-950">Orders</h2>
+            <p className="text-sm text-slate-600">Current importer order state and the next importer action.</p>
           </div>
-          <Link
-            href="/importer/orders/new"
-            className="rounded-lg bg-slate-900 px-4 py-2 text-sm text-white"
-          >
-            Create order
-          </Link>
+          <Link href="/importer/orders/new" className={primaryActionClass}>Create order</Link>
         </div>
 
-        <div className="mt-4 overflow-x-auto">
+        <div className="mt-4 grid gap-3 lg:hidden">
+          {dashboardViewRows.map((row) => (
+            <article key={row.order.id} className={`rounded-2xl border p-4 shadow-sm ${row.needsInvoiceResubmission ? "border-rose-200 bg-rose-50" : "border-slate-200 bg-white"}`}>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">{row.order.retailers?.name ?? "Retailer not set"}</div>
+                  <h3 className="mt-1 text-base font-semibold text-slate-950">{row.order.order_ref ?? row.order.id}</h3>
+                  <p className="mt-1 break-all text-xs text-slate-500">{row.order.id}</p>
+                </div>
+                <span className={`w-fit rounded-full border px-3 py-1 text-xs font-semibold ${statusPillClass(row.needsInvoiceResubmission, row.hasOpenEvidenceQuery, row.importerStatus)}`}>
+                  {row.importerStatus}
+                </span>
+              </div>
+
+              <div className="mt-4 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
+                <div className="rounded-xl bg-white/70 p-3 ring-1 ring-slate-100">
+                  <div className="text-xs text-slate-500">Qty</div>
+                  <div className="font-semibold text-slate-950">{row.order.total_qty_declared ?? 0}</div>
+                </div>
+                <div className="rounded-xl bg-white/70 p-3 ring-1 ring-slate-100">
+                  <div className="text-xs text-slate-500">Declared GBP</div>
+                  <div className="font-semibold text-slate-950">{gbp(row.order.order_total_gbp_declared)}</div>
+                </div>
+                <div className="rounded-xl bg-white/70 p-3 ring-1 ring-slate-100">
+                  <div className="text-xs text-slate-500">Tracking</div>
+                  <div className="font-semibold text-slate-950">{row.hasTracking ? "Yes" : "No"}</div>
+                </div>
+                <div className="rounded-xl bg-white/70 p-3 ring-1 ring-slate-100">
+                  <div className="text-xs text-slate-500">Invoice</div>
+                  <div className="font-semibold text-slate-950">{row.hasInvoice ? "Yes" : "No"}</div>
+                </div>
+              </div>
+
+              <div className="mt-4 rounded-xl border border-slate-200 bg-white/80 p-3 text-sm">
+                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Next action</div>
+                <div className={row.needsInvoiceResubmission ? "mt-1 font-semibold text-rose-700" : "mt-1 font-semibold text-slate-900"}>{row.importerNextAction}</div>
+                <div className="mt-1 text-xs text-slate-500">{row.order.funded_at ? "Funded" : "Open"} · Raw: {friendlyStatus(row.order.status)}</div>
+              </div>
+
+              <div className="mt-4 flex flex-wrap gap-2">
+                <Link className={secondaryActionClass} href={row.operationsHref}>Open order</Link>
+                <Link className={row.needsInvoiceResubmission ? warningActionClass : secondaryActionClass} href={`${row.operationsHref}#invoice`}>
+                  {row.needsInvoiceResubmission ? "Upload corrected invoice" : "Upload invoice"}
+                </Link>
+                <Link className={secondaryActionClass} href={`${row.operationsHref}#tracking`}>Add tracking</Link>
+                {row.hasInvoice ? <Link className={secondaryActionClass} href={`/importer/reconciliation/${row.order.id}`}>Reconcile</Link> : null}
+                {row.hasInvoice && row.hasTracking ? (
+                  <Link className={successActionClass} href={`/importer/delivery-allocation/${row.order.id}`}>Assign tracking</Link>
+                ) : row.hasInvoice ? (
+                  <span className="inline-flex min-h-9 items-center rounded-full border border-slate-200 bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-400">Assign after tracking</span>
+                ) : null}
+                {row.hasOpenEvidenceQuery ? <Link href="/importer/evidence-queries" className={warningActionClass}>Answer query</Link> : null}
+              </div>
+            </article>
+          ))}
+        </div>
+
+        <div className="mt-4 hidden overflow-x-auto rounded-2xl border border-slate-200 lg:block">
           <table className="min-w-full text-sm">
-            <thead className="bg-slate-50 text-left">
+            <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
               <tr>
                 <th className="p-3">Order</th>
                 <th className="p-3">Retailer</th>
                 <th className="p-3">Auth ref</th>
                 <th className="p-3">Qty</th>
-                <th className="p-3">Declared GBP</th>
-                <th className="p-3">Screenshots</th>
-                <th className="p-3">Tracking</th>
-                <th className="p-3">Invoice</th>
-                <th className="p-3">Open queries</th>
+                <th className="p-3">Declared</th>
+                <th className="p-3">Evidence</th>
                 <th className="p-3">Status</th>
                 <th className="p-3">Next action</th>
                 <th className="p-3">Actions</th>
               </tr>
             </thead>
-            <tbody>
-              {dashboardRows.map((order) => {
-                const hasTracking = trackingSet.has(order.id);
-                const orderInvoices = invoicesByOrderId.get(order.id) ?? [];
-                const hasInvoice = orderInvoices.length > 0;
-                const needsInvoiceResubmission = latestRejectedNeedsResubmission(orderInvoices);
-                const screenshotCount = screenshotCounts.get(order.id) ?? 0;
-                const openQuerySummary = openEvidenceQueryByOrderId.get(order.id);
-                const hasOpenEvidenceQuery = (openQuerySummary?.count ?? 0) > 0;
-                const reconciliationSummary = reconciliationByOrderId.get(order.id) ?? (hasInvoice ? { unresolvedCount: 0, unresolvedNonExceptionCount: 0 } : undefined);
-                const importerNextAction = nextAction(order, hasOpenEvidenceQuery, needsInvoiceResubmission, reconciliationSummary);
-                const importerStatus = importerStatusLabel(order, hasOpenEvidenceQuery, needsInvoiceResubmission, reconciliationSummary);
-                const operationsHref = `/importer/orders/${order.id}/operations`;
-
-                return (
-                  <tr key={order.id} className="border-t align-top">
-                    <td className="p-3">
-                      <div className="font-medium">{order.order_ref}</div>
-                      <div className="text-xs text-slate-500">{order.id}</div>
-                    </td>
-                    <td className="p-3">{order.retailers?.name ?? "—"}</td>
-                    <td className="p-3">{order.payment_auth_id ?? "—"}</td>
-                    <td className="p-3">{order.total_qty_declared ?? 0}</td>
-                    <td className="p-3">{gbp(order.order_total_gbp_declared)}</td>
-                    <td className="p-3">{screenshotCount}</td>
-                    <td className="p-3">{hasTracking ? "Yes" : "No"}</td>
-                    <td className="p-3">
-                      <div>{hasInvoice ? "Yes" : "No"}</div>
-                      {needsInvoiceResubmission ? <div className="mt-1 rounded bg-rose-100 px-2 py-1 text-xs font-medium text-rose-800">Resubmit required</div> : null}
-                    </td>
-                    <td className="p-3">
-                      {openQuerySummary ? (
-                        <div className="space-y-1">
-                          <div className="font-medium">{openQuerySummary.count}</div>
-                          <div className="text-xs text-slate-500">
-                            {openQuerySummary.latestQueryType ?? "—"}
-                          </div>
-                          <div className="text-xs text-slate-500">
-                            {previewMessage(openQuerySummary.latestMessage)}
-                          </div>
-                        </div>
-                      ) : (
-                        "0"
-                      )}
-                    </td>
-                    <td className="p-3">
-                      <div className="font-medium">{importerStatus}</div>
-                      <div className="text-xs text-slate-500">
-                        {order.funded_at ? "Funded" : "Open"} · Raw: {friendlyStatus(order.status)}
-                      </div>
-                    </td>
-                    <td className="p-3">
-                      <div className={needsInvoiceResubmission ? "font-semibold text-rose-700" : ""}>{importerNextAction}</div>
-                      {hasOpenEvidenceQuery ? (
-                        <Link href="/importer/evidence-queries" className="text-xs font-medium text-sky-600">
-                          Answer
-                        </Link>
+            <tbody className="divide-y divide-slate-100">
+              {dashboardViewRows.map((row) => (
+                <tr key={row.order.id} className={row.needsInvoiceResubmission ? "align-top bg-rose-50/70" : "align-top hover:bg-slate-50/80"}>
+                  <td className="p-3">
+                    <div className="font-semibold text-slate-950">{row.order.order_ref}</div>
+                    <div className="max-w-[180px] break-words text-xs text-slate-500">{row.order.id}</div>
+                  </td>
+                  <td className="p-3 font-medium text-slate-800">{row.order.retailers?.name ?? "—"}</td>
+                  <td className="max-w-[180px] break-words p-3 text-slate-700">{row.order.payment_auth_id ?? "—"}</td>
+                  <td className="p-3 text-slate-700">{row.order.total_qty_declared ?? 0}</td>
+                  <td className="p-3 font-semibold text-slate-900">{gbp(row.order.order_total_gbp_declared)}</td>
+                  <td className="p-3">
+                    <div className="flex flex-wrap gap-1.5">
+                      <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700">Screenshots {row.screenshotCount}</span>
+                      <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${row.hasTracking ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-600"}`}>Tracking {row.hasTracking ? "yes" : "no"}</span>
+                      <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${row.needsInvoiceResubmission ? "bg-rose-100 text-rose-800" : row.hasInvoice ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-600"}`}>
+                        {row.needsInvoiceResubmission ? "Invoice resubmit" : row.hasInvoice ? "Invoice yes" : "Invoice no"}
+                      </span>
+                    </div>
+                  </td>
+                  <td className="p-3">
+                    <span className={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold ${statusPillClass(row.needsInvoiceResubmission, row.hasOpenEvidenceQuery, row.importerStatus)}`}>
+                      {row.importerStatus}
+                    </span>
+                    <div className="mt-1 text-xs text-slate-500">{row.order.funded_at ? "Funded" : "Open"} · Raw: {friendlyStatus(row.order.status)}</div>
+                    {row.openQuerySummary ? (
+                      <div className="mt-2 text-xs text-slate-500">Query: {previewMessage(row.openQuerySummary.latestMessage)}</div>
+                    ) : null}
+                  </td>
+                  <td className="p-3">
+                    <div className={row.needsInvoiceResubmission ? "font-semibold text-rose-700" : "font-semibold text-slate-900"}>{row.importerNextAction}</div>
+                    {row.hasOpenEvidenceQuery ? <Link href="/importer/evidence-queries" className="mt-1 inline-flex text-xs font-semibold text-sky-700 hover:underline">Answer query</Link> : null}
+                  </td>
+                  <td className="p-3">
+                    <div className="flex max-w-[360px] flex-wrap gap-2">
+                      <Link className={secondaryActionClass} href={row.operationsHref}>Open</Link>
+                      <Link className={row.needsInvoiceResubmission ? warningActionClass : secondaryActionClass} href={`${row.operationsHref}#invoice`}>
+                        {row.needsInvoiceResubmission ? "Upload corrected invoice" : "Upload invoice"}
+                      </Link>
+                      <Link className={secondaryActionClass} href={`${row.operationsHref}#tracking`}>Add tracking</Link>
+                      {row.hasInvoice ? <Link className={secondaryActionClass} href={`/importer/reconciliation/${row.order.id}`}>Reconcile</Link> : null}
+                      {row.hasInvoice && row.hasTracking ? (
+                        <Link className={successActionClass} href={`/importer/delivery-allocation/${row.order.id}`}>Assign tracking</Link>
+                      ) : row.hasInvoice ? (
+                        <span className="inline-flex min-h-9 items-center rounded-full border border-slate-200 bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-400">Assign after tracking</span>
                       ) : null}
-                    </td>
-                    <td className="p-3">
-                      <div className="flex flex-col gap-1 whitespace-nowrap">
-                        <Link className="text-sky-700 underline" href={operationsHref}>Open</Link>
-                        <Link className={needsInvoiceResubmission ? "font-semibold text-rose-700 underline" : "text-sky-700 underline"} href={`${operationsHref}#invoice`}>{needsInvoiceResubmission ? "Upload corrected invoice" : "Upload invoice"}</Link>
-                        <Link className="text-sky-700 underline" href={`${operationsHref}#tracking`}>Add tracking</Link>
-                        {hasInvoice ? <Link className="text-sky-700 underline" href={`/importer/reconciliation/${order.id}`}>Reconcile</Link> : null}
-                        {hasInvoice && hasTracking ? (
-                          <Link className="font-semibold text-emerald-700 underline" href={`/importer/delivery-allocation/${order.id}`}>Assign tracking to items</Link>
-                        ) : hasInvoice ? (
-                          <span className="text-xs text-slate-400">Assign items after tracking</span>
-                        ) : null}
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
+                    </div>
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>
