@@ -5,6 +5,7 @@ import { createClient } from "@/utils/supabase/server";
 import { runMindeeOcrAfterUpload } from "./ocr";
 
 const INVOICE_EVIDENCE_BUCKET = "invoice-evidence";
+const RETIRED_INVOICE_REVIEW_STATUSES = new Set(["rejected_resubmit_required", "superseded", "duplicate_blocked"]);
 
 const rs = (f: FormData, k: string) => {
   const v = f.get(k);
@@ -216,6 +217,24 @@ export async function submitInvoiceEvidenceAction(formData: FormData) {
   }
 
   const { operator, importerId, shipperId } = await requireOperatorAccess(supabase, orderId);
+
+  const { data: existingInvoices, error: existingInvoiceError } = await supabase
+    .from("supplier_invoices")
+    .select("id, invoice_ref, review_status")
+    .eq("order_id", orderId);
+
+  if (existingInvoiceError) {
+    redirect(`/importer/orders/${orderId}/operations?error=${encodeURIComponent(existingInvoiceError.message)}`);
+  }
+
+  const activeWorkingInvoice = (existingInvoices ?? []).find(
+    (invoice) => !RETIRED_INVOICE_REVIEW_STATUSES.has(invoice.review_status ?? "pending_review")
+  );
+
+  if (activeWorkingInvoice) {
+    redirect(`/importer/orders/${orderId}/operations?error=${encodeURIComponent("A current supplier invoice already exists for this order. Ask a supervisor to reject it before uploading a replacement.")}`);
+  }
+
   const objectPath = `${importerId}/${orderId}/${Date.now()}.${safeExt(invoiceFile.name)}`;
   const { error: uploadError } = await supabase.storage
     .from(INVOICE_EVIDENCE_BUCKET)
