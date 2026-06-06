@@ -1,6 +1,6 @@
 # Final Sale Value and Balance Due Addendum v1
 
-Status: locked for build sequencing after 2026-06-05 design review. Updated to include sale credits/credit notes, authorisation reference display, and supervisor-approved ledger credit boundaries.
+Status: locked for build sequencing after 2026-06-05 design review. Updated to include sale credits/credit notes, authorisation reference display, supervisor-approved ledger credit boundaries, and conditional display rules so zero-value settlement rows are not surfaced prematurely.
 
 This addendum extends `docs/governing-pack/ui/FUNDING_ACTION_CONTRACT.md` and the customer/importer order portal rules. It does **not** replace the original purchase-funding threshold. It adds a final sale settlement layer so the platform can show and collect any remaining amount after Sage-posted sale documents confirm the final sale value.
 
@@ -62,18 +62,28 @@ Do not change `recompute_order_platform_funded(...)` to use final sale value. Th
 
 The same order/payment authorisation reference must be visible wherever the accepted estimate, final sale value, sale documents, or balance due are shown.
 
-Minimum customer/importer display fields:
+Always show these fields on customer/importer order views:
 
 ```text
 Order ref
 Authorisation ref
 Accepted estimate
-Final sale value / estimated sale value
-Amount received
-Balance due / potential credit pending final review
+Current status / initial payment status
 ```
 
-This creates a clear audit trail between the original quote/order, the customer's payment reference, and final sale settlement.
+Then show settlement fields only when their conditions are met:
+
+```text
+Amount received = show only when at least one payment/credit/funding event exists.
+Final sale value = show only when a posted sale document, final sale adjustment, or sale credit exists.
+Balance due = show only when final sale value exists and balance due > £0.00.
+Potential credit pending final review = show only when final sale value exists and amount received > final sale value and no approved ledger credit exists for that surplus.
+Credit added to account = show only when supervisor/admin-approved ledger credit exists for that order.
+```
+
+Do not show zero-value rows merely to fill the UI.
+
+This creates a clear audit trail between the original quote/order, the customer's payment reference, and final sale settlement without creating premature settlement noise.
 
 ## 4. Final sale value
 
@@ -99,7 +109,7 @@ posted_sale_total_gbp = posted_sale_charge_gbp - posted_sale_credit_gbp
 
 Credit note amounts are stored as positive source amounts. The sign is determined by `invoice_type = 'credit_note'`.
 
-For UI/read-model purposes:
+For calculation/read-model purposes:
 
 ```text
 final_sale_value_gbp =
@@ -107,7 +117,7 @@ final_sale_value_gbp =
   else accepted_estimate_gbp
 ```
 
-Before Sage-posted sale documents exist, show the value as an estimate. After they exist, show it as final.
+For customer/importer UI purposes, do not surface a separate final sale value section before Sage-posted sale documents exist. Before then, show accepted estimate and payment status only. The accepted estimate may be used internally as the fallback calculation basis, but it should not be labelled as final sale value.
 
 ## 5. Sale document download section
 
@@ -149,6 +159,16 @@ potential_credit_pending_review_gbp = max(amount_received_gbp - final_sale_value
 ```
 
 Do not present this as available account credit until supervisor/admin approval creates a credit row in `importer_credit_ledger`.
+
+UI display conditions:
+
+```text
+Show amount_received_gbp only when amount_received_gbp > 0 or the page is a detailed payment breakdown.
+Show balance_due_gbp only when final_sale_value_exists and balance_due_gbp > 0.
+Show potential_credit_pending_review_gbp only when final_sale_value_exists and potential_credit_pending_review_gbp > 0 and approved ledger credit for that surplus does not exist.
+Show credit_added_to_account only when approved ledger credit exists.
+Hide zero balance/zero pending-credit rows in summary cards and customer-facing overview sections.
+```
 
 ## 7. Critical distinction: final balance is not overfunding
 
@@ -256,21 +276,22 @@ Potential credit pending final review may be shown in GBP. If local guidance is 
 
 ### Main orders list
 
-Replace sole reliance on original order value with:
+Always show:
 
 - Order ref
 - Authorisation ref
 - Accepted estimate
-- Final sale value, where available
-- Balance due, where final sale value exceeds amount received
-- Potential credit pending final review, where amount received exceeds final sale value
+- Current status / initial payment status
 
-Before Sage-posted sale documents exist:
+Conditionally show:
 
-```text
-Estimated sale value: £X
-Authorisation ref: AUTH-...
-```
+- Amount received, only if payment/credit/funding exists
+- Final sale value, only when posted sale document/adjustment/credit exists
+- Balance due, only when final sale value exists and exceeds amount received
+- Potential credit pending final review, only when final sale value exists and amount received exceeds final sale value and approved ledger credit does not yet exist
+- Credit added to account, only when supervisor/admin-approved ledger credit exists for the order
+
+Before Sage-posted sale documents exist, do **not** show final sale value, balance due, or potential credit pending final review as zero rows.
 
 After Sage-posted sale documents exist:
 
@@ -278,21 +299,45 @@ After Sage-posted sale documents exist:
 Final sale value: £Y
 Accepted estimate: £X
 Authorisation ref: AUTH-...
+```
+
+Add only the relevant settlement line:
+
+```text
 Balance due: £Z
+```
+
+or:
+
+```text
 Potential credit pending final review: £C
+```
+
+or:
+
+```text
+Credit added to account: £C
 ```
 
 ### Customer/order details
 
-Show:
+Always show:
 
 ```text
 Order ref
 Authorisation ref
 Accepted estimate
-Final sale value
+Current status / initial payment status
+```
+
+Then conditionally show:
+
+```text
 Amount received
-Balance due / Potential credit pending final review
+Final sale value
+Balance due
+Potential credit pending final review
+Credit added to account
 Pay today in local currency, where balance is due
 ```
 
@@ -306,15 +351,25 @@ not main/supplementary/credit_note agency-style or implementation wording.
 
 ### Importer/order operations details
 
-Keep purchase/evidence controls operationally separate, but add a final sale summary block once Sage-posted sale documents exist:
+Keep purchase/evidence controls operationally separate.
+
+Always show:
 
 ```text
 Order ref
 Authorisation ref
 Accepted estimate
+Operational status
+```
+
+Add a final sale summary block only once Sage-posted sale documents/credits exist:
+
+```text
 Final sale value
-Amount received
-Balance due / Potential credit pending final review
+Amount received, where relevant
+Balance due, where > £0
+Potential credit pending final review, where > £0 and not approved
+Credit added to account, where approved
 ```
 
 ## 12. Non-goals for this patch
@@ -338,10 +393,10 @@ Do not create account credit from customer-facing UI calculations.
 Minimum safe build order:
 
 1. Patch final sale read calculation to include `credit_note` as a negative sale document.
-2. Patch customer order details to show authorisation ref, signed final sale value, balance due, and potential credit pending final review.
+2. Patch customer order details to show authorisation ref, signed final sale value, balance due, and potential credit pending final review only when conditions are met.
 3. Patch sale document download section to list sale document, final sale adjustment, and sale credit rows.
-4. Patch importer main orders list to show authorisation ref, signed final sale value/balance due/pending credit.
-5. Patch importer order operations page to show the same final sale summary.
+4. Patch importer main orders list to show authorisation ref, signed final sale value/balance due/pending credit only when conditions are met.
+5. Patch importer order operations page to show the same final sale summary only when sale documents/credits exist.
 6. Patch DVA/card reconciliation workbench to classify additional matched money as final balance payment before potential credit.
 7. Tighten supervisor credit readiness so ledger credit cannot be approved before final sale/shipping closure is complete.
 8. Only then consider whether generated overfunding credit needs backend correction once final sale value exists.
@@ -353,11 +408,15 @@ Minimum safe build order:
 ```text
 Accepted estimate: £250
 Authorisation ref: AUTH-123
-Amount received: £250
-Final sale value shown as estimated £250
+Initial payment received: yes
+```
+
+Do not show:
+
+```text
+Final sale value: Estimated £250
 Balance due: £0
 Potential credit pending final review: £0
-Initial payment received: yes
 ```
 
 ### Scenario B — final sale value higher
@@ -381,10 +440,10 @@ Accepted estimate: £250
 Authorisation ref: AUTH-123
 Final sale value: £285
 Amount received after second payment: £285
-Balance due: £0
-Potential credit pending final review: £0
 Second payment classified as final balance payment
 ```
+
+Do not show zero-value balance or zero-value pending credit rows.
 
 ### Scenario D — sale credit reduces final sale value
 
@@ -395,10 +454,11 @@ Posted sale document: +£250
 Posted sale credit: -£40
 Final sale value: £210
 Amount received: £250
-Balance due: £0
 Potential credit pending final review: £40
 Credit is not available at checkout until supervisor/admin approval creates ledger credit
 ```
+
+Do not show zero-value balance due.
 
 ### Scenario E — true overpayment after final sale closure
 
@@ -407,10 +467,11 @@ Accepted estimate: £250
 Authorisation ref: AUTH-123
 Final sale value: £285
 Amount received: £300
-Balance due: £0
 Potential credit pending final review: £15
 Supervisor/admin approval required before £15 becomes available account credit
 ```
+
+Do not show zero-value balance due.
 
 ## 15. Locked decision
 
