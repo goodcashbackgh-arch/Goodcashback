@@ -26,11 +26,10 @@ function friendly(value: string | null | undefined) {
   return value.replaceAll("_", " ").replace(/^./, (first) => first.toUpperCase());
 }
 
-function invoiceTypeLabel(value: string | null | undefined) {
-  if (value === "main") return "Main invoice";
-  if (value === "supplementary") return "Supplementary invoice";
+function saleDocumentLabel(value: string | null | undefined) {
+  if (value === "supplementary") return "Final sale adjustment";
   if (value === "credit_note") return "Credit note";
-  return friendly(value);
+  return "Sale document";
 }
 
 function shortOrderTitle(orderRef: string | null | undefined, fallbackId: string) {
@@ -84,10 +83,27 @@ function journeyClass(done: boolean, current: boolean) {
   return "border-slate-200 bg-white text-slate-500 ring-slate-100";
 }
 
-function customerStatusLabel({ rawStatus, lifecycleStatus, thresholdMet, reviewHref, shipmentArranged, deliveryConfirmed }: { rawStatus: string | null | undefined; lifecycleStatus: string | null | undefined; thresholdMet: boolean; reviewHref: string | null; shipmentArranged: boolean; deliveryConfirmed: boolean }) {
+function customerStatusLabel({
+  rawStatus,
+  lifecycleStatus,
+  thresholdMet,
+  reviewHref,
+  shipmentArranged,
+  deliveryConfirmed,
+  finalBalanceDueGbp,
+}: {
+  rawStatus: string | null | undefined;
+  lifecycleStatus: string | null | undefined;
+  thresholdMet: boolean;
+  reviewHref: string | null;
+  shipmentArranged: boolean;
+  deliveryConfirmed: boolean;
+  finalBalanceDueGbp: number;
+}) {
   const status = String(lifecycleStatus ?? rawStatus ?? "").toLowerCase();
   if (reviewHref) return "Ready for your review";
   if (!thresholdMet) return "Payment required";
+  if (finalBalanceDueGbp > 0.01) return "Final balance due";
   if (deliveryConfirmed) return "Completed";
   if (shipmentArranged) return "Shipment arranged";
   if (["pending_dva_funding", "funding_pending", "draft"].includes(status)) return "Payment received; processing";
@@ -99,10 +115,10 @@ function customerStatusLabel({ rawStatus, lifecycleStatus, thresholdMet, reviewH
   return friendly(lifecycleStatus ?? rawStatus);
 }
 
-function statusTone({ statusLabel, thresholdMet, reviewHref }: { statusLabel: string; thresholdMet: boolean; reviewHref: string | null }): Tone {
+function statusTone({ statusLabel, thresholdMet, reviewHref, finalBalanceDueGbp }: { statusLabel: string; thresholdMet: boolean; reviewHref: string | null; finalBalanceDueGbp: number }): Tone {
   const normalised = statusLabel.toLowerCase();
   if (reviewHref) return "ready";
-  if (!thresholdMet || normalised.includes("payment required")) return "action";
+  if (!thresholdMet || normalised.includes("payment required") || finalBalanceDueGbp > 0.01) return "action";
   if (normalised.includes("completed")) return "complete";
   if (normalised.includes("review")) return "review";
   return "muted";
@@ -158,7 +174,7 @@ export default async function CustomerOrderOperationsPage({ params, searchParams
     return String(a.sage_posted_at ?? a.sage_invoice_date ?? "").localeCompare(String(b.sage_posted_at ?? b.sage_invoice_date ?? ""));
   });
   const totalInvoicedGbp = invoices.reduce((sum, row) => sum + Number(row.amount_gbp ?? 0), 0);
-  const finalInvoiceIssued = invoices.length > 0;
+  const finalSaleValueConfirmed = invoices.length > 0;
   const funding = fundingRes.data;
   const screenshots = (screenshotsRes.data ?? []) as ScreenshotRow[];
   const state = stateRes.data;
@@ -173,27 +189,49 @@ export default async function CustomerOrderOperationsPage({ params, searchParams
   const creditBalanceRows = (creditBalanceRes.data ?? []) as CreditBalanceRow[];
   const availableCreditGbp = creditBalanceRows.reduce((sum, row) => sum + Number(row.available_credit_gbp ?? 0), 0);
   const availableCreditLocal = effectiveRate ? availableCreditGbp * effectiveRate : 0;
-  const orderGbp = Number(order.order_total_gbp_declared ?? 0);
+  const acceptedEstimateGbp = Number(order.order_total_gbp_declared ?? 0);
+  const finalSaleValueGbp = finalSaleValueConfirmed ? totalInvoicedGbp : acceptedEstimateGbp;
   const totalQty = Number(order.total_qty_declared ?? 0);
   const appliedCreditGbp = Number(funding?.applied_credit_gbp ?? 0);
   const confirmedPaymentGbp = Number(funding?.confirmed_dva_funding_gbp ?? 0);
-  const gapRemainingGbp = funding?.gap_remaining_gbp !== undefined && funding?.gap_remaining_gbp !== null ? Number(funding.gap_remaining_gbp) : Math.max(orderGbp - appliedCreditGbp - confirmedPaymentGbp, 0);
-  const currentNetPayableGbp = Math.max(gapRemainingGbp, 0);
-  const currentNetPayableLocal = effectiveRate ? currentNetPayableGbp * effectiveRate : 0;
+  const amountReceivedGbp = confirmedPaymentGbp + appliedCreditGbp;
+  const finalBalanceDueGbp = Math.max(finalSaleValueGbp - amountReceivedGbp, 0);
+  const creditDueGbp = Math.max(amountReceivedGbp - finalSaleValueGbp, 0);
+  const finalBalanceDueLocal = effectiveRate ? finalBalanceDueGbp * effectiveRate : 0;
   const appliedCreditLocal = effectiveRate ? appliedCreditGbp * effectiveRate : 0;
   const fxLabel = fxDate === today ? "today's FX" : fxDate ? `latest FX ${fxDate}` : "no FX available";
-  const statusLabel = customerStatusLabel({ rawStatus: order.status, lifecycleStatus: state?.lifecycle_status, thresholdMet, reviewHref, shipmentArranged, deliveryConfirmed });
-  const tone = statusTone({ statusLabel, thresholdMet, reviewHref });
+  const statusLabel = customerStatusLabel({ rawStatus: order.status, lifecycleStatus: state?.lifecycle_status, thresholdMet, reviewHref, shipmentArranged, deliveryConfirmed, finalBalanceDueGbp });
+  const tone = statusTone({ statusLabel, thresholdMet, reviewHref, finalBalanceDueGbp });
   const orderTitle = shortOrderTitle(order.order_ref, orderId);
   const itemLabel = Number.isFinite(totalQty) && totalQty > 0 ? `${totalQty} ${totalQty === 1 ? "item" : "items"}` : "Goods order";
-  const nextActionTitle = reviewHref ? "Review items before shipment" : !thresholdMet ? "Payment required" : deliveryConfirmed ? "Delivery confirmed" : shipmentArranged ? "Waiting for delivery confirmation" : "No action needed right now";
-  const nextActionBody = reviewHref ? "Check the order before shipment and request a hold if anything should not be sent." : !thresholdMet ? "The remaining amount needs to be paid before this order can continue." : deliveryConfirmed ? "Delivery confirmation has been received." : shipmentArranged ? (estimatedWindow ? `Estimated delivery window: ${estimatedWindow}.` : "Shipping date is pending from the shipper.") : "We are processing this order. You can return here to check progress.";
+  const nextActionTitle = reviewHref
+    ? "Review items before shipment"
+    : !thresholdMet
+      ? "Payment required"
+      : finalBalanceDueGbp > 0.01
+        ? "Final balance due"
+        : deliveryConfirmed
+          ? "Delivery confirmed"
+          : shipmentArranged
+            ? "Waiting for delivery confirmation"
+            : "No action needed right now";
+  const nextActionBody = reviewHref
+    ? "Check the order before shipment and request a hold if anything should not be sent."
+    : !thresholdMet
+      ? "The accepted estimate needs to be paid before this order can continue."
+      : finalBalanceDueGbp > 0.01
+        ? `The final sale value is now confirmed. Balance due: ${money(finalBalanceDueGbp)}${effectiveRate ? ` (${localAmount(finalBalanceDueLocal, currencyCode)} using ${fxLabel}).` : "."}`
+        : deliveryConfirmed
+          ? "Delivery confirmation has been received."
+          : shipmentArranged
+            ? (estimatedWindow ? `Estimated delivery window: ${estimatedWindow}.` : "Shipping date is pending from the shipper.")
+            : "We are processing this order. You can return here to check progress.";
   const journey = [
     { label: "Order received", done: true },
     { label: "Payment received", done: thresholdMet },
-    { label: "Items confirmed", done: shipmentArranged || finalExportAccepted || finalInvoiceIssued },
+    { label: "Items confirmed", done: shipmentArranged || finalExportAccepted || finalSaleValueConfirmed },
     { label: "Shipment arranged", done: shipmentArranged },
-    { label: "Invoice issued", done: finalInvoiceIssued },
+    { label: "Sale value confirmed", done: finalSaleValueConfirmed },
     { label: "Delivery confirmation", done: deliveryConfirmed },
   ];
   const firstPending = journey.findIndex((step) => !step.done);
@@ -210,12 +248,30 @@ export default async function CustomerOrderOperationsPage({ params, searchParams
           {qp.error ? <p className="mt-4 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-800 xl:col-span-2">{qp.error}</p> : null}
         </div>
       </header>
+
       <section className={`mt-5 rounded-[1.75rem] border p-5 shadow-sm ${toneCardClass(tone)}`}><div className="xl:flex xl:items-center xl:justify-between xl:gap-6"><div><p className="text-xs font-black uppercase tracking-[0.2em] opacity-70">Next step</p><h2 className="mt-2 text-2xl font-black">{nextActionTitle}</h2><p className="mt-2 text-sm leading-6 opacity-80">{nextActionBody}</p></div>{reviewHref ? <Link href={reviewHref} className="mt-4 block rounded-2xl bg-slate-950 px-5 py-3 text-center text-sm font-black text-white shadow-sm xl:mt-0">Open review</Link> : null}</div></section>
+
       <section className="mt-5 overflow-hidden rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm"><h2 className="text-xl font-black">Order journey</h2><p className="mt-1 text-sm text-slate-600">A customer-safe view of the order progress.</p><div className="mt-5 flex gap-3 overflow-x-auto pb-2">{journey.map((step, index) => <div key={step.label} className={`min-w-[9.5rem] rounded-2xl border px-4 py-3 text-sm font-black shadow-sm ring-1 ${journeyClass(step.done, index === firstPending)}`}><span className="mr-2">{step.done ? "✓" : index === firstPending ? "•" : "○"}</span>{step.label}</div>)}</div></section>
-      <section className="mt-5 grid grid-cols-2 gap-3 xl:grid-cols-4"><div className="rounded-[1.5rem] border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs font-black uppercase tracking-wide text-slate-500">Order value</p><p className="mt-2 text-2xl font-black">{money(orderGbp)}</p></div><div className="rounded-[1.5rem] border border-amber-100 bg-amber-50/70 p-4 shadow-sm"><p className="text-xs font-black uppercase tracking-wide text-amber-700">Still due</p><p className="mt-2 text-2xl font-black text-amber-950">{money(currentNetPayableGbp)}</p><p className="mt-1 text-xs font-bold text-amber-800">{effectiveRate ? localAmount(currentNetPayableLocal, currencyCode) : "No FX rate"}</p></div><div className="rounded-[1.5rem] border border-cyan-100 bg-cyan-50/70 p-4 shadow-sm"><p className="text-xs font-black uppercase tracking-wide text-cyan-700">Credit used</p><p className="mt-2 text-2xl font-black text-cyan-950">{money(appliedCreditGbp)}</p></div><div className="rounded-[1.5rem] border border-emerald-100 bg-emerald-50/70 p-4 shadow-sm"><p className="text-xs font-black uppercase tracking-wide text-emerald-700">Payment</p><p className="mt-3"><span className={`rounded-full px-3 py-1 text-xs font-bold ring-1 ${tonePillClass(thresholdMet ? "complete" : "action")}`}>{thresholdMet ? "Received" : "Required"}</span></p></div></section>
-      <section className="mt-5 grid gap-4 xl:grid-cols-3"><article className="rounded-[1.5rem] border border-slate-200 bg-white p-5 shadow-sm"><p className="text-xs font-black uppercase tracking-wide text-slate-500">Shipping update</p><h3 className="mt-2 text-xl font-black">{shipmentArranged ? "Shipment arranged" : "Shipping date pending"}</h3><div className="mt-3 text-sm leading-6 text-slate-700">{shippingDate ? <><p>Shipping date: <span className="font-black text-slate-950">{formatDate(shippingDate)}</span></p><p>Estimated window: <span className="font-black text-slate-950">{estimatedWindow}</span></p><p className="text-xs font-semibold text-slate-500">Based on a 5-8 week estimate from the shipper shipping date.</p></> : <p>Shipping date pending from shipper.</p>}</div></article><article className="rounded-[1.5rem] border border-slate-200 bg-white p-5 shadow-sm"><p className="text-xs font-black uppercase tracking-wide text-slate-500">Customer invoices</p><h3 className="mt-2 text-xl font-black">{finalInvoiceIssued ? `${invoices.length} ${invoices.length === 1 ? "invoice" : "invoices"} issued` : "Not available yet"}</h3><div className="mt-3 text-sm leading-6 text-slate-700">{finalInvoiceIssued ? <><p>Total invoiced: <span className="font-black text-slate-950">{money(totalInvoicedGbp)}</span></p><div className="mt-3 space-y-2">{invoices.map((invoice, index) => <div key={invoice.id} className="rounded-2xl bg-slate-50 p-3 ring-1 ring-slate-100"><p className="font-black text-slate-950">{invoiceTypeLabel(invoice.invoice_type)} · {money(invoice.amount_gbp)}</p><p className="text-xs font-semibold text-slate-500">Issued {formatDate(invoice.sage_invoice_date ?? invoice.sage_posted_at)} · Invoice {index + 1}</p><a href={`/customer/orders/${orderId}/invoices/${invoice.id}/download`} className="mt-3 inline-flex rounded-xl bg-slate-950 px-3 py-2 text-xs font-black text-white">Download invoice</a></div>)}</div></> : <p>Your customer invoices will appear once issued.</p>}</div></article><article className="rounded-[1.5rem] border border-slate-200 bg-white p-5 shadow-sm"><p className="text-xs font-black uppercase tracking-wide text-slate-500">Delivery confirmation</p><h3 className="mt-2 text-xl font-black">{deliveryConfirmed ? "Received" : "Pending"}</h3><p className="mt-3 text-sm leading-6 text-slate-700">{deliveryConfirmed ? "Delivery confirmation has been received." : "We will update this page once delivery confirmation is received."}</p></article></section>
-      <details className="mt-5 rounded-[1.75rem] border border-cyan-100 bg-cyan-50/70 p-5 shadow-sm" open={currentNetPayableGbp > 0.01}><summary className="cursor-pointer list-none text-xl font-black text-cyan-950">Credit and FX details</summary><p className="mt-2 text-sm leading-6 text-slate-700">The order closes in GBP. Local figures are payment-stage guidance using the current/latest FX rate.</p><div className="mt-4 grid gap-3 xl:grid-cols-4"><div className="rounded-2xl bg-white p-4 ring-1 ring-cyan-100"><p className="text-xs font-black uppercase text-cyan-700">Applied credit</p><p className="mt-1 text-xl font-black">{money(appliedCreditGbp)}</p></div><div className="rounded-2xl bg-white p-4 ring-1 ring-cyan-100"><p className="text-xs font-black uppercase text-cyan-700">Applied credit local</p><p className="mt-1 text-xl font-black">{effectiveRate ? localAmount(appliedCreditLocal, currencyCode) : "No FX rate"}</p></div><div className="rounded-2xl bg-white p-4 ring-1 ring-cyan-100"><p className="text-xs font-black uppercase text-cyan-700">Available credit</p><p className="mt-1 text-xl font-black">{money(availableCreditGbp)}</p><p className="mt-1 text-xs font-semibold text-slate-500">{effectiveRate ? localAmount(availableCreditLocal, currencyCode) : "No FX rate"}</p></div><div className="rounded-2xl bg-white p-4 ring-1 ring-cyan-100"><p className="text-xs font-black uppercase text-cyan-700">FX used</p><p className="mt-1 text-xl font-black">{effectiveRate ? effectiveRate.toFixed(4) : "-"}</p><p className="mt-1 text-xs font-semibold text-slate-500">{fxLabel}</p></div></div></details>
-      <section className="mt-5 grid gap-4 xl:grid-cols-2"><details className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm"><summary className="cursor-pointer list-none text-xl font-black">Payment details</summary><div className="mt-4 grid gap-3 text-sm text-slate-700"><p>Required amount: <span className="font-black text-slate-950">{money(funding?.purchase_funding_threshold_gbp ?? order.order_total_gbp_declared)}</span></p><p>Confirmed payment: <span className="font-black text-slate-950">{money(confirmedPaymentGbp)}</span></p><p>Applied credit: <span className="font-black text-slate-950">{money(appliedCreditGbp)}</span></p><p>Amount still due: <span className="font-black text-slate-950">{money(currentNetPayableGbp)}</span></p></div></details><details className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm"><summary className="cursor-pointer list-none text-xl font-black">Order evidence</summary><p className="mt-3 text-sm leading-6 text-slate-600">Original order screenshots are available. Internal procurement and warehouse tracking details are hidden.</p><div className="mt-4 flex flex-wrap gap-2">{screenshots.length === 0 ? <p className="text-sm text-slate-600">No screenshots uploaded.</p> : null}{screenshots.map((row, index) => <a key={row.id} href={row.screenshot_url} target="_blank" rel="noreferrer" className="rounded-xl bg-slate-950 px-3 py-2 text-xs font-black text-white">Open screenshot {index + 1}</a>)}</div></details></section>
+
+      <section className="mt-5 grid grid-cols-2 gap-3 xl:grid-cols-4">
+        <div className="rounded-[1.5rem] border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs font-black uppercase tracking-wide text-slate-500">{finalSaleValueConfirmed ? "Final sale value" : "Estimated sale value"}</p><p className="mt-2 text-2xl font-black">{money(finalSaleValueGbp)}</p><p className="mt-1 text-xs font-bold text-slate-500">Accepted estimate: {money(acceptedEstimateGbp)}</p></div>
+        <div className="rounded-[1.5rem] border border-amber-100 bg-amber-50/70 p-4 shadow-sm"><p className="text-xs font-black uppercase tracking-wide text-amber-700">Balance due</p><p className="mt-2 text-2xl font-black text-amber-950">{money(finalBalanceDueGbp)}</p><p className="mt-1 text-xs font-bold text-amber-800">{effectiveRate ? localAmount(finalBalanceDueLocal, currencyCode) : "No FX rate"}</p><p className="mt-1 text-[11px] font-semibold text-amber-700">{fxLabel}</p></div>
+        <div className="rounded-[1.5rem] border border-cyan-100 bg-cyan-50/70 p-4 shadow-sm"><p className="text-xs font-black uppercase tracking-wide text-cyan-700">Amount received</p><p className="mt-2 text-2xl font-black text-cyan-950">{money(amountReceivedGbp)}</p><p className="mt-1 text-xs font-bold text-cyan-800">Credit used: {money(appliedCreditGbp)}</p></div>
+        <div className="rounded-[1.5rem] border border-emerald-100 bg-emerald-50/70 p-4 shadow-sm"><p className="text-xs font-black uppercase tracking-wide text-emerald-700">Payment</p><p className="mt-3"><span className={`rounded-full px-3 py-1 text-xs font-bold ring-1 ${tonePillClass(thresholdMet ? "complete" : "action")}`}>{thresholdMet ? "Initial payment received" : "Required"}</span></p>{creditDueGbp > 0.01 ? <p className="mt-2 text-xs font-bold text-emerald-800">Credit due: {money(creditDueGbp)}</p> : null}</div>
+      </section>
+
+      <section className="mt-5 grid gap-4 xl:grid-cols-3">
+        <article className="rounded-[1.5rem] border border-slate-200 bg-white p-5 shadow-sm"><p className="text-xs font-black uppercase tracking-wide text-slate-500">Shipping update</p><h3 className="mt-2 text-xl font-black">{shipmentArranged ? "Shipment arranged" : "Shipping date pending"}</h3><div className="mt-3 text-sm leading-6 text-slate-700">{shippingDate ? <><p>Shipping date: <span className="font-black text-slate-950">{formatDate(shippingDate)}</span></p><p>Estimated window: <span className="font-black text-slate-950">{estimatedWindow}</span></p><p className="text-xs font-semibold text-slate-500">Based on a 5-8 week estimate from the shipper shipping date.</p></> : <p>Shipping date pending from shipper.</p>}</div></article>
+        <article className="rounded-[1.5rem] border border-slate-200 bg-white p-5 shadow-sm"><p className="text-xs font-black uppercase tracking-wide text-slate-500">Sale documents</p><h3 className="mt-2 text-xl font-black">{finalSaleValueConfirmed ? `${invoices.length} ${invoices.length === 1 ? "document" : "documents"} issued` : "Not available yet"}</h3><div className="mt-3 text-sm leading-6 text-slate-700">{finalSaleValueConfirmed ? <><p>Final sale value: <span className="font-black text-slate-950">{money(totalInvoicedGbp)}</span></p><div className="mt-3 space-y-2">{invoices.map((invoice, index) => <div key={invoice.id} className="rounded-2xl bg-slate-50 p-3 ring-1 ring-slate-100"><p className="font-black text-slate-950">{saleDocumentLabel(invoice.invoice_type)} · {money(invoice.amount_gbp)}</p><p className="text-xs font-semibold text-slate-500">Issued {formatDate(invoice.sage_invoice_date ?? invoice.sage_posted_at)} · Document {index + 1}</p><a href={`/customer/orders/${orderId}/invoices/${invoice.id}/download`} className="mt-3 inline-flex rounded-xl bg-slate-950 px-3 py-2 text-xs font-black text-white">Download sale document</a></div>)}</div></> : <p>Your sale documents will appear once issued.</p>}</div></article>
+        <article className="rounded-[1.5rem] border border-slate-200 bg-white p-5 shadow-sm"><p className="text-xs font-black uppercase tracking-wide text-slate-500">Delivery confirmation</p><h3 className="mt-2 text-xl font-black">{deliveryConfirmed ? "Received" : "Pending"}</h3><p className="mt-3 text-sm leading-6 text-slate-700">{deliveryConfirmed ? "Delivery confirmation has been received." : "We will update this page once delivery confirmation is received."}</p></article>
+      </section>
+
+      <details className="mt-5 rounded-[1.75rem] border border-cyan-100 bg-cyan-50/70 p-5 shadow-sm" open={finalBalanceDueGbp > 0.01}><summary className="cursor-pointer list-none text-xl font-black text-cyan-950">Credit and FX details</summary><p className="mt-2 text-sm leading-6 text-slate-700">The order closes in GBP. Local figures for any final balance use the latest available FX rate.</p><div className="mt-4 grid gap-3 xl:grid-cols-4"><div className="rounded-2xl bg-white p-4 ring-1 ring-cyan-100"><p className="text-xs font-black uppercase text-cyan-700">Applied credit</p><p className="mt-1 text-xl font-black">{money(appliedCreditGbp)}</p></div><div className="rounded-2xl bg-white p-4 ring-1 ring-cyan-100"><p className="text-xs font-black uppercase text-cyan-700">Applied credit local</p><p className="mt-1 text-xl font-black">{effectiveRate ? localAmount(appliedCreditLocal, currencyCode) : "No FX rate"}</p></div><div className="rounded-2xl bg-white p-4 ring-1 ring-cyan-100"><p className="text-xs font-black uppercase text-cyan-700">Available credit</p><p className="mt-1 text-xl font-black">{money(availableCreditGbp)}</p><p className="mt-1 text-xs font-semibold text-slate-500">{effectiveRate ? localAmount(availableCreditLocal, currencyCode) : "No FX rate"}</p></div><div className="rounded-2xl bg-white p-4 ring-1 ring-cyan-100"><p className="text-xs font-black uppercase text-cyan-700">Latest FX</p><p className="mt-1 text-xl font-black">{effectiveRate ? effectiveRate.toFixed(4) : "-"}</p><p className="mt-1 text-xs font-semibold text-slate-500">{fxLabel}</p></div></div></details>
+
+      <section className="mt-5 grid gap-4 xl:grid-cols-2">
+        <details className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm"><summary className="cursor-pointer list-none text-xl font-black">Payment details</summary><div className="mt-4 grid gap-3 text-sm text-slate-700"><p>Accepted estimate: <span className="font-black text-slate-950">{money(acceptedEstimateGbp)}</span></p><p>{finalSaleValueConfirmed ? "Final sale value" : "Estimated sale value"}: <span className="font-black text-slate-950">{money(finalSaleValueGbp)}</span></p><p>Confirmed payment: <span className="font-black text-slate-950">{money(confirmedPaymentGbp)}</span></p><p>Applied credit: <span className="font-black text-slate-950">{money(appliedCreditGbp)}</span></p><p>Amount received: <span className="font-black text-slate-950">{money(amountReceivedGbp)}</span></p><p>Balance due: <span className="font-black text-slate-950">{money(finalBalanceDueGbp)}</span></p>{creditDueGbp > 0.01 ? <p>Credit due: <span className="font-black text-slate-950">{money(creditDueGbp)}</span></p> : null}</div></details>
+        <details className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm"><summary className="cursor-pointer list-none text-xl font-black">Order evidence</summary><p className="mt-3 text-sm leading-6 text-slate-600">Original order screenshots are available. Internal procurement and warehouse tracking details are hidden.</p><div className="mt-4 flex flex-wrap gap-2">{screenshots.length === 0 ? <p className="text-sm text-slate-600">No screenshots uploaded.</p> : null}{screenshots.map((row, index) => <a key={row.id} href={row.screenshot_url} target="_blank" rel="noreferrer" className="rounded-xl bg-slate-950 px-3 py-2 text-xs font-black text-white">Open screenshot {index + 1}</a>)}</div></details>
+      </section>
     </main>
   );
 }
