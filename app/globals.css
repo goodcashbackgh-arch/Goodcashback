@@ -122,3 +122,41 @@ section.mt-5.grid.grid-cols-1.gap-3.sm\:grid-cols-2.xl\:grid-cols-4 > div[class*
 section.mt-5.grid.grid-cols-1.gap-3.sm\:grid-cols-2.xl\:grid-cols-4 > div[class*="border-emerald-100"][class*="bg-emerald-50"]:has(> p.mt-2.text-2xl) p {
   color: rgb(120 53 15) !important;
 }
+
+/* Supervisor command centre: restore the original wide lane-card feel after switching the data source to the canonical status engine. */
+main table.min-w-\[1480px\].table-fixed col:nth-child(3) {
+  width: 120px !important;
+}
+
+main table.min-w-\[1480px\].table-fixed col:nth-child(4),
+main table.min-w-\[1480px\].table-fixed col:nth-child(5),
+main table.min-w-\[1480px\].table-fixed col:nth-child(6),
+main table.min-w-\[1480px\].table-fixed col:nth-child(7) {
+  width: 235px !important;
+}
+
+main table.min-w-\[1480px\].table-fixed col:nth-child(8) {
+  width: 200px !important;
+}
+
+main table.min-w-\[1480px\].table-fixed td > div.grid.gap-1\.5 > div.rounded-xl.border.border-slate-200.bg-white {
+  min-height: 4.9rem !important;
+  padding: 0.85rem 0.85rem !important;
+}
+
+main table.min-w-\[1480px\].table-fixed td > div.grid.gap-1\.5 > div.rounded-xl.border.border-slate-200.bg-white > div {
+  align-items: flex-start !important;
+}
+
+main table.min-w-\[1480px\].table-fixed td > div.grid.gap-1\.5 > div.rounded-xl.border.border-slate-200.bg-white span:first-child {
+  max-width: 10rem !important;
+  font-size: 0.70rem !important;
+  letter-spacing: 0.08em !important;
+}
+
+main table.min-w-\[1480px\].table-fixed td > div.grid.gap-1\.5 > div.rounded-xl.border.border-slate-200.bg-white span:last-child {
+  max-width: 8rem !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
