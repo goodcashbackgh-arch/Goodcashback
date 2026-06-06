@@ -1,0 +1,300 @@
+# Final Sale Value and Balance Due Addendum v1
+
+Status: locked for build sequencing after 2026-06-05 design review.
+
+This addendum extends `docs/governing-pack/ui/FUNDING_ACTION_CONTRACT.md` and the customer/importer order portal rules. It does **not** replace the original purchase-funding threshold. It adds a final sale settlement layer so the platform can show and collect any remaining amount after Sage-posted sale documents confirm the final sale value.
+
+## 1. Commercial framing
+
+Goodcashback acts as principal. User-facing copy must present the transaction as Goodcashback's sale to the customer/importer.
+
+Use these terms in customer/importer UI:
+
+- Accepted estimate
+- Final sale value
+- Final sale adjustment
+- Amount received
+- Balance due
+- Credit due
+- Sale document
+
+Do **not** use these terms in customer/importer UI:
+
+- supplier invoice
+- shipping supplementary invoice
+- recharge invoice
+- agency fee
+- service provider fee
+- customer funding target for final sale settlement
+
+Internal database table names may still contain existing technical words such as `sales_invoices` and `invoice_type`. Those names are implementation details and must not drive customer-facing wording.
+
+## 2. Existing funding threshold remains intact
+
+The original order value remains the accepted estimate/pro-forma amount:
+
+```text
+accepted_estimate_gbp = orders.order_total_gbp_declared
+```
+
+The existing initial payment flow remains:
+
+```text
+initial_payment_received = cumulative order funding >= accepted_estimate_gbp
+```
+
+This initial payment unlocks the operational order flow. It must not be reversed merely because a later final sale document increases the total sale value.
+
+Do not change `recompute_order_platform_funded(...)` to use final sale value. That function should continue to support the accepted-estimate threshold unless a later contract explicitly redesigns the order state model.
+
+## 3. Final sale value
+
+Once Sage-posted sale documents exist for an order, the final sale value is the sum of the posted Sage sale document amounts for that order.
+
+```text
+posted_sale_total_gbp = SUM(sales_invoices.amount_gbp)
+where sales_invoices.order_id = order.id
+  and sales_invoices.sage_status = 'posted'
+  and sales_invoices.sage_invoice_id is not null
+  and sales_invoices.invoice_type in ('main', 'supplementary')
+```
+
+For UI/read-model purposes:
+
+```text
+final_sale_value_gbp =
+  if posted_sale_total_gbp > 0 then posted_sale_total_gbp
+  else accepted_estimate_gbp
+```
+
+Before Sage-posted sale documents exist, show the value as an estimate. After they exist, show it as final.
+
+## 4. Final sale settlement calculation
+
+Amount received is all effective money/credit allocated to the order.
+
+```text
+amount_received_gbp = confirmed_dva_funding_gbp + applied_credit_gbp
+```
+
+Final balance due is:
+
+```text
+balance_due_gbp = max(final_sale_value_gbp - amount_received_gbp, 0)
+```
+
+Credit due is:
+
+```text
+credit_due_gbp = max(amount_received_gbp - final_sale_value_gbp, 0)
+```
+
+## 5. Critical distinction: final balance is not overfunding
+
+A payment above the accepted estimate is **not** automatically customer credit if the posted final sale value is higher.
+
+Contract rule:
+
+```text
+If amount_received_gbp > accepted_estimate_gbp
+and amount_received_gbp <= final_sale_value_gbp
+then the extra amount settles the final sale balance.
+It must not be treated as overfunding credit.
+```
+
+Only the amount above the final sale value is true credit:
+
+```text
+true_credit_due_gbp = max(amount_received_gbp - final_sale_value_gbp, 0)
+```
+
+This is the key downstream guard. The existing overfunding-credit logic is based on the original accepted estimate, so the final balance layer must either:
+
+1. use a read model that offsets generated overfunding credit where it is actually settling final balance; or
+2. patch the overfunding-credit sync logic so it uses final sale value once Sage-posted sale documents exist.
+
+Do not allow final-balance payments to be misclassified as customer credit.
+
+## 6. DVA/card statement matching implications
+
+Staff/supervisor reconciliation must show three separate targets for an order:
+
+1. Accepted estimate payment
+2. Final balance payment
+3. True credit/overpayment
+
+A new statement-line match above the accepted estimate should be allowed when:
+
+```text
+balance_due_gbp > 0
+```
+
+In that case, label the match as:
+
+```text
+Final balance payment
+```
+
+not:
+
+```text
+Extra funding
+Overfunding
+Supplementary invoice payment
+```
+
+Once balance_due_gbp reaches zero, any additional matched amount becomes true credit/overpayment.
+
+## 7. FX display rule
+
+Accepted estimate/pro-forma figures use the original locked quote FX snapshot.
+
+Final balance due uses latest available FX for the importer/customer country at the time the balance is displayed.
+
+UI rule:
+
+```text
+balance_due_local = balance_due_gbp * latest_available_fx_rate
+```
+
+Show the rate date clearly:
+
+```text
+Pay today: [LOCAL AMOUNT]
+Based on latest available FX rate dated YYYY-MM-DD
+```
+
+If a same-day FX rate exists, label it as today's FX. If not, use the most recent available rate and show the date. Do not silently reuse the original quote FX for final balance due.
+
+## 8. UI layout rules
+
+### Main orders list
+
+Replace sole reliance on original order value with:
+
+- Accepted estimate
+- Final sale value, where available
+- Balance due, where final sale value exceeds amount received
+
+Before Sage-posted sale documents exist:
+
+```text
+Estimated sale value: £X
+```
+
+After Sage-posted sale documents exist:
+
+```text
+Final sale value: £Y
+Accepted estimate: £X
+Balance due: £Z
+```
+
+### Customer/order details
+
+Show:
+
+```text
+Accepted estimate
+Final sale value
+Amount received
+Balance due / Credit due
+Pay today in local currency
+```
+
+Sale documents can be listed, but customer-facing labels should be:
+
+- Sale document
+- Final sale adjustment
+
+not main/supplementary agency-style wording.
+
+### Importer/order operations details
+
+Keep purchase/evidence controls operationally separate, but add a final sale summary block once Sage-posted sale documents exist:
+
+```text
+Accepted estimate
+Final sale value
+Amount received
+Balance due / Credit due
+```
+
+## 9. Non-goals for this patch
+
+Do not rewrite the original order funding threshold.
+
+Do not overwrite `orders.order_total_gbp_declared`.
+
+Do not make final balance due block goods already purchased, evidence review, or shipment controls unless a later contract explicitly adds a closure gate.
+
+Do not expose internal procurement/shipping document wording in customer/importer UI.
+
+Do not change VAT logic merely because this display layer is added. VAT return and Sage posting logic remain governed by their own contracts.
+
+## 10. Build sequence
+
+Minimum safe build order:
+
+1. Add a final sale balance read model/view or equivalent server-side calculation.
+2. Patch customer order details to use final sale value and balance due.
+3. Patch importer main orders list to show final sale value/balance due.
+4. Patch importer order operations page to show the same final sale summary.
+5. Patch DVA/card reconciliation workbench to classify additional matched money as final balance payment before true credit.
+6. Only then consider whether generated overfunding credit needs backend correction once final sale value exists.
+
+## 11. Acceptance tests
+
+### Scenario A — no final sale document yet
+
+```text
+Accepted estimate: £250
+Amount received: £250
+Final sale value shown as estimated £250
+Balance due: £0
+Initial payment received: yes
+```
+
+### Scenario B — final sale value higher
+
+```text
+Accepted estimate: £250
+Final sale value: £285
+Amount received: £250
+Balance due: £35
+Initial payment received: yes
+Order is not reverted to unfunded
+```
+
+### Scenario C — extra payment settles final balance
+
+```text
+Accepted estimate: £250
+Final sale value: £285
+Amount received after second payment: £285
+Balance due: £0
+Credit due: £0
+Second payment classified as final balance payment
+```
+
+### Scenario D — true overpayment
+
+```text
+Accepted estimate: £250
+Final sale value: £285
+Amount received: £300
+Balance due: £0
+Credit due: £15
+Only £15 is true credit
+```
+
+## 12. Locked decision
+
+The platform must preserve two separate concepts:
+
+```text
+Initial payment received = accepted estimate covered.
+Final settlement complete = final sale value covered.
+```
+
+The first unlocks operational fulfilment. The second settles the final customer/importer sale value.
