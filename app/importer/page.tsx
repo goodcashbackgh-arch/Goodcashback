@@ -18,7 +18,7 @@ type OrderRow = {
 type StateRow = { id: string; lifecycle_status: string | null };
 type RefRow = { order_id: string };
 type InvoiceRow = { order_id: string; review_status: string | null };
-type SaleDocumentRow = { order_id: string; amount_gbp: number | string | null; sage_invoice_id: string | null };
+type SaleDocumentRow = { order_id: string; amount_gbp: number | string | null; sage_invoice_id: string | null; invoice_type: string | null };
 type FundingPositionRow = { order_id: string; confirmed_dva_funding_gbp: number | string | null; applied_credit_gbp: number | string | null; funded_total_gbp: number | string | null };
 type LineRow = { id: string; eligible_for_invoice_yn: string | null; supplier_invoices: { order_id: string }[] | { order_id: string } | null };
 type DisputeLineRow = { supplier_invoice_line_id: string | null };
@@ -32,6 +32,11 @@ const successActionClass = "inline-flex min-h-9 items-center justify-center roun
 
 function gbp(value: number | string | null | undefined) {
   return new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP", minimumFractionDigits: 2 }).format(Number(value ?? 0));
+}
+
+function saleDocumentSignedAmount(row: SaleDocumentRow) {
+  const amount = Number(row.amount_gbp ?? 0);
+  return row.invoice_type === "credit_note" ? -Math.abs(amount) : amount;
 }
 
 function friendlyStatus(value: string | null | undefined) {
@@ -106,7 +111,7 @@ export default async function ImporterPage() {
     orderIds.length ? supabase.from("order_evidence_queries").select("order_id, message, status, created_at").in("order_id", orderIds).eq("status", "open").order("created_at", { ascending: false }) : { data: [], error: null },
     orderIds.length ? supabase.from("supplier_invoice_lines").select("id, eligible_for_invoice_yn, supplier_invoices!inner(order_id)").in("supplier_invoices.order_id", orderIds) : { data: [] },
     supabase.from("dispute_lines").select("supplier_invoice_line_id"),
-    orderIds.length ? (supabaseAdmin as any).from("sales_invoices").select("order_id, amount_gbp, sage_invoice_id").in("order_id", orderIds).eq("sage_status", "posted").not("sage_invoice_id", "is", null).in("invoice_type", ["main", "supplementary"]) : Promise.resolve({ data: [] }),
+    orderIds.length ? (supabaseAdmin as any).from("sales_invoices").select("order_id, amount_gbp, sage_invoice_id, invoice_type").in("order_id", orderIds).eq("sage_status", "posted").not("sage_invoice_id", "is", null).in("invoice_type", ["main", "supplementary", "credit_note"]) : Promise.resolve({ data: [] }),
     orderIds.length ? supabase.from("order_funding_position_vw").select("order_id, confirmed_dva_funding_gbp, applied_credit_gbp, funded_total_gbp").in("order_id", orderIds) : { data: [] },
   ]);
   if (stateError) throw stateError;
@@ -150,7 +155,7 @@ export default async function ImporterPage() {
   const finalSaleValueByOrderId = new Map<string, { total: number; confirmed: boolean }>();
   for (const doc of (saleDocuments ?? []) as SaleDocumentRow[]) {
     const current = finalSaleValueByOrderId.get(doc.order_id) ?? { total: 0, confirmed: false };
-    current.total += Number(doc.amount_gbp ?? 0);
+    current.total += saleDocumentSignedAmount(doc);
     current.confirmed = current.confirmed || Boolean(doc.sage_invoice_id);
     finalSaleValueByOrderId.set(doc.order_id, current);
   }
@@ -170,8 +175,8 @@ export default async function ImporterPage() {
     const finalSaleValueGbp = finalSale?.confirmed ? finalSale.total : acceptedEstimateGbp;
     const funding = fundingByOrderId.get(order.id);
     const amountReceivedGbp = Number(funding?.funded_total_gbp ?? (Number(funding?.confirmed_dva_funding_gbp ?? 0) + Number(funding?.applied_credit_gbp ?? 0)));
-    const finalBalanceDueGbp = Math.max(finalSaleValueGbp - amountReceivedGbp, 0);
-    const creditDueGbp = Math.max(amountReceivedGbp - finalSaleValueGbp, 0);
+    const finalBalanceDueGbp = finalSale?.confirmed ? Math.max(finalSaleValueGbp - amountReceivedGbp, 0) : 0;
+    const pendingCreditGbp = finalSale?.confirmed ? Math.max(amountReceivedGbp - finalSaleValueGbp, 0) : 0;
     const status = nextStatus({
       lifecycleStatus: lifecycleByOrderId.get(order.id) ?? null,
       fundedAt: order.funded_at,
@@ -182,7 +187,7 @@ export default async function ImporterPage() {
       hasInvoice,
       finalBalanceDueGbp,
     });
-    return { order, hasInvoice, hasTracking, needsResubmission, querySummary, rec, status, screenshotCount: screenshotCountByOrderId.get(order.id) ?? 0, acceptedEstimateGbp, finalSaleValueGbp, finalSaleConfirmed: Boolean(finalSale?.confirmed), finalBalanceDueGbp, creditDueGbp, amountReceivedGbp };
+    return { order, hasInvoice, hasTracking, needsResubmission, querySummary, rec, status, screenshotCount: screenshotCountByOrderId.get(order.id) ?? 0, acceptedEstimateGbp, finalSaleValueGbp, finalSaleConfirmed: Boolean(finalSale?.confirmed), finalBalanceDueGbp, pendingCreditGbp, amountReceivedGbp };
   });
 
   const resubmissionCount = rows.filter((row) => row.needsResubmission).length;
@@ -228,13 +233,13 @@ export default async function ImporterPage() {
             return (
               <article key={row.order.id} className={`rounded-2xl border p-4 shadow-sm ${row.needsResubmission ? "border-rose-200 bg-rose-50" : row.finalBalanceDueGbp > 0.01 ? "border-amber-200 bg-amber-50" : "border-slate-200 bg-white"}`}>
                 <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                  <div><div className="text-xs font-semibold uppercase tracking-wide text-slate-500">{row.order.retailers?.name ?? "Retailer not set"}</div><h3 className="mt-1 text-base font-semibold text-slate-950">{row.order.order_ref ?? row.order.id}</h3><p className="mt-1 break-all text-xs text-slate-500">{row.order.id}</p></div>
+                  <div><div className="text-xs font-semibold uppercase tracking-wide text-slate-500">{row.order.retailers?.name ?? "Retailer not set"}</div><h3 className="mt-1 text-base font-semibold text-slate-950">{row.order.order_ref ?? row.order.id}</h3><p className="mt-1 break-all text-xs text-slate-500">Authorisation ref: {row.order.payment_auth_id ?? "Not assigned"}</p></div>
                   <span className={`w-fit rounded-full border px-3 py-1 text-xs font-semibold ${statusClass(row.needsResubmission, Boolean(row.querySummary?.count), row.status.status, row.finalBalanceDueGbp)}`}>{row.status.status}</span>
                 </div>
                 <div className="mt-4 grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
                   <div className="rounded-xl bg-white/70 p-3 ring-1 ring-slate-100"><div className="text-xs text-slate-500">Qty</div><div className="font-semibold text-slate-950">{row.order.total_qty_declared ?? 0}</div></div>
-                  <div className="rounded-xl bg-white/70 p-3 ring-1 ring-slate-100"><div className="text-xs text-slate-500">{row.finalSaleConfirmed ? "Final sale value" : "Estimated sale value"}</div><div className="font-semibold text-slate-950">{gbp(row.finalSaleValueGbp)}</div><div className="mt-1 text-[11px] text-slate-500">Accepted estimate {gbp(row.acceptedEstimateGbp)}</div></div>
-                  <div className="rounded-xl bg-white/70 p-3 ring-1 ring-slate-100"><div className="text-xs text-slate-500">Balance due</div><div className={`font-semibold ${row.finalBalanceDueGbp > 0.01 ? "text-amber-900" : "text-slate-950"}`}>{gbp(row.finalBalanceDueGbp)}</div>{row.creditDueGbp > 0.01 ? <div className="mt-1 text-[11px] text-emerald-700">Credit due {gbp(row.creditDueGbp)}</div> : null}</div>
+                  <div className="rounded-xl bg-white/70 p-3 ring-1 ring-slate-100"><div className="text-xs text-slate-500">Accepted estimate</div><div className="font-semibold text-slate-950">{gbp(row.acceptedEstimateGbp)}</div></div>
+                  {row.finalSaleConfirmed ? <div className="rounded-xl bg-white/70 p-3 ring-1 ring-slate-100"><div className="text-xs text-slate-500">Final sale value</div><div className="font-semibold text-slate-950">{gbp(row.finalSaleValueGbp)}</div>{row.finalBalanceDueGbp > 0.01 ? <div className="mt-1 text-[11px] text-amber-700">Balance due {gbp(row.finalBalanceDueGbp)}</div> : null}{row.pendingCreditGbp > 0.01 ? <div className="mt-1 text-[11px] text-amber-700">Potential credit pending review {gbp(row.pendingCreditGbp)}</div> : null}</div> : null}
                   <div className="rounded-xl bg-white/70 p-3 ring-1 ring-slate-100"><div className="text-xs text-slate-500">Tracking / evidence</div><div className="font-semibold text-slate-950">{row.hasTracking ? "Tracking yes" : "Tracking no"}</div><div className="mt-1 text-[11px] text-slate-500">Evidence {row.hasInvoice ? "yes" : "no"}</div></div>
                 </div>
                 <div className="mt-4 rounded-xl border border-slate-200 bg-white/80 p-3 text-sm"><div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Next action</div><div className={row.needsResubmission ? "mt-1 font-semibold text-rose-700" : row.finalBalanceDueGbp > 0.01 ? "mt-1 font-semibold text-amber-800" : "mt-1 font-semibold text-slate-900"}>{row.status.action}</div><div className="mt-1 text-xs text-slate-500">{row.order.funded_at ? "Initial payment received" : "Open"} · Raw: {friendlyStatus(row.order.status)}</div></div>
