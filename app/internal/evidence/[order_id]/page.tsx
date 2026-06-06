@@ -14,6 +14,18 @@ type SourceState<T> = {
   error: string | null;
 };
 
+type PhysicalLineSummary = {
+  physicalTargetQty: number;
+  physicalProgressedQty: number;
+  physicalUnresolvedQty: number;
+  physicalTargetAmount: number;
+  physicalProgressedAmount: number;
+  physicalUnresolvedAmount: number;
+  parkedLineCount: number;
+  parkedAmount: number;
+  status: string;
+};
+
 function asString(value: unknown) {
   if (typeof value === "string") return value;
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
@@ -67,6 +79,93 @@ function pickFirst(row: DataRow | null | undefined, candidates: string[]) {
 
 function getColumns(rows: DataRow[]) {
   return Array.from(new Set(rows.flatMap((row) => Object.keys(row)))).sort();
+}
+
+function lineQty(line: DataRow) {
+  return asNumber(pickFirst(line, ["qty", "quantity", "qty_confirmed"])) ?? 0;
+}
+
+function lineAmount(line: DataRow) {
+  return (
+    asNumber(
+      pickFirst(line, [
+        "amount_inc_vat_gbp",
+        "amount_confirmed",
+        "amount",
+        "line_amount_gbp",
+        "amount_gbp",
+        "total_price",
+      ])
+    ) ?? 0
+  );
+}
+
+function lineConfirmedAmount(line: DataRow) {
+  return asNumber(pickFirst(line, ["amount_confirmed", "amount_inc_vat_gbp", "amount", "line_amount_gbp", "amount_gbp"]));
+}
+
+function isPhysicalInvoiceLine(line: DataRow) {
+  return asBoolean(pickFirst(line, ["eligible_for_invoice_yn"])) === true;
+}
+
+function isProgressedPhysicalLine(line: DataRow) {
+  if (!isPhysicalInvoiceLine(line)) return false;
+  return pickFirst(line, ["qty_confirmed"]) !== null && pickFirst(line, ["amount_confirmed"]) !== null;
+}
+
+function buildPhysicalLineSummary(lines: DataRow[]): PhysicalLineSummary {
+  const physicalLines = lines.filter(isPhysicalInvoiceLine);
+  const progressedPhysicalLines = physicalLines.filter(isProgressedPhysicalLine);
+  const parkedLines = lines.filter((line) => !isPhysicalInvoiceLine(line));
+
+  const physicalTargetQty = physicalLines.reduce((total, line) => total + lineQty(line), 0);
+  const physicalProgressedQty = progressedPhysicalLines.reduce(
+    (total, line) => total + (asNumber(pickFirst(line, ["qty_confirmed"])) ?? lineQty(line)),
+    0
+  );
+  const physicalTargetAmount = physicalLines.reduce((total, line) => total + lineAmount(line), 0);
+  const physicalProgressedAmount = progressedPhysicalLines.reduce(
+    (total, line) => total + (lineConfirmedAmount(line) ?? 0),
+    0
+  );
+  const physicalUnresolvedQty = Math.max(physicalTargetQty - physicalProgressedQty, 0);
+  const physicalUnresolvedAmount = Math.max(physicalTargetAmount - physicalProgressedAmount, 0);
+  const parkedAmount = parkedLines.reduce((total, line) => total + lineAmount(line), 0);
+
+  let status = "No physical goods lines";
+  if (physicalLines.length > 0 && physicalUnresolvedQty <= 0 && physicalUnresolvedAmount <= 0) {
+    status = "Physical goods progressed";
+  } else if (physicalProgressedQty > 0 || physicalProgressedAmount > 0) {
+    status = "Physical goods partially progressed";
+  } else if (physicalLines.length > 0) {
+    status = "Physical goods unresolved";
+  }
+
+  return {
+    physicalTargetQty,
+    physicalProgressedQty,
+    physicalUnresolvedQty,
+    physicalTargetAmount,
+    physicalProgressedAmount,
+    physicalUnresolvedAmount,
+    parkedLineCount: parkedLines.length,
+    parkedAmount,
+    status,
+  };
+}
+
+function statusPillClass(tone: string) {
+  const normalized = tone.toLowerCase();
+  if (normalized.includes("complete") || normalized.includes("progressed") || normalized.includes("approved")) {
+    return "bg-emerald-50 text-emerald-900";
+  }
+  if (normalized.includes("partial") || normalized.includes("pending") || normalized.includes("review")) {
+    return "bg-amber-50 text-amber-900";
+  }
+  if (normalized.includes("blocked") || normalized.includes("exception") || normalized.includes("unresolved")) {
+    return "bg-rose-50 text-rose-900";
+  }
+  return "bg-sky-50 text-sky-900";
 }
 
 async function readOrderState(
@@ -124,22 +223,13 @@ async function readInvoiceLinesByInvoiceIds(
   };
 }
 
-function statusSummary(recon: DataRow | null) {
-  const qtyUnresolved = asNumber(pickFirst(recon, ["qty_unresolved"])) ?? 0;
-  const amtUnresolved = asNumber(pickFirst(recon, ["amount_unresolved_gbp", "amount_unresolved"])) ?? 0;
-  const qtyProgressed = asNumber(pickFirst(recon, ["qty_progressed", "qty_progressed_invoiceable"])) ?? 0;
-  const amtProgressed =
-    asNumber(pickFirst(recon, ["amount_progressed_gbp", "amount_progressed_invoiceable_gbp"])) ?? 0;
-
-  if (qtyUnresolved <= 0 && amtUnresolved <= 0 && (qtyProgressed > 0 || amtProgressed > 0)) {
-    return "Fully progressed";
-  }
-
-  if (qtyProgressed > 0 || amtProgressed > 0) {
-    return "Partially progressed";
-  }
-
-  return "Unresolved";
+async function readRpcRowByOrderId(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  functionName: string,
+  orderId: string
+): Promise<SourceState<DataRow | null>> {
+  const { data, error } = await (supabase as any).rpc(functionName).eq("order_id", orderId).maybeSingle();
+  return { source: functionName, data: (data ?? null) as DataRow | null, error: error?.message ?? null };
 }
 
 export default async function InternalEvidenceDetailPage({
@@ -156,8 +246,10 @@ export default async function InternalEvidenceDetailPage({
   const queryParams = searchParams ? await searchParams : {};
   const supabase = await createClient();
 
-  const [orderState, invoices, tracking, reconciliationRows] = await Promise.all([
+  const [orderState, canonicalStatus, canonicalProgress, invoices, tracking, reconciliationRows] = await Promise.all([
     readOrderState(supabase, orderId),
+    readRpcRowByOrderId(supabase, "internal_platform_order_status_v1", orderId),
+    readRpcRowByOrderId(supabase, "internal_platform_order_progress_v1", orderId),
     readRowsByOrderId(supabase, "supplier_invoices", orderId),
     readRowsByOrderId(supabase, "order_tracking_submissions", orderId),
     readRowsByOrderId(supabase, "order_reconciliation_vw", orderId),
@@ -168,6 +260,8 @@ export default async function InternalEvidenceDetailPage({
     .filter((invoiceId) => invoiceId.length > 0);
 
   const invoiceLines = await readInvoiceLinesByInvoiceIds(supabase, invoiceIds);
+  const physicalLineSummary = buildPhysicalLineSummary(invoiceLines.data);
+
   const {
     data: { user },
   } = await supabase.auth.getUser();
@@ -206,6 +300,8 @@ export default async function InternalEvidenceDetailPage({
 
   const sourceDiagnostics = [
     { source: orderState.source, rows: orderState.data ? [orderState.data] : [], error: orderState.error },
+    { source: canonicalStatus.source, rows: canonicalStatus.data ? [canonicalStatus.data] : [], error: canonicalStatus.error },
+    { source: canonicalProgress.source, rows: canonicalProgress.data ? [canonicalProgress.data] : [], error: canonicalProgress.error },
     { source: invoices.source, rows: invoices.data, error: invoices.error },
     { source: invoiceLines.source, rows: invoiceLines.data, error: invoiceLines.error },
     { source: tracking.source, rows: tracking.data, error: tracking.error },
@@ -213,6 +309,8 @@ export default async function InternalEvidenceDetailPage({
   ];
 
   const warnings = sourceDiagnostics.filter((source) => source.error);
+  const orderRef = pickFirst(canonicalStatus.data, ["order_ref"]) ?? pickFirst(orderState.data, ["order_ref", "parent_order_ref", "supplier_order_ref"]);
+  const statusSummary = asString(pickFirst(canonicalStatus.data, ["current_stage_label", "current_stage"])) || physicalLineSummary.status;
 
   return (
     <main className="min-h-screen bg-slate-50 px-6 py-8 text-slate-950">
@@ -222,9 +320,9 @@ export default async function InternalEvidenceDetailPage({
             ← Back to evidence queue
           </Link>
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Evidence detail</p>
-          <h1 className="mt-2 text-3xl font-semibold tracking-tight">Order {orderId}</h1>
+          <h1 className="mt-2 text-3xl font-semibold tracking-tight">Order {formatValue(orderRef)}</h1>
           <p className="mt-3 text-sm leading-6 text-slate-600">
-            Read-only detail sourced from order state, invoices, invoice lines, tracking submissions,
+            Read-only detail sourced from canonical operational status, invoices, invoice lines, tracking submissions,
             and reconciliation diagnostics.
           </p>
         </section>
@@ -243,43 +341,49 @@ export default async function InternalEvidenceDetailPage({
         ) : null}
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-          <h2 className="text-xl font-semibold">Header</h2>
+          <h2 className="text-xl font-semibold">Canonical status</h2>
           <div className="mt-4 grid gap-4 sm:grid-cols-3">
             <div>
               <p className="text-xs uppercase tracking-wide text-slate-500">order_ref</p>
+              <p className="mt-1 font-medium text-slate-900">{formatValue(orderRef)}</p>
+            </div>
+            <div>
+              <p className="text-xs uppercase tracking-wide text-slate-500">current_stage</p>
               <p className="mt-1 font-medium text-slate-900">
-                {formatValue(pickFirst(orderState.data, ["order_ref", "parent_order_ref", "supplier_order_ref"]))}
+                {formatValue(pickFirst(canonicalStatus.data, ["current_stage", "current_stage_label"]))}
               </p>
             </div>
             <div>
-              <p className="text-xs uppercase tracking-wide text-slate-500">lifecycle_status</p>
-              <p className="mt-1 font-medium text-slate-900">{formatValue(pickFirst(orderState.data, ["lifecycle_status"]))}</p>
+              <p className="text-xs uppercase tracking-wide text-slate-500">next_action</p>
+              <p className="mt-1 font-medium text-slate-900">{formatValue(pickFirst(canonicalStatus.data, ["next_action"]))}</p>
             </div>
-            <div>
-              <p className="text-xs uppercase tracking-wide text-slate-500">operational_bucket</p>
-              <p className="mt-1 font-medium text-slate-900">{formatValue(pickFirst(orderState.data, ["operational_bucket"]))}</p>
+          </div>
+          <div className="mt-4 grid gap-4 sm:grid-cols-4">
+            <div className="rounded-2xl border border-slate-200 p-4">
+              <p className="text-xs uppercase tracking-wide text-slate-500">supplier</p>
+              <p className="mt-1 font-medium text-slate-900">{formatValue(pickFirst(canonicalStatus.data, ["supplier_state"]))}</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 p-4">
+              <p className="text-xs uppercase tracking-wide text-slate-500">tracking</p>
+              <p className="mt-1 font-medium text-slate-900">{formatValue(pickFirst(canonicalStatus.data, ["tracking_state"]))}</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 p-4">
+              <p className="text-xs uppercase tracking-wide text-slate-500">shipment/export/pod</p>
+              <p className="mt-1 font-medium text-slate-900">
+                {formatValue(pickFirst(canonicalStatus.data, ["shipment_state"]))} / {formatValue(pickFirst(canonicalStatus.data, ["export_evidence_state"]))} / {formatValue(pickFirst(canonicalStatus.data, ["pod_delivery_state"]))}
+              </p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 p-4">
+              <p className="text-xs uppercase tracking-wide text-slate-500">gates</p>
+              <p className="mt-1 font-medium text-slate-900">
+                {formatValue(pickFirst(canonicalProgress.data, ["gate_complete_count"]))} / {formatValue(pickFirst(canonicalProgress.data, ["gate_total"]))}
+              </p>
             </div>
           </div>
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-          <h2 className="text-xl font-semibold">Funding / lifecycle context</h2>
-          <div className="mt-4 grid gap-4 sm:grid-cols-2">
-            <div>
-              <p className="text-xs uppercase tracking-wide text-slate-500">funding_overlay</p>
-              <p className="mt-1 font-medium text-slate-900">{formatValue(pickFirst(orderState.data, ["funding_overlay"]))}</p>
-            </div>
-            <div>
-              <p className="text-xs uppercase tracking-wide text-slate-500">shipment_readiness_overlay</p>
-              <p className="mt-1 font-medium text-slate-900">
-                {formatValue(pickFirst(orderState.data, ["shipment_readiness_overlay"]))}
-              </p>
-            </div>
-          </div>
-        </section>
-
-        <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-          <h2 className="text-xl font-semibold">Invoice section</h2>
+          <h2 className="text-xl font-semibold">Supplier invoice approval gate</h2>
           {invoices.data.length === 0 ? (
             <p className="mt-4 text-sm text-slate-600">No supplier invoices for this order.</p>
           ) : (
@@ -288,18 +392,20 @@ export default async function InternalEvidenceDetailPage({
                 <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
                   <tr>
                     <th className="px-4 py-3 font-semibold">invoice_ref</th>
-                    <th className="px-4 py-3 font-semibold">uploaded_at</th>
-                    <th className="px-4 py-3 font-semibold">ocr_service_used</th>
-                    <th className="px-4 py-3 font-semibold">reconciliation_confirmed_at</th>
+                    <th className="px-4 py-3 font-semibold">review_status</th>
+                    <th className="px-4 py-3 font-semibold">blocked_from_sage</th>
+                    <th className="px-4 py-3 font-semibold">current_for_order</th>
+                    <th className="px-4 py-3 font-semibold">reviewed_at</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 bg-white">
                   {invoices.data.map((invoice, index) => (
                     <tr key={`${asString(pickFirst(invoice, ["id", "supplier_invoice_id", "invoice_id"])) || "invoice"}-${index}`}>
                       <td className="px-4 py-3">{formatValue(pickFirst(invoice, ["invoice_ref", "invoice_number"]))}</td>
-                      <td className="px-4 py-3">{formatValue(pickFirst(invoice, ["uploaded_at", "created_at"]))}</td>
-                      <td className="px-4 py-3">{formatValue(pickFirst(invoice, ["ocr_service_used"]))}</td>
-                      <td className="px-4 py-3">{formatValue(pickFirst(invoice, ["reconciliation_confirmed_at"]))}</td>
+                      <td className="px-4 py-3">{formatValue(pickFirst(invoice, ["review_status"]))}</td>
+                      <td className="px-4 py-3">{formatValue(asBoolean(pickFirst(invoice, ["blocked_from_sage_yn"])))}</td>
+                      <td className="px-4 py-3">{formatValue(asBoolean(pickFirst(invoice, ["is_current_for_order"])))}</td>
+                      <td className="px-4 py-3">{formatValue(pickFirst(invoice, ["reviewed_at"]))}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -310,6 +416,9 @@ export default async function InternalEvidenceDetailPage({
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold">Invoice lines section</h2>
+          <p className="mt-2 text-sm text-slate-600">
+            Physical goods lines are shown separately from parked non-physical rows such as delivery, fees, or zero-value informational rows.
+          </p>
           {linesByInvoice.size === 0 ? (
             <p className="mt-4 text-sm text-slate-600">No supplier invoice lines for this order.</p>
           ) : (
@@ -326,24 +435,27 @@ export default async function InternalEvidenceDetailPage({
                       <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
                         <thead className="bg-white text-xs uppercase tracking-wide text-slate-500">
                           <tr>
+                            <th className="px-4 py-3 font-semibold">description</th>
                             <th className="px-4 py-3 font-semibold">qty</th>
-                            <th className="px-4 py-3 font-semibold">amount</th>
-                            <th className="px-4 py-3 font-semibold">eligible_for_invoice_yn</th>
-                            <th className="px-4 py-3 font-semibold">line_source</th>
+                            <th className="px-4 py-3 font-semibold">amount_inc_vat</th>
+                            <th className="px-4 py-3 font-semibold">amount_confirmed</th>
+                            <th className="px-4 py-3 font-semibold">eligible</th>
+                            <th className="px-4 py-3 font-semibold">line_state</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100 bg-white">
                           {lines.map((line, index) => {
                             const eligible = asBoolean(pickFirst(line, ["eligible_for_invoice_yn"]));
+                            const progressed = isProgressedPhysicalLine(line);
                             return (
                               <tr key={`${invoiceId}-${index}`}>
+                                <td className="px-4 py-3">{formatValue(pickFirst(line, ["description", "line_description"]))}</td>
                                 <td className="px-4 py-3">{formatValue(pickFirst(line, ["qty", "quantity"]))}</td>
-                                <td className="px-4 py-3">
-                                  {formatMoney(asNumber(pickFirst(line, ["amount", "line_amount_gbp", "amount_gbp"])))}
-                                </td>
+                                <td className="px-4 py-3">{formatMoney(asNumber(pickFirst(line, ["amount_inc_vat_gbp", "amount", "line_amount_gbp", "amount_gbp"])))}</td>
+                                <td className="px-4 py-3">{formatMoney(asNumber(pickFirst(line, ["amount_confirmed"])))}</td>
                                 <td className="px-4 py-3">{formatValue(eligible)}</td>
                                 <td className="px-4 py-3">
-                                  {formatValue(pickFirst(line, ["line_source", "source", "entry_source"]))}
+                                  {eligible ? (progressed ? "Physical progressed" : "Physical unresolved") : "Parked non-physical"}
                                 </td>
                               </tr>
                             );
@@ -385,44 +497,68 @@ export default async function InternalEvidenceDetailPage({
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-          <h2 className="text-xl font-semibold">Reconciliation section</h2>
+          <h2 className="text-xl font-semibold">Physical goods reconciliation</h2>
           <div className="mt-4 grid gap-4 md:grid-cols-3">
             <div className="rounded-2xl border border-slate-200 p-4">
-              <p className="text-xs uppercase tracking-wide text-slate-500">qty target / progressed / unresolved</p>
+              <p className="text-xs uppercase tracking-wide text-slate-500">physical qty target / progressed / unresolved</p>
               <p className="mt-2 text-sm leading-6 text-slate-800">
-                {formatValue(pickFirst(reconciliation, ["qty_target", "qty_target_invoiceable"]))} /{" "}
-                {formatValue(pickFirst(reconciliation, ["qty_progressed", "qty_progressed_invoiceable"]))} /{" "}
-                {formatValue(pickFirst(reconciliation, ["qty_unresolved"]))}
+                {physicalLineSummary.physicalTargetQty} / {physicalLineSummary.physicalProgressedQty} / {physicalLineSummary.physicalUnresolvedQty}
               </p>
             </div>
             <div className="rounded-2xl border border-slate-200 p-4">
-              <p className="text-xs uppercase tracking-wide text-slate-500">amount target / progressed / unresolved</p>
+              <p className="text-xs uppercase tracking-wide text-slate-500">physical amount target / progressed / unresolved</p>
               <p className="mt-2 text-sm leading-6 text-slate-800">
-                {formatMoney(asNumber(pickFirst(reconciliation, ["amount_target_gbp", "amount_target_invoiceable_gbp"])))} /{" "}
-                {formatMoney(
-                  asNumber(pickFirst(reconciliation, ["amount_progressed_gbp", "amount_progressed_invoiceable_gbp"]))
-                )} /{" "}
-                {formatMoney(asNumber(pickFirst(reconciliation, ["amount_unresolved_gbp", "amount_unresolved"])))}
+                {formatMoney(physicalLineSummary.physicalTargetAmount)} / {formatMoney(physicalLineSummary.physicalProgressedAmount)} / {formatMoney(physicalLineSummary.physicalUnresolvedAmount)}
               </p>
             </div>
             <div className="rounded-2xl border border-slate-200 p-4">
-              <p className="text-xs uppercase tracking-wide text-slate-500">invoiceable_subset_released_yn</p>
+              <p className="text-xs uppercase tracking-wide text-slate-500">parked non-physical rows / amount</p>
               <p className="mt-2 text-sm font-medium text-slate-900">
-                {formatValue(
-                  asBoolean(
-                    pickFirst(reconciliation, ["invoiceable_subset_released_yn"]) ??
-                      pickFirst(orderState.data, ["invoiceable_subset_released_yn"])
-                  )
-                )}
+                {physicalLineSummary.parkedLineCount} / {formatMoney(physicalLineSummary.parkedAmount)}
               </p>
             </div>
           </div>
+          <details className="mt-4 rounded-2xl border border-slate-200 p-4">
+            <summary className="cursor-pointer text-sm font-semibold text-slate-700">Legacy reconciliation view</summary>
+            <div className="mt-4 grid gap-4 md:grid-cols-3">
+              <div>
+                <p className="text-xs uppercase tracking-wide text-slate-500">legacy qty target / progressed / unresolved</p>
+                <p className="mt-2 text-sm leading-6 text-slate-800">
+                  {formatValue(pickFirst(reconciliation, ["qty_target", "qty_target_invoiceable"]))} /{" "}
+                  {formatValue(pickFirst(reconciliation, ["qty_progressed", "qty_progressed_invoiceable"]))} /{" "}
+                  {formatValue(pickFirst(reconciliation, ["qty_unresolved"]))}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs uppercase tracking-wide text-slate-500">legacy amount target / progressed / unresolved</p>
+                <p className="mt-2 text-sm leading-6 text-slate-800">
+                  {formatMoney(asNumber(pickFirst(reconciliation, ["amount_target_gbp", "amount_target_invoiceable_gbp"])))} /{" "}
+                  {formatMoney(asNumber(pickFirst(reconciliation, ["amount_progressed_gbp", "amount_progressed_invoiceable_gbp"])))} /{" "}
+                  {formatMoney(asNumber(pickFirst(reconciliation, ["amount_unresolved_gbp", "amount_unresolved"]))) }
+                </p>
+              </div>
+              <div>
+                <p className="text-xs uppercase tracking-wide text-slate-500">invoiceable_subset_released_yn</p>
+                <p className="mt-2 text-sm font-medium text-slate-900">
+                  {formatValue(
+                    asBoolean(
+                      pickFirst(reconciliation, ["invoiceable_subset_released_yn"]) ??
+                        pickFirst(orderState.data, ["invoiceable_subset_released_yn"])
+                    )
+                  )}
+                </p>
+              </div>
+            </div>
+          </details>
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold">Status summary</h2>
-          <p className="mt-3 inline-flex rounded-xl bg-sky-50 px-3 py-2 text-sm font-semibold text-sky-900">
-            {statusSummary(reconciliation)}
+          <p className={`mt-3 inline-flex rounded-xl px-3 py-2 text-sm font-semibold ${statusPillClass(statusSummary)}`}>
+            {statusSummary}
+          </p>
+          <p className="mt-3 inline-flex rounded-xl bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-900">
+            {physicalLineSummary.status}
           </p>
         </section>
 
@@ -501,7 +637,7 @@ export default async function InternalEvidenceDetailPage({
                       const lineId = asString(pickFirst(line, ["id", "supplier_invoice_line_id", "line_id"]));
                       if (!lineId) return null;
                       const lineLabel =
-                        asString(pickFirst(line, ["supplier_invoice_line_ref", "line_ref", "sku"])) || lineId;
+                        asString(pickFirst(line, ["description", "supplier_invoice_line_ref", "line_ref", "sku"])) || lineId;
                       return (
                         <option key={lineId} value={lineId}>
                           {lineLabel}
@@ -583,61 +719,61 @@ export default async function InternalEvidenceDetailPage({
                     const status = asString(query.status).toLowerCase();
                     const queryId = asString(query.id);
                     return (
-                    <tr key={queryId}>
-                      <td className="px-4 py-3">{formatValue(query.created_at)}</td>
-                      <td className="px-4 py-3">{formatValue(query.query_type)}</td>
-                      <td className="px-4 py-3">{formatValue(query.status)}</td>
-                      <td className="max-w-md px-4 py-3">{formatValue(query.message)}</td>
-                      <td className="px-4 py-3">
-                        <div className="space-y-1 text-xs text-slate-600">
-                          <p>invoice: {formatValue(query.supplier_invoice_id)}</p>
-                          <p>line: {formatValue(query.supplier_invoice_line_id)}</p>
-                          <p>tracking: {formatValue(query.order_tracking_submission_id)}</p>
-                        </div>
-                      </td>
-                      <td className="max-w-sm px-4 py-3">{formatValue(query.answer_text)}</td>
-                      <td className="px-4 py-3">
-                        {status === "answered" || status === "open" ? (
-                          <form action={closeOrderEvidenceQueryAction} className="space-y-2">
-                            <input type="hidden" name="order_id" value={orderId} />
-                            <input type="hidden" name="query_id" value={queryId} />
-                            <input
-                              type="text"
-                              name="notes"
-                              placeholder="Optional closure reason"
-                              className="w-full rounded-lg border border-slate-300 px-2 py-1 text-xs"
-                            />
-                            <button
-                              type="submit"
-                              className="rounded-lg bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-500"
-                            >
-                              Close query
-                            </button>
-                          </form>
-                        ) : null}
-                        {status === "open" ? (
-                          <form action={cancelOrderEvidenceQueryAction} className="space-y-2">
-                            <input type="hidden" name="order_id" value={orderId} />
-                            <input type="hidden" name="query_id" value={queryId} />
-                            <input
-                              type="text"
-                              name="notes"
-                              placeholder="Optional cancellation note"
-                              className="w-full rounded-lg border border-slate-300 px-2 py-1 text-xs"
-                            />
-                            <button
-                              type="submit"
-                              className="rounded-lg bg-rose-600 px-3 py-1 text-xs font-semibold text-white hover:bg-rose-500"
-                            >
-                              Cancel query
-                            </button>
-                          </form>
-                        ) : null}
-                        {status !== "answered" && status !== "open" ? (
-                          <span className="text-xs text-slate-500">—</span>
-                        ) : null}
-                      </td>
-                    </tr>
+                      <tr key={queryId}>
+                        <td className="px-4 py-3">{formatValue(query.created_at)}</td>
+                        <td className="px-4 py-3">{formatValue(query.query_type)}</td>
+                        <td className="px-4 py-3">{formatValue(query.status)}</td>
+                        <td className="max-w-md px-4 py-3">{formatValue(query.message)}</td>
+                        <td className="px-4 py-3">
+                          <div className="space-y-1 text-xs text-slate-600">
+                            <p>invoice: {formatValue(query.supplier_invoice_id)}</p>
+                            <p>line: {formatValue(query.supplier_invoice_line_id)}</p>
+                            <p>tracking: {formatValue(query.order_tracking_submission_id)}</p>
+                          </div>
+                        </td>
+                        <td className="max-w-sm px-4 py-3">{formatValue(query.answer_text)}</td>
+                        <td className="px-4 py-3">
+                          {status === "answered" || status === "open" ? (
+                            <form action={closeOrderEvidenceQueryAction} className="space-y-2">
+                              <input type="hidden" name="order_id" value={orderId} />
+                              <input type="hidden" name="query_id" value={queryId} />
+                              <input
+                                type="text"
+                                name="notes"
+                                placeholder="Optional closure reason"
+                                className="w-full rounded-lg border border-slate-300 px-2 py-1 text-xs"
+                              />
+                              <button
+                                type="submit"
+                                className="rounded-lg bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-500"
+                              >
+                                Close query
+                              </button>
+                            </form>
+                          ) : null}
+                          {status === "open" ? (
+                            <form action={cancelOrderEvidenceQueryAction} className="space-y-2">
+                              <input type="hidden" name="order_id" value={orderId} />
+                              <input type="hidden" name="query_id" value={queryId} />
+                              <input
+                                type="text"
+                                name="notes"
+                                placeholder="Optional cancellation note"
+                                className="w-full rounded-lg border border-slate-300 px-2 py-1 text-xs"
+                              />
+                              <button
+                                type="submit"
+                                className="rounded-lg bg-rose-600 px-3 py-1 text-xs font-semibold text-white hover:bg-rose-500"
+                              >
+                                Cancel query
+                              </button>
+                            </form>
+                          ) : null}
+                          {status !== "answered" && status !== "open" ? (
+                            <span className="text-xs text-slate-500">—</span>
+                          ) : null}
+                        </td>
+                      </tr>
                     );
                   })}
                 </tbody>
@@ -656,9 +792,7 @@ export default async function InternalEvidenceDetailPage({
                 <div key={source.source} className="rounded-2xl border border-slate-200 p-4">
                   <p className="text-sm font-semibold text-slate-900">{source.source}</p>
                   <p className="mt-1 text-xs text-slate-600">Rows: {source.rows.length.toLocaleString("en-GB")}</p>
-                  <p className="mt-1 text-xs text-slate-600">
-                    Error: {source.error ? source.error : "None"}
-                  </p>
+                  <p className="mt-1 text-xs text-slate-600">Error: {source.error ? source.error : "None"}</p>
                   <p className="mt-2 break-all text-xs text-slate-500">
                     Available columns: {getColumns(source.rows).join(", ") || "No columns returned"}
                   </p>
