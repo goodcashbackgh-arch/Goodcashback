@@ -112,3 +112,13 @@ label:has(input[name="confirm_overfunding"])::after {
     grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
   }
 }
+
+/* Customer order details: pending credit is a review state, not an approved/complete green state. */
+section.mt-5.grid.grid-cols-1.gap-3.sm\:grid-cols-2.xl\:grid-cols-4 > div[class*="border-emerald-100"][class*="bg-emerald-50"]:has(> p.mt-2.text-2xl) {
+  border-color: rgb(254 243 199) !important;
+  background-color: rgb(255 251 235 / 0.7) !important;
+}
+
+section.mt-5.grid.grid-cols-1.gap-3.sm\:grid-cols-2.xl\:grid-cols-4 > div[class*="border-emerald-100"][class*="bg-emerald-50"]:has(> p.mt-2.text-2xl) p {
+  color: rgb(120 53 15) !important;
+}
