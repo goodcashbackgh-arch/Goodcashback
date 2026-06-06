@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
+import { supabaseAdmin } from "@/lib/supabase/admin";
 
 type OrderRow = {
   id: string;
@@ -17,6 +18,8 @@ type OrderRow = {
 type StateRow = { id: string; lifecycle_status: string | null };
 type RefRow = { order_id: string };
 type InvoiceRow = { order_id: string; review_status: string | null };
+type SaleDocumentRow = { order_id: string; amount_gbp: number | string | null; sage_invoice_id: string | null };
+type FundingPositionRow = { order_id: string; confirmed_dva_funding_gbp: number | string | null; applied_credit_gbp: number | string | null; funded_total_gbp: number | string | null };
 type LineRow = { id: string; eligible_for_invoice_yn: string | null; supplier_invoices: { order_id: string }[] | { order_id: string } | null };
 type DisputeLineRow = { supplier_invoice_line_id: string | null };
 type QueryRow = { order_id: string; message: string | null };
@@ -48,9 +51,9 @@ function needsInvoiceResubmission(invoices: InvoiceRow[]) {
   return hasRejected && !hasLiveInvoice;
 }
 
-function statusClass(needsResubmission: boolean, hasQuery: boolean, status: string) {
+function statusClass(needsResubmission: boolean, hasQuery: boolean, status: string, balanceDueGbp = 0) {
   if (needsResubmission) return "border-rose-200 bg-rose-50 text-rose-800";
-  if (hasQuery) return "border-amber-200 bg-amber-50 text-amber-800";
+  if (hasQuery || balanceDueGbp > 0.01) return "border-amber-200 bg-amber-50 text-amber-800";
   if (status.toLowerCase().includes("complete")) return "border-emerald-200 bg-emerald-50 text-emerald-800";
   return "border-slate-200 bg-slate-50 text-slate-700";
 }
@@ -63,9 +66,11 @@ function nextStatus(args: {
   unresolvedCount: number;
   unresolvedNonExceptionCount: number;
   hasInvoice: boolean;
+  finalBalanceDueGbp: number;
 }) {
   if (args.needsResubmission) return { status: "Invoice resubmission required", action: "Upload corrected invoice" };
   if (args.hasQuery) return { status: "Evidence query open", action: "Answer evidence query" };
+  if (args.finalBalanceDueGbp > 0.01) return { status: "Final balance due", action: "Collect final balance" };
   if (args.lifecycleStatus === "partially_progressed") {
     if (args.unresolvedNonExceptionCount > 0) return { status: "Invoice reconciliation open", action: "Continue invoice reconciliation" };
     if (args.unresolvedCount > 0) return { status: "Exception branch in progress", action: "Exception branches in progress" };
@@ -96,11 +101,13 @@ export default async function ImporterPage() {
   const orderRows = (orders ?? []) as unknown as OrderRow[];
   const orderIds = orderRows.map((order) => order.id);
 
-  const [{ data: orderStates, error: stateError }, { data: openQueries, error: queryError }, { data: invoiceLines }, { data: disputeLines }] = await Promise.all([
+  const [{ data: orderStates, error: stateError }, { data: openQueries, error: queryError }, { data: invoiceLines }, { data: disputeLines }, { data: saleDocuments }, { data: fundingPositions }] = await Promise.all([
     orderIds.length ? supabase.from("order_state_vw").select("id, lifecycle_status").in("id", orderIds) : { data: [], error: null },
     orderIds.length ? supabase.from("order_evidence_queries").select("order_id, message, status, created_at").in("order_id", orderIds).eq("status", "open").order("created_at", { ascending: false }) : { data: [], error: null },
     orderIds.length ? supabase.from("supplier_invoice_lines").select("id, eligible_for_invoice_yn, supplier_invoices!inner(order_id)").in("supplier_invoices.order_id", orderIds) : { data: [] },
     supabase.from("dispute_lines").select("supplier_invoice_line_id"),
+    orderIds.length ? (supabaseAdmin as any).from("sales_invoices").select("order_id, amount_gbp, sage_invoice_id").in("order_id", orderIds).eq("sage_status", "posted").not("sage_invoice_id", "is", null).in("invoice_type", ["main", "supplementary"]) : Promise.resolve({ data: [] }),
+    orderIds.length ? supabase.from("order_funding_position_vw").select("order_id, confirmed_dva_funding_gbp, applied_credit_gbp, funded_total_gbp").in("order_id", orderIds) : { data: [] },
   ]);
   if (stateError) throw stateError;
   if (queryError) throw queryError;
@@ -140,6 +147,17 @@ export default async function ImporterPage() {
     reconciliationByOrderId.set(orderId, current);
   }
 
+  const finalSaleValueByOrderId = new Map<string, { total: number; confirmed: boolean }>();
+  for (const doc of (saleDocuments ?? []) as SaleDocumentRow[]) {
+    const current = finalSaleValueByOrderId.get(doc.order_id) ?? { total: 0, confirmed: false };
+    current.total += Number(doc.amount_gbp ?? 0);
+    current.confirmed = current.confirmed || Boolean(doc.sage_invoice_id);
+    finalSaleValueByOrderId.set(doc.order_id, current);
+  }
+
+  const fundingByOrderId = new Map<string, FundingPositionRow>();
+  for (const funding of (fundingPositions ?? []) as FundingPositionRow[]) fundingByOrderId.set(funding.order_id, funding);
+
   const rows = orderRows.map((order) => {
     const orderInvoices = invoicesByOrderId.get(order.id) ?? [];
     const hasInvoice = orderInvoices.length > 0;
@@ -147,6 +165,13 @@ export default async function ImporterPage() {
     const needsResubmission = needsInvoiceResubmission(orderInvoices);
     const querySummary = queryByOrderId.get(order.id);
     const rec = reconciliationByOrderId.get(order.id) ?? { unresolvedCount: 0, unresolvedNonExceptionCount: 0 };
+    const acceptedEstimateGbp = Number(order.order_total_gbp_declared ?? 0);
+    const finalSale = finalSaleValueByOrderId.get(order.id);
+    const finalSaleValueGbp = finalSale?.confirmed ? finalSale.total : acceptedEstimateGbp;
+    const funding = fundingByOrderId.get(order.id);
+    const amountReceivedGbp = Number(funding?.funded_total_gbp ?? (Number(funding?.confirmed_dva_funding_gbp ?? 0) + Number(funding?.applied_credit_gbp ?? 0)));
+    const finalBalanceDueGbp = Math.max(finalSaleValueGbp - amountReceivedGbp, 0);
+    const creditDueGbp = Math.max(amountReceivedGbp - finalSaleValueGbp, 0);
     const status = nextStatus({
       lifecycleStatus: lifecycleByOrderId.get(order.id) ?? null,
       fundedAt: order.funded_at,
@@ -155,12 +180,14 @@ export default async function ImporterPage() {
       unresolvedCount: rec.unresolvedCount,
       unresolvedNonExceptionCount: rec.unresolvedNonExceptionCount,
       hasInvoice,
+      finalBalanceDueGbp,
     });
-    return { order, hasInvoice, hasTracking, needsResubmission, querySummary, rec, status, screenshotCount: screenshotCountByOrderId.get(order.id) ?? 0 };
+    return { order, hasInvoice, hasTracking, needsResubmission, querySummary, rec, status, screenshotCount: screenshotCountByOrderId.get(order.id) ?? 0, acceptedEstimateGbp, finalSaleValueGbp, finalSaleConfirmed: Boolean(finalSale?.confirmed), finalBalanceDueGbp, creditDueGbp, amountReceivedGbp };
   });
 
   const resubmissionCount = rows.filter((row) => row.needsResubmission).length;
   const openQueryCount = rows.filter((row) => Boolean(row.querySummary?.count)).length;
+  const finalBalanceCount = rows.filter((row) => row.finalBalanceDueGbp > 0.01).length;
   const invoiceOrderCount = invoicesByOrderId.size;
 
   return (
@@ -171,7 +198,7 @@ export default async function ImporterPage() {
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.22em] text-sky-700">Importer workspace</p>
               <h1 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950 md:text-3xl">Goodcashback Importer</h1>
-              <p className="mt-2 text-sm text-slate-600">Welcome, {operator.full_name}. Manage orders, invoice evidence, tracking and reconciliation from one control view.</p>
+              <p className="mt-2 text-sm text-slate-600">Welcome, {operator.full_name}. Manage orders, evidence, tracking, reconciliation and final sale balances from one control view.</p>
             </div>
             <div className="flex flex-wrap gap-2">
               <Link href="/importer/exceptions" className={secondaryActionClass}>Active exceptions</Link>
@@ -183,14 +210,14 @@ export default async function ImporterPage() {
 
       <section className="grid gap-3 md:grid-cols-5">
         <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><div className="text-xs font-medium uppercase tracking-wide text-slate-500">Total orders</div><div className="mt-2 text-2xl font-semibold text-slate-950">{rows.length}</div></div>
-        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><div className="text-xs font-medium uppercase tracking-wide text-slate-500">Funded</div><div className="mt-2 text-2xl font-semibold text-slate-950">{orderRows.filter((order) => !!order.funded_at).length}</div></div>
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><div className="text-xs font-medium uppercase tracking-wide text-slate-500">Initial payment received</div><div className="mt-2 text-2xl font-semibold text-slate-950">{orderRows.filter((order) => !!order.funded_at).length}</div></div>
         <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><div className="text-xs font-medium uppercase tracking-wide text-slate-500">Tracking submitted</div><div className="mt-2 text-2xl font-semibold text-slate-950">{trackingSet.size}</div></div>
-        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><div className="text-xs font-medium uppercase tracking-wide text-slate-500">Invoices submitted</div><div className="mt-2 text-2xl font-semibold text-slate-950">{invoiceOrderCount}</div></div>
-        <div className={`rounded-2xl border p-4 shadow-sm ${resubmissionCount > 0 ? "border-rose-200 bg-rose-50" : "border-emerald-200 bg-emerald-50"}`}><div className={`text-xs font-medium uppercase tracking-wide ${resubmissionCount > 0 ? "text-rose-700" : "text-emerald-700"}`}>Needs action</div><div className={`mt-2 text-2xl font-semibold ${resubmissionCount > 0 ? "text-rose-900" : "text-emerald-900"}`}>{resubmissionCount + openQueryCount}</div></div>
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><div className="text-xs font-medium uppercase tracking-wide text-slate-500">Order evidence submitted</div><div className="mt-2 text-2xl font-semibold text-slate-950">{invoiceOrderCount}</div></div>
+        <div className={`rounded-2xl border p-4 shadow-sm ${resubmissionCount + finalBalanceCount > 0 ? "border-amber-200 bg-amber-50" : "border-emerald-200 bg-emerald-50"}`}><div className={`text-xs font-medium uppercase tracking-wide ${resubmissionCount + finalBalanceCount > 0 ? "text-amber-700" : "text-emerald-700"}`}>Needs action</div><div className={`mt-2 text-2xl font-semibold ${resubmissionCount + finalBalanceCount > 0 ? "text-amber-900" : "text-emerald-900"}`}>{resubmissionCount + openQueryCount + finalBalanceCount}</div></div>
       </section>
 
       <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm md:p-5">
-        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between"><div><h2 className="text-lg font-semibold text-slate-950">Orders</h2><p className="text-sm text-slate-600">Current importer order state and the next importer action.</p></div><Link href="/importer/orders/new" className={primaryActionClass}>Create order</Link></div>
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between"><div><h2 className="text-lg font-semibold text-slate-950">Orders</h2><p className="text-sm text-slate-600">Current importer order state, final sale value and next importer action.</p></div><Link href="/importer/orders/new" className={primaryActionClass}>Create order</Link></div>
         <div className="mt-4 grid gap-3">
           {rows.map((row) => {
             const operationsHref = `/importer/orders/${row.order.id}/operations`;
@@ -199,21 +226,21 @@ export default async function ImporterPage() {
             const canReconcile = !row.needsResubmission && row.hasInvoice;
             const canAssignTracking = !row.needsResubmission && row.hasInvoice && row.hasTracking;
             return (
-              <article key={row.order.id} className={`rounded-2xl border p-4 shadow-sm ${row.needsResubmission ? "border-rose-200 bg-rose-50" : "border-slate-200 bg-white"}`}>
+              <article key={row.order.id} className={`rounded-2xl border p-4 shadow-sm ${row.needsResubmission ? "border-rose-200 bg-rose-50" : row.finalBalanceDueGbp > 0.01 ? "border-amber-200 bg-amber-50" : "border-slate-200 bg-white"}`}>
                 <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                   <div><div className="text-xs font-semibold uppercase tracking-wide text-slate-500">{row.order.retailers?.name ?? "Retailer not set"}</div><h3 className="mt-1 text-base font-semibold text-slate-950">{row.order.order_ref ?? row.order.id}</h3><p className="mt-1 break-all text-xs text-slate-500">{row.order.id}</p></div>
-                  <span className={`w-fit rounded-full border px-3 py-1 text-xs font-semibold ${statusClass(row.needsResubmission, Boolean(row.querySummary?.count), row.status.status)}`}>{row.status.status}</span>
+                  <span className={`w-fit rounded-full border px-3 py-1 text-xs font-semibold ${statusClass(row.needsResubmission, Boolean(row.querySummary?.count), row.status.status, row.finalBalanceDueGbp)}`}>{row.status.status}</span>
                 </div>
                 <div className="mt-4 grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
                   <div className="rounded-xl bg-white/70 p-3 ring-1 ring-slate-100"><div className="text-xs text-slate-500">Qty</div><div className="font-semibold text-slate-950">{row.order.total_qty_declared ?? 0}</div></div>
-                  <div className="rounded-xl bg-white/70 p-3 ring-1 ring-slate-100"><div className="text-xs text-slate-500">Declared GBP</div><div className="font-semibold text-slate-950">{gbp(row.order.order_total_gbp_declared)}</div></div>
-                  <div className="rounded-xl bg-white/70 p-3 ring-1 ring-slate-100"><div className="text-xs text-slate-500">Tracking</div><div className="font-semibold text-slate-950">{row.hasTracking ? "Yes" : "No"}</div></div>
-                  <div className="rounded-xl bg-white/70 p-3 ring-1 ring-slate-100"><div className="text-xs text-slate-500">Invoice</div><div className="font-semibold text-slate-950">{row.hasInvoice ? "Yes" : "No"}</div></div>
+                  <div className="rounded-xl bg-white/70 p-3 ring-1 ring-slate-100"><div className="text-xs text-slate-500">{row.finalSaleConfirmed ? "Final sale value" : "Estimated sale value"}</div><div className="font-semibold text-slate-950">{gbp(row.finalSaleValueGbp)}</div><div className="mt-1 text-[11px] text-slate-500">Accepted estimate {gbp(row.acceptedEstimateGbp)}</div></div>
+                  <div className="rounded-xl bg-white/70 p-3 ring-1 ring-slate-100"><div className="text-xs text-slate-500">Balance due</div><div className={`font-semibold ${row.finalBalanceDueGbp > 0.01 ? "text-amber-900" : "text-slate-950"}`}>{gbp(row.finalBalanceDueGbp)}</div>{row.creditDueGbp > 0.01 ? <div className="mt-1 text-[11px] text-emerald-700">Credit due {gbp(row.creditDueGbp)}</div> : null}</div>
+                  <div className="rounded-xl bg-white/70 p-3 ring-1 ring-slate-100"><div className="text-xs text-slate-500">Tracking / evidence</div><div className="font-semibold text-slate-950">{row.hasTracking ? "Tracking yes" : "Tracking no"}</div><div className="mt-1 text-[11px] text-slate-500">Evidence {row.hasInvoice ? "yes" : "no"}</div></div>
                 </div>
-                <div className="mt-4 rounded-xl border border-slate-200 bg-white/80 p-3 text-sm"><div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Next action</div><div className={row.needsResubmission ? "mt-1 font-semibold text-rose-700" : "mt-1 font-semibold text-slate-900"}>{row.status.action}</div><div className="mt-1 text-xs text-slate-500">{row.order.funded_at ? "Funded" : "Open"} · Raw: {friendlyStatus(row.order.status)}</div></div>
+                <div className="mt-4 rounded-xl border border-slate-200 bg-white/80 p-3 text-sm"><div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Next action</div><div className={row.needsResubmission ? "mt-1 font-semibold text-rose-700" : row.finalBalanceDueGbp > 0.01 ? "mt-1 font-semibold text-amber-800" : "mt-1 font-semibold text-slate-900"}>{row.status.action}</div><div className="mt-1 text-xs text-slate-500">{row.order.funded_at ? "Initial payment received" : "Open"} · Raw: {friendlyStatus(row.order.status)}</div></div>
                 <div className="mt-4 flex flex-wrap gap-2">
                   <Link className={secondaryActionClass} href={operationsHref}>Open order</Link>
-                  {canUploadInvoice ? <Link className={row.needsResubmission ? warningActionClass : secondaryActionClass} href={`${operationsHref}#invoice`}>{row.needsResubmission ? "Upload corrected invoice" : "Upload invoice"}</Link> : null}
+                  {canUploadInvoice ? <Link className={row.needsResubmission ? warningActionClass : secondaryActionClass} href={`${operationsHref}#invoice`}>{row.needsResubmission ? "Upload corrected evidence" : "Upload order evidence"}</Link> : null}
                   {canAddTracking ? <Link className={secondaryActionClass} href={`${operationsHref}#tracking`}>Add tracking</Link> : null}
                   {canReconcile ? <Link className={secondaryActionClass} href={`/importer/reconciliation/${row.order.id}`}>Reconcile</Link> : null}
                   {canAssignTracking ? <Link className={successActionClass} href={`/importer/delivery-allocation/${row.order.id}`}>Assign tracking</Link> : row.hasInvoice && !row.hasTracking && !row.needsResubmission ? <span className="inline-flex min-h-9 items-center rounded-full border border-slate-200 bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-400">Assign after tracking</span> : null}
