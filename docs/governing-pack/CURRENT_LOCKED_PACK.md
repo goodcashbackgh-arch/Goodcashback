@@ -1,6 +1,6 @@
 # Current Locked Governing Pack — Multi Tenant Platform Build
 
-Status: current control reference for UI/API wiring after the live Day 2–9 backend pass, updated for the final settlement, partial-coverage, non-physical line-resolution, and completion-loyalty reward build sequence.
+Status: current control reference for UI/API wiring after the live Day 2–9 backend pass, updated for the final settlement, partial-coverage, non-physical line-resolution, completion-loyalty reward build sequence, and shipper customer-hold hard-block later control.
 
 ## Source of truth
 
@@ -61,6 +61,7 @@ Later addendums and current build contracts:
 6. Non-physical Supplier Invoice Line Resolution Contract v1 (`docs/governing-pack/ui/NON_PHYSICAL_SUPPLIER_INVOICE_LINE_RESOLUTION_CONTRACT_v1.md`).
 7. Final Sale Value and Balance Due Addendum v1 (`docs/governing-pack/ui/FINAL_SALE_VALUE_AND_BALANCE_DUE_ADDENDUM_v1.md`).
 8. Completion Loyalty Reward and Sage Posting Addendum v1 (`docs/governing-pack/ui/COMPLETION_LOYALTY_REWARD_AND_SAGE_POSTING_ADDENDUM_v1.md`).
+9. Shipper Customer Hold Hard Block Later Contract v1 (`docs/governing-pack/ui/SHIPPER_CUSTOMER_HOLD_HARD_BLOCK_LATER_CONTRACT_v1.md`) — later control only; not built.
 
 ## Non-negotiable UI wiring rules
 
@@ -81,6 +82,7 @@ Later addendums and current build contracts:
 15. Default-N supplier invoice lines remain unresolved unless an active non-physical resolution or exception link exists.
 16. Final sale settlement is a separate closure layer and must not change the accepted-estimate funding threshold or `recompute_order_platform_funded(...)`.
 17. Completion loyalty reward credit remains locked until the relevant Sage journal is posted successfully.
+18. Shipper customer-hold hard block is not built; current control is visible shipper set-aside instruction plus SOP/audit trail, with hard block documented as a later control.
 
 ## Funding page read-only sources
 
