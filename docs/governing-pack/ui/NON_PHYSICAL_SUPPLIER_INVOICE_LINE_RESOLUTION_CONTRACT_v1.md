@@ -6,6 +6,8 @@ Add a controlled closure path for supplier invoice OCR/manual lines that are rea
 
 The purpose is to let operator reconciliation and supplier draft readiness close without falsely progressing non-physical rows into tracking, package allocation, shipper queues, shipment evidence, export packs, customer invoicing, or Sage goods-line payloads.
 
+This contract is also an upstream dependency for final settlement and completion loyalty reward basis calculations. Non-physical rows can affect the signed qualifying net spend only when they have been explicitly classified/resolved and their commercial sign is known.
+
 ## Non-goals
 
 - Do not change `supplier_invoice_lines.eligible_for_invoice_yn`; live constraint allows only `Y` or `N`.
@@ -15,6 +17,7 @@ The purpose is to let operator reconciliation and supplier draft readiness close
 - Do not auto-hide non-physical lines silently.
 - Do not weaken unresolved physical-product controls.
 - Do not infer non-physical status purely from `eligible_for_invoice_yn = 'N'`.
+- Do not infer completion loyalty reward basis from unclassified delivery, discount, fee, or other financial rows.
 
 ## Current live limitation
 
@@ -117,6 +120,54 @@ Positive delivery/fee/rounding amounts that affect invoice gross should be handl
 
 Discount sign treatment must be explicit in supervisor accounting. OCR source values are preserved; financial type/treatment determines whether the amount increases or reduces final coded value.
 
+## Qualifying net spend dependency for completion loyalty rewards
+
+The Completion Loyalty Reward and Sage Posting Addendum depends on this contract for delivery, discount, fee, and other non-physical financial rows.
+
+A non-physical supplier invoice row may affect the completion loyalty reward basis only when it is explicitly resolved/classified and the qualifying net spend read model can prove its commercial treatment.
+
+Default treatment for completion loyalty reward basis:
+
+```text
+Unresolved default-N line
+= block proposal
+
+Resolved qualifying delivery/charge line
+= may increase signed qualifying gross basis
+
+Resolved qualifying discount/credit line
+= may decrease signed qualifying gross basis
+
+Resolved non-qualifying charge or informational line
+= excluded from qualifying basis
+
+Mixed or unclear allocation
+= block proposal for supervisor/admin review
+```
+
+The qualifying net spend read model must not guess. It must block reward proposal when any of the following remain unresolved:
+
+```text
+- default-N supplier invoice line without active resolution or exception link;
+- delivery/discount/fee row without explicit financial type;
+- unknown commercial sign;
+- unproven allocation of a discount or credit across qualifying and non-qualifying rows;
+- missing or ambiguous accounting coding for a row that could affect the signed basis;
+- active dispute or active hold affecting the row/order;
+- partial shipment/export/POD/customer sale coverage.
+```
+
+The signed qualifying gross basis for loyalty proposal may include qualifying standard-rate components with their commercial signs:
+
+```text
++ qualifying physical goods gross
++ qualifying delivery/charge gross where classified as qualifying
+- qualifying discount gross where linked/apportioned to qualifying spend
+- qualifying credit/refund/return gross where linked to qualifying spend
+```
+
+The derived qualifying net spend is then calculated by the loyalty reward basis read model, not by this line-resolution contract.
+
 ## Status and display rules
 
 Pages that display supplier invoice line state must use the same line-state model:
@@ -141,7 +192,7 @@ Exception-linked rows
 
 ## Upstream and downstream controls
 
-The line-resolution model affects status, readiness, routing, and display. It must not mutate source facts unless the relevant user action is performed.
+The line-resolution model affects status, readiness, routing, display, final settlement readiness, qualifying net spend readiness, completion loyalty reward proposal readiness, and Sage/accounting handoff readiness. It must not mutate source facts unless the relevant user action is performed.
 
 It must not automatically change:
 
@@ -152,6 +203,7 @@ It must not automatically change:
 - shipment packages;
 - export/POD evidence;
 - customer sales invoices;
+- customer loyalty reward approvals;
 - Sage postings;
 - VAT return snapshots.
 
@@ -167,3 +219,7 @@ It must not automatically change:
 8. Parked line allocation attempt: allocation action must reject it.
 9. Existing dispute/refund/replacement flows remain unchanged.
 10. Existing `eligible_for_invoice_yn = 'Y'` product lines remain the only normal route into tracking/package allocation.
+11. Completion loyalty reward proposal must block when a default-N delivery/discount/fee row has no active resolution.
+12. Completion loyalty reward proposal may include resolved qualifying delivery/charge rows only through the qualifying net spend read model.
+13. Completion loyalty reward proposal must reduce the signed qualifying gross basis for resolved qualifying discount/credit rows.
+14. Completion loyalty reward proposal must block, not guess, when a discount or credit cannot be safely allocated across qualifying and non-qualifying rows.
