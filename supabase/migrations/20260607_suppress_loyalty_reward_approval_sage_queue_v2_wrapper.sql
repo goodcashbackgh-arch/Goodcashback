@@ -5,13 +5,17 @@ SET LOCAL statement_timeout = '0';
 
 DO $$
 BEGIN
-  IF to_regprocedure('public.internal_ready_for_sage_queue_v2()') IS NULL THEN
-    RAISE EXCEPTION 'Prerequisite missing: public.internal_ready_for_sage_queue_v2()';
+  IF to_regprocedure('public.internal_ready_for_sage_queue_v2_legacy_with_loyalty_lane()') IS NULL THEN
+    IF to_regprocedure('public.internal_ready_for_sage_queue_v2()') IS NULL THEN
+      RAISE EXCEPTION 'Prerequisite missing: public.internal_ready_for_sage_queue_v2()';
+    END IF;
+
+    ALTER FUNCTION public.internal_ready_for_sage_queue_v2()
+      RENAME TO internal_ready_for_sage_queue_v2_legacy_with_loyalty_lane;
   END IF;
 END $$;
 
-ALTER FUNCTION public.internal_ready_for_sage_queue_v2()
-  RENAME TO internal_ready_for_sage_queue_v2_legacy_with_loyalty_lane;
+DROP FUNCTION IF EXISTS public.internal_ready_for_sage_queue_v2();
 
 CREATE FUNCTION public.internal_ready_for_sage_queue_v2()
 RETURNS TABLE (
