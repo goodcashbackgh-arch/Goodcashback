@@ -1,0 +1,18 @@
+Manual migration required. GitHub connector blocked .sql write.
+
+Purpose: replace internal_ready_for_sage_queue_v2 so it no longer UNIONs the old loyalty_reward_journals CTE. The old v1 approval-to-Sage path is superseded by cash-backed v2 funding confirmation.
+
+Run a SQL migration that recreates public.internal_ready_for_sage_queue_v2 using the same customer_sales / shipper_ap / customer_hold rows as current v2, but remove:
+- v_loyalty_expense_ledger_ready variable
+- v_customer_credit_liability_ledger_ready variable
+- loyalty_reward_journals CTE
+- UNION ALL SELECT * FROM loyalty_reward_journals
+- customer_credit ordering branch
+
+Then verify:
+select document_lane, document_type, count(*)
+from public.internal_ready_for_sage_queue_v2()
+group by document_lane, document_type
+order by 1,2;
+
+Expected: no completion_loyalty_reward_journal rows.
