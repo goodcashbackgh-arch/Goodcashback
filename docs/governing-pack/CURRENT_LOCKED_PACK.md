@@ -1,6 +1,6 @@
 # Current Locked Governing Pack — Multi Tenant Platform Build
 
-Status: current control reference for UI/API wiring after the live Day 2–9 backend pass, updated for the final settlement, partial-coverage, non-physical line-resolution, completion-loyalty reward build sequence, and shipper customer-hold hard-block later control.
+Status: current control reference for UI/API wiring after the live Day 2–9 backend pass, updated for the final settlement, partial-coverage, non-physical line-resolution, cash-backed completion-loyalty reward control, and shipper customer-hold hard-block later control.
 
 ## Source of truth
 
@@ -60,7 +60,7 @@ Later addendums and current build contracts:
 5. Platform Operational Status Engine Contract v1 (`docs/governing-pack/ui/PLATFORM_OPERATIONAL_STATUS_ENGINE_CONTRACT_v1.md`).
 6. Non-physical Supplier Invoice Line Resolution Contract v1 (`docs/governing-pack/ui/NON_PHYSICAL_SUPPLIER_INVOICE_LINE_RESOLUTION_CONTRACT_v1.md`).
 7. Final Sale Value and Balance Due Addendum v1 (`docs/governing-pack/ui/FINAL_SALE_VALUE_AND_BALANCE_DUE_ADDENDUM_v1.md`).
-8. Completion Loyalty Reward and Sage Posting Addendum v1 (`docs/governing-pack/ui/COMPLETION_LOYALTY_REWARD_AND_SAGE_POSTING_ADDENDUM_v1.md`).
+8. Completion Loyalty Reward Cash-Backed Credit Addendum v2 (`docs/governing-pack/ui/COMPLETION_LOYALTY_REWARD_CASH_BACKED_CREDIT_ADDENDUM_v2.md`) — supersedes `COMPLETION_LOYALTY_REWARD_AND_SAGE_POSTING_ADDENDUM_v1.md` for future build work.
 9. Shipper Customer Hold Hard Block Later Contract v1 (`docs/governing-pack/ui/SHIPPER_CUSTOMER_HOLD_HARD_BLOCK_LATER_CONTRACT_v1.md`) — later control only; not built.
 
 ## Non-negotiable UI wiring rules
@@ -81,8 +81,9 @@ Later addendums and current build contracts:
 14. Partial shipment/export/POD/customer sale must not be treated as full-order completion.
 15. Default-N supplier invoice lines remain unresolved unless an active non-physical resolution or exception link exists.
 16. Final sale settlement is a separate closure layer and must not change the accepted-estimate funding threshold or `recompute_order_platform_funded(...)`.
-17. Completion loyalty reward credit remains locked until the relevant Sage journal is posted successfully.
-18. Shipper customer-hold hard block is not built; current control is visible shipper set-aside instruction plus SOP/audit trail, with hard block documented as a later control.
+17. Completion loyalty reward is not dashboard-available merely on clean completion or approval-in-principle; supervisor/admin must fund/pay the customer DVA/customer account and confirm evidence before available dashboard credit is released.
+18. Completion loyalty reward v1 Sage-at-approval treatment is superseded; do not queue approval itself for Sage posting in future work.
+19. Shipper customer-hold hard block is not built; current control is visible shipper set-aside instruction plus SOP/audit trail, with hard block documented as a later control.
 
 ## Funding page read-only sources
 
@@ -104,22 +105,23 @@ Do not wire these actions until function signatures are verified from the final 
 
 ## Current final settlement and loyalty reward build sequence
 
-The next durable build must follow this order:
+The next durable build must follow this corrected order:
 
 1. Final sale settlement read model / RPC.
 2. Completion readiness overlay using the operational status engine.
 3. Qualifying net spend read model using resolved/classified supplier/customer sale facts.
 4. Completion loyalty reward proposal read model.
-5. Supervisor/admin approval RPC that creates locked `importer_credit_ledger` credit.
-6. Customer/order details and sale document UI patches.
-7. Importer order list and importer operations page patches.
-8. DVA/card reconciliation final-balance-first logic.
-9. Supervisor credit readiness gate.
-10. Sage-ready queue lane and loyalty reward journal posting.
-11. Unlock completion loyalty credit only after Sage posting succeeds.
-12. Later credit-application Sage journal when the credit is used on a future order.
+5. Supervisor/admin approval-in-principle state that does **not** create available dashboard credit.
+6. Supervisor/admin funding-proof lane: customer DVA/customer account top-up/payment evidence and/or matched DVA/card/bank statement line.
+7. Funding confirmation RPC that releases available dashboard credit only after funding proof.
+8. Customer/order details and sale document UI patches.
+9. Importer order list and importer operations page patches.
+10. DVA/card reconciliation final-balance-first logic plus loyalty-funding match controls.
+11. Supervisor credit readiness gate.
+12. Reuse existing future-order credit application machinery after funded loyalty credit is released.
+13. Sage/customer-account posting must follow the cash-backed v2 addendum; do not use the v1 reward-approval journal trigger.
 
-The final sale settlement read model is first because customer display, DVA/card classification, supervisor credit readiness, loyalty reward eligibility, and Sage posting must all consume one settlement truth.
+The final sale settlement read model is first because customer display, DVA/card classification, supervisor credit readiness, loyalty reward eligibility, and posting controls must all consume one settlement truth.
 
 ## Current repo/deploy state
 
@@ -131,10 +133,11 @@ The final sale settlement read model is first because customer display, DVA/card
 
 ## Next steps after this doc
 
-1. Confirm the four governing documents above are in the repo and aligned.
-2. Build the final sale settlement read model first.
-3. Run SQL simulations against real orders before wiring write actions.
-4. Keep `/internal/funding` and `/internal/sage-ready` read-only for new lanes until live function signatures are confirmed.
-5. Run `npm run build` locally before deployment where possible.
-6. Deploy only after build passes.
-7. Then add staff-only action wiring one function at a time.
+1. Confirm the governing documents above are in the repo and aligned.
+2. Treat v1 completion-loyalty Sage-at-approval code as superseded for future work.
+3. Build the funding-proof / customer DVA top-up confirmation layer before dashboard-credit release.
+4. Run SQL simulations against real orders before wiring write actions.
+5. Keep `/internal/funding` and `/internal/sage-ready` read-only for new lanes until live function signatures are confirmed.
+6. Run `npm run build` locally before deployment where possible.
+7. Deploy only after build passes.
+8. Then add staff-only action wiring one function at a time.
