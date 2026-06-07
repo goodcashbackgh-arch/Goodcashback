@@ -15,12 +15,12 @@ type SourceState<T> = {
 };
 
 type PhysicalLineSummary = {
-  physicalTargetQty: number;
-  physicalProgressedQty: number;
-  physicalUnresolvedQty: number;
-  physicalTargetAmount: number;
-  physicalProgressedAmount: number;
-  physicalUnresolvedAmount: number;
+  progressedPhysicalCount: number;
+  progressedPhysicalQty: number;
+  progressedPhysicalAmount: number;
+  unresolvedDefaultCount: number;
+  unresolvedDefaultQty: number;
+  unresolvedDefaultAmount: number;
   parkedLineCount: number;
   parkedAmount: number;
   status: string;
@@ -81,6 +81,10 @@ function getColumns(rows: DataRow[]) {
   return Array.from(new Set(rows.flatMap((row) => Object.keys(row)))).sort();
 }
 
+function rowId(row: DataRow) {
+  return asString(pickFirst(row, ["id", "supplier_invoice_line_id", "line_id"])).trim();
+}
+
 function lineQty(line: DataRow) {
   return asNumber(pickFirst(line, ["qty", "quantity", "qty_confirmed"])) ?? 0;
 }
@@ -104,50 +108,71 @@ function lineConfirmedAmount(line: DataRow) {
   return asNumber(pickFirst(line, ["amount_confirmed", "amount_inc_vat_gbp", "amount", "line_amount_gbp", "amount_gbp"]));
 }
 
-function isPhysicalInvoiceLine(line: DataRow) {
+function isEligiblePhysicalLine(line: DataRow) {
   return asBoolean(pickFirst(line, ["eligible_for_invoice_yn"])) === true;
 }
 
 function isProgressedPhysicalLine(line: DataRow) {
-  if (!isPhysicalInvoiceLine(line)) return false;
+  if (!isEligiblePhysicalLine(line)) return false;
   return pickFirst(line, ["qty_confirmed"]) !== null && pickFirst(line, ["amount_confirmed"]) !== null;
 }
 
-function buildPhysicalLineSummary(lines: DataRow[]): PhysicalLineSummary {
-  const physicalLines = lines.filter(isPhysicalInvoiceLine);
-  const progressedPhysicalLines = physicalLines.filter(isProgressedPhysicalLine);
-  const parkedLines = lines.filter((line) => !isPhysicalInvoiceLine(line));
+function hasActiveNonPhysicalResolution(line: DataRow, resolutionsByLineId: Map<string, DataRow>) {
+  const lineId = rowId(line);
+  if (!lineId) return false;
+  const resolution = resolutionsByLineId.get(lineId);
+  return Boolean(resolution && asBoolean(pickFirst(resolution, ["active"])) !== false);
+}
 
-  const physicalTargetQty = physicalLines.reduce((total, line) => total + lineQty(line), 0);
-  const physicalProgressedQty = progressedPhysicalLines.reduce(
+function lineState(line: DataRow, resolutionsByLineId: Map<string, DataRow>) {
+  if (isEligiblePhysicalLine(line)) {
+    return isProgressedPhysicalLine(line) ? "Physical progressed" : "Physical missing confirmation";
+  }
+
+  const resolution = resolutionsByLineId.get(rowId(line));
+  if (resolution && asBoolean(pickFirst(resolution, ["active"])) !== false) {
+    const financialType = asString(pickFirst(resolution, ["financial_type"]));
+    return financialType ? `Parked non-physical: ${financialType}` : "Parked non-physical";
+  }
+
+  return "Unresolved default N";
+}
+
+function buildPhysicalLineSummary(lines: DataRow[], resolutionsByLineId: Map<string, DataRow>): PhysicalLineSummary {
+  const progressedPhysicalLines = lines.filter(isProgressedPhysicalLine);
+  const parkedLines = lines.filter((line) => hasActiveNonPhysicalResolution(line, resolutionsByLineId));
+  const unresolvedDefaultLines = lines.filter(
+    (line) => !isEligiblePhysicalLine(line) && !hasActiveNonPhysicalResolution(line, resolutionsByLineId)
+  );
+
+  const progressedPhysicalQty = progressedPhysicalLines.reduce(
     (total, line) => total + (asNumber(pickFirst(line, ["qty_confirmed"])) ?? lineQty(line)),
     0
   );
-  const physicalTargetAmount = physicalLines.reduce((total, line) => total + lineAmount(line), 0);
-  const physicalProgressedAmount = progressedPhysicalLines.reduce(
+  const progressedPhysicalAmount = progressedPhysicalLines.reduce(
     (total, line) => total + (lineConfirmedAmount(line) ?? 0),
     0
   );
-  const physicalUnresolvedQty = Math.max(physicalTargetQty - physicalProgressedQty, 0);
-  const physicalUnresolvedAmount = Math.max(physicalTargetAmount - physicalProgressedAmount, 0);
+  const unresolvedDefaultQty = unresolvedDefaultLines.reduce((total, line) => total + lineQty(line), 0);
+  const unresolvedDefaultAmount = unresolvedDefaultLines.reduce((total, line) => total + lineAmount(line), 0);
   const parkedAmount = parkedLines.reduce((total, line) => total + lineAmount(line), 0);
 
-  let status = "No physical goods lines";
-  if (physicalLines.length > 0 && physicalUnresolvedQty <= 0 && physicalUnresolvedAmount <= 0) {
+  let status = "No invoice lines";
+  if (unresolvedDefaultLines.length > 0) {
+    status = "Unresolved default N lines remain";
+  } else if (progressedPhysicalLines.length > 0) {
     status = "Physical goods progressed";
-  } else if (physicalProgressedQty > 0 || physicalProgressedAmount > 0) {
-    status = "Physical goods partially progressed";
-  } else if (physicalLines.length > 0) {
-    status = "Physical goods unresolved";
+  } else if (parkedLines.length > 0) {
+    status = "Only parked non-physical rows";
   }
 
   return {
-    physicalTargetQty,
-    physicalProgressedQty,
-    physicalUnresolvedQty,
-    physicalTargetAmount,
-    physicalProgressedAmount,
-    physicalUnresolvedAmount,
+    progressedPhysicalCount: progressedPhysicalLines.length,
+    progressedPhysicalQty,
+    progressedPhysicalAmount,
+    unresolvedDefaultCount: unresolvedDefaultLines.length,
+    unresolvedDefaultQty,
+    unresolvedDefaultAmount,
     parkedLineCount: parkedLines.length,
     parkedAmount,
     status,
@@ -223,6 +248,27 @@ async function readInvoiceLinesByInvoiceIds(
   };
 }
 
+async function readLineResolutionsByInvoiceIds(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  invoiceIds: string[]
+): Promise<SourceState<DataRow[]>> {
+  if (invoiceIds.length === 0) {
+    return { source: "supplier_invoice_line_resolutions", data: [], error: null };
+  }
+
+  const { data, error } = await supabase
+    .from("supplier_invoice_line_resolutions")
+    .select("*")
+    .in("supplier_invoice_id", invoiceIds)
+    .eq("active", true);
+
+  return {
+    source: "supplier_invoice_line_resolutions",
+    data: (data ?? []) as DataRow[],
+    error: error?.message ?? null,
+  };
+}
+
 async function readRpcRowByOrderId(
   supabase: Awaited<ReturnType<typeof createClient>>,
   functionName: string,
@@ -259,8 +305,18 @@ export default async function InternalEvidenceDetailPage({
     .map((invoice) => asString(pickFirst(invoice, ["id", "supplier_invoice_id", "invoice_id"])).trim())
     .filter((invoiceId) => invoiceId.length > 0);
 
-  const invoiceLines = await readInvoiceLinesByInvoiceIds(supabase, invoiceIds);
-  const physicalLineSummary = buildPhysicalLineSummary(invoiceLines.data);
+  const [invoiceLines, lineResolutions] = await Promise.all([
+    readInvoiceLinesByInvoiceIds(supabase, invoiceIds),
+    readLineResolutionsByInvoiceIds(supabase, invoiceIds),
+  ]);
+
+  const resolutionsByLineId = new Map<string, DataRow>();
+  for (const resolution of lineResolutions.data) {
+    const lineId = asString(pickFirst(resolution, ["supplier_invoice_line_id"]));
+    if (lineId) resolutionsByLineId.set(lineId, resolution);
+  }
+
+  const physicalLineSummary = buildPhysicalLineSummary(invoiceLines.data, resolutionsByLineId);
 
   const {
     data: { user },
@@ -304,6 +360,7 @@ export default async function InternalEvidenceDetailPage({
     { source: canonicalProgress.source, rows: canonicalProgress.data ? [canonicalProgress.data] : [], error: canonicalProgress.error },
     { source: invoices.source, rows: invoices.data, error: invoices.error },
     { source: invoiceLines.source, rows: invoiceLines.data, error: invoiceLines.error },
+    { source: lineResolutions.source, rows: lineResolutions.data, error: lineResolutions.error },
     { source: tracking.source, rows: tracking.data, error: tracking.error },
     { source: reconciliationRows.source, rows: reconciliationRows.data, error: reconciliationRows.error },
   ];
@@ -322,7 +379,7 @@ export default async function InternalEvidenceDetailPage({
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Evidence detail</p>
           <h1 className="mt-2 text-3xl font-semibold tracking-tight">Order {formatValue(orderRef)}</h1>
           <p className="mt-3 text-sm leading-6 text-slate-600">
-            Read-only detail sourced from canonical operational status, invoices, invoice lines, tracking submissions,
+            Read-only detail sourced from canonical operational status, invoices, invoice line resolutions, tracking submissions,
             and reconciliation diagnostics.
           </p>
         </section>
@@ -417,7 +474,7 @@ export default async function InternalEvidenceDetailPage({
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold">Invoice lines section</h2>
           <p className="mt-2 text-sm text-slate-600">
-            Physical goods lines are shown separately from parked non-physical rows such as delivery, fees, or zero-value informational rows.
+            Line state uses explicit line-resolution records. Default N lines remain unresolved until progressed, exception-linked, or explicitly parked.
           </p>
           {linesByInvoice.size === 0 ? (
             <p className="mt-4 text-sm text-slate-600">No supplier invoice lines for this order.</p>
@@ -446,7 +503,6 @@ export default async function InternalEvidenceDetailPage({
                         <tbody className="divide-y divide-slate-100 bg-white">
                           {lines.map((line, index) => {
                             const eligible = asBoolean(pickFirst(line, ["eligible_for_invoice_yn"]));
-                            const progressed = isProgressedPhysicalLine(line);
                             return (
                               <tr key={`${invoiceId}-${index}`}>
                                 <td className="px-4 py-3">{formatValue(pickFirst(line, ["description", "line_description"]))}</td>
@@ -454,9 +510,7 @@ export default async function InternalEvidenceDetailPage({
                                 <td className="px-4 py-3">{formatMoney(asNumber(pickFirst(line, ["amount_inc_vat_gbp", "amount", "line_amount_gbp", "amount_gbp"])))}</td>
                                 <td className="px-4 py-3">{formatMoney(asNumber(pickFirst(line, ["amount_confirmed"])))}</td>
                                 <td className="px-4 py-3">{formatValue(eligible)}</td>
-                                <td className="px-4 py-3">
-                                  {eligible ? (progressed ? "Physical progressed" : "Physical unresolved") : "Parked non-physical"}
-                                </td>
+                                <td className="px-4 py-3">{lineState(line, resolutionsByLineId)}</td>
                               </tr>
                             );
                           })}
@@ -497,22 +551,22 @@ export default async function InternalEvidenceDetailPage({
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-          <h2 className="text-xl font-semibold">Physical goods reconciliation</h2>
+          <h2 className="text-xl font-semibold">Line resolution reconciliation</h2>
           <div className="mt-4 grid gap-4 md:grid-cols-3">
             <div className="rounded-2xl border border-slate-200 p-4">
-              <p className="text-xs uppercase tracking-wide text-slate-500">physical qty target / progressed / unresolved</p>
+              <p className="text-xs uppercase tracking-wide text-slate-500">progressed physical lines / qty / amount</p>
               <p className="mt-2 text-sm leading-6 text-slate-800">
-                {physicalLineSummary.physicalTargetQty} / {physicalLineSummary.physicalProgressedQty} / {physicalLineSummary.physicalUnresolvedQty}
+                {physicalLineSummary.progressedPhysicalCount} / {physicalLineSummary.progressedPhysicalQty} / {formatMoney(physicalLineSummary.progressedPhysicalAmount)}
               </p>
             </div>
             <div className="rounded-2xl border border-slate-200 p-4">
-              <p className="text-xs uppercase tracking-wide text-slate-500">physical amount target / progressed / unresolved</p>
+              <p className="text-xs uppercase tracking-wide text-slate-500">unresolved default N rows / qty / amount</p>
               <p className="mt-2 text-sm leading-6 text-slate-800">
-                {formatMoney(physicalLineSummary.physicalTargetAmount)} / {formatMoney(physicalLineSummary.physicalProgressedAmount)} / {formatMoney(physicalLineSummary.physicalUnresolvedAmount)}
+                {physicalLineSummary.unresolvedDefaultCount} / {physicalLineSummary.unresolvedDefaultQty} / {formatMoney(physicalLineSummary.unresolvedDefaultAmount)}
               </p>
             </div>
             <div className="rounded-2xl border border-slate-200 p-4">
-              <p className="text-xs uppercase tracking-wide text-slate-500">parked non-physical rows / amount</p>
+              <p className="text-xs uppercase tracking-wide text-slate-500">explicit parked non-physical rows / amount</p>
               <p className="mt-2 text-sm font-medium text-slate-900">
                 {physicalLineSummary.parkedLineCount} / {formatMoney(physicalLineSummary.parkedAmount)}
               </p>
@@ -557,7 +611,7 @@ export default async function InternalEvidenceDetailPage({
           <p className={`mt-3 inline-flex rounded-xl px-3 py-2 text-sm font-semibold ${statusPillClass(statusSummary)}`}>
             {statusSummary}
           </p>
-          <p className="mt-3 inline-flex rounded-xl bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-900">
+          <p className={`mt-3 inline-flex rounded-xl px-3 py-2 text-sm font-semibold ${statusPillClass(physicalLineSummary.status)}`}>
             {physicalLineSummary.status}
           </p>
         </section>
