@@ -1,6 +1,6 @@
 # Current Locked Governing Pack — Multi Tenant Platform Build
 
-Status: current control reference for UI/API wiring after the live Day 2–9 backend pass.
+Status: current control reference for UI/API wiring after the live Day 2–9 backend pass, updated for the final settlement, partial-coverage, non-physical line-resolution, and completion-loyalty reward build sequence.
 
 ## Source of truth
 
@@ -51,12 +51,16 @@ Supplementary party-flow matrices:
 3. Admin role stage matrix v6.
 4. Shipper role stage matrix v5.
 
-Later addendums:
+Later addendums and current build contracts:
 
 1. VAT Timing & Export Evidence Addendum v1.
 2. Progressive Commercial Release & Replacement Invoicing Addendum v1.
 3. Day 6/8 Accounting Release and VAT Reporting Clarification Addendum v1.
 4. Portal and Order Operations Addendum v1 (`docs/governing-pack/architecture/PORTAL_AND_ORDER_OPERATIONS_ADDENDUM_V1.md`).
+5. Platform Operational Status Engine Contract v1 (`docs/governing-pack/ui/PLATFORM_OPERATIONAL_STATUS_ENGINE_CONTRACT_v1.md`).
+6. Non-physical Supplier Invoice Line Resolution Contract v1 (`docs/governing-pack/ui/NON_PHYSICAL_SUPPLIER_INVOICE_LINE_RESOLUTION_CONTRACT_v1.md`).
+7. Final Sale Value and Balance Due Addendum v1 (`docs/governing-pack/ui/FINAL_SALE_VALUE_AND_BALANCE_DUE_ADDENDUM_v1.md`).
+8. Completion Loyalty Reward and Sage Posting Addendum v1 (`docs/governing-pack/ui/COMPLETION_LOYALTY_REWARD_AND_SAGE_POSTING_ADDENDUM_v1.md`).
 
 ## Non-negotiable UI wiring rules
 
@@ -73,6 +77,10 @@ Later addendums:
 11. Sage posting remains queue-driven and idempotent.
 12. Shipper only acts on supervisor-confirmed progressed shipment scope.
 13. Reconciliation proves what was bought; finalisation decides what gets billed; shipping/handoff sees only physical goods; Sage sees only approved final invoice drafts.
+14. Partial shipment/export/POD/customer sale must not be treated as full-order completion.
+15. Default-N supplier invoice lines remain unresolved unless an active non-physical resolution or exception link exists.
+16. Final sale settlement is a separate closure layer and must not change the accepted-estimate funding threshold or `recompute_order_platform_funded(...)`.
+17. Completion loyalty reward credit remains locked until the relevant Sage journal is posted successfully.
 
 ## Funding page read-only sources
 
@@ -92,6 +100,25 @@ Do not wire these actions until function signatures are verified from the final 
 - `accept_order_match_suggestion_and_reconcile(...)`
 - `apply_importer_credit_to_order(...)`
 
+## Current final settlement and loyalty reward build sequence
+
+The next durable build must follow this order:
+
+1. Final sale settlement read model / RPC.
+2. Completion readiness overlay using the operational status engine.
+3. Qualifying net spend read model using resolved/classified supplier/customer sale facts.
+4. Completion loyalty reward proposal read model.
+5. Supervisor/admin approval RPC that creates locked `importer_credit_ledger` credit.
+6. Customer/order details and sale document UI patches.
+7. Importer order list and importer operations page patches.
+8. DVA/card reconciliation final-balance-first logic.
+9. Supervisor credit readiness gate.
+10. Sage-ready queue lane and loyalty reward journal posting.
+11. Unlock completion loyalty credit only after Sage posting succeeds.
+12. Later credit-application Sage journal when the credit is used on a future order.
+
+The final sale settlement read model is first because customer display, DVA/card classification, supervisor credit readiness, loyalty reward eligibility, and Sage posting must all consume one settlement truth.
+
 ## Current repo/deploy state
 
 - Active Vercel project: `goodcashback-v2`.
@@ -102,8 +129,10 @@ Do not wire these actions until function signatures are verified from the final 
 
 ## Next steps after this doc
 
-1. Add the final locked backend pack files to GitHub if not already present.
-2. Keep `/internal/funding` read-only until live data shape is confirmed.
-3. Run `npm run build` locally before deployment where possible.
-4. Deploy only after build passes.
-5. Then add staff-only action wiring one function at a time.
+1. Confirm the four governing documents above are in the repo and aligned.
+2. Build the final sale settlement read model first.
+3. Run SQL simulations against real orders before wiring write actions.
+4. Keep `/internal/funding` and `/internal/sage-ready` read-only for new lanes until live function signatures are confirmed.
+5. Run `npm run build` locally before deployment where possible.
+6. Deploy only after build passes.
+7. Then add staff-only action wiring one function at a time.
