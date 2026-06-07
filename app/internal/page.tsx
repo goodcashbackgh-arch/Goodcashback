@@ -132,6 +132,12 @@ const cards: QueueCard[] = [
     proof: "Separate from card spend matching",
   },
   {
+    title: "Completion loyalty rewards",
+    href: "/internal/completion-loyalty-rewards",
+    description: "Supervisor lane for completion reward proposals, approval-in-principle, customer DVA/account funding proof and dashboard credit release.",
+    proof: "Cash-backed v2 reward control",
+  },
+  {
     title: "Shipping control centre",
     href: "/internal/shipping-control",
     description: "Supervisor spine for importer shipment batches, package receipt truth, allocation status, shipper invoice lane, customer invoice lane, master shipment lane and accounting-readiness placeholders.",
