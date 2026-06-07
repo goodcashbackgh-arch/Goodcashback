@@ -1,0 +1,4 @@
+BEGIN;
+ALTER TABLE public.importer_credit_ledger DROP CONSTRAINT IF EXISTS importer_credit_ledger_source_type_check;
+ALTER TABLE public.importer_credit_ledger ADD CONSTRAINT importer_credit_ledger_source_type_check CHECK (source_type IS NULL OR source_type IN ('overfunding','settlement_credit','refund_resolution','liability_settlement','manual','payout_reversal','credit_application','payout_settlement','completion_loyalty_reward'));
+COMMIT;
