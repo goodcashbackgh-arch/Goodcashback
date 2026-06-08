@@ -128,7 +128,7 @@ AS $$
     JOIN public.operator_importers oi ON oi.operator_id = op.id AND oi.revoked_at IS NULL
     WHERE op.auth_user_id = auth.uid()
       AND COALESCE(op.active, true) = true
-    ORDER BY oi.created_at DESC NULLS LAST, oi.id DESC
+    ORDER BY oi.granted_at DESC NULLS LAST, oi.id DESC
     LIMIT 1
   )
   SELECT
@@ -173,7 +173,7 @@ BEGIN
    AND oi.revoked_at IS NULL
   WHERE op.auth_user_id = auth.uid()
     AND COALESCE(op.active, true) = true
-  ORDER BY oi.created_at DESC NULLS LAST, oi.id DESC
+  ORDER BY oi.granted_at DESC NULLS LAST, oi.id DESC
   LIMIT 1;
 
   IF v_operator.operator_id IS NULL THEN
