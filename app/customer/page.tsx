@@ -135,6 +135,7 @@ function MobileOrderRow({ order, currencyCode }: { order: OrderSummary; currency
         <span className="truncate">{order.dateLabel}</span>
         <span className="font-black text-sky-700 transition group-hover:translate-x-0.5">Open →</span>
       </div>
+      {order.creditUsedGbp > 0.01 ? <p className="mt-1 text-xs font-bold text-cyan-800">Account credit applied: {gbp(order.creditUsedGbp)}</p> : null}
       {order.remainingCashNeededGbp > 0.01 ? <p className="mt-1 text-xs font-semibold text-slate-500">Local guide: {localAmount(order.remainingCashNeededLocal, currencyCode)}</p> : null}
     </Link>
   );
@@ -324,7 +325,7 @@ export default async function CustomerDashboardPage() {
                 <th className="p-4">Order</th>
                 <th className="p-4">Goods</th>
                 <th className="p-4">Order value</th>
-                <th className="p-4">Credit used</th>
+                <th className="p-4">Account credit</th>
                 <th className="p-4">Current cash due</th>
                 <th className="p-4">Funding</th>
                 <th className="p-4">Status</th>
@@ -339,7 +340,7 @@ export default async function CustomerDashboardPage() {
                     <td className="p-4"><div className="font-black">{order.title}</div><div className="text-xs text-slate-400">Ref: {order.orderRef}</div></td>
                     <td className="p-4"><div className="font-semibold text-slate-800">{order.description}</div><div className="text-xs text-slate-500">{order.dateLabel}</div></td>
                     <td className="p-4"><div className="font-black">{gbp(order.declaredGbp)}</div><div className="text-xs text-slate-500">GBP closure basis</div></td>
-                    <td className="p-4"><div className="font-black text-cyan-800">{gbp(order.creditUsedGbp)}</div><div className="text-xs text-slate-500">Net after credit {gbp(netAfterCredit)}</div></td>
+                    <td className="p-4"><div className="font-black text-cyan-800">{gbp(order.creditUsedGbp)}</div><div className="text-xs text-slate-500">Net after account credit {gbp(netAfterCredit)}</div></td>
                     <td className="p-4"><div className={`font-black ${fundingTextClass(order.remainingCashNeededGbp)}`}>{gbp(order.remainingCashNeededGbp)}</div><div className="text-xs text-slate-500">Local guide {effectiveRate ? localAmount(order.remainingCashNeededLocal, currencyCode) : "—"}</div></td>
                     <td className="p-4"><span className={statusPill(order.fundingFunded)}>{order.fundingLabel}</span></td>
                     <td className="p-4"><span className={`rounded-full px-3 py-1 text-xs font-bold ring-1 ${statusToneClass(order.statusTone)}`}>{order.statusLabel}</span></td>
