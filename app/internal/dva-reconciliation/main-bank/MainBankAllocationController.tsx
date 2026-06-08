@@ -1,10 +1,11 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { allocateMainBankLineToShipperApAction } from "./actions";
+import { allocateMainBankLineToShipperApAction, matchMainBankLineToCompletionLoyaltyAction } from "./actions";
 import { allocateMainBankFxFeeAction } from "./fxFeeActions";
 
 type Row = Record<string, unknown>;
+type TargetMode = "shipper_ap" | "completion_loyalty";
 
 const gbpFormatter = new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" });
 
@@ -49,18 +50,31 @@ function residualLabel(value: string) {
   return "Unmatched hold";
 }
 
+function safeAvailable(line: Row | null, residual: number) {
+  if (!line) return 0;
+  const readModelRemaining = round2(num(line.remaining_gbp));
+  const legacyRemainingAfterResidual = round2(Math.max(num(line.amount_gbp) - num(line.allocated_gbp) - residual, 0));
+  return Math.max(Math.min(readModelRemaining, legacyRemainingAfterResidual), 0);
+}
+
 export default function MainBankAllocationController({
   lines,
   targets,
+  loyaltyTargets,
   residualRows,
+  targetMode,
 }: {
   lines: Row[];
   targets: Row[];
+  loyaltyTargets: Row[];
   residualRows: Row[];
+  targetMode: TargetMode;
 }) {
   const firstLineId = text(lines[0]?.statement_line_id);
+  const firstLoyaltyOrderId = text(loyaltyTargets[0]?.order_id);
   const [selectedLineId, setSelectedLineId] = useState(firstLineId);
   const [selectedTargetIds, setSelectedTargetIds] = useState<string[]>([]);
+  const [selectedLoyaltyOrderId, setSelectedLoyaltyOrderId] = useState(firstLoyaltyOrderId);
   const [residualType, setResidualType] = useState("fx_card_difference");
   const [manualResidual, setManualResidual] = useState("");
 
@@ -84,13 +98,17 @@ export default function MainBankAllocationController({
 
   const selectedLine = lines.find((row) => text(row.statement_line_id) === selectedLineId) ?? null;
   const selectedResidualExisting = residualByLine.get(selectedLineId) ?? 0;
-  const selectedLineAvailable = Math.max(round2(num(selectedLine?.remaining_gbp) - selectedResidualExisting), 0);
+  const selectedLineAvailable = safeAvailable(selectedLine, selectedResidualExisting);
   const selectedTargets = targets.filter((row) => selectedTargetIds.includes(text(row.shipping_document_id)));
   const selectedTargetTotal = round2(selectedTargets.reduce((sum, row) => sum + num(row.remaining_gbp), 0));
-  const residualAmount = round2(manualResidual ? Number(manualResidual) || 0 : Math.max(selectedLineAvailable - selectedTargetTotal, 0));
-  const explainedTotal = round2(selectedTargetTotal + residualAmount);
+  const selectedLoyaltyTarget = loyaltyTargets.find((row) => text(row.order_id) === selectedLoyaltyOrderId) ?? null;
+  const selectedLoyaltyAmount = round2(num(selectedLoyaltyTarget?.suggested_reward_gbp));
+  const selectedPrimaryTotal = targetMode === "completion_loyalty" ? selectedLoyaltyAmount : selectedTargetTotal;
+  const residualAmount = round2(manualResidual ? Number(manualResidual) || 0 : Math.max(selectedLineAvailable - selectedPrimaryTotal, 0));
+  const explainedTotal = round2(selectedPrimaryTotal + residualAmount);
   const gap = round2(selectedLineAvailable - explainedTotal);
-  const canConfirmAp = Boolean(selectedLineId && selectedTargetIds.length > 0 && selectedTargetTotal <= selectedLineAvailable + 0.01);
+  const canConfirmAp = Boolean(targetMode === "shipper_ap" && selectedLineId && selectedTargetIds.length > 0 && selectedTargetTotal <= selectedLineAvailable + 0.01);
+  const canConfirmLoyalty = Boolean(targetMode === "completion_loyalty" && selectedLineId && selectedLoyaltyOrderId && selectedLoyaltyAmount > 0 && selectedLoyaltyAmount <= selectedLineAvailable + 0.01);
   const canConfirmResidual = Boolean(selectedLineId && residualAmount > 0 && residualAmount <= selectedLineAvailable + 0.01);
   const exact = Math.abs(gap) < 0.01;
 
@@ -104,17 +122,21 @@ export default function MainBankAllocationController({
         <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-emerald-900 shadow-sm">
           <p className="text-[11px] font-bold uppercase tracking-wide opacity-70">Main-bank lines</p>
           <p className="mt-1 text-2xl font-extrabold">{lines.length}</p>
-          <p className="mt-1 text-xs leading-4">{gbp(lines.reduce((sum, row) => sum + Math.max(num(row.remaining_gbp) - (residualByLine.get(text(row.statement_line_id)) ?? 0), 0), 0))} available after residuals</p>
+          <p className="mt-1 text-xs leading-4">{gbp(lines.reduce((sum, row) => sum + safeAvailable(row, residualByLine.get(text(row.statement_line_id)) ?? 0), 0))} available after consumed amounts</p>
         </div>
         <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-emerald-900 shadow-sm">
-          <p className="text-[11px] font-bold uppercase tracking-wide opacity-70">Open shipper AP</p>
-          <p className="mt-1 text-2xl font-extrabold">{targets.length}</p>
-          <p className="mt-1 text-xs leading-4">{gbp(targets.reduce((sum, row) => sum + num(row.remaining_gbp), 0))} visible remaining</p>
+          <p className="text-[11px] font-bold uppercase tracking-wide opacity-70">{targetMode === "completion_loyalty" ? "Loyalty targets" : "Open shipper AP"}</p>
+          <p className="mt-1 text-2xl font-extrabold">{targetMode === "completion_loyalty" ? loyaltyTargets.length : targets.length}</p>
+          <p className="mt-1 text-xs leading-4">
+            {targetMode === "completion_loyalty"
+              ? `${gbp(loyaltyTargets.reduce((sum, row) => sum + num(row.suggested_reward_gbp), 0))} reward-ready`
+              : `${gbp(targets.reduce((sum, row) => sum + num(row.remaining_gbp), 0))} visible remaining`}
+          </p>
         </div>
         <div className="rounded-2xl border border-sky-200 bg-sky-50 p-3 text-sky-900 shadow-sm">
-          <p className="text-[11px] font-bold uppercase tracking-wide opacity-70">Selected AP</p>
-          <p className="mt-1 text-2xl font-extrabold">{gbp(selectedTargetTotal)}</p>
-          <p className="mt-1 text-xs leading-4">{selectedTargetIds.length} invoice(s) selected</p>
+          <p className="text-[11px] font-bold uppercase tracking-wide opacity-70">Selected target</p>
+          <p className="mt-1 text-2xl font-extrabold">{gbp(selectedPrimaryTotal)}</p>
+          <p className="mt-1 text-xs leading-4">{targetMode === "completion_loyalty" ? (selectedLoyaltyTarget ? "1 reward target selected" : "No reward target") : `${selectedTargetIds.length} invoice(s) selected`}</p>
         </div>
         <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-amber-900 shadow-sm">
           <p className="text-[11px] font-bold uppercase tracking-wide opacity-70">Residual input</p>
@@ -136,7 +158,7 @@ export default function MainBankAllocationController({
             {lines.map((line) => {
               const id = text(line.statement_line_id);
               const residual = residualByLine.get(id) ?? 0;
-              const remaining = Math.max(num(line.remaining_gbp) - residual, 0);
+              const remaining = safeAvailable(line, residual);
               return (
                 <button key={id} type="button" onClick={() => setSelectedLineId(id)} className={`rounded-2xl border p-4 text-left shadow-sm ${cardClass(id === selectedLineId, "bank")}`}>
                   <div className="flex items-start justify-between gap-3">
@@ -148,7 +170,7 @@ export default function MainBankAllocationController({
                   </div>
                   <div className="mt-3 grid gap-2 text-sm text-slate-700 sm:grid-cols-4">
                     <p>Amount <span className="font-bold text-slate-950">{gbp(line.amount_gbp)}</span></p>
-                    <p>AP <span className="font-bold text-slate-950">{gbp(line.allocated_gbp)}</span></p>
+                    <p>Shipper AP <span className="font-bold text-slate-950">{gbp(line.allocated_gbp)}</span></p>
                     <p>FX/fee/hold <span className="font-bold text-slate-950">{gbp(residual)}</span></p>
                     <p>Available <span className="font-bold text-slate-950">{gbp(remaining)}</span></p>
                   </div>
@@ -158,38 +180,70 @@ export default function MainBankAllocationController({
           </div>
         </div>
 
-        <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
-          <h2 className="text-xl font-semibold">2. Tick shipper AP invoice(s)</h2>
-          <p className="mt-1 border-b border-slate-100 pb-3 text-sm text-slate-500">Tick one or more posted shipper AP invoices for the selected bank line.</p>
-          <div className="mt-4 grid gap-3">
-            {targets.map((target) => {
-              const id = text(target.shipping_document_id);
-              const selected = selectedTargetIds.includes(id);
-              return (
-                <label key={id} className={`block cursor-pointer rounded-2xl border p-4 shadow-sm transition hover:border-emerald-300 hover:bg-emerald-50 ${cardClass(selected, "target")}`}>
-                  <div className="flex items-start gap-3">
-                    <input className="mt-1 h-4 w-4 rounded border-slate-300" type="checkbox" checked={selected} onChange={() => toggleTarget(id)} />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-start justify-between gap-3">
-                        <div>
-                          <p className="text-lg font-bold text-slate-950">{short(target.shipper_invoice_ref, 80)}</p>
-                          <p className="mt-1 text-sm text-slate-600">{text(target.shipper_name)} · Sage posted</p>
-                        </div>
-                        <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-700">{text(target.target_status)}</span>
+        {targetMode === "completion_loyalty" ? (
+          <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+            <h2 className="text-xl font-semibold">2. Select one loyalty reward target</h2>
+            <p className="mt-1 border-b border-slate-100 pb-3 text-sm text-slate-500">Select a clean completed reward-ready order. Confirmation releases dashboard credit after matching the main-bank funding line.</p>
+            <div className="mt-4 grid gap-3">
+              {loyaltyTargets.length === 0 ? (
+                <p className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm font-semibold text-slate-600">No completion loyalty targets are ready for main-bank funding match.</p>
+              ) : null}
+              {loyaltyTargets.map((target) => {
+                const id = text(target.order_id);
+                const selected = id === selectedLoyaltyOrderId;
+                return (
+                  <button key={id} type="button" onClick={() => setSelectedLoyaltyOrderId(id)} className={`rounded-2xl border p-4 text-left shadow-sm transition hover:border-emerald-300 hover:bg-emerald-50 ${cardClass(selected, "target")}`}>
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <p className="text-lg font-bold text-slate-950">{short(target.order_ref, 80)}</p>
+                        <p className="mt-1 text-sm text-slate-600">{short(target.importer_name, 72)}</p>
                       </div>
-                      <div className="mt-3 grid gap-2 text-sm text-slate-700 sm:grid-cols-3">
-                        <p>Amount <span className="font-bold text-slate-950">{gbp(target.amount_gbp)}</span></p>
-                        <p>Allocated <span className="font-bold text-slate-950">{gbp(target.allocated_gbp)}</span></p>
-                        <p>Remaining <span className="font-bold text-slate-950">{gbp(target.remaining_gbp)}</span></p>
-                      </div>
-                      <p className="mt-2 break-all text-xs text-slate-500">Sage invoice: {short(target.sage_purchase_invoice_id, 42)}</p>
+                      <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-bold text-emerald-800">Reward-ready</span>
                     </div>
-                  </div>
-                </label>
-              );
-            })}
+                    <div className="mt-3 grid gap-2 text-sm text-slate-700 sm:grid-cols-3">
+                      <p>Qualifying net <span className="font-bold text-slate-950">{gbp(target.qualifying_net_spend_gbp)}</span></p>
+                      <p>Reward <span className="font-bold text-slate-950">{gbp(target.suggested_reward_gbp)}</span></p>
+                      <p>Status <span className="font-bold text-slate-950">{short(target.target_status, 30)}</span></p>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
           </div>
-        </div>
+        ) : (
+          <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+            <h2 className="text-xl font-semibold">2. Tick shipper AP invoice(s)</h2>
+            <p className="mt-1 border-b border-slate-100 pb-3 text-sm text-slate-500">Tick one or more posted shipper AP invoices for the selected bank line.</p>
+            <div className="mt-4 grid gap-3">
+              {targets.map((target) => {
+                const id = text(target.shipping_document_id);
+                const selected = selectedTargetIds.includes(id);
+                return (
+                  <label key={id} className={`block cursor-pointer rounded-2xl border p-4 shadow-sm transition hover:border-emerald-300 hover:bg-emerald-50 ${cardClass(selected, "target")}`}>
+                    <div className="flex items-start gap-3">
+                      <input className="mt-1 h-4 w-4 rounded border-slate-300" type="checkbox" checked={selected} onChange={() => toggleTarget(id)} />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <p className="text-lg font-bold text-slate-950">{short(target.shipper_invoice_ref, 80)}</p>
+                            <p className="mt-1 text-sm text-slate-600">{text(target.shipper_name)} · Sage posted</p>
+                          </div>
+                          <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-700">{text(target.target_status)}</span>
+                        </div>
+                        <div className="mt-3 grid gap-2 text-sm text-slate-700 sm:grid-cols-3">
+                          <p>Amount <span className="font-bold text-slate-950">{gbp(target.amount_gbp)}</span></p>
+                          <p>Allocated <span className="font-bold text-slate-950">{gbp(target.allocated_gbp)}</span></p>
+                          <p>Remaining <span className="font-bold text-slate-950">{gbp(target.remaining_gbp)}</span></p>
+                        </div>
+                        <p className="mt-2 break-all text-xs text-slate-500">Sage invoice: {short(target.sage_purchase_invoice_id, 42)}</p>
+                      </div>
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </section>
 
       <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -201,28 +255,39 @@ export default function MainBankAllocationController({
         <div className="mx-auto grid max-w-7xl gap-3 lg:grid-cols-[1fr_auto] lg:items-end">
           <div className="space-y-1 text-sm text-slate-700">
             <p className="font-bold text-slate-950">Bank selected: {selectedLine ? short(selectedLine.reference_raw, 54) : "none"} · available {gbp(selectedLineAvailable)}</p>
-            <p>Shipper AP selected: {selectedTargetIds.length} invoice(s) · {gbp(selectedTargetTotal)}</p>
+            <p>{targetMode === "completion_loyalty" ? `Loyalty target selected: ${selectedLoyaltyTarget ? short(selectedLoyaltyTarget.order_ref, 42) : "none"} · ${gbp(selectedLoyaltyAmount)}` : `Shipper AP selected: ${selectedTargetIds.length} invoice(s) · ${gbp(selectedTargetTotal)}`}</p>
             <p>Residual selected: {gbp(residualAmount)} · {residualLabel(residualType)}</p>
             <p className="font-bold text-slate-950">Gap: {gbp(gap)}</p>
-            <p className="text-xs font-semibold text-amber-700">{exact ? "Balanced — ready to submit AP and/or residual allocations." : gap > 0 ? "Still has unexplained amount. Add residual or select more AP." : "Over-selected. Untick AP or reduce residual."}</p>
+            <p className="text-xs font-semibold text-amber-700">{exact ? "Balanced — ready to submit target and/or residual allocations." : gap > 0 ? "Still has unexplained amount. Add residual or select a larger target." : "Over-selected. Reduce target/residual."}</p>
           </div>
 
           <div className="grid gap-2 sm:grid-cols-2 lg:min-w-[34rem]">
-            <form action={allocateMainBankLineToShipperApAction} className="grid gap-2">
-              <input type="hidden" name="dva_statement_line_id" value={selectedLineId} />
-              {selectedTargetIds.map((id) => <input key={id} type="hidden" name="shipping_document_id" value={id} />)}
-              <input type="hidden" name="notes" value="Main bank payment matched to posted shipper AP invoice(s)." />
-              <button type="submit" disabled={!canConfirmAp} className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-bold text-white disabled:bg-slate-200 disabled:text-slate-500">Confirm shipper AP</button>
-            </form>
+            {targetMode === "completion_loyalty" ? (
+              <form action={matchMainBankLineToCompletionLoyaltyAction} className="grid gap-2">
+                <input type="hidden" name="dva_statement_line_id" value={selectedLineId} />
+                <input type="hidden" name="order_id" value={selectedLoyaltyOrderId} />
+                <input type="hidden" name="reward_amount_gbp" value={selectedLoyaltyAmount > 0 ? selectedLoyaltyAmount.toFixed(2) : ""} />
+                <input type="hidden" name="notes" value="Main-bank payment matched to completion loyalty reward funding." />
+                <button type="submit" disabled={!canConfirmLoyalty} className="rounded-xl bg-sky-700 px-4 py-2 text-sm font-bold text-white disabled:bg-slate-200 disabled:text-slate-500">Release loyalty credit</button>
+              </form>
+            ) : (
+              <form action={allocateMainBankLineToShipperApAction} className="grid gap-2">
+                <input type="hidden" name="dva_statement_line_id" value={selectedLineId} />
+                {selectedTargetIds.map((id) => <input key={id} type="hidden" name="shipping_document_id" value={id} />)}
+                <input type="hidden" name="notes" value="Main bank payment matched to posted shipper AP invoice(s)." />
+                <button type="submit" disabled={!canConfirmAp} className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-bold text-white disabled:bg-slate-200 disabled:text-slate-500">Confirm shipper AP</button>
+              </form>
+            )}
 
             <form action={allocateMainBankFxFeeAction} className="grid gap-2">
+              <input type="hidden" name="target" value={targetMode} />
               <input type="hidden" name="dva_statement_line_id" value={selectedLineId} />
               <select className="rounded-xl border border-slate-300 px-3 py-2 text-sm" name="residual_allocation_type" value={residualType} onChange={(event) => setResidualType(event.target.value)}>
                 <option value="fx_card_difference">FX/card difference</option>
                 <option value="bank_fee">Bank fee</option>
               </select>
               <input className="rounded-xl border border-slate-300 px-3 py-2 text-sm" name="residual_gbp_amount" value={manualResidual || (residualAmount > 0 ? residualAmount.toFixed(2) : "")} onChange={(event) => setManualResidual(event.target.value)} placeholder="Residual amount" />
-              <input type="hidden" name="notes" value="Main-bank residual allocated separately from shipper AP." />
+              <input type="hidden" name="notes" value="Main-bank residual allocated separately from selected target." />
               <button type="submit" disabled={!canConfirmResidual} className="rounded-xl bg-amber-700 px-4 py-2 text-sm font-bold text-white disabled:bg-slate-200 disabled:text-slate-500">Save FX/fee residual</button>
             </form>
           </div>
