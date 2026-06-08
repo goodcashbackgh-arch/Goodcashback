@@ -224,8 +224,10 @@ export default async function CustomerDashboardPage() {
     const amount = Number(row.amount_gbp ?? 0);
     return sum + (row.direction === "credit" ? amount : -amount);
   }, 0);
-  const rpcCreditBalanceGbp = ((creditBalanceRows ?? []) as CreditBalanceRow[]).reduce((sum, row) => sum + Number(row.available_credit_gbp ?? 0), 0);
-  const creditBalanceGbp = Number.isFinite(rpcCreditBalanceGbp) && rpcCreditBalanceGbp !== 0 ? rpcCreditBalanceGbp : fallbackCreditBalanceGbp;
+  const rpcRows = (creditBalanceRows ?? []) as CreditBalanceRow[];
+  const hasRpcCreditBalance = Array.isArray(creditBalanceRows) && rpcRows.length > 0;
+  const rpcCreditBalanceGbp = rpcRows.reduce((sum, row) => sum + Number(row.available_credit_gbp ?? 0), 0);
+  const creditBalanceGbp = hasRpcCreditBalance && Number.isFinite(rpcCreditBalanceGbp) ? rpcCreditBalanceGbp : fallbackCreditBalanceGbp;
   const rate = Number(fxRate?.quote_rate ?? 0);
   const markup = Number(fxRate?.quote_card_markup_pct ?? 0);
   const effectiveRate = rate ? rate * (1 + markup / 100) : 0;
@@ -270,7 +272,7 @@ export default async function CustomerDashboardPage() {
             <p className="text-xs font-black uppercase tracking-[0.28em] text-sky-600">Customer portal</p>
             <h1 className="mt-2 text-4xl font-black tracking-tight text-slate-950 xl:text-5xl">Goodcashback Customer</h1>
             <p className="mt-2 text-base text-slate-600">{operator.full_name} · {importer.trading_name ?? importer.company_name}</p>
-            <p className="mt-3 text-sm font-semibold text-slate-500">{rows.length} orders · {needsAttention.length} need attention · {gbp(creditBalanceGbp)} credit</p>
+            <p className="mt-3 text-sm font-semibold text-slate-500">{rows.length} orders · {needsAttention.length} need attention · {gbp(creditBalanceGbp)} available account credit</p>
           </div>
           <div className="grid gap-3 xl:min-w-64">
             <Link href="/customer/orders/new" className="rounded-2xl bg-slate-950 px-5 py-3 text-center text-sm font-black text-white shadow-sm transition hover:bg-slate-800">Create order</Link>
@@ -283,17 +285,17 @@ export default async function CustomerDashboardPage() {
         <div className="grid grid-cols-3 gap-3 text-center">
           <div><p className="text-xs font-black uppercase tracking-wide text-slate-500">Orders</p><p className="mt-1 text-2xl font-black">{rows.length}</p></div>
           <div><p className="text-xs font-black uppercase tracking-wide text-emerald-700">Funded</p><p className="mt-1 text-2xl font-black text-emerald-950">{fundedCount}</p></div>
-          <div><p className="text-xs font-black uppercase tracking-wide text-cyan-700">Credit</p><p className="mt-1 text-2xl font-black text-cyan-950">{gbp(creditBalanceGbp)}</p></div>
+          <div><p className="text-xs font-black uppercase tracking-wide text-cyan-700">Account credit</p><p className="mt-1 text-2xl font-black text-cyan-950">{gbp(creditBalanceGbp)}</p></div>
         </div>
-        <p className="mt-3 rounded-2xl bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800 ring-1 ring-amber-100">Local guide: {effectiveRate ? localAmount(creditBalanceGbp * effectiveRate, currencyCode) : "—"} · {fxLabel}</p>
+        <p className="mt-3 rounded-2xl bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800 ring-1 ring-amber-100">Account credit local guide: {effectiveRate ? localAmount(creditBalanceGbp * effectiveRate, currencyCode) : "—"} · {fxLabel}</p>
       </section>
 
       <section className="mt-5 hidden gap-4 xl:grid xl:grid-cols-4">
         <div className="rounded-[1.5rem] border border-slate-200 bg-white p-5 shadow-sm"><div className="text-sm font-semibold text-slate-500">Total orders</div><div className="mt-2 text-3xl font-black">{rows.length}</div></div>
         <div className="rounded-[1.5rem] border border-emerald-100 bg-emerald-50/70 p-5 shadow-sm"><div className="text-sm font-semibold text-emerald-700">Funded</div><div className="mt-2 text-3xl font-black text-emerald-950">{fundedCount}</div></div>
-        <div className="rounded-[1.5rem] border border-cyan-100 bg-cyan-50/70 p-5 shadow-sm"><div className="text-sm font-semibold text-cyan-700">Ledger credit GBP</div><div className="mt-2 text-3xl font-black text-cyan-950">{gbp(creditBalanceGbp)}</div></div>
+        <div className="rounded-[1.5rem] border border-cyan-100 bg-cyan-50/70 p-5 shadow-sm"><div className="text-sm font-semibold text-cyan-700">Available account credit</div><div className="mt-2 text-3xl font-black text-cyan-950">{gbp(creditBalanceGbp)}</div></div>
         <div className="rounded-[1.5rem] border border-amber-100 bg-amber-50/70 p-5 shadow-sm">
-          <div className="text-sm font-semibold text-amber-700">Ledger credit local</div>
+          <div className="text-sm font-semibold text-amber-700">Local guide</div>
           <div className="mt-2 text-3xl font-black text-amber-950">{effectiveRate ? localAmount(creditBalanceGbp * effectiveRate, currencyCode) : "—"}</div>
           <div className={rateDate === today ? "mt-2 text-xs font-bold text-emerald-700" : "mt-2 text-xs font-bold text-amber-800"}>{fxLabel}</div>
         </div>
