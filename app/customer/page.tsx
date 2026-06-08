@@ -233,8 +233,6 @@ export default async function CustomerDashboardPage() {
   const markup = Number(fxRate?.quote_card_markup_pct ?? 0);
   const effectiveRate = rate ? rate * (1 + markup / 100) : 0;
   const currencyCode = currencyCodeFromCountries(importer.countries as CurrencyRelation);
-  const rateDate = fxRate?.rate_date as string | undefined;
-  const fxLabel = rateDate === today ? "Today's FX rate" : rateDate ? `Latest available FX rate: ${rateDate}` : "No FX rate available";
 
   const summaries: OrderSummary[] = rows.map((order) => {
     const funding = fundingByOrder.get(order.id) ?? { cash: 0, credit: 0, total: 0 };
@@ -288,25 +286,19 @@ export default async function CustomerDashboardPage() {
           <div><p className="text-xs font-black uppercase tracking-wide text-emerald-700">Funded</p><p className="mt-1 text-2xl font-black text-emerald-950">{fundedCount}</p></div>
           <div><p className="text-xs font-black uppercase tracking-wide text-cyan-700">Account credit</p><p className="mt-1 text-2xl font-black text-cyan-950">{gbp(creditBalanceGbp)}</p></div>
         </div>
-        <p className="mt-3 rounded-2xl bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800 ring-1 ring-amber-100">Account credit local guide: {effectiveRate ? localAmount(creditBalanceGbp * effectiveRate, currencyCode) : "—"} · {fxLabel}</p>
       </section>
 
-      <section className="mt-5 hidden gap-4 xl:grid xl:grid-cols-4">
+      <section className="mt-5 hidden gap-4 xl:grid xl:grid-cols-3">
         <div className="rounded-[1.5rem] border border-slate-200 bg-white p-5 shadow-sm"><div className="text-sm font-semibold text-slate-500">Total orders</div><div className="mt-2 text-3xl font-black">{rows.length}</div></div>
         <div className="rounded-[1.5rem] border border-emerald-100 bg-emerald-50/70 p-5 shadow-sm"><div className="text-sm font-semibold text-emerald-700">Funded</div><div className="mt-2 text-3xl font-black text-emerald-950">{fundedCount}</div></div>
         <div className="rounded-[1.5rem] border border-cyan-100 bg-cyan-50/70 p-5 shadow-sm"><div className="text-sm font-semibold text-cyan-700">Available account credit</div><div className="mt-2 text-3xl font-black text-cyan-950">{gbp(creditBalanceGbp)}</div></div>
-        <div className="rounded-[1.5rem] border border-amber-100 bg-amber-50/70 p-5 shadow-sm">
-          <div className="text-sm font-semibold text-amber-700">Local guide</div>
-          <div className="mt-2 text-3xl font-black text-amber-950">{effectiveRate ? localAmount(creditBalanceGbp * effectiveRate, currencyCode) : "—"}</div>
-          <div className={rateDate === today ? "mt-2 text-xs font-bold text-emerald-700" : "mt-2 text-xs font-bold text-amber-800"}>{fxLabel}</div>
-        </div>
       </section>
 
       <section className="mt-5 overflow-hidden rounded-[1.75rem] border border-slate-200 bg-white shadow-sm">
         <div className="flex flex-col gap-2 border-b border-slate-100 bg-slate-50/70 p-5 xl:flex-row xl:items-center xl:justify-between">
           <div>
             <h2 className="text-xl font-black">Orders</h2>
-            <p className="text-sm text-slate-600">Order values close in GBP. Local figures are payment-stage guidance using the current/latest FX rate.</p>
+            <p className="text-sm text-slate-600">Order values close in GBP. Local figures are payment-stage guidance.</p>
           </div>
           <span className="w-full rounded-full bg-sky-100 px-3 py-2 text-center text-xs font-black text-sky-700 xl:w-auto xl:py-1">{rows.length} orders</span>
         </div>
