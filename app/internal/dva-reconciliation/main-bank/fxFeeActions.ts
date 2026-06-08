@@ -20,7 +20,10 @@ export async function allocateMainBankFxFeeAction(formData: FormData) {
     data: { user },
   } = await supabase.auth.getUser();
 
-  if (!user) redirectBack({ error: "Please sign in again before saving the FX or fee allocation." });
+  const targetMode = readString(formData, "target") === "completion_loyalty" ? "completion_loyalty" : "shipper_ap";
+  const baseParams = { target: targetMode };
+
+  if (!user) redirectBack({ ...baseParams, error: "Please sign in again before saving the FX or fee allocation." });
 
   const statementLineId = readString(formData, "dva_statement_line_id");
   const allocationType = readString(formData, "residual_allocation_type");
@@ -28,9 +31,9 @@ export async function allocateMainBankFxFeeAction(formData: FormData) {
   const notes = readString(formData, "notes") || "Main bank FX or fee allocation.";
   const amount = amountRaw ? Number(amountRaw) : 0;
 
-  if (!statementLineId) redirectBack({ error: "Select one main-bank statement line first." });
-  if (allocationType !== "fx_card_difference" && allocationType !== "bank_fee") redirectBack({ error: "Choose FX/card difference or bank fee." });
-  if (!Number.isFinite(amount) || amount <= 0) redirectBack({ error: "Amount must be greater than zero." });
+  if (!statementLineId) redirectBack({ ...baseParams, error: "Select one main-bank statement line first." });
+  if (allocationType !== "fx_card_difference" && allocationType !== "bank_fee") redirectBack({ ...baseParams, error: "Choose FX/card difference or bank fee." });
+  if (!Number.isFinite(amount) || amount <= 0) redirectBack({ ...baseParams, error: "Amount must be greater than zero." });
 
   const { data, error } = await supabase.rpc("staff_allocate_statement_line_to_fx_card_or_fee", {
     p_dva_statement_line_id: statementLineId,
@@ -39,7 +42,7 @@ export async function allocateMainBankFxFeeAction(formData: FormData) {
     p_notes: notes,
   });
 
-  if (error) redirectBack({ error: error.message });
+  if (error) redirectBack({ ...baseParams, error: error.message });
 
   revalidatePath("/internal/dva-reconciliation/main-bank");
   revalidatePath("/internal/dva-reconciliation/allocations");
@@ -50,5 +53,5 @@ export async function allocateMainBankFxFeeAction(formData: FormData) {
       ? Number((data as { allocated_gbp_amount?: unknown }).allocated_gbp_amount ?? amount)
       : amount;
 
-  redirectBack({ success: `Saved ${allocationType.replace(/_/g, " ")} allocation £${allocatedAmount.toFixed(2)}.` });
+  redirectBack({ ...baseParams, success: `Saved ${allocationType.replace(/_/g, " ")} allocation £${allocatedAmount.toFixed(2)}.` });
 }
