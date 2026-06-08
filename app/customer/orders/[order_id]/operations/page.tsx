@@ -5,12 +5,11 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 
 type ScreenshotRow = { id: string; screenshot_url: string };
 type ReviewLinkRow = { customer_review_path: string | null };
-type CreditBalanceRow = { importer_id: string | null; available_credit_gbp: number | string | null };
+type CreditBalanceRow = { available_credit_gbp: number | string | null };
 type ShipmentPackageRow = { shipment_batch_id: string | null };
 type ShipmentBatchRow = { id: string; dispatched_at?: string | null; shipment_cutoff_at?: string | null; booking_ref?: string | null };
 type InvoiceRow = { id: string; amount_gbp?: number | string | null; invoice_type?: string | null; sage_invoice_id?: string | null; sage_invoice_date?: string | null; sage_posted_at?: string | null };
 type EvidenceRow = { document_kind?: string | null; review_status?: string | null };
-
 type Tone = "action" | "ready" | "complete" | "review" | "muted";
 
 function money(value: unknown) {
@@ -38,8 +37,7 @@ function saleDocumentSignedAmount(row: InvoiceRow) {
 }
 
 function signedMoney(value: number) {
-  if (value < 0) return `-${money(Math.abs(value))}`;
-  return `+${money(value)}`;
+  return value < 0 ? `-${money(Math.abs(value))}` : `+${money(value)}`;
 }
 
 function invoiceSortRank(value: string | null | undefined) {
@@ -50,10 +48,8 @@ function invoiceSortRank(value: string | null | undefined) {
 }
 
 function shortOrderTitle(orderRef: string | null | undefined, fallbackId: string) {
-  const ref = orderRef || fallbackId;
-  const cleaned = ref.replace(/^ORD-/i, "");
-  const short = cleaned.length > 6 ? cleaned.slice(-6) : cleaned;
-  return `Order ${short}`;
+  const cleaned = (orderRef || fallbackId).replace(/^ORD-/i, "");
+  return `Order ${cleaned.length > 6 ? cleaned.slice(-6) : cleaned}`;
 }
 
 function formatDate(value: string | null | undefined) {
@@ -100,52 +96,10 @@ function journeyClass(done: boolean, current: boolean) {
   return "border-slate-200 bg-white text-slate-500 ring-slate-100";
 }
 
-function customerStatusLabel({
-  rawStatus,
-  lifecycleStatus,
-  thresholdMet,
-  reviewHref,
-  shipmentArranged,
-  deliveryConfirmed,
-  finalBalanceDueGbp,
-}: {
-  rawStatus: string | null | undefined;
-  lifecycleStatus: string | null | undefined;
-  thresholdMet: boolean;
-  reviewHref: string | null;
-  shipmentArranged: boolean;
-  deliveryConfirmed: boolean;
-  finalBalanceDueGbp: number;
-}) {
-  const status = String(lifecycleStatus ?? rawStatus ?? "").toLowerCase();
-  if (reviewHref) return "Ready for your review";
-  if (!thresholdMet) return "Payment required";
-  if (finalBalanceDueGbp > 0.01) return "Final balance due";
-  if (deliveryConfirmed) return "Completed";
-  if (shipmentArranged) return "Shipment arranged";
-  if (["pending_dva_funding", "funding_pending", "draft"].includes(status)) return "Payment received; processing";
-  if (["reconciling", "partially_progressed", "invoice_reconciled_tracking_open"].includes(status)) return "Order being prepared";
-  if (["ready_for_shipment", "shipment_booked"].includes(status)) return "Preparing for shipment";
-  if (["shipment_dispatched", "awaiting_importer_receipt"].includes(status)) return "Shipment in progress";
-  if (["completed", "archived"].includes(status)) return "Completed";
-  if (["discrepancy_open", "awaiting_financial_closure"].includes(status)) return "Under review";
-  return friendly(lifecycleStatus ?? rawStatus);
-}
-
-function statusTone({ statusLabel, thresholdMet, reviewHref, finalBalanceDueGbp }: { statusLabel: string; thresholdMet: boolean; reviewHref: string | null; finalBalanceDueGbp: number }): Tone {
-  const normalised = statusLabel.toLowerCase();
-  if (reviewHref) return "ready";
-  if (!thresholdMet || normalised.includes("payment required") || finalBalanceDueGbp > 0.01) return "action";
-  if (normalised.includes("completed")) return "complete";
-  if (normalised.includes("review")) return "review";
-  return "muted";
-}
-
 export default async function CustomerOrderOperationsPage({ params, searchParams }: { params: Promise<{ order_id: string }>; searchParams?: Promise<{ success?: string; error?: string }> }) {
   const { order_id: orderId } = await params;
   const qp = searchParams ? await searchParams : {};
   const supabase = await createClient();
-
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
@@ -190,69 +144,70 @@ export default async function CustomerOrderOperationsPage({ params, searchParams
     if (rank !== 0) return rank;
     return String(a.sage_posted_at ?? a.sage_invoice_date ?? "").localeCompare(String(b.sage_posted_at ?? b.sage_invoice_date ?? ""));
   });
-  const totalInvoicedGbp = invoices.reduce((sum, row) => sum + saleDocumentSignedAmount(row), 0);
-  const finalSaleValueConfirmed = invoices.length > 0;
+
   const funding = fundingRes.data;
-  const screenshots = (screenshotsRes.data ?? []) as ScreenshotRow[];
   const state = stateRes.data;
+  const screenshots = (screenshotsRes.data ?? []) as ScreenshotRow[];
   const reviewLink = reviewRes.data as ReviewLinkRow | null;
   const reviewHref = reviewLink?.customer_review_path ?? null;
   const thresholdMet = Boolean(funding?.threshold_met_yn);
-  const currencyCode = order.importers?.countries?.currencies?.code ?? "Local";
-  const rate = Number(fxRes.data?.quote_rate ?? 0);
-  const markup = Number(fxRes.data?.quote_card_markup_pct ?? 0);
-  const effectiveRate = rate ? rate * (1 + markup / 100) : 0;
-  const fxDate = fxRes.data?.rate_date as string | undefined;
-  const creditBalanceRows = (creditBalanceRes.data ?? []) as CreditBalanceRow[];
-  const availableCreditGbp = creditBalanceRows.reduce((sum, row) => sum + Number(row.available_credit_gbp ?? 0), 0);
-  const availableCreditLocal = effectiveRate ? availableCreditGbp * effectiveRate : 0;
   const acceptedEstimateGbp = Number(order.order_total_gbp_declared ?? 0);
-  const finalSaleValueGbp = finalSaleValueConfirmed ? totalInvoicedGbp : acceptedEstimateGbp;
   const totalQty = Number(order.total_qty_declared ?? 0);
   const appliedCreditGbp = Number(funding?.applied_credit_gbp ?? 0);
   const confirmedPaymentGbp = Number(funding?.confirmed_dva_funding_gbp ?? 0);
   const amountReceivedGbp = confirmedPaymentGbp + appliedCreditGbp;
-  const hasAmountReceived = amountReceivedGbp > 0.01;
+  const initialCashDueGbp = Math.max(acceptedEstimateGbp - amountReceivedGbp, 0);
+  const finalSaleValueConfirmed = invoices.length > 0;
+  const finalSaleValueGbp = finalSaleValueConfirmed ? invoices.reduce((sum, row) => sum + saleDocumentSignedAmount(row), 0) : acceptedEstimateGbp;
   const finalBalanceDueGbp = finalSaleValueConfirmed ? Math.max(finalSaleValueGbp - amountReceivedGbp, 0) : 0;
+  const visibleCashDueGbp = finalSaleValueConfirmed ? finalBalanceDueGbp : initialCashDueGbp;
   const pendingCreditGbp = finalSaleValueConfirmed ? Math.max(amountReceivedGbp - finalSaleValueGbp, 0) : 0;
+  const hasAmountReceived = amountReceivedGbp > 0.01;
+
+  const rate = Number(fxRes.data?.quote_rate ?? 0);
+  const markup = Number(fxRes.data?.quote_card_markup_pct ?? 0);
+  const effectiveRate = rate ? rate * (1 + markup / 100) : 0;
+  const fxDate = fxRes.data?.rate_date as string | undefined;
+  const fxLabel = fxDate === today ? "today's FX" : fxDate ? `latest FX ${fxDate}` : "no FX available";
+  const importerRelation = order.importers as any;
+  const currencyCode = importerRelation?.countries?.currencies?.code ?? "Local";
+  const visibleCashDueLocal = effectiveRate ? visibleCashDueGbp * effectiveRate : 0;
   const finalBalanceDueLocal = effectiveRate ? finalBalanceDueGbp * effectiveRate : 0;
   const appliedCreditLocal = effectiveRate ? appliedCreditGbp * effectiveRate : 0;
-  const fxLabel = fxDate === today ? "today's FX" : fxDate ? `latest FX ${fxDate}` : "no FX available";
-  const statusLabel = customerStatusLabel({ rawStatus: order.status, lifecycleStatus: state?.lifecycle_status, thresholdMet, reviewHref, shipmentArranged, deliveryConfirmed, finalBalanceDueGbp });
-  const tone = statusTone({ statusLabel, thresholdMet, reviewHref, finalBalanceDueGbp });
-  const orderTitle = shortOrderTitle(order.order_ref, orderId);
-  const itemLabel = Number.isFinite(totalQty) && totalQty > 0 ? `${totalQty} ${totalQty === 1 ? "item" : "items"}` : "Goods order";
-  const nextActionTitle = reviewHref
-    ? "Review items before shipment"
-    : !thresholdMet
-      ? "Payment required"
-      : finalBalanceDueGbp > 0.01
-        ? "Final balance due"
-        : deliveryConfirmed
-          ? "Delivery confirmed"
-          : shipmentArranged
-            ? "Waiting for delivery confirmation"
-            : "No action needed right now";
+  const creditBalanceRows = (creditBalanceRes.data ?? []) as CreditBalanceRow[];
+  const availableCreditGbp = creditBalanceRows.reduce((sum, row) => sum + Number(row.available_credit_gbp ?? 0), 0);
+  const availableCreditLocal = effectiveRate ? availableCreditGbp * effectiveRate : 0;
+
+  const statusRaw = String(state?.lifecycle_status ?? order.status ?? "").toLowerCase();
+  const statusLabel = reviewHref ? "Ready for your review" : !thresholdMet ? "Payment required" : finalBalanceDueGbp > 0.01 ? "Final balance due" : deliveryConfirmed ? "Completed" : shipmentArranged ? "Shipment arranged" : ["pending_dva_funding", "funding_pending", "draft"].includes(statusRaw) ? "Payment received; processing" : ["reconciling", "partially_progressed", "invoice_reconciled_tracking_open"].includes(statusRaw) ? "Order being prepared" : ["ready_for_shipment", "shipment_booked"].includes(statusRaw) ? "Preparing for shipment" : ["shipment_dispatched", "awaiting_importer_receipt"].includes(statusRaw) ? "Shipment in progress" : ["completed", "archived"].includes(statusRaw) ? "Completed" : ["discrepancy_open", "awaiting_financial_closure"].includes(statusRaw) ? "Under review" : friendly(state?.lifecycle_status ?? order.status);
+  const tone: Tone = reviewHref ? "ready" : !thresholdMet || finalBalanceDueGbp > 0.01 ? "action" : statusLabel.toLowerCase().includes("completed") ? "complete" : statusLabel.toLowerCase().includes("review") ? "review" : "muted";
+  const nextActionTitle = reviewHref ? "Review items before shipment" : !thresholdMet ? "Payment required" : finalBalanceDueGbp > 0.01 ? "Final balance due" : deliveryConfirmed ? "Delivery confirmed" : shipmentArranged ? "Waiting for delivery confirmation" : "No action needed right now";
   const nextActionBody = reviewHref
     ? "Check the order before shipment and request a hold if anything should not be sent."
-    : !thresholdMet
-      ? "The accepted estimate needs to be paid before this order can continue."
-      : finalBalanceDueGbp > 0.01
-        ? `The final sale value is now confirmed. Balance due: ${money(finalBalanceDueGbp)}${effectiveRate ? ` (${localAmount(finalBalanceDueLocal, currencyCode)} using ${fxLabel}).` : "."}`
-        : deliveryConfirmed
-          ? "Delivery confirmation has been received."
-          : shipmentArranged
-            ? (estimatedWindow ? `Estimated delivery window: ${estimatedWindow}.` : "Shipping date is pending from the shipper.")
-            : "We are processing this order. You can return here to check progress.";
+    : !thresholdMet && appliedCreditGbp > 0.01
+      ? `Account credit of ${money(appliedCreditGbp)} has been applied. ${money(initialCashDueGbp)} remains due before this order can continue${effectiveRate ? ` (${localAmount(visibleCashDueLocal, currencyCode)} using ${fxLabel}).` : "."}`
+      : !thresholdMet
+        ? "The accepted estimate needs to be paid before this order can continue."
+        : finalBalanceDueGbp > 0.01
+          ? `The final sale value is now confirmed. Balance due: ${money(finalBalanceDueGbp)}${effectiveRate ? ` (${localAmount(finalBalanceDueLocal, currencyCode)} using ${fxLabel}).` : "."}`
+          : deliveryConfirmed
+            ? "Delivery confirmation has been received."
+            : shipmentArranged
+              ? (estimatedWindow ? `Estimated delivery window: ${estimatedWindow}.` : "Shipping date is pending from the shipper.")
+              : "We are processing this order. You can return here to check progress.";
   const journey = [
     { label: "Order received", done: true },
-    { label: "Payment received", done: thresholdMet },
-    { label: "Items confirmed", done: shipmentArranged || finalExportAccepted || finalSaleValueConfirmed },
+    ...(appliedCreditGbp > 0.01 ? [{ label: "Account credit applied", done: true }] : []),
+    { label: thresholdMet ? "Payment received" : "Payment remaining", done: thresholdMet },
+    { label: "Items confirmed", done: thresholdMet && (shipmentArranged || finalExportAccepted || finalSaleValueConfirmed) },
     { label: "Shipment arranged", done: shipmentArranged },
     { label: "Sale value confirmed", done: finalSaleValueConfirmed },
     { label: "Delivery confirmation", done: deliveryConfirmed },
   ];
   const firstPending = journey.findIndex((step) => !step.done);
+  const orderTitle = shortOrderTitle(order.order_ref, orderId);
+  const itemLabel = Number.isFinite(totalQty) && totalQty > 0 ? `${totalQty} ${totalQty === 1 ? "item" : "items"}` : "Goods order";
+  const paymentPillLabel = thresholdMet ? "Payment received" : appliedCreditGbp > 0.01 ? "Part-paid" : "Required";
 
   return (
     <main className="min-h-screen bg-gradient-to-b from-sky-50 via-white to-slate-50 p-4 pb-24 text-slate-950 xl:p-6 xl:pb-10">
@@ -261,23 +216,23 @@ export default async function CustomerOrderOperationsPage({ params, searchParams
         <div className="bg-gradient-to-r from-sky-500 via-cyan-400 to-emerald-300 px-5 py-2" />
         <div className="p-5 xl:flex xl:items-start xl:justify-between xl:gap-6 xl:p-7">
           <div className="min-w-0"><p className="text-xs font-black uppercase tracking-[0.28em] text-sky-600">Customer order</p><h1 className="mt-2 text-4xl font-black tracking-tight xl:text-5xl">{orderTitle}</h1><p className="mt-2 text-sm font-semibold text-slate-600">{itemLabel} · Ref: {order.order_ref ?? orderId}</p><p className="mt-1 text-xs font-black uppercase tracking-wide text-slate-500">Authorisation ref: {order.payment_auth_id ?? "Not assigned"}</p></div>
-          <div className="mt-5 xl:mt-0 xl:min-w-72"><div className={`rounded-2xl border p-4 ${toneCardClass(tone)}`}><p className="text-xs font-black uppercase tracking-wide opacity-70">Current status</p><p className="mt-1 text-2xl font-black">{statusLabel}</p><p className="mt-3 text-xs font-black uppercase tracking-wide opacity-70">Next step</p><p className="mt-1 text-sm font-black">{nextActionTitle}</p></div></div>
+          <div className="mt-5 xl:mt-0 xl:min-w-72"><div className={`rounded-2xl border p-4 ${toneCardClass(tone)}`}><p className="text-xs font-black uppercase tracking-wide opacity-70">Current status</p><p className="mt-1 text-2xl font-black">{statusLabel}</p><p className="mt-3 text-xs font-black uppercase tracking-wide opacity-70">Next step</p><p className="mt-1 text-sm font-black">{nextActionTitle}</p>{appliedCreditGbp > 0.01 && !thresholdMet ? <p className="mt-3 text-xs font-bold opacity-80">Account credit applied: {money(appliedCreditGbp)} · Cash due: {money(initialCashDueGbp)}</p> : null}</div></div>
           {qp.success ? <p className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-800 xl:col-span-2">{qp.success}</p> : null}
           {qp.error ? <p className="mt-4 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-800 xl:col-span-2">{qp.error}</p> : null}
         </div>
       </header>
 
       <section className={`mt-5 rounded-[1.75rem] border p-5 shadow-sm ${toneCardClass(tone)}`}><div className="xl:flex xl:items-center xl:justify-between xl:gap-6"><div><p className="text-xs font-black uppercase tracking-[0.2em] opacity-70">Next step</p><h2 className="mt-2 text-2xl font-black">{nextActionTitle}</h2><p className="mt-2 text-sm leading-6 opacity-80">{nextActionBody}</p></div>{reviewHref ? <Link href={reviewHref} className="mt-4 block rounded-2xl bg-slate-950 px-5 py-3 text-center text-sm font-black text-white shadow-sm xl:mt-0">Open review</Link> : null}</div></section>
-
       <section className="mt-5 overflow-hidden rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm"><h2 className="text-xl font-black">Order journey</h2><p className="mt-1 text-sm text-slate-600">A customer-safe view of the order progress.</p><div className="mt-5 flex gap-3 overflow-x-auto pb-2">{journey.map((step, index) => <div key={step.label} className={`min-w-[9.5rem] rounded-2xl border px-4 py-3 text-sm font-black shadow-sm ring-1 ${journeyClass(step.done, index === firstPending)}`}><span className="mr-2">{step.done ? "✓" : index === firstPending ? "•" : "○"}</span>{step.label}</div>)}</div></section>
 
       <section className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <div className="rounded-[1.5rem] border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs font-black uppercase tracking-wide text-slate-500">Accepted estimate</p><p className="mt-2 text-2xl font-black">{money(acceptedEstimateGbp)}</p><p className="mt-1 text-xs font-bold text-slate-500">Authorisation ref: {order.payment_auth_id ?? "Not assigned"}</p></div>
-        {hasAmountReceived ? <div className="rounded-[1.5rem] border border-cyan-100 bg-cyan-50/70 p-4 shadow-sm"><p className="text-xs font-black uppercase tracking-wide text-cyan-700">Amount received</p><p className="mt-2 text-2xl font-black text-cyan-950">{money(amountReceivedGbp)}</p>{appliedCreditGbp > 0.01 ? <p className="mt-1 text-xs font-bold text-cyan-800">Credit used: {money(appliedCreditGbp)}</p> : null}</div> : null}
+        {hasAmountReceived ? <div className="rounded-[1.5rem] border border-cyan-100 bg-cyan-50/70 p-4 shadow-sm"><p className="text-xs font-black uppercase tracking-wide text-cyan-700">Amount received</p><p className="mt-2 text-2xl font-black text-cyan-950">{money(amountReceivedGbp)}</p>{appliedCreditGbp > 0.01 ? <p className="mt-1 text-xs font-bold text-cyan-800">Account credit applied: {money(appliedCreditGbp)}</p> : null}</div> : null}
+        {!thresholdMet && visibleCashDueGbp > 0.01 ? <div className="rounded-[1.5rem] border border-amber-100 bg-amber-50/70 p-4 shadow-sm"><p className="text-xs font-black uppercase tracking-wide text-amber-700">Cash due</p><p className="mt-2 text-2xl font-black text-amber-950">{money(visibleCashDueGbp)}</p><p className="mt-1 text-xs font-bold text-amber-800">{effectiveRate ? localAmount(visibleCashDueLocal, currencyCode) : "No FX rate"}</p><p className="mt-1 text-[11px] font-semibold text-amber-700">{fxLabel}</p></div> : null}
         {finalSaleValueConfirmed ? <div className="rounded-[1.5rem] border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs font-black uppercase tracking-wide text-slate-500">Final sale value</p><p className="mt-2 text-2xl font-black">{money(finalSaleValueGbp)}</p><p className="mt-1 text-xs font-bold text-slate-500">After sale documents and credits</p></div> : null}
-        {finalBalanceDueGbp > 0.01 ? <div className="rounded-[1.5rem] border border-amber-100 bg-amber-50/70 p-4 shadow-sm"><p className="text-xs font-black uppercase tracking-wide text-amber-700">Balance due</p><p className="mt-2 text-2xl font-black text-amber-950">{money(finalBalanceDueGbp)}</p><p className="mt-1 text-xs font-bold text-amber-800">{effectiveRate ? localAmount(finalBalanceDueLocal, currencyCode) : "No FX rate"}</p><p className="mt-1 text-[11px] font-semibold text-amber-700">{fxLabel}</p></div> : null}
+        {thresholdMet && finalBalanceDueGbp > 0.01 ? <div className="rounded-[1.5rem] border border-amber-100 bg-amber-50/70 p-4 shadow-sm"><p className="text-xs font-black uppercase tracking-wide text-amber-700">Balance due</p><p className="mt-2 text-2xl font-black text-amber-950">{money(finalBalanceDueGbp)}</p><p className="mt-1 text-xs font-bold text-amber-800">{effectiveRate ? localAmount(finalBalanceDueLocal, currencyCode) : "No FX rate"}</p><p className="mt-1 text-[11px] font-semibold text-amber-700">{fxLabel}</p></div> : null}
         {pendingCreditGbp > 0.01 ? <div className="rounded-[1.5rem] border border-emerald-100 bg-emerald-50/70 p-4 shadow-sm"><p className="text-xs font-black uppercase tracking-wide text-emerald-700">Potential credit pending final review</p><p className="mt-2 text-2xl font-black text-emerald-950">{money(pendingCreditGbp)}</p><p className="mt-1 text-xs font-bold text-emerald-800">Not available until supervisor approval</p></div> : null}
-        <div className="rounded-[1.5rem] border border-emerald-100 bg-emerald-50/70 p-4 shadow-sm"><p className="text-xs font-black uppercase tracking-wide text-emerald-700">Payment</p><p className="mt-3"><span className={`rounded-full px-3 py-1 text-xs font-bold ring-1 ${tonePillClass(thresholdMet ? "complete" : "action")}`}>{thresholdMet ? "Initial payment received" : "Required"}</span></p></div>
+        <div className={`rounded-[1.5rem] border p-4 shadow-sm ${thresholdMet ? "border-emerald-100 bg-emerald-50/70" : "border-amber-100 bg-amber-50/70"}`}><p className={`text-xs font-black uppercase tracking-wide ${thresholdMet ? "text-emerald-700" : "text-amber-700"}`}>Payment</p><p className="mt-3"><span className={`rounded-full px-3 py-1 text-xs font-bold ring-1 ${tonePillClass(thresholdMet ? "complete" : "action")}`}>{paymentPillLabel}</span></p></div>
       </section>
 
       <section className="mt-5 grid gap-4 xl:grid-cols-3">
@@ -286,10 +241,10 @@ export default async function CustomerOrderOperationsPage({ params, searchParams
         <article className="rounded-[1.5rem] border border-slate-200 bg-white p-5 shadow-sm"><p className="text-xs font-black uppercase tracking-wide text-slate-500">Delivery confirmation</p><h3 className="mt-2 text-xl font-black">{deliveryConfirmed ? "Received" : "Pending"}</h3><p className="mt-3 text-sm leading-6 text-slate-700">{deliveryConfirmed ? "Delivery confirmation has been received." : "We will update this page once delivery confirmation is received."}</p></article>
       </section>
 
-      {finalBalanceDueGbp > 0.01 || pendingCreditGbp > 0.01 || appliedCreditGbp > 0.01 || availableCreditGbp > 0.01 ? <details className="mt-5 rounded-[1.75rem] border border-cyan-100 bg-cyan-50/70 p-5 shadow-sm" open={finalBalanceDueGbp > 0.01}><summary className="cursor-pointer list-none text-xl font-black text-cyan-950">Credit and FX details</summary><p className="mt-2 text-sm leading-6 text-slate-700">The order closes in GBP. Local figures for any final balance use the latest available FX rate.</p><div className="mt-4 grid gap-3 xl:grid-cols-4">{appliedCreditGbp > 0.01 ? <div className="rounded-2xl bg-white p-4 ring-1 ring-cyan-100"><p className="text-xs font-black uppercase text-cyan-700">Applied credit</p><p className="mt-1 text-xl font-black">{money(appliedCreditGbp)}</p></div> : null}{appliedCreditGbp > 0.01 ? <div className="rounded-2xl bg-white p-4 ring-1 ring-cyan-100"><p className="text-xs font-black uppercase text-cyan-700">Applied credit local</p><p className="mt-1 text-xl font-black">{effectiveRate ? localAmount(appliedCreditLocal, currencyCode) : "No FX rate"}</p></div> : null}{availableCreditGbp > 0.01 ? <div className="rounded-2xl bg-white p-4 ring-1 ring-cyan-100"><p className="text-xs font-black uppercase text-cyan-700">Available account credit</p><p className="mt-1 text-xl font-black">{money(availableCreditGbp)}</p><p className="mt-1 text-xs font-semibold text-slate-500">{effectiveRate ? localAmount(availableCreditLocal, currencyCode) : "No FX rate"}</p></div> : null}<div className="rounded-2xl bg-white p-4 ring-1 ring-cyan-100"><p className="text-xs font-black uppercase text-cyan-700">Latest FX</p><p className="mt-1 text-xl font-black">{effectiveRate ? effectiveRate.toFixed(4) : "-"}</p><p className="mt-1 text-xs font-semibold text-slate-500">{fxLabel}</p></div></div></details> : null}
+      {visibleCashDueGbp > 0.01 || pendingCreditGbp > 0.01 || appliedCreditGbp > 0.01 || availableCreditGbp > 0.01 ? <details className="mt-5 rounded-[1.75rem] border border-cyan-100 bg-cyan-50/70 p-5 shadow-sm" open={visibleCashDueGbp > 0.01}><summary className="cursor-pointer list-none text-xl font-black text-cyan-950">Credit and FX details</summary><p className="mt-2 text-sm leading-6 text-slate-700">The order closes in GBP. Local figures for any remaining cash due use the latest available FX rate.</p><div className="mt-4 grid gap-3 xl:grid-cols-4">{appliedCreditGbp > 0.01 ? <div className="rounded-2xl bg-white p-4 ring-1 ring-cyan-100"><p className="text-xs font-black uppercase text-cyan-700">Account credit applied</p><p className="mt-1 text-xl font-black">{money(appliedCreditGbp)}</p></div> : null}{appliedCreditGbp > 0.01 ? <div className="rounded-2xl bg-white p-4 ring-1 ring-cyan-100"><p className="text-xs font-black uppercase text-cyan-700">Account credit local guide</p><p className="mt-1 text-xl font-black">{effectiveRate ? localAmount(appliedCreditLocal, currencyCode) : "No FX rate"}</p></div> : null}{visibleCashDueGbp > 0.01 ? <div className="rounded-2xl bg-white p-4 ring-1 ring-amber-100"><p className="text-xs font-black uppercase text-amber-700">Cash due</p><p className="mt-1 text-xl font-black">{money(visibleCashDueGbp)}</p><p className="mt-1 text-xs font-semibold text-slate-500">{effectiveRate ? localAmount(visibleCashDueLocal, currencyCode) : "No FX rate"}</p></div> : null}{availableCreditGbp > 0.01 ? <div className="rounded-2xl bg-white p-4 ring-1 ring-cyan-100"><p className="text-xs font-black uppercase text-cyan-700">Available account credit</p><p className="mt-1 text-xl font-black">{money(availableCreditGbp)}</p><p className="mt-1 text-xs font-semibold text-slate-500">{effectiveRate ? localAmount(availableCreditLocal, currencyCode) : "No FX rate"}</p></div> : null}<div className="rounded-2xl bg-white p-4 ring-1 ring-cyan-100"><p className="text-xs font-black uppercase text-cyan-700">Latest FX</p><p className="mt-1 text-xl font-black">{effectiveRate ? effectiveRate.toFixed(4) : "-"}</p><p className="mt-1 text-xs font-semibold text-slate-500">{fxLabel}</p></div></div></details> : null}
 
       <section className="mt-5 grid gap-4 xl:grid-cols-2">
-        <details className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm"><summary className="cursor-pointer list-none text-xl font-black">Payment details</summary><div className="mt-4 grid gap-3 text-sm text-slate-700"><p>Authorisation ref: <span className="font-black text-slate-950">{order.payment_auth_id ?? "Not assigned"}</span></p><p>Accepted estimate: <span className="font-black text-slate-950">{money(acceptedEstimateGbp)}</span></p>{finalSaleValueConfirmed ? <p>Final sale value: <span className="font-black text-slate-950">{money(finalSaleValueGbp)}</span></p> : null}{confirmedPaymentGbp > 0.01 ? <p>Confirmed payment: <span className="font-black text-slate-950">{money(confirmedPaymentGbp)}</span></p> : null}{appliedCreditGbp > 0.01 ? <p>Applied credit: <span className="font-black text-slate-950">{money(appliedCreditGbp)}</span></p> : null}{hasAmountReceived ? <p>Amount received: <span className="font-black text-slate-950">{money(amountReceivedGbp)}</span></p> : null}{finalBalanceDueGbp > 0.01 ? <p>Balance due: <span className="font-black text-slate-950">{money(finalBalanceDueGbp)}</span></p> : null}{pendingCreditGbp > 0.01 ? <p>Potential credit pending final review: <span className="font-black text-slate-950">{money(pendingCreditGbp)}</span></p> : null}</div></details>
+        <details className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm"><summary className="cursor-pointer list-none text-xl font-black">Payment details</summary><div className="mt-4 grid gap-3 text-sm text-slate-700"><p>Authorisation ref: <span className="font-black text-slate-950">{order.payment_auth_id ?? "Not assigned"}</span></p><p>Accepted estimate: <span className="font-black text-slate-950">{money(acceptedEstimateGbp)}</span></p>{finalSaleValueConfirmed ? <p>Final sale value: <span className="font-black text-slate-950">{money(finalSaleValueGbp)}</span></p> : null}{confirmedPaymentGbp > 0.01 ? <p>Confirmed payment: <span className="font-black text-slate-950">{money(confirmedPaymentGbp)}</span></p> : null}{appliedCreditGbp > 0.01 ? <p>Account credit applied: <span className="font-black text-slate-950">{money(appliedCreditGbp)}</span></p> : null}{hasAmountReceived ? <p>Amount received: <span className="font-black text-slate-950">{money(amountReceivedGbp)}</span></p> : null}{visibleCashDueGbp > 0.01 ? <p>Cash due: <span className="font-black text-slate-950">{money(visibleCashDueGbp)}</span></p> : null}{pendingCreditGbp > 0.01 ? <p>Potential credit pending final review: <span className="font-black text-slate-950">{money(pendingCreditGbp)}</span></p> : null}</div></details>
         <details className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm"><summary className="cursor-pointer list-none text-xl font-black">Order evidence</summary><p className="mt-3 text-sm leading-6 text-slate-600">Original order screenshots are available. Internal procurement and warehouse tracking details are hidden.</p><div className="mt-4 flex flex-wrap gap-2">{screenshots.length === 0 ? <p className="text-sm text-slate-600">No screenshots uploaded.</p> : null}{screenshots.map((row, index) => <a key={row.id} href={row.screenshot_url} target="_blank" rel="noreferrer" className="rounded-xl bg-slate-950 px-3 py-2 text-xs font-black text-white">Open screenshot {index + 1}</a>)}</div></details>
       </section>
     </main>
