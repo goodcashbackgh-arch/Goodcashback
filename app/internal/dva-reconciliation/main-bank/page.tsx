@@ -58,7 +58,7 @@ export default async function MainBankShipperMatchingPage({
   const targetsResult = targetMode === "shipper_ap"
     ? await (supabase as any).rpc("internal_shipper_ap_posted_targets_for_main_bank_v1", {
         p_status: targetStatus,
-        p_search: q || null,
+        p_search: null,
         p_limit: 300,
         p_offset: 0,
       })
@@ -66,7 +66,7 @@ export default async function MainBankShipperMatchingPage({
 
   const loyaltyTargetsResult = targetMode === "completion_loyalty"
     ? await (supabase as any).rpc("internal_main_bank_completion_loyalty_targets_v1", {
-        p_search: q || null,
+        p_search: null,
         p_limit: 300,
         p_offset: 0,
       })
@@ -124,8 +124,8 @@ export default async function MainBankShipperMatchingPage({
           <form action="/internal/dva-reconciliation/main-bank" className="grid gap-3 md:grid-cols-[1fr_180px_180px_auto] md:items-end">
             <input type="hidden" name="target" value={targetMode} />
             <label className="grid gap-1 text-xs font-bold uppercase tracking-wide text-slate-500">
-              Search
-              <input className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-950" name="q" defaultValue={q} placeholder={targetMode === "shipper_ap" ? "Shipper, invoice ref, bank ref" : "Order, importer, bank ref"} />
+              Search bank lines
+              <input className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-950" name="q" defaultValue={q} placeholder="Bank ref, date, amount, source bank" />
             </label>
             <label className="grid gap-1 text-xs font-bold uppercase tracking-wide text-slate-500">
               Statement status
