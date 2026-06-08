@@ -25,7 +25,9 @@ export default function SelectionControls() {
       >
         Unselect all visible
       </button>
-      <span className="text-slate-500">Row checkboxes control selected-visible freeze actions only.</span>
+      <span className="text-slate-500">
+        FX/card and bank-fee rows marked endpoint-prove-required are control-postable: select, freeze, batch, then post from the batch detail.
+      </span>
     </div>
   );
 }
