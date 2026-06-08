@@ -1,6 +1,30 @@
 "use client";
 
+import { useEffect } from "react";
+
+function relabelControlPostingStatus() {
+  const rows = document.querySelectorAll<HTMLTableRowElement>("tbody tr");
+  rows.forEach((row) => {
+    const cells = row.querySelectorAll<HTMLTableCellElement>("td");
+    if (cells.length < 10) return;
+
+    const categoryText = cells[2]?.textContent?.toLowerCase() ?? "";
+    const isControlPostableRow = categoryText.includes("bank fee") || categoryText.includes("fx/card difference");
+    if (!isControlPostableRow) return;
+
+    const statusPill = cells[9]?.querySelector<HTMLSpanElement>("span");
+    if (statusPill?.textContent?.trim().toLowerCase() !== "blocked endpoint prove required") return;
+
+    statusPill.textContent = "Control-postable";
+    statusPill.title = "Selectable for controlled freeze, batch and batch-detail Sage posting.";
+  });
+}
+
 export default function SelectionControls() {
+  useEffect(() => {
+    relabelControlPostingStatus();
+  }, []);
+
   function setVisibleSelections(checked: boolean) {
     const boxes = document.querySelectorAll<HTMLInputElement>('input[data-accounting-row-select="true"]');
     boxes.forEach((box) => {
