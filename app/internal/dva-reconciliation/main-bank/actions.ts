@@ -42,6 +42,23 @@ function redirectWithResult(params: Record<string, string>): never {
   redirect(`/internal/dva-reconciliation/main-bank?${query.toString()}`);
 }
 
+async function confirmedResidualForLine(supabase: Awaited<ReturnType<typeof createClient>>, statementLineId: string) {
+  const { data } = await supabase
+    .from("dva_statement_line_allocations")
+    .select("allocated_gbp_amount")
+    .eq("dva_statement_line_id", statementLineId)
+    .eq("allocation_status", "confirmed")
+    .in("allocation_type", ["fx_card_difference", "bank_fee", "unmatched_hold"]);
+
+  return round2(((data ?? []) as Row[]).reduce((sum, row) => sum + num(row.allocated_gbp_amount), 0));
+}
+
+function safeLineRemaining(row: Row, confirmedResidualGbp: number) {
+  const readModelRemaining = round2(num(row.remaining_gbp));
+  const legacyRemainingAfterResidual = round2(Math.max(num(row.amount_gbp) - num(row.allocated_gbp) - confirmedResidualGbp, 0));
+  return Math.min(readModelRemaining, legacyRemainingAfterResidual);
+}
+
 export async function allocateMainBankLineToShipperApAction(formData: FormData) {
   const supabase = await createClient();
   const {
@@ -101,7 +118,8 @@ export async function allocateMainBankLineToShipperApAction(formData: FormData) 
     redirectWithResult({ error: "One bank payment can only be matched to invoices for one shipper/Sage contact. Split different shippers into separate bank lines or separate allocations." });
   }
 
-  const lineRemaining = round2(num(selectedLine.remaining_gbp));
+  const residualGbp = await confirmedResidualForLine(supabase, statementLineId);
+  const lineRemaining = safeLineRemaining(selectedLine, residualGbp);
   const targetTotal = round2(selectedTargets.reduce((sum, row) => sum + num(row.remaining_gbp), 0));
 
   if (shippingDocumentIds.length > 1 && targetTotal > lineRemaining + 0.01) {
@@ -114,6 +132,10 @@ export async function allocateMainBankLineToShipperApAction(formData: FormData) 
   for (const target of selectedTargets) {
     const targetId = text(target.shipping_document_id);
     const allocationAmount = shippingDocumentIds.length === 1 && amountRaw ? amount : round2(num(target.remaining_gbp));
+
+    if ((allocationAmount ?? 0) > lineRemaining - allocatedTotal + 0.01) {
+      redirectWithResult({ error: `Selected shipper allocation exceeds remaining bank line amount £${lineRemaining.toFixed(2)} after FX/fee/loyalty consumption.` });
+    }
 
     const { data, error } = await supabase.rpc("staff_allocate_main_bank_line_to_shipper_ap_v1", {
       p_dva_statement_line_id: statementLineId,
