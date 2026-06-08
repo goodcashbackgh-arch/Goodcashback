@@ -6,6 +6,7 @@ SET LOCAL statement_timeout = '0';
 -- Source-lot account credit application.
 -- Customer-facing balance stays one account-credit pot.
 -- Internal ledger consumption is source-aware for audit and prevents hidden VAT/cashback wording leaks.
+-- Balance compatibility rule: unlocked debit rows still reduce the account-credit pot, even when legacy rows were not source-lot linked.
 
 CREATE OR REPLACE FUNCTION public.internal_importer_available_account_credit_lots_v1(
   p_importer_id uuid
@@ -22,30 +23,44 @@ LANGUAGE sql
 SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $$
-  WITH legacy_unlinked_debits AS (
+  WITH source_credit_types AS (
+    SELECT *
+    FROM (VALUES
+      ('settlement_credit'::text, 1),
+      ('overfunding'::text, 2),
+      ('refund_resolution'::text, 3),
+      ('liability_settlement'::text, 4),
+      ('payout_reversal'::text, 5),
+      ('completion_loyalty_reward'::text, 6),
+      ('manual'::text, 7)
+    ) AS v(source_type, priority)
+  ), source_credit_ids AS (
+    SELECT c.id
+    FROM public.importer_credit_ledger c
+    JOIN source_credit_types sct ON sct.source_type = c.source_type::text
+    WHERE c.importer_id = p_importer_id
+      AND c.direction = 'credit'
+      AND c.lock_reason IS NULL
+  ), legacy_unlinked_debits AS (
     SELECT
       ROUND(COALESCE(SUM(ABS(d.amount_gbp)), 0)::numeric, 2) AS amount_gbp
     FROM public.importer_credit_ledger d
     WHERE d.importer_id = p_importer_id
       AND d.direction = 'debit'
-      AND d.source_type = 'credit_application'
       AND d.lock_reason IS NULL
-      AND (
-        COALESCE(d.source_table, '') <> 'importer_credit_ledger'
-        OR d.source_id IS NULL
-        OR COALESCE(d.source_entity_type, '') <> 'importer_credit_ledger'
-        OR d.source_entity_id IS NULL
+      AND NOT (
+        COALESCE(d.source_table, '') = 'importer_credit_ledger'
+        AND d.source_id IN (SELECT id FROM source_credit_ids)
+      )
+      AND NOT (
+        COALESCE(d.source_entity_type, '') = 'importer_credit_ledger'
+        AND d.source_entity_id IN (SELECT id FROM source_credit_ids)
       )
   ), lot_base AS (
     SELECT
       c.id AS credit_ledger_id,
       c.source_type::text AS source_type,
-      CASE c.source_type
-        WHEN 'settlement_credit' THEN 1
-        WHEN 'overfunding' THEN 2
-        WHEN 'completion_loyalty_reward' THEN 3
-        ELSE 99
-      END AS priority,
+      sct.priority,
       COALESCE(c.effective_at, c.created_at) AS effective_at,
       c.created_at,
       ROUND(GREATEST(
@@ -53,12 +68,12 @@ AS $$
         0
       )::numeric, 2) AS amount_after_linked_debits_gbp
     FROM public.importer_credit_ledger c
+    JOIN source_credit_types sct ON sct.source_type = c.source_type::text
     LEFT JOIN LATERAL (
       SELECT ROUND(COALESCE(SUM(ABS(d.amount_gbp)), 0)::numeric, 2) AS linked_debit_gbp
       FROM public.importer_credit_ledger d
       WHERE d.importer_id = c.importer_id
         AND d.direction = 'debit'
-        AND d.source_type = 'credit_application'
         AND d.lock_reason IS NULL
         AND (
           (COALESCE(d.source_table, '') = 'importer_credit_ledger' AND d.source_id = c.id)
@@ -68,8 +83,6 @@ AS $$
     WHERE c.importer_id = p_importer_id
       AND c.direction = 'credit'
       AND c.lock_reason IS NULL
-      AND c.source_type IN ('settlement_credit', 'overfunding', 'completion_loyalty_reward')
-      AND c.applied_to_order_id IS NULL
   ), ordered_lots AS (
     SELECT
       lb.*,
@@ -185,24 +198,12 @@ BEGIN
   IF v_order.order_type <> 'original' THEN RAISE EXCEPTION 'Credit can only auto-apply to original orders.'; END IF;
   IF v_order.status IN ('archived', 'cancelled') THEN RAISE EXCEPTION 'Cannot apply credit to order status %.', v_order.status; END IF;
 
-  -- Lock source credit lots before computing availability so concurrent applications cannot double-spend.
+  -- Lock all unlocked account-credit rows and debits for this importer so concurrent applications cannot double-spend.
   PERFORM 1
   FROM public.importer_credit_ledger c
   WHERE c.importer_id = v_order.importer_id
-    AND c.direction = 'credit'
     AND c.lock_reason IS NULL
-    AND c.source_type IN ('settlement_credit', 'overfunding', 'completion_loyalty_reward')
-    AND c.applied_to_order_id IS NULL
-  ORDER BY
-    CASE c.source_type
-      WHEN 'settlement_credit' THEN 1
-      WHEN 'overfunding' THEN 2
-      WHEN 'completion_loyalty_reward' THEN 3
-      ELSE 99
-    END,
-    COALESCE(c.effective_at, c.created_at),
-    c.created_at,
-    c.id
+  ORDER BY c.created_at, c.id
   FOR UPDATE;
 
   SELECT ROUND(COALESCE(SUM(amount_gbp) FILTER (WHERE event_type = 'credit_applied'), 0)::numeric, 2),
