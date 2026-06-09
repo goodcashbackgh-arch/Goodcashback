@@ -1,9 +1,11 @@
 import Link from "next/link";
 import { createClient } from "@/utils/supabase/server";
+import { allocateStatementLineToFinalBalancePaymentAction } from "../finalBalanceActions";
 
 type Row = Record<string, unknown>;
+type OperationalKind = "invoice" | "exception" | "final_balance";
 type OperationalRow = {
-  kind: "invoice" | "exception";
+  kind: OperationalKind;
   id: string;
   title: string;
   retailerName: string;
@@ -73,14 +75,14 @@ function groupBy(rows: Row[], key: string) {
 
 function statusFilter(row: Row) {
   if (bool(row.confirmed_balanced_yn)) return "balanced";
-  if (num(row.open_allocated_gbp) > 0) return "part";
+  if (num(row.confirmed_allocated_gbp) > 0 || num(row.open_allocated_gbp) > 0) return "part";
   return "unmatched";
 }
 
 function lineTone(row: Row, selectedLineId: string) {
   if (text(row.dva_statement_line_id) === selectedLineId) return "border-sky-500 bg-sky-50 ring-2 ring-sky-200";
   if (bool(row.confirmed_balanced_yn)) return "border-emerald-200 bg-emerald-50";
-  if (num(row.open_allocated_gbp) > 0) return "border-amber-200 bg-amber-50";
+  if (num(row.confirmed_allocated_gbp) > 0 || num(row.open_allocated_gbp) > 0) return "border-amber-200 bg-amber-50";
   return "border-slate-200 bg-white";
 }
 
@@ -155,8 +157,15 @@ function importerLabel(importer?: Row) {
 }
 
 function isUsefulOperationalCandidate(row: OperationalRow) {
+  if (row.kind === "final_balance") return row.amount > 0 && row.status === "balance_due";
   if (row.kind === "exception") return row.openExceptionTotal > 0 && row.status !== "resolved" && row.status !== "closed";
   return row.status === "approved_current" && (row.amount > 0 || row.progressedTotal > 0);
+}
+
+function targetKindLabel(kind: OperationalKind) {
+  if (kind === "invoice") return "Invoice";
+  if (kind === "exception") return "Exception";
+  return "Final balance payment";
 }
 
 export default async function DvaMatchingWorkspacePage({
@@ -225,6 +234,9 @@ export default async function DvaMatchingWorkspacePage({
   const selectedMerchantTokens = merchantTokens(selectedLine?.retailer_name_ref, selectedLine?.reference_raw);
   const rightRetailer = manualRightRetailer || leftRetailer;
 
+  const settlementV2Result = await supabase.rpc("internal_order_final_sale_settlement_v2", { p_order_id: null });
+  const settlementRows = ((settlementV2Result.data ?? []) as unknown as Row[]).filter((row) => !selectedImporterId || text(row.importer_id) === selectedImporterId);
+
   const filteredStatementLines = statementLines.filter((row) => {
     const statusOk = leftStatus === "all" || statusFilter(row) === leftStatus;
     const directionOk = leftDirection === "all" || text(row.direction) === leftDirection;
@@ -277,18 +289,36 @@ export default async function DvaMatchingWorkspacePage({
     };
   });
 
-  const allOperationalRows = [...invoiceRows, ...exceptionRows];
+  const finalBalanceRows: OperationalRow[] = settlementRows
+    .filter((row) => num(row.final_balance_due_gbp) > 0.01 && bool(row.final_sale_value_exists))
+    .map((row) => ({
+      kind: "final_balance",
+      id: `final-balance-${text(row.order_id)}`,
+      title: `Final balance payment · ${text(row.order_ref)}`,
+      retailerName: "Final sale settlement",
+      orderRef: text(row.order_ref),
+      orderId: text(row.order_id),
+      status: "balance_due",
+      amount: num(row.final_balance_due_gbp),
+      progressedTotal: num(row.amount_received_gbp),
+      openExceptionTotal: 0,
+      raw: row,
+    }));
+
+  const allOperationalRows = [...finalBalanceRows, ...invoiceRows, ...exceptionRows];
   const hasAutoMerchantMatches = !rightRetailer && selectedMerchantTokens.length > 0 && allOperationalRows.some((row) => merchantScore(row, selectedMerchantTokens) > 0);
   const operationalRows = allOperationalRows
     .filter((row) => {
       const manualRetailerOk = !rightRetailer || row.retailerName.toLowerCase().includes(rightRetailer.toLowerCase()) || row.title.toLowerCase().includes(rightRetailer.toLowerCase()) || row.orderRef.toLowerCase().includes(rightRetailer.toLowerCase());
-      const autoRetailerOk = !hasAutoMerchantMatches || merchantScore(row, selectedMerchantTokens) > 0;
+      const autoRetailerOk = row.kind === "final_balance" || !hasAutoMerchantMatches || merchantScore(row, selectedMerchantTokens) > 0;
       const statusOk =
         rightStatus === "all" ||
         (rightStatus === "usable" ? isUsefulOperationalCandidate(row) : rightStatus === "open" ? row.status !== "resolved" && row.status !== "closed" : row.status === rightStatus);
       return manualRetailerOk && autoRetailerOk && statusOk;
     })
     .sort((a, b) => {
+      if (a.kind === "final_balance" && b.kind !== "final_balance") return -1;
+      if (b.kind === "final_balance" && a.kind !== "final_balance") return 1;
       const merchantDelta = merchantScore(b, selectedMerchantTokens) - merchantScore(a, selectedMerchantTokens);
       if (merchantDelta !== 0) return merchantDelta;
       const amountDelta = amountScore(selectedStatementAmount, b) - amountScore(selectedStatementAmount, a);
@@ -300,9 +330,24 @@ export default async function DvaMatchingWorkspacePage({
   const selectedTargetAmount = selectedTarget ? selectedTarget.amount || selectedTarget.progressedTotal || selectedTarget.openExceptionTotal : 0;
   const suggestedAllocation = selectedTarget ? Math.min(selectedStatementRemaining, selectedTargetAmount || selectedStatementRemaining) : 0;
   const remainingAfterSelection = Math.max(0, selectedStatementRemaining - suggestedAllocation);
+  const selectedTargetIsFinalBalance = selectedTarget?.kind === "final_balance";
+  const finalBalanceFxExcess = selectedTargetIsFinalBalance ? Math.max(0, selectedStatementRemaining - selectedTargetAmount) : 0;
+  const finalBalanceAfterSelection = selectedTargetIsFinalBalance ? Math.max(0, selectedTargetAmount - selectedStatementRemaining) : 0;
+  const canApplyFinalBalance = selectedTargetIsFinalBalance && text(selectedLine?.direction) === "in" && selectedStatementRemaining > 0 && selectedTargetAmount > 0;
+  const activeReturnPath = workspaceHref({
+    importer_id: selectedImporterId,
+    line_id: activeLineId,
+    target_id: selectedTargetId,
+    left_status: leftStatus,
+    left_direction: leftDirection,
+    left_retailer: leftRetailer,
+    right_retailer: manualRightRetailer,
+    right_status: rightStatus,
+  });
+
   const inTotal = statementLines.filter((row) => text(row.direction) === "in").reduce((sum, row) => sum + num(row.statement_gbp_amount), 0);
   const outTotal = statementLines.filter((row) => text(row.direction) === "out").reduce((sum, row) => sum + num(row.statement_gbp_amount), 0);
-  const unmatchedCount = statementLines.filter((row) => !bool(row.confirmed_balanced_yn) && num(row.confirmed_allocated_gbp) === 0).length;
+  const unmatchedCount = statementLines.filter((row) => statusFilter(row) === "unmatched").length;
   const creditBalance = creditLedger.reduce((sum, row) => {
     const direction = text(row.direction).toLowerCase();
     const entryType = text(row.entry_type).toLowerCase();
@@ -318,7 +363,7 @@ export default async function DvaMatchingWorkspacePage({
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">DVA/card matching workspace</p>
           <h1 className="mt-2 text-3xl font-semibold tracking-tight">Two-pane importer matching cockpit</h1>
           <p className="mt-3 max-w-5xl text-sm leading-6 text-slate-600">
-            Supervisor allocation workspace for committed DVA/card statement lines. Pick a statement line on the left and the operational target on the right, then use the controlled action bar to allocate supplier purchases, retailer refunds, exception holds, FX/card residuals, or bank fees. Customer/importer IN funding stays in Importer Funding Control.
+            Supervisor allocation workspace for committed DVA/card statement lines. Pick a statement line on the left and the operational target on the right, then use the controlled action bar to allocate supplier purchases, retailer refunds, exception holds, final-balance payments, FX/card residuals, or bank fees. Accepted-estimate IN funding stays in Importer Funding Control.
           </p>
           <form action="/internal/dva-reconciliation/workspace" className="mt-5 flex flex-wrap items-end gap-3">
             <div className="min-w-64 flex-1">
@@ -336,7 +381,7 @@ export default async function DvaMatchingWorkspacePage({
         <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           {metric("Importer", importerLabel(selectedImporter), "Workspace is now importer-scoped by default.")}
           {metric("IN / OUT", `${gbp(inTotal)} / ${gbp(outTotal)}`, "Committed statement movement visible in this workspace.")}
-          {metric("Credit balance", gbp(creditBalance), "Existing importer credit ledger signal.")}
+          {metric("Final balance targets", String(finalBalanceRows.length), "Open final-sale balances available in the right pane.")}
           {metric("Unmatched lines", String(unmatchedCount), "Statement lines still needing funding or allocation route.")}
         </section>
 
@@ -351,6 +396,13 @@ export default async function DvaMatchingWorkspacePage({
           <section className="rounded-3xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-950">
             <p className="font-semibold">Automation signal for selected statement line</p>
             <p className="mt-1">{selectedLineSuggestions.length} suggestion(s) exist. Use the filters to verify before confirming allocation through the controlled action bar.</p>
+          </section>
+        ) : null}
+
+        {settlementV2Result.error ? (
+          <section className="rounded-3xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
+            <p className="font-semibold">Final-balance cards are waiting for the settlement v2 migration.</p>
+            <p className="mt-1">{settlementV2Result.error.message}</p>
           </section>
         ) : null}
 
@@ -404,7 +456,7 @@ export default async function DvaMatchingWorkspacePage({
                     </div>
                     <span className="rounded-full bg-white px-2 py-1 text-xs font-semibold text-slate-700 ring-1 ring-slate-200">{statusFilter(row)}</span>
                   </div>
-                  <p className="mt-2 text-xs text-slate-500">Allocated {gbp(row.confirmed_allocated_gbp)} · Remaining {gbp(row.confirmed_unallocated_gbp)} · Auth {text(row.auth_id_ref) || "—"}</p>
+                  <p className="mt-2 text-xs text-slate-500">Allocated {gbp(row.confirmed_allocated_gbp)} · Remaining {gbp(row.confirmed_unallocated_gbp)} · Open/draft {gbp(row.open_allocated_gbp)} · Auth {text(row.auth_id_ref) || "—"}</p>
                 </Link>
               ))}
             </div>
@@ -424,6 +476,7 @@ export default async function DvaMatchingWorkspacePage({
                 <select name="right_status" defaultValue={rightStatus} className="rounded-xl border border-slate-200 px-3 py-2 text-sm">
                   <option value="usable">Usable candidates</option>
                   <option value="open">Open / active</option>
+                  <option value="balance_due">Balance due</option>
                   <option value="approved_current">Approved current</option>
                   <option value="pending_review">Pending review</option>
                   <option value="rejected_resubmit_required">Rejected / resubmit</option>
@@ -434,7 +487,7 @@ export default async function DvaMatchingWorkspacePage({
             </div>
 
             <div className="mt-4 space-y-3">
-              {operationalRows.length === 0 ? <p className="text-sm text-slate-500">No candidate orders, invoices, or exceptions match the current filters.</p> : null}
+              {operationalRows.length === 0 ? <p className="text-sm text-slate-500">No candidate orders, invoices, exceptions, or final-balance targets match the current filters.</p> : null}
               {operationalRows.map((row) => (
                 <Link
                   key={`${row.kind}-${row.id}`}
@@ -452,12 +505,19 @@ export default async function DvaMatchingWorkspacePage({
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div>
-                      <p className="font-semibold">{row.kind === "invoice" ? "Invoice" : "Exception"} · {row.title}</p>
+                      <p className="font-semibold">{targetKindLabel(row.kind)} · {row.title}</p>
                       <p className="mt-1 text-sm text-slate-600">{row.retailerName || "No retailer"} · {row.orderRef || "No order ref"}</p>
                     </div>
                     <span className="rounded-full bg-white px-2 py-1 text-xs font-semibold text-slate-700 ring-1 ring-slate-200">{row.status || "open"}</span>
                   </div>
-                  <p className="mt-2 text-xs text-slate-500">Amount {gbp(row.amount)} · Progressed {gbp(row.progressedTotal)} · Open exception {gbp(row.openExceptionTotal)}</p>
+                  {row.kind === "final_balance" ? (
+                    <div className="mt-2 space-y-1 text-xs text-slate-500">
+                      <p>Final sale value {gbp(row.raw.signed_final_sale_value_gbp)} · Received so far {gbp(row.raw.amount_received_gbp)} · Balance due {gbp(row.raw.final_balance_due_gbp)}</p>
+                      {text(selectedLine?.direction) === "in" ? <p>Selected line preview: apply {gbp(Math.min(selectedStatementRemaining, row.amount))} · balance after {gbp(Math.max(0, row.amount - selectedStatementRemaining))} · FX/card excess {gbp(Math.max(0, selectedStatementRemaining - row.amount))}</p> : <p className="font-semibold text-amber-700">Final-balance payment requires an IN statement line.</p>}
+                    </div>
+                  ) : (
+                    <p className="mt-2 text-xs text-slate-500">Amount {gbp(row.amount)} · Progressed {gbp(row.progressedTotal)} · Open exception {gbp(row.openExceptionTotal)}</p>
+                  )}
                   {merchantScore(row, selectedMerchantTokens) > 0 ? <p className="mt-2 rounded-xl bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800">Merchant match score: {merchantScore(row, selectedMerchantTokens)}</p> : null}
                   {amountScore(selectedStatementAmount, row) > 0 ? <p className="mt-2 rounded-xl bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">Amount closeness score: {amountScore(selectedStatementAmount, row)}</p> : null}
                   {row.id === selectedTargetId ? <p className="mt-2 rounded-xl bg-sky-100 px-3 py-2 text-xs font-semibold text-sky-900">Selected target</p> : null}
@@ -472,15 +532,28 @@ export default async function DvaMatchingWorkspacePage({
         <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 text-sm">
           <div>
             <p className="font-semibold">Selected statement: {selectedLine ? `${text(selectedLine.direction).toUpperCase()} · ${gbp(selectedStatementAmount)}` : "none"}</p>
-            <p className="text-slate-600">Current allocated {gbp(selectedStatementAllocated)} · Selected target {selectedTarget ? `${selectedTarget.kind} · ${gbp(selectedTargetAmount)}` : "none"}</p>
+            <p className="text-slate-600">Current allocated {gbp(selectedStatementAllocated)} · Selected target {selectedTarget ? `${targetKindLabel(selectedTarget.kind)} · ${gbp(selectedTargetAmount)}` : "none"}</p>
           </div>
           <div className="grid gap-1 text-right">
             <p className="font-semibold">Suggested allocation: {gbp(suggestedAllocation)}</p>
             <p className="text-slate-600">Remaining after selection: {gbp(remainingAfterSelection)}</p>
+            {selectedTargetIsFinalBalance ? <p className="text-slate-600">Final balance after: {gbp(finalBalanceAfterSelection)} · FX/card excess: {gbp(finalBalanceFxExcess)}</p> : null}
             {!selectedTarget ? <p className="text-xs font-semibold text-amber-700">Select a right-side target before allocation.</p> : null}
+            {selectedTargetIsFinalBalance && text(selectedLine?.direction) !== "in" ? <p className="text-xs font-semibold text-amber-700">Final-balance payment requires an IN statement line.</p> : null}
           </div>
           <div className="flex flex-wrap gap-2">
-            <button className="rounded-xl bg-slate-200 px-4 py-2 font-semibold text-slate-500" type="button" disabled>Confirm allocation next</button>
+            {selectedTargetIsFinalBalance ? (
+              <form action={allocateStatementLineToFinalBalancePaymentAction}>
+                <input type="hidden" name="return_path" value={activeReturnPath} />
+                <input type="hidden" name="dva_statement_line_id" value={activeLineId} />
+                <input type="hidden" name="order_id" value={selectedTarget?.orderId ?? ""} />
+                <input type="hidden" name="classify_fx_excess" value="true" />
+                <input type="hidden" name="notes" value="Final balance allocation from DVA/card workspace." />
+                <button className="rounded-xl bg-slate-950 px-4 py-2 font-semibold text-white disabled:bg-slate-200 disabled:text-slate-500" type="submit" disabled={!canApplyFinalBalance}>{finalBalanceFxExcess > 0 ? "Apply balance + FX/card excess" : "Apply to final balance"}</button>
+              </form>
+            ) : (
+              <button className="rounded-xl bg-slate-200 px-4 py-2 font-semibold text-slate-500" type="button" disabled>Confirm allocation next</button>
+            )}
             <button className="rounded-xl bg-slate-100 px-4 py-2 font-semibold text-slate-500" type="button" disabled>Add FX/card diff next</button>
           </div>
         </div>
