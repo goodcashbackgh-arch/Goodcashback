@@ -5,10 +5,11 @@ import {
   allocateStatementLineToOperationalTargetAction,
   allocateStatementLineToSupplierInvoiceAction,
 } from "../actions";
+import { allocateStatementLineToFinalBalancePaymentAction } from "../finalBalanceActions";
 import FxResidualAllocationForm from "./FxResidualAllocationForm";
 
 type Direction = "in" | "out" | "neutral";
-type TargetType = "invoice" | "exception" | "unknown";
+type TargetType = "invoice" | "exception" | "final_balance" | "unknown";
 
 type PickedItem = {
   id: string;
@@ -74,6 +75,7 @@ function signedAmount(direction: Direction, amount: number) {
 
 function inferTargetDirection(body: string): Direction {
   const lower = body.toLowerCase();
+  if (lower.startsWith("final balance payment")) return "in";
   if (lower.startsWith("invoice")) return "out";
   if (lower.startsWith("exception") && lower.includes("refund")) return "in";
   if (lower.startsWith("exception") && lower.includes("not charged")) return "neutral";
@@ -83,9 +85,15 @@ function inferTargetDirection(body: string): Direction {
 }
 
 function inferTargetType(body: string): TargetType {
+  if (body.startsWith("Final balance payment")) return "final_balance";
   if (body.startsWith("Invoice")) return "invoice";
   if (body.startsWith("Exception")) return "exception";
   return "unknown";
+}
+
+function targetOrderId(item?: PickedItem | null) {
+  const id = item?.id ?? "";
+  return id.startsWith("final-balance-") ? id.slice("final-balance-".length) : id;
 }
 
 function hideServerSelectedBadges(anchor: HTMLAnchorElement) {
@@ -121,12 +129,15 @@ function classifyAnchor(anchor: HTMLAnchorElement): ClassifiedCard | null {
 
   const lineId = url.searchParams.get("line_id") || "";
   const targetId = url.searchParams.get("target_id") || "";
-  const isTargetCard = body.startsWith("Invoice") || body.startsWith("Exception");
+  const isTargetCard = body.startsWith("Invoice") || body.startsWith("Exception") || body.startsWith("Final balance payment");
 
   if (targetId && isTargetCard) {
     const direction = inferTargetDirection(body);
     const targetType = inferTargetType(body);
-    const amount = parseGbp(body.match(/Amount\s+£[\d,.]+/)?.[0] || body);
+    const amount =
+      targetType === "final_balance"
+        ? (parseLabeledGbp(body, "Balance due") ?? parseGbp(body))
+        : parseGbp(body.match(/Amount\s+£[\d,.]+/)?.[0] || body);
     return {
       anchor,
       id: targetId,
@@ -210,6 +221,14 @@ function applyCardVisual(anchor: HTMLAnchorElement, item: PickedItem) {
 function message(statements: Map<string, PickedItem>, targets: Map<string, PickedItem>, net: number) {
   if (statements.size === 0 || targets.size === 0) return "Select bank/card line(s) and operational target(s).";
 
+  const statement = singleItem(statements);
+  const target = singleItem(targets);
+  if (target?.targetType === "final_balance") {
+    if (!statement) return "Final-balance mode: select one IN bank/card line only.";
+    if (statement.direction !== "in") return "Final-balance payment requires one IN bank/card line.";
+    return "Final-balance mode: apply the balance first; any surplus becomes FX/card difference.";
+  }
+
   const statementIn = countDirection(statements, "in");
   const statementOut = countDirection(statements, "out");
   const targetIn = countDirection(targets, "in");
@@ -232,6 +251,10 @@ function operationalAllocationType(statement?: PickedItem | null, target?: Picke
   if (statement.direction === "in" && target.direction === "in") return "retailer_refund";
   if (statement.direction === "out" && target.direction === "out") return "exception_hold";
   return "";
+}
+
+function hasFinalBalanceTarget(items: Map<string, PickedItem>) {
+  return [...items.values()].some((item) => item.targetType === "final_balance");
 }
 
 export default function SafeWorkspaceSelectionController() {
@@ -299,8 +322,14 @@ export default function SafeWorkspaceSelectionController() {
           selectable: card.selectable,
         };
 
-        if (card.kind === "statement") setStatements((current) => toggleMap(current, item));
-        else setTargets((current) => toggleMap(current, item));
+        if (card.kind === "statement") {
+          setStatements((current) => (hasFinalBalanceTarget(targets) ? new Map([[item.id, item]]) : toggleMap(current, item)));
+        } else {
+          setTargets((current) => {
+            if (item.targetType === "final_balance" || hasFinalBalanceTarget(current)) return new Map([[item.id, item]]);
+            return toggleMap(current, item);
+          });
+        }
       };
 
       card.anchor.addEventListener("click", onClick);
@@ -308,7 +337,7 @@ export default function SafeWorkspaceSelectionController() {
     }
 
     return () => cleanupFns.forEach((cleanup) => cleanup());
-  }, [cards]);
+  }, [cards, targets]);
 
   useEffect(() => {
     for (const card of cards) {
@@ -332,10 +361,23 @@ export default function SafeWorkspaceSelectionController() {
   const statement = singleItem(statements);
   const target = singleItem(targets);
   const hasPrimaryTarget = targets.size > 0;
+  const selectedTargetIsFinalBalance = target?.targetType === "final_balance";
+  const finalBalanceOrderId = selectedTargetIsFinalBalance ? targetOrderId(target) : "";
   const canConfirmSupplier = Boolean(statement && target?.targetType === "invoice");
   const operationalType = operationalAllocationType(statement, target);
   const canConfirmOperational = Boolean(statement && target?.targetType === "exception" && operationalType);
   const allocationAmount = Math.min(statement?.remainingAmount ?? statement?.amount ?? 0, target?.amount ?? 0);
+  const statementRemainingForFinalBalance = statement?.remainingAmount ?? statement?.amount ?? 0;
+  const finalBalanceFxExcess = selectedTargetIsFinalBalance ? Math.max(0, statementRemainingForFinalBalance - (target?.amount ?? 0)) : 0;
+  const finalBalanceAfterSelection = selectedTargetIsFinalBalance ? Math.max(0, (target?.amount ?? 0) - statementRemainingForFinalBalance) : 0;
+  const canConfirmFinalBalance = Boolean(
+    selectedTargetIsFinalBalance &&
+      statement &&
+      statement.direction === "in" &&
+      statement.selectable !== false &&
+      finalBalanceOrderId &&
+      allocationAmount > 0.009,
+  );
   const fxResidualAmount = Math.abs(statement?.remainingAmount ?? statement?.amount ?? 0);
   const canAllocateFxResidual = Boolean(statement && statement.selectable !== false && !hasPrimaryTarget && fxResidualAmount > 0.009);
 
@@ -353,6 +395,11 @@ export default function SafeWorkspaceSelectionController() {
           </p>
           <p className="font-bold text-slate-950">Net position gap: {gbp(netGap)}</p>
           <p className="text-xs text-slate-500">Absolute/gross gap: {gbp(grossGap)}</p>
+          {selectedTargetIsFinalBalance ? (
+            <p className="text-xs text-slate-600">
+              Final balance after: {gbp(finalBalanceAfterSelection)} · FX/card excess: {gbp(finalBalanceFxExcess)}
+            </p>
+          ) : null}
           <p className="text-xs font-semibold text-amber-700">{selectedSummary}</p>
         </div>
 
@@ -374,6 +421,21 @@ export default function SafeWorkspaceSelectionController() {
             remainingAmount={fxResidualAmount}
             returnPath={currentPath}
           />
+
+          <form action={allocateStatementLineToFinalBalancePaymentAction}>
+            <input type="hidden" name="return_path" value={currentPath} />
+            <input type="hidden" name="dva_statement_line_id" value={statement?.id ?? ""} />
+            <input type="hidden" name="order_id" value={finalBalanceOrderId} />
+            <input type="hidden" name="classify_fx_excess" value="true" />
+            <input type="hidden" name="notes" value="Allocated from DVA/card matching workspace final-balance target." />
+            <button
+              type="submit"
+              disabled={!canConfirmFinalBalance}
+              className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500"
+            >
+              {finalBalanceFxExcess > 0.009 ? "Apply balance + FX/card excess" : "Apply to final balance"}
+            </button>
+          </form>
 
           <form action={allocateStatementLineToOperationalTargetAction}>
             <input type="hidden" name="return_path" value={currentPath} />
