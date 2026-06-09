@@ -57,6 +57,12 @@ function parseLabeledGbp(body: string, label: string) {
   return Number.isFinite(value) ? value : null;
 }
 
+function parseFinalBalanceDue(body: string) {
+  const match = body.match(/Balance\s+due\s*£\s*([\d,]+(?:\.\d{1,2})?)/i);
+  if (match) return Number(match[1].replace(/,/g, "")) || 0;
+  return parseLabeledGbp(body, "Balance due") ?? 0;
+}
+
 function itemLabel(body: string) {
   return (
     body
@@ -136,7 +142,7 @@ function classifyAnchor(anchor: HTMLAnchorElement): ClassifiedCard | null {
     const targetType = inferTargetType(body);
     const amount =
       targetType === "final_balance"
-        ? (parseLabeledGbp(body, "Balance due") ?? parseGbp(body))
+        ? parseFinalBalanceDue(body)
         : parseGbp(body.match(/Amount\s+£[\d,.]+/)?.[0] || body);
     return {
       anchor,
@@ -226,7 +232,7 @@ function message(statements: Map<string, PickedItem>, targets: Map<string, Picke
   if (target?.targetType === "final_balance") {
     if (!statement) return "Final-balance mode: select one IN bank/card line only.";
     if (statement.direction !== "in") return "Final-balance payment requires one IN bank/card line.";
-    return "Final-balance mode: apply the balance first; any surplus becomes FX/card difference.";
+    return "Final-balance mode: apply the balance first. Classify any remaining statement balance separately as FX/card difference afterwards.";
   }
 
   const statementIn = countDirection(statements, "in");
@@ -368,7 +374,7 @@ export default function SafeWorkspaceSelectionController() {
   const canConfirmOperational = Boolean(statement && target?.targetType === "exception" && operationalType);
   const allocationAmount = Math.min(statement?.remainingAmount ?? statement?.amount ?? 0, target?.amount ?? 0);
   const statementRemainingForFinalBalance = statement?.remainingAmount ?? statement?.amount ?? 0;
-  const finalBalanceFxExcess = selectedTargetIsFinalBalance ? Math.max(0, statementRemainingForFinalBalance - (target?.amount ?? 0)) : 0;
+  const postBalanceSurplus = selectedTargetIsFinalBalance ? Math.max(0, statementRemainingForFinalBalance - (target?.amount ?? 0)) : 0;
   const finalBalanceAfterSelection = selectedTargetIsFinalBalance ? Math.max(0, (target?.amount ?? 0) - statementRemainingForFinalBalance) : 0;
   const canConfirmFinalBalance = Boolean(
     selectedTargetIsFinalBalance &&
@@ -397,7 +403,7 @@ export default function SafeWorkspaceSelectionController() {
           <p className="text-xs text-slate-500">Absolute/gross gap: {gbp(grossGap)}</p>
           {selectedTargetIsFinalBalance ? (
             <p className="text-xs text-slate-600">
-              Final balance after: {gbp(finalBalanceAfterSelection)} · FX/card excess: {gbp(finalBalanceFxExcess)}
+              Final balance after: {gbp(finalBalanceAfterSelection)} · Surplus to classify afterwards: {gbp(postBalanceSurplus)}
             </p>
           ) : null}
           <p className="text-xs font-semibold text-amber-700">{selectedSummary}</p>
@@ -426,14 +432,14 @@ export default function SafeWorkspaceSelectionController() {
             <input type="hidden" name="return_path" value={currentPath} />
             <input type="hidden" name="dva_statement_line_id" value={statement?.id ?? ""} />
             <input type="hidden" name="order_id" value={finalBalanceOrderId} />
-            <input type="hidden" name="classify_fx_excess" value="true" />
-            <input type="hidden" name="notes" value="Allocated from DVA/card matching workspace final-balance target." />
+            <input type="hidden" name="classify_fx_excess" value="false" />
+            <input type="hidden" name="notes" value="Allocated from DVA/card matching workspace final-balance target. Surplus statement balance remains for separate FX/card classification." />
             <button
               type="submit"
               disabled={!canConfirmFinalBalance}
               className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500"
             >
-              {finalBalanceFxExcess > 0.009 ? "Apply balance + FX/card excess" : "Apply to final balance"}
+              Apply to final balance
             </button>
           </form>
 
