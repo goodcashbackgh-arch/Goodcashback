@@ -1,6 +1,6 @@
 # Final Sale Value and Balance Due Addendum v1
 
-Status: locked for build sequencing after 2026-06-05 design review. Updated to include sale credits/credit notes, authorisation reference display, supervisor-approved ledger credit boundaries, and conditional display rules so zero-value settlement rows are not surfaced prematurely.
+Status: locked for build sequencing after 2026-06-05 design review. Updated to include sale credits/credit notes, authorisation reference display, supervisor-approved ledger credit boundaries, conditional display rules so zero-value settlement rows are not surfaced prematurely, and the 2026-06-08 DVA/card final-balance allocation clarification.
 
 This addendum extends `docs/governing-pack/ui/FUNDING_ACTION_CONTRACT.md` and the customer/importer order portal rules. It does **not** replace the original purchase-funding threshold. It adds a final sale settlement layer so the platform can show and collect any remaining amount after Sage-posted sale documents confirm the final sale value.
 
@@ -17,6 +17,7 @@ Use these terms in customer/importer UI:
 - Sale credit
 - Amount received
 - Balance due
+- Final balance payment
 - Potential credit pending final review
 - Credit added to account
 - Available account credit
@@ -74,7 +75,7 @@ Current status / initial payment status
 Then show settlement fields only when their conditions are met:
 
 ```text
-Amount received = show only when at least one payment/credit/funding event exists.
+Amount received = show only when at least one payment/credit/funding event/final-balance allocation exists.
 Final sale value = show only when a posted sale document, final sale adjustment, or sale credit exists.
 Balance due = show only when final sale value exists and balance due > £0.00.
 Potential credit pending final review = show only when final sale value exists and amount received > final sale value and no approved ledger credit exists for that surplus.
@@ -140,10 +141,18 @@ The download action should use the existing customer-facing PDF route for every 
 
 ## 6. Final sale settlement calculation
 
-Amount received is all effective money/credit allocated to the order.
+Amount received is all effective money/credit allocated to the order for final-sale settlement.
 
 ```text
-amount_received_gbp = confirmed_dva_funding_gbp + applied_credit_gbp
+amount_received_gbp = confirmed_dva_funding_gbp + confirmed_final_balance_payment_gbp + applied_credit_gbp
+```
+
+Where:
+
+```text
+confirmed_dva_funding_gbp = accepted-estimate/order-funding money already allocated to the order.
+confirmed_final_balance_payment_gbp = confirmed DVA/card statement-line allocations with allocation_type = final_balance_payment.
+applied_credit_gbp = approved/unlocked account credit actually applied to this order.
 ```
 
 Final balance due is:
@@ -197,6 +206,8 @@ available_account_credit_gbp = importer_credit_ledger approved/unlocked credit b
 
 Do not allow final-balance payments to be misclassified as customer credit.
 
+Do not route final-balance settlement through accepted-estimate order funding if that route would cause `sync_order_overfunding_credit(...)` or equivalent logic to create overfunding credit merely because final sale settlement takes total receipts above the accepted estimate.
+
 ## 8. Supervisor-approved credit boundary
 
 The existing supervisor/admin credit approval mechanism remains the only route for turning potential credit into usable account credit.
@@ -221,7 +232,7 @@ Do not bypass this with an automatic customer-page credit creation.
 
 ## 9. DVA/card statement matching implications
 
-Staff/supervisor reconciliation must show three separate targets for an order:
+Staff/supervisor reconciliation must show three separate internal targets for an order:
 
 1. Accepted estimate payment
 2. Final balance payment
@@ -247,7 +258,23 @@ Overfunding
 Supplementary invoice payment
 ```
 
-Once balance_due_gbp reaches zero, any additional matched amount becomes potential credit pending final review. It becomes available account credit only after supervisor/admin approval creates ledger credit.
+### Final-balance allocation rule
+
+When matching a DVA/card IN statement line to an order with final balance due, the converted GBP value of the statement line must reduce the final balance first.
+
+```text
+statement_remaining_gbp = unallocated GBP remaining on the selected statement line
+balance_due_gbp = current final sale balance still due
+amount_to_final_balance_gbp = min(statement_remaining_gbp, balance_due_gbp)
+fx_card_excess_gbp = max(statement_remaining_gbp - balance_due_gbp, 0)
+balance_after_allocation_gbp = max(balance_due_gbp - statement_remaining_gbp, 0)
+```
+
+Do not create FX/card difference while the final balance is still open.
+
+Only when `balance_due_gbp` reaches zero does any extra remaining amount on the selected statement line become FX/card difference, bank fee, unmatched hold, or another explicitly classified residual.
+
+That residual is not automatically potential customer credit merely because it is above the balance. It becomes potential customer credit only where it represents a true commercial overpayment after final-sale review, not card/FX/provider variance.
 
 ## 10. FX display rule
 
@@ -285,7 +312,7 @@ Always show:
 
 Conditionally show:
 
-- Amount received, only if payment/credit/funding exists
+- Amount received, only if payment/credit/funding/final-balance allocation exists
 - Final sale value, only when posted sale document/adjustment/credit exists
 - Balance due, only when final sale value exists and exceeds amount received
 - Potential credit pending final review, only when final sale value exists and amount received exceeds final sale value and approved ledger credit does not yet exist
@@ -388,6 +415,8 @@ Do not change checkout/order-creation auto-credit application. It must continue 
 
 Do not create account credit from customer-facing UI calculations.
 
+Do not use `staff_reconcile_dva_line_to_order(...)` for final-balance settlement if that route would generate accepted-estimate overfunding credit or conflate final settlement with initial funding.
+
 ## 13. Build sequence
 
 Minimum safe build order:
@@ -397,9 +426,10 @@ Minimum safe build order:
 3. Patch sale document download section to list sale document, final sale adjustment, and sale credit rows.
 4. Patch importer main orders list to show authorisation ref, signed final sale value/balance due/pending credit only when conditions are met.
 5. Patch importer order operations page to show the same final sale summary only when sale documents/credits exist.
-6. Patch DVA/card reconciliation workbench to classify additional matched money as final balance payment before potential credit.
-7. Tighten supervisor credit readiness so ledger credit cannot be approved before final sale/shipping closure is complete.
-8. Only then consider whether generated overfunding credit needs backend correction once final sale value exists.
+6. Patch DVA/card reconciliation workbench to allocate additional matched money as final balance payment before potential credit.
+7. Patch DVA/card final-balance residual handling so converted GBP reduces balance first and only excess after balance closure is FX/card difference or held residual.
+8. Tighten supervisor credit readiness so ledger credit cannot be approved before final sale/shipping closure is complete.
+9. Only then consider whether generated overfunding credit needs backend correction once final sale value exists.
 
 ## 14. Acceptance tests
 
@@ -433,19 +463,49 @@ Initial payment received: yes
 Order is not reverted to unfunded
 ```
 
-### Scenario C — extra payment settles final balance
+### Scenario C — extra payment partially settles final balance
 
 ```text
 Accepted estimate: £250
 Authorisation ref: AUTH-123
 Final sale value: £285
-Amount received after second payment: £285
-Second payment classified as final balance payment
+Amount received before second payment: £250
+Balance due before second payment: £35
+Second DVA/card IN statement line: £20
 ```
 
-Do not show zero-value balance or zero-value pending credit rows.
+Expected result:
 
-### Scenario D — sale credit reduces final sale value
+```text
+£20 allocated as final_balance_payment
+Balance due after allocation: £15
+No FX/card difference created
+No overfunding credit created
+No importer credit created
+```
+
+### Scenario D — final payment settles balance with FX/card excess
+
+```text
+Accepted estimate: £250
+Authorisation ref: AUTH-123
+Final sale value: £285
+Amount received before final payment: £265
+Balance due before final payment: £20
+Final DVA/card IN statement line: £20.12
+```
+
+Expected result:
+
+```text
+£20 allocated as final_balance_payment
+£0.12 classified as fx_card_difference or held residual after staff confirmation
+Balance due after allocation: £0
+No overfunding credit created
+No importer credit created
+```
+
+### Scenario E — sale credit reduces final sale value
 
 ```text
 Accepted estimate: £250
@@ -460,7 +520,7 @@ Credit is not available at checkout until supervisor/admin approval creates ledg
 
 Do not show zero-value balance due.
 
-### Scenario E — true overpayment after final sale closure
+### Scenario F — true overpayment after final sale closure
 
 ```text
 Accepted estimate: £250
@@ -479,8 +539,37 @@ The platform must preserve three separate concepts:
 
 ```text
 Initial payment received = accepted estimate covered.
-Final settlement complete = final sale value covered, including sale credits/credit notes.
+Final settlement complete = final sale value covered, including sale credits/credit notes and confirmed final-balance payment allocations.
 Available account credit = supervisor/admin-approved ledger credit only.
 ```
 
 The first unlocks operational fulfilment. The second settles the final customer/importer sale value. The third is the only credit that can be used against future orders at checkout/order creation.
+
+## 16. 2026-06-08 final-balance DVA allocation clarification
+
+This clarification supersedes any looser wording in Section 9 about additional matched amounts once final balance reaches zero.
+
+The correct sequence is:
+
+```text
+1. Converted GBP on a DVA/card IN line reduces final balance while balance_due_gbp > 0.
+2. Only excess after balance_due_gbp reaches zero may be classified as fx_card_difference, bank_fee, unmatched_hold, or another staff-confirmed residual.
+3. That excess is not customer credit unless supervisor/admin later confirms it is a true commercial surplus after final-sale review.
+```
+
+Worked example:
+
+```text
+Initial final balance due: £100.00
+Payment 1 DVA/card IN line: £60.38
+Allocate to final balance: £60.38
+Balance after payment 1: £39.62
+FX/card difference after payment 1: £0.00
+
+Payment 2 DVA/card IN line: £39.74
+Allocate to final balance: £39.62
+Balance after payment 2: £0.00
+FX/card difference after payment 2: £0.12
+```
+
+No overfunding credit or importer account credit is created by either payment in that example.
