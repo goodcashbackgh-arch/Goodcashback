@@ -5,7 +5,8 @@ SET LOCAL statement_timeout = '0';
 
 -- DVA/card statement-line allocation summary v1 update.
 -- Adds confirmed final-balance payment total to the existing summary view.
--- Keeps all existing summary columns and appends final_balance_payment_allocated_gbp.
+-- IMPORTANT: existing view columns must remain in their current order.
+-- Therefore final_balance_payment_allocated_gbp is appended at the end.
 
 DO $$
 BEGIN
@@ -52,10 +53,6 @@ SELECT
   ), 0) AS retailer_refund_allocated_gbp,
   COALESCE(SUM(a.allocated_gbp_amount) FILTER (
     WHERE a.allocation_status = 'confirmed'
-      AND a.allocation_type = 'final_balance_payment'
-  ), 0) AS final_balance_payment_allocated_gbp,
-  COALESCE(SUM(a.allocated_gbp_amount) FILTER (
-    WHERE a.allocation_status = 'confirmed'
       AND a.allocation_type IN ('fx_card_difference', 'bank_fee')
   ), 0) AS fx_card_or_fee_allocated_gbp,
   COALESCE(SUM(a.allocated_gbp_amount) FILTER (
@@ -72,7 +69,11 @@ SELECT
       l.amount_gbp_equivalent
       - COALESCE(SUM(a.allocated_gbp_amount) FILTER (WHERE a.allocation_status = 'confirmed'), 0)
     ) < 0.01
-  ) AS confirmed_balanced_yn
+  ) AS confirmed_balanced_yn,
+  COALESCE(SUM(a.allocated_gbp_amount) FILTER (
+    WHERE a.allocation_status = 'confirmed'
+      AND a.allocation_type = 'final_balance_payment'
+  ), 0) AS final_balance_payment_allocated_gbp
 FROM public.dva_statement_lines l
 JOIN public.dva_statements s
   ON s.id = l.dva_statement_id
