@@ -164,6 +164,7 @@ export default async function CustomerOrderOperationsPage({ params, searchParams
   const finalSaleValueConfirmed = invoices.length > 0;
   const finalSaleValueGbp = finalSaleValueConfirmed ? invoices.reduce((sum, row) => sum + saleDocumentSignedAmount(row), 0) : acceptedEstimateGbp;
   const finalBalanceDueGbp = finalSaleValueConfirmed ? Math.max(finalSaleValueGbp - amountReceivedGbp, 0) : 0;
+  const orderComplete = finalBalanceDueGbp <= 0.01 && deliveryConfirmed;
   const visibleCashDueGbp = finalSaleValueConfirmed ? finalBalanceDueGbp : initialCashDueGbp;
   const pendingCreditGbp = finalSaleValueConfirmed ? Math.max(amountReceivedGbp - finalSaleValueGbp, 0) : 0;
   const hasAmountReceived = amountReceivedGbp > 0.01;
@@ -181,7 +182,7 @@ export default async function CustomerOrderOperationsPage({ params, searchParams
   const statusRaw = String(state?.lifecycle_status ?? order.status ?? "").toLowerCase();
   const statusLabel = reviewHref ? "Ready for your review" : !thresholdMet ? "Payment required" : finalBalanceDueGbp > 0.01 ? "Final balance due" : deliveryConfirmed ? "Completed" : shipmentArranged ? "Shipment arranged" : ["pending_dva_funding", "funding_pending", "draft"].includes(statusRaw) ? "Payment received; processing" : ["reconciling", "partially_progressed", "invoice_reconciled_tracking_open"].includes(statusRaw) ? "Order being prepared" : ["ready_for_shipment", "shipment_booked"].includes(statusRaw) ? "Preparing for shipment" : ["shipment_dispatched", "awaiting_importer_receipt"].includes(statusRaw) ? "Shipment in progress" : ["completed", "archived"].includes(statusRaw) ? "Completed" : ["discrepancy_open", "awaiting_financial_closure"].includes(statusRaw) ? "Under review" : friendly(state?.lifecycle_status ?? order.status);
   const tone: Tone = reviewHref ? "ready" : !thresholdMet || finalBalanceDueGbp > 0.01 ? "action" : statusLabel.toLowerCase().includes("completed") ? "complete" : statusLabel.toLowerCase().includes("review") ? "review" : "muted";
-  const nextActionTitle = reviewHref ? "Review items before shipment" : !thresholdMet ? "Payment required" : finalBalanceDueGbp > 0.01 ? "Final balance due" : deliveryConfirmed ? "Delivery confirmed" : shipmentArranged ? "Waiting for delivery confirmation" : "No action needed right now";
+  const nextActionTitle = reviewHref ? "Review items before shipment" : !thresholdMet ? "Payment required" : finalBalanceDueGbp > 0.01 ? "Final balance due" : orderComplete ? "Order complete" : deliveryConfirmed ? "Delivery confirmed" : shipmentArranged ? "Waiting for delivery confirmation" : "No action needed right now";
   const nextActionBody = reviewHref
     ? "Check the order before shipment and request a hold if anything should not be sent."
     : !thresholdMet && appliedCreditGbp > 0.01
@@ -190,11 +191,13 @@ export default async function CustomerOrderOperationsPage({ params, searchParams
         ? "The accepted estimate needs to be paid before this order can continue."
         : finalBalanceDueGbp > 0.01
           ? `The final sale value is now confirmed. Balance due: ${money(finalBalanceDueGbp)}${effectiveRate ? ` (${localAmount(finalBalanceDueLocal, currencyCode)}).` : "."}`
-          : deliveryConfirmed
-            ? "Delivery confirmation has been received."
-            : shipmentArranged
-              ? (estimatedWindow ? `Estimated delivery window: ${estimatedWindow}.` : "Shipping date is pending from the shipper.")
-              : "We are processing this order. You can return here to check progress.";
+          : orderComplete
+            ? "Delivery confirmation has been received and the order is complete."
+            : deliveryConfirmed
+              ? "Delivery confirmation has been received."
+              : shipmentArranged
+                ? (estimatedWindow ? `Estimated delivery window: ${estimatedWindow}.` : "Shipping date is pending from the shipper.")
+                : "We are processing this order. You can return here to check progress.";
   const journey = [
     { label: "Order received", done: true },
     ...(appliedCreditGbp > 0.01 ? [{ label: "Account credit applied", done: true }] : []),
