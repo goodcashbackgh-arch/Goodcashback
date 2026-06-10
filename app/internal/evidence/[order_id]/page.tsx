@@ -292,10 +292,11 @@ export default async function InternalEvidenceDetailPage({
   const queryParams = searchParams ? await searchParams : {};
   const supabase = await createClient();
 
-  const [orderState, canonicalStatus, canonicalProgress, invoices, tracking, reconciliationRows] = await Promise.all([
+  const [orderState, canonicalStatus, canonicalProgress, audienceStatus, invoices, tracking, reconciliationRows] = await Promise.all([
     readOrderState(supabase, orderId),
     readRpcRowByOrderId(supabase, "internal_platform_order_status_v1", orderId),
     readRpcRowByOrderId(supabase, "internal_platform_order_progress_v1", orderId),
+    readRpcRowByOrderId(supabase, "order_audience_status_v1", orderId),
     readRowsByOrderId(supabase, "supplier_invoices", orderId),
     readRowsByOrderId(supabase, "order_tracking_submissions", orderId),
     readRowsByOrderId(supabase, "order_reconciliation_vw", orderId),
@@ -358,6 +359,7 @@ export default async function InternalEvidenceDetailPage({
     { source: orderState.source, rows: orderState.data ? [orderState.data] : [], error: orderState.error },
     { source: canonicalStatus.source, rows: canonicalStatus.data ? [canonicalStatus.data] : [], error: canonicalStatus.error },
     { source: canonicalProgress.source, rows: canonicalProgress.data ? [canonicalProgress.data] : [], error: canonicalProgress.error },
+    { source: audienceStatus.source, rows: audienceStatus.data ? [audienceStatus.data] : [], error: audienceStatus.error },
     { source: invoices.source, rows: invoices.data, error: invoices.error },
     { source: invoiceLines.source, rows: invoiceLines.data, error: invoiceLines.error },
     { source: lineResolutions.source, rows: lineResolutions.data, error: lineResolutions.error },
@@ -380,7 +382,7 @@ export default async function InternalEvidenceDetailPage({
           <h1 className="mt-2 text-3xl font-semibold tracking-tight">Order {formatValue(orderRef)}</h1>
           <p className="mt-3 text-sm leading-6 text-slate-600">
             Read-only detail sourced from canonical operational status, invoices, invoice line resolutions, tracking submissions,
-            and reconciliation diagnostics.
+            audience status and reconciliation diagnostics.
           </p>
         </section>
 
@@ -435,6 +437,39 @@ export default async function InternalEvidenceDetailPage({
               <p className="mt-1 font-medium text-slate-900">
                 {formatValue(pickFirst(canonicalProgress.data, ["gate_complete_count"]))} / {formatValue(pickFirst(canonicalProgress.data, ["gate_total"]))}
               </p>
+            </div>
+          </div>
+        </section>
+
+        <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+          <h2 className="text-xl font-semibold">Audience status / settlement</h2>
+          <p className="mt-2 text-sm text-slate-600">
+            Read-only audience wrapper output. This page does not calculate customer or importer balance locally.
+          </p>
+          <div className="mt-4 grid gap-4 sm:grid-cols-3 lg:grid-cols-6">
+            <div className="rounded-2xl border border-slate-200 p-4">
+              <p className="text-xs uppercase tracking-wide text-slate-500">accepted_estimate</p>
+              <p className="mt-1 font-medium text-slate-900">{formatMoney(asNumber(pickFirst(audienceStatus.data, ["accepted_estimate_gbp"])))}</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 p-4">
+              <p className="text-xs uppercase tracking-wide text-slate-500">final_sale_value</p>
+              <p className="mt-1 font-medium text-slate-900">{formatMoney(asNumber(pickFirst(audienceStatus.data, ["final_sale_value_gbp"])))}</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 p-4">
+              <p className="text-xs uppercase tracking-wide text-slate-500">settlement_received</p>
+              <p className="mt-1 font-medium text-slate-900">{formatMoney(asNumber(pickFirst(audienceStatus.data, ["canonical_amount_received_gbp", "canonical_settlement_received_gbp"])))}</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 p-4">
+              <p className="text-xs uppercase tracking-wide text-slate-500">balance_due</p>
+              <p className="mt-1 font-medium text-slate-900">{formatMoney(asNumber(pickFirst(audienceStatus.data, ["canonical_balance_due_gbp"])))}</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 p-4">
+              <p className="text-xs uppercase tracking-wide text-slate-500">customer_status</p>
+              <p className="mt-1 font-medium text-slate-900">{formatValue(pickFirst(audienceStatus.data, ["customer_status_label"]))}</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 p-4">
+              <p className="text-xs uppercase tracking-wide text-slate-500">importer_status</p>
+              <p className="mt-1 font-medium text-slate-900">{formatValue(pickFirst(audienceStatus.data, ["importer_status_label"]))}</p>
             </div>
           </div>
         </section>
