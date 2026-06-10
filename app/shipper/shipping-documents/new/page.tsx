@@ -22,7 +22,6 @@ type WorklistRow = {
   latest_currency_code: string | null;
   latest_total_amount: number | string | null;
   latest_file_url: string | null;
-  latest_ocr_status: string | null;
   latest_review_status: string | null;
   latest_version_no: number | null;
   open_resubmission_request_count: number | string | null;
@@ -57,7 +56,6 @@ function friendly(value: string | null | undefined) {
 
 function statusClass(status: string | null | undefined) {
   if (!status || status === "not_started") return "bg-amber-100 text-amber-800";
-  if (["uploaded_pending_ocr", "ocr_pending", "not_started"].includes(status)) return "bg-amber-100 text-amber-800";
   if (["accepted_current"].includes(status)) return "bg-emerald-100 text-emerald-800";
   if (["resubmission_requested", "rejected_resubmit_required"].includes(status)) return "bg-rose-100 text-rose-800";
   if (["superseded", "voided"].includes(status)) return "bg-slate-200 text-slate-700";
@@ -110,7 +108,7 @@ export default async function NewShippingDocumentPage({
           <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">Shipping charge document upload</h1>
           <p className="mt-2 text-sm text-slate-600">{(shipperUser as any).full_name} · {shipper?.name ?? "Shipper"}</p>
           <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-600">
-            Upload the single current money document for this shipment batch. It may be a shipper invoice, receipt or supporting charge document, but only one active document can feed OCR, supervisor money review, shipping apportionment and Sage readiness. Uploading a new document before supervisor acceptance replaces the current one for this batch.
+            Upload the single current money document for this shipment batch. It may be a shipper invoice, receipt or supporting charge document, but only one active document can feed platform document review, supervisor money review and shipping apportionment. Uploading a new document before supervisor acceptance replaces the current one for this batch.
           </p>
           {qp.success ? <p className="mt-4 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">{qp.success}</p> : null}
           {qp.error ? <p className="mt-4 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-900">{qp.error}</p> : null}
@@ -178,7 +176,6 @@ export default async function NewShippingDocumentPage({
                       <p><span className="text-slate-500">Ref:</span> {selectedRow.latest_document_ref ?? "—"}</p>
                       <p><span className="text-slate-500">Date:</span> {shortDate(selectedRow.latest_document_date)}</p>
                       <p><span className="text-slate-500">Amount:</span> {money(selectedRow.latest_total_amount, selectedRow.latest_currency_code ?? "GBP")}</p>
-                      <p><span className="text-slate-500">OCR:</span> {friendly(selectedRow.latest_ocr_status)}</p>
                       <p><span className="text-slate-500">Version:</span> {selectedRow.latest_version_no ?? "—"}</p>
                       {normalizeLink(selectedRow.latest_file_url) ? <a href={normalizeLink(selectedRow.latest_file_url) ?? "#"} target="_blank" rel="noreferrer" className="inline-block font-semibold text-sky-700 underline">Open current document</a> : null}
                     </div>
