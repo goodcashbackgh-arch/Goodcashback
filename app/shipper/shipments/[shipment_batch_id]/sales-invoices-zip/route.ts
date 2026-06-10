@@ -29,10 +29,10 @@ type SalesInvoiceRow = {
 };
 
 function safeName(value: string | null | undefined) {
-  return (value || "sales-invoice")
+  return (value || "shipment-document")
     .replace(/[^a-z0-9._-]+/gi, "-")
     .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "") || "sales-invoice";
+    .replace(/^-|-$/g, "") || "shipment-document";
 }
 
 function normalize(value: string | null | undefined) {
@@ -133,12 +133,12 @@ async function fetchSageInvoicePdf(sageInvoiceId: string, origin: string) {
 
   if (!response.ok) {
     const body = await response.text().catch(() => "");
-    throw new Error(`Sage PDF fetch failed (${response.status} ${response.statusText}): ${body.slice(0, 300)}`);
+    throw new Error(`Document PDF fetch failed (${response.status} ${response.statusText}): ${body.slice(0, 300)}`);
   }
 
   if (!contentType.toLowerCase().includes("application/pdf")) {
     const body = await response.text().catch(() => "");
-    throw new Error(`Sage returned ${contentType || "unknown content-type"}, not application/pdf. Invoice may not be posted. Body: ${body.slice(0, 300)}`);
+    throw new Error(`Document service returned ${contentType || "unknown content-type"}, not application/pdf. Document may not be ready. Body: ${body.slice(0, 300)}`);
   }
 
   return Buffer.from(await response.arrayBuffer());
@@ -155,17 +155,17 @@ export async function GET(request: Request, { params }: { params: Promise<{ ship
     p_shipment_batch_id: shipmentBatchId,
   });
 
-  if (error) return new NextResponse(`Unable to generate sales invoice ZIP: ${error.message}`, { status: 400 });
+  if (error) return new NextResponse(`Unable to generate shipment document ZIP: ${error.message}`, { status: 400 });
 
   const rows = (data ?? []) as PackRow[];
   const invoiceRows = rows.filter((row) => String(row.sales_invoice_ref ?? "").trim());
   if (invoiceRows.length === 0) {
-    return new NextResponse("No posted customer sales invoice references found for this shipment batch.", { status: 404 });
+    return new NextResponse("No posted shipment document references found for this shipment batch.", { status: 404 });
   }
 
   const orderIds = unique(invoiceRows.map((row) => row.order_id));
   if (orderIds.length === 0) {
-    return new NextResponse("No order ids were returned for the posted invoice evidence rows.", { status: 404 });
+    return new NextResponse("No order ids were returned for the posted document evidence rows.", { status: 404 });
   }
 
   const { data: invoiceData, error: invoiceError } = await supabaseAdmin
@@ -176,7 +176,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ ship
     .eq("sage_status", "posted");
 
   if (invoiceError) {
-    return new NextResponse(`Unable to resolve Sage invoice ids for sales invoice ZIP: ${invoiceError.message}`, { status: 400 });
+    return new NextResponse(`Unable to resolve document ids for shipment document ZIP: ${invoiceError.message}`, { status: 400 });
   }
 
   const invoices = (invoiceData ?? []) as SalesInvoiceRow[];
@@ -194,24 +194,24 @@ export async function GET(request: Request, { params }: { params: Promise<{ ship
     const sageInvoiceId = String(invoice?.sage_invoice_id ?? "").trim();
 
     if (!invoice || !sageInvoiceId) {
-      failures.push(`${ref}: no posted Sage invoice id found for order(s) ${unique(groupRows.map((row) => row.order_ref)).join(", ") || "unknown"}.`);
+      failures.push(`${ref}: no posted document id found for order(s) ${unique(groupRows.map((row) => row.order_ref)).join(", ") || "unknown"}.`);
       continue;
     }
 
     try {
       const pdf = await fetchSageInvoicePdf(sageInvoiceId, origin);
       files.push({
-        name: `sales-invoices/${safeName(ref)}.pdf`,
+        name: `shipment-documents/${safeName(ref)}.pdf`,
         content: pdf,
       });
     } catch (error) {
-      failures.push(`${ref}: ${error instanceof Error ? error.message : "Sage PDF fetch failed."}`);
+      failures.push(`${ref}: ${error instanceof Error ? error.message : "Document PDF fetch failed."}`);
     }
   }
 
   if (files.length === 0) {
     return new NextResponse([
-      "No Sage sales invoice PDFs could be added to the ZIP.",
+      "No shipment document PDFs could be added to the ZIP.",
       "",
       ...failures,
     ].join("\n"), { status: 502 });
@@ -220,19 +220,19 @@ export async function GET(request: Request, { params }: { params: Promise<{ ship
   files.unshift({
     name: "README.txt",
     content: [
-      "Sales invoice ZIP",
+      "Shipment document ZIP",
       `Shipment batch: ${shipmentBatchId}`,
       `PDF files: ${files.length}`,
       "",
-      "PDF files are fetched from Sage Accounting using GET /sales_invoices/{id} with Accept: application/pdf.",
-      "Supplementary shipping-only invoices are intentionally excluded from this COS / EEP sales invoice pack.",
+      "PDF files are fetched from approved platform document records for shipment evidence support.",
+      "Supplementary shipping-only charge documents are intentionally excluded from this COS / EEP support pack.",
       ...(failures.length > 0 ? ["", "Fetch warnings:", ...failures] : []),
     ].join("\n"),
   });
 
   const archive = zip(files);
   const first = rows[0];
-  const filename = `${safeName(first?.eep_ref || first?.booking_ref || shipmentBatchId)}-sales-invoices.zip`;
+  const filename = `${safeName(first?.eep_ref || first?.booking_ref || shipmentBatchId)}-shipment-documents.zip`;
 
   return new NextResponse(archive, {
     headers: {
