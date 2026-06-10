@@ -159,18 +159,18 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
             <div>
               <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-sky-100 bg-sky-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-sky-700">
                 <span className="h-2 w-2 rounded-full" style={{ backgroundColor: BRAND_COLOUR }} />
-                OCR control room
+                Document review control
               </div>
               <h1 className="max-w-3xl text-3xl font-semibold tracking-tight text-slate-950 sm:text-4xl">Supplier invoice exceptions queue</h1>
               <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-600">
-                Review OCR/header exceptions only. Full matches should route out to operator reconciliation, so this page stays focused on genuine intervention work.
+                Review document/header exceptions only. Full matches should route out to operator reconciliation, so this page stays focused on genuine intervention work.
               </p>
             </div>
 
             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
               <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Queue discipline</p>
               <p className="mt-2 text-sm leading-6 text-slate-700">
-                Do not use this screen as a general invoice list. It exists to clear OCR pending items, header mismatches, duplicate blocks, and review flags.
+                Do not use this screen as a general invoice list. It exists to clear document extraction pending items, header mismatches, duplicate blocks, and review flags.
               </p>
             </div>
           </div>
@@ -179,7 +179,7 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
             <div className="space-y-3 border-t border-slate-100 px-5 py-4 sm:px-7">
               {qp.success ? <p className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-medium text-emerald-800">{qp.success}</p> : null}
               {qp.error ? <p className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-medium text-rose-800">{qp.error}</p> : null}
-              {matchError ? <p className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-medium text-amber-800">Match decision view not available yet: run docs/governing-pack/backend/supplier_invoice_match_decision_v1.sql. Fallback filtering is active.</p> : null}
+              {matchError ? <p className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-medium text-amber-800">Match decision view not available yet. Fallback filtering is active.</p> : null}
             </div>
           ) : null}
         </section>
@@ -190,7 +190,7 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
           <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Needs action</p>
             <p className="mt-3 text-3xl font-semibold text-slate-950">{visible.length}</p>
-            <p className="mt-1 text-sm text-slate-500">Review / OCR pending / duplicates</p>
+            <p className="mt-1 text-sm text-slate-500">Review / extraction pending / duplicates</p>
           </div>
           <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Routed away</p>
@@ -208,7 +208,7 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
           {visible.length === 0 ? (
             <div className="rounded-[2rem] border border-dashed border-slate-300 bg-white p-10 text-center shadow-sm">
               <p className="text-lg font-semibold text-slate-950">No invoice exceptions need review.</p>
-              <p className="mt-2 text-sm text-slate-500">That is the target state. New OCR/header mismatches will appear here when they need supervisor attention.</p>
+              <p className="mt-2 text-sm text-slate-500">That is the target state. New document/header mismatches will appear here when they need supervisor attention.</p>
             </div>
           ) : null}
 
@@ -226,8 +226,8 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
                     <div>
                       <div className="flex flex-wrap items-center gap-2">
                         <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${reviewStatusTone(invoice.review_status)}`}>{invoice.review_status}</span>
-                        {invoice.blocked_from_sage_yn ? <span className="rounded-full border border-rose-200 bg-rose-50 px-3 py-1 text-xs font-semibold text-rose-700">Blocked from Sage</span> : null}
-                        <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${mindeeTone(invoice.mindee_ocr_status)}`}>Mindee: {invoice.mindee_ocr_status ?? "not started"}</span>
+                        {invoice.blocked_from_sage_yn ? <span className="rounded-full border border-rose-200 bg-rose-50 px-3 py-1 text-xs font-semibold text-rose-700">Accounting blocked</span> : null}
+                        <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${mindeeTone(invoice.mindee_ocr_status)}`}>Extraction: {invoice.mindee_ocr_status ?? "not started"}</span>
                       </div>
                       <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">{order?.order_ref ?? invoice.order_id}</h2>
                       <p className="mt-1 text-sm text-slate-500">Uploaded {new Date(invoice.uploaded_at).toLocaleString("en-GB")}</p>
@@ -261,7 +261,7 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
                       <div className="flex flex-wrap items-center justify-between gap-3">
                         <div>
                           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Header comparison</p>
-                          <h3 className="mt-1 text-lg font-semibold text-slate-950">Operator submission vs OCR extraction</h3>
+                          <h3 className="mt-1 text-lg font-semibold text-slate-950">Operator submission vs extracted document data</h3>
                         </div>
                         <span className="rounded-full px-3 py-1 text-xs font-semibold text-slate-950" style={{ backgroundColor: "rgba(32, 193, 252, 0.16)" }}>{flags.length} open flags</span>
                       </div>
@@ -272,15 +272,15 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
                           <p className="mt-1 break-words text-sm font-semibold text-slate-950">{invoice.invoice_ref}</p>
                         </div>
                         <div className="rounded-2xl border border-slate-200 p-4">
-                          <p className="text-xs font-medium text-slate-500">OCR ref</p>
+                          <p className="text-xs font-medium text-slate-500">Extracted ref</p>
                           <p className="mt-1 break-words text-sm font-semibold text-slate-950">{invoice.ocr_invoice_ref ?? "—"}</p>
                         </div>
                         <div className="rounded-2xl border border-slate-200 p-4">
-                          <p className="text-xs font-medium text-slate-500">OCR retailer / supplier</p>
+                          <p className="text-xs font-medium text-slate-500">Extracted retailer / supplier</p>
                           <p className="mt-1 break-words text-sm font-semibold text-slate-950">{invoice.ocr_retailer_name ?? "—"}</p>
                         </div>
                         <div className="rounded-2xl border border-slate-200 p-4">
-                          <p className="text-xs font-medium text-slate-500">OCR date</p>
+                          <p className="text-xs font-medium text-slate-500">Extracted date</p>
                           <p className="mt-1 text-sm font-semibold text-slate-950">{invoice.ocr_invoice_date ?? "—"}</p>
                         </div>
                         <div className="rounded-2xl border border-slate-200 p-4">
@@ -288,7 +288,7 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
                           <p className="mt-1 text-sm font-semibold text-slate-950">{total === null ? "—" : money(total)}</p>
                         </div>
                         <div className="rounded-2xl border border-slate-200 p-4">
-                          <p className="text-xs font-medium text-slate-500">OCR total</p>
+                          <p className="text-xs font-medium text-slate-500">Extracted total</p>
                           <p className="mt-1 text-sm font-semibold text-slate-950">{invoice.ocr_invoice_total_gbp === null ? "—" : money(invoice.ocr_invoice_total_gbp)}</p>
                         </div>
                         <div className="rounded-2xl border border-slate-200 p-4">
@@ -296,7 +296,7 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
                           <p className="mt-1 text-sm font-semibold text-slate-950">{invoice.mindee_pages_consumed ?? "—"}</p>
                         </div>
                         <div className="rounded-2xl border border-slate-200 p-4">
-                          <p className="text-xs font-medium text-slate-500">OCR line count</p>
+                          <p className="text-xs font-medium text-slate-500">Extracted line count</p>
                           <p className="mt-1 text-sm font-semibold text-slate-950">{match?.ocr_line_count ?? "—"}</p>
                         </div>
                       </div>
@@ -307,7 +307,7 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
                         <div>
                           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-white/50">Matching / routing decision</p>
                           <p className="mt-2 text-xl font-semibold capitalize">{invoice.review_status === "duplicate_blocked" ? "Duplicate blocked" : decisionLabel(match?.routing_decision)}</p>
-                          <p className="mt-1 text-sm leading-6 text-white/70">{invoice.review_status === "duplicate_blocked" ? (invoice.review_notes ?? "Possible duplicate invoice blocked after OCR.") : (match?.routing_reason ?? "Decision view unavailable.")}</p>
+                          <p className="mt-1 text-sm leading-6 text-white/70">{invoice.review_status === "duplicate_blocked" ? (invoice.review_notes ?? "Possible duplicate invoice blocked after document extraction.") : (match?.routing_reason ?? "Decision view unavailable.")}</p>
                         </div>
                         <div className="h-10 w-10 rounded-2xl" style={{ backgroundColor: invoice.review_status === "duplicate_blocked" ? "#fb7185" : BRAND_COLOUR }} />
                       </div>
@@ -318,19 +318,19 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
                         <div className={`rounded-2xl border px-4 py-3 text-sm font-semibold ${matchTone(match?.total_match_yn)}`}>Total match: {invoice.review_status === "duplicate_blocked" ? "Duplicate" : yesNo(match?.total_match_yn)}</div>
                       </div>
 
-                      {match?.pending_adjustment_yn ? <p className="mt-4 rounded-2xl border border-amber-300/40 bg-amber-300/10 p-3 text-sm text-amber-100">Delivery/discount approval is pending. This blocks supplier approval/Sage readiness, not operator line reconciliation.</p> : null}
+                      {match?.pending_adjustment_yn ? <p className="mt-4 rounded-2xl border border-amber-300/40 bg-amber-300/10 p-3 text-sm text-amber-100">Delivery/discount approval is pending. This blocks supplier approval/accounting readiness, not operator line reconciliation.</p> : null}
                     </div>
 
                     <div className="grid gap-4 lg:grid-cols-2">
                       <form action={saveSupplierInvoiceHeaderReviewAction} className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
                         <input type="hidden" name="supplier_invoice_id" value={invoice.id} />
                         <h3 className="text-lg font-semibold text-slate-950">Save header correction</h3>
-                        <p className="mt-1 text-sm text-slate-500">Use this only to resolve OCR/header issues. It does not replace operator line reconciliation.</p>
+                        <p className="mt-1 text-sm text-slate-500">Use this only to resolve document/header issues. It does not replace operator line reconciliation.</p>
                         <input name="corrected_invoice_ref" className="mt-4 w-full rounded-2xl border border-slate-200 bg-white p-3 text-sm outline-none transition focus:border-sky-300" defaultValue={invoice.ocr_invoice_ref ?? invoice.invoice_ref} placeholder="Accepted invoice ref" />
-                        <input name="ocr_invoice_ref" className="mt-3 w-full rounded-2xl border border-slate-200 bg-white p-3 text-sm outline-none transition focus:border-sky-300" defaultValue={invoice.ocr_invoice_ref ?? ""} placeholder="OCR invoice ref" />
-                        <input name="ocr_retailer_name" className="mt-3 w-full rounded-2xl border border-slate-200 bg-white p-3 text-sm outline-none transition focus:border-sky-300" defaultValue={invoice.ocr_retailer_name ?? ""} placeholder="OCR retailer / supplier name" />
+                        <input name="ocr_invoice_ref" className="mt-3 w-full rounded-2xl border border-slate-200 bg-white p-3 text-sm outline-none transition focus:border-sky-300" defaultValue={invoice.ocr_invoice_ref ?? ""} placeholder="Extracted invoice ref" />
+                        <input name="ocr_retailer_name" className="mt-3 w-full rounded-2xl border border-slate-200 bg-white p-3 text-sm outline-none transition focus:border-sky-300" defaultValue={invoice.ocr_retailer_name ?? ""} placeholder="Extracted retailer / supplier name" />
                         <input name="ocr_invoice_date" type="date" className="mt-3 w-full rounded-2xl border border-slate-200 bg-white p-3 text-sm outline-none transition focus:border-sky-300" defaultValue={invoice.ocr_invoice_date ?? ""} />
-                        <input name="ocr_invoice_total_gbp" type="number" min="0" step="0.01" className="mt-3 w-full rounded-2xl border border-slate-200 bg-white p-3 text-sm outline-none transition focus:border-sky-300" defaultValue={invoice.ocr_invoice_total_gbp ?? total ?? ""} placeholder="Accepted/OCR invoice total GBP" />
+                        <input name="ocr_invoice_total_gbp" type="number" min="0" step="0.01" className="mt-3 w-full rounded-2xl border border-slate-200 bg-white p-3 text-sm outline-none transition focus:border-sky-300" defaultValue={invoice.ocr_invoice_total_gbp ?? total ?? ""} placeholder="Accepted/extracted invoice total GBP" />
                         <input name="review_notes" className="mt-3 w-full rounded-2xl border border-slate-200 bg-white p-3 text-sm outline-none transition focus:border-sky-300" placeholder="Review note / correction reason" />
                         <button className="mt-4 rounded-full px-5 py-3 text-sm font-semibold text-slate-950 shadow-sm transition hover:opacity-90" style={{ backgroundColor: BRAND_COLOUR }}>Save correction</button>
                       </form>
@@ -348,28 +348,28 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
                   <aside className="border-t border-slate-100 bg-slate-50 p-5 sm:p-7 lg:border-l lg:border-t-0">
                     <div className="sticky top-6 space-y-4">
                       <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Mindee OCR status</p>
+                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Document extraction status</p>
                         <p className="mt-3 text-lg font-semibold text-slate-950">{invoice.mindee_ocr_status ?? "not_started"}</p>
                         <dl className="mt-4 space-y-3 text-sm">
                           <div>
-                            <dt className="text-slate-500">Job ID</dt>
+                            <dt className="text-slate-500">Processing job ID</dt>
                             <dd className="mt-1 break-words font-medium text-slate-950">{invoice.mindee_job_id ?? "—"}</dd>
                           </div>
                           <div>
-                            <dt className="text-slate-500">Inference ID</dt>
+                            <dt className="text-slate-500">Processing reference</dt>
                             <dd className="mt-1 break-words font-medium text-slate-950">{invoice.mindee_inference_id ?? "—"}</dd>
                           </div>
                         </dl>
-                        {invoice.mindee_error_message ? <p className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">Mindee error: {invoice.mindee_error_message}</p> : null}
+                        {invoice.mindee_error_message ? <p className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">Extraction error: {invoice.mindee_error_message}</p> : null}
                         <div className="mt-4 space-y-2">
-                          {canStartMindee(invoice) ? <form action={runMindeeOcrForSupplierInvoiceAction}><input type="hidden" name="supplier_invoice_id" value={invoice.id} /><button className="w-full rounded-full border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800 transition hover:bg-amber-100">Send to Mindee OCR — uses page credit</button></form> : null}
-                          {canFetchMindee(invoice) ? <form method="post" action="/internal/invoice-review/safe-fetch-mindee"><input type="hidden" name="supplier_invoice_id" value={invoice.id} /><button className="w-full rounded-full border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800 transition hover:bg-emerald-100">Fetch/save Mindee result — no new page</button></form> : null}
+                          {canStartMindee(invoice) ? <form action={runMindeeOcrForSupplierInvoiceAction}><input type="hidden" name="supplier_invoice_id" value={invoice.id} /><button className="w-full rounded-full border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800 transition hover:bg-amber-100">Start document extraction</button></form> : null}
+                          {canFetchMindee(invoice) ? <form method="post" action="/internal/invoice-review/safe-fetch-mindee"><input type="hidden" name="supplier_invoice_id" value={invoice.id} /><button className="w-full rounded-full border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800 transition hover:bg-emerald-100">Fetch/save extraction result</button></form> : null}
                         </div>
                       </div>
 
                       <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
                         <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Approval gate</p>
-                        {block ? <p className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800"><strong>Supplier approval/Sage still blocked:</strong> {block}</p> : <p className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">Supplier approval gate looks clear. Use Supplier draft ready for bulk approval after reconciliation is complete.</p>}
+                        {block ? <p className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800"><strong>Supplier approval/accounting still blocked:</strong> {block}</p> : <p className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">Supplier approval gate looks clear. Use Supplier draft ready for bulk approval after reconciliation is complete.</p>}
                       </div>
 
                       {flags.length > 0 ? (
