@@ -75,7 +75,7 @@ export default async function ShipperPackageContentsPage({
           <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">Package contents</h1>
           <p className="mt-2 text-sm text-slate-600">{(shipperUser as any).full_name} · {shipper?.name ?? "Shipper"}</p>
           <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-600">
-            Read-only package contents for operational checking. Description and quantity only. Values, VAT, margin, Sage, DVA/card and payment data are hidden.
+            Read-only package contents for operational checking. Description and quantity only. Commercial values and payment data are hidden.
           </p>
           {error ? <p className="mt-4 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-900">{error.message}</p> : null}
         </section>
@@ -130,7 +130,7 @@ export default async function ShipperPackageContentsPage({
             </div>
           )}
           <p className="mt-4 rounded-2xl bg-slate-50 p-3 text-xs text-slate-600">
-            This page is for shipper operational visibility only. It does not permit item allocation, value review, COS generation, Sage posting or VAT clearance.
+            This page is for shipper operational visibility only. It does not permit item allocation, commercial value review, COS generation or downstream accounting clearance.
           </p>
         </section>
       </div>
