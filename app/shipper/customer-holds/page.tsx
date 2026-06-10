@@ -151,7 +151,7 @@ export default async function ShipperCustomerHoldsPage() {
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Goodcashback Shipper</p>
           <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">Customer hold / set-aside instructions</h1>
           <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
-            This page shows approved set-aside instructions and the next state. It does not show supplier invoice controls, VAT, Sage, or DVA/card information.
+            This page shows approved set-aside instructions and the next state. It does not show upstream finance, payment or accounting controls.
           </p>
           <p className="mt-3 text-sm text-slate-600">Welcome: <span className="font-semibold text-slate-900">{shipperUser.full_name}</span> · {shipper?.name ?? "Shipper"}</p>
           {error ? <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">Customer hold set-aside queue unavailable: {error.message}. Apply the latest migration before testing this page.</p> : null}
