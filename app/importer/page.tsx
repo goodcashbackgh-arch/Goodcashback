@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
-import { supabaseAdmin } from "@/lib/supabase/admin";
 
 type OrderRow = {
   id: string;
@@ -15,17 +14,16 @@ type OrderRow = {
   retailers: { name: string | null } | null;
 };
 
-type StateRow = { id: string; lifecycle_status: string | null };
 type RefRow = { order_id: string };
 type InvoiceRow = { order_id: string; review_status: string | null };
-type SaleDocumentRow = { order_id: string; amount_gbp: number | string | null; sage_invoice_id: string | null; invoice_type: string | null };
-type FundingPositionRow = { order_id: string; confirmed_dva_funding_gbp: number | string | null; applied_credit_gbp: number | string | null; funded_total_gbp: number | string | null };
 type AudienceStatusRow = {
   order_id: string;
+  accepted_estimate_gbp: number | string | null;
   final_sale_value_gbp: number | string | null;
   canonical_amount_received_gbp: number | string | null;
   canonical_balance_due_gbp: number | string | null;
   potential_credit_pending_review_gbp: number | string | null;
+  customer_sales_state: string | null;
   importer_status_label: string | null;
   importer_next_action: string | null;
 };
@@ -41,11 +39,6 @@ const successActionClass = "inline-flex min-h-9 items-center justify-center roun
 
 function gbp(value: number | string | null | undefined) {
   return new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP", minimumFractionDigits: 2 }).format(Number(value ?? 0));
-}
-
-function saleDocumentSignedAmount(row: SaleDocumentRow) {
-  const amount = Number(row.amount_gbp ?? 0);
-  return row.invoice_type === "credit_note" ? -Math.abs(amount) : amount;
 }
 
 function friendlyStatus(value: string | null | undefined) {
@@ -72,30 +65,6 @@ function statusClass(needsResubmission: boolean, hasQuery: boolean, status: stri
   return "border-slate-200 bg-slate-50 text-slate-700";
 }
 
-function nextStatus(args: {
-  lifecycleStatus: string | null;
-  fundedAt: string | null;
-  hasQuery: boolean;
-  needsResubmission: boolean;
-  unresolvedCount: number;
-  unresolvedNonExceptionCount: number;
-  hasInvoice: boolean;
-  finalBalanceDueGbp: number;
-}) {
-  if (args.needsResubmission) return { status: "Invoice resubmission required", action: "Upload corrected invoice" };
-  if (args.hasQuery) return { status: "Evidence query open", action: "Answer evidence query" };
-  if (args.finalBalanceDueGbp > 0.01) return { status: "Final balance due", action: "Collect final balance" };
-  if (args.lifecycleStatus === "partially_progressed") {
-    if (args.unresolvedNonExceptionCount > 0) return { status: "Invoice reconciliation open", action: "Continue invoice reconciliation" };
-    if (args.unresolvedCount > 0) return { status: "Exception branch in progress", action: "Exception branches in progress" };
-    return { status: "Importer reconciliation complete", action: "No importer reconciliation action required" };
-  }
-  if (args.lifecycleStatus === "reconciling") return { status: "Reconciling", action: "Awaiting invoice reconciliation" };
-  if (args.lifecycleStatus === "evidence_collecting") return { status: "Evidence collecting", action: "Upload invoice or tracking" };
-  if (!args.fundedAt) return { status: "Open", action: "No importer action required" };
-  return { status: args.lifecycleStatus ? friendlyStatus(args.lifecycleStatus) : "Funded", action: "In progress" };
-}
-
 export default async function ImporterPage() {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -115,21 +84,14 @@ export default async function ImporterPage() {
   const orderRows = (orders ?? []) as unknown as OrderRow[];
   const orderIds = orderRows.map((order) => order.id);
 
-  const [{ data: orderStates, error: stateError }, { data: openQueries, error: queryError }, { data: invoiceLines }, { data: disputeLines }, { data: saleDocuments }, { data: fundingPositions }, { data: audienceStatuses, error: audienceStatusError }] = await Promise.all([
-    orderIds.length ? supabase.from("order_state_vw").select("id, lifecycle_status").in("id", orderIds) : { data: [], error: null },
+  const [{ data: openQueries, error: queryError }, { data: invoiceLines }, { data: disputeLines }, { data: audienceStatuses, error: audienceStatusError }] = await Promise.all([
     orderIds.length ? supabase.from("order_evidence_queries").select("order_id, message, status, created_at").in("order_id", orderIds).eq("status", "open").order("created_at", { ascending: false }) : { data: [], error: null },
     orderIds.length ? supabase.from("supplier_invoice_lines").select("id, eligible_for_invoice_yn, supplier_invoices!inner(order_id)").in("supplier_invoices.order_id", orderIds) : { data: [] },
     supabase.from("dispute_lines").select("supplier_invoice_line_id"),
-    orderIds.length ? (supabaseAdmin as any).from("sales_invoices").select("order_id, amount_gbp, sage_invoice_id, invoice_type").in("order_id", orderIds).eq("sage_status", "posted").not("sage_invoice_id", "is", null).in("invoice_type", ["main", "supplementary", "credit_note"]) : Promise.resolve({ data: [] }),
-    orderIds.length ? supabase.from("order_funding_position_vw").select("order_id, confirmed_dva_funding_gbp, applied_credit_gbp, funded_total_gbp").in("order_id", orderIds) : { data: [] },
     orderIds.length ? supabase.rpc("order_audience_status_v1", { p_order_id: null }) : { data: [], error: null },
   ]);
-  if (stateError) throw stateError;
   if (queryError) throw queryError;
   if (audienceStatusError) throw audienceStatusError;
-
-  const lifecycleByOrderId = new Map<string, string | null>();
-  for (const row of (orderStates ?? []) as StateRow[]) lifecycleByOrderId.set(row.id, row.lifecycle_status);
 
   const screenshotCountByOrderId = new Map<string, number>();
   for (const row of (screenshots ?? []) as RefRow[]) screenshotCountByOrderId.set(row.order_id, (screenshotCountByOrderId.get(row.order_id) ?? 0) + 1);
@@ -163,19 +125,16 @@ export default async function ImporterPage() {
     reconciliationByOrderId.set(orderId, current);
   }
 
-  const finalSaleValueByOrderId = new Map<string, { total: number; confirmed: boolean }>();
-  for (const doc of (saleDocuments ?? []) as SaleDocumentRow[]) {
-    const current = finalSaleValueByOrderId.get(doc.order_id) ?? { total: 0, confirmed: false };
-    current.total += saleDocumentSignedAmount(doc);
-    current.confirmed = current.confirmed || Boolean(doc.sage_invoice_id);
-    finalSaleValueByOrderId.set(doc.order_id, current);
-  }
-
-  const fundingByOrderId = new Map<string, FundingPositionRow>();
-  for (const funding of (fundingPositions ?? []) as FundingPositionRow[]) fundingByOrderId.set(funding.order_id, funding);
-
   const audienceByOrderId = new Map<string, AudienceStatusRow>();
   for (const audienceStatus of (audienceStatuses ?? []) as AudienceStatusRow[]) audienceByOrderId.set(audienceStatus.order_id, audienceStatus);
+
+  const missingAudienceRows = orderRows.filter((order) => {
+    const audienceStatus = audienceByOrderId.get(order.id);
+    return !audienceStatus?.importer_status_label || !audienceStatus?.importer_next_action;
+  });
+  if (missingAudienceRows.length > 0) {
+    return <main className="min-h-screen bg-slate-50 p-6 text-slate-950"><div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"><p className="font-semibold">Canonical importer status unavailable.</p><p className="mt-1">This page is blocked to avoid showing stale local balances. Missing order refs: {missingAudienceRows.map((order) => order.order_ref ?? order.id).join(", ")}</p></div></main>;
+  }
 
   const rows = orderRows.map((order) => {
     const orderInvoices = invoicesByOrderId.get(order.id) ?? [];
@@ -184,33 +143,17 @@ export default async function ImporterPage() {
     const needsResubmission = needsInvoiceResubmission(orderInvoices);
     const querySummary = queryByOrderId.get(order.id);
     const rec = reconciliationByOrderId.get(order.id) ?? { unresolvedCount: 0, unresolvedNonExceptionCount: 0 };
-    const acceptedEstimateGbp = Number(order.order_total_gbp_declared ?? 0);
-    const finalSale = finalSaleValueByOrderId.get(order.id);
-    const audienceStatus = audienceByOrderId.get(order.id);
-    const localFinalSaleValueGbp = finalSale?.confirmed ? finalSale.total : acceptedEstimateGbp;
-    const localFunding = fundingByOrderId.get(order.id);
-    const localAmountReceivedGbp = Number(localFunding?.funded_total_gbp ?? (Number(localFunding?.confirmed_dva_funding_gbp ?? 0) + Number(localFunding?.applied_credit_gbp ?? 0)));
-    const localFinalBalanceDueGbp = finalSale?.confirmed ? Math.max(localFinalSaleValueGbp - localAmountReceivedGbp, 0) : 0;
-    const localPendingCreditGbp = finalSale?.confirmed ? Math.max(localAmountReceivedGbp - localFinalSaleValueGbp, 0) : 0;
-    const finalSaleValueGbp = Number(audienceStatus?.final_sale_value_gbp ?? localFinalSaleValueGbp);
-    const amountReceivedGbp = Number(audienceStatus?.canonical_amount_received_gbp ?? localAmountReceivedGbp);
-    const finalBalanceDueGbp = Number(audienceStatus?.canonical_balance_due_gbp ?? localFinalBalanceDueGbp);
-    const pendingCreditGbp = Number(audienceStatus?.potential_credit_pending_review_gbp ?? localPendingCreditGbp);
-    const fallbackStatus = nextStatus({
-      lifecycleStatus: lifecycleByOrderId.get(order.id) ?? null,
-      fundedAt: order.funded_at,
-      hasQuery: Boolean(querySummary?.count),
-      needsResubmission,
-      unresolvedCount: rec.unresolvedCount,
-      unresolvedNonExceptionCount: rec.unresolvedNonExceptionCount,
-      hasInvoice,
-      finalBalanceDueGbp,
-    });
+    const audienceStatus = audienceByOrderId.get(order.id)!;
+    const acceptedEstimateGbp = Number(audienceStatus.accepted_estimate_gbp ?? order.order_total_gbp_declared ?? 0);
+    const finalSaleValueGbp = Number(audienceStatus.final_sale_value_gbp ?? acceptedEstimateGbp);
+    const amountReceivedGbp = Number(audienceStatus.canonical_amount_received_gbp ?? 0);
+    const finalBalanceDueGbp = Number(audienceStatus.canonical_balance_due_gbp ?? 0);
+    const pendingCreditGbp = Number(audienceStatus.potential_credit_pending_review_gbp ?? 0);
     const status = {
-      status: audienceStatus?.importer_status_label ?? fallbackStatus.status,
-      action: audienceStatus?.importer_next_action ?? fallbackStatus.action,
+      status: audienceStatus.importer_status_label!,
+      action: audienceStatus.importer_next_action!,
     };
-    return { order, hasInvoice, hasTracking, needsResubmission, querySummary, rec, status, screenshotCount: screenshotCountByOrderId.get(order.id) ?? 0, acceptedEstimateGbp, finalSaleValueGbp, finalSaleConfirmed: Boolean(finalSale?.confirmed || audienceStatus), finalBalanceDueGbp, pendingCreditGbp, amountReceivedGbp };
+    return { order, hasInvoice, hasTracking, needsResubmission, querySummary, rec, status, screenshotCount: screenshotCountByOrderId.get(order.id) ?? 0, acceptedEstimateGbp, finalSaleValueGbp, finalSaleConfirmed: audienceStatus.customer_sales_state === "posted", finalBalanceDueGbp, pendingCreditGbp, amountReceivedGbp };
   });
 
   const resubmissionCount = rows.filter((row) => row.needsResubmission).length;
