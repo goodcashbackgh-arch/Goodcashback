@@ -24,7 +24,7 @@ export default async function ShipperShipmentBatchLayout({
             href={`/shipper/shipments/${shipmentBatchId}/sales-invoices-zip`}
             className="rounded-xl border border-sky-300 bg-sky-50 px-4 py-2 text-sm font-semibold text-sky-900 hover:bg-sky-100"
           >
-            Download sales invoices ZIP
+            Download shipment document ZIP
           </Link>
           <Link
             href={`/shipper/shipments/${shipmentBatchId}/final-evidence`}
@@ -33,7 +33,7 @@ export default async function ShipperShipmentBatchLayout({
             Upload final evidence
           </Link>
           <span className="text-xs font-medium text-slate-600">
-            Create the draft pack, download invoice evidence, then upload the completed final evidence.
+            Create the draft pack, download supporting shipment documents, then upload the completed final evidence.
           </span>
         </div>
       </div>
