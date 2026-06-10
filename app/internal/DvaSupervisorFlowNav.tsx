@@ -10,44 +10,44 @@ const flowLinks = [
   {
     href: "/internal/dva-statement-import/mindee-control",
     step: "2",
-    label: "PDF OCR control",
-    hint: "Run, fetch and parse statement OCR",
+    label: "PDF statement extraction",
+    hint: "Run document read and parse statement",
   },
   {
     href: "/internal/dva-reconciliation",
     step: "3",
     label: "Control hub",
-    hint: "See what needs funding, matching, review or exception action",
+    hint: "See what needs payment, matching, review or exception action",
   },
   {
     href: "/internal/dva-reconciliation/workspace",
     step: "4",
     label: "Importer matching",
-    hint: "Importer DVA/card allocation for supplier, refund, FX/card, fee and hold items",
+    hint: "Importer payment matching for supplier charges, refunds, FX/payment variance, fees and hold items",
   },
   {
     href: "/internal/dva-reconciliation/main-bank",
     step: "4B",
     label: "Main bank / shipper",
-    hint: "Main company bank OUT lines matched to posted shipper AP invoices",
+    hint: "Main company bank OUT lines matched to approved shipper charge records",
   },
   {
     href: "/internal/funding",
     step: "5",
-    label: "Importer funding",
+    label: "Importer payment matching",
     hint: "Apply customer/importer IN money to orders or credit",
   },
   {
     href: "/internal/dva-reconciliation/allocations",
     step: "6",
-    label: "Allocations & reversals",
-    hint: "Review or reverse active allocation records",
+    label: "Matching & reversals",
+    hint: "Review or reverse active matching records",
   },
   {
     href: "/internal/dva-reconciliation/review-pack",
     step: "7",
     label: "Review pack",
-    hint: "Prove statement lines are explained before Sage readiness",
+    hint: "Prove statement lines are explained before accounting readiness",
   },
   {
     href: "/internal/dva-reconciliation/exception-actions",
@@ -63,15 +63,15 @@ export default function DvaSupervisorFlowNav() {
       <div className="mx-auto max-w-7xl">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-sky-600">Supervisor DVA/card flow</p>
-            <p className="mt-1 text-xs text-slate-500">Import statement truth → OCR/commit → control hub → importer match or main-bank shipper match → fund/review/reverse → review pack → exception actions → pre-Sage readiness.</p>
+            <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-sky-600">Supervisor payment flow</p>
+            <p className="mt-1 text-xs text-slate-500">Import statement truth → document read/commit → control hub → importer match or main-bank shipper match → pay/review/reverse → review pack → exception actions → accounting readiness.</p>
           </div>
           <Link href="/internal" className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50">
             Internal home
           </Link>
         </div>
 
-        <nav className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5 xl:grid-cols-9" aria-label="DVA supervisor flow">
+        <nav className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5 xl:grid-cols-9" aria-label="Supervisor payment flow">
           {flowLinks.map((link) => (
             <Link
               key={link.href}
