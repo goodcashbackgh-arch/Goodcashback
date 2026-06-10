@@ -11,6 +11,17 @@ type ShipmentBatchRow = { id: string; dispatched_at?: string | null; shipment_cu
 type InvoiceRow = { id: string; amount_gbp?: number | string | null; invoice_type?: string | null; sage_invoice_id?: string | null; sage_invoice_date?: string | null; sage_posted_at?: string | null };
 type FinalBalancePaymentAllocationRow = { allocated_gbp_amount?: number | string | null };
 type EvidenceRow = { document_kind?: string | null; review_status?: string | null };
+type AudienceStatusRow = {
+  accepted_estimate_gbp: number | string | null;
+  final_sale_value_gbp: number | string | null;
+  canonical_amount_received_gbp: number | string | null;
+  canonical_balance_due_gbp: number | string | null;
+  potential_credit_pending_review_gbp: number | string | null;
+  customer_sales_state: string | null;
+  customer_complete_yn: boolean | null;
+  customer_status_label: string | null;
+  customer_next_action: string | null;
+};
 type Tone = "action" | "ready" | "complete" | "review" | "muted";
 
 function money(value: unknown) {
@@ -19,11 +30,6 @@ function money(value: unknown) {
 
 function localAmount(value: unknown, code = "Local") {
   return `${code} ${new Intl.NumberFormat("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(value ?? 0))}`;
-}
-
-function friendly(value: string | null | undefined) {
-  if (!value) return "-";
-  return value.replaceAll("_", " ").replace(/^./, (first) => first.toUpperCase());
 }
 
 function saleDocumentLabel(value: string | null | undefined) {
@@ -114,17 +120,23 @@ export default async function CustomerOrderOperationsPage({ params, searchParams
   if (!access) redirect("/customer");
 
   const today = new Date().toISOString().slice(0, 10);
-  const [fundingRes, screenshotsRes, stateRes, reviewRes, creditBalanceRes, fxRes, shipmentPackageRes, invoiceRes, finalBalancePaymentRes] = await Promise.all([
+  const [fundingRes, screenshotsRes, reviewRes, creditBalanceRes, fxRes, shipmentPackageRes, invoiceRes, finalBalancePaymentRes, audienceStatusRes] = await Promise.all([
     supabase.from("order_funding_position_vw").select("*").eq("order_id", orderId).maybeSingle(),
     supabase.from("order_screenshots").select("id, screenshot_url").eq("order_id", orderId).order("display_order"),
-    supabase.from("order_state_vw").select("lifecycle_status").eq("id", orderId).maybeSingle(),
     (supabase as any).rpc("customer_active_order_review_link_v1", { p_order_id: orderId }).maybeSingle(),
     supabase.rpc("customer_importer_credit_balance_v1"),
     supabase.from("fx_rates").select("quote_rate, quote_card_markup_pct, rate_date").eq("country_id", order.importers?.country_id).lte("rate_date", today).order("rate_date", { ascending: false }).limit(1).maybeSingle(),
     (supabaseAdmin as any).from("shipper_shipment_batch_packages").select("shipment_batch_id").eq("order_id", orderId).eq("active", true),
     (supabaseAdmin as any).from("sales_invoices").select("id, amount_gbp, invoice_type, sage_invoice_id, sage_invoice_date, sage_posted_at").eq("order_id", orderId).eq("sage_status", "posted").not("sage_invoice_id", "is", null).in("invoice_type", ["main", "supplementary", "credit_note"]),
     (supabaseAdmin as any).from("dva_statement_line_allocations").select("allocated_gbp_amount").eq("order_id", orderId).eq("allocation_type", "final_balance_payment").eq("allocation_status", "confirmed"),
+    (supabase as any).rpc("order_audience_status_v1", { p_order_id: orderId }).maybeSingle(),
   ]);
+
+  if (audienceStatusRes.error) throw audienceStatusRes.error;
+  if (!audienceStatusRes.data) {
+    return <main className="min-h-screen bg-slate-50 p-6 text-slate-950"><div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"><p className="font-semibold">Canonical customer status unavailable.</p><p className="mt-1">This page is blocked to avoid showing a stale balance.</p></div></main>;
+  }
+  const canonicalStatus = audienceStatusRes.data as AudienceStatusRow;
 
   const shipmentPackages = (shipmentPackageRes.data ?? []) as ShipmentPackageRow[];
   const shipmentBatchIds = Array.from(new Set(shipmentPackages.map((row) => row.shipment_batch_id).filter(Boolean) as string[]));
@@ -148,25 +160,24 @@ export default async function CustomerOrderOperationsPage({ params, searchParams
   });
 
   const funding = fundingRes.data;
-  const state = stateRes.data;
   const screenshots = (screenshotsRes.data ?? []) as ScreenshotRow[];
   const reviewLink = reviewRes.data as ReviewLinkRow | null;
   const reviewHref = reviewLink?.customer_review_path ?? null;
   const thresholdMet = Boolean(funding?.threshold_met_yn);
-  const acceptedEstimateGbp = Number(order.order_total_gbp_declared ?? 0);
+  const acceptedEstimateGbp = Number(canonicalStatus.accepted_estimate_gbp ?? order.order_total_gbp_declared ?? 0);
   const totalQty = Number(order.total_qty_declared ?? 0);
   const appliedCreditGbp = Number(funding?.applied_credit_gbp ?? 0);
   const confirmedPaymentGbp = Number(funding?.confirmed_dva_funding_gbp ?? 0);
   const initialAmountReceivedGbp = confirmedPaymentGbp + appliedCreditGbp;
   const finalBalancePaymentGbp = ((finalBalancePaymentRes.data ?? []) as FinalBalancePaymentAllocationRow[]).reduce((sum, row) => sum + Number(row.allocated_gbp_amount ?? 0), 0);
-  const amountReceivedGbp = initialAmountReceivedGbp + finalBalancePaymentGbp;
+  const amountReceivedGbp = Number(canonicalStatus.canonical_amount_received_gbp ?? 0);
   const initialCashDueGbp = Math.max(acceptedEstimateGbp - initialAmountReceivedGbp, 0);
-  const finalSaleValueConfirmed = invoices.length > 0;
-  const finalSaleValueGbp = finalSaleValueConfirmed ? invoices.reduce((sum, row) => sum + saleDocumentSignedAmount(row), 0) : acceptedEstimateGbp;
-  const finalBalanceDueGbp = finalSaleValueConfirmed ? Math.max(finalSaleValueGbp - amountReceivedGbp, 0) : 0;
-  const orderComplete = finalBalanceDueGbp <= 0.01 && deliveryConfirmed;
+  const finalSaleValueConfirmed = canonicalStatus.customer_sales_state === "posted" || invoices.length > 0;
+  const finalSaleValueGbp = Number(canonicalStatus.final_sale_value_gbp ?? acceptedEstimateGbp);
+  const finalBalanceDueGbp = Number(canonicalStatus.canonical_balance_due_gbp ?? 0);
+  const orderComplete = Boolean(canonicalStatus.customer_complete_yn) || (finalBalanceDueGbp <= 0.01 && deliveryConfirmed);
   const visibleCashDueGbp = finalSaleValueConfirmed ? finalBalanceDueGbp : initialCashDueGbp;
-  const pendingCreditGbp = finalSaleValueConfirmed ? Math.max(amountReceivedGbp - finalSaleValueGbp, 0) : 0;
+  const pendingCreditGbp = Number(canonicalStatus.potential_credit_pending_review_gbp ?? 0);
   const hasAmountReceived = amountReceivedGbp > 0.01;
 
   const rate = Number(fxRes.data?.quote_rate ?? 0);
@@ -179,10 +190,9 @@ export default async function CustomerOrderOperationsPage({ params, searchParams
   const availableCreditGbp = ((creditBalanceRes.data ?? []) as CreditBalanceRow[]).reduce((sum, row) => sum + Number(row.available_credit_gbp ?? 0), 0);
   const availableCreditLocal = effectiveRate ? availableCreditGbp * effectiveRate : 0;
 
-  const statusRaw = String(state?.lifecycle_status ?? order.status ?? "").toLowerCase();
-  const statusLabel = reviewHref ? "Ready for your review" : !thresholdMet ? "Payment required" : finalBalanceDueGbp > 0.01 ? "Final balance due" : deliveryConfirmed ? "Completed" : shipmentArranged ? "Shipment arranged" : ["pending_dva_funding", "funding_pending", "draft"].includes(statusRaw) ? "Payment received; processing" : ["reconciling", "partially_progressed", "invoice_reconciled_tracking_open"].includes(statusRaw) ? "Order being prepared" : ["ready_for_shipment", "shipment_booked"].includes(statusRaw) ? "Preparing for shipment" : ["shipment_dispatched", "awaiting_importer_receipt"].includes(statusRaw) ? "Shipment in progress" : ["completed", "archived"].includes(statusRaw) ? "Completed" : ["discrepancy_open", "awaiting_financial_closure"].includes(statusRaw) ? "Under review" : friendly(state?.lifecycle_status ?? order.status);
+  const statusLabel = reviewHref ? "Ready for your review" : canonicalStatus.customer_status_label ?? "In progress";
   const tone: Tone = reviewHref ? "ready" : !thresholdMet || finalBalanceDueGbp > 0.01 ? "action" : statusLabel.toLowerCase().includes("completed") ? "complete" : statusLabel.toLowerCase().includes("review") ? "review" : "muted";
-  const nextActionTitle = reviewHref ? "Review items before shipment" : !thresholdMet ? "Payment required" : finalBalanceDueGbp > 0.01 ? "Final balance due" : orderComplete ? "Order complete" : deliveryConfirmed ? "Delivery confirmed" : shipmentArranged ? "Waiting for delivery confirmation" : "No action needed right now";
+  const nextActionTitle = reviewHref ? "Review items before shipment" : canonicalStatus.customer_next_action ?? "No action needed right now";
   const nextActionBody = reviewHref
     ? "Check the order before shipment and request a hold if anything should not be sent."
     : !thresholdMet && appliedCreditGbp > 0.01
