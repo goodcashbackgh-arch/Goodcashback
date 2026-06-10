@@ -65,8 +65,8 @@ export default async function VatJournalDetailPage({ params, searchParams }: any
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <Link href={runId ? `/internal/accounting-vat/returns/${runId}?tab=journals` : "/internal/accounting-vat?tab=journals"} className="text-sm font-semibold text-sky-600">← Back to VAT journals</Link>
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">VAT journal detail</p>
-          <h1 className="mt-2 text-3xl font-semibold tracking-tight">Sage adjustment journal</h1>
-          <p className="mt-2 text-sm leading-6 text-slate-600">Admin-only VAT journal control. Approved journals can be posted to Sage via /journals only after dry-run validation and approval.</p>
+          <h1 className="mt-2 text-3xl font-semibold tracking-tight">Accounting adjustment journal</h1>
+          <p className="mt-2 text-sm leading-6 text-slate-600">Admin-only VAT journal control. Approved journals can be posted to the accounting system only after dry-run validation and approval.</p>
           {qs.success ? <p className="mt-4 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-900">{qs.success}</p> : null}
           {qs.error ? <p className="mt-4 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-900">{qs.error}</p> : null}
         </section>
@@ -78,13 +78,13 @@ export default async function VatJournalDetailPage({ params, searchParams }: any
           <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Status</p><p className="mt-1 text-xl font-bold">{pretty(journal.status)}</p></div>
           <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Target box</p><p className="mt-1 text-xl font-bold">{pretty(journal.target_box)}</p></div>
           <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Amount</p><p className="mt-1 text-xl font-bold">{amount(journal.amount_gbp)}</p></div>
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Sage reference</p><p className="mt-1 break-all text-sm font-bold">{text(journal.sage_journal_ref) || "—"}</p></div>
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Sage journal id</p><p className="mt-1 break-all text-sm font-bold">{text(journal.sage_journal_id) || "—"}</p></div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">External accounting reference</p><p className="mt-1 break-all text-sm font-bold">{text(journal.sage_journal_ref) || "—"}</p></div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Accounting journal ID</p><p className="mt-1 break-all text-sm font-bold">{text(journal.sage_journal_id) || "—"}</p></div>
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold">Validation and approval</h2>
-          <p className="mt-2 text-sm leading-6 text-slate-600">Use this sequence before live Sage posting: dry-run validate, admin approve, then post.</p>
+          <p className="mt-2 text-sm leading-6 text-slate-600">Use this sequence before live accounting posting: dry-run validate, admin approve, then post.</p>
           <div className="mt-5 flex flex-wrap gap-3">
             <form action={dryRunVatAdjustmentJournalAction}>
               <input type="hidden" name="journal_id" value={journalId} />
@@ -99,7 +99,7 @@ export default async function VatJournalDetailPage({ params, searchParams }: any
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold">Posting control</h2>
-          <p className="mt-2 text-sm leading-6 text-slate-600">This action calls Sage /journals server-side using the existing OAuth token-refresh path. It remains blocked unless the live VAT journal posting environment flag is enabled.</p>
+          <p className="mt-2 text-sm leading-6 text-slate-600">This action posts the approved accounting journal server-side using the existing secure connection. It remains blocked unless the live VAT journal posting environment flag is enabled.</p>
           {journal.last_error ? <p className="mt-4 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900">Last error: {text(journal.last_error)}</p> : null}
           {canPost ? (
             <form action={postVatAdjustmentJournalToSageAction} className="mt-5 space-y-4 rounded-2xl border border-amber-200 bg-amber-50 p-4">
@@ -107,9 +107,9 @@ export default async function VatJournalDetailPage({ params, searchParams }: any
               <input type="hidden" name="return_run_id" value={runId} />
               <label className="flex gap-3 text-sm font-semibold leading-6 text-amber-950">
                 <input className="mt-1 h-4 w-4" type="checkbox" name="confirm_live_sage_post" value="yes" />
-                I confirm this is the controlled live Sage /journals posting step for this admin-approved VAT adjustment journal.
+                I confirm this is the controlled live accounting posting step for this admin-approved VAT adjustment journal.
               </label>
-              <button className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-bold text-white hover:bg-slate-800">Post approved VAT journal to Sage</button>
+              <button className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-bold text-white hover:bg-slate-800">Post approved VAT journal to accounting system</button>
             </form>
           ) : (
             <p className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm font-semibold text-slate-700">Posting button appears only when status is admin approved.</p>
