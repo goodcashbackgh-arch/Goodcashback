@@ -74,7 +74,7 @@ export default async function ShipperPackageReceiptsPage({
           <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">Package receipt actions</h1>
           <p className="mt-2 text-sm text-slate-600">{shipperUser.full_name} · {shipper?.name ?? "Shipper"}</p>
           <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-600">
-            Record package-level physical truth only. Contents preview shows description and quantity only. This does not lock operator/supervisor item-content allocation and does not create shipment, COS, VAT or Sage effects.
+            Record package-level physical truth only. Contents preview shows description and quantity only. This does not lock operator/supervisor item-content allocation and does not create shipment, final export evidence or downstream accounting effects.
           </p>
           {queryParams.success ? <p className="mt-4 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">{queryParams.success}</p> : null}
           {queryParams.error ? <p className="mt-4 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-900">{queryParams.error}</p> : null}
