@@ -307,3 +307,223 @@ Do not treat absence of a document as proof of completion. A lane closes only fr
 7. Run drift audit across all active orders.
 8. Only then continue with new workflow builds.
 ```
+
+## 11. User-facing terminology exposure addendum
+
+This addendum covers visible UI wording only. It does not change the canonical status engine, database schema, RPCs, routes, integrations, permissions, calculations or workflow gates.
+
+### 11.1 Purpose
+
+External and semi-external users must not be shown the names of internal vendors, accounting systems, automation tools, tax mechanics or implementation details unless the page is explicitly internal/staff-only and the wording is necessary for staff control.
+
+This is a presentation-layer control. It must not be used to hide operational truth, change accounting treatment, change payment matching, alter evidence requirements, or weaken the audit trail.
+
+### 11.2 No-functionality-change boundary
+
+Allowed changes:
+
+```text
+- visible headings;
+- visible labels;
+- helper text;
+- button text;
+- warning text;
+- badge text;
+- downloadable README text;
+- route response/error text shown to users;
+- display-only sanitising of dynamic warning/note/status text already being rendered.
+```
+
+Prohibited changes:
+
+```text
+- renaming tables, columns, RPCs, functions, route folders, imports, adapters or environment variables;
+- changing payment/funding/settlement logic;
+- changing statement matching or allocation logic;
+- changing document-read/OCR implementation logic;
+- changing accounting-system posting logic;
+- changing tax/VAT return logic;
+- changing role permissions or RLS;
+- changing canonical status calculations;
+- changing workflow gates;
+- changing database-stored historic evidence solely to make wording cleaner.
+```
+
+Internal code identifiers may retain implementation names where required for safe operation. The restriction is on user-visible text and downloadable/user-visible output.
+
+### 11.3 Replacement map for visible UI text
+
+The following visible terms must be replaced where they appear in customer, importer, shipper or generic staff-demo UI:
+
+```text
+Mindee                         -> document processor / document parser / document read
+OCR                            -> document read / document extraction / statement extraction
+PDF OCR control                -> PDF statement extraction / Statement document control
+Run, fetch and parse statement OCR -> Run document read and parse statement
+Sage / Sage Cloud              -> accounting system / finance system / accounting records
+pre-Sage readiness             -> accounting readiness / posting readiness
+Sage readiness                 -> accounting readiness
+Sage posting                   -> accounting posting
+posted to Sage                 -> posted to accounting records
+Sage invoice ID                -> accounting document ID
+Sage reference                 -> accounting reference
+DVA/card                       -> payment account / statement account / collection account
+DVA statement                  -> payment statement / collection statement
+card line                      -> statement line / payment line
+FX/card diff                   -> FX/payment variance
+bank fee                       -> bank/payment fee
+shipper AP invoice             -> shipper charge record / shipping charge document
+AP invoice                     -> payable charge document / supplier charge record
+posted shipper AP invoices     -> approved shipper charge records
+supplier invoice               -> supplier charge document / retailer purchase document, depending context
+sales invoice                  -> final order document / customer final invoice / shipment support document, depending audience
+final balance                  -> remaining order balance, where customer/importer-facing
+funding                        -> payment / order payment / payment received, where customer/importer-facing
+Importer funding               -> Importer payment matching / Order payment matching
+allocation                     -> matching / payment matching, where customer/importer-facing
+VAT                            -> tax / compliance / statutory review, unless strictly internal tax-admin context
+HMRC                           -> internal compliance authority wording only; not shipper/customer-facing
+Box 1 / Box 4 / Box 6 / Box 7  -> tax return box values, internal-only
+ledger                         -> account balance / account record, where user-facing
+auth ref                       -> payment reference / reference
+reconciliation                 -> matching / review / statement matching, where user-facing
+```
+
+### 11.4 Screenshot-specific replacements agreed in implementation
+
+The following screenshot-visible wording must be replaced:
+
+```text
+Mindee direction out corrected to in...
+-> Document direction corrected to inbound...
+
+PDF OCR control
+-> PDF statement extraction
+
+Run, fetch and parse statement OCR
+-> Run document read and parse statement
+
+pre-Sage readiness
+-> accounting readiness
+
+Importer DVA/card allocation for supplier, refund, FX/card, fee and hold items
+-> Importer payment matching for supplier charges, refunds, FX/payment variance, fees and hold items
+
+Main company bank OUT lines matched to posted shipper AP invoices
+-> Main company bank OUT lines matched to approved shipper charge records
+
+FX/card diff
+-> FX/payment variance
+
+Allocate FX/card or bank fee
+-> Allocate FX/payment variance or bank fee
+
+Apply to final balance
+-> Apply to remaining order balance
+
+Confirm supplier allocation
+-> Confirm supplier charge matching
+```
+
+### 11.5 Dynamic text sanitising rule
+
+Some leaked wording may come from stored database warning strings, parser notes or audit messages rather than hardcoded page text. UI pages that render dynamic notes, warnings, parsed statement messages or status messages must pass those values through a display-only sanitiser before rendering.
+
+Required helper pattern:
+
+```text
+cleanUiText(value)
+```
+
+Required behaviour:
+
+```text
+- accept string/null/undefined;
+- return a display-safe string;
+- replace banned visible terms using the replacement map;
+- preserve numbers, dates, references and operational meaning;
+- not mutate the underlying database value;
+- not change business logic or matching decisions.
+```
+
+Example:
+
+```text
+Stored value: Mindee direction out corrected to in using balance-after movement.
+Displayed value: Document direction corrected to inbound using balance-after movement.
+```
+
+### 11.6 Page-scope priority
+
+Cleanup must proceed in this order:
+
+```text
+1. Shipper-facing pages and shipper downloadable/route output.
+2. Customer-facing pages.
+3. Importer/operator-facing pages.
+4. Internal staff UI intended for screenshots/demo walkthroughs.
+5. Downloadable evidence packs and route response text.
+6. Repository docs/migrations only if surfaced in the app or demo pack.
+```
+
+### 11.7 Shipper-facing acceptance proof
+
+For `app/shipper/**`, the following visible terms must not appear in rendered UI copy or user-visible route output:
+
+```text
+Mindee
+OCR
+Sage
+Sage Cloud
+pre-Sage
+VAT
+DVA
+DVA/card
+sales invoice
+sales-invoices
+shipper AP
+AP invoice
+```
+
+Shipper-facing pages must remain focused on:
+
+```text
+- package receipt;
+- package contents;
+- shipment batch facts;
+- shipping charge document upload/replacement;
+- final export/COS/POD evidence;
+- set-aside and return actions;
+- approved shipper charge records;
+- shipment document ZIP / support pack wording.
+```
+
+Shipper-facing pages must not show customer balance due, customer/importer next action, internal accounting-system names, tax-return language, payment-account mechanics or implementation-vendor names.
+
+### 11.8 Audit requirement
+
+A UI terminology audit script should be added before the wider cleanup is considered complete.
+
+Expected behaviour:
+
+```text
+- scan UI-visible files first: app/**/*.tsx, app/**/*.ts route response text, src/**/*.tsx, components/**/*.tsx;
+- report banned visible terms;
+- allow explicit exceptions for internal implementation files, adapters, migrations, SQL, and docs not rendered in the app;
+- fail or warn before release where banned terms appear in user-facing UI copy.
+```
+
+This audit must not force unsafe renaming of implementation identifiers.
+
+### 11.9 Acceptance proof for terminology cleanup
+
+The terminology cleanup is complete only when:
+
+```text
+- canonical status drift audit remains clean;
+- no status/action/balance behaviour changes;
+- app/shipper search returns no visible banned terms;
+- customer/importer-facing pages are searched and patched next;
+- internal/demo-facing pages are searched and patched after external pages;
+- any remaining banned terms are documented as internal-code exceptions, not visible UI copy.
+```
