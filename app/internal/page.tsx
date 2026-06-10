@@ -21,7 +21,7 @@ const dvaFlowSteps: FlowStep[] = [
     step: "1",
     title: "Upload / import statement",
     href: "/internal/dva-statement-import",
-    description: "Start here for bank, card, DVA and statement uploads. Create the batch, parse/OCR, review, commit or void.",
+    description: "Start here for bank, card, DVA and statement uploads. Create the batch, parse/extract, review, commit or void.",
   },
   {
     step: "2A",
@@ -92,13 +92,13 @@ const cards: QueueCard[] = [
   {
     title: "Accounting command centre",
     href: "/internal/accounting-command-centre",
-    description: "Official accounting/Sage cockpit: live-ready documents, frozen snapshots, revalidation, posting gates, mapping/settings diagnostics and future batch posting control.",
+    description: "Official accounting cockpit: live-ready documents, frozen snapshots, revalidation, posting gates, mapping/settings diagnostics and future batch posting control.",
     proof: "Daily cockpit 2 of 2 — accounting execution readiness",
   },
   {
     title: "DVA/card statement workflow",
     href: "/internal/dva-statement-import",
-    description: "Start here for bank/card/DVA statement upload, OCR or parsing, staging, commit, and safe import voiding.",
+    description: "Start here for bank/card/DVA statement upload, document extraction or parsing, staging, commit, and safe import voiding.",
     proof: "Statement import → commit → matching",
   },
   {
@@ -168,13 +168,13 @@ const cards: QueueCard[] = [
     proof: "Customer hold review and approval gate",
   },
   {
-    title: "Sage mapping diagnostic",
+    title: "Accounting mapping diagnostic",
     href: "/internal/sage-mapping",
     description: "Legacy/drill-down mapping page. Daily accounting users should start from Accounting Command Centre; this page remains for exact mapping edits until the settings tab is fully absorbed.",
     proof: "Demoted under v4 — not a command centre",
   },
   {
-    title: "Pre-Sage readiness diagnostic",
+    title: "Pre-accounting readiness diagnostic",
     href: "/internal/status-control/pre-sage-financial-readiness",
     description: "Legacy blocker pack for order-level diagnosis. Daily users should start from Supervisor Command Centre or Accounting Command Centre, not this page.",
     proof: "Demoted under v4 — diagnostic only",
@@ -186,15 +186,15 @@ const cards: QueueCard[] = [
     proof: "Demoted under v4 — use Accounting Command Centre first",
   },
   {
-    title: "Evidence / OCR queue",
+    title: "Evidence / document extraction queue",
     href: "/internal/evidence",
-    description: "Invoice-first, tracking-first, OCR review, progressed subset, and source-line protection.",
+    description: "Invoice-first, tracking-first, document extraction review, progressed subset, and source-line protection.",
     proof: "Day 3 regression passed",
   },
   {
     title: "Invoice exceptions",
     href: "/internal/invoice-review",
-    description: "Supervisor queue for wrong invoices, OCR/header issues, total mismatches, unresolved lines, and resubmission problems.",
+    description: "Supervisor queue for wrong invoices, document/header issues, total mismatches, unresolved lines, and resubmission problems.",
     proof: "Exceptions-only invoice gate",
   },
   {
@@ -230,7 +230,7 @@ const cards: QueueCard[] = [
   {
     title: "Accounting / VAT",
     href: "/internal/accounting-vat",
-    description: "VAT reporting, released sales invoice reporting, prepayment timing, Box 1 breach and Box 6 reporting. Sage/accounting cockpit sits under Accounting Command Centre.",
+    description: "VAT reporting, released sales invoice reporting, prepayment timing, Box 1 breach and Box 6 reporting. Accounting cockpit sits under Accounting Command Centre.",
     proof: "Day 6/8 regression passed",
   },
   {
@@ -272,7 +272,7 @@ export default async function InternalPage() {
                 Staff control dashboard
               </h1>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-                v4 operating model: use Supervisor Command Centre for operational readiness and Accounting Command Centre for accounting/Sage execution readiness. Legacy Sage-ready, mapping and pre-Sage readiness pages remain diagnostic drill-downs, not daily command pages.
+                v4 operating model: use Supervisor Command Centre for operational readiness and Accounting Command Centre for accounting execution readiness. Legacy live-ready, mapping and pre-accounting readiness pages remain diagnostic drill-downs, not daily command pages.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700">
@@ -292,7 +292,7 @@ export default async function InternalPage() {
           <Link href="/internal/accounting-command-centre" className="rounded-3xl border border-violet-200 bg-violet-50 p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
             <p className="text-xs font-bold uppercase tracking-[0.22em] text-violet-600">Daily cockpit 2</p>
             <h2 className="mt-2 text-2xl font-semibold tracking-tight">Accounting Command Centre</h2>
-            <p className="mt-2 text-sm leading-6 text-slate-600">Single accounting/Sage cockpit for live-ready rows, frozen snapshots, revalidation, posting gates, mapping diagnostics and future batch posting.</p>
+            <p className="mt-2 text-sm leading-6 text-slate-600">Single accounting cockpit for live-ready rows, frozen snapshots, revalidation, posting gates, mapping diagnostics and future batch posting.</p>
             <div className="mt-4 text-sm font-bold text-violet-700">Open accounting cockpit →</div>
           </Link>
         </section>
@@ -303,7 +303,7 @@ export default async function InternalPage() {
               <p className="text-xs font-bold uppercase tracking-[0.22em] text-sky-600">Start here for DVA/card statements</p>
               <h2 className="mt-2 text-2xl font-semibold tracking-tight">DVA/card statement workflow</h2>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-                This is the supervisor route for statement uploads, OCR/commit, matching, allocation review, reversal, and later grouped pre-Sage review. Main company bank shipper payments branch separately after commit.
+                This is the supervisor route for statement uploads, document extraction/commit, matching, allocation review, reversal, and later grouped pre-accounting review. Main company bank shipper payments branch separately after commit.
               </p>
             </div>
             <Link href="/internal/dva-statement-import" className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-sky-700">
@@ -383,7 +383,7 @@ export default async function InternalPage() {
         <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-900">
           <h2 className="font-semibold">Build guardrails</h2>
           <p className="mt-2">
-            Stable progressed subsets may move forward. Open children block final whole-order closure, not stable subset release. VAT is prepayment-first and sales-invoice based. Sage posting remains queued and idempotent. Shipper package batches are movement truth only; shipper invoices, export evidence and accounting readiness stay in separate supervisor/accounting lanes. The daily model is two command centres plus child task rooms.
+            Stable progressed subsets may move forward. Open children block final whole-order closure, not stable subset release. VAT is prepayment-first and sales-invoice based. Accounting posting remains queued and idempotent. Shipper package batches are movement truth only; shipper invoices, export evidence and accounting readiness stay in separate supervisor/accounting lanes. The daily model is two command centres plus child task rooms.
           </p>
         </section>
       </div>
