@@ -152,7 +152,7 @@ export async function postVatAdjustmentJournalToSageAction(formData: FormData) {
     journalRedirect(
       journalId,
       returnRunId,
-      "Confirm controlled live Sage posting before posting this VAT adjustment journal.",
+      "Confirm controlled live accounting posting before posting this VAT adjustment journal.",
       "error",
     );
   }
@@ -168,18 +168,18 @@ export async function postVatAdjustmentJournalToSageAction(formData: FormData) {
     });
 
     if (result.failed > 0) {
-      const message = result.error || "VAT journal Sage posting failed";
+      const message = result.error || "VAT journal accounting posting failed";
       redirectTo = returnRunId
         ? `/internal/accounting-vat/returns/${returnRunId}?tab=journals&vatError=${encodeURIComponent(message)}`
         : `${redirectBase}?error=${encodeURIComponent(message)}`;
     } else {
-      const message = `VAT adjustment journal posted to Sage: ${result.sageReference || result.sageJournalId}`;
+      const message = `VAT adjustment journal posted to accounting system: ${result.sageReference || result.sageJournalId}`;
       redirectTo = returnRunId
         ? `/internal/accounting-vat/returns/${returnRunId}?tab=journals&vatSuccess=${encodeURIComponent(message)}`
         : `${redirectBase}?success=${encodeURIComponent(message)}`;
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : "VAT adjustment journal Sage posting failed.";
+    const message = error instanceof Error ? error.message : "VAT adjustment journal accounting posting failed.";
     redirectTo = returnRunId
       ? `/internal/accounting-vat/returns/${returnRunId}?tab=journals&vatError=${encodeURIComponent(message)}`
       : `${redirectBase}?error=${encodeURIComponent(message)}`;
