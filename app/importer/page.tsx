@@ -58,7 +58,8 @@ function needsInvoiceResubmission(invoices: InvoiceRow[]) {
   return hasRejected && !hasLiveInvoice;
 }
 
-function statusClass(needsResubmission: boolean, hasQuery: boolean, status: string, balanceDueGbp = 0) {
+function statusClass(needsResubmission: boolean, hasQuery: boolean, status: string, balanceDueGbp = 0, canonicalMissing = false) {
+  if (canonicalMissing) return "border-slate-200 bg-slate-50 text-slate-600";
   if (needsResubmission) return "border-rose-200 bg-rose-50 text-rose-800";
   if (hasQuery || balanceDueGbp > 0.01) return "border-amber-200 bg-amber-50 text-amber-800";
   if (status.toLowerCase().includes("complete")) return "border-emerald-200 bg-emerald-50 text-emerald-800";
@@ -128,14 +129,6 @@ export default async function ImporterPage() {
   const audienceByOrderId = new Map<string, AudienceStatusRow>();
   for (const audienceStatus of (audienceStatuses ?? []) as AudienceStatusRow[]) audienceByOrderId.set(audienceStatus.order_id, audienceStatus);
 
-  const missingAudienceRows = orderRows.filter((order) => {
-    const audienceStatus = audienceByOrderId.get(order.id);
-    return !audienceStatus?.importer_status_label || !audienceStatus?.importer_next_action;
-  });
-  if (missingAudienceRows.length > 0) {
-    return <main className="min-h-screen bg-slate-50 p-6 text-slate-950"><div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"><p className="font-semibold">Canonical importer status unavailable.</p><p className="mt-1">This page is blocked to avoid showing stale local balances. Missing order refs: {missingAudienceRows.map((order) => order.order_ref ?? order.id).join(", ")}</p></div></main>;
-  }
-
   const rows = orderRows.map((order) => {
     const orderInvoices = invoicesByOrderId.get(order.id) ?? [];
     const hasInvoice = orderInvoices.length > 0;
@@ -143,17 +136,18 @@ export default async function ImporterPage() {
     const needsResubmission = needsInvoiceResubmission(orderInvoices);
     const querySummary = queryByOrderId.get(order.id);
     const rec = reconciliationByOrderId.get(order.id) ?? { unresolvedCount: 0, unresolvedNonExceptionCount: 0 };
-    const audienceStatus = audienceByOrderId.get(order.id)!;
-    const acceptedEstimateGbp = Number(audienceStatus.accepted_estimate_gbp ?? order.order_total_gbp_declared ?? 0);
-    const finalSaleValueGbp = Number(audienceStatus.final_sale_value_gbp ?? acceptedEstimateGbp);
-    const amountReceivedGbp = Number(audienceStatus.canonical_amount_received_gbp ?? 0);
-    const finalBalanceDueGbp = Number(audienceStatus.canonical_balance_due_gbp ?? 0);
-    const pendingCreditGbp = Number(audienceStatus.potential_credit_pending_review_gbp ?? 0);
+    const audienceStatus = audienceByOrderId.get(order.id);
+    const canonicalMissing = !audienceStatus?.importer_status_label || !audienceStatus?.importer_next_action;
+    const acceptedEstimateGbp = Number(audienceStatus?.accepted_estimate_gbp ?? order.order_total_gbp_declared ?? 0);
+    const finalSaleValueGbp = Number(audienceStatus?.final_sale_value_gbp ?? acceptedEstimateGbp);
+    const amountReceivedGbp = Number(audienceStatus?.canonical_amount_received_gbp ?? 0);
+    const finalBalanceDueGbp = canonicalMissing ? 0 : Number(audienceStatus?.canonical_balance_due_gbp ?? 0);
+    const pendingCreditGbp = canonicalMissing ? 0 : Number(audienceStatus?.potential_credit_pending_review_gbp ?? 0);
     const status = {
-      status: audienceStatus.importer_status_label!,
-      action: audienceStatus.importer_next_action!,
+      status: canonicalMissing ? "Status unavailable" : audienceStatus!.importer_status_label!,
+      action: canonicalMissing ? "Open order for details" : audienceStatus!.importer_next_action!,
     };
-    return { order, hasInvoice, hasTracking, needsResubmission, querySummary, rec, status, screenshotCount: screenshotCountByOrderId.get(order.id) ?? 0, acceptedEstimateGbp, finalSaleValueGbp, finalSaleConfirmed: audienceStatus.customer_sales_state === "posted", finalBalanceDueGbp, pendingCreditGbp, amountReceivedGbp };
+    return { order, hasInvoice, hasTracking, needsResubmission, querySummary, rec, status, screenshotCount: screenshotCountByOrderId.get(order.id) ?? 0, acceptedEstimateGbp, finalSaleValueGbp, finalSaleConfirmed: audienceStatus?.customer_sales_state === "posted", finalBalanceDueGbp, pendingCreditGbp, amountReceivedGbp, canonicalMissing };
   });
 
   const resubmissionCount = rows.filter((row) => row.needsResubmission).length;
@@ -200,8 +194,9 @@ export default async function ImporterPage() {
               <article key={row.order.id} className={`rounded-2xl border p-4 shadow-sm ${row.needsResubmission ? "border-rose-200 bg-rose-50" : row.finalBalanceDueGbp > 0.01 ? "border-amber-200 bg-amber-50" : "border-slate-200 bg-white"}`}>
                 <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                   <div><div className="text-xs font-semibold uppercase tracking-wide text-slate-500">{row.order.retailers?.name ?? "Retailer not set"}</div><h3 className="mt-1 text-base font-semibold text-slate-950">{row.order.order_ref ?? row.order.id}</h3><p className="mt-1 break-all text-xs text-slate-500">Authorisation ref: {row.order.payment_auth_id ?? "Not assigned"}</p></div>
-                  <span className={`w-fit rounded-full border px-3 py-1 text-xs font-semibold ${statusClass(row.needsResubmission, Boolean(row.querySummary?.count), row.status.status, row.finalBalanceDueGbp)}`}>{row.status.status}</span>
+                  <span className={`w-fit rounded-full border px-3 py-1 text-xs font-semibold ${statusClass(row.needsResubmission, Boolean(row.querySummary?.count), row.status.status, row.finalBalanceDueGbp, row.canonicalMissing)}`}>{row.status.status}</span>
                 </div>
+                {row.canonicalMissing ? <p className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">Canonical audience status is unavailable for this order, so no balance due is shown here.</p> : null}
                 <div className="mt-4 grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
                   <div className="rounded-xl bg-white/70 p-3 ring-1 ring-slate-100"><div className="text-xs text-slate-500">Qty</div><div className="font-semibold text-slate-950">{row.order.total_qty_declared ?? 0}</div></div>
                   <div className="rounded-xl bg-white/70 p-3 ring-1 ring-slate-100"><div className="text-xs text-slate-500">Accepted estimate</div><div className="font-semibold text-slate-950">{gbp(row.acceptedEstimateGbp)}</div></div>
