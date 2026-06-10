@@ -20,6 +20,17 @@ type InvoiceSummaryRow = { supplier_invoice_id: string; invoice_total_gbp: numbe
 type AdjustmentRow = { id: string; supplier_invoice_id: string | null; adjustment_type: string; amount_gbp: number; approval_status: string; requires_supervisor_approval: boolean | null };
 type ReviewFlagRow = { id: string; supplier_invoice_id: string; flag_type: string; message: string; status: string; created_at: string };
 type SaleDocumentRow = { amount_gbp: number | string | null; sage_invoice_id: string | null; invoice_type: string | null };
+type AudienceStatusRow = {
+  order_id: string;
+  accepted_estimate_gbp: number | string | null;
+  final_sale_value_gbp: number | string | null;
+  canonical_amount_received_gbp: number | string | null;
+  canonical_balance_due_gbp: number | string | null;
+  potential_credit_pending_review_gbp: number | string | null;
+  customer_sales_state: string | null;
+  importer_status_label: string | null;
+  importer_next_action: string | null;
+};
 
 const retiredInvoiceStatuses = new Set(["rejected_resubmit_required", "superseded", "duplicate_blocked"]);
 const cardClass = "rounded-2xl border border-slate-200 bg-white p-4 shadow-sm";
@@ -118,7 +129,7 @@ export default async function OrderOperationsPage({ params, searchParams }: { pa
   const { data: operator } = await supabase.from("operators").select("id").eq("auth_user_id", user.id).eq("active", true).maybeSingle();
   if (!operator) return <main className="p-6">Operator account required.</main>;
 
-  const [{ data: order }, { data: screenshots }, { data: tracking }, { data: funding }, { data: invoices }, { data: couriers }, { data: adjustments }, { data: invoiceLines }, { data: invoiceSummaries }, { data: reviewFlags }, { data: saleDocuments }] = await Promise.all([
+  const [{ data: order }, { data: screenshots }, { data: tracking }, { data: funding }, { data: invoices }, { data: couriers }, { data: adjustments }, { data: invoiceLines }, { data: invoiceSummaries }, { data: reviewFlags }, { data: saleDocuments }, { data: audienceStatus, error: audienceStatusError }] = await Promise.all([
     supabase.from("orders").select("*, importers(countries(currencies(code))), retailers(name)").eq("id", orderId).maybeSingle(),
     supabase.from("order_screenshots").select("*").eq("order_id", orderId).order("display_order"),
     supabase.from("order_tracking_submissions").select("*, couriers(name)").eq("order_id", orderId).order("submitted_at", { ascending: false }),
@@ -130,10 +141,14 @@ export default async function OrderOperationsPage({ params, searchParams }: { pa
     supabase.from("supplier_invoice_financial_summary").select("supplier_invoice_id, invoice_total_gbp, supplier_invoices!inner(order_id)").eq("supplier_invoices.order_id", orderId),
     supabase.from("supplier_invoice_review_flags").select("id, supplier_invoice_id, flag_type, message, status, created_at").eq("order_id", orderId).order("created_at", { ascending: false }),
     (supabaseAdmin as any).from("sales_invoices").select("amount_gbp, sage_invoice_id, invoice_type").eq("order_id", orderId).eq("sage_status", "posted").not("sage_invoice_id", "is", null).in("invoice_type", ["main", "supplementary"]),
+    (supabase as any).rpc("order_audience_status_v1", { p_order_id: orderId }).maybeSingle(),
   ]);
 
+  if (audienceStatusError) throw audienceStatusError;
   if (!order) return <main className="p-6">Order not found.</main>;
+  if (!audienceStatus) return <main className="p-6">Canonical order status unavailable. This page is blocked to avoid showing a stale balance.</main>;
 
+  const canonicalAudienceStatus = audienceStatus as AudienceStatusRow;
   const trackingRows = (tracking ?? []) as TrackingRow[];
   const finalTrackingExists = trackingRows.some((t) => t.is_final_delivery_yn);
   const currencyCode = order.importers?.countries?.currencies?.code ?? null;
@@ -148,18 +163,18 @@ export default async function OrderOperationsPage({ params, searchParams }: { pa
   const orderHasResubmissionRequired = rejectedInvoices.length > 0 && liveInvoiceRows.length === 0;
   const showInvoiceUploadForm = liveInvoiceRows.length === 0;
   const reviewFlagRows = (reviewFlags ?? []) as ReviewFlagRow[];
-  const acceptedEstimateGbp = Number(order.order_total_gbp_declared ?? 0);
+  const acceptedEstimateGbp = Number(canonicalAudienceStatus.accepted_estimate_gbp ?? order.order_total_gbp_declared ?? 0);
   const saleDocumentRows = (saleDocuments ?? []) as SaleDocumentRow[];
-  const postedSaleTotalGbp = saleDocumentRows.reduce((sum, row) => sum + Number(row.amount_gbp ?? 0), 0);
-  const finalSaleValueConfirmed = saleDocumentRows.some((row) => Boolean(row.sage_invoice_id));
-  const finalSaleValueGbp = finalSaleValueConfirmed ? postedSaleTotalGbp : acceptedEstimateGbp;
-  const amountReceivedGbp = Number(funding?.funded_total_gbp ?? (Number(funding?.confirmed_dva_funding_gbp ?? 0) + Number(funding?.applied_credit_gbp ?? 0)));
-  const finalBalanceDueGbp = Math.max(finalSaleValueGbp - amountReceivedGbp, 0);
-  const creditDueGbp = Math.max(amountReceivedGbp - finalSaleValueGbp, 0);
+  const finalSaleValueConfirmed = canonicalAudienceStatus.customer_sales_state === "posted" || saleDocumentRows.some((row) => Boolean(row.sage_invoice_id));
+  const finalSaleValueGbp = Number(canonicalAudienceStatus.final_sale_value_gbp ?? acceptedEstimateGbp);
+  const amountReceivedGbp = Number(canonicalAudienceStatus.canonical_amount_received_gbp ?? 0);
+  const finalBalanceDueGbp = Number(canonicalAudienceStatus.canonical_balance_due_gbp ?? 0);
+  const creditDueGbp = Number(canonicalAudienceStatus.potential_credit_pending_review_gbp ?? 0);
   const orderGoodsBaseline = acceptedEstimateGbp;
   const fundingStatus = funding?.status as string | null | undefined;
   const thresholdMet = Boolean(funding?.threshold_met_yn);
-  const operationalStatus = operationalStatusLabel({ thresholdMet, orderHasResubmissionRequired, liveInvoiceRows, invoiceLineRows, finalTrackingExists, finalBalanceDueGbp });
+  const fallbackOperationalStatus = operationalStatusLabel({ thresholdMet, orderHasResubmissionRequired, liveInvoiceRows, invoiceLineRows, finalTrackingExists, finalBalanceDueGbp });
+  const operationalStatus = canonicalAudienceStatus.importer_status_label ?? fallbackOperationalStatus;
 
   const lineTotalsByInvoice = new Map<string, { qty: number; amount: number }>();
   for (const line of invoiceLineRows) {
@@ -212,13 +227,13 @@ export default async function OrderOperationsPage({ params, searchParams }: { pa
         <div className="rounded-xl bg-slate-50 p-3"><div className="text-xs text-slate-500">Accepted estimate</div><div className="font-semibold text-slate-950">{money(acceptedEstimateGbp)}</div></div>
         <div className="rounded-xl bg-slate-50 p-3"><div className="text-xs text-slate-500">{finalSaleValueConfirmed ? "Final sale value" : "Estimated sale value"}</div><div className="font-semibold text-slate-950">{money(finalSaleValueGbp)}</div></div>
         <div className="rounded-xl bg-slate-50 p-3"><div className="text-xs text-slate-500">Balance due</div><div className={`font-semibold ${finalBalanceDueGbp > 0.01 ? "text-amber-900" : "text-slate-950"}`}>{money(finalBalanceDueGbp)}</div>{creditDueGbp > 0.01 ? <div className="mt-1 text-[11px] text-emerald-700">Credit due {money(creditDueGbp)}</div> : null}</div>
-        <div className="rounded-xl bg-slate-50 p-3"><div className="text-xs text-slate-500">System</div><div className="font-semibold text-slate-950">{friendlyValue(order.status)}</div></div>
+        <div className="rounded-xl bg-slate-50 p-3"><div className="text-xs text-slate-500">System</div><div className="font-semibold text-slate-950">{operationalStatus}</div></div>
       </div>
     </section>
 
     <section className={cardClass}>
       <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
-        <div><h2 className="text-lg font-semibold text-slate-950">Initial payment</h2><p className="mt-1 text-xs text-slate-500">Accepted-estimate threshold unlocks fulfilment. Final balance due is shown separately once the final sale value is confirmed.</p></div>
+        <div><h2 className="text-lg font-semibold text-slate-950">Initial payment</h2><p className="mt-1 text-xs text-slate-500">Accepted-estimate threshold unlocks fulfilment. Any final balance or credit is shown once the final sale value is confirmed.</p></div>
         <span className={`w-fit rounded-full px-3 py-1 text-xs font-semibold ${fundingStatusClass(fundingStatus, thresholdMet)}`}>{thresholdMet ? "Initial payment received" : friendlyValue(fundingStatus)}</span>
       </div>
       <div className="mt-4 grid gap-3 text-sm md:grid-cols-3 lg:grid-cols-6">
