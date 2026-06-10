@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
+import { cleanUiText } from "@/lib/ui/cleanUiText";
 import { commitDvaStatementImportBatchAction, resetDvaStatementImportBatchAction } from "../actions";
 import StatementBalanceCheckCard from "../StatementBalanceCheckCard";
 
@@ -25,6 +26,10 @@ function text(value: unknown) {
   if (typeof value === "string") return value;
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
   return "";
+}
+
+function uiText(value: unknown) {
+  return cleanUiText(text(value));
 }
 
 function num(value: unknown) {
@@ -85,7 +90,7 @@ function getByPath(root: unknown, path: string[]) {
 
 function correctionText(row: Row) {
   const note = text(getByPath(row.raw_json, ["_goodcashback_balance_check", "correction_note"]));
-  return note;
+  return cleanUiText(note);
 }
 
 function PaginationControls({
@@ -139,10 +144,10 @@ export default async function DvaStatementImportDetailPage({
 
   const rowPage = positivePage(currentSearchParams.row_page);
   const rowFrom = (rowPage - 1) * ROW_PAGE_SIZE;
-  const commitSuccess = text(currentSearchParams.commit_success);
-  const commitError = text(currentSearchParams.commit_error);
-  const resetSuccess = text(currentSearchParams.reset_success);
-  const resetError = text(currentSearchParams.reset_error);
+  const commitSuccess = uiText(currentSearchParams.commit_success);
+  const commitError = uiText(currentSearchParams.commit_error);
+  const resetSuccess = uiText(currentSearchParams.reset_success);
+  const resetError = uiText(currentSearchParams.reset_error);
 
   const supabase = await createClient();
   const [batchResult, rowsResult] = await Promise.all([
@@ -178,13 +183,13 @@ export default async function DvaStatementImportDetailPage({
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div className="min-w-0 flex-1">
               <Link href="/internal/dva-statement-import" className="text-sm font-semibold text-sky-600">← Back to statement import</Link>
-              <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Statement detail / reconciliation</p>
+              <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Statement detail / review</p>
               <h1 className="mt-2 max-w-full break-words text-2xl font-semibold tracking-tight [overflow-wrap:anywhere] sm:text-3xl">{text(batch.original_filename) || batchId}</h1>
               <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
                 Review extracted header, balance chain, staged rows, corrections, and references before committing this statement batch.
               </p>
             </div>
-            <span className={`rounded-full px-3 py-1 text-sm font-semibold ring-1 ${statusClass(batchStatus)}`}>{batchStatus}</span>
+            <span className={`rounded-full px-3 py-1 text-sm font-semibold ring-1 ${statusClass(batchStatus)}`}>{uiText(batchStatus)}</span>
           </div>
 
           <div className="mt-5 grid gap-3 text-sm text-slate-700 sm:grid-cols-2 lg:grid-cols-5">
@@ -212,12 +217,12 @@ export default async function DvaStatementImportDetailPage({
               <p className="text-sm font-medium uppercase tracking-[0.18em] text-sky-500">Next control step</p>
               <h2 className="mt-2 text-xl font-semibold">Commit clean rows</h2>
               <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
-                Commit turns reviewed staged rows into live DVA/card statement lines. Only committed lines should move into funding, invoice, refund, fee, or exception matching.
+                Commit turns reviewed staged rows into live payment statement lines. Only committed lines should move into payment, charge-document, refund, fee, or exception matching.
               </p>
             </div>
             {canOpenMatchingWorkbench ? (
               <Link className="rounded-2xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white" href="/internal/dva-reconciliation">
-                Open DVA/card control hub →
+                Open payment control hub →
               </Link>
             ) : null}
           </div>
@@ -235,7 +240,7 @@ export default async function DvaStatementImportDetailPage({
             ) : (
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm leading-6 text-slate-600">
                 {canOpenMatchingWorkbench
-                  ? "This batch already has committed statement lines. Continue in the DVA/card control hub."
+                  ? "This batch already has committed statement lines. Continue in the payment control hub."
                   : "Commit is disabled until the batch has clean rows, no parse errors, and no previous commit."}
               </div>
             )}
@@ -245,7 +250,7 @@ export default async function DvaStatementImportDetailPage({
                 <input type="hidden" name="import_batch_id" value={batchId} />
                 <label className="block text-sm font-semibold text-amber-950">Reset staged rows before commit</label>
                 <input className="mt-2 w-full rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm" name="reset_reason" defaultValue="Fix FX rates and re-parse before commit." />
-                <p className="mt-2 text-xs leading-5 text-amber-900">Pre-commit only. Keeps the uploaded PDF and Mindee OCR result, but deletes staged rows so this batch can be parsed again.</p>
+                <p className="mt-2 text-xs leading-5 text-amber-900">Pre-commit only. Keeps the uploaded PDF and document-read result, but deletes staged rows so this batch can be parsed again.</p>
                 <button className="mt-3 rounded-xl bg-amber-600 px-4 py-2 text-sm font-semibold text-white" type="submit">
                   Reset staged rows
                 </button>
@@ -275,9 +280,9 @@ export default async function DvaStatementImportDetailPage({
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0 flex-1">
                       <h3 className="break-words font-semibold [overflow-wrap:anywhere]">Row {text(row.source_row_number)} · {text(row.merchant_raw) || "Unidentified transaction"}</h3>
-                      <p className="mt-1 text-sm text-slate-600">{displayRowDate(row)} · {text(row.direction)} · {text(row.transaction_type_candidate)}</p>
+                      <p className="mt-1 text-sm text-slate-600">{displayRowDate(row)} · {text(row.direction)} · {uiText(row.transaction_type_candidate)}</p>
                     </div>
-                    <span className={`rounded-full px-3 py-1 text-sm font-semibold ring-1 ${statusClass(text(row.parse_status))}`}>{text(row.parse_status)}</span>
+                    <span className={`rounded-full px-3 py-1 text-sm font-semibold ring-1 ${statusClass(text(row.parse_status))}`}>{uiText(row.parse_status)}</span>
                   </div>
                   <div className="mt-3 grid gap-2 text-sm text-slate-700 sm:grid-cols-5">
                     <p>Local: <span className="font-semibold">{num(row.amount_local_ccy).toLocaleString("en-GB")} {text(row.local_ccy)}</span></p>
@@ -290,7 +295,7 @@ export default async function DvaStatementImportDetailPage({
                   {text(row.statement_date) && text(row.transaction_date) && text(row.statement_date) !== text(row.transaction_date) ? (
                     <p className="mt-2 text-xs text-slate-500">Statement date: {text(row.statement_date)}</p>
                   ) : null}
-                  {text(row.error_message) ? <p className="mt-3 text-sm text-rose-700">{text(row.error_code)}: {text(row.error_message)}</p> : null}
+                  {text(row.error_message) ? <p className="mt-3 text-sm text-rose-700">{uiText(row.error_code)}: {uiText(row.error_message)}</p> : null}
                 </article>
               );
             })}
