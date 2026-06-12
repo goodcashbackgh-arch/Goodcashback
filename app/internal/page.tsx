@@ -21,25 +21,25 @@ const dvaFlowSteps: FlowStep[] = [
     step: "1",
     title: "Upload / import statement",
     href: "/internal/dva-statement-import",
-    description: "Start here for bank, card, DVA and statement uploads. Create the batch, parse/extract, review, commit or void.",
+    description: "Start here for bank, card and payment statement uploads. Create the batch, parse/extract, review, commit or void.",
   },
   {
     step: "2A",
-    title: "Importer match workspace",
+    title: "Importer matching workspace",
     href: "/internal/dva-reconciliation/workspace",
-    description: "Use for importer DVA/card statement lines matched to supplier invoices, refunds, exceptions, holds and FX/card differences.",
+    description: "Use for importer payment statement lines matched to supplier charge records, refunds, exceptions, holds and FX/payment differences.",
   },
   {
     step: "2B",
     title: "Main bank / shipper match",
     href: "/internal/dva-reconciliation/main-bank",
-    description: "Use for main company bank OUT lines matched to posted shipper AP invoices. This branch does not touch importer matching.",
+    description: "Use for main company bank OUT lines matched to approved shipper charge records. This branch does not touch importer matching.",
   },
   {
     step: "3",
-    title: "Allocation review",
+    title: "Matching review",
     href: "/internal/dva-reconciliation/allocations",
-    description: "Review active allocations and reverse a wrong allocation before downstream control.",
+    description: "Review active matching records and reverse a wrong match before downstream control.",
   },
   {
     step: "4",
@@ -54,25 +54,25 @@ const shippingFlowSteps: FlowStep[] = [
     step: "1",
     title: "Shipping control centre",
     href: "/internal/shipping-control",
-    description: "Start here for shipment batches, package truth, receipt status, allocation status and next-lane visibility.",
+    description: "Start here for shipment batches, package truth, receipt status, matching status and next-lane visibility.",
   },
   {
     step: "2",
-    title: "Delivery allocation / value apportionment",
+    title: "Delivery matching / value apportionment",
     href: "/internal/shipping-control?focus=delivery-allocation",
-    description: "Open the shipment batch, then use Review delivery allocation to allocate progressed invoice lines to packages and trigger delivery/discount apportionment.",
+    description: "Open the shipment batch, then use Review delivery matching to allocate progressed evidence lines to packages and trigger delivery/discount apportionment.",
   },
   {
     step: "3",
-    title: "Review shipper docs",
+    title: "Review shipper charge docs",
     href: "/internal/shipping-control/shipper-documents",
     description: "Supervisor reviews uploaded shipper charge documents and accepts/rejects the current money source.",
   },
   {
     step: "4",
-    title: "Customer invoice release queue",
+    title: "Customer final document release queue",
     href: "/internal/shipping-control/customer-invoice-release",
-    description: "Create controlled customer sales invoice drafts from stable shipment/customer invoice intents.",
+    description: "Create controlled customer final document drafts from stable shipment/customer final document intents.",
   },
   {
     step: "5",
@@ -86,7 +86,7 @@ const cards: QueueCard[] = [
   {
     title: "Supervisor command centre",
     href: "/internal/supervisor-command-centre",
-    description: "Official operational cockpit: one grid row per order/order-shipment grouping covering funding, DVA/card, supplier invoice, exceptions, logistics, customer sales, shipper AP, export/delivery and next action.",
+    description: "Official operational cockpit: one grid row per order/order-shipment grouping covering payment, supplier charge records, exceptions, logistics, customer final documents, shipper charges, export/delivery and next action.",
     proof: "Daily cockpit 1 of 2 — operational readiness",
   },
   {
@@ -96,70 +96,70 @@ const cards: QueueCard[] = [
     proof: "Daily cockpit 2 of 2 — accounting execution readiness",
   },
   {
-    title: "DVA/card statement workflow",
+    title: "Payment statement workflow",
     href: "/internal/dva-statement-import",
-    description: "Start here for bank/card/DVA statement upload, document extraction or parsing, staging, commit, and safe import voiding.",
+    description: "Start here for bank/card/payment statement upload, document extraction or parsing, staging, commit, and safe import voiding.",
     proof: "Statement import → commit → matching",
   },
   {
-    title: "DVA/card importer matching workspace",
+    title: "Importer payment matching workspace",
     href: "/internal/dva-reconciliation/workspace",
-    description: "Two-pane supervisor workspace for matching importer DVA/card statement lines to supplier invoices, refunds, exceptions, holds, and FX/card differences.",
-    proof: "Importer DVA/card matching page",
+    description: "Two-pane supervisor workspace for matching importer payment statement lines to supplier charge records, refunds, exceptions, holds, and FX/payment differences.",
+    proof: "Importer payment matching page",
   },
   {
     title: "Main bank / shipper matching",
     href: "/internal/dva-reconciliation/main-bank",
-    description: "Separate branch for committed main company bank OUT lines. Match them to posted shipper AP invoices without changing the importer supplier/retailer workflow.",
-    proof: "Main bank → shipper AP branch",
+    description: "Separate branch for committed main company bank OUT lines. Match them to approved shipper charge records without changing the importer supplier/retailer workflow.",
+    proof: "Main bank → shipper charge branch",
   },
   {
-    title: "Allocation review / reversal",
+    title: "Matching review / reversal",
     href: "/internal/dva-reconciliation/allocations",
-    description: "Review active statement-line allocations and reverse only the incorrect allocation row when needed.",
-    proof: "Pre-review allocation control",
+    description: "Review active statement-line matches and reverse only the incorrect matching row when needed.",
+    proof: "Pre-review matching control",
   },
   {
-    title: "DVA/card control hub",
+    title: "Payment control hub",
     href: "/internal/dva-reconciliation",
     description: "Summary and diagnostic view for statement-line positions, unmatched signals, and importer control totals. Not the main matching workspace.",
     proof: "Control summary only",
   },
   {
-    title: "Importer funding queue",
+    title: "Importer payment queue",
     href: "/internal/funding",
-    description: "Separate money-received flow: importer funding, funding gaps, overfunding credit, and importer credit application.",
+    description: "Separate money-received flow: importer payments, payment gaps, overpayment credit, and importer credit application.",
     proof: "Separate from card spend matching",
   },
   {
     title: "Completion loyalty rewards",
     href: "/internal/completion-loyalty-rewards",
-    description: "Supervisor lane for completion reward proposals, approval-in-principle, customer DVA/account funding proof and dashboard credit release.",
+    description: "Supervisor lane for completion reward proposals, approval-in-principle, customer payment/account funding proof and dashboard credit release.",
     proof: "Cash-backed v2 reward control",
   },
   {
     title: "Shipping control centre",
     href: "/internal/shipping-control",
-    description: "Supervisor spine for importer shipment batches, package receipt truth, allocation status, shipper invoice lane, customer invoice lane, master shipment lane and accounting-readiness placeholders.",
+    description: "Supervisor spine for importer shipment batches, package receipt truth, matching status, shipper charge lane, customer final document lane, master shipment lane and accounting-readiness placeholders.",
     proof: "Shipping control task room",
   },
   {
-    title: "Delivery allocation / value apportionment",
+    title: "Delivery matching / value apportionment",
     href: "/internal/shipping-control?focus=delivery-allocation-card",
-    description: "Route to the shipment batch detail, then use Review delivery allocation to allocate progressed invoice lines to packages and recalculate delivery/discount shares on adjusted net values.",
-    proof: "Shipping control → batch detail → Review delivery allocation",
+    description: "Route to the shipment batch detail, then use Review delivery matching to allocate progressed evidence lines to packages and recalculate delivery/discount shares on adjusted net values.",
+    proof: "Shipping control → batch detail → Review delivery matching",
   },
   {
-    title: "Shipper invoice / receipt review",
+    title: "Shipper charge document review",
     href: "/internal/shipping-control/shipper-documents",
     description: "Supervisor lane for uploaded shipper charge documents. Accept current document to lock the money source before apportionment.",
     proof: "One active charge document per batch",
   },
   {
-    title: "Customer invoice release queue",
+    title: "Customer final document release queue",
     href: "/internal/shipping-control/customer-invoice-release",
-    description: "Bulk-create controlled customer sales invoice drafts from stable, approved customer invoice intents.",
-    proof: "Internal sales invoice draft gate",
+    description: "Bulk-create controlled customer final document drafts from stable, approved customer final document intents.",
+    proof: "Internal final document draft gate",
   },
   {
     title: "Customer pre-shipment holds",
@@ -188,31 +188,31 @@ const cards: QueueCard[] = [
   {
     title: "Evidence / document extraction queue",
     href: "/internal/evidence",
-    description: "Invoice-first, tracking-first, document extraction review, progressed subset, and source-line protection.",
+    description: "Evidence-first, tracking-first, document extraction review, progressed subset, and source-line protection.",
     proof: "Day 3 regression passed",
   },
   {
-    title: "Invoice exceptions",
+    title: "Evidence exceptions",
     href: "/internal/invoice-review",
-    description: "Supervisor queue for wrong invoices, document/header issues, total mismatches, unresolved lines, and resubmission problems.",
-    proof: "Exceptions-only invoice gate",
+    description: "Supervisor queue for wrong evidence, document/header issues, total mismatches, unresolved lines, and resubmission problems.",
+    proof: "Exceptions-only evidence gate",
   },
   {
-    title: "Supplier draft ready",
+    title: "Supplier charge ready",
     href: "/internal/supplier-draft-ready",
-    description: "Clean supplier invoices that passed readiness checks and can be bulk approved as current before accounting handoff.",
+    description: "Clean supplier charge records that passed readiness checks and can be bulk approved as current before accounting handoff.",
     proof: "Bulk approval lane v1",
   },
   {
     title: "Refund document control",
     href: "/internal/refund-document-control",
-    description: "Supplier credit and refund-document queue for credit notes, refund proof without credit note, and no-document evidence. Open the detail page to release, code net/VAT/gross, and approve current.",
+    description: "Supplier credit and refund-document queue for credit notes, refund proof without credit note, and no-document evidence. Open the detail page to release, code net/tax/gross, and approve current.",
     proof: "Supplier credit control lane v1",
   },
   {
     title: "Adjustment review",
     href: "/internal/adjustments",
-    description: "Supervisor approval for retailer discounts and over-limit delivery charges before final invoice drafting.",
+    description: "Supervisor approval for retailer discounts and over-limit delivery charges before final document drafting.",
     proof: "Portal operations addendum v1",
   },
   {
@@ -228,15 +228,15 @@ const cards: QueueCard[] = [
     proof: "Day 5 regression passed",
   },
   {
-    title: "Accounting / VAT",
+    title: "Accounting / compliance",
     href: "/internal/accounting-vat",
-    description: "VAT reporting, released sales invoice reporting, prepayment timing, Box 1 breach and Box 6 reporting. Accounting cockpit sits under Accounting Command Centre.",
+    description: "Tax reporting, released final document reporting, prepayment timing, statutory box checks and reporting. Accounting cockpit sits under Accounting Command Centre.",
     proof: "Day 6/8 regression passed",
   },
   {
     title: "Escalations",
     href: "/internal/escalations",
-    description: "Admin governance queue for funding, VAT, release, shipping, and exception anomalies.",
+    description: "Admin governance queue for payment, compliance, release, shipping, and exception anomalies.",
     proof: "Day 7/9 regression passed",
   },
 ];
@@ -300,10 +300,10 @@ export default async function InternalPage() {
         <section className="rounded-3xl border border-sky-200 bg-white p-5 shadow-sm">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <p className="text-xs font-bold uppercase tracking-[0.22em] text-sky-600">Start here for DVA/card statements</p>
-              <h2 className="mt-2 text-2xl font-semibold tracking-tight">DVA/card statement workflow</h2>
+              <p className="text-xs font-bold uppercase tracking-[0.22em] text-sky-600">Start here for payment statements</p>
+              <h2 className="mt-2 text-2xl font-semibold tracking-tight">Payment statement workflow</h2>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-                This is the supervisor route for statement uploads, document extraction/commit, matching, allocation review, reversal, and later grouped pre-accounting review. Main company bank shipper payments branch separately after commit.
+                This is the supervisor route for statement uploads, document extraction/commit, matching, matching review, reversal, and later grouped pre-accounting review. Main company bank shipper payments branch separately after commit.
               </p>
             </div>
             <Link href="/internal/dva-statement-import" className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-sky-700">
@@ -336,7 +336,7 @@ export default async function InternalPage() {
               <p className="text-xs font-bold uppercase tracking-[0.22em] text-emerald-600">Start here for shipper-side testing</p>
               <h2 className="mt-2 text-2xl font-semibold tracking-tight">Shipping and accounting readiness workflow</h2>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-                Use these links after logging in as staff/supervisor. The flow moves from shipping truth to customer invoice draft creation, then accounting handoff through the Accounting Command Centre.
+                Use these links after logging in as staff/supervisor. The flow moves from shipping truth to customer final document draft creation, then accounting handoff through the Accounting Command Centre.
               </p>
             </div>
             <Link href="/internal/accounting-command-centre" className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-emerald-800">
@@ -383,7 +383,7 @@ export default async function InternalPage() {
         <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-900">
           <h2 className="font-semibold">Build guardrails</h2>
           <p className="mt-2">
-            Stable progressed subsets may move forward. Open children block final whole-order closure, not stable subset release. VAT is prepayment-first and sales-invoice based. Accounting posting remains queued and idempotent. Shipper package batches are movement truth only; shipper invoices, export evidence and accounting readiness stay in separate supervisor/accounting lanes. The daily model is two command centres plus child task rooms.
+            Stable progressed subsets may move forward. Open children block final whole-order closure, not stable subset release. Statutory reporting is prepayment-first and final-document based. Accounting posting remains queued and idempotent. Shipper package batches are movement truth only; shipper charge documents, export evidence and accounting readiness stay in separate supervisor/accounting lanes. The daily model is two command centres plus child task rooms.
           </p>
         </section>
       </div>
