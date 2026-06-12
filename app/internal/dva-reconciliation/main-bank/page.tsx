@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { createClient } from "@/utils/supabase/server";
+import { cleanUiText } from "@/lib/ui/cleanUiText";
 import MainBankAllocationController from "./MainBankAllocationController";
 
 type Row = Record<string, unknown>;
@@ -44,8 +45,8 @@ export default async function MainBankShipperMatchingPage({
   const q = firstParam(params.q);
   const targetParam = firstParam(params.target);
   const targetMode: TargetMode = targetParam === "completion_loyalty" ? "completion_loyalty" : "shipper_ap";
-  const success = firstParam(params.success);
-  const error = firstParam(params.error);
+  const success = cleanUiText(firstParam(params.success));
+  const error = cleanUiText(firstParam(params.error));
 
   const supabase = await createClient();
   const linesResult = await (supabase as any).rpc("internal_main_bank_shipper_statement_lines_v1", {
@@ -93,16 +94,16 @@ export default async function MainBankShipperMatchingPage({
       <div className="mx-auto max-w-7xl space-y-5">
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <Link href="/internal" className="text-sm font-semibold text-sky-700">← Back to internal dashboard</Link>
-          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Main bank allocation workspace</p>
-          <h1 className="mt-2 text-3xl font-semibold tracking-tight">Main bank allocation</h1>
+          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Main bank matching workspace</p>
+          <h1 className="mt-2 text-3xl font-semibold tracking-tight">Main bank matching</h1>
           <p className="mt-3 max-w-5xl text-sm leading-6 text-slate-600">
-            Shared main-company bank workspace. Shipper AP remains the default lane. Completion loyalty uses the same bank lines but a separate target mode, so the same bank amount cannot be reused twice.
+            Shared main-company bank workspace. Shipper charge matching remains the default lane. Completion loyalty uses the same bank lines but a separate target mode, so the same bank amount cannot be reused twice.
           </p>
           {success ? <p className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-900">{success}</p> : null}
           {error ? <p className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900">{error}</p> : null}
           {dataError ? (
             <p className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">
-              Main-bank data unavailable: {linesResult.error?.message || targetsResult.error?.message || loyaltyTargetsResult.error?.message || residualsResult.error?.message}
+              Main-bank data unavailable: {cleanUiText(linesResult.error?.message || targetsResult.error?.message || loyaltyTargetsResult.error?.message || residualsResult.error?.message)}
             </p>
           ) : null}
         </section>
@@ -110,13 +111,13 @@ export default async function MainBankShipperMatchingPage({
         <section className="grid gap-3 md:grid-cols-2">
           <Link href={targetHref("shipper_ap", q)} className={`rounded-2xl border p-4 text-sm font-semibold shadow-sm ${modeClass(targetMode === "shipper_ap")}`}>
             <span className="block text-xs uppercase tracking-wide opacity-70">Target mode</span>
-            <span className="mt-1 block text-lg font-extrabold">Shipper AP</span>
-            <span className="mt-1 block font-normal opacity-80">Match main-bank OUT lines to posted shipper purchase invoices.</span>
+            <span className="mt-1 block text-lg font-extrabold">Shipper charge records</span>
+            <span className="mt-1 block font-normal opacity-80">Match main-bank OUT lines to approved shipper charge records.</span>
           </Link>
           <Link href={targetHref("completion_loyalty", q)} className={`rounded-2xl border p-4 text-sm font-semibold shadow-sm ${modeClass(targetMode === "completion_loyalty")}`}>
             <span className="block text-xs uppercase tracking-wide opacity-70">Target mode</span>
             <span className="mt-1 block text-lg font-extrabold">Completion loyalty</span>
-            <span className="mt-1 block font-normal opacity-80">Match main-bank funding to clean completed reward targets and release dashboard credit.</span>
+            <span className="mt-1 block font-normal opacity-80">Match main-bank payment proof to clean completed reward targets and release dashboard credit.</span>
           </Link>
         </section>
 
@@ -131,17 +132,17 @@ export default async function MainBankShipperMatchingPage({
               Statement status
               <select className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-950" name="status" defaultValue={status}>
                 <option value="unmatched">Unmatched</option>
-                <option value="part_allocated">Part allocated</option>
+                <option value="part_allocated">Part matched</option>
                 <option value="balanced">Balanced</option>
                 <option value="all">All</option>
               </select>
             </label>
             {targetMode === "shipper_ap" ? (
               <label className="grid gap-1 text-xs font-bold uppercase tracking-wide text-slate-500">
-                Shipper AP status
+                Shipper charge status
                 <select className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-950" name="target_status" defaultValue={targetStatus}>
                   <option value="open">Open</option>
-                  <option value="allocated">Allocated</option>
+                  <option value="allocated">Matched</option>
                   <option value="all">All</option>
                 </select>
               </label>
