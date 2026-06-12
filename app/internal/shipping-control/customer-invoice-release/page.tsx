@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
+import { cleanUiText } from "@/lib/ui/cleanUiText";
 import { createCustomerInvoiceDrafts } from "./actions";
 import SelectionControls from "./SelectionControls";
 
@@ -40,7 +41,7 @@ function money(value: number | string | null | undefined) {
 
 function friendly(value: string | null | undefined) {
   if (!value) return "—";
-  return value.replaceAll("_", " ").replace(/^./, (first) => first.toUpperCase());
+  return cleanUiText(value.replaceAll("_", " ").replace(/^./, (first) => first.toUpperCase()));
 }
 
 function statusClass(status: string | null | undefined) {
@@ -54,7 +55,7 @@ function statusClass(status: string | null | undefined) {
 function actionLabel(status: string | null | undefined) {
   if (status === "ready_to_create_draft") return "Ready for draft creation";
   if (status === "draft_exists") return "Draft already exists";
-  if (status === "posted_exists") return "Invoice already posted";
+  if (status === "posted_exists") return "Final invoice already posted";
   if (status === "blocked") return "Blocked";
   return friendly(status);
 }
@@ -93,9 +94,9 @@ export default async function CustomerInvoiceReleaseQueuePage({ searchParams }: 
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Goodcashback Internal</p>
           <div className="mt-2 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
             <div>
-              <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Customer invoice release queue</h1>
+              <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Customer final invoice release queue</h1>
               <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
-                Focused supervisor queue for stable customer invoice intents. Select ready rows and create controlled draft records. This does not post to Sage, clear VAT, generate COS/BOL/POD, or close export evidence.
+                Focused supervisor queue for stable customer final invoice intents. Select ready rows and create controlled draft invoice records. This does not post to the accounting system, clear VAT, generate shipment certificates/BOL/POD, or close export evidence.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700">
@@ -103,9 +104,9 @@ export default async function CustomerInvoiceReleaseQueuePage({ searchParams }: 
               <div>{staff.role_type}</div>
             </div>
           </div>
-          {error ? <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">Queue unavailable: {error.message}. Run the latest Supabase migration before testing this page.</p> : null}
-          {params.result === "created" ? <p className="mt-4 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">Draft creation complete: {params.created ?? "0"} created, {params.skipped ?? "0"} skipped.</p> : null}
-          {params.result === "error" ? <p className="mt-4 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-900">Draft creation failed: {params.message ?? "Unknown error"}</p> : null}
+          {error ? <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">Queue unavailable: {cleanUiText(error.message)}. Run the latest Supabase migration before testing this page.</p> : null}
+          {params.result === "created" ? <p className="mt-4 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">Draft invoice creation complete: {params.created ?? "0"} created, {params.skipped ?? "0"} skipped.</p> : null}
+          {params.result === "error" ? <p className="mt-4 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-900">Draft invoice creation failed: {cleanUiText(params.message ?? "Unknown error")}</p> : null}
           {params.result === "no_ready_rows_selected" ? <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">No ready rows selected.</p> : null}
         </section>
 
@@ -119,8 +120,8 @@ export default async function CustomerInvoiceReleaseQueuePage({ searchParams }: 
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
           <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
             <div>
-              <h2 className="text-xl font-semibold">Ready and blocked invoice intents</h2>
-              <p className="mt-2 text-sm leading-6 text-slate-600">Use Preview to inspect a booking. Select only the ready rows you want to convert to draft records.</p>
+              <h2 className="text-xl font-semibold">Ready and blocked final invoice intents</h2>
+              <p className="mt-2 text-sm leading-6 text-slate-600">Use Preview to inspect a booking. Select only the ready rows you want to convert to draft invoice records.</p>
             </div>
             <div className="flex flex-col gap-2 sm:items-end">
               <SelectionControls formId={releaseFormId} disabled={readyRows.length === 0 || Boolean(error)} />
@@ -163,7 +164,7 @@ export default async function CustomerInvoiceReleaseQueuePage({ searchParams }: 
             </div>
           ) : null}
 
-          {rows.length === 0 ? <p className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">No customer invoice intents found yet.</p> : null}
+          {rows.length === 0 ? <p className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">No customer final invoice intents found yet.</p> : null}
 
           <div className="mt-5 grid gap-4 lg:hidden">
             {rows.map((row) => (
@@ -181,7 +182,7 @@ export default async function CustomerInvoiceReleaseQueuePage({ searchParams }: 
                   <div className="rounded-xl bg-white p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Action</p><p className="mt-1 font-semibold">{row.customer_action_label ?? friendly(row.proposed_invoice_type)}</p></div>
                   <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3"><p className="text-xs uppercase tracking-wide text-emerald-700">Amount</p><p className="mt-1 font-semibold">{money(row.proposed_amount_gbp)}</p></div>
                   <div className="rounded-xl bg-white p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Lines</p><p className="mt-1 font-semibold">{n(row.ready_line_count)} / {n(row.line_count)}</p></div>
-                  <div className="rounded-xl bg-white p-3"><p className="text-xs uppercase tracking-wide text-slate-500">State</p><p className="mt-1 font-semibold">{friendly(row.sales_invoice_state)}</p></div>
+                  <div className="rounded-xl bg-white p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Invoice state</p><p className="mt-1 font-semibold">{friendly(row.sales_invoice_state)}</p></div>
                 </div>
                 {n(row.blocker_count) > 0 ? <p className="mt-3 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">{(row.blockers ?? []).map(friendly).join(", ")}</p> : null}
                 <div className="mt-4 flex flex-wrap gap-2">
@@ -202,7 +203,7 @@ export default async function CustomerInvoiceReleaseQueuePage({ searchParams }: 
                   <th className="px-3 py-2 text-left">Customer action</th>
                   <th className="px-3 py-2 text-right">Amount</th>
                   <th className="px-3 py-2 text-right">Lines</th>
-                  <th className="px-3 py-2 text-left">State</th>
+                  <th className="px-3 py-2 text-left">Invoice state</th>
                   <th className="px-3 py-2 text-left">Next</th>
                   <th className="px-3 py-2 text-left">Links</th>
                 </tr>
@@ -227,7 +228,7 @@ export default async function CustomerInvoiceReleaseQueuePage({ searchParams }: 
 
         <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-900">
           <h2 className="font-semibold">Control rule</h2>
-          <p className="mt-2">This queue creates internal draft customer invoice records only. It does not post to Sage, clear VAT/export evidence, generate COS/BOL/POD, or close the order.</p>
+          <p className="mt-2">This queue creates internal draft customer final invoice records only. It does not post to the accounting system, clear VAT/export evidence, generate shipment certificates/BOL/POD, or close the order.</p>
         </section>
       </div>
     </main>
