@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { createClient } from "@/utils/supabase/server";
+import { cleanUiText } from "@/lib/ui/cleanUiText";
 import { createRealStatementImportBatchAction, voidDvaStatementImportBatchAction } from "./actions";
 
 type Row = Record<string, unknown>;
@@ -71,6 +72,12 @@ function statusClass(status: string) {
   return "bg-slate-100 text-slate-700 ring-slate-200";
 }
 
+function statusLabel(status: unknown) {
+  const value = text(status);
+  if (value === "ocr_or_parsing") return "document read or parsing";
+  return cleanUiText(value.replaceAll("_", " "));
+}
+
 function nextAction(batch: Row) {
   const fileType = text(batch.detected_file_type);
   const rowCount = num(batch.row_count);
@@ -78,7 +85,7 @@ function nextAction(batch: Row) {
   if (isVoidedBatch(batch)) return "Voided — audit trail only. Upload a fresh statement if this was wrong.";
   if (status === "committed") return "Committed — available for matching. Void only if this import was uploaded in error.";
   if (status === "failed") return "Failed — open detail or upload a corrected batch.";
-  if (fileType === "pdf" && rowCount === 0) return "Run PDF OCR / parse rows, then review detail.";
+  if (fileType === "pdf" && rowCount === 0) return "Run PDF statement extraction / parse rows, then review detail.";
   if (rowCount > 0) return "Open detail to review balance chain and staged rows.";
   return "Extract rows, then review detail.";
 }
@@ -128,8 +135,8 @@ export default async function DvaStatementImportPage({
   searchParams?: SearchParamsValue | Promise<SearchParamsValue>;
 }) {
   const params = searchParams ? await Promise.resolve(searchParams) : {};
-  const importSuccess = text(params.import_success);
-  const importError = text(params.import_error);
+  const importSuccess = cleanUiText(text(params.import_success));
+  const importError = cleanUiText(text(params.import_error));
   const batchId = text(params.batch_id);
   const batchPage = positivePage(params.batch_page);
   const selectedBatchStatus = batchStatusFilter(params.batch_status);
@@ -170,14 +177,14 @@ export default async function DvaStatementImportPage({
           <Link href="/internal" className="text-sm font-semibold text-sky-600">← Back to internal dashboard</Link>
           <div className="mt-6 flex flex-wrap items-start justify-between gap-4">
             <div className="min-w-0 flex-1">
-              <p className="text-sm font-medium uppercase tracking-[0.2em] text-sky-500">DVA/card statement import</p>
+              <p className="text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Payment statement import</p>
               <h1 className="mt-2 text-3xl font-semibold tracking-tight">Statement upload queue</h1>
               <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-600">
-                Upload statement files here. Each batch card opens a detail page for balance checks, staged rows, and reconciliation review.
+                Upload statement files here. Each batch card opens a detail page for balance checks, staged rows, and matching review.
               </p>
             </div>
             <Link className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white" href="/internal/dva-statement-import/mindee-control">
-              Open PDF Mindee control
+              Open PDF statement extraction
             </Link>
           </div>
           <div className="mt-4 flex flex-wrap gap-2">
@@ -199,13 +206,13 @@ export default async function DvaStatementImportPage({
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold">Upload statement file</h2>
           <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-            Upload creates the batch. PDF OCR and row review happen after the batch exists. Choose an importer DVA/card account for importer-controlled money, or the main company bank account for platform-level payments such as shipper invoices.
+            Upload creates the batch. PDF statement extraction and row review happen after the batch exists. Choose an importer payment account for importer-controlled money, or the main company bank account for platform-level payments such as shipper charge records.
           </p>
           <form action={createRealStatementImportBatchAction} className="mt-5 grid gap-4 md:grid-cols-4">
             <div>
               <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Statement account</label>
               <select className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" name="statement_account_context" defaultValue="importer_dva_card_account">
-                <option value="importer_dva_card_account">Importer DVA/card account</option>
+                <option value="importer_dva_card_account">Importer payment account</option>
                 <option value="main_company_bank_account">Main company bank account</option>
               </select>
               <p className="mt-1 text-xs leading-5 text-slate-500">Main company bank is for shipper/platform payments and does not require an importer.</p>
@@ -213,7 +220,7 @@ export default async function DvaStatementImportPage({
             <div>
               <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Importer</label>
               <select className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" name="importer_id">
-                <option value="">Select importer only for importer DVA/card</option>
+                <option value="">Select importer only for importer payment account</option>
                 {importers.map((importer) => (
                   <option key={text(importer.id)} value={text(importer.id)}>{text(importer.trading_name) || text(importer.company_name) || text(importer.id)}</option>
                 ))}
@@ -243,7 +250,7 @@ export default async function DvaStatementImportPage({
             <div>
               <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Batch settlement markup override %</label>
               <input className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" name="default_card_markup_pct" type="number" min="0" step="0.001" defaultValue="0" />
-              <p className="mt-1 text-xs leading-5 text-slate-500">Optional. Leave 0 to use daily settlement-card markup by transaction date. Enter a positive value only to override all daily markups in this batch.</p>
+              <p className="mt-1 text-xs leading-5 text-slate-500">Optional. Leave 0 to use daily settlement markup by transaction date. Enter a positive value only to override all daily markups in this batch.</p>
             </div>
             <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 md:col-span-2">
               <label className="flex items-start gap-3 text-sm font-semibold text-emerald-900">
@@ -262,7 +269,7 @@ export default async function DvaStatementImportPage({
             </div>
             <div className="md:col-span-2">
               <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">FX source context</label>
-              <input className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" name="fx_source_context" placeholder="e.g. BOG base settlement rate; daily card spread used unless batch override supplied" />
+              <input className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" name="fx_source_context" placeholder="e.g. BOG base settlement rate; daily payment spread used unless batch override supplied" />
             </div>
             <div className="md:col-span-2">
               <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Notes</label>
@@ -307,9 +314,9 @@ export default async function DvaStatementImportPage({
                   <div className="min-w-0 flex-1">
                     <h3 className="break-words text-lg font-semibold [overflow-wrap:anywhere]">{text(batch.original_filename) || text(batch.id)}</h3>
                     <p className="mt-1 break-words text-sm text-slate-600">{text(batch.source_bank).toUpperCase()} · {text(batch.local_ccy)} · {text(batch.statement_period_from)} → {text(batch.statement_period_to)}</p>
-                    {voided ? <p className="mt-2 break-words text-xs font-semibold text-rose-700">Voided: {text(batch.void_reason) || "No reason captured"}</p> : null}
+                    {voided ? <p className="mt-2 break-words text-xs font-semibold text-rose-700">Voided: {cleanUiText(text(batch.void_reason)) || "No reason captured"}</p> : null}
                   </div>
-                  <span className={`shrink-0 rounded-full px-3 py-1 text-sm font-semibold ring-1 ${statusClass(text(batch.status))}`}>{text(batch.status)}</span>
+                  <span className={`shrink-0 rounded-full px-3 py-1 text-sm font-semibold ring-1 ${statusClass(text(batch.status))}`}>{statusLabel(batch.status)}</span>
                 </div>
                 <div className="mt-4 grid gap-2 text-sm text-slate-700 sm:grid-cols-5">
                   <p>Rows: <span className="font-semibold">{num(batch.row_count)}</span></p>
