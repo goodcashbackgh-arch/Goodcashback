@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { createClient } from "@/utils/supabase/server";
+import { cleanUiText } from "@/lib/ui/cleanUiText";
 
 type Row = Record<string, unknown>;
 type ReadError = { source: string; message: string };
@@ -85,9 +86,9 @@ function statusClass(row: Row) {
 
 function statusLabel(row: Row) {
   if (bool(row.confirmed_balanced_yn)) return "balanced";
-  if (num(row.open_allocated_gbp) > 0) return "part allocated / held";
-  if (text(row.direction) === "in") return "funding route";
-  return "needs allocation";
+  if (num(row.open_allocated_gbp) > 0) return "part matched / held";
+  if (text(row.direction) === "in") return "payment route";
+  return "needs matching";
 }
 
 function statusFilter(row: Row) {
@@ -97,8 +98,8 @@ function statusFilter(row: Row) {
 }
 
 function actionMessage(row: Row) {
-  if (bool(row.confirmed_balanced_yn)) return "Balanced — review pack can prove this line before Sage readiness.";
-  if (text(row.direction) === "in") return "Customer/importer IN money uses Importer Funding Control.";
+  if (bool(row.confirmed_balanced_yn)) return "Balanced — review pack can prove this line before accounting readiness.";
+  if (text(row.direction) === "in") return "Customer/importer IN money uses Importer Payment Control.";
   return "OUT/refund/fee/hold lines use the Matching Workspace or Unmatched OUT triage.";
 }
 
@@ -111,7 +112,7 @@ function primaryHref(row: Row, hasSuggestion: boolean) {
 
 function primaryCta(row: Row, hasSuggestion: boolean) {
   if (bool(row.confirmed_balanced_yn)) return "Open review pack";
-  if (text(row.direction) === "in") return "Open funding control";
+  if (text(row.direction) === "in") return "Open payment control";
   if (!hasSuggestion) return "Open unmatched OUT triage";
   return "Open matching workspace";
 }
@@ -271,7 +272,7 @@ function LineControlCard({
         <div className="rounded-2xl bg-white/75 p-3 ring-1 ring-slate-200">
           <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Statement truth</p>
           <p className="mt-2 break-words text-sm text-slate-800 [overflow-wrap:anywhere]">{text(line.reference_raw) || "No reference text"}</p>
-          <p className="mt-2 text-xs text-slate-500">Auth: {text(line.auth_id_ref) || "—"}</p>
+          <p className="mt-2 text-xs text-slate-500">Payment ref: {text(line.auth_id_ref) || "—"}</p>
           <p className="text-xs text-slate-500">Statement text: {text(line.retailer_name_ref) || "—"}</p>
         </div>
 
@@ -285,8 +286,8 @@ function LineControlCard({
 
         <div className="rounded-2xl bg-white/75 p-3 ring-1 ring-slate-200">
           <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Operational signal</p>
-          <p className="mt-2 text-sm font-semibold text-slate-900">{text(invoice?.invoice_ref) || text(invoice?.ocr_invoice_ref) || "No invoice link"}</p>
-          <p className="mt-1 text-xs text-slate-500">Invoice/OCR: {gbp(invoice?.ocr_invoice_total_gbp || invoice?.reconciliation_gbp_total)}</p>
+          <p className="mt-2 text-sm font-semibold text-slate-900">{text(invoice?.invoice_ref) || text(invoice?.ocr_invoice_ref) || "No supplier charge link"}</p>
+          <p className="mt-1 text-xs text-slate-500">Supplier charge/read: {gbp(invoice?.ocr_invoice_total_gbp || invoice?.reconciliation_gbp_total)}</p>
           <p className="text-xs text-slate-500">Progressed: {gbp(progressedTotal)}</p>
           <p className="text-xs text-slate-500">Open exception: {gbp(openExceptionTotal)}</p>
         </div>
@@ -303,7 +304,7 @@ function LineControlCard({
 
       {suggestion ? (
         <div className="mt-3 rounded-2xl bg-white/75 p-3 text-xs text-slate-600 ring-1 ring-slate-200">
-          Suggested match: <span className="font-semibold text-slate-900">{text(suggestion.suggested_match_type)}</span>
+          Suggested match: <span className="font-semibold text-slate-900">{cleanUiText(text(suggestion.suggested_match_type))}</span>
           {text(suggestion.confidence) ? <> · Confidence: <span className="font-semibold text-slate-900">{text(suggestion.confidence)}</span></> : null}
           <> · Variance: <span className="font-semibold text-slate-900">{gbp(suggestion.variance_gbp)}</span> · {num(suggestion.variance_days)} days</>
         </div>
@@ -491,10 +492,10 @@ export default async function DvaReconciliationWorkbenchPage({
       <div className="mx-auto max-w-7xl space-y-6">
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <Link href="/internal" className="text-sm font-semibold text-sky-600">← Back to internal dashboard</Link>
-          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">DVA/card control hub</p>
+          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Payment control hub</p>
           <h1 className="mt-2 text-3xl font-semibold tracking-tight">Route committed statement lines to the right control path</h1>
           <p className="mt-3 max-w-5xl text-sm leading-6 text-slate-600">
-            This is the traffic-control page after statement rows are committed. It shows which lines need importer funding, supplier/refund/fee/hold matching, allocation reversal, review-pack sign-off, or exception action. It does not replace the governed funding, matching, allocation or Sage-readiness actions.
+            This is the traffic-control page after statement rows are committed. It shows which lines need importer payment review, supplier/refund/fee/hold matching, match reversal, review-pack sign-off, or exception action. It does not replace the governed payment, matching, reversal or accounting-readiness actions.
           </p>
         </section>
 
@@ -504,22 +505,22 @@ export default async function DvaReconciliationWorkbenchPage({
               <p className="text-sm font-medium uppercase tracking-[0.18em] text-sky-500">Where to act</p>
               <h2 className="mt-2 text-xl font-semibold">Choose the route based on the statement line</h2>
               <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
-                IN customer/importer money uses the funding path. Supplier purchases, refunds, FX/card differences, bank fees and holds use the matching/allocation path. Review pack is the confidence checkpoint before pre-Sage readiness.
+                IN customer/importer money uses the payment path. Supplier purchases, refunds, FX/payment variances, bank fees and holds use the matching path. Review pack is the confidence checkpoint before accounting readiness.
               </p>
             </div>
           </div>
           <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-            <RouteCard title="Customer/importer IN" body="Apply received money to order funding gaps or importer credit." href="/internal/funding" cta="Open funding control" tone="emerald" />
-            <RouteCard title="Supplier / refund / fee / hold" body="Match statement lines to supplier invoices, refund exceptions, FX/card residuals, bank fees or holds." href="/internal/dva-reconciliation/workspace" cta="Open workspace" tone="sky" />
+            <RouteCard title="Customer/importer IN" body="Apply received money to order payment gaps or importer credit." href="/internal/funding" cta="Open payment control" tone="emerald" />
+            <RouteCard title="Supplier / refund / fee / hold" body="Match statement lines to supplier charge records, refund exceptions, FX/payment residuals, bank fees or holds." href="/internal/dva-reconciliation/workspace" cta="Open workspace" tone="sky" />
             <RouteCard title="Unmatched OUT" body="Investigate OUT lines before treating them as residuals or holds." href="/internal/dva-reconciliation/unmatched" cta="Open triage" tone="amber" />
-            <RouteCard title="Active allocations" body="Review or reverse confirmed allocation rows without voiding statement batches." href="/internal/dva-reconciliation/allocations" cta="Open reversals" tone="violet" />
-            <RouteCard title="Review pack" body="Prove each statement line is balanced, held or blocked before Sage readiness." href="/internal/dva-reconciliation/review-pack" cta="Open review pack" tone="slate" />
+            <RouteCard title="Active matches" body="Review or reverse confirmed matching rows without voiding statement batches." href="/internal/dva-reconciliation/allocations" cta="Open reversals" tone="violet" />
+            <RouteCard title="Review pack" body="Prove each statement line is balanced, held or blocked before accounting readiness." href="/internal/dva-reconciliation/review-pack" cta="Open review pack" tone="slate" />
           </div>
         </section>
 
         {(allocationSuccess || allocationError) ? (
           <section className={`rounded-3xl border p-5 text-sm font-semibold leading-6 ${allocationSuccess ? "border-emerald-200 bg-emerald-50 text-emerald-900" : "border-rose-200 bg-rose-50 text-rose-900"}`}>
-            {allocationSuccess || allocationError}
+            {cleanUiText(allocationSuccess || allocationError)}
           </section>
         ) : null}
 
@@ -527,7 +528,7 @@ export default async function DvaReconciliationWorkbenchPage({
           <section className="rounded-3xl border border-rose-200 bg-rose-50 p-5 text-sm leading-6 text-rose-900">
             <h2 className="font-semibold">Read issues</h2>
             <ul className="mt-2 list-disc pl-5">
-              {readErrors.map((error) => <li key={`${error.source}-${error.message}`}>{error.source}: {error.message}</li>)}
+              {readErrors.map((error) => <li key={`${error.source}-${error.message}`}>{error.source}: {cleanUiText(error.message)}</li>)}
             </ul>
           </section>
         ) : null}
@@ -549,7 +550,7 @@ export default async function DvaReconciliationWorkbenchPage({
             <div className="flex flex-wrap gap-2">
               {[
                 ["needs", "Needs route/action", statusCounts.needs],
-                ["draft", "Part allocated / held", statusCounts.draft],
+                ["draft", "Part matched / held", statusCounts.draft],
                 ["balanced", "Balanced / completed", statusCounts.balanced],
                 ["all", "All", statusCounts.all],
               ].map(([value, label, count]) => (
@@ -571,23 +572,23 @@ export default async function DvaReconciliationWorkbenchPage({
               <p className="text-sm font-medium uppercase tracking-[0.18em] text-sky-500">Importer control position</p>
               <h2 className="mt-2 text-xl font-semibold">{selectedImporter ? (text(selectedImporter.trading_name) || text(selectedImporter.company_name) || "Selected importer") : "All importers"}</h2>
               <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
-                Use this summary to catch the £500-in / £450-spent / £50-open-position problem. It is a control view, not a replacement for funding or supplier-allocation RPCs.
+                Use this summary to catch the £500-in / £450-spent / £50-open-position problem. It is a control view, not a replacement for payment or supplier-matching RPCs.
               </p>
             </div>
             <Link className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white" href="/internal/funding">
-              Open Importer Funding Control →
+              Open Importer Payment Control →
             </Link>
           </div>
 
           <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <SummaryMetric label="IN statement lines" value={gbp(statementInTotal)} hint="Visible funding/credit inflows from committed statement lines." tone="emerald" />
+            <SummaryMetric label="IN statement lines" value={gbp(statementInTotal)} hint="Visible payment/credit inflows from committed statement lines." tone="emerald" />
             <SummaryMetric label="OUT statement lines" value={gbp(statementOutTotal)} hint="Visible card/supplier/refund/fee outflows from committed statement lines." tone="rose" />
-            <SummaryMetric label="Credit ledger balance" value={gbp(creditLedgerBalance)} hint="Importer credit ledger net from existing ledger rows." tone="sky" />
-            <SummaryMetric label="Indicative net position" value={gbp(indicativeNetPosition)} hint="IN + credit ledger - OUT. Use as a review signal, not a posting figure." tone="violet" />
-            <SummaryMetric label="Supplier allocated" value={gbp(supplierInvoiceAllocated)} hint="Confirmed allocations to supplier invoices." tone="slate" />
-            <SummaryMetric label="Refunds / fees / holds" value={gbp(retailerRefundAllocated + fxCardFeeAllocated + exceptionOrHoldAllocated)} hint="Retailer refund, FX/card/fee and exception/hold allocations." tone="amber" />
+            <SummaryMetric label="Credit account balance" value={gbp(creditLedgerBalance)} hint="Importer credit account net from existing ledger rows." tone="sky" />
+            <SummaryMetric label="Indicative net position" value={gbp(indicativeNetPosition)} hint="IN + credit account - OUT. Use as a review signal, not a posting figure." tone="violet" />
+            <SummaryMetric label="Supplier matched" value={gbp(supplierInvoiceAllocated)} hint="Confirmed matches to supplier charge records." tone="slate" />
+            <SummaryMetric label="Refunds / fees / holds" value={gbp(retailerRefundAllocated + fxCardFeeAllocated + exceptionOrHoldAllocated)} hint="Retailer refund, FX/payment/fee and exception/hold matches." tone="amber" />
             <SummaryMetric label="Open exceptions" value={gbp(openExceptionTotalSummary)} hint="Open paper/commercial exception impact for this importer scope." tone="amber" />
-            <SummaryMetric label="Unmatched lines" value={`${unmatchedInCount} IN · ${unmatchedOutCount} OUT`} hint="Needs funding route or supplier/refund/fee/exception allocation." tone={unmatchedInCount + unmatchedOutCount > 0 ? "rose" : "emerald"} />
+            <SummaryMetric label="Unmatched lines" value={`${unmatchedInCount} IN · ${unmatchedOutCount} OUT`} hint="Needs payment route or supplier/refund/fee/exception matching." tone={unmatchedInCount + unmatchedOutCount > 0 ? "rose" : "emerald"} />
           </div>
         </section>
 
@@ -596,7 +597,7 @@ export default async function DvaReconciliationWorkbenchPage({
             <div>
               <h2 className="text-xl font-semibold">Statement-line control queue</h2>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-                Showing {filteredRows.length} line(s). This is a routing queue, not a spreadsheet. Open the correct governed page to fund, match, reverse, hold or review.
+                Showing {filteredRows.length} line(s). This is a routing queue, not a spreadsheet. Open the correct governed page to pay, match, reverse, hold or review.
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
