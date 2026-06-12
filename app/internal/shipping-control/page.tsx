@@ -180,7 +180,7 @@ export default async function InternalShippingControlPage({ searchParams }: { se
           <div className="mt-2 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
             <div>
               <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Shipping control centre</h1>
-              <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">Read-only supervisor overview of shipment batches, package receipt truth, content matching, shipper documents, apportionment, customer final document release readiness, draft shipment certificate/export evidence and final POD/delivery evidence. Action work belongs in focused child queues.</p>
+              <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">Read-only supervisor overview of shipment batches, package receipt truth, content matching, shipper documents, apportionment, customer final invoice release readiness, draft shipment certificate/export evidence and final POD/delivery evidence. Action work belongs in focused child queues.</p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700"><div className="font-medium text-slate-950">{staff.full_name}</div><div>{staff.role_type}</div></div>
           </div>
@@ -199,8 +199,8 @@ export default async function InternalShippingControlPage({ searchParams }: { se
         <section className="grid gap-4 lg:grid-cols-3">
           <Link href="/internal/shipping-control/customer-invoice-release" className="rounded-3xl border border-emerald-200 bg-emerald-50 p-5 shadow-sm hover:bg-emerald-100">
             <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Focused action queue</p>
-            <h2 className="mt-2 text-xl font-semibold text-emerald-950">Customer final document release queue</h2>
-            <p className="mt-2 text-sm leading-6 text-emerald-900">Open the controlled customer final document release workbench. Metrics are kept inside the focused queue so this shipping overview is not blocked by final-document release diagnostics.</p>
+            <h2 className="mt-2 text-xl font-semibold text-emerald-950">Customer final invoice release queue</h2>
+            <p className="mt-2 text-sm leading-6 text-emerald-900">Open the controlled customer final invoice release workbench. Metrics are kept inside the focused queue so this shipping overview is not blocked by final-invoice release diagnostics.</p>
             <div className="mt-4 text-sm font-semibold text-emerald-800">Open queue →</div>
           </Link>
           <Link href="/internal/shipping-control/shipper-documents" className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm hover:bg-slate-50">
@@ -253,7 +253,7 @@ export default async function InternalShippingControlPage({ searchParams }: { se
             </tbody></table></div>
           )}
         </section>
-        <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-900"><h2 className="font-semibold">Control rule</h2><p className="mt-2">This page is the overview. Repeated actions belong in focused child queues: shipper document review, customer final document release, accounting readiness, draft shipment certificate and final export/POD evidence. This page itself does not approve, post, clear tax, generate shipment certificates/BOL/POD or create customer final documents.</p></section>
+        <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-900"><h2 className="font-semibold">Control rule</h2><p className="mt-2">This page is the overview. Repeated actions belong in focused child queues: shipper document review, customer final invoice release, accounting readiness, draft shipment certificate and final export/POD evidence. This page itself does not approve, post, clear VAT, generate shipment certificates/BOL/POD or create customer final invoices.</p></section>
       </div>
     </main>
   );
