@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { createClient } from "@/utils/supabase/server";
+import { cleanUiText } from "@/lib/ui/cleanUiText";
 import { reverseDvaStatementLineAllocationAction } from "../actions";
 
 type SearchParams = {
@@ -53,7 +54,7 @@ function numeric(value: number | string | null | undefined) {
 }
 
 function pretty(value: string | null | undefined) {
-  return value ? value.replaceAll("_", " ") : "—";
+  return value ? cleanUiText(value.replaceAll("_", " ")) : "—";
 }
 
 function tone(status: string | null | undefined) {
@@ -63,18 +64,18 @@ function tone(status: string | null | undefined) {
 }
 
 function targetLabel(row: AllocationDetailRow) {
-  if (row.allocation_type === "supplier_invoice") return row.supplier_invoice_ref || "Supplier invoice";
+  if (row.allocation_type === "supplier_invoice") return row.supplier_invoice_ref || "Supplier charge record";
   if (row.allocation_type === "retailer_refund") return "Retailer refund";
   if (row.allocation_type === "exception_hold") return "Exception / replacement hold";
   if (row.allocation_type === "not_charged_closure") return "Not charged closure";
-  if (row.allocation_type === "fx_card_difference") return "FX/card difference";
-  if (row.allocation_type === "bank_fee") return "Bank/card fee";
+  if (row.allocation_type === "fx_card_difference") return "FX/payment variance";
+  if (row.allocation_type === "bank_fee") return "Bank/payment fee";
   if (row.allocation_type === "unmatched_hold") return "Unmatched hold";
   return pretty(row.allocation_type);
 }
 
 function sourceText(row: AllocationDetailRow) {
-  return row.statement_description || row.statement_reference || "No statement text";
+  return cleanUiText(row.statement_description || row.statement_reference || "No statement text");
 }
 
 export default async function DvaAllocationReviewPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
@@ -116,10 +117,10 @@ export default async function DvaAllocationReviewPage({ searchParams }: { search
       <div className="mx-auto max-w-7xl space-y-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.25em] text-sky-600">DVA/card reconciliation</p>
-            <h1 className="mt-2 text-2xl font-bold tracking-tight">Active allocation records</h1>
+            <p className="text-xs font-semibold uppercase tracking-[0.25em] text-sky-600">Payment statement matching</p>
+            <h1 className="mt-2 text-2xl font-bold tracking-tight">Active matching records</h1>
             <p className="mt-1 max-w-3xl text-sm text-slate-600">
-              One card = one active allocation. Source used/open is the current total across all active rows for that statement line.
+              One card = one active match. Source used/open is the current total across all active rows for that statement line.
             </p>
           </div>
           <Link href={workspacePath} className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-50">
@@ -128,11 +129,11 @@ export default async function DvaAllocationReviewPage({ searchParams }: { search
         </div>
 
         {params.allocation_error ? (
-          <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">{params.allocation_error}</div>
+          <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">{cleanUiText(params.allocation_error)}</div>
         ) : null}
 
         {params.allocation_success ? (
-          <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">{params.allocation_success}</div>
+          <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">{cleanUiText(params.allocation_success)}</div>
         ) : null}
 
         <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -154,13 +155,13 @@ export default async function DvaAllocationReviewPage({ searchParams }: { search
 
         <section className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
           <div className="border-b border-slate-100 px-4 py-3 text-sm font-semibold text-slate-700">
-            Showing {rows.length} active allocation record(s)
+            Showing {rows.length} active matching record(s)
           </div>
 
           {error ? (
-            <div className="p-4 text-sm font-semibold text-rose-700">{error.message}</div>
+            <div className="p-4 text-sm font-semibold text-rose-700">{cleanUiText(error.message)}</div>
           ) : rows.length === 0 ? (
-            <div className="p-8 text-center text-sm text-slate-500">No active allocations found for this filter.</div>
+            <div className="p-8 text-center text-sm text-slate-500">No active matching records found for this filter.</div>
           ) : (
             <div className="divide-y divide-slate-100">
               {rows.map((row) => {
@@ -178,7 +179,7 @@ export default async function DvaAllocationReviewPage({ searchParams }: { search
                       <div className="flex min-w-0 flex-wrap items-center gap-2">
                         <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${tone(row.allocation_status)}`}>{pretty(row.allocation_status)}</span>
                         <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-semibold text-slate-700">{direction}</span>
-                        <span className="rounded-full border border-sky-200 bg-sky-50 px-2.5 py-1 text-xs font-semibold text-sky-800">{pretty(row.allocation_type)}</span>
+                        <span className="rounded-full border border-sky-200 bg-sky-50 px-2.5 py-1 text-xs font-semibold text-sky-800">{targetLabel(row)}</span>
                         {sourceStatus?.allocation_status_bucket ? (
                           <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-xs font-semibold text-indigo-800">source {pretty(sourceStatus.allocation_status_bucket)}</span>
                         ) : null}
@@ -213,11 +214,11 @@ export default async function DvaAllocationReviewPage({ searchParams }: { search
 
                     {row.allocation_status === "confirmed" || row.allocation_status === "held" ? (
                       <form action={reverseDvaStatementLineAllocationAction} className="grid min-w-0 gap-2 rounded-2xl border border-slate-200 bg-white p-4 lg:w-80 lg:max-w-80">
-                        <p className="break-words text-xs font-semibold text-slate-600 [overflow-wrap:anywhere]">Reverse only this {gbp(allocated)} row.</p>
+                        <p className="break-words text-xs font-semibold text-slate-600 [overflow-wrap:anywhere]">Reverse only this {gbp(allocated)} matching row.</p>
                         <input type="hidden" name="allocation_id" value={row.allocation_id} />
                         <input type="hidden" name="return_path" value={workspacePath} />
                         <input name="reversal_reason" placeholder="Reason" className="min-w-0 rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-900" minLength={8} required />
-                        <button className="whitespace-normal break-words rounded-xl bg-rose-600 px-3 py-2 text-sm font-semibold text-white hover:bg-rose-700 [overflow-wrap:anywhere]" type="submit">Reverse this allocation only</button>
+                        <button className="whitespace-normal break-words rounded-xl bg-rose-600 px-3 py-2 text-sm font-semibold text-white hover:bg-rose-700 [overflow-wrap:anywhere]" type="submit">Reverse this match only</button>
                       </form>
                     ) : null}
                   </article>
