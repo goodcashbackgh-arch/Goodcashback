@@ -34,6 +34,10 @@ export async function reviewShippingDocumentAction(formData: FormData) {
     redirect(`/internal/shipping-control/shipper-documents/${shippingDocumentId}?error=Choose%20a%20valid%20review%20decision.`);
   }
 
+  if (decision === "accept_current" && !extractedDocumentDate) {
+    redirect(`/internal/shipping-control/shipper-documents/${shippingDocumentId}?error=${encodeURIComponent("Enter or confirm the document date before accepting the shipper charge document.")}`);
+  }
+
   const { error } = await (supabase as any).rpc("internal_review_shipping_document_v1", {
     p_shipping_document_id: shippingDocumentId,
     p_decision: decision,
