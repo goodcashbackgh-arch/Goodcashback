@@ -303,6 +303,12 @@ export default function SafeWorkspaceSelectionController() {
 
     for (const card of cards) {
       const onClick = (event: MouseEvent) => {
+        const currentLineId = new URLSearchParams(window.location.search).get("line_id") || "";
+
+        if (card.kind === "statement" && card.id !== currentLineId) {
+          return;
+        }
+
         event.preventDefault();
         event.stopPropagation();
 
