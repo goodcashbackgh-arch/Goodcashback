@@ -161,9 +161,10 @@ function classifyAnchor(anchor: HTMLAnchorElement): ClassifiedCard | null {
     const direction: Direction = /\bIN\b/.test(body) ? "in" : /\bOUT\b/.test(body) ? "out" : "neutral";
     const amount = parseGbp(body);
     const remainingAmount = parseLabeledGbp(body, "Remaining") ?? amount;
-    const isBalanced = body.toLowerCase().includes("balanced") || remainingAmount <= 0.009;
+    const lowerBody = body.toLowerCase();
+    const isUnavailable = lowerBody.includes("balanced") || lowerBody.includes("funding confirmed") || remainingAmount <= 0.009;
 
-    if (isBalanced) markUnavailable(anchor);
+    if (isUnavailable) markUnavailable(anchor);
 
     return {
       anchor,
@@ -174,7 +175,7 @@ function classifyAnchor(anchor: HTMLAnchorElement): ClassifiedCard | null {
       kind: "statement",
       direction,
       remainingAmount,
-      selectable: !isBalanced,
+      selectable: !isUnavailable,
     };
   }
 

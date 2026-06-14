@@ -73,17 +73,33 @@ function groupBy(rows: Row[], key: string) {
   return grouped;
 }
 
+function isFundingConfirmedLine(row: Row) {
+  return (
+    text(row.match_status) === "confirmed" &&
+    !bool(row.confirmed_balanced_yn) &&
+    num(row.confirmed_allocated_gbp) <= 0 &&
+    num(row.open_allocated_gbp) <= 0
+  );
+}
+
 function statusFilter(row: Row) {
   if (bool(row.confirmed_balanced_yn)) return "balanced";
   if (num(row.confirmed_allocated_gbp) > 0 || num(row.open_allocated_gbp) > 0) return "part";
+  if (isFundingConfirmedLine(row)) return "funding confirmed";
   return "unmatched";
 }
 
 function lineTone(row: Row, selectedLineId: string) {
+  if (isFundingConfirmedLine(row)) return "border-emerald-300 bg-emerald-50 ring-1 ring-emerald-200";
   if (text(row.dva_statement_line_id) === selectedLineId) return "border-sky-500 bg-sky-50 ring-2 ring-sky-200";
   if (bool(row.confirmed_balanced_yn)) return "border-emerald-200 bg-emerald-50";
   if (num(row.confirmed_allocated_gbp) > 0 || num(row.open_allocated_gbp) > 0) return "border-amber-200 bg-amber-50";
   return "border-slate-200 bg-white";
+}
+
+function statusBadgeTone(status: string) {
+  if (status === "funding confirmed") return "bg-emerald-100 text-emerald-800 ring-emerald-200";
+  return "bg-white text-slate-700 ring-slate-200";
 }
 
 function opTone(row: OperationalRow, selectedTargetId: string) {
@@ -434,31 +450,34 @@ export default async function DvaMatchingWorkspacePage({
 
             <div className="mt-4 space-y-3">
               {filteredStatementLines.length === 0 ? <p className="text-sm text-slate-500">No statement lines match the current filters.</p> : null}
-              {filteredStatementLines.map((row) => (
-                <Link
-                  key={text(row.dva_statement_line_id)}
-                  href={workspaceHref({
-                    importer_id: selectedImporterId,
-                    line_id: text(row.dva_statement_line_id),
-                    target_id: selectedTargetId,
-                    left_status: leftStatus,
-                    left_direction: leftDirection,
-                    left_retailer: leftRetailer,
-                    right_retailer: manualRightRetailer,
-                    right_status: rightStatus,
-                  })}
-                  className={`block rounded-2xl border p-4 ${lineTone(row, activeLineId)}`}
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <p className="font-semibold">{text(row.statement_date)} · {text(row.direction).toUpperCase()} · {gbp(row.statement_gbp_amount)}</p>
-                      <p className="mt-1 break-words text-sm text-slate-600 [overflow-wrap:anywhere]">{text(row.reference_raw) || text(row.retailer_name_ref) || "No statement text"}</p>
+              {filteredStatementLines.map((row) => {
+                const status = statusFilter(row);
+                return (
+                  <Link
+                    key={text(row.dva_statement_line_id)}
+                    href={workspaceHref({
+                      importer_id: selectedImporterId,
+                      line_id: text(row.dva_statement_line_id),
+                      target_id: selectedTargetId,
+                      left_status: leftStatus,
+                      left_direction: leftDirection,
+                      left_retailer: leftRetailer,
+                      right_retailer: manualRightRetailer,
+                      right_status: rightStatus,
+                    })}
+                    className={`block rounded-2xl border p-4 ${lineTone(row, activeLineId)}`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="font-semibold">{text(row.statement_date)} · {text(row.direction).toUpperCase()} · {gbp(row.statement_gbp_amount)}</p>
+                        <p className="mt-1 break-words text-sm text-slate-600 [overflow-wrap:anywhere]">{text(row.reference_raw) || text(row.retailer_name_ref) || "No statement text"}</p>
+                      </div>
+                      <span className={`rounded-full px-2 py-1 text-xs font-semibold ring-1 ${statusBadgeTone(status)}`}>{status}</span>
                     </div>
-                    <span className="rounded-full bg-white px-2 py-1 text-xs font-semibold text-slate-700 ring-1 ring-slate-200">{statusFilter(row)}</span>
-                  </div>
-                  <p className="mt-2 text-xs text-slate-500">Allocated {gbp(row.confirmed_allocated_gbp)} · Remaining {gbp(row.confirmed_unallocated_gbp)} · Open/draft {gbp(row.open_allocated_gbp)} · Auth {text(row.auth_id_ref) || "—"}</p>
-                </Link>
-              ))}
+                    <p className="mt-2 text-xs text-slate-500">Allocated {gbp(row.confirmed_allocated_gbp)} · Remaining {gbp(row.confirmed_unallocated_gbp)} · Open/draft {gbp(row.open_allocated_gbp)} · Auth {text(row.auth_id_ref) || "—"}</p>
+                  </Link>
+                );
+              })}
             </div>
           </div>
 
