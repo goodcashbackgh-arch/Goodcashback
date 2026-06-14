@@ -1,1 +1,0 @@
-Shipper manual upload date must be provided by users so downstream Sage readiness can fall back to manual document_date when OCR/extracted_document_date is blank.
