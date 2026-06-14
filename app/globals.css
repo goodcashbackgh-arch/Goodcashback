@@ -33,12 +33,14 @@ form:has(button[disabled][title*="AP posting"]) {
 }
 
 /* Layout-only fix for the active DVA/card matching sticky bar. Keep it shallow so it does not cover the matching workspace. */
+aside.fixed.inset-x-0.bottom-0.z-20,
 aside.fixed.inset-x-0.bottom-0.z-40 {
   max-height: 72px !important;
   overflow: hidden !important;
   padding: 0.35rem 0.75rem !important;
 }
 
+aside.fixed.inset-x-0.bottom-0.z-20 > div,
 aside.fixed.inset-x-0.bottom-0.z-40 > div {
   display: grid !important;
   grid-template-columns: minmax(260px, 1fr) auto !important;
@@ -47,15 +49,18 @@ aside.fixed.inset-x-0.bottom-0.z-40 > div {
   font-size: 0.75rem !important;
 }
 
+aside.fixed.inset-x-0.bottom-0.z-20 > div > div:first-child,
 aside.fixed.inset-x-0.bottom-0.z-40 > div > div:first-child {
   display: none !important;
 }
 
+aside.fixed.inset-x-0.bottom-0.z-20 > div > div:nth-child(2),
 aside.fixed.inset-x-0.bottom-0.z-40 > div > div:nth-child(2) {
   min-width: 0 !important;
   padding: 0.35rem 0.6rem !important;
 }
 
+aside.fixed.inset-x-0.bottom-0.z-20 > div > div:nth-child(3),
 aside.fixed.inset-x-0.bottom-0.z-40 > div > div:nth-child(3) {
   display: flex !important;
   flex-wrap: nowrap !important;
@@ -64,11 +69,15 @@ aside.fixed.inset-x-0.bottom-0.z-40 > div > div:nth-child(3) {
   overflow-x: auto !important;
 }
 
+aside.fixed.inset-x-0.bottom-0.z-20 p,
 aside.fixed.inset-x-0.bottom-0.z-40 p {
   margin: 0 !important;
   line-height: 1.1 !important;
 }
 
+aside.fixed.inset-x-0.bottom-0.z-20 button,
+aside.fixed.inset-x-0.bottom-0.z-20 select,
+aside.fixed.inset-x-0.bottom-0.z-20 input,
 aside.fixed.inset-x-0.bottom-0.z-40 button,
 aside.fixed.inset-x-0.bottom-0.z-40 select,
 aside.fixed.inset-x-0.bottom-0.z-40 input {
@@ -79,14 +88,17 @@ aside.fixed.inset-x-0.bottom-0.z-40 input {
 }
 
 @media (max-width: 900px) {
+  aside.fixed.inset-x-0.bottom-0.z-20,
   aside.fixed.inset-x-0.bottom-0.z-40 {
     max-height: 120px !important;
   }
 
+  aside.fixed.inset-x-0.bottom-0.z-20 > div,
   aside.fixed.inset-x-0.bottom-0.z-40 > div {
     grid-template-columns: 1fr !important;
   }
 
+  aside.fixed.inset-x-0.bottom-0.z-20 > div > div:first-child,
   aside.fixed.inset-x-0.bottom-0.z-40 > div > div:first-child {
     display: none !important;
   }
