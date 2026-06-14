@@ -240,25 +240,37 @@ export default async function DvaMatchingWorkspacePage({
   const disputes = ((disputesResult.data ?? []) as unknown as Row[]).filter((row) => orderIds.has(text(row.order_id)));
   const suggestionsByLineId = groupBy((suggestionsResult.data ?? []) as unknown as Row[], "dva_statement_line_id");
   const creditLedger = ((creditLedgerResult.data ?? []) as unknown as Row[]).filter((row) => !selectedImporterId || text(row.importer_id) === selectedImporterId);
-  const selectedLine = statementLines.find((row) => text(row.dva_statement_line_id) === selectedLineId) ?? statementLines[0];
-  const activeLineId = text(selectedLine?.dva_statement_line_id);
-  const selectedImporter = selectedImporterId ? importersById.get(selectedImporterId) : undefined;
-  const selectedLineSuggestions = suggestionsByLineId.get(activeLineId) ?? [];
-  const selectedStatementAmount = num(selectedLine?.statement_gbp_amount);
-  const selectedStatementAllocated = num(selectedLine?.confirmed_allocated_gbp);
-  const selectedStatementRemaining = Math.max(0, selectedStatementAmount - selectedStatementAllocated);
-  const selectedMerchantTokens = merchantTokens(selectedLine?.retailer_name_ref, selectedLine?.reference_raw);
-  const rightRetailer = manualRightRetailer || leftRetailer;
-
-  const settlementV2Result = await supabase.rpc("internal_order_final_sale_settlement_v2", { p_order_id: null });
-  const settlementRows = ((settlementV2Result.data ?? []) as unknown as Row[]).filter((row) => !selectedImporterId || text(row.importer_id) === selectedImporterId);
-
   const filteredStatementLines = statementLines.filter((row) => {
     const statusOk = leftStatus === "all" || statusFilter(row) === leftStatus;
     const directionOk = leftDirection === "all" || text(row.direction) === leftDirection;
     const retailerOk = containsNeedle(row.retailer_name_ref, leftRetailer) || containsNeedle(row.reference_raw, leftRetailer);
     return statusOk && directionOk && retailerOk;
   });
+
+  const selectedLineFromUrl = statementLines.find((row) => text(row.dva_statement_line_id) === selectedLineId);
+  const selectedLineIsVisible =
+    !!selectedLineFromUrl &&
+    filteredStatementLines.some((row) => text(row.dva_statement_line_id) === selectedLineId);
+
+  const selectedLine = selectedLineIsVisible
+    ? selectedLineFromUrl
+    : filteredStatementLines[0] ?? statementLines[0];
+
+  const activeLineId = text(selectedLine?.dva_statement_line_id);
+  const urlLineStillActive = !!selectedLineId && selectedLineId === activeLineId;
+  const activeSelectedTargetId = urlLineStillActive ? selectedTargetId : "";
+  const activeManualRightRetailer = urlLineStillActive ? manualRightRetailer : "";
+
+  const selectedImporter = selectedImporterId ? importersById.get(selectedImporterId) : undefined;
+  const selectedLineSuggestions = suggestionsByLineId.get(activeLineId) ?? [];
+  const selectedStatementAmount = num(selectedLine?.statement_gbp_amount);
+  const selectedStatementAllocated = num(selectedLine?.confirmed_allocated_gbp);
+  const selectedStatementRemaining = Math.max(0, selectedStatementAmount - selectedStatementAllocated);
+  const selectedMerchantTokens = merchantTokens(selectedLine?.retailer_name_ref, selectedLine?.reference_raw);
+  const rightRetailer = activeManualRightRetailer || leftRetailer;
+
+  const settlementV2Result = await supabase.rpc("internal_order_final_sale_settlement_v2", { p_order_id: null });
+  const settlementRows = ((settlementV2Result.data ?? []) as unknown as Row[]).filter((row) => !selectedImporterId || text(row.importer_id) === selectedImporterId);
 
   const invoiceRows: OperationalRow[] = invoices.map((invoice) => {
     const order = orders.find((row) => text(row.id) === text(invoice.order_id));
@@ -342,7 +354,7 @@ export default async function DvaMatchingWorkspacePage({
       return Number(isUsefulOperationalCandidate(b)) - Number(isUsefulOperationalCandidate(a)) || b.amount - a.amount;
     });
 
-  const selectedTarget = operationalRows.find((row) => row.id === selectedTargetId);
+  const selectedTarget = operationalRows.find((row) => row.id === activeSelectedTargetId);
   const selectedTargetAmount = selectedTarget ? selectedTarget.amount || selectedTarget.progressedTotal || selectedTarget.openExceptionTotal : 0;
   const suggestedAllocation = selectedTarget ? Math.min(selectedStatementRemaining, selectedTargetAmount || selectedStatementRemaining) : 0;
   const remainingAfterSelection = Math.max(0, selectedStatementRemaining - suggestedAllocation);
@@ -353,11 +365,11 @@ export default async function DvaMatchingWorkspacePage({
   const activeReturnPath = workspaceHref({
     importer_id: selectedImporterId,
     line_id: activeLineId,
-    target_id: selectedTargetId,
+    target_id: activeSelectedTargetId,
     left_status: leftStatus,
     left_direction: leftDirection,
     left_retailer: leftRetailer,
-    right_retailer: manualRightRetailer,
+    right_retailer: activeManualRightRetailer,
     right_status: rightStatus,
   });
 
@@ -429,8 +441,8 @@ export default async function DvaMatchingWorkspacePage({
               <form className="mt-3 grid gap-2 sm:grid-cols-2" action="/internal/dva-reconciliation/workspace">
                 <input type="hidden" name="importer_id" value={selectedImporterId} />
                 <input type="hidden" name="line_id" value={activeLineId} />
-                <input type="hidden" name="target_id" value={selectedTargetId} />
-                <input type="hidden" name="right_retailer" value={manualRightRetailer} />
+                <input type="hidden" name="target_id" value={activeSelectedTargetId} />
+                <input type="hidden" name="right_retailer" value={activeManualRightRetailer} />
                 <input type="hidden" name="right_status" value={rightStatus} />
                 <select name="left_status" defaultValue={leftStatus} className="rounded-xl border border-slate-200 px-3 py-2 text-sm">
                   <option value="unmatched">Unmatched</option>
@@ -461,11 +473,11 @@ export default async function DvaMatchingWorkspacePage({
       href={workspaceHref({
         importer_id: selectedImporterId,
         line_id: rowLineId,
-        target_id: isActiveStatementLine ? selectedTargetId : "",
+        target_id: isActiveStatementLine ? activeSelectedTargetId : "",
         left_status: leftStatus,
         left_direction: leftDirection,
         left_retailer: leftRetailer,
-        right_retailer: isActiveStatementLine ? manualRightRetailer : "",
+        right_retailer: isActiveStatementLine ? activeManualRightRetailer : "",
         right_status: rightStatus,
       })}
                     className={`block rounded-2xl border p-4 ${lineTone(row, activeLineId)}`}
@@ -490,11 +502,11 @@ export default async function DvaMatchingWorkspacePage({
               <form className="mt-3 grid gap-2 sm:grid-cols-2" action="/internal/dva-reconciliation/workspace">
                 <input type="hidden" name="importer_id" value={selectedImporterId} />
                 <input type="hidden" name="line_id" value={activeLineId} />
-                <input type="hidden" name="target_id" value={selectedTargetId} />
+                <input type="hidden" name="target_id" value={activeSelectedTargetId} />
                 <input type="hidden" name="left_status" value={leftStatus} />
                 <input type="hidden" name="left_direction" value={leftDirection} />
                 <input type="hidden" name="left_retailer" value={leftRetailer} />
-                <input name="right_retailer" defaultValue={manualRightRetailer} placeholder={hasAutoMerchantMatches ? `Auto: ${selectedMerchantTokens.join(", ")}` : "Retailer/order filter, e.g. Ninja"} className="rounded-xl border border-slate-200 px-3 py-2 text-sm" />
+                <input name="right_retailer" defaultValue={activeManualRightRetailer} placeholder={hasAutoMerchantMatches ? `Auto: ${selectedMerchantTokens.join(", ")}` : "Retailer/order filter, e.g. Ninja"} className="rounded-xl border border-slate-200 px-3 py-2 text-sm" />
                 <select name="right_status" defaultValue={rightStatus} className="rounded-xl border border-slate-200 px-3 py-2 text-sm">
                   <option value="usable">Usable candidates</option>
                   <option value="open">Open / active</option>
@@ -520,10 +532,10 @@ export default async function DvaMatchingWorkspacePage({
                     left_status: leftStatus,
                     left_direction: leftDirection,
                     left_retailer: leftRetailer,
-                    right_retailer: manualRightRetailer,
+                    right_retailer: activeManualRightRetailer,
                     right_status: rightStatus,
                   })}
-                  className={`block rounded-2xl border p-4 ${opTone(row, selectedTargetId)}`}
+                  className={`block rounded-2xl border p-4 ${opTone(row, activeSelectedTargetId)}`}
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div>
@@ -542,7 +554,7 @@ export default async function DvaMatchingWorkspacePage({
                   )}
                   {merchantScore(row, selectedMerchantTokens) > 0 ? <p className="mt-2 rounded-xl bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800">Merchant match score: {merchantScore(row, selectedMerchantTokens)}</p> : null}
                   {amountScore(selectedStatementAmount, row) > 0 ? <p className="mt-2 rounded-xl bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">Amount closeness score: {amountScore(selectedStatementAmount, row)}</p> : null}
-                  {row.id === selectedTargetId ? <p className="mt-2 rounded-xl bg-sky-100 px-3 py-2 text-xs font-semibold text-sky-900">Selected target</p> : null}
+                  {row.id === activeSelectedTargetId ? <p className="mt-2 rounded-xl bg-sky-100 px-3 py-2 text-xs font-semibold text-sky-900">Selected target</p> : null}
                 </Link>
               ))}
             </div>
