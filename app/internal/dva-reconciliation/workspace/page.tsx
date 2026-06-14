@@ -451,18 +451,20 @@ export default async function DvaMatchingWorkspacePage({
             <div className="mt-4 space-y-3">
               {filteredStatementLines.length === 0 ? <p className="text-sm text-slate-500">No statement lines match the current filters.</p> : null}
               {filteredStatementLines.map((row) => {
+                const rowLineId = text(row.dva_statement_line_id);
+                const isActiveStatementLine = rowLineId === activeLineId;
                 const status = statusFilter(row);
                 return (
                   <Link
-                    key={text(row.dva_statement_line_id)}
+                    key={rowLineId}
                     href={workspaceHref({
                       importer_id: selectedImporterId,
-                      line_id: text(row.dva_statement_line_id),
-                      target_id: selectedTargetId,
+                      line_id: rowLineId,
+                      target_id: isActiveStatementLine ? selectedTargetId : "",
                       left_status: leftStatus,
                       left_direction: leftDirection,
                       left_retailer: leftRetailer,
-                      right_retailer: manualRightRetailer,
+                      right_retailer: isActiveStatementLine ? manualRightRetailer : "",
                       right_status: rightStatus,
                     })}
                     className={`block rounded-2xl border p-4 ${lineTone(row, activeLineId)}`}
