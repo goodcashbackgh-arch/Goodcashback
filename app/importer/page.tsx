@@ -167,6 +167,7 @@ export default async function ImporterPage() {
               <p className="mt-2 text-sm text-slate-600">Welcome, {operator.full_name}. Manage orders, evidence, tracking, matching and remaining order balances from one control view.</p>
             </div>
             <div className="flex flex-wrap gap-2">
+              <Link href="/customer" className={secondaryActionClass}>Customer portal</Link>
               <Link href="/importer/exceptions" className={secondaryActionClass}>Active exceptions</Link>
               <Link href="/importer/orders/new" className={primaryActionClass}>Create order</Link>
             </div>
