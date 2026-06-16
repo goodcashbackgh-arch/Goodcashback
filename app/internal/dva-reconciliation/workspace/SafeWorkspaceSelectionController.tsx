@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   allocateStatementLineToOperationalTargetAction,
   allocateStatementLineToSupplierInvoiceAction,
@@ -182,6 +183,20 @@ function classifyAnchor(anchor: HTMLAnchorElement): ClassifiedCard | null {
   return null;
 }
 
+function toPickedItem(card: ClassifiedCard): PickedItem {
+  return {
+    id: card.id,
+    label: card.label,
+    amount: card.amount,
+    signedAmount: card.signedAmount,
+    kind: card.kind,
+    direction: card.direction,
+    targetType: card.targetType,
+    remainingAmount: card.remainingAmount,
+    selectable: card.selectable,
+  };
+}
+
 function toggleMap(current: Map<string, PickedItem>, item: PickedItem) {
   const next = new Map(current);
   if (next.has(item.id)) next.delete(item.id);
@@ -265,13 +280,19 @@ function hasFinalBalanceTarget(items: Map<string, PickedItem>) {
 }
 
 export default function SafeWorkspaceSelectionController() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const searchKey = searchParams.toString();
+  const routeKey = `${pathname}?${searchKey}`;
+
   const [cards, setCards] = useState<ClassifiedCard[]>([]);
   const [statements, setStatements] = useState<Map<string, PickedItem>>(new Map());
   const [targets, setTargets] = useState<Map<string, PickedItem>>(new Map());
   const [currentPath, setCurrentPath] = useState("/internal/dva-reconciliation/workspace");
 
   useEffect(() => {
-    const path = `${window.location.pathname}${window.location.search}`;
+    const path = searchKey ? `${pathname}?${searchKey}` : pathname;
     setCurrentPath(path);
 
     const anchors = Array.from(
@@ -283,31 +304,32 @@ export default function SafeWorkspaceSelectionController() {
     }).filter((card): card is ClassifiedCard => Boolean(card?.id));
     setCards(classified);
 
-    const params = new URLSearchParams(window.location.search);
+    const params = new URLSearchParams(searchKey);
     const initialLineId = params.get("line_id") || "";
     const initialTargetId = params.get("target_id") || "";
+    const nextStatements = new Map<string, PickedItem>();
+    const nextTargets = new Map<string, PickedItem>();
 
     if (initialLineId) {
       const line = classified.find((card) => card.kind === "statement" && card.id === initialLineId && card.selectable !== false);
-      if (line) setStatements(new Map([[line.id, { ...line, anchor: undefined } as unknown as PickedItem]]));
+      if (line) nextStatements.set(line.id, toPickedItem(line));
     }
 
     if (initialTargetId) {
       const target = classified.find((card) => card.kind === "target" && card.id === initialTargetId);
-      if (target) setTargets(new Map([[target.id, { ...target, anchor: undefined } as unknown as PickedItem]]));
+      if (target) nextTargets.set(target.id, toPickedItem(target));
     }
-  }, []);
+
+    setStatements(nextStatements);
+    setTargets(nextTargets);
+  }, [pathname, routeKey, searchKey]);
 
   useEffect(() => {
     const cleanupFns: Array<() => void> = [];
 
     for (const card of cards) {
       const onClick = (event: MouseEvent) => {
-        const currentLineId = new URLSearchParams(window.location.search).get("line_id") || "";
-
-        if (card.kind === "statement" && card.id !== currentLineId) {
-          return;
-        }
+        const item = toPickedItem(card);
 
         event.preventDefault();
         event.stopPropagation();
@@ -323,19 +345,18 @@ export default function SafeWorkspaceSelectionController() {
           return;
         }
 
-        const item: PickedItem = {
-          id: card.id,
-          label: card.label,
-          amount: card.amount,
-          signedAmount: card.signedAmount,
-          kind: card.kind,
-          direction: card.direction,
-          targetType: card.targetType,
-          remainingAmount: card.remainingAmount,
-          selectable: card.selectable,
-        };
-
         if (card.kind === "statement") {
+          const currentLineId = new URLSearchParams(window.location.search).get("line_id") || "";
+
+          if (card.id !== currentLineId) {
+            setStatements(new Map([[item.id, item]]));
+            setTargets(new Map());
+
+            const nextUrl = new URL(card.anchor.href, window.location.origin);
+            router.push(`${nextUrl.pathname}${nextUrl.search}`, { scroll: false });
+            return;
+          }
+
           setStatements((current) => (hasFinalBalanceTarget(targets) ? new Map([[item.id, item]]) : toggleMap(current, item)));
         } else {
           setTargets((current) => {
@@ -350,7 +371,7 @@ export default function SafeWorkspaceSelectionController() {
     }
 
     return () => cleanupFns.forEach((cleanup) => cleanup());
-  }, [cards, targets]);
+  }, [cards, router, targets]);
 
   useEffect(() => {
     for (const card of cards) {
