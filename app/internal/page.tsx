@@ -18,6 +18,12 @@ type FlowStep = {
 
 const dvaFlowSteps: FlowStep[] = [
   {
+    step: "Prep",
+    title: "Daily FX rates",
+    href: "/internal/fx-rates",
+    description: "Maintain country/date quote and settlement FX before customer quotes, statement extraction and payment matching.",
+  },
+  {
     step: "1",
     title: "Upload / import statement",
     href: "/internal/dva-statement-import",
@@ -300,18 +306,18 @@ export default async function InternalPage() {
         <section className="rounded-3xl border border-sky-200 bg-white p-5 shadow-sm">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <p className="text-xs font-bold uppercase tracking-[0.22em] text-sky-600">Start here for payment statements</p>
+              <p className="text-xs font-bold uppercase tracking-[0.22em] text-sky-600">Start here for FX and payment statements</p>
               <h2 className="mt-2 text-2xl font-semibold tracking-tight">Payment statement workflow</h2>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-                This is the supervisor route for statement uploads, document extraction/commit, matching, matching review, reversal, and later grouped pre-accounting review. Main company bank shipper payments branch separately after commit.
+                Maintain daily country FX first, then use this supervisor route for statement uploads, document extraction/commit, matching, matching review, reversal, and later grouped pre-accounting review. Main company bank shipper payments branch separately after commit.
               </p>
             </div>
-            <Link href="/internal/dva-statement-import" className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-sky-700">
-              Start statement workflow →
+            <Link href="/internal/fx-rates" className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-sky-700">
+              Maintain daily FX →
             </Link>
           </div>
 
-          <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+          <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-6">
             {dvaFlowSteps.map((step) => (
               <Link
                 key={step.href}
