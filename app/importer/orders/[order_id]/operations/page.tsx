@@ -12,6 +12,8 @@ type TrackingRow = {
   note: string | null;
   is_final_delivery_yn: boolean | null;
   couriers: { name: string } | null;
+  courier_tracking_url?: string | null;
+  tracking_evidence_url?: string | null;
   tracking_screenshot_url?: string | null;
 };
 type InvoiceRow = { id: string; invoice_ref: string; review_status: string | null; review_notes: string | null; uploaded_at: string | null };
@@ -35,7 +37,7 @@ type AudienceStatusRow = {
 const retiredInvoiceStatuses = new Set(["rejected_resubmit_required", "superseded", "duplicate_blocked"]);
 const cardClass = "rounded-2xl border border-slate-200 bg-white p-4 shadow-sm";
 const inputClass = "rounded-xl border border-slate-300 bg-white p-3 text-sm shadow-sm";
-const secondaryButtonClass = "inline-flex min-h-9 items-center justify-center rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm hover:border-sky-300 hover:bg-sky-50 hover:text-sky-800";
+const secondaryButtonClass = "inline-flex min-h-9 w-fit shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm hover:border-sky-300 hover:bg-sky-50 hover:text-sky-800";
 
 function money(value: number | string | null | undefined, currency = "GBP") {
   const n = Number(value ?? 0);
@@ -267,7 +269,7 @@ export default async function OrderOperationsPage({ params, searchParams }: { pa
         <select name="courier_id" required className={inputClass}><option value="">Courier</option>{(couriers ?? []).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
         <input name="tracking_ref" required className={inputClass} placeholder="Tracking ref" />
         <input name="tracking_date" type="date" required className={inputClass} />
-        <input name="tracking_screenshot_url" className={inputClass} placeholder="Tracking URL / courier tracking link" />
+        <input name="courier_tracking_url" className={inputClass} placeholder="Live courier tracking URL" />
         <input name="tracking_evidence_file" type="file" accept=".pdf,image/*,.png,.jpg,.jpeg,.webp" className={inputClass} />
         <input name="note" className={inputClass} placeholder="Note" />
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" name="is_final_delivery_yn" />This completes delivery for this order</label>
@@ -275,7 +277,9 @@ export default async function OrderOperationsPage({ params, searchParams }: { pa
         <button className="w-fit rounded-full bg-sky-600 px-4 py-2 text-sm font-semibold text-white shadow-sm">Add tracking</button>
       </form>
       {trackingRows.length === 0 ? <p className="mt-4 rounded-xl bg-slate-50 p-3 text-sm text-slate-600">No tracking submitted yet.</p> : <div className="mt-4 space-y-2 text-sm">{trackingRows.map((t) => {
-        const evidenceUrl = normalizeLink(t.tracking_screenshot_url);
+        const trackUrl = normalizeLink(t.courier_tracking_url);
+        const evidenceUrl = normalizeLink(t.tracking_evidence_url ?? t.tracking_screenshot_url);
+        const legacyOnly = !t.courier_tracking_url && !t.tracking_evidence_url && Boolean(t.tracking_screenshot_url);
         return <article key={t.id} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
           <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
             <div className="flex flex-wrap items-center gap-2">
@@ -284,16 +288,18 @@ export default async function OrderOperationsPage({ params, searchParams }: { pa
               <span>{formatDate(t.tracking_date)}</span>
               {t.is_final_delivery_yn ? <span className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-semibold text-emerald-800">Final delivery</span> : null}
             </div>
-            <div className="flex flex-wrap gap-2">
-              {evidenceUrl ? <a href={evidenceUrl} target="_blank" rel="noreferrer" className={secondaryButtonClass}>Open evidence</a> : null}
-              <details>
+            <div className="flex w-fit flex-wrap gap-2 md:justify-end">
+              {trackUrl ? <a href={trackUrl} target="_blank" rel="noreferrer" className={secondaryButtonClass}>Track parcel</a> : null}
+              {evidenceUrl ? <a href={evidenceUrl} target="_blank" rel="noreferrer" className={secondaryButtonClass}>{legacyOnly ? "Open legacy link/evidence" : "Open evidence"}</a> : null}
+              <details className="w-full md:w-auto">
                 <summary className={`${secondaryButtonClass} cursor-pointer list-none`}>Show details</summary>
-                <div className="mt-3 rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-700">
+                <div className="mt-3 rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-700 md:min-w-72">
                   <div><span className="font-semibold">Courier:</span> {t.couriers?.name ?? "—"}</div>
                   <div><span className="font-semibold">Tracking ref:</span> {t.tracking_ref}</div>
                   <div><span className="font-semibold">Tracking date:</span> {formatDate(t.tracking_date)}</div>
                   <div><span className="font-semibold">Submitted:</span> {formatDate(t.submitted_at)}</div>
-                  <div><span className="font-semibold">Evidence:</span> {evidenceUrl ? <a href={evidenceUrl} target="_blank" rel="noreferrer" className="font-semibold text-sky-700 underline">Open tracking/evidence file</a> : "—"}</div>
+                  <div><span className="font-semibold">Track parcel:</span> {trackUrl ? <a href={trackUrl} target="_blank" rel="noreferrer" className="font-semibold text-sky-700 underline">Open live tracking</a> : "—"}</div>
+                  <div><span className="font-semibold">Evidence:</span> {evidenceUrl ? <a href={evidenceUrl} target="_blank" rel="noreferrer" className="font-semibold text-sky-700 underline">{legacyOnly ? "Open legacy link/evidence" : "Open evidence file"}</a> : "—"}</div>
                   {t.note ? <p className="mt-2 rounded bg-slate-50 p-2"><span className="font-medium">Note:</span> {t.note}</p> : null}
                 </div>
               </details>
