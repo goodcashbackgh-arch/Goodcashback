@@ -166,10 +166,10 @@ export default async function ImporterPage() {
               <h1 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950 md:text-3xl">Goodcashback Importer</h1>
               <p className="mt-2 text-sm text-slate-600">Welcome, {operator.full_name}. Manage orders, evidence, tracking, matching and remaining order balances from one control view.</p>
             </div>
-            <div className="flex flex-wrap gap-2">
+            <div className="grid gap-2 md:flex md:flex-wrap md:justify-end">
+              <Link href="/importer/orders/new" className={primaryActionClass}>Create order</Link>
               <Link href="/customer" className={secondaryActionClass}>Customer portal</Link>
               <Link href="/importer/exceptions" className={secondaryActionClass}>Active exceptions</Link>
-              <Link href="/importer/orders/new" className={primaryActionClass}>Create order</Link>
             </div>
           </div>
         </div>
