@@ -171,7 +171,7 @@ export default async function ShipperPage({
             Welcome: <span className="font-semibold text-slate-900">{shipperUser.full_name}</span> · {shipperName}
           </p>
           <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-600">
-            This dashboard is scoped to your shipper account. Work by importer and package row: review tracking evidence, view contents by description/quantity only, record receipt, and keep package-level truth separate from item-content allocation.
+            Use this dashboard to review package rows by importer, open supporting evidence, record receipts, and prepare clean packages for shipment.
           </p>
           <div className="mt-5 flex flex-wrap gap-3">
             <Link href="/shipper/shipments" className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">
@@ -187,12 +187,12 @@ export default async function ShipperPage({
               4. Return tasks
             </Link>
             <Link href="/shipper/shipping-documents/new" className="rounded-xl border border-sky-300 bg-sky-50 px-4 py-2 text-sm font-semibold text-sky-900 hover:bg-sky-100">
-              5. Upload shipping charge doc
+              5. Upload charge document
             </Link>
           </div>
           <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm leading-6 text-slate-700">
-            <p className="font-semibold text-slate-950">Test sequence</p>
-            <p className="mt-1">Receipt/package work happens here. Shipping money document upload is the next shipper step. Supervisor acceptance is done from the internal shipping-control document review queue.</p>
+            <p className="font-semibold text-slate-950">What to do here</p>
+            <p className="mt-1">Record received packages, resolve any receipt issues, then create shipment batches for packages that are ready to ship. Upload the shipment charge document once the batch is prepared.</p>
           </div>
           {rpcError ? (
             <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
