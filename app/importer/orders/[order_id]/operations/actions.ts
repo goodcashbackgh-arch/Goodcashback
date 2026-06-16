@@ -116,7 +116,7 @@ export async function addTrackingSubmissionAction(formData: FormData) {
   const courierId = rs(formData, "courier_id");
   const trackingRef = rs(formData, "tracking_ref");
   const trackingDate = rs(formData, "tracking_date");
-  const trackingEvidenceUrlInput = normalizeExternalUrl(rs(formData, "tracking_screenshot_url") || null);
+  const courierTrackingUrl = normalizeExternalUrl(rs(formData, "courier_tracking_url") || rs(formData, "tracking_screenshot_url") || null);
   const trackingEvidenceFile = formData.get("tracking_evidence_file");
   const note = rs(formData, "note") || null;
   const isFinalDelivery = rs(formData, "is_final_delivery_yn") === "on";
@@ -124,7 +124,7 @@ export async function addTrackingSubmissionAction(formData: FormData) {
   if (!orderId) redirect("/importer?error=Missing+order+id");
   const { operator, importerId } = await requireOperatorAccess(supabase, orderId);
 
-  let trackingEvidenceUrl = trackingEvidenceUrlInput;
+  let trackingEvidenceUrl: string | null = null;
   if (trackingEvidenceFile instanceof File && trackingEvidenceFile.size > 0) {
     try {
       trackingEvidenceUrl = await uploadEvidenceFile({
@@ -139,13 +139,14 @@ export async function addTrackingSubmissionAction(formData: FormData) {
     }
   }
 
-  const { error } = await supabase.rpc("importer_add_order_tracking_submission", {
+  const { error } = await supabase.rpc("importer_add_order_tracking_submission_v2", {
     p_order_id: orderId,
     p_operator_id: operator.id,
     p_courier_id: courierId,
     p_tracking_ref: trackingRef,
     p_tracking_date: trackingDate,
-    p_tracking_screenshot_url: trackingEvidenceUrl,
+    p_courier_tracking_url: courierTrackingUrl,
+    p_tracking_evidence_url: trackingEvidenceUrl,
     p_note: note,
     p_is_final_delivery_yn: isFinalDelivery,
   });
