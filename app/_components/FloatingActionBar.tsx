@@ -20,7 +20,10 @@ export function FloatingActionBar({
   const [hidden, setHidden] = useState(false);
 
   useEffect(() => {
-    const target = document.getElementById(hideWhenVisibleId);
+    const target =
+      document.getElementById(hideWhenVisibleId) ??
+      document.querySelector<HTMLElement>("[data-floating-actions-hide-sentinel]") ??
+      document.querySelector<HTMLElement>("main section:last-of-type");
 
     if (!target || typeof IntersectionObserver === "undefined") {
       setHidden(false);
