@@ -98,6 +98,34 @@ Do not supersede old tracking submissions for split deliveries.
 
 `superseded_at` should only be used for correcting/replacing an erroneous submission, not for normal split deliveries.
 
+### 3A) Tracking link and evidence-file separation
+
+Locked rule from 2026-06-16:
+
+- `courier_tracking_url` means the live retailer/courier tracking page used to monitor parcel movement.
+- `tracking_evidence_url` means the uploaded supporting evidence file, such as dispatch screenshot, PDF, delivery note, or retailer confirmation.
+- `tracking_screenshot_url` remains as a legacy/backward-compatible field only. It must not be removed or renamed during MVP hardening because existing shipper, delivery allocation, and historic tracking views still consume it.
+
+Persistence rule:
+
+- If the operator provides a live courier/retailer tracking URL, save it to `courier_tracking_url`.
+- If the operator uploads a supporting evidence file, save its public/storage URL to `tracking_evidence_url`.
+- For backward compatibility, keep writing `tracking_screenshot_url` using this fallback order:
+  1. `tracking_evidence_url` if a file/evidence URL exists;
+  2. otherwise `courier_tracking_url` if only a live tracking link exists.
+
+Display rule:
+
+- Show `Track parcel` from `courier_tracking_url`.
+- Show `Open evidence` from `tracking_evidence_url`, falling back to legacy `tracking_screenshot_url` where no split-column value exists.
+- When showing legacy `tracking_screenshot_url`, label it as legacy tracking/evidence unless the system can safely classify it.
+
+Compatibility rule:
+
+- Do not change tracking final-delivery logic.
+- Do not change shipment allocation, shipper package receipt, export evidence, Sage, VAT, funding, customer sales invoice, or invoice reconciliation behaviour as part of this split.
+- Additive columns and a v2 insert RPC are preferred over changing/removing the existing RPC signature.
+
 ---
 
 ## 4) Delivery completion rule
@@ -212,6 +240,8 @@ Do not allow:
 8. Existing missing-invoice/evidence upload path still works or remains visibly linked.
 9. Reconciliation link still opens the existing reconciliation page.
 10. No Sage/VAT/funding/shipping postings are triggered by tracking submission.
+11. New tracking rows can preserve both a live courier tracking URL and an uploaded evidence file.
+12. Old rows using `tracking_screenshot_url` still display through the legacy fallback.
 
 ---
 
