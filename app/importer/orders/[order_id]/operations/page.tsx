@@ -52,6 +52,14 @@ function formatDate(value: string | null | undefined) {
   return value.includes("T") ? value.slice(0, 10) : value;
 }
 
+function normalizeLink(value: string | null | undefined) {
+  const raw = (value ?? "").trim();
+  if (!raw) return null;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(raw)) return raw;
+  if (raw.startsWith("//")) return `https:${raw}`;
+  return `https://${raw}`;
+}
+
 function adjustmentLabel(type: string) {
   if (type === "retailer_delivery") return "Final order delivery adjustment";
   if (type === "retailer_discount") return "Final order discount";
@@ -248,7 +256,7 @@ export default async function OrderOperationsPage({ params, searchParams }: { pa
 
     <section className={cardClass}>
       <h2 className="text-lg font-semibold text-slate-950">Screenshots</h2>
-      <div className="mt-3 flex flex-wrap gap-3">{((screenshots ?? []) as ScreenshotRow[]).map((s) => <a key={s.id} href={s.screenshot_url} target="_blank" className="block rounded-xl border bg-white p-1 shadow-sm"><img src={s.screenshot_url} alt="Screenshot" style={{ width: 160, height: 120, objectFit: "contain" }} /></a>)}</div>
+      <div className="mt-3 flex flex-wrap gap-3">{((screenshots ?? []) as ScreenshotRow[]).map((s) => <a key={s.id} href={s.screenshot_url} target="_blank" rel="noreferrer" className="block rounded-xl border bg-white p-1 shadow-sm"><img src={s.screenshot_url} alt="Screenshot" style={{ width: 160, height: 120, objectFit: "contain" }} /></a>)}</div>
     </section>
 
     <section id="tracking" className={cardClass}>
@@ -266,7 +274,33 @@ export default async function OrderOperationsPage({ params, searchParams }: { pa
         <p className="text-xs text-slate-500 md:col-span-2">Use the retailer/courier tracking URL as the main live tracking source. Upload a dispatch screenshot, PDF, or delivery note as supporting evidence where useful.</p>
         <button className="w-fit rounded-full bg-sky-600 px-4 py-2 text-sm font-semibold text-white shadow-sm">Add tracking</button>
       </form>
-      {trackingRows.length === 0 ? <p className="mt-4 rounded-xl bg-slate-50 p-3 text-sm text-slate-600">No tracking submitted yet.</p> : <div className="mt-4 space-y-2 text-sm">{trackingRows.map((t) => <details key={t.id} className="rounded-xl border border-slate-200 bg-slate-50 p-3"><summary className="cursor-pointer list-none"><div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between"><div className="flex flex-wrap items-center gap-2"><span className="font-semibold">{t.couriers?.name ?? "Courier"} · {t.tracking_ref}</span><span className="text-slate-500">·</span><span>{formatDate(t.tracking_date)}</span>{t.is_final_delivery_yn ? <span className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-semibold text-emerald-800">Final delivery</span> : null}</div><span className="font-semibold text-sky-700 underline">View details</span></div></summary>{t.note ? <p className="mt-3 rounded bg-white p-2 text-xs text-slate-700"><span className="font-medium">Note:</span> {t.note}</p> : null}</details>)}</div>}
+      {trackingRows.length === 0 ? <p className="mt-4 rounded-xl bg-slate-50 p-3 text-sm text-slate-600">No tracking submitted yet.</p> : <div className="mt-4 space-y-2 text-sm">{trackingRows.map((t) => {
+        const evidenceUrl = normalizeLink(t.tracking_screenshot_url);
+        return <article key={t.id} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+          <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-semibold">{t.couriers?.name ?? "Courier"} · {t.tracking_ref}</span>
+              <span className="text-slate-500">·</span>
+              <span>{formatDate(t.tracking_date)}</span>
+              {t.is_final_delivery_yn ? <span className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-semibold text-emerald-800">Final delivery</span> : null}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {evidenceUrl ? <a href={evidenceUrl} target="_blank" rel="noreferrer" className={secondaryButtonClass}>Open evidence</a> : null}
+              <details>
+                <summary className={`${secondaryButtonClass} cursor-pointer list-none`}>Show details</summary>
+                <div className="mt-3 rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-700">
+                  <div><span className="font-semibold">Courier:</span> {t.couriers?.name ?? "—"}</div>
+                  <div><span className="font-semibold">Tracking ref:</span> {t.tracking_ref}</div>
+                  <div><span className="font-semibold">Tracking date:</span> {formatDate(t.tracking_date)}</div>
+                  <div><span className="font-semibold">Submitted:</span> {formatDate(t.submitted_at)}</div>
+                  <div><span className="font-semibold">Evidence:</span> {evidenceUrl ? <a href={evidenceUrl} target="_blank" rel="noreferrer" className="font-semibold text-sky-700 underline">Open tracking/evidence file</a> : "—"}</div>
+                  {t.note ? <p className="mt-2 rounded bg-slate-50 p-2"><span className="font-medium">Note:</span> {t.note}</p> : null}
+                </div>
+              </details>
+            </div>
+          </div>
+        </article>;
+      })}</div>}
     </section>
 
     <section id="invoice" className={cardClass}>
