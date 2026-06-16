@@ -47,14 +47,18 @@ BEGIN
     RETURN NEW;
   END IF;
 
-  -- Do not mutate a locked/submitted/mismatched VAT run. Those require the
-  -- correction/reopen flow by design.
+  -- Do not mutate a VAT run after source refresh should already be frozen.
+  -- These statuses match the VAT return UI/source-refresh blocked lane.
   IF NOT EXISTS (
     SELECT 1
     FROM public.vat_return_runs r
     WHERE r.id = NEW.vat_return_run_id
       AND r.locked_at IS NULL
       AND r.status NOT IN (
+        'admin_approved',
+        'sage_adjustment_journals_pending',
+        'sage_adjustment_journals_posted',
+        'sage_return_review_required',
         'sage_return_submitted',
         'matched_to_sage_locked',
         'mismatch_needs_admin_review',
@@ -93,7 +97,8 @@ EXECUTE FUNCTION public.trg_vat_box6_supersede_base_candidate_on_timing_natural_
 
 -- One-time cleanup for any currently editable VAT run that already has both the
 -- base sales invoice candidate and the replacement natural-current timing line
--- active for the same sales invoice.
+-- active for the same sales invoice. Frozen/approved/journal/submitted/locked
+-- returns are deliberately left untouched and must use correction/reopen flow.
 WITH affected AS (
   UPDATE public.vat_return_run_lines c
   SET
@@ -107,6 +112,10 @@ WITH affected AS (
   WHERE c.vat_return_run_id = r.id
     AND r.locked_at IS NULL
     AND r.status NOT IN (
+      'admin_approved',
+      'sage_adjustment_journals_pending',
+      'sage_adjustment_journals_posted',
+      'sage_return_review_required',
       'sage_return_submitted',
       'matched_to_sage_locked',
       'mismatch_needs_admin_review',
@@ -158,6 +167,10 @@ FROM recalculated
 WHERE r.id = recalculated.vat_return_run_id
   AND r.locked_at IS NULL
   AND r.status NOT IN (
+    'admin_approved',
+    'sage_adjustment_journals_pending',
+    'sage_adjustment_journals_posted',
+    'sage_return_review_required',
     'sage_return_submitted',
     'matched_to_sage_locked',
     'mismatch_needs_admin_review',
