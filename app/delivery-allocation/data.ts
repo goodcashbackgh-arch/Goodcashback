@@ -23,6 +23,8 @@ export type DeliveryAllocationTracking = {
   id: string;
   tracking_ref: string;
   tracking_date: string | null;
+  courier_tracking_url: string | null;
+  tracking_evidence_url: string | null;
   tracking_screenshot_url: string | null;
   note: string | null;
   is_final_delivery_yn: boolean | null;
@@ -120,7 +122,7 @@ export async function loadDeliveryAllocationData(
 
   const { data: trackingRows, error: trackingError } = await db
     .from("order_tracking_submissions")
-    .select("id, tracking_ref, tracking_date, tracking_screenshot_url, note, is_final_delivery_yn, couriers(name)")
+    .select("id, tracking_ref, tracking_date, courier_tracking_url, tracking_evidence_url, tracking_screenshot_url, note, is_final_delivery_yn, couriers(name)")
     .eq("order_id", orderId)
     .is("superseded_at", null)
     .order("tracking_date", { ascending: true })
@@ -177,6 +179,8 @@ export async function loadDeliveryAllocationData(
         id: row.id,
         tracking_ref: String(row.tracking_ref ?? ""),
         tracking_date: row.tracking_date ?? null,
+        courier_tracking_url: row.courier_tracking_url ?? null,
+        tracking_evidence_url: row.tracking_evidence_url ?? null,
         tracking_screenshot_url: row.tracking_screenshot_url ?? null,
         note: row.note ?? null,
         is_final_delivery_yn: row.is_final_delivery_yn ?? null,
@@ -192,20 +196,16 @@ export async function loadDeliveryAllocationData(
       discount_share_gbp: money(row.discount_share_gbp),
       retailer_delivery_share_gbp: money(row.retailer_delivery_share_gbp),
       adjusted_net_value_gbp: money(row.adjusted_net_value_gbp),
-      allocation_status: String(row.allocation_status ?? "allocated"),
-      allocation_basis: String(row.allocation_basis ?? "operator_declaration"),
+      allocation_status: String(row.allocation_status ?? "unknown_contents"),
+      allocation_basis: String(row.allocation_basis ?? "operator_declared"),
       evidence_url: row.evidence_url ?? null,
       notes: row.notes ?? null,
       supervisor_accepted_at: row.supervisor_accepted_at ?? null,
       locked_for_export_pack_at: row.locked_for_export_pack_at ?? null,
     })),
     adjustments: {
-      retailerDeliveryGbp: approvedAdjustments
-        .filter((row: any) => row.adjustment_type === "retailer_delivery")
-        .reduce((sum: number, row: any) => sum + money(row.amount_gbp), 0),
-      retailerDiscountGbp: approvedAdjustments
-        .filter((row: any) => row.adjustment_type === "retailer_discount")
-        .reduce((sum: number, row: any) => sum + money(row.amount_gbp), 0),
+      retailerDeliveryGbp: approvedAdjustments.filter((row: any) => row.adjustment_type === "retailer_delivery").reduce((sum: number, row: any) => sum + money(row.amount_gbp), 0),
+      retailerDiscountGbp: approvedAdjustments.filter((row: any) => row.adjustment_type === "retailer_discount").reduce((sum: number, row: any) => sum + money(row.amount_gbp), 0),
       pendingCount: pendingAdjustments.length,
     },
   };
