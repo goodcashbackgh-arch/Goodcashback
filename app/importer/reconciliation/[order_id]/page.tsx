@@ -235,8 +235,7 @@ export default async function ImporterReconciliationOrderPage({
   const allocatedQty = invoiceLines.reduce((sum, line) => {
     const progressed = isProgressed(line);
     const exceptionLinked = openDisputeByLineId.has(line.id);
-    const nonPhysicalResolved = nonPhysicalResolutionByLineId.has(line.id);
-    if (!progressed && !exceptionLinked && !nonPhysicalResolved) return sum;
+    if (!progressed && !exceptionLinked) return sum;
     return sum + Number(line.qty ?? 0);
   }, 0);
   const allocatedAmount = invoiceLines.reduce((sum, line) => {
@@ -267,10 +266,10 @@ export default async function ImporterReconciliationOrderPage({
   }, {});
   const legacyScreenshotUrl = typeof order.screenshot_url === "string" && order.screenshot_url.trim().length > 0 ? order.screenshot_url.trim() : null;
 
-  const lineQtyTotal = invoiceLines.reduce((sum, line) => sum + Number(line.qty ?? 0), 0);
-  const lineAmountTotal = invoiceLines.reduce((sum, line) => sum + Number(line.amount_inc_vat_gbp ?? 0), 0);
-  const qtyVariance = lineQtyTotal - declaredQty;
-  const amountVariance = lineAmountTotal - declaredAmount;
+  const accountedPhysicalQty = allocatedQty;
+  const accountedFinancialAmount = allocatedAmount;
+  const qtyVariance = accountedPhysicalQty - declaredQty;
+  const amountVariance = accountedFinancialAmount - declaredAmount;
   const qtyMatched = qtyVariance === 0;
   const amountMatched = Math.abs(amountVariance) < 0.01;
   const lineSetBalanced = qtyMatched && amountMatched;
@@ -303,14 +302,14 @@ export default async function ImporterReconciliationOrderPage({
           </div>
           <div className="mt-5 grid gap-3 md:grid-cols-3">
             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase tracking-wide text-slate-500">Original declared qty</p><p className="mt-1 text-2xl font-semibold">{declaredQty}</p></div>
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase tracking-wide text-slate-500">Current invoice-line qty</p><p className="mt-1 text-2xl font-semibold">{lineQtyTotal}</p></div>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase tracking-wide text-slate-500">Accounted physical qty</p><p className="mt-1 text-2xl font-semibold">{accountedPhysicalQty}</p></div>
             <div className={`rounded-2xl border p-4 ${qtyMatched ? "border-emerald-200 bg-emerald-50" : "border-amber-200 bg-amber-50"}`}><p className="text-xs uppercase tracking-wide text-slate-500">Qty variance</p><p className="mt-1 text-2xl font-semibold">{signedNumber(qtyVariance)}</p></div>
             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase tracking-wide text-slate-500">Original declared value</p><p className="mt-1 text-2xl font-semibold">{gbp(declaredAmount)}</p></div>
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase tracking-wide text-slate-500">Current invoice-line value</p><p className="mt-1 text-2xl font-semibold">{gbp(lineAmountTotal)}</p></div>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase tracking-wide text-slate-500">Accounted invoice value</p><p className="mt-1 text-2xl font-semibold">{gbp(accountedFinancialAmount)}</p></div>
             <div className={`rounded-2xl border p-4 ${amountMatched ? "border-emerald-200 bg-emerald-50" : "border-amber-200 bg-amber-50"}`}><p className="text-xs uppercase tracking-wide text-slate-500">Value variance</p><p className="mt-1 text-2xl font-semibold">{signedGbp(amountVariance)}</p></div>
           </div>
           <p className="mt-4 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm leading-6 text-slate-700">
-            A matched qty/value set means the original parent order baseline is accounted for. Non-physical rows can be parked without becoming shipper/package allocation tasks.
+            A matched qty/value set means the original parent order baseline is accounted for. Parked non-physical rows count toward invoice value only and do not become shipper/package allocation tasks.
           </p>
         </section>
 
