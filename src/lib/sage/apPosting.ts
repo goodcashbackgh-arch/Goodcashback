@@ -258,8 +258,8 @@ function extractApPurchaseInvoicePayload(row: BatchRow) {
 
   const invoiceLines = resolvedLines.map((line, index) => {
     const description = firstText(line, [["description"], ["posting_description"], ["source_description"]]);
-    const ledgerAccountId = frozenLedgerAccountId || firstText(line, [["sage_ledger_account_id"], ["resolved_ledger_account_id"]]);
-    const taxRateId = frozenTaxRateId || firstText(line, [["sage_tax_rate_id"], ["resolved_tax_rate_id"]]);
+    const ledgerAccountId = firstText(line, [["sage_ledger_account_id"], ["resolved_ledger_account_id"]]) || frozenLedgerAccountId;
+    const taxRateId = firstText(line, [["sage_tax_rate_id"], ["resolved_tax_rate_id"]]) || frozenTaxRateId;
     const quantity = num(line.quantity || line.qty || 1) || 1;
     const grossAmount = firstAmount(line, [["gross_amount_gbp"], ["total_line_amount_gbp"], ["line_total_gbp"], ["amount_gbp"], ["unit_price_gbp"], ["unit_price"]]);
     const hasNet = hasAmount(line.net_amount_gbp);
