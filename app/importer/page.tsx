@@ -144,9 +144,14 @@ export default async function ImporterPage() {
     const amountReceivedGbp = Number(audienceStatus?.canonical_amount_received_gbp ?? 0);
     const finalBalanceDueGbp = canonicalMissing ? 0 : Number(audienceStatus?.canonical_balance_due_gbp ?? 0);
     const pendingCreditGbp = canonicalMissing ? 0 : Number(audienceStatus?.potential_credit_pending_review_gbp ?? 0);
+    const canonicalStatus = canonicalMissing ? "Status unavailable" : cleanUiText(audienceStatus!.importer_status_label!);
+    const canonicalAction = canonicalMissing ? "Open order for details" : cleanUiText(audienceStatus!.importer_next_action!);
+    const rawStatus = (order.status ?? "").trim().toLowerCase();
+    const rawInvoiceReconciled = rawStatus === "partially_progressed" || rawStatus === "invoice_reconciled_tracking_open";
+    const canonicalStaleReconciliation = rawInvoiceReconciled && canonicalStatus === "Invoice reconciliation open" && canonicalAction === "Continue invoice reconciliation";
     const status = {
-      status: canonicalMissing ? "Status unavailable" : cleanUiText(audienceStatus!.importer_status_label!),
-      action: canonicalMissing ? "Open order for details" : cleanUiText(audienceStatus!.importer_next_action!),
+      status: canonicalStaleReconciliation ? (hasTracking ? "Tracking submitted" : "Invoice reconciled; tracking open") : canonicalStatus,
+      action: canonicalStaleReconciliation ? (hasTracking ? "Assign tracking" : "Add tracking") : canonicalAction,
     };
     return { order, hasInvoice, hasTracking, needsResubmission, querySummary, rec, status, screenshotCount: screenshotCountByOrderId.get(order.id) ?? 0, acceptedEstimateGbp, finalSaleValueGbp, finalSaleConfirmed: audienceStatus?.customer_sales_state === "posted", finalBalanceDueGbp, pendingCreditGbp, amountReceivedGbp, canonicalMissing };
   });
