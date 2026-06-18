@@ -1,0 +1,44 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 553 >>
+stream
+BT /F1 12 Tf 50 760 Td (GHA-STRESS-001 supplier invoice placeholder) Tj ET
+BT /F1 12 Tf 50 738 Td (Invoice ref: INV-GHA-STRESS-001-OCR) Tj ET
+BT /F1 12 Tf 50 716 Td (Order ref: ORD-1781788078147) Tj ET
+BT /F1 12 Tf 50 694 Td (Supplier: Ninja Kitchen) Tj ET
+BT /F1 12 Tf 50 672 Td (Invoice date: 18 June 2026) Tj ET
+BT /F1 12 Tf 50 650 Td (Net: GBP 91.67) Tj ET
+BT /F1 12 Tf 50 628 Td (VAT: GBP 18.33) Tj ET
+BT /F1 12 Tf 50 606 Td (Gross: GBP 110.00) Tj ET
+BT /F1 12 Tf 50 584 Td (This is a blank metadata evidence PDF for Sage attachment testing.) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+6 0 obj
+<< /Title (GHA-STRESS-001 supplier invoice placeholder) /Author (Goodcashback stress test) /Subject (INV-GHA-STRESS-001-OCR) /Keywords (ORD-1781788078147 Ninja Kitchen 91.67 18.33 110.00) >>
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000000844 00000 n 
+0000000922 00000 n 
+trailer
+<< /Size 7 /Root 1 0 R /Info 6 0 R >>
+startxref
+1162
+%%EOF
