@@ -84,6 +84,7 @@ function taskAction(batch: BatchRow, progress: ProgressRow | null) {
 function buttonClass(tone: string) {
   if (tone === "sky") return "rounded-xl border border-sky-300 bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-900 hover:bg-sky-100";
   if (tone === "amber") return "rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900 hover:bg-amber-100";
+  if (tone === "indigo") return "rounded-xl border border-indigo-300 bg-indigo-50 px-3 py-2 text-xs font-semibold text-indigo-900 hover:bg-indigo-100";
   return "rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-100";
 }
 
@@ -138,6 +139,7 @@ export default async function ShipperShipmentsPage() {
           </p>
           <div className="mt-5 flex flex-wrap gap-3">
             <Link href="/shipper/shipments/new" className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">Create shipment batch</Link>
+            <Link href="/shipper/groupage-movements" className="rounded-xl border border-indigo-300 bg-indigo-50 px-4 py-2 text-sm font-semibold text-indigo-900 hover:bg-indigo-100">Groupage movements</Link>
             <Link href="/shipper/shipping-documents/new" className="rounded-xl border border-sky-300 bg-sky-50 px-4 py-2 text-sm font-semibold text-sky-900 hover:bg-sky-100">Upload shipping charge doc</Link>
           </div>
           {error ? <p className="mt-4 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-900">{error.message}</p> : null}
