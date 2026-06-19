@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 import { createGroupageMovementAction } from "../shipments/actions";
+import GroupageSelectionControls from "./GroupageSelectionControls";
 
 type CandidateBatch = {
   shipment_batch_id: string;
@@ -76,6 +77,10 @@ function hasSubmittedOrAcceptedEvidence(row: CandidateBatch) {
   return ["submitted_for_review", "accepted_current"].includes(row.export_evidence_status ?? "") || ["submitted_for_review", "accepted_current"].includes(row.pod_status ?? "");
 }
 
+function hasPositiveExportQuantity(row: CandidateBatch) {
+  return n(row.package_count) > 0 && n(row.item_qty) > 0;
+}
+
 export default async function ShipperGroupageMovementsPage({ searchParams }: { searchParams?: Promise<{ success?: string; error?: string }> }) {
   const qp = searchParams ? await searchParams : {};
   const supabase = await createClient();
@@ -105,9 +110,10 @@ export default async function ShipperGroupageMovementsPage({ searchParams }: { s
   const candidateRows = ((candidates ?? []) as CandidateBatch[]);
   const movementRows = ((movements ?? []) as MovementRow[]);
   const profileRows = ((profiles ?? []) as ExportProfile[]);
-  const availableCandidates = candidateRows.filter((row) => !row.existing_groupage_movement_id && !hasSubmittedOrAcceptedEvidence(row));
+  const availableCandidates = candidateRows.filter((row) => !row.existing_groupage_movement_id && !hasSubmittedOrAcceptedEvidence(row) && hasPositiveExportQuantity(row));
   const alreadyGroupedCount = candidateRows.filter((row) => row.existing_groupage_movement_id).length;
   const alreadyEvidencedCount = candidateRows.filter((row) => !row.existing_groupage_movement_id && hasSubmittedOrAcceptedEvidence(row)).length;
+  const emptyQtyCount = candidateRows.filter((row) => !row.existing_groupage_movement_id && !hasSubmittedOrAcceptedEvidence(row) && !hasPositiveExportQuantity(row)).length;
   const shipper = Array.isArray((shipperUser as any).shippers) ? (shipperUser as any).shippers[0] : (shipperUser as any).shippers;
 
   return (
@@ -128,40 +134,44 @@ export default async function ShipperGroupageMovementsPage({ searchParams }: { s
           {movementsError ? <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">Groupage movements unavailable: {movementsError.message}</p> : null}
         </section>
 
-        <section className="grid gap-4 md:grid-cols-5">
+        <section className="grid gap-4 md:grid-cols-6">
           <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Movements</p><p className="mt-1 text-2xl font-semibold">{movementRows.length}</p></div>
           <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Available batches</p><p className="mt-1 text-2xl font-semibold">{availableCandidates.length}</p></div>
           <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Grouped batches</p><p className="mt-1 text-2xl font-semibold">{alreadyGroupedCount}</p></div>
           <div className="rounded-3xl border border-amber-200 bg-amber-50 p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-amber-700">Already evidenced</p><p className="mt-1 text-2xl font-semibold text-amber-950">{alreadyEvidencedCount}</p></div>
+          <div className="rounded-3xl border border-rose-200 bg-rose-50 p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-rose-700">Empty / zero qty</p><p className="mt-1 text-2xl font-semibold text-rose-950">{emptyQtyCount}</p></div>
           <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Export profiles</p><p className="mt-1 text-2xl font-semibold">{profileRows.length}</p></div>
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
           <h2 className="text-xl font-semibold">Create Groupage Movement</h2>
-          <p className="mt-2 text-sm leading-6 text-slate-600">Select real existing booking references. Batches already grouped, or with submitted/accepted final export or POD evidence, are excluded from normal groupage selection to prevent duplicate evidence rows.</p>
+          <p className="mt-2 text-sm leading-6 text-slate-600">Select real existing booking references. Batches already grouped, already evidenced, or with zero packages/quantity are excluded from normal groupage selection.</p>
           <form action={createGroupageMovementAction} className="mt-5 space-y-4">
             <div className="grid gap-3 md:grid-cols-2">
               <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-slate-500">Groupage movement ref</span><input name="groupage_movement_ref" required placeholder="e.g. GM-20260619-001 / container movement ref" className="w-full rounded-xl border border-slate-300 px-3 py-2" /></label>
               <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-slate-500">Export evidence profile</span><select name="profile_id" className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2"><option value="">Use latest available profile / leave blank</option>{profileRows.map((profile) => <option key={profile.id} value={profile.id}>{profile.profile_name ?? profile.exporter_name ?? profile.id}</option>)}</select></label>
             </div>
-            {availableCandidates.length === 0 ? <p className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">No clean ungrouped candidate batches are currently available. Batches with submitted or accepted export/POD evidence are intentionally excluded.</p> : (
-              <div className="overflow-x-auto rounded-2xl border border-slate-200">
-                <table className="min-w-full divide-y divide-slate-200 text-sm">
-                  <thead className="bg-slate-100 text-xs uppercase tracking-wide text-slate-500"><tr><th className="px-3 py-2 text-left">Select</th><th className="px-3 py-2 text-left">Booking ref</th><th className="px-3 py-2 text-left">Importer / recipient</th><th className="px-3 py-2 text-right">Packages / qty</th><th className="px-3 py-2 text-right">Value</th><th className="px-3 py-2 text-left">Evidence</th></tr></thead>
-                  <tbody className="divide-y divide-slate-100 bg-white">
-                    {availableCandidates.map((row) => (
-                      <tr key={row.shipment_batch_id}>
-                        <td className="px-3 py-2"><input type="checkbox" name="shipment_batch_ids" value={row.shipment_batch_id} /></td>
-                        <td className="px-3 py-2 font-semibold">{row.booking_ref ?? row.shipment_batch_id}</td>
-                        <td className="px-3 py-2"><p className="font-semibold">{row.importer_name ?? "Importer"}</p><p className="text-xs text-slate-500">Recipient: {row.final_recipient_name ?? "Not set"}</p>{row.final_recipient_address ? <p className="text-xs text-slate-500">{row.final_recipient_address}</p> : <p className="text-xs font-semibold text-amber-700">Recipient address profile missing</p>}</td>
-                        <td className="px-3 py-2 text-right"><p className="font-semibold">{n(row.package_count)} pkg</p><p className="text-xs text-slate-500">Qty {qty(row.item_qty)}</p></td>
-                        <td className="px-3 py-2 text-right font-semibold">{money(row.invoice_value_gbp)}</td>
-                        <td className="px-3 py-2"><span className={`inline-block rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.export_evidence_status)}`}>Export: {friendly(row.export_evidence_status)}</span><span className={`mt-1 block w-fit rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.pod_status)}`}>POD: {friendly(row.pod_status)}</span></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+            {availableCandidates.length === 0 ? <p className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">No clean ungrouped candidate batches are currently available. Batches with submitted/accepted evidence or zero quantity are intentionally excluded.</p> : (
+              <>
+                <GroupageSelectionControls fieldName="shipment_batch_ids" label="Candidate booking refs" />
+                <div className="overflow-x-auto rounded-2xl border border-slate-200">
+                  <table className="min-w-full divide-y divide-slate-200 text-sm">
+                    <thead className="bg-slate-100 text-xs uppercase tracking-wide text-slate-500"><tr><th className="px-3 py-2 text-left">Select</th><th className="px-3 py-2 text-left">Booking ref</th><th className="px-3 py-2 text-left">Importer / recipient</th><th className="px-3 py-2 text-right">Packages / qty</th><th className="px-3 py-2 text-right">Value</th><th className="px-3 py-2 text-left">Evidence</th></tr></thead>
+                    <tbody className="divide-y divide-slate-100 bg-white">
+                      {availableCandidates.map((row) => (
+                        <tr key={row.shipment_batch_id}>
+                          <td className="px-3 py-2"><input type="checkbox" name="shipment_batch_ids" value={row.shipment_batch_id} /></td>
+                          <td className="px-3 py-2 font-semibold">{row.booking_ref ?? row.shipment_batch_id}</td>
+                          <td className="px-3 py-2"><p className="font-semibold">{row.importer_name ?? "Importer"}</p><p className="text-xs text-slate-500">Recipient: {row.final_recipient_name ?? "Not set"}</p>{row.final_recipient_address ? <p className="text-xs text-slate-500">{row.final_recipient_address}</p> : <p className="text-xs font-semibold text-amber-700">Recipient address profile missing</p>}</td>
+                          <td className="px-3 py-2 text-right"><p className="font-semibold">{n(row.package_count)} pkg</p><p className="text-xs text-slate-500">Qty {qty(row.item_qty)}</p></td>
+                          <td className="px-3 py-2 text-right font-semibold">{money(row.invoice_value_gbp)}</td>
+                          <td className="px-3 py-2"><span className={`inline-block rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.export_evidence_status)}`}>Export: {friendly(row.export_evidence_status)}</span><span className={`mt-1 block w-fit rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.pod_status)}`}>POD: {friendly(row.pod_status)}</span></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
             )}
             <button type="submit" className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">Create Groupage Movement</button>
           </form>
