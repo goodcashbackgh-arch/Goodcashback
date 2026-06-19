@@ -221,7 +221,7 @@ export async function createGroupageMovementAction(formData: FormData) {
   const selected = formData.getAll("shipment_batch_ids").filter((value): value is string => typeof value === "string" && value.trim().length > 0);
 
   if (!movementRef) redirect(`/shipper/groupage-movements?error=${encodeURIComponent("Groupage movement reference is required.")}`);
-  if (selected.length === 0) redirect(`/shipper/groupage-movements?error=${encodeURIComponent("Select at least one shipment batch.")}`);
+  if (selected.length < 2) redirect(`/shipper/groupage-movements?error=${encodeURIComponent("Select at least two shipment batches for a Groupage Movement.")}`);
 
   const { data, error } = await (supabase as any).rpc("shipper_create_groupage_movement_v1", {
     p_shipment_batch_ids: selected,
@@ -350,4 +350,49 @@ export async function submitGroupagePodAction(formData: FormData) {
   revalidatePath("/shipper/groupage-movements");
   revalidatePath(`/shipper/groupage-movements/${groupageMovementId}`);
   redirect(`/shipper/groupage-movements/${groupageMovementId}?success=${encodeURIComponent("POD uploaded for selected booking references")}`);
+}
+
+export async function excludeGroupageBatchesAction(formData: FormData) {
+  const supabase = await createClient();
+  const groupageMovementId = readString(formData, "groupage_movement_id");
+  const selected = formData.getAll("exclude_shipment_batch_ids").filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+
+  if (!groupageMovementId) redirect("/shipper/groupage-movements?error=Missing%20groupage%20movement%20id.");
+  if (selected.length === 0) redirect(`/shipper/groupage-movements/${groupageMovementId}?error=${encodeURIComponent("Select at least one booking reference to exclude.")}`);
+
+  const { error } = await (supabase as any).rpc("shipper_exclude_groupage_batches_v1", {
+    p_groupage_movement_id: groupageMovementId,
+    p_shipment_batch_ids: selected,
+  });
+
+  if (error) {
+    redirect(`/shipper/groupage-movements/${groupageMovementId}?error=${encodeURIComponent(error.message)}`);
+  }
+
+  revalidatePath("/shipper");
+  revalidatePath("/shipper/shipments");
+  revalidatePath("/shipper/groupage-movements");
+  revalidatePath(`/shipper/groupage-movements/${groupageMovementId}`);
+  redirect(`/shipper/groupage-movements/${groupageMovementId}?success=${encodeURIComponent("Selected booking refs excluded. If fewer than two remained, the movement was cancelled.")}`);
+}
+
+export async function cancelGroupageMovementAction(formData: FormData) {
+  const supabase = await createClient();
+  const groupageMovementId = readString(formData, "groupage_movement_id");
+
+  if (!groupageMovementId) redirect("/shipper/groupage-movements?error=Missing%20groupage%20movement%20id.");
+
+  const { error } = await (supabase as any).rpc("shipper_cancel_groupage_movement_v1", {
+    p_groupage_movement_id: groupageMovementId,
+  });
+
+  if (error) {
+    redirect(`/shipper/groupage-movements/${groupageMovementId}?error=${encodeURIComponent(error.message)}`);
+  }
+
+  revalidatePath("/shipper");
+  revalidatePath("/shipper/shipments");
+  revalidatePath("/shipper/groupage-movements");
+  revalidatePath(`/shipper/groupage-movements/${groupageMovementId}`);
+  redirect(`/shipper/groupage-movements?success=${encodeURIComponent("Groupage Movement cancelled and included booking refs released")}`);
 }
