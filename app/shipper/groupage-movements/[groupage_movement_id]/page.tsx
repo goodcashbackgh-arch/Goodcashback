@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
-import { saveGroupageMovementFactsAction, submitGroupagePodAction, submitGroupageSignedExportPackAction } from "../../shipments/actions";
+import { cancelGroupageMovementAction, excludeGroupageBatchesAction, saveGroupageMovementFactsAction, submitGroupagePodAction, submitGroupageSignedExportPackAction } from "../../shipments/actions";
 
 type DetailRow = {
   groupage_movement_id: string;
@@ -58,11 +58,6 @@ function dateValue(value: string | null | undefined) {
   return value.includes("T") ? value.slice(0, 10) : value;
 }
 
-function shortDate(value: string | null | undefined) {
-  if (!value) return "—";
-  return value.includes("T") ? value.slice(0, 10) : value;
-}
-
 function friendly(value: string | null | undefined) {
   if (!value) return "—";
   return value.replaceAll("_", " ").replace(/^./, (first) => first.toUpperCase());
@@ -115,7 +110,11 @@ export default async function ShipperGroupageMovementDetailPage({
     first && !first.exporter_name_snapshot ? "Exporter profile missing" : null,
     first && !first.movement_consignee_name_snapshot ? "Movement consignee missing" : null,
     rows.some((row) => !row.final_recipient_address) ? "One or more final recipient addresses are missing" : null,
+    rows.length < 2 ? "A Groupage Movement requires at least two active booking refs" : null,
   ].filter(Boolean) as string[];
+
+  const editable = ["draft", "movement_facts_incomplete", "movement_facts_ready"].includes(first?.groupage_status ?? "");
+  const validGroupageSize = rows.length >= 2;
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-6 text-slate-950 sm:px-6 sm:py-8">
@@ -155,6 +154,29 @@ export default async function ShipperGroupageMovementDetailPage({
               </section>
             ) : null}
 
+            {editable ? (
+              <section className="rounded-3xl border border-rose-200 bg-rose-50 p-5 shadow-sm sm:p-6">
+                <h2 className="text-xl font-semibold text-rose-950">Reset / exclude booking refs</h2>
+                <p className="mt-2 text-sm leading-6 text-rose-900">Use this before signed export pack or POD upload. If excluding selected refs leaves fewer than two active booking refs, the system cancels the Groupage Movement and releases the remaining batch.</p>
+                <form action={excludeGroupageBatchesAction} className="mt-4 space-y-3">
+                  <input type="hidden" name="groupage_movement_id" value={groupageMovementId} />
+                  <div className="rounded-2xl border border-rose-200 bg-white p-3">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-rose-800">Select booking refs to exclude</p>
+                    <div className="mt-2 grid gap-2 md:grid-cols-2">
+                      {rows.map((row) => <label key={row.shipment_batch_id} className="flex items-center gap-2 text-sm"><input type="checkbox" name="exclude_shipment_batch_ids" value={row.shipment_batch_id} /> <span className="font-semibold">{row.booking_ref ?? row.shipment_batch_id}</span><span className="text-slate-500">{row.importer_name ?? "Importer"}</span></label>)}
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-3">
+                    <button type="submit" className="rounded-xl border border-rose-300 bg-white px-4 py-2 text-sm font-semibold text-rose-900 hover:bg-rose-100">Exclude selected booking refs</button>
+                  </div>
+                </form>
+                <form action={cancelGroupageMovementAction} className="mt-3">
+                  <input type="hidden" name="groupage_movement_id" value={groupageMovementId} />
+                  <button type="submit" className="rounded-xl bg-rose-900 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-800">Cancel whole Groupage Movement</button>
+                </form>
+              </section>
+            ) : null}
+
             <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
               <h2 className="text-xl font-semibold">Movement facts</h2>
               <p className="mt-2 text-sm leading-6 text-slate-600">These shared facts are applied to each included batch’s existing final shipment/COS completion fields.</p>
@@ -191,7 +213,7 @@ export default async function ShipperGroupageMovementDetailPage({
                   <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-slate-500">Notify party address</span><input name="notify_party_address" defaultValue={first.notify_party_address_snapshot ?? ""} className="w-full rounded-xl border border-slate-300 px-3 py-2" /></label>
                   <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-slate-500">Authorised name</span><input name="authorised_name" defaultValue={first.authorised_name ?? (shipperUser as any).full_name ?? ""} className="w-full rounded-xl border border-slate-300 px-3 py-2" /></label>
                   <label className="flex items-center gap-3 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm"><input name="signature_stamp_confirmation_yn" type="checkbox" defaultChecked={Boolean(first.signature_stamp_confirmation_yn)} /> Signed/stamped pack will be authenticated by the shipper</label>
-                  <div className="md:col-span-2"><button type="submit" className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">Save and apply to included batches</button></div>
+                  <div className="md:col-span-2"><button type="submit" disabled={!validGroupageSize} className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400">Save and apply to included batches</button></div>
                 </form>
               </details>
             </section>
@@ -199,7 +221,7 @@ export default async function ShipperGroupageMovementDetailPage({
             <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
               <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                 <div><h2 className="text-xl font-semibold">Included booking refs</h2><p className="mt-2 text-sm leading-6 text-slate-600">Open individual batches from here. Batch status remains the canonical truth.</p></div>
-                <Link href={`/shipper/groupage-movements/${groupageMovementId}/export-pack`} target="_blank" className="rounded-xl border border-indigo-300 bg-indigo-50 px-4 py-2 text-sm font-semibold text-indigo-900 hover:bg-indigo-100">Download combined export pack</Link>
+                {validGroupageSize ? <Link href={`/shipper/groupage-movements/${groupageMovementId}/export-pack`} target="_blank" className="rounded-xl border border-indigo-300 bg-indigo-50 px-4 py-2 text-sm font-semibold text-indigo-900 hover:bg-indigo-100">Download combined export pack</Link> : <span className="rounded-xl border border-slate-300 bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-600">Export pack blocked: needs 2+ booking refs</span>}
               </div>
               <div className="mt-4 overflow-x-auto rounded-2xl border border-slate-200">
                 <table className="min-w-full divide-y divide-slate-200 text-sm"><thead className="bg-slate-100 text-xs uppercase tracking-wide text-slate-500"><tr><th className="px-3 py-2 text-left">Booking ref</th><th className="px-3 py-2 text-left">Importer / recipient</th><th className="px-3 py-2 text-right">Packages / qty</th><th className="px-3 py-2 text-right">Value</th><th className="px-3 py-2 text-left">Evidence</th><th className="px-3 py-2 text-left">Action</th></tr></thead><tbody className="divide-y divide-slate-100 bg-white">
@@ -217,7 +239,7 @@ export default async function ShipperGroupageMovementDetailPage({
                   <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-amber-800">Document ref</span><input name="document_ref" defaultValue={first.groupage_movement_ref ?? ""} className="w-full rounded-xl border border-amber-300 bg-white px-3 py-2" /></label>
                   <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-amber-800">Signed export pack file</span><input name="groupage_export_pack_file" type="file" required className="w-full rounded-xl border border-amber-300 bg-white px-3 py-2" /></label>
                   <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-amber-800">Notes</span><textarea name="notes" rows={3} className="w-full rounded-xl border border-amber-300 bg-white px-3 py-2" /></label>
-                  <button type="submit" className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">Upload and apply to all included batches</button>
+                  <button type="submit" disabled={!validGroupageSize} className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400">Upload and apply to all included batches</button>
                 </form>
               </article>
               <article className="rounded-3xl border border-sky-200 bg-sky-50 p-5 shadow-sm sm:p-6">
@@ -228,13 +250,13 @@ export default async function ShipperGroupageMovementDetailPage({
                   <div className="rounded-2xl border border-sky-200 bg-white p-3">
                     <p className="text-xs font-semibold uppercase tracking-wide text-sky-800">Covered booking refs</p>
                     <div className="mt-2 grid gap-2">
-                      {rows.map((row) => <label key={row.shipment_batch_id} className="flex items-center gap-2 text-sm"><input type="checkbox" name="pod_shipment_batch_ids" value={row.shipment_batch_id} /> <span className="font-semibold">{row.booking_ref ?? row.shipment_batch_id}</span><span className="text-slate-500">{row.importer_name ?? "Importer"}</span></label>)}
+                      {rows.map((row) => <label key={row.shipment_batch_id} className="flex items-center gap-2 text-sm"><input type="checkbox" name="pod_shipment_batch_ids" value={row.shipment_batch_id} disabled={!validGroupageSize} /> <span className="font-semibold">{row.booking_ref ?? row.shipment_batch_id}</span><span className="text-slate-500">{row.importer_name ?? "Importer"}</span></label>)}
                     </div>
                   </div>
                   <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-sky-800">POD ref</span><input name="pod_document_ref" className="w-full rounded-xl border border-sky-300 bg-white px-3 py-2" /></label>
                   <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-sky-800">POD file</span><input name="groupage_pod_file" type="file" required className="w-full rounded-xl border border-sky-300 bg-white px-3 py-2" /></label>
                   <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-sky-800">Notes</span><textarea name="pod_notes" rows={3} className="w-full rounded-xl border border-sky-300 bg-white px-3 py-2" /></label>
-                  <button type="submit" className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">Upload POD for selected booking refs</button>
+                  <button type="submit" disabled={!validGroupageSize} className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400">Upload POD for selected booking refs</button>
                 </form>
               </article>
             </section>
