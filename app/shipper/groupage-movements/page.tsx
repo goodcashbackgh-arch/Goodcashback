@@ -72,6 +72,10 @@ function statusClass(status: string | null | undefined) {
   return "bg-amber-100 text-amber-800";
 }
 
+function hasSubmittedOrAcceptedEvidence(row: CandidateBatch) {
+  return ["submitted_for_review", "accepted_current"].includes(row.export_evidence_status ?? "") || ["submitted_for_review", "accepted_current"].includes(row.pod_status ?? "");
+}
+
 export default async function ShipperGroupageMovementsPage({ searchParams }: { searchParams?: Promise<{ success?: string; error?: string }> }) {
   const qp = searchParams ? await searchParams : {};
   const supabase = await createClient();
@@ -101,7 +105,9 @@ export default async function ShipperGroupageMovementsPage({ searchParams }: { s
   const candidateRows = ((candidates ?? []) as CandidateBatch[]);
   const movementRows = ((movements ?? []) as MovementRow[]);
   const profileRows = ((profiles ?? []) as ExportProfile[]);
-  const availableCandidates = candidateRows.filter((row) => !row.existing_groupage_movement_id);
+  const availableCandidates = candidateRows.filter((row) => !row.existing_groupage_movement_id && !hasSubmittedOrAcceptedEvidence(row));
+  const alreadyGroupedCount = candidateRows.filter((row) => row.existing_groupage_movement_id).length;
+  const alreadyEvidencedCount = candidateRows.filter((row) => !row.existing_groupage_movement_id && hasSubmittedOrAcceptedEvidence(row)).length;
   const shipper = Array.isArray((shipperUser as any).shippers) ? (shipperUser as any).shippers[0] : (shipperUser as any).shippers;
 
   return (
@@ -122,22 +128,23 @@ export default async function ShipperGroupageMovementsPage({ searchParams }: { s
           {movementsError ? <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">Groupage movements unavailable: {movementsError.message}</p> : null}
         </section>
 
-        <section className="grid gap-4 md:grid-cols-4">
+        <section className="grid gap-4 md:grid-cols-5">
           <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Movements</p><p className="mt-1 text-2xl font-semibold">{movementRows.length}</p></div>
           <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Available batches</p><p className="mt-1 text-2xl font-semibold">{availableCandidates.length}</p></div>
-          <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Grouped batches</p><p className="mt-1 text-2xl font-semibold">{candidateRows.filter((row) => row.existing_groupage_movement_id).length}</p></div>
+          <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Grouped batches</p><p className="mt-1 text-2xl font-semibold">{alreadyGroupedCount}</p></div>
+          <div className="rounded-3xl border border-amber-200 bg-amber-50 p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-amber-700">Already evidenced</p><p className="mt-1 text-2xl font-semibold text-amber-950">{alreadyEvidencedCount}</p></div>
           <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Export profiles</p><p className="mt-1 text-2xl font-semibold">{profileRows.length}</p></div>
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
           <h2 className="text-xl font-semibold">Create Groupage Movement</h2>
-          <p className="mt-2 text-sm leading-6 text-slate-600">Select real existing booking references. Do not create artificial suffixes. Batches already in another active Groupage Movement are shown but cannot be selected.</p>
+          <p className="mt-2 text-sm leading-6 text-slate-600">Select real existing booking references. Batches already grouped, or with submitted/accepted final export or POD evidence, are excluded from normal groupage selection to prevent duplicate evidence rows.</p>
           <form action={createGroupageMovementAction} className="mt-5 space-y-4">
             <div className="grid gap-3 md:grid-cols-2">
               <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-slate-500">Groupage movement ref</span><input name="groupage_movement_ref" required placeholder="e.g. GM-20260619-001 / container movement ref" className="w-full rounded-xl border border-slate-300 px-3 py-2" /></label>
               <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-slate-500">Export evidence profile</span><select name="profile_id" className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2"><option value="">Use latest available profile / leave blank</option>{profileRows.map((profile) => <option key={profile.id} value={profile.id}>{profile.profile_name ?? profile.exporter_name ?? profile.id}</option>)}</select></label>
             </div>
-            {availableCandidates.length === 0 ? <p className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">No ungrouped candidate batches are currently available.</p> : (
+            {availableCandidates.length === 0 ? <p className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">No clean ungrouped candidate batches are currently available. Batches with submitted or accepted export/POD evidence are intentionally excluded.</p> : (
               <div className="overflow-x-auto rounded-2xl border border-slate-200">
                 <table className="min-w-full divide-y divide-slate-200 text-sm">
                   <thead className="bg-slate-100 text-xs uppercase tracking-wide text-slate-500"><tr><th className="px-3 py-2 text-left">Select</th><th className="px-3 py-2 text-left">Booking ref</th><th className="px-3 py-2 text-left">Importer / recipient</th><th className="px-3 py-2 text-right">Packages / qty</th><th className="px-3 py-2 text-right">Value</th><th className="px-3 py-2 text-left">Evidence</th></tr></thead>
