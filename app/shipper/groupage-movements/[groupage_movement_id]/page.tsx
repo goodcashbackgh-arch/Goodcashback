@@ -2,7 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 import { saveGroupageMovementFactsAction, submitGroupagePodAction, submitGroupageSignedExportPackAction } from "../../shipments/actions";
-import { cancelGroupageMovementAction, excludeGroupageBatchesAction } from "./actions";
+import { cancelGroupageMovementAction, excludeGroupageBatchesAction, refreshGroupageMovementSnapshotsAction } from "./actions";
 import GroupageSelectionControls from "../GroupageSelectionControls";
 
 type DetailRow = {
@@ -164,6 +164,15 @@ export default async function ShipperGroupageMovementDetailPage({
               <section className="rounded-3xl border border-amber-300 bg-amber-50 p-5 text-sm leading-6 text-amber-900 shadow-sm">
                 <h2 className="text-lg font-semibold text-amber-950">Profile/data blockers before strong export pack</h2>
                 <ul className="mt-2 list-disc space-y-1 pl-5">{profileBlockers.map((blocker) => <li key={blocker}>{blocker}</li>)}</ul>
+                <div className="mt-4 flex flex-wrap gap-3">
+                  <Link href="/shipper/export-evidence-profile" className="rounded-xl border border-amber-300 bg-white px-4 py-2 text-sm font-semibold text-amber-900 hover:bg-amber-100">Complete export evidence profile</Link>
+                  <Link href="/shipper/importer-delivery-profiles" className="rounded-xl border border-amber-300 bg-white px-4 py-2 text-sm font-semibold text-amber-900 hover:bg-amber-100">Complete importer delivery profiles</Link>
+                  <form action={refreshGroupageMovementSnapshotsAction}>
+                    <input type="hidden" name="groupage_movement_id" value={groupageMovementId} />
+                    <button type="submit" className="rounded-xl bg-amber-900 px-4 py-2 text-sm font-semibold text-white hover:bg-amber-800">Refresh movement from profiles</button>
+                  </form>
+                </div>
+                <p className="mt-3 text-xs text-amber-800">These fields are pulled from the source database profile tables and snapshotted into this movement. They are not free-typed into the movement as the primary source.</p>
               </section>
             ) : null}
 
