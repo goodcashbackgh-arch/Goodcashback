@@ -19,6 +19,27 @@ async function movementStatus(supabase: Awaited<ReturnType<typeof createClient>>
   return data as { groupage_movement_ref?: string | null; status?: string | null } | null;
 }
 
+export async function refreshGroupageMovementSnapshotsAction(formData: FormData) {
+  const supabase = await createClient();
+  const groupageMovementId = readString(formData, "groupage_movement_id");
+
+  if (!groupageMovementId) redirect("/shipper/groupage-movements?error=Missing%20groupage%20movement%20id.");
+
+  const { error } = await (supabase as any).rpc("shipper_refresh_groupage_movement_snapshots_v1", {
+    p_groupage_movement_id: groupageMovementId,
+  });
+
+  if (error) {
+    redirect(`/shipper/groupage-movements/${groupageMovementId}?error=${encodeURIComponent(error.message)}`);
+  }
+
+  revalidatePath("/shipper");
+  revalidatePath("/shipper/shipments");
+  revalidatePath("/shipper/groupage-movements");
+  revalidatePath(`/shipper/groupage-movements/${groupageMovementId}`);
+  redirect(`/shipper/groupage-movements/${groupageMovementId}?success=${encodeURIComponent("Groupage Movement refreshed from export profile and importer delivery profiles")}`);
+}
+
 export async function excludeGroupageBatchesAction(formData: FormData) {
   const supabase = await createClient();
   const groupageMovementId = readString(formData, "groupage_movement_id");
