@@ -106,7 +106,18 @@ export default async function ShipperGroupageMovementDetailPage({
   const totalQty = rows.reduce((sum, row) => sum + n(row.item_qty), 0);
   const totalValue = rows.reduce((sum, row) => sum + n(row.invoice_value_gbp), 0);
 
-  if (!first && !error) redirect("/shipper/groupage-movements?error=Groupage%20Movement%20not%20found.");
+  if (!first && !error) {
+    const { data: movement } = await supabase
+      .from("shipper_groupage_movements")
+      .select("groupage_movement_ref, status")
+      .eq("id", groupageMovementId)
+      .maybeSingle();
+    const ref = (movement as any)?.groupage_movement_ref ?? groupageMovementId;
+    if ((movement as any)?.status === "voided") {
+      redirect(`/shipper/groupage-movements?success=${encodeURIComponent(`Groupage Movement ${ref} cancelled/released.`)}`);
+    }
+    redirect("/shipper/groupage-movements");
+  }
 
   const profileBlockers = [
     first && !first.exporter_name_snapshot ? "Exporter profile missing" : null,
