@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
-import { cancelGroupageMovementAction, excludeGroupageBatchesAction, saveGroupageMovementFactsAction, submitGroupagePodAction, submitGroupageSignedExportPackAction } from "../../shipments/actions";
+import { saveGroupageMovementFactsAction, submitGroupagePodAction, submitGroupageSignedExportPackAction } from "../../shipments/actions";
+import { cancelGroupageMovementAction, excludeGroupageBatchesAction } from "./actions";
+import GroupageSelectionControls from "../GroupageSelectionControls";
 
 type DetailRow = {
   groupage_movement_id: string;
@@ -160,15 +162,14 @@ export default async function ShipperGroupageMovementDetailPage({
                 <p className="mt-2 text-sm leading-6 text-rose-900">Use this before signed export pack or POD upload. If excluding selected refs leaves fewer than two active booking refs, the system cancels the Groupage Movement and releases the remaining batch.</p>
                 <form action={excludeGroupageBatchesAction} className="mt-4 space-y-3">
                   <input type="hidden" name="groupage_movement_id" value={groupageMovementId} />
+                  <GroupageSelectionControls fieldName="exclude_shipment_batch_ids" label="Included booking refs" />
                   <div className="rounded-2xl border border-rose-200 bg-white p-3">
                     <p className="text-xs font-semibold uppercase tracking-wide text-rose-800">Select booking refs to exclude</p>
                     <div className="mt-2 grid gap-2 md:grid-cols-2">
                       {rows.map((row) => <label key={row.shipment_batch_id} className="flex items-center gap-2 text-sm"><input type="checkbox" name="exclude_shipment_batch_ids" value={row.shipment_batch_id} /> <span className="font-semibold">{row.booking_ref ?? row.shipment_batch_id}</span><span className="text-slate-500">{row.importer_name ?? "Importer"}</span></label>)}
                     </div>
                   </div>
-                  <div className="flex flex-wrap gap-3">
-                    <button type="submit" className="rounded-xl border border-rose-300 bg-white px-4 py-2 text-sm font-semibold text-rose-900 hover:bg-rose-100">Exclude selected booking refs</button>
-                  </div>
+                  <button type="submit" className="rounded-xl border border-rose-300 bg-white px-4 py-2 text-sm font-semibold text-rose-900 hover:bg-rose-100">Exclude selected booking refs</button>
                 </form>
                 <form action={cancelGroupageMovementAction} className="mt-3">
                   <input type="hidden" name="groupage_movement_id" value={groupageMovementId} />
@@ -247,6 +248,7 @@ export default async function ShipperGroupageMovementDetailPage({
                 <p className="mt-2 text-sm leading-6 text-sky-900">Upload POD only for the booking refs covered by that POD. This will create normal POD evidence rows only for selected batches.</p>
                 <form action={submitGroupagePodAction} className="mt-5 grid gap-3">
                   <input type="hidden" name="groupage_movement_id" value={groupageMovementId} />
+                  <GroupageSelectionControls fieldName="pod_shipment_batch_ids" label="POD covered refs" />
                   <div className="rounded-2xl border border-sky-200 bg-white p-3">
                     <p className="text-xs font-semibold uppercase tracking-wide text-sky-800">Covered booking refs</p>
                     <div className="mt-2 grid gap-2">
