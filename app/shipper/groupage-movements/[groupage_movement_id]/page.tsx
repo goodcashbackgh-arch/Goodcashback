@@ -2,7 +2,12 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 import { submitGroupagePodAction, submitGroupageSignedExportPackAction } from "../../shipments/actions";
-import { cancelGroupageMovementAction, excludeGroupageBatchesAction, refreshGroupageMovementSnapshotsAction } from "./actions";
+import {
+  cancelGroupageMovementAction,
+  excludeGroupageBatchesAction,
+  refreshGroupageMovementSnapshotsAction,
+  saveGroupageMovementFactsAction,
+} from "./actions";
 import GroupageSelectionControls from "../GroupageSelectionControls";
 
 type DetailRow = {
@@ -24,6 +29,10 @@ type DetailRow = {
   exporter_vat_number_snapshot: string | null;
   movement_consignee_name_snapshot: string | null;
   movement_consignee_address_snapshot: string | null;
+  notify_party_name_snapshot: string | null;
+  notify_party_address_snapshot: string | null;
+  authorised_name: string | null;
+  signature_stamp_confirmation_yn: boolean | null;
   shipment_batch_id: string;
   booking_ref: string | null;
   importer_name: string | null;
@@ -58,6 +67,24 @@ function statusClass(status: string | null | undefined) {
 
 function field(label: string, value: string | null | undefined) {
   return <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3"><p className="text-xs uppercase tracking-wide text-slate-500">{label}</p><p className="mt-1 whitespace-pre-wrap font-semibold">{value || "Not entered"}</p></div>;
+}
+
+function inputField(label: string, name: string, value: string | null | undefined, type = "text") {
+  return (
+    <label className="space-y-1 text-sm">
+      <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</span>
+      <input name={name} type={type} defaultValue={value ?? ""} className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-slate-950" />
+    </label>
+  );
+}
+
+function textAreaField(label: string, name: string, value: string | null | undefined) {
+  return (
+    <label className="space-y-1 text-sm md:col-span-2">
+      <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</span>
+      <textarea name={name} defaultValue={value ?? ""} rows={3} className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-slate-950" />
+    </label>
+  );
 }
 
 export default async function ShipperGroupageMovementDetailPage({
@@ -141,7 +168,36 @@ export default async function ShipperGroupageMovementDetailPage({
 
           {editable ? <section className="rounded-3xl border border-rose-200 bg-rose-50 p-5 shadow-sm sm:p-6"><h2 className="text-xl font-semibold text-rose-950">Reset / exclude booking refs</h2><p className="mt-2 text-sm leading-6 text-rose-900">If excluding selected refs leaves fewer than two active booking refs, the system cancels the movement and releases the remaining batch.</p><form action={excludeGroupageBatchesAction} className="mt-4 space-y-3"><input type="hidden" name="groupage_movement_id" value={groupageMovementId} /><GroupageSelectionControls fieldName="exclude_shipment_batch_ids" label="Included booking refs" /><div className="rounded-2xl border border-rose-200 bg-white p-3"><div className="mt-2 grid gap-2 md:grid-cols-2">{rows.map((row) => <label key={row.shipment_batch_id} className="flex items-center gap-2 text-sm"><input type="checkbox" name="exclude_shipment_batch_ids" value={row.shipment_batch_id} /> <span className="font-semibold">{row.booking_ref ?? row.shipment_batch_id}</span><span className="text-slate-500">{row.importer_name ?? "Importer"}</span></label>)}</div></div><button type="submit" className="rounded-xl border border-rose-300 bg-white px-4 py-2 text-sm font-semibold text-rose-900 hover:bg-rose-100">Exclude selected booking refs</button></form><form action={cancelGroupageMovementAction} className="mt-3"><input type="hidden" name="groupage_movement_id" value={groupageMovementId} /><button type="submit" className="rounded-xl bg-rose-900 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-800">Cancel whole Groupage Movement</button></form></section> : null}
 
-          <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6"><h2 className="text-xl font-semibold">Movement facts</h2><p className="mt-2 text-sm leading-6 text-slate-600">Source profile facts are snapshotted from admin/onboarding records.</p><div className="mt-4 grid gap-3 md:grid-cols-3">{field("Exporter", first.exporter_name_snapshot)}{field("Exporter address", first.exporter_address_snapshot)}{field("Exporter VAT", first.exporter_vat_number_snapshot)}{field("Movement consignee", first.movement_consignee_name_snapshot)}{field("Consignee address", first.movement_consignee_address_snapshot)}{field("Weight text", first.weight_text || "Not separately recorded by issuing consolidator")}{field("MBOL / sea waybill", first.mbl_bol_sea_waybill_ref)}{field("Container / seal", `${first.container_number ?? "—"} / ${first.seal_number ?? "—"}`)}{field("Vessel / voyage", first.vessel_voyage)}{field("Port loading", first.port_of_loading)}{field("Port discharge", first.port_of_discharge)}{field("Place delivery", first.place_of_delivery)}</div></section>
+          <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+              <div><h2 className="text-xl font-semibold">Movement facts</h2><p className="mt-2 text-sm leading-6 text-slate-600">Source profile facts are snapshotted from admin/onboarding. Transport facts below are entered for this movement and applied to included batches.</p></div>
+              {first.groupage_status === "movement_facts_ready" ? <span className="w-fit rounded-full bg-emerald-100 px-3 py-1 text-sm font-semibold text-emerald-800">Facts ready</span> : <span className="w-fit rounded-full bg-amber-100 px-3 py-1 text-sm font-semibold text-amber-800">Facts incomplete</span>}
+            </div>
+            <div className="mt-4 grid gap-3 md:grid-cols-3">{field("Exporter", first.exporter_name_snapshot)}{field("Exporter address", first.exporter_address_snapshot)}{field("Exporter VAT", first.exporter_vat_number_snapshot)}{field("Movement consignee", first.movement_consignee_name_snapshot)}{field("Consignee address", first.movement_consignee_address_snapshot)}{field("Notify party", first.notify_party_name_snapshot)}{field("Notify party address", first.notify_party_address_snapshot)}{field("Weight text", first.weight_text || "Not separately recorded by issuing consolidator")}{field("Export shipment date", first.export_shipment_date)}{field("MBOL / sea waybill", first.mbl_bol_sea_waybill_ref)}{field("Container / seal", `${first.container_number ?? "—"} / ${first.seal_number ?? "—"}`)}{field("Vessel / voyage", first.vessel_voyage)}{field("Port loading", first.port_of_loading)}{field("Port discharge", first.port_of_discharge)}{field("Place delivery", first.place_of_delivery)}{field("Authorised name", first.authorised_name)}{field("Signature/stamp", first.signature_stamp_confirmation_yn ? "Confirmed" : "Not confirmed")}</div>
+            {editable ? <form action={saveGroupageMovementFactsAction} className="mt-6 rounded-3xl border border-slate-200 bg-slate-50 p-4">
+              <input type="hidden" name="groupage_movement_id" value={groupageMovementId} />
+              <h3 className="text-lg font-semibold">Enter / update movement transport facts</h3>
+              <p className="mt-1 text-sm leading-6 text-slate-600">Save partial facts as draft, or complete all required transport facts plus authorised signature/stamp confirmation to move this Groupage Movement to facts ready.</p>
+              <div className="mt-4 grid gap-3 md:grid-cols-3">
+                {inputField("MBOL / sea waybill", "mbl_bol_sea_waybill_ref", first.mbl_bol_sea_waybill_ref)}
+                {inputField("Container number", "container_number", first.container_number)}
+                {inputField("Seal number", "seal_number", first.seal_number)}
+                {inputField("Vessel / voyage", "vessel_voyage", first.vessel_voyage)}
+                {inputField("Port of loading", "port_of_loading", first.port_of_loading)}
+                {inputField("Port of discharge", "port_of_discharge", first.port_of_discharge)}
+                {inputField("Place of delivery", "place_of_delivery", first.place_of_delivery)}
+                {inputField("Export shipment date", "export_shipment_date", first.export_shipment_date, "date")}
+                {inputField("Weight text", "weight_text", first.weight_text)}
+                {inputField("Authorised name", "authorised_name", first.authorised_name)}
+                <label className="flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800"><input type="checkbox" name="signature_stamp_confirmation_yn" defaultChecked={Boolean(first.signature_stamp_confirmation_yn)} /> Signature/stamp confirmed</label>
+                {textAreaField("Movement consignee override, optional", "movement_consignee_name", first.movement_consignee_name_snapshot)}
+                {textAreaField("Movement consignee address override, optional", "movement_consignee_address", first.movement_consignee_address_snapshot)}
+                {inputField("Notify party override, optional", "notify_party_name", first.notify_party_name_snapshot)}
+                {textAreaField("Notify party address override, optional", "notify_party_address", first.notify_party_address_snapshot)}
+              </div>
+              <button type="submit" className="mt-4 rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">Save movement facts</button>
+            </form> : null}
+          </section>
 
           <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6"><div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between"><div><h2 className="text-xl font-semibold">Included booking refs</h2><p className="mt-2 text-sm leading-6 text-slate-600">Batch status remains the canonical truth.</p></div>{validGroupageSize ? <Link href={`/shipper/groupage-movements/${groupageMovementId}/export-pack`} target="_blank" className="rounded-xl border border-indigo-300 bg-indigo-50 px-4 py-2 text-sm font-semibold text-indigo-900 hover:bg-indigo-100">Download combined export pack</Link> : <span className="rounded-xl border border-slate-300 bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-600">Export pack blocked: needs 2+ booking refs</span>}</div><div className="mt-4 overflow-x-auto rounded-2xl border border-slate-200"><table className="min-w-full divide-y divide-slate-200 text-sm"><thead className="bg-slate-100 text-xs uppercase tracking-wide text-slate-500"><tr><th className="px-3 py-2 text-left">Booking ref</th><th className="px-3 py-2 text-left">Importer / recipient</th><th className="px-3 py-2 text-right">Packages / qty</th><th className="px-3 py-2 text-right">Value</th><th className="px-3 py-2 text-left">Evidence</th><th className="px-3 py-2 text-left">Action</th></tr></thead><tbody className="divide-y divide-slate-100 bg-white">{rows.map((row) => <tr key={row.shipment_batch_id}><td className="px-3 py-2 font-semibold">{row.booking_ref ?? row.shipment_batch_id}</td><td className="px-3 py-2"><p className="font-semibold">{row.importer_name ?? "Importer"}</p><p className="text-xs text-slate-500">Recipient: {row.final_recipient_name ?? "Not set"}</p>{row.final_recipient_address ? <p className="text-xs text-slate-500">{row.final_recipient_address}</p> : <p className="text-xs font-semibold text-amber-700">Recipient address missing</p>}</td><td className="px-3 py-2 text-right"><p className="font-semibold">{n(row.package_count)} pkg</p><p className="text-xs text-slate-500">Qty {n(row.item_qty)}</p></td><td className="px-3 py-2 text-right font-semibold">{money(row.invoice_value_gbp)}</td><td className="px-3 py-2"><span className={`inline-block rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.export_evidence_status)}`}>Export: {friendly(row.export_evidence_status)}</span><span className={`mt-1 block w-fit rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.pod_status)}`}>POD: {friendly(row.pod_status)}</span></td><td className="px-3 py-2"><Link href={`/shipper/shipments/${row.shipment_batch_id}`} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50">Open batch</Link></td></tr>)}</tbody></table></div></section>
 
