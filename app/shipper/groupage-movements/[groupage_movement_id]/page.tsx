@@ -95,15 +95,42 @@ function borderPillClass(status: string | null | undefined) {
 }
 
 function field(label: string, value: string | null | undefined) {
-  return <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3"><p className="text-xs uppercase tracking-wide text-slate-500">{label}</p><p className="mt-1 whitespace-pre-wrap font-semibold">{value || "Not entered"}</p></div>;
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+      <p className="text-xs uppercase tracking-wide text-slate-500">{label}</p>
+      <p className="mt-1 whitespace-pre-wrap font-semibold">{value || "Not entered"}</p>
+    </div>
+  );
 }
 
 function inputField(label: string, name: string, value: string | null | undefined, type = "text") {
-  return <label className="space-y-1 text-sm"><span className="text-xs font-semibold uppercase tracking-wide text-amber-800">{label}</span><input name={name} type={type} defaultValue={value ?? ""} className="w-full rounded-xl border border-amber-300 bg-white px-3 py-2 text-slate-950" /></label>;
+  return (
+    <label className="space-y-1 text-sm">
+      <span className="text-xs font-semibold uppercase tracking-wide text-amber-800">{label}</span>
+      <input name={name} type={type} defaultValue={value ?? ""} className="w-full rounded-xl border border-amber-300 bg-white px-3 py-2 text-slate-950" />
+    </label>
+  );
 }
 
 function textAreaField(label: string, name: string, value: string | null | undefined) {
-  return <label className="space-y-1 text-sm md:col-span-2"><span className="text-xs font-semibold uppercase tracking-wide text-amber-800">{label}</span><textarea name={name} defaultValue={value ?? ""} rows={3} className="w-full rounded-xl border border-amber-300 bg-white px-3 py-2 text-slate-950" /></label>;
+  return (
+    <label className="space-y-1 text-sm md:col-span-2">
+      <span className="text-xs font-semibold uppercase tracking-wide text-amber-800">{label}</span>
+      <textarea name={name} defaultValue={value ?? ""} rows={3} className="w-full rounded-xl border border-amber-300 bg-white px-3 py-2 text-slate-950" />
+    </label>
+  );
+}
+
+function FloatingDownloadControls({ groupageMovementId }: { groupageMovementId: string }) {
+  return (
+    <div className="fixed inset-x-4 bottom-4 z-40 mx-auto max-w-5xl rounded-3xl border border-indigo-200 bg-white/95 p-4 shadow-xl backdrop-blur">
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Link href={`/shipper/groupage-movements/${groupageMovementId}/export-pack`} target="_blank" className="rounded-xl border border-indigo-300 bg-indigo-50 px-4 py-3 text-center text-sm font-semibold text-indigo-900 hover:bg-indigo-100">Download combined export pack</Link>
+        <Link href={`/shipper/groupage-movements/${groupageMovementId}/sales-invoices-zip`} className="rounded-xl border border-sky-300 bg-sky-50 px-4 py-3 text-center text-sm font-semibold text-sky-900 hover:bg-sky-100">Download supporting shipment documents ZIP</Link>
+      </div>
+      <p className="mt-3 text-sm text-slate-600">Download the groupage pack and supporting shipment documents without leaving this movement.</p>
+    </div>
+  );
 }
 
 export default async function ShipperGroupageMovementDetailPage({
@@ -150,19 +177,10 @@ export default async function ShipperGroupageMovementDetailPage({
   const allPodAccepted = validGroupageSize && rows.every((row) => row.pod_status === "accepted_current");
   const movementComplete = first?.groupage_status === "complete" || (allExportAccepted && allPodAccepted);
   const movementFactsReady = movementComplete || Boolean(
-    first?.exporter_name_snapshot &&
-    first?.exporter_address_snapshot &&
-    first?.exporter_vat_number_snapshot &&
-    first?.movement_consignee_name_snapshot &&
-    first?.movement_consignee_address_snapshot &&
-    first?.mbl_bol_sea_waybill_ref &&
-    first?.container_number &&
-    first?.seal_number &&
-    first?.vessel_voyage &&
-    first?.port_of_loading &&
-    first?.port_of_discharge &&
-    first?.place_of_delivery &&
-    first?.export_shipment_date
+    first?.exporter_name_snapshot && first?.exporter_address_snapshot && first?.exporter_vat_number_snapshot &&
+    first?.movement_consignee_name_snapshot && first?.movement_consignee_address_snapshot &&
+    first?.mbl_bol_sea_waybill_ref && first?.container_number && first?.seal_number && first?.vessel_voyage &&
+    first?.port_of_loading && first?.port_of_discharge && first?.place_of_delivery && first?.export_shipment_date
   );
   const blockers = [
     first && !first.exporter_name_snapshot ? "Exporter profile missing from admin/onboarding source data" : null,
@@ -181,12 +199,19 @@ export default async function ShipperGroupageMovementDetailPage({
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-6 text-slate-950 sm:px-6 sm:py-8">
-      <div className="mx-auto max-w-7xl space-y-6 pb-32">
+      <div className="mx-auto max-w-7xl space-y-6 pb-40">
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-          <div className="flex flex-wrap gap-3 text-sm font-semibold text-sky-700"><Link href="/shipper/groupage-movements">← Groupage Movements</Link><Link href="/shipper/shipments">Shipment batches</Link></div>
+          <div className="flex flex-wrap gap-3 text-sm font-semibold text-sky-700">
+            <Link href="/shipper/groupage-movements">← Groupage Movements</Link>
+            <Link href="/shipper/shipments">Shipment batches</Link>
+          </div>
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Goodcashback Shipper</p>
           <div className="mt-2 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-            <div><h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Groupage Movement {first?.groupage_movement_ref ?? groupageMovementId}</h1><p className="mt-2 text-sm text-slate-600">{(shipperUser as any).full_name} · {first?.shipper_name ?? shipper?.name ?? "Shipper"}</p><p className="mt-3 max-w-4xl text-sm leading-6 text-slate-600">Groupage uses source data from admin/onboarding records, snapshots it into the movement, and writes uploads back to existing batch evidence controls.</p></div>
+            <div>
+              <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Groupage Movement {first?.groupage_movement_ref ?? groupageMovementId}</h1>
+              <p className="mt-2 text-sm text-slate-600">{(shipperUser as any).full_name} · {first?.shipper_name ?? shipper?.name ?? "Shipper"}</p>
+              <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-600">Groupage uses source data from admin/onboarding records, snapshots it into the movement, and writes uploads back to existing batch evidence controls.</p>
+            </div>
             <span className={`w-fit rounded-full px-3 py-1 text-sm font-semibold ${pillClass(movementComplete ? "complete" : first?.groupage_status)}`}>{movementComplete ? "Complete" : movementLabel(first?.groupage_status)}</span>
           </div>
           {movementComplete ? <p className="mt-4 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-900">Groupage Movement complete: export pack and POD are accepted for all included booking refs.</p> : null}
@@ -196,11 +221,6 @@ export default async function ShipperGroupageMovementDetailPage({
         </section>
 
         {first ? <>
-          <section className="rounded-3xl border border-indigo-200 bg-white p-4 shadow-sm">
-            <div className="grid gap-3 md:grid-cols-2"><Link href={`/shipper/groupage-movements/${groupageMovementId}/export-pack`} target="_blank" className="rounded-xl border border-indigo-300 bg-indigo-50 px-4 py-3 text-center text-sm font-semibold text-indigo-900 hover:bg-indigo-100">Download combined export pack</Link><Link href={`/shipper/groupage-movements/${groupageMovementId}/sales-invoices-zip`} className="rounded-xl border border-sky-300 bg-sky-50 px-4 py-3 text-center text-sm font-semibold text-sky-900 hover:bg-sky-100">Download supporting shipment documents ZIP</Link></div>
-            <p className="mt-3 text-sm text-slate-600">Download actions are available here without covering the movement facts or evidence controls.</p>
-          </section>
-
           <section className="grid gap-4 md:grid-cols-6">
             <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Booking refs</p><p className="mt-1 text-2xl font-semibold">{rows.length}</p></div>
             <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Packages</p><p className="mt-1 text-2xl font-semibold">{totalPackages}</p></div>
@@ -225,6 +245,7 @@ export default async function ShipperGroupageMovementDetailPage({
           {!movementComplete ? <section className="grid gap-4 lg:grid-cols-2"><article className="rounded-3xl border border-amber-200 bg-amber-50 p-5 shadow-sm sm:p-6"><h2 className="text-xl font-semibold text-amber-950">Signed export pack</h2><p className="mt-2 text-sm leading-6 text-amber-900">The signed/stamped Groupage Export Pack applies to all active included booking refs. It should not be re-uploaded unless supervisor/admin rejects it.</p>{allExportAccepted ? <div className="mt-5 rounded-2xl border border-emerald-300 bg-white p-4 text-sm font-semibold text-emerald-950">Signed export pack accepted. No re-upload required.</div> : signedPackSubmitted ? <div className="mt-5 rounded-2xl border border-amber-300 bg-white p-4 text-sm font-semibold text-amber-950">Already submitted. Await supervisor/admin review or resubmission instruction.</div> : <form action={submitGroupageSignedExportPackAction} encType="multipart/form-data" className="mt-5 grid gap-3"><input type="hidden" name="groupage_movement_id" value={groupageMovementId} /><label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-amber-800">Document ref</span><input name="document_ref" defaultValue={first.groupage_movement_ref ?? ""} className="w-full rounded-xl border border-amber-300 bg-white px-3 py-2" /></label><label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-amber-800">Signed export pack file</span><input name="groupage_export_pack_file" type="file" required className="w-full rounded-xl border border-amber-300 bg-white px-3 py-2" /></label><button type="submit" disabled={!validGroupageSize} className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400">Upload and apply to all included batches</button></form>}</article><article className="rounded-3xl border border-sky-200 bg-sky-50 p-5 shadow-sm sm:p-6"><h2 className="text-xl font-semibold text-sky-950">POD / delivery evidence</h2><p className="mt-2 text-sm leading-6 text-sky-900">Select only open booking refs covered by the POD file. Submitted or accepted POD refs are locked.</p><form action={`/shipper/groupage-movements/${groupageMovementId}/pod-upload`} method="post" encType="multipart/form-data" className="mt-5 grid gap-3"><input type="hidden" name="groupage_movement_id" value={groupageMovementId} /><GroupageSelectionControls fieldName="pod_shipment_batch_ids" label="Open POD booking refs" /><div className="grid gap-3">{rows.map((row) => { const closed = podIsClosed(row.pod_status); const rejected = row.pod_status === "rejected_resubmit_required"; return <label key={row.shipment_batch_id} className={`flex items-start gap-3 rounded-2xl border p-4 text-sm shadow-sm ${closed ? "border-slate-200 bg-slate-50 opacity-80" : rejected ? "border-rose-300 bg-rose-50" : "border-sky-300 bg-white"}`}><input type="checkbox" name="pod_shipment_batch_ids" value={row.shipment_batch_id} disabled={!podUploadAllowed || closed} className="mt-1 h-5 w-5" /><span className="min-w-0 flex-1"><span className="block font-semibold text-slate-950">{row.booking_ref ?? row.shipment_batch_id}</span><span className="block text-slate-500">{row.importer_name ?? "Importer"}</span><span className={`mt-2 inline-block rounded-full border px-2 py-1 text-xs font-semibold ${borderPillClass(row.pod_status)}`}>POD: {evidenceLabel(row.pod_status)}</span><span className={`ml-2 mt-2 inline-block rounded-full border px-2 py-1 text-xs font-semibold ${borderPillClass(row.export_evidence_status)}`}>Export: {evidenceLabel(row.export_evidence_status)}</span></span></label>; })}</div>{!podUploadAllowed ? <div className="rounded-2xl border border-emerald-300 bg-white p-4 text-sm font-semibold text-emerald-900">No open booking refs require POD upload from this page.</div> : null}<label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-sky-800">POD ref</span><input name="pod_document_ref" defaultValue={first.groupage_movement_ref ?? ""} disabled={!podUploadAllowed} className="w-full rounded-xl border border-sky-300 bg-white px-3 py-2 disabled:bg-slate-100" /></label><label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-sky-800">POD file</span><input name="groupage_pod_file" type="file" required disabled={!podUploadAllowed} className="w-full rounded-xl border border-sky-300 bg-white px-3 py-2 disabled:bg-slate-100" /></label><button type="submit" disabled={!podUploadAllowed} className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400">Upload POD for selected open booking refs</button></form></article></section> : <section className="rounded-3xl border border-emerald-300 bg-emerald-50 p-5 shadow-sm sm:p-6"><h2 className="text-xl font-semibold text-emerald-950">Evidence complete</h2><p className="mt-2 text-sm leading-6 text-emerald-900">Signed groupage export pack and POD are accepted for every active included booking ref. No further shipper upload action is required.</p></section>}
         </> : null}
       </div>
+      <FloatingDownloadControls groupageMovementId={groupageMovementId} />
     </main>
   );
 }
