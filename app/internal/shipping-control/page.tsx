@@ -76,14 +76,17 @@ function statusLabel(status: string | null | undefined) {
   if (status === "shipping_apportionment_approved") return "Shipping apportionment approved";
   if (status === "movement_facts_ready") return "Groupage facts ready";
   if (status === "movement_facts_incomplete") return "Groupage facts incomplete";
-  if (status === "signed_export_pack_submitted") return "Groupage pack submitted";
+  if (status === "signed_export_pack_submitted") return "Groupage export pack awaiting review";
   if (status === "pod_part_submitted") return "Groupage POD submitted";
   if (status === "not_grouped") return "Not grouped";
   return friendly(status);
 }
 
-function groupageEvidenceLabel(status: string | null | undefined) {
+function evidenceLabel(status: string | null | undefined) {
   if (!status || status === "not_grouped" || status === "not_started") return "Not submitted";
+  if (status === "submitted_for_review") return "Awaiting supervisor review";
+  if (status === "accepted_current") return "Accepted current";
+  if (status === "rejected_resubmit_required") return "Rejected / resubmit required";
   return statusLabel(status);
 }
 
@@ -157,6 +160,44 @@ function matchesFilter(row: ShippingControlRow, filter: string) {
   return true;
 }
 
+function GroupageCell({ row }: { row: ShippingControlRow }) {
+  if (!row.grouped_yn) {
+    return <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-700">Not grouped</span>;
+  }
+
+  return (
+    <div className="space-y-1">
+      <Link href={`/internal/shipping-control/groupage-movements/${row.groupage_movement_id}`} className="font-semibold text-indigo-900 hover:underline">
+        {row.groupage_movement_ref ?? "Groupage movement"}
+      </Link>
+      <span className={`block w-fit rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.groupage_export_pack_status)}`}>
+        Export pack: {evidenceLabel(row.groupage_export_pack_status)}
+      </span>
+      <span className={`block w-fit rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.groupage_pod_status)}`}>
+        POD: {evidenceLabel(row.groupage_pod_status)}
+      </span>
+    </div>
+  );
+}
+
+function DocumentsCell({ row }: { row: ShippingControlRow }) {
+  return (
+    <div className="space-y-1">
+      <span className={`inline-block rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.shipper_invoice_status)}`}>
+        Shipper document: {statusLabel(row.shipper_invoice_status)}
+      </span>
+      {!row.grouped_yn ? (
+        <span className={`block w-fit rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.export_evidence_status)}`}>
+          Export evidence: {statusLabel(row.export_evidence_status)}
+        </span>
+      ) : null}
+      <span className={`block w-fit rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.sage_readiness_status)}`}>
+        Accounting readiness: {statusLabel(row.sage_readiness_status)}
+      </span>
+    </div>
+  );
+}
+
 export default async function InternalShippingControlPage({ searchParams }: { searchParams?: Promise<{ status?: string; q?: string }> }) {
   const qp = searchParams ? await searchParams : {};
   const selectedStatus = qp.status ?? "all";
@@ -216,7 +257,7 @@ export default async function InternalShippingControlPage({ searchParams }: { se
           <div className="mt-2 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
             <div>
               <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Shipping control centre</h1>
-              <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">Read-only supervisor overview of shipment batches, package receipt truth, content matching, shipper documents, apportionment, groupage movement state, customer final invoice release readiness, draft shipment certificate/export evidence and final POD/delivery evidence. Action work belongs in focused child queues.</p>
+              <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">Read-only supervisor overview of shipment batches, receipt truth, content matching, shipper documents, apportionment, groupage evidence status and POD/delivery evidence. Groupage pack approval is movement-level; POD remains per booking ref.</p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700"><div className="font-medium text-slate-950">{staff.full_name}</div><div>{staff.role_type}</div></div>
           </div>
@@ -248,14 +289,14 @@ export default async function InternalShippingControlPage({ searchParams }: { se
                 <tr key={row.shipment_batch_id}>
                   <td className="px-3 py-3 align-top"><p className="font-semibold text-slate-950">{row.booking_ref ?? row.shipment_batch_id}</p><p className="mt-1 text-xs text-slate-500">Batch {row.shipment_batch_id.slice(0, 8)}…</p><span className={`mt-2 inline-block rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.batch_status)}`}>{statusLabel(row.batch_status)}</span></td>
                   <td className="px-3 py-3 align-top"><p className="font-semibold">{row.importer_name ?? "Importer"}</p><p className="mt-1 text-xs text-slate-600">{row.shipper_name ?? "Shipper"}</p><p className="mt-2 text-xs text-slate-500">Orders: {truncate(row.order_refs_preview, 58)}</p></td>
-                  <td className="px-3 py-3 align-top">{row.grouped_yn ? <div className="space-y-1"><p className="font-semibold text-indigo-900">{row.groupage_movement_ref}</p><span className={`inline-block rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.groupage_status)}`}>{statusLabel(row.groupage_status)}</span><span className={`block w-fit rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.groupage_export_pack_status)}`}>Groupage pack: {groupageEvidenceLabel(row.groupage_export_pack_status)}</span><span className={`block w-fit rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.groupage_pod_status)}`}>Groupage POD: {groupageEvidenceLabel(row.groupage_pod_status)}</span></div> : <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-700">Not grouped</span>}</td>
+                  <td className="px-3 py-3 align-top"><GroupageCell row={row} /></td>
                   <td className="px-3 py-3 align-top"><p><span className="text-slate-500">Dispatch:</span> {shortDate(row.dispatched_at)}</p><p className="mt-1"><span className="text-slate-500">Cut-off:</span> {shortDate(row.shipment_cutoff_at)}</p><p className="mt-1"><span className="text-slate-500">Boxes:</span> {row.box_count ?? "—"}</p></td>
                   <td className="px-3 py-3 text-right align-top"><p className="font-semibold">{n(row.package_count)} package{n(row.package_count) === 1 ? "" : "s"}</p><p className="mt-1 text-xs text-slate-600">{qty(row.item_qty)} unit{n(row.item_qty) === 1 ? "" : "s"}</p><p className="mt-2 text-xs text-slate-500">{truncate(row.package_refs_preview, 52)}</p></td>
                   <td className="px-3 py-3 align-top"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.receipt_status_summary)}`}>{statusLabel(row.receipt_status_summary)}</span>{n(row.receipt_issue_count) > 0 ? <p className="mt-2 text-xs font-semibold text-rose-700">{n(row.receipt_issue_count)} issue(s)</p> : null}</td>
                   <td className="px-3 py-3 align-top"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.allocation_status_summary)}`}>{statusLabel(row.allocation_status_summary)}</span><p className="mt-2 text-xs text-slate-600">{n(row.allocated_package_count)} matched · {n(row.unallocated_package_count)} missing</p></td>
-                  <td className="px-3 py-3 align-top"><div className="space-y-1"><span className={`inline-block rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.shipper_invoice_status)}`}>Shipper document: {statusLabel(row.shipper_invoice_status)}</span><span className={`block w-fit rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.export_evidence_status)}`}>Export evidence: {statusLabel(row.export_evidence_status)}</span><span className={`block w-fit rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.sage_readiness_status)}`}>Accounting readiness: {statusLabel(row.sage_readiness_status)}</span></div></td>
+                  <td className="px-3 py-3 align-top"><DocumentsCell row={row} /></td>
                   <td className="px-3 py-3 align-top"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.next_action)}`}>{statusLabel(row.next_action)}</span></td>
-                  <td className="px-3 py-3 align-top"><div className="flex flex-col gap-2">{row.grouped_yn && row.groupage_movement_id ? <Link href={`/shipper/groupage-movements/${row.groupage_movement_id}`} className="rounded-xl border border-indigo-300 bg-indigo-50 px-3 py-2 text-xs font-semibold text-indigo-900 hover:bg-indigo-100">Open groupage movement</Link> : null}<Link href={`/internal/shipping-control/${row.shipment_batch_id}`} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50">View batch detail</Link><Link href={`/internal/shipping-control/readiness/${row.shipment_batch_id}`} className="rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-900 hover:bg-emerald-100">Readiness / route preview</Link><Link href="/internal/shipping-control/shipper-documents" className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50">Review shipper documents</Link><Link href={`/internal/export-evidence/draft/${row.shipment_batch_id}`} className="rounded-xl border border-indigo-300 bg-indigo-50 px-3 py-2 text-xs font-semibold text-indigo-900 hover:bg-indigo-100">Review export basis / draft shipment certificate</Link><Link href={`/internal/export-evidence/final/${row.shipment_batch_id}`} className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900 hover:bg-amber-100">Review final evidence / POD</Link></div></td>
+                  <td className="px-3 py-3 align-top"><div className="flex flex-col gap-2">{row.grouped_yn && row.groupage_movement_id ? <Link href={`/internal/shipping-control/groupage-movements/${row.groupage_movement_id}`} className="rounded-xl border border-indigo-300 bg-indigo-50 px-3 py-2 text-xs font-semibold text-indigo-900 hover:bg-indigo-100">Open groupage movement</Link> : null}<Link href={`/internal/shipping-control/${row.shipment_batch_id}`} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50">View batch detail</Link><Link href={`/internal/shipping-control/readiness/${row.shipment_batch_id}`} className="rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-900 hover:bg-emerald-100">Readiness / route preview</Link><Link href="/internal/shipping-control/shipper-documents" className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50">Review shipper documents</Link><Link href={`/internal/export-evidence/draft/${row.shipment_batch_id}`} className="rounded-xl border border-indigo-300 bg-indigo-50 px-3 py-2 text-xs font-semibold text-indigo-900 hover:bg-indigo-100">Review export basis / draft shipment certificate</Link><Link href={`/internal/export-evidence/final/${row.shipment_batch_id}`} className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900 hover:bg-amber-100">Review final evidence / POD</Link></div></td>
                 </tr>
               ))}
             </tbody></table></div>
