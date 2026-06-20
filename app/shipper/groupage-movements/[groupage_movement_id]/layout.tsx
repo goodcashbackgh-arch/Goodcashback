@@ -1,5 +1,7 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { FloatingActionBar } from "@/app/_components/FloatingActionBar";
+import { createClient } from "@/utils/supabase/server";
 
 export default async function ShipperGroupageMovementLayout({
   children,
@@ -9,6 +11,28 @@ export default async function ShipperGroupageMovementLayout({
   params: Promise<{ groupage_movement_id: string }>;
 }) {
   const { groupage_movement_id: groupageMovementId } = await params;
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+
+  if (user) {
+    const { data: shipperUser } = await supabase
+      .from("shipper_users")
+      .select("id")
+      .eq("auth_user_id", user.id)
+      .eq("active", true)
+      .maybeSingle();
+
+    if (!shipperUser) {
+      const { data: staff } = await supabase
+        .from("staff")
+        .select("id")
+        .eq("auth_user_id", user.id)
+        .eq("active", true)
+        .maybeSingle();
+
+      if (staff) redirect(`/internal/shipping-control/groupage-movements/${groupageMovementId}`);
+    }
+  }
 
   return (
     <>
