@@ -60,6 +60,14 @@ function friendly(value: string | null | undefined) {
   return value.replaceAll("_", " ").replace(/^./, (first) => first.toUpperCase());
 }
 
+function evidenceLabel(value: string | null | undefined) {
+  if (value === "submitted_for_review") return "Awaiting supervisor review";
+  if (value === "accepted_current") return "Accepted current";
+  if (value === "rejected_resubmit_required") return "Rejected / resubmit required";
+  if (!value || value === "not_started") return "Not submitted";
+  return friendly(value);
+}
+
 function statusClass(status: string | null | undefined) {
   if (["accepted_current", "movement_facts_ready", "complete", "pod_fully_accepted", "signed_export_pack_fully_accepted"].includes(status ?? "")) return "bg-emerald-100 text-emerald-800";
   if (["rejected_resubmit_required", "voided"].includes(status ?? "")) return "bg-rose-100 text-rose-800";
@@ -94,6 +102,9 @@ export default async function InternalGroupageMovementDetailPage({ params }: { p
   const totalPackages = rows.reduce((sum, row) => sum + n(row.package_count), 0);
   const totalQty = rows.reduce((sum, row) => sum + n(row.item_qty), 0);
   const totalValue = rows.reduce((sum, row) => sum + n(row.invoice_value_gbp), 0);
+  const exportSubmitted = rows.filter((row) => row.export_evidence_status === "submitted_for_review").length;
+  const exportAccepted = rows.filter((row) => row.export_evidence_status === "accepted_current").length;
+  const podAccepted = rows.filter((row) => row.pod_status === "accepted_current").length;
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-6 text-slate-950 sm:px-6 sm:py-8">
@@ -106,7 +117,7 @@ export default async function InternalGroupageMovementDetailPage({ params }: { p
           <div className="mt-2 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
             <div>
               <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Groupage Movement {first?.groupage_movement_ref ?? groupageMovementId}</h1>
-              <p className="mt-2 text-sm text-slate-600">Supervisor visibility across included importer shipment batches. Groupage status is aggregate only; batch/order status remains canonical.</p>
+              <p className="mt-2 text-sm text-slate-600">Internal review hub for the movement pack and each underlying booking ref. The movement is the wrapper; the batch/order evidence records remain the approval source of truth.</p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700"><div className="font-medium text-slate-950">{(staff as any).full_name}</div><div>{(staff as any).role_type}</div></div>
           </div>
@@ -117,16 +128,24 @@ export default async function InternalGroupageMovementDetailPage({ params }: { p
         {first ? (
           <>
             <section className="grid gap-4 md:grid-cols-4">
-              <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Status</p><p className={`mt-1 w-fit rounded-full px-3 py-1 text-sm font-semibold ${statusClass(first.groupage_status)}`}>{friendly(first.groupage_status)}</p></div>
+              <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Movement status</p><p className={`mt-1 w-fit rounded-full px-3 py-1 text-sm font-semibold ${statusClass(first.groupage_status)}`}>{friendly(first.groupage_status)}</p></div>
               <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Booking refs</p><p className="mt-1 text-2xl font-semibold">{rows.length}</p></div>
-              <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Packages / qty</p><p className="mt-1 text-2xl font-semibold">{totalPackages} / {qty(totalQty)}</p></div>
-              <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Invoice value</p><p className="mt-1 text-2xl font-semibold">{money(totalValue)}</p></div>
+              <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">Export evidence</p><p className="mt-1 text-sm font-semibold">{exportSubmitted} awaiting · {exportAccepted} accepted</p></div>
+              <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs uppercase tracking-wide text-slate-500">POD</p><p className="mt-1 text-sm font-semibold">{podAccepted} accepted · {rows.length - podAccepted} open</p></div>
+            </section>
+
+            <section className="rounded-3xl border border-indigo-200 bg-indigo-50 p-5 shadow-sm sm:p-6">
+              <h2 className="text-xl font-semibold text-indigo-950">Groupage pack review logic</h2>
+              <p className="mt-2 text-sm leading-6 text-indigo-900">Use this page to see the movement-level facts, then open each booking ref evidence lane to view/download and accept or reject the uploaded signed COS/MBL/export pack and POD. Approval remains on the existing batch evidence pages so the audit trail stays per booking ref.</p>
+              <div className="mt-4 flex flex-wrap gap-3">
+                <Link href={`/shipper/groupage-movements/${groupageMovementId}/export-pack`} target="_blank" className="rounded-xl border border-indigo-300 bg-white px-4 py-2 text-sm font-semibold text-indigo-900 hover:bg-indigo-100">View draft combined export pack</Link>
+                <Link href={`/shipper/groupage-movements/${groupageMovementId}/sales-invoices-zip`} className="rounded-xl border border-sky-300 bg-white px-4 py-2 text-sm font-semibold text-sky-900 hover:bg-sky-100">Download supporting shipment documents ZIP</Link>
+              </div>
             </section>
 
             <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
               <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                 <div><h2 className="text-xl font-semibold">Movement facts</h2><p className="mt-2 text-sm text-slate-600">These facts should match the signed export pack and underlying batch completion fields.</p></div>
-                <Link href={`/shipper/groupage-movements/${groupageMovementId}/export-pack`} target="_blank" className="rounded-xl border border-indigo-300 bg-indigo-50 px-4 py-2 text-sm font-semibold text-indigo-900 hover:bg-indigo-100">View combined export pack</Link>
               </div>
               <div className="mt-4 grid gap-3 md:grid-cols-3">
                 {field("Exporter", first.exporter_name_snapshot)}
@@ -135,6 +154,8 @@ export default async function InternalGroupageMovementDetailPage({ params }: { p
                 {field("Shipper", first.shipper_name)}
                 {field("Movement consignee", first.movement_consignee_name_snapshot)}
                 {field("Consignee address", first.movement_consignee_address_snapshot)}
+                {field("Notify party", first.notify_party_name_snapshot)}
+                {field("Notify party address", first.notify_party_address_snapshot)}
                 {field("MBOL / BOL", first.mbl_bol_sea_waybill_ref)}
                 {field("Container / seal", `${first.container_number ?? "—"} / ${first.seal_number ?? "—"}`)}
                 {field("Vessel / voyage", first.vessel_voyage)}
@@ -145,10 +166,11 @@ export default async function InternalGroupageMovementDetailPage({ params }: { p
             </section>
 
             <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-              <h2 className="text-xl font-semibold">Included booking refs</h2>
+              <h2 className="text-xl font-semibold">Included booking refs and evidence actions</h2>
+              <p className="mt-2 text-sm text-slate-600">Open the final evidence lane to view/download the signed COS/MBL/export evidence and accept or reject it. Open the POD lane for delivery evidence when submitted.</p>
               <div className="mt-4 overflow-x-auto rounded-2xl border border-slate-200">
                 <table className="min-w-full divide-y divide-slate-200 text-sm"><thead className="bg-slate-100 text-xs uppercase tracking-wide text-slate-500"><tr><th className="px-3 py-2 text-left">Booking ref</th><th className="px-3 py-2 text-left">Importer / recipient</th><th className="px-3 py-2 text-right">Packages / qty</th><th className="px-3 py-2 text-right">Value</th><th className="px-3 py-2 text-left">Evidence status</th><th className="px-3 py-2 text-left">Actions</th></tr></thead><tbody className="divide-y divide-slate-100 bg-white">
-                  {rows.map((row) => <tr key={row.shipment_batch_id}><td className="px-3 py-2 font-semibold">{row.booking_ref ?? row.shipment_batch_id}</td><td className="px-3 py-2"><p className="font-semibold">{row.importer_name ?? "Importer"}</p><p className="text-xs text-slate-500">Recipient: {row.final_recipient_name ?? "Not set"}</p><p className="text-xs text-slate-500">{row.final_recipient_address ?? "Recipient address missing"}</p></td><td className="px-3 py-2 text-right"><p className="font-semibold">{n(row.package_count)} pkg</p><p className="text-xs text-slate-500">Qty {qty(row.item_qty)}</p></td><td className="px-3 py-2 text-right font-semibold">{money(row.invoice_value_gbp)}</td><td className="px-3 py-2"><span className={`inline-block rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.export_evidence_status)}`}>Export: {friendly(row.export_evidence_status)}</span><span className={`mt-1 block w-fit rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.pod_status)}`}>POD: {friendly(row.pod_status)}</span></td><td className="px-3 py-2"><div className="flex flex-col gap-2"><Link href={`/internal/shipping-control/${row.shipment_batch_id}`} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50">View batch detail</Link><Link href={`/internal/export-evidence/final/${row.shipment_batch_id}`} className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900 hover:bg-amber-100">Review final evidence / POD</Link></div></td></tr>)}
+                  {rows.map((row) => <tr key={row.shipment_batch_id}><td className="px-3 py-2 font-semibold">{row.booking_ref ?? row.shipment_batch_id}</td><td className="px-3 py-2"><p className="font-semibold">{row.importer_name ?? "Importer"}</p><p className="text-xs text-slate-500">Recipient: {row.final_recipient_name ?? "Not set"}</p><p className="text-xs text-slate-500">{row.final_recipient_address ?? "Recipient address missing"}</p></td><td className="px-3 py-2 text-right"><p className="font-semibold">{n(row.package_count)} pkg</p><p className="text-xs text-slate-500">Qty {qty(row.item_qty)}</p></td><td className="px-3 py-2 text-right font-semibold">{money(row.invoice_value_gbp)}</td><td className="px-3 py-2"><span className={`inline-block rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.export_evidence_status)}`}>Export pack: {evidenceLabel(row.export_evidence_status)}</span><span className={`mt-1 block w-fit rounded-full px-2 py-1 text-xs font-semibold ${statusClass(row.pod_status)}`}>POD: {evidenceLabel(row.pod_status)}</span></td><td className="px-3 py-2"><div className="flex flex-col gap-2"><Link href={`/internal/export-evidence/final/${row.shipment_batch_id}`} className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900 hover:bg-amber-100">View / approve signed pack</Link><Link href={`/internal/export-evidence/pod/${row.shipment_batch_id}`} className="rounded-xl border border-sky-300 bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-900 hover:bg-sky-100">View / approve POD</Link><Link href={`/internal/shipping-control/${row.shipment_batch_id}`} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50">View batch detail</Link></div></td></tr>)}
                 </tbody></table>
               </div>
             </section>
