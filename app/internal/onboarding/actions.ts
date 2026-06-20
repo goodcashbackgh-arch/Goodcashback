@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 
 function textValue(formData: FormData, key: string) {
@@ -17,7 +18,7 @@ function nullableUuid(formData: FormData, key: string) {
   return value.length ? value : null;
 }
 
-async function callRpc(name: string, args: Record<string, unknown>) {
+async function callRpc(name: string, args: Record<string, unknown>, successMessage: string) {
   const supabase = await createClient();
   const { error } = await (supabase as any).rpc(name, args);
   if (error) {
@@ -25,6 +26,7 @@ async function callRpc(name: string, args: Record<string, unknown>) {
   }
   revalidatePath("/internal/onboarding");
   revalidatePath("/internal/access-control");
+  redirect(`/internal/onboarding?saved=${encodeURIComponent(successMessage)}`);
 }
 
 export async function upsertShipperBranchAction(formData: FormData) {
@@ -36,7 +38,7 @@ export async function upsertShipperBranchAction(formData: FormData) {
     p_country_id: nullableUuid(formData, "country_id"),
     p_vat_treatment: nullableText(formData, "vat_treatment"),
     p_vat_registration_country: nullableText(formData, "vat_registration_country"),
-  });
+  }, "Shipping-company branch saved");
 }
 
 export async function upsertImporterBranchAction(formData: FormData) {
@@ -47,7 +49,7 @@ export async function upsertImporterBranchAction(formData: FormData) {
     p_company_name: textValue(formData, "company_name"),
     p_trading_name: nullableText(formData, "trading_name"),
     p_address: nullableText(formData, "address"),
-  });
+  }, "Importer/customer branch saved");
 }
 
 export async function upsertImporterDeliveryProfileAction(formData: FormData) {
@@ -61,7 +63,7 @@ export async function upsertImporterDeliveryProfileAction(formData: FormData) {
     p_final_recipient_country: textValue(formData, "final_recipient_country"),
     p_final_recipient_phone: nullableText(formData, "final_recipient_phone"),
     p_final_recipient_email: nullableText(formData, "final_recipient_email"),
-  });
+  }, "Importer/customer delivery profile saved");
 }
 
 export async function upsertExportEvidenceProfileAction(formData: FormData) {
@@ -77,7 +79,7 @@ export async function upsertExportEvidenceProfileAction(formData: FormData) {
     p_default_movement_consignee_address: textValue(formData, "default_movement_consignee_address"),
     p_default_notify_party_name: nullableText(formData, "default_notify_party_name"),
     p_default_notify_party_address: nullableText(formData, "default_notify_party_address"),
-  });
+  }, "Export evidence profile saved");
 }
 
 export async function setSupervisorScopeAction(formData: FormData) {
@@ -90,7 +92,7 @@ export async function setSupervisorScopeAction(formData: FormData) {
     p_supervisor_staff_id: nullableUuid(formData, "supervisor_staff_id"),
     p_scope_mode: textValue(formData, "scope_mode"),
     p_shipper_ids: shipperIds,
-  });
+  }, "Supervisor scope saved");
 }
 
 export async function linkOperatorImporterAction(formData: FormData) {
@@ -99,5 +101,5 @@ export async function linkOperatorImporterAction(formData: FormData) {
     p_importer_id: nullableUuid(formData, "importer_id"),
     p_relationship_type: textValue(formData, "relationship_type"),
     p_role_code: textValue(formData, "role_code"),
-  });
+  }, "Existing user link saved");
 }
