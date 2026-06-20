@@ -9,13 +9,20 @@ export const dynamic = "force-dynamic";
 type PackRow = {
   groupage_movement_ref: string | null;
   booking_ref: string | null;
+  order_id: string | null;
+  order_ref: string | null;
   sales_invoice_ref: string | null;
 };
 
 type InvoiceRow = {
   id: string;
+  order_id: string | null;
   sage_invoice_id: string | null;
   sage_reference: string | null;
+  sage_status: string | null;
+  invoice_type: string | null;
+  sage_posted_at: string | null;
+  created_at: string | null;
 };
 
 function safeName(value: string | null | undefined) {
@@ -79,6 +86,18 @@ function zip(files: { name: string; content: Buffer | string }[]) {
   return Buffer.concat([...localParts, centralDirectory, end]);
 }
 
+function pickInvoiceForRef(ref: string, groupRows: PackRow[], invoices: InvoiceRow[]) {
+  const groupOrderIds = new Set(unique(groupRows.map((row) => row.order_id)));
+  const candidates = invoices.filter((invoice) => invoice.order_id && groupOrderIds.has(invoice.order_id));
+  const wantedRef = normal(ref);
+
+  return candidates.find((invoice) => normal(invoice.sage_reference) === wantedRef)
+    ?? candidates.find((invoice) => normal(invoice.sage_invoice_id) === wantedRef)
+    ?? (candidates.length === 1 ? candidates[0] : null)
+    ?? candidates.sort((a, b) => String(b.sage_posted_at ?? b.created_at ?? "").localeCompare(String(a.sage_posted_at ?? a.created_at ?? "")))[0]
+    ?? null;
+}
+
 async function fetchInvoicePdf(invoiceId: string, origin: string) {
   const response = await sageApiFetch(`/sales_invoices/${encodeURIComponent(invoiceId)}`, {
     method: "GET",
@@ -104,28 +123,37 @@ export async function GET(request: Request, { params }: { params: Promise<{ grou
   if (error) return new NextResponse(`Unable to generate supporting ZIP: ${error.message}`, { status: 400 });
 
   const rows = (data ?? []) as PackRow[];
-  const invoiceRefs = unique(rows.map((row) => row.sales_invoice_ref));
-  if (invoiceRefs.length === 0) return new NextResponse("No posted customer sales invoice references found for this Groupage Movement.", { status: 404 });
+  const invoiceRows = rows.filter((row) => String(row.sales_invoice_ref ?? "").trim());
+  if (invoiceRows.length === 0) return new NextResponse("No posted customer sales invoice references found for this Groupage Movement.", { status: 404 });
 
-  const [byRef, byId] = await Promise.all([
-    supabaseAdmin.from("sales_invoices").select("id, sage_invoice_id, sage_reference").eq("invoice_type", "main").eq("sage_status", "posted").in("sage_reference", invoiceRefs),
-    supabaseAdmin.from("sales_invoices").select("id, sage_invoice_id, sage_reference").eq("invoice_type", "main").eq("sage_status", "posted").in("sage_invoice_id", invoiceRefs),
-  ]);
-  if (byRef.error) return new NextResponse(`Unable to resolve invoice references: ${byRef.error.message}`, { status: 400 });
-  if (byId.error) return new NextResponse(`Unable to resolve invoice ids: ${byId.error.message}`, { status: 400 });
+  const orderIds = unique(invoiceRows.map((row) => row.order_id));
+  if (orderIds.length === 0) return new NextResponse("No order ids were returned for the Groupage supporting document rows.", { status: 404 });
 
-  const invoices = new Map<string, InvoiceRow>();
-  for (const invoice of [...(byRef.data ?? []), ...(byId.data ?? [])] as InvoiceRow[]) invoices.set(invoice.id, invoice);
+  const { data: invoiceData, error: invoiceError } = await supabaseAdmin
+    .from("sales_invoices")
+    .select("id, order_id, sage_invoice_id, sage_reference, sage_status, invoice_type, sage_posted_at, created_at")
+    .in("order_id", orderIds)
+    .eq("invoice_type", "main")
+    .eq("sage_status", "posted");
+  if (invoiceError) return new NextResponse(`Unable to resolve supporting invoice documents: ${invoiceError.message}`, { status: 400 });
+
+  const invoices = (invoiceData ?? []) as InvoiceRow[];
+  const grouped = new Map<string, PackRow[]>();
+  for (const row of invoiceRows) {
+    const ref = String(row.sales_invoice_ref).trim();
+    grouped.set(ref, [...(grouped.get(ref) ?? []), row]);
+  }
 
   const files: { name: string; content: Buffer | string }[] = [];
   const warnings: string[] = [];
 
-  for (const ref of invoiceRefs) {
-    const invoice = Array.from(invoices.values()).find((row) => normal(row.sage_reference) === normal(ref) || normal(row.sage_invoice_id) === normal(ref));
+  for (const [ref, groupRows] of grouped.entries()) {
+    const invoice = pickInvoiceForRef(ref, groupRows, invoices);
     const invoiceId = String(invoice?.sage_invoice_id ?? "").trim();
-    const bookingRefs = unique(rows.filter((row) => normal(row.sales_invoice_ref) === normal(ref)).map((row) => row.booking_ref));
+    const bookingRefs = unique(groupRows.map((row) => row.booking_ref));
+    const orderRefs = unique(groupRows.map((row) => row.order_ref));
     if (!invoiceId) {
-      warnings.push(`${ref}: posted document id not found.`);
+      warnings.push(`${ref}: posted document id not found for booking(s) ${bookingRefs.join(", ") || "unknown"} / order(s) ${orderRefs.join(", ") || "unknown"}.`);
       continue;
     }
     try {
