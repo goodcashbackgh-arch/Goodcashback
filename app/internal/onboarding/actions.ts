@@ -18,15 +18,23 @@ function nullableUuid(formData: FormData, key: string) {
   return value.length ? value : null;
 }
 
-async function callRpc(name: string, args: Record<string, unknown>, successMessage: string) {
+async function rpcNoRedirect(name: string, args: Record<string, unknown>) {
   const supabase = await createClient();
   const { error } = await (supabase as any).rpc(name, args);
   if (error) {
     throw new Error(error.message);
   }
+}
+
+function finish(successMessage: string) {
   revalidatePath("/internal/onboarding");
   revalidatePath("/internal/access-control");
   redirect(`/internal/onboarding?saved=${encodeURIComponent(successMessage)}`);
+}
+
+async function callRpc(name: string, args: Record<string, unknown>, successMessage: string) {
+  await rpcNoRedirect(name, args);
+  finish(successMessage);
 }
 
 export async function upsertShipperBranchAction(formData: FormData) {
@@ -96,10 +104,27 @@ export async function setSupervisorScopeAction(formData: FormData) {
 }
 
 export async function linkOperatorImporterAction(formData: FormData) {
-  await callRpc("internal_link_operator_importer_v1", {
+  const roleCodes = formData
+    .getAll("role_codes")
+    .map((value) => String(value).trim())
+    .filter((value): value is "customer" | "importer" => value === "customer" || value === "importer");
+
+  if (roleCodes.length === 0) {
+    throw new Error("Select at least one portal role");
+  }
+
+  const args = {
     p_operator_id: nullableUuid(formData, "operator_id"),
     p_importer_id: nullableUuid(formData, "importer_id"),
     p_relationship_type: textValue(formData, "relationship_type"),
-    p_role_code: textValue(formData, "role_code"),
-  }, "Existing user link saved");
+  };
+
+  for (const roleCode of roleCodes) {
+    await rpcNoRedirect("internal_link_operator_importer_v1", {
+      ...args,
+      p_role_code: roleCode,
+    });
+  }
+
+  finish(roleCodes.length === 2 ? "Existing user linked as customer and importer" : `Existing user linked as ${roleCodes[0]}`);
 }
