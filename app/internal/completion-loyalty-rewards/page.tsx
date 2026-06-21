@@ -6,8 +6,10 @@ import {
   approveCompletionLoyaltyRewardAction,
   confirmCompletionLoyaltyRewardFundingAction,
 } from "./actions";
+import { WorkbenchClientEnhancements } from "./WorkbenchClientEnhancements";
 
-type SearchParams = { success?: string; error?: string };
+type FilterStatus = "all" | "proposed" | "pending_funding" | "released" | "blocked";
+type SearchParams = { success?: string; error?: string; status?: string; order_ref?: string };
 type BlockerDetails = Record<string, unknown>;
 
 type WorkbenchRow = {
@@ -150,6 +152,11 @@ function summaryClass(tone: SummaryCard["tone"]) {
   return "border-amber-200 bg-amber-50 text-amber-950";
 }
 
+function normalizeFilterStatus(value: string | null | undefined): FilterStatus {
+  if (value === "proposed" || value === "pending_funding" || value === "released" || value === "blocked") return value;
+  return "all";
+}
+
 function isProposed(row: WorkbenchRow) {
   return row.workbench_status === "proposed_pending_supervisor_review";
 }
@@ -165,6 +172,20 @@ function isReleased(row: WorkbenchRow) {
 function isBlocked(row: WorkbenchRow) {
   const status = row.workbench_status ?? "";
   return !isProposed(row) && !isPendingFunding(row) && !isReleased(row) && (status.includes("blocked") || status.includes("not_ready") || Boolean(row.completion_blocker) || Boolean(row.basis_blocker));
+}
+
+function rowMatchesStatus(row: WorkbenchRow, status: FilterStatus) {
+  if (status === "proposed") return isProposed(row);
+  if (status === "pending_funding") return isPendingFunding(row);
+  if (status === "released") return isReleased(row);
+  if (status === "blocked") return isBlocked(row);
+  return true;
+}
+
+function rowMatchesOrderRef(row: WorkbenchRow, query: string) {
+  const trimmed = query.trim().toLowerCase();
+  if (!trimmed) return true;
+  return String(row.order_ref ?? "").toLowerCase().includes(trimmed);
 }
 
 function field(label: string, value: ReactNode) {
@@ -191,7 +212,19 @@ function TextInput({ name, label, defaultValue, required, placeholder }: { name:
   );
 }
 
-function AmountInput({ name, label, defaultValue, required = true }: { name: string; label: string; defaultValue?: string; required?: boolean }) {
+function AmountInput({
+  name,
+  label,
+  defaultValue,
+  required = true,
+  loyaltyField,
+}: {
+  name: string;
+  label: string;
+  defaultValue?: string;
+  required?: boolean;
+  loyaltyField?: "approved_amount" | "reward_rate";
+}) {
   return (
     <label className="block text-sm font-medium text-slate-700">
       {label}
@@ -202,6 +235,7 @@ function AmountInput({ name, label, defaultValue, required = true }: { name: str
         step="0.01"
         defaultValue={defaultValue}
         required={required}
+        data-loyalty-field={loyaltyField}
         className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900"
       />
     </label>
@@ -222,13 +256,23 @@ function NotesInput() {
 }
 
 function ApprovalForm({ row }: { row: WorkbenchRow }) {
+  const qualifyingNetSpend = numeric(row.qualifying_net_spend_gbp);
+
   return (
-    <form action={approveCompletionLoyaltyRewardAction} className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 p-4">
+    <form
+      action={approveCompletionLoyaltyRewardAction}
+      data-loyalty-approval-form="true"
+      data-qualifying-net-spend={qualifyingNetSpend.toFixed(2)}
+      className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 p-4"
+    >
       <input type="hidden" name="order_id" value={row.order_id ?? ""} />
       <h3 className="text-sm font-semibold text-amber-950">Record approval-in-principle</h3>
+      <p className="mt-1 text-xs text-amber-900">
+        Amount and rate are linked to qualifying net spend ({money(row.qualifying_net_spend_gbp)}). Edit either field and the other recalculates before approval.
+      </p>
       <div className="mt-3 grid gap-3 md:grid-cols-2">
-        <AmountInput name="approved_amount_gbp" label="Approved amount GBP" defaultValue={formatInputNumber(row.suggested_reward_gbp)} />
-        <AmountInput name="reward_rate_pct" label="Reward rate percent" defaultValue="10.00" />
+        <AmountInput name="approved_amount_gbp" label="Approved amount GBP" defaultValue={formatInputNumber(row.suggested_reward_gbp)} loyaltyField="approved_amount" />
+        <AmountInput name="reward_rate_pct" label="Reward rate percent" defaultValue="10.00" loyaltyField="reward_rate" />
         <NotesInput />
       </div>
       <button className="mt-4 rounded-lg bg-amber-900 px-4 py-2 text-sm font-semibold text-white hover:bg-amber-800">
@@ -258,34 +302,11 @@ function FundingForm({ row }: { row: WorkbenchRow }) {
   );
 }
 
-function FundingProofScript() {
-  const script = `
-    document.addEventListener('submit', function (event) {
-      var form = event.target;
-      if (!form || !form.matches || !form.matches('[data-funding-proof-form="true"]')) return;
-      var dva = form.querySelector('[name="dva_statement_line_id"]');
-      var evidence = form.querySelector('[name="funding_evidence_ref"]');
-      if (!((dva && dva.value.trim()) || (evidence && evidence.value.trim()))) {
-        event.preventDefault();
-        if (evidence) evidence.setCustomValidity('Funding proof required: enter a DVA statement line ID or funding evidence reference.');
-        if (evidence) evidence.reportValidity();
-      } else if (evidence) {
-        evidence.setCustomValidity('');
-      }
-    }, true);
-    document.addEventListener('input', function (event) {
-      var form = event.target && event.target.closest ? event.target.closest('[data-funding-proof-form="true"]') : null;
-      if (!form) return;
-      var evidence = form.querySelector('[name="funding_evidence_ref"]');
-      if (evidence) evidence.setCustomValidity('');
-    }, true);
-  `;
-
-  return <script dangerouslySetInnerHTML={{ __html: script }} />;
-}
-
 export default async function CompletionLoyaltyRewardsPage({ searchParams }: { searchParams?: Promise<SearchParams> }) {
   const params = searchParams ? await searchParams : {};
+  const filterStatus = normalizeFilterStatus(params.status);
+  const orderRefQuery = (params.order_ref ?? "").trim();
+  const filterActive = filterStatus !== "all" || orderRefQuery.length > 0;
   const supabase = await createClient();
   const {
     data: { user },
@@ -337,6 +358,8 @@ export default async function CompletionLoyaltyRewardsPage({ searchParams }: { s
     };
   });
 
+  const filteredRows = rows.filter((row) => rowMatchesStatus(row, filterStatus) && rowMatchesOrderRef(row, orderRefQuery));
+
   const error = workbenchResult.error;
   const detailError = proposalsResult.error || settlementResult.error;
 
@@ -369,7 +392,7 @@ export default async function CompletionLoyaltyRewardsPage({ searchParams }: { s
 
   return (
     <main className="mx-auto max-w-7xl px-6 py-10">
-      <FundingProofScript />
+      <WorkbenchClientEnhancements />
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <div>
           <Link href="/internal" className="text-sm font-medium text-slate-600 hover:text-slate-950">← Internal tools</Link>
@@ -396,12 +419,49 @@ export default async function CompletionLoyaltyRewardsPage({ searchParams }: { s
         ))}
       </section>
 
+      <form method="get" className="mt-6 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="grid gap-3 md:grid-cols-[220px_1fr_auto_auto] md:items-end">
+          <label className="block text-sm font-medium text-slate-700">
+            Status
+            <select
+              name="status"
+              defaultValue={filterStatus}
+              className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900"
+            >
+              <option value="all">All statuses</option>
+              <option value="proposed">Reward-ready proposals</option>
+              <option value="pending_funding">Approved pending funding</option>
+              <option value="released">Released dashboard credit</option>
+              <option value="blocked">Blocked / not ready</option>
+            </select>
+          </label>
+          <label className="block text-sm font-medium text-slate-700">
+            Order reference
+            <input
+              name="order_ref"
+              defaultValue={orderRefQuery}
+              placeholder="e.g. ORD-1777620991295"
+              className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900"
+            />
+          </label>
+          <button className="rounded-lg bg-slate-950 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">Apply filter</button>
+          {filterActive ? (
+            <Link href="/internal/completion-loyalty-rewards" className="rounded-lg border border-slate-300 px-4 py-2 text-center text-sm font-semibold text-slate-700 hover:bg-slate-50">
+              Clear
+            </Link>
+          ) : null}
+        </div>
+        <p className="mt-3 text-xs text-slate-500">
+          Showing {filteredRows.length} of {rows.length} loyalty reward rows.
+        </p>
+      </form>
+
       <section className="mt-8 space-y-5">
-        {rows.length === 0 ? (
+        {filteredRows.length === 0 ? (
           <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-600">
-            No completion loyalty reward rows are currently in the workbench.
+            {rows.length === 0 ? "No completion loyalty reward rows are currently in the workbench." : "No completion loyalty reward rows match this filter."}
           </div>
-        ) : rows.map((row) => (
+        ) : filteredRows.map((row) => (
           <article key={`${row.order_id ?? row.order_ref}-${row.approval_id ?? "proposal"}`} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
