@@ -12,6 +12,8 @@ type FloatingActionBarProps = {
 
 export const SHIPMENT_FLOATING_ACTION_HIDE_SENTINEL_ID = "shipment-floating-actions-hide-sentinel";
 
+const BOTTOM_HIDE_DISTANCE_PX = 180;
+
 export function FloatingActionBar({
   children,
   hideWhenVisibleId = SHIPMENT_FLOATING_ACTION_HIDE_SENTINEL_ID,
@@ -21,26 +23,49 @@ export function FloatingActionBar({
   const [hidden, setHidden] = useState(false);
 
   useEffect(() => {
+    let sentinelHidden = false;
+
+    const isNearBottom = () => {
+      const doc = document.documentElement;
+      const body = document.body;
+      const scrollTop = window.scrollY || window.pageYOffset || doc.scrollTop || 0;
+      const viewportHeight = window.innerHeight || doc.clientHeight || 0;
+      const scrollHeight = Math.max(doc.scrollHeight, body?.scrollHeight ?? 0);
+
+      return scrollHeight - (scrollTop + viewportHeight) <= BOTTOM_HIDE_DISTANCE_PX;
+    };
+
+    const applyHiddenState = () => {
+      setHidden(sentinelHidden || isNearBottom());
+    };
+
     const target =
       document.getElementById(hideWhenVisibleId) ??
       document.querySelector<HTMLElement>("[data-floating-actions-hide-sentinel]") ??
       document.querySelector<HTMLElement>("main section:last-of-type");
 
-    if (!target || typeof IntersectionObserver === "undefined") {
-      setHidden(false);
-      return;
-    }
+    const observer =
+      target && typeof IntersectionObserver !== "undefined"
+        ? new IntersectionObserver(
+            ([entry]) => {
+              sentinelHidden = entry.isIntersecting;
+              applyHiddenState();
+            },
+            { threshold: 0.01 },
+          )
+        : null;
 
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        setHidden(entry.isIntersecting);
-      },
-      { threshold: 0.01 },
-    );
+    if (target && observer) observer.observe(target);
 
-    observer.observe(target);
+    applyHiddenState();
+    window.addEventListener("scroll", applyHiddenState, { passive: true });
+    window.addEventListener("resize", applyHiddenState);
 
-    return () => observer.disconnect();
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("scroll", applyHiddenState);
+      window.removeEventListener("resize", applyHiddenState);
+    };
   }, [hideWhenVisibleId]);
 
   return (
