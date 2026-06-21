@@ -8,6 +8,7 @@ import {
 } from "./actions";
 
 type SearchParams = { success?: string; error?: string };
+type BlockerDetails = Record<string, unknown>;
 
 type WorkbenchRow = {
   order_id: string | null;
@@ -25,6 +26,22 @@ type WorkbenchRow = {
   amount_released_gbp: number | string | null;
   available_dashboard_credit_gbp: number | string | null;
   workbench_status: string | null;
+  approval_blocker?: string | null;
+  final_settlement_state?: string | null;
+  potential_credit_pending_review_gbp?: number | string | null;
+  blocker_details_json?: BlockerDetails | null;
+};
+
+type ProposalRow = {
+  order_id: string | null;
+  approval_blocker: string | null;
+  final_settlement_state: string | null;
+  blocker_details_json: BlockerDetails | null;
+};
+
+type SettlementRow = {
+  order_id: string | null;
+  potential_credit_pending_review_gbp: number | string | null;
 };
 
 type SummaryCard = {
@@ -56,6 +73,66 @@ function formatInputNumber(value: number | string | null | undefined, fallback =
 function friendly(value: string | null | undefined) {
   if (!value) return "—";
   return value.replaceAll("_", " ").replace(/^./, (first) => first.toUpperCase());
+}
+
+function detailText(row: WorkbenchRow, key: string) {
+  const value = row.blocker_details_json?.[key];
+  return typeof value === "string" ? value : "";
+}
+
+function detailNumber(row: WorkbenchRow, key: string) {
+  const value = row.blocker_details_json?.[key];
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
+}
+
+function blockerReason(row: WorkbenchRow) {
+  const reasons: string[] = [];
+  const settlementState = row.final_settlement_state || detailText(row, "final_settlement_state");
+  const pendingCredit = numeric(row.potential_credit_pending_review_gbp);
+  const missingCoding = detailNumber(row, "missing_accounting_coding_count");
+  const defaultN = detailNumber(row, "unresolved_default_n_count");
+  const adminReview = detailNumber(row, "admin_review_required_count");
+  const unresolvedFinancial = detailNumber(row, "unresolved_financial_treatment_count");
+  const openDisputes = detailNumber(row, "open_dispute_count");
+  const activeHolds = detailNumber(row, "active_hold_count");
+  const non20Rate = detailNumber(row, "non_20_rate_count");
+
+  if (settlementState === "potential_credit_pending_review") {
+    reasons.push(`Settlement surplus credit pending review${pendingCredit > 0 ? `: ${money(pendingCredit)}` : ""}`);
+  } else if (settlementState && !["settled_nil", "credit_added_to_account"].includes(settlementState)) {
+    reasons.push(`Final settlement state: ${friendly(settlementState)}`);
+  }
+
+  if (missingCoding > 0) reasons.push(`Missing supplier accounting coding: ${missingCoding} line${missingCoding === 1 ? "" : "s"}`);
+  if (defaultN > 0) reasons.push(`Unresolved default-N product treatment: ${defaultN} line${defaultN === 1 ? "" : "s"}`);
+  if (adminReview > 0) reasons.push(`Admin review required: ${adminReview} line${adminReview === 1 ? "" : "s"}`);
+  if (unresolvedFinancial > 0) reasons.push(`Unresolved financial treatment: ${unresolvedFinancial} line${unresolvedFinancial === 1 ? "" : "s"}`);
+  if (openDisputes > 0) reasons.push(`Open dispute: ${openDisputes}`);
+  if (activeHolds > 0) reasons.push(`Active hold: ${activeHolds}`);
+  if (non20Rate > 0) reasons.push(`Non-20%/unknown tax rate: ${non20Rate} line${non20Rate === 1 ? "" : "s"}`);
+
+  if (reasons.length > 0) return reasons.join(" · ");
+  return friendly(row.approval_blocker || row.basis_blocker || row.completion_blocker || row.workbench_status);
+}
+
+function blockerNextStep(row: WorkbenchRow) {
+  const steps: string[] = [];
+  const settlementState = row.final_settlement_state || detailText(row, "final_settlement_state");
+  const missingCoding = detailNumber(row, "missing_accounting_coding_count");
+
+  if (settlementState === "potential_credit_pending_review") {
+    steps.push("Clear the surplus/settlement credit review first.");
+  }
+  if (missingCoding > 0) {
+    steps.push("Complete supplier accounting coding on the reconciliation page.");
+  }
+
+  return steps.length > 0 ? steps.join(" ") : "Resolve the listed blocker, then refresh this page.";
 }
 
 function statusClass(value: string | null | undefined) {
@@ -226,10 +303,42 @@ export default async function CompletionLoyaltyRewardsPage({ searchParams }: { s
   if (!staff) redirect("/auth/check");
   if (!["admin", "supervisor"].includes(String(staff.role_type))) redirect("/internal");
 
-  const { data, error } = await (supabase as any).rpc("internal_completion_loyalty_reward_funding_workbench_v1", {
-    p_order_id: null,
+  const [workbenchResult, proposalsResult, settlementResult] = await Promise.all([
+    (supabase as any).rpc("internal_completion_loyalty_reward_funding_workbench_v1", {
+      p_order_id: null,
+    }),
+    (supabase as any).rpc("internal_completion_loyalty_reward_proposals_v1", {
+      p_order_id: null,
+    }),
+    (supabase as any).rpc("internal_order_final_sale_settlement_v1", {
+      p_order_id: null,
+    }),
+  ]);
+
+  const proposalByOrderId = new Map<string, ProposalRow>();
+  for (const row of (proposalsResult.data ?? []) as ProposalRow[]) {
+    if (row.order_id) proposalByOrderId.set(row.order_id, row);
+  }
+
+  const settlementByOrderId = new Map<string, SettlementRow>();
+  for (const row of (settlementResult.data ?? []) as SettlementRow[]) {
+    if (row.order_id) settlementByOrderId.set(row.order_id, row);
+  }
+
+  const rows = ((workbenchResult.data ?? []) as WorkbenchRow[]).map((row) => {
+    const proposal = row.order_id ? proposalByOrderId.get(row.order_id) : null;
+    const settlement = row.order_id ? settlementByOrderId.get(row.order_id) : null;
+    return {
+      ...row,
+      approval_blocker: row.approval_blocker ?? proposal?.approval_blocker ?? null,
+      final_settlement_state: row.final_settlement_state ?? proposal?.final_settlement_state ?? null,
+      potential_credit_pending_review_gbp: row.potential_credit_pending_review_gbp ?? settlement?.potential_credit_pending_review_gbp ?? null,
+      blocker_details_json: row.blocker_details_json ?? proposal?.blocker_details_json ?? null,
+    };
   });
-  const rows = (data ?? []) as WorkbenchRow[];
+
+  const error = workbenchResult.error;
+  const detailError = proposalsResult.error || settlementResult.error;
 
   const cards: SummaryCard[] = [
     {
@@ -275,6 +384,7 @@ export default async function CompletionLoyaltyRewardsPage({ searchParams }: { s
       {params.success ? <div className="mb-5 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-medium text-emerald-900">{params.success}</div> : null}
       {params.error ? <div className="mb-5 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm font-medium text-rose-900">{params.error}</div> : null}
       {error ? <div className="mb-5 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm font-medium text-rose-900">{error.message}</div> : null}
+      {detailError ? <div className="mb-5 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm font-medium text-amber-900">Detailed blocker read unavailable: {detailError.message}</div> : null}
 
       <section className="grid gap-4 md:grid-cols-4">
         {cards.map((card) => (
@@ -305,9 +415,19 @@ export default async function CompletionLoyaltyRewardsPage({ searchParams }: { s
               </div>
             </div>
 
+            {isBlocked(row) ? (
+              <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-950">
+                <p className="text-xs font-bold uppercase tracking-wide text-rose-700">Why blocked</p>
+                <p className="mt-1 font-semibold">{blockerReason(row)}</p>
+                <p className="mt-2 text-xs leading-5 text-rose-900">Next step: {blockerNextStep(row)}</p>
+              </div>
+            ) : null}
+
             <dl className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               {field("Completion blocker", row.completion_blocker ?? "—")}
               {field("Basis blocker", row.basis_blocker ?? "—")}
+              {field("Settlement state", friendly(row.final_settlement_state))}
+              {field("Pending settlement credit", money(row.potential_credit_pending_review_gbp))}
               {field("Qualifying net spend", money(row.qualifying_net_spend_gbp))}
               {field("Suggested reward", money(row.suggested_reward_gbp))}
               {field("Approved amount", money(row.approved_amount_gbp))}
