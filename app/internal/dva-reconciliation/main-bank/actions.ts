@@ -172,33 +172,35 @@ export async function matchMainBankLineToCompletionLoyaltyAction(formData: FormD
   } = await supabase.auth.getUser();
 
   if (!user) {
-    redirectWithResult({ error: "Please sign in again before matching the loyalty funding line.", target: "completion_loyalty" });
+    redirectWithResult({ error: "Please sign in again before reserving the loyalty funding line.", target: "completion_loyalty" });
   }
 
   const statementLineId = readString(formData, "dva_statement_line_id");
   const orderId = readString(formData, "order_id");
   const amountRaw = readString(formData, "reward_amount_gbp");
   const amount = amountRaw ? Number(amountRaw) : null;
-  const notes = readString(formData, "notes") || "Main-bank funding matched to completion loyalty reward.";
+  const notes = readString(formData, "notes") || "Main-bank OUT reserved for completion loyalty reward.";
 
   if (!statementLineId || !orderId) {
     redirectWithResult({ error: "Select one main-bank OUT line and one completion loyalty target.", target: "completion_loyalty" });
   }
 
   if (amountRaw && (!Number.isFinite(amount) || Number(amount) <= 0)) {
-    redirectWithResult({ error: "Reward release amount must be greater than zero.", target: "completion_loyalty" });
+    redirectWithResult({ error: "Reward reserve amount must be greater than zero.", target: "completion_loyalty" });
   }
 
-  const { data, error } = await supabase.rpc("staff_match_main_bank_line_to_completion_loyalty_v1", {
+  const { data, error } = await supabase.rpc("staff_stage_main_bank_line_to_completion_loyalty_v2", {
     p_dva_statement_line_id: statementLineId,
     p_order_id: orderId,
     p_reward_amount_gbp: amount,
     p_notes: notes,
+    p_activation_route: "dva_account_top_up",
+    p_card_used_by: "staff",
   });
 
   if (error) redirectWithResult({ error: error.message, target: "completion_loyalty" });
 
-  const releasedAmount =
+  const reservedAmount =
     typeof data === "object" && data !== null && "matched_gbp_amount" in data
       ? num((data as { matched_gbp_amount?: unknown }).matched_gbp_amount)
       : amount ?? 0;
@@ -210,6 +212,6 @@ export async function matchMainBankLineToCompletionLoyaltyAction(formData: FormD
 
   redirectWithResult({
     target: "completion_loyalty",
-    success: `Matched main-bank funding and released ${releasedAmount.toFixed(2)} loyalty credit${orderRef ? ` for ${orderRef}` : ""}.`,
+    success: `Reserved main-bank OUT for ${reservedAmount.toFixed(2)} loyalty${orderRef ? ` on ${orderRef}` : ""}. Pair the DVA/virtual-card IN before release.`,
   });
 }
