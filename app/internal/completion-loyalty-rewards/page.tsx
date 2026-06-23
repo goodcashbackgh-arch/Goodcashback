@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 import {
   approveCompletionLoyaltyRewardAction,
+  applyCompletionLoyaltyToOrderAction,
   confirmCompletionLoyaltyRewardFundingAction,
 } from "./actions";
 import { WorkbenchClientEnhancements } from "./WorkbenchClientEnhancements";
@@ -14,15 +15,17 @@ type BlockerDetails = Record<string, unknown>;
 
 type WorkbenchRow = {
   order_id: string | null;
-  approval_id: string | null;
   order_ref: string | null;
+  importer_id: string | null;
   proposal_status: string | null;
   completion_blocker: string | null;
   basis_blocker: string | null;
   qualifying_net_spend_gbp: number | string | null;
   suggested_reward_gbp: number | string | null;
+  approval_id: string | null;
   approval_status: string | null;
   approved_amount_gbp: number | string | null;
+  funding_confirmation_id?: string | null;
   funding_status: string | null;
   amount_funded_gbp: number | string | null;
   amount_released_gbp: number | string | null;
@@ -44,6 +47,22 @@ type ProposalRow = {
 type SettlementRow = {
   order_id: string | null;
   potential_credit_pending_review_gbp: number | string | null;
+};
+
+type TargetOrder = {
+  id: string;
+  order_ref: string | null;
+  importer_id: string | null;
+  status: string | null;
+  order_total_gbp_declared: number | string | null;
+  created_at: string | null;
+  remaining_due_gbp: number;
+};
+
+type FundingEventRow = {
+  order_id: string | null;
+  event_type: string | null;
+  amount_gbp: number | string | null;
 };
 
 type SummaryCard = {
@@ -166,7 +185,7 @@ function isPendingFunding(row: WorkbenchRow) {
 }
 
 function isReleased(row: WorkbenchRow) {
-  return row.workbench_status === "dashboard_credit_released" || numeric(row.amount_released_gbp) > 0 || numeric(row.available_dashboard_credit_gbp) > 0;
+  return row.workbench_status === "dashboard_credit_released" || row.workbench_status === "released_available_dashboard_credit" || numeric(row.amount_released_gbp) > 0 || numeric(row.available_dashboard_credit_gbp) > 0;
 }
 
 function isBlocked(row: WorkbenchRow) {
@@ -302,6 +321,50 @@ function FundingForm({ row }: { row: WorkbenchRow }) {
   );
 }
 
+function ApplyLoyaltyForm({ row, targetOrders }: { row: WorkbenchRow; targetOrders: TargetOrder[] }) {
+  const available = numeric(row.available_dashboard_credit_gbp);
+  const options = targetOrders.filter((order) => order.importer_id === row.importer_id && order.id !== row.order_id && order.remaining_due_gbp > 0.01);
+
+  if (available <= 0.01) return null;
+
+  return (
+    <form action={applyCompletionLoyaltyToOrderAction} className="mt-5 rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
+      <h3 className="text-sm font-semibold text-emerald-950">Apply loyalty to an order</h3>
+      <p className="mt-1 text-xs text-emerald-900">
+        This is a staff-only action. It applies released loyalty to the selected order and creates the proper credit-applied funding event.
+      </p>
+      <div className="mt-3 grid gap-3 md:grid-cols-2">
+        <label className="block text-sm font-medium text-slate-700">
+          Order to receive loyalty
+          <select
+            name="target_order_id"
+            required
+            className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900"
+            defaultValue=""
+          >
+            <option value="">Select order</option>
+            {options.map((order) => (
+              <option key={order.id} value={order.id}>
+                {order.order_ref ?? order.id} · due {money(order.remaining_due_gbp)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <AmountInput name="amount_gbp" label="Loyalty amount GBP" defaultValue={Math.min(available, options[0]?.remaining_due_gbp ?? available).toFixed(2)} />
+        <NotesInput />
+      </div>
+      {options.length === 0 ? (
+        <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-900">
+          No open same-customer order balance is available for this loyalty reward.
+        </p>
+      ) : null}
+      <button disabled={options.length === 0} className="mt-4 rounded-lg bg-emerald-900 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-800 disabled:bg-slate-200 disabled:text-slate-500">
+        Apply loyalty to selected order
+      </button>
+    </form>
+  );
+}
+
 export default async function CompletionLoyaltyRewardsPage({ searchParams }: { searchParams?: Promise<SearchParams> }) {
   const params = searchParams ? await searchParams : {};
   const filterStatus = normalizeFilterStatus(params.status);
@@ -358,6 +421,42 @@ export default async function CompletionLoyaltyRewardsPage({ searchParams }: { s
     };
   });
 
+  const importerIds = Array.from(new Set(rows.map((row) => row.importer_id).filter(Boolean))) as string[];
+  const { data: targetOrderRows } = importerIds.length
+    ? await supabase
+        .from("orders")
+        .select("id, order_ref, importer_id, status, order_total_gbp_declared, created_at")
+        .in("importer_id", importerIds)
+        .order("created_at", { ascending: false })
+    : { data: [] };
+
+  const targetOrderIds = ((targetOrderRows ?? []) as TargetOrder[]).map((order) => order.id);
+  const { data: targetFundingEvents } = targetOrderIds.length
+    ? await supabase
+        .from("order_funding_events")
+        .select("order_id, event_type, amount_gbp")
+        .in("order_id", targetOrderIds)
+        .in("event_type", ["funding_contribution", "credit_applied", "manual_adjustment", "funding_reversed"])
+    : { data: [] };
+
+  const targetFundingByOrder = new Map<string, number>();
+  for (const event of (targetFundingEvents ?? []) as FundingEventRow[]) {
+    const orderId = event.order_id ?? "";
+    if (!orderId) continue;
+    const amount = numeric(event.amount_gbp);
+    const current = targetFundingByOrder.get(orderId) ?? 0;
+    if (event.event_type === "funding_reversed") targetFundingByOrder.set(orderId, current - Math.abs(amount));
+    else targetFundingByOrder.set(orderId, current + Math.abs(amount));
+  }
+
+  const targetOrders: TargetOrder[] = ((targetOrderRows ?? []) as TargetOrder[])
+    .map((order) => {
+      const declared = numeric(order.order_total_gbp_declared);
+      const funded = targetFundingByOrder.get(order.id) ?? 0;
+      return { ...order, remaining_due_gbp: Math.max(declared - funded, 0) };
+    })
+    .filter((order) => order.remaining_due_gbp > 0.01 && !String(order.status ?? "").toLowerCase().includes("cancelled"));
+
   const filteredRows = rows.filter((row) => rowMatchesStatus(row, filterStatus) && rowMatchesOrderRef(row, orderRefQuery));
 
   const error = workbenchResult.error;
@@ -398,7 +497,7 @@ export default async function CompletionLoyaltyRewardsPage({ searchParams }: { s
           <Link href="/internal" className="text-sm font-medium text-slate-600 hover:text-slate-950">← Internal tools</Link>
           <h1 className="mt-3 text-3xl font-bold tracking-tight text-slate-950">Completion loyalty rewards</h1>
           <p className="mt-2 max-w-3xl text-sm text-slate-600">
-            Supervisor lane for completion reward proposals, approval-in-principle, customer DVA/account funding proof and dashboard credit released controls.
+            Supervisor lane for completion reward proposals, approval-in-principle, DVA/account funding proof, released dashboard credit, and staff-only application to an order balance.
           </p>
           <p className="mt-2 text-sm text-slate-500">Signed in as {staff.full_name ?? "staff"} · {staff.role_type}</p>
         </div>
@@ -498,6 +597,7 @@ export default async function CompletionLoyaltyRewardsPage({ searchParams }: { s
 
             {isProposed(row) ? <ApprovalForm row={row} /> : null}
             {isPendingFunding(row) ? <FundingForm row={row} /> : null}
+            {isReleased(row) ? <ApplyLoyaltyForm row={row} targetOrders={targetOrders} /> : null}
           </article>
         ))}
       </section>
