@@ -2,7 +2,6 @@ import Link from "next/link";
 import { createClient } from "@/utils/supabase/server";
 
 type SearchParamsValue = Record<string, string | string[] | undefined>;
-type Row = Record<string, unknown>;
 
 type ImporterRow = {
   id: string;
@@ -30,6 +29,15 @@ type StatementLineRow = {
   active_allocation_count: number | string | null;
   confirmed_unallocated_gbp: number | string | null;
   confirmed_balanced_yn: boolean | string | null;
+  statement_account_context: string | null;
+  statement_account_label: string | null;
+  source_bank: string | null;
+  control_match_reason: string | null;
+  loyalty_credit_funding_allocated_gbp: number | string | null;
+  main_bank_loyalty_match_count: number | string | null;
+  loyalty_internal_transfer_out_gbp: number | string | null;
+  loyalty_internal_transfer_in_gbp: number | string | null;
+  loyalty_internal_transfer_in_count: number | string | null;
 };
 
 type AllocationRow = {
@@ -75,6 +83,21 @@ type OrderRow = {
 type RetailerRow = {
   id: string;
   name: string | null;
+};
+
+type ReadinessState = {
+  ready: boolean;
+  balanced: boolean;
+  open: number;
+  supplier: number;
+  refund: number;
+  fxOrFee: number;
+  exceptionOrHold: number;
+  allocationCount: number;
+  fundingAmount: number;
+  fundingOrderId: string;
+  fundingAt: string;
+  explanation: string;
 };
 
 const gbpFormatter = new Intl.NumberFormat("en-GB", {
@@ -142,7 +165,7 @@ function isTerminalException(dispute: DisputeRow) {
   return Boolean(dispute.resolved_at) || TERMINAL_EXCEPTION_STATUSES.has(text(dispute.status));
 }
 
-function readiness(row: StatementLineRow, allocations: AllocationRow[], funding?: FundingRow) {
+function readiness(row: StatementLineRow, allocations: AllocationRow[], funding?: FundingRow): ReadinessState {
   const direction = text(row.direction);
   const fundedAmount = num(funding?.reconciled_gbp_amount);
   const statementAmount = num(row.statement_gbp_amount);
@@ -213,6 +236,79 @@ function readinessTone(ready: boolean, balanced: boolean) {
   return "border-amber-200 bg-amber-50 text-amber-800";
 }
 
+function controlClassification(row: StatementLineRow, state: ReadinessState, allocations: AllocationRow[]) {
+  const direction = text(row.direction).toLowerCase();
+  const accountContext = text(row.statement_account_context);
+  const controlReason = text(row.control_match_reason);
+  const loyaltyOut = num(row.loyalty_internal_transfer_out_gbp);
+  const loyaltyIn = num(row.loyalty_internal_transfer_in_gbp);
+  const loyaltyInCount = num(row.loyalty_internal_transfer_in_count);
+  const loyaltyMatches = num(row.main_bank_loyalty_match_count);
+  const hasHeld = allocations.some((allocation) => text(allocation.allocation_status) === "held");
+
+  if (controlReason === "loyalty_internal_transfer_out" || loyaltyOut > 0) {
+    return {
+      label: loyaltyMatches > 0 && loyaltyIn <= 0 ? "Loyalty internal transfer OUT" : "Loyalty transfer control",
+      tone: "border-violet-200 bg-violet-50 text-violet-800",
+      boundary: "Internal transfer control only. Not customer cash, not supplier AP, and not a Sage posting action from this review pack.",
+    };
+  }
+
+  if (controlReason === "loyalty_internal_transfer_in" || loyaltyIn > 0 || loyaltyInCount > 0) {
+    return {
+      label: "Loyalty destination IN",
+      tone: "border-violet-200 bg-violet-50 text-violet-800",
+      boundary: "Destination side of loyalty activation. Do not classify this as ordinary customer funding.",
+    };
+  }
+
+  if (state.fundingAmount > 0 || (direction === "in" && accountContext === "importer_dva_card_account" && state.allocationCount === 0)) {
+    return {
+      label: "Importer funding / top-up",
+      tone: "border-emerald-200 bg-emerald-50 text-emerald-800",
+      boundary: "Funding proof belongs to the funding/order-credit controls, not supplier spend allocation.",
+    };
+  }
+
+  if (state.supplier > 0) {
+    return {
+      label: "Supplier charge allocation",
+      tone: "border-sky-200 bg-sky-50 text-sky-800",
+      boundary: "Supplier/AP evidence. Sage readiness still requires mapped supplier invoice and zero or approved residual.",
+    };
+  }
+
+  if (state.refund > 0) {
+    return {
+      label: "Retailer refund allocation",
+      tone: "border-emerald-200 bg-emerald-50 text-emerald-800",
+      boundary: "Refund evidence must stay linked to refund/exception outcome, not ordinary customer funding.",
+    };
+  }
+
+  if (state.exceptionOrHold > 0 || hasHeld) {
+    return {
+      label: "Exception / hold allocation",
+      tone: "border-amber-200 bg-amber-50 text-amber-800",
+      boundary: "Exception control. Do not fake refund or supplier closure until retailer/operator outcome is evidenced.",
+    };
+  }
+
+  if (state.fxOrFee > 0) {
+    return {
+      label: "FX/card/bank-fee residual",
+      tone: "border-amber-200 bg-amber-50 text-amber-800",
+      boundary: "Residual classification only. Needs deliberate accounting treatment before Sage payload readiness.",
+    };
+  }
+
+  return {
+    label: "Unclassified statement line",
+    tone: "border-rose-200 bg-rose-50 text-rose-800",
+    boundary: "Needs allocation, funding, refund, loyalty, FX/fee, or exception classification before accounting readiness.",
+  };
+}
+
 function allocationTarget(row: AllocationRow) {
   const type = text(row.allocation_type);
   if (type === "supplier_invoice") return row.supplier_invoice_ref || "Supplier invoice";
@@ -256,7 +352,7 @@ export default async function DvaAccountingReviewPackPage({
 
   let statementQuery = supabase
     .from("dva_statement_line_allocation_summary_vw")
-    .select("dva_statement_line_id, importer_id, statement_date, reference_raw, retailer_name_ref, auth_id_ref, direction, amount_local_ccy, local_ccy, statement_gbp_amount, match_status, confirmed_allocated_gbp, supplier_invoice_allocated_gbp, retailer_refund_allocated_gbp, fx_card_or_fee_allocated_gbp, exception_or_hold_allocated_gbp, active_allocation_count, confirmed_unallocated_gbp, confirmed_balanced_yn")
+    .select("dva_statement_line_id, importer_id, statement_date, reference_raw, retailer_name_ref, auth_id_ref, direction, amount_local_ccy, local_ccy, statement_gbp_amount, match_status, confirmed_allocated_gbp, supplier_invoice_allocated_gbp, retailer_refund_allocated_gbp, fx_card_or_fee_allocated_gbp, exception_or_hold_allocated_gbp, active_allocation_count, confirmed_unallocated_gbp, confirmed_balanced_yn, statement_account_context, statement_account_label, source_bank, control_match_reason, loyalty_credit_funding_allocated_gbp, main_bank_loyalty_match_count, loyalty_internal_transfer_out_gbp, loyalty_internal_transfer_in_gbp, loyalty_internal_transfer_in_count")
     .order("statement_date", { ascending: false })
     .limit(250);
 
@@ -326,7 +422,8 @@ export default async function DvaAccountingReviewPackPage({
     const allocations = allocationsByLineId.get(line.dva_statement_line_id) ?? [];
     const funding = fundingByLineId.get(line.dva_statement_line_id)?.[0];
     const state = readiness(line, allocations, funding);
-    return { line, allocations, state };
+    const control = controlClassification(line, state, allocations);
+    return { line, allocations, state, control };
   });
 
   const visibleLines = enrichedLines.filter(({ state }) => {
@@ -351,7 +448,7 @@ export default async function DvaAccountingReviewPackPage({
               <p className="text-xs font-bold uppercase tracking-[0.22em] text-sky-600">DVA/card accounting review pack</p>
               <h1 className="mt-2 max-w-3xl text-3xl font-bold tracking-tight sm:text-4xl lg:text-5xl">Statement-line control pack</h1>
               <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-600 sm:text-base">
-                Read-only pack showing statement lines with supplier invoice, refund, FX/card, fee, exception and order-funding explanations before accounting handoff. No posting and no financial state changes happen here.
+                Read-only pack showing statement lines with supplier invoice, refund, FX/card, fee, exception, order-funding and loyalty/internal-transfer classifications before accounting handoff. No posting and no financial state changes happen here.
               </p>
             </div>
             <div className="grid w-full gap-2 sm:flex sm:w-auto sm:flex-wrap sm:justify-start lg:justify-end">
@@ -427,7 +524,7 @@ export default async function DvaAccountingReviewPackPage({
             <div className="p-8 text-center text-sm text-slate-500">No statement lines match this filter.</div>
           ) : (
             <div className="divide-y divide-slate-100">
-              {visibleLines.map(({ line, allocations, state }) => {
+              {visibleLines.map(({ line, allocations, state, control }) => {
                 const fundedOrder = state.fundingOrderId ? ordersById.get(state.fundingOrderId) : undefined;
                 return (
                   <article key={line.dva_statement_line_id} className="p-4">
@@ -438,10 +535,14 @@ export default async function DvaAccountingReviewPackPage({
                             <p className="text-lg font-bold text-slate-950">{line.statement_date || "No date"} · {text(line.direction).toUpperCase() || "—"} · {gbp(line.statement_gbp_amount)}</p>
                             <p className="mt-1 break-words text-sm text-slate-600">{statementText(line)}</p>
                             <p className="mt-1 text-xs text-slate-500">Auth/ref {line.auth_id_ref || "—"} · Local {gbp(line.amount_local_ccy)} {line.local_ccy || ""}</p>
+                            <p className="mt-1 text-xs text-slate-500">Account {pretty(line.statement_account_context)} · {line.statement_account_label || "—"} · Bank/source {line.source_bank || "—"}</p>
                           </div>
-                          <span className={`rounded-full border px-3 py-1 text-xs font-bold ${readinessTone(state.ready, state.balanced)}`}>
-                            {state.ready ? "Ready" : state.balanced ? "Balanced review" : "Needs work"}
-                          </span>
+                          <div className="flex flex-wrap gap-2">
+                            <span className={`rounded-full border px-3 py-1 text-xs font-bold ${control.tone}`}>{control.label}</span>
+                            <span className={`rounded-full border px-3 py-1 text-xs font-bold ${readinessTone(state.ready, state.balanced)}`}>
+                              {state.ready ? "Ready" : state.balanced ? "Balanced review" : "Needs work"}
+                            </span>
+                          </div>
                         </div>
 
                         <div className="mt-4 grid gap-3 sm:grid-cols-5">
@@ -458,6 +559,12 @@ export default async function DvaAccountingReviewPackPage({
                         <div className="mt-3 rounded-xl bg-slate-50 p-3 text-sm text-slate-600">
                           <p className="font-semibold text-slate-900">Accounting review status</p>
                           <p className="mt-1">{state.explanation}</p>
+                        </div>
+
+                        <div className={`mt-3 rounded-xl border p-3 text-sm ${control.tone}`}>
+                          <p className="font-semibold">Control classification</p>
+                          <p className="mt-1">{control.boundary}</p>
+                          <p className="mt-2 text-xs opacity-80">Control reason: {pretty(line.control_match_reason)} · Loyalty OUT {gbp(line.loyalty_internal_transfer_out_gbp)} · Loyalty IN {gbp(line.loyalty_internal_transfer_in_gbp)}</p>
                         </div>
                       </div>
 
