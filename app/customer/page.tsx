@@ -14,8 +14,9 @@ type OrderRow = {
   created_at: string | null;
 };
 
-type CreditRow = { direction: string | null; amount_gbp: number | string | null };
+type CreditRow = { direction: string | null; amount_gbp: number | string | null; source_type?: string | null };
 type CreditBalanceRow = { importer_id: string | null; available_credit_gbp: number | string | null };
+type LoyaltyBalanceRow = { importer_id: string | null; pending_activation_gbp: number | string | null; ready_to_use_gbp: number | string | null };
 type FundingEventRow = { order_id: string | null; event_type: string | null; amount_gbp: number | string | null };
 
 type CurrencyRelation = { currencies?: { code?: string | null }[] | { code?: string | null } | null }[] | { currencies?: { code?: string | null }[] | { code?: string | null } | null } | null;
@@ -186,13 +187,20 @@ export default async function CustomerDashboardPage() {
   if (!importer) redirect("/auth/check");
 
   const today = new Date().toISOString().slice(0, 10);
-  const [{ data: orders, error: ordersError }, { data: creditRows }, { data: fundingEvents }, { data: fxRate }, { data: creditBalanceRows }] = await Promise.all([
+  const [
+    { data: orders, error: ordersError },
+    { data: creditRows },
+    { data: fundingEvents },
+    { data: fxRate },
+    { data: creditBalanceRows },
+    { data: loyaltyBalanceRows },
+  ] = await Promise.all([
     supabase
       .from("orders")
       .select("id, order_ref, status, payment_auth_id, total_qty_declared, order_total_gbp_declared, quote_total_ghs, funded_at, created_at")
       .eq("importer_id", importer.id)
       .order("created_at", { ascending: false }),
-    supabase.from("importer_credit_ledger").select("direction, amount_gbp").eq("importer_id", importer.id),
+    supabase.from("importer_credit_ledger").select("direction, amount_gbp, source_type").eq("importer_id", importer.id),
     supabase.from("order_funding_events").select("order_id, event_type, amount_gbp").in("event_type", ["funding_contribution", "credit_applied", "manual_adjustment", "funding_reversed"]),
     supabase
       .from("fx_rates")
@@ -203,6 +211,7 @@ export default async function CustomerDashboardPage() {
       .limit(1)
       .maybeSingle(),
     supabase.rpc("customer_importer_credit_balance_v1"),
+    supabase.rpc("customer_completion_loyalty_reward_balance_v1"),
   ]);
   if (ordersError) throw ordersError;
 
@@ -222,6 +231,7 @@ export default async function CustomerDashboardPage() {
   }
 
   const fallbackCreditBalanceGbp = ((creditRows ?? []) as CreditRow[]).reduce((sum, row) => {
+    if (row.source_type === "completion_loyalty_reward") return sum;
     const amount = Number(row.amount_gbp ?? 0);
     return sum + (row.direction === "credit" ? amount : -amount);
   }, 0);
@@ -229,6 +239,14 @@ export default async function CustomerDashboardPage() {
   const hasRpcCreditBalance = Array.isArray(creditBalanceRows) && rpcRows.length > 0;
   const rpcCreditBalanceGbp = rpcRows.reduce((sum, row) => sum + Number(row.available_credit_gbp ?? 0), 0);
   const creditBalanceGbp = hasRpcCreditBalance && Number.isFinite(rpcCreditBalanceGbp) ? rpcCreditBalanceGbp : fallbackCreditBalanceGbp;
+  const loyaltyRows = (loyaltyBalanceRows ?? []) as LoyaltyBalanceRow[];
+  const pendingLoyaltyGbp = loyaltyRows.reduce((sum, row) => sum + Number(row.pending_activation_gbp ?? 0), 0);
+  const readyLoyaltyGbp = loyaltyRows.reduce((sum, row) => sum + Number(row.ready_to_use_gbp ?? 0), 0);
+  const loyaltyStatusText = readyLoyaltyGbp > 0.01
+    ? `${gbp(readyLoyaltyGbp)} ready to use`
+    : pendingLoyaltyGbp > 0.01
+      ? `${gbp(pendingLoyaltyGbp)} pending activation`
+      : "No loyalty reward active yet";
   const rate = Number(fxRate?.quote_rate ?? 0);
   const markup = Number(fxRate?.quote_card_markup_pct ?? 0);
   const effectiveRate = rate ? rate * (1 + markup / 100) : 0;
@@ -280,18 +298,31 @@ export default async function CustomerDashboardPage() {
         </div>
       </header>
 
+      <section className="mt-5 rounded-[1.5rem] border border-cyan-100 bg-white p-4 shadow-sm">
+        <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+          <div>
+            <p className="text-xs font-black uppercase tracking-wide text-cyan-700">Your credit</p>
+            <h2 className="mt-1 text-2xl font-black text-slate-950">{gbp(creditBalanceGbp)} available account credit</h2>
+            <p className="mt-1 text-sm font-semibold text-slate-600">Loyalty reward: {loyaltyStatusText}</p>
+          </div>
+          <div className="rounded-2xl bg-cyan-50 px-4 py-3 text-sm font-semibold leading-6 text-cyan-900 ring-1 ring-cyan-100">
+            Account credit can be used on orders. Loyalty rewards become usable only after activation.
+          </div>
+        </div>
+      </section>
+
       <section className="mt-5 rounded-[1.5rem] border border-sky-100 bg-white p-4 shadow-sm xl:hidden">
         <div className="grid grid-cols-3 gap-3 text-center">
           <div><p className="text-xs font-black uppercase tracking-wide text-slate-500">Orders</p><p className="mt-1 text-2xl font-black">{rows.length}</p></div>
           <div><p className="text-xs font-black uppercase tracking-wide text-emerald-700">Funded</p><p className="mt-1 text-2xl font-black text-emerald-950">{fundedCount}</p></div>
-          <div><p className="text-xs font-black uppercase tracking-wide text-cyan-700">Account credit</p><p className="mt-1 text-2xl font-black text-cyan-950">{gbp(creditBalanceGbp)}</p></div>
+          <div><p className="text-xs font-black uppercase tracking-wide text-amber-700">Attention</p><p className="mt-1 text-2xl font-black text-amber-950">{needsAttention.length}</p></div>
         </div>
       </section>
 
       <section className="mt-5 hidden gap-4 xl:grid xl:grid-cols-3">
         <div className="rounded-[1.5rem] border border-slate-200 bg-white p-5 shadow-sm"><div className="text-sm font-semibold text-slate-500">Total orders</div><div className="mt-2 text-3xl font-black">{rows.length}</div></div>
         <div className="rounded-[1.5rem] border border-emerald-100 bg-emerald-50/70 p-5 shadow-sm"><div className="text-sm font-semibold text-emerald-700">Funded</div><div className="mt-2 text-3xl font-black text-emerald-950">{fundedCount}</div></div>
-        <div className="rounded-[1.5rem] border border-cyan-100 bg-cyan-50/70 p-5 shadow-sm"><div className="text-sm font-semibold text-cyan-700">Available account credit</div><div className="mt-2 text-3xl font-black text-cyan-950">{gbp(creditBalanceGbp)}</div></div>
+        <div className="rounded-[1.5rem] border border-amber-100 bg-amber-50/70 p-5 shadow-sm"><div className="text-sm font-semibold text-amber-700">Need attention</div><div className="mt-2 text-3xl font-black text-amber-950">{needsAttention.length}</div></div>
       </section>
 
       <section className="mt-5 overflow-hidden rounded-[1.75rem] border border-slate-200 bg-white shadow-sm">
