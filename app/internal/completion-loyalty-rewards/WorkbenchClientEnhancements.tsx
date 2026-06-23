@@ -19,6 +19,77 @@ function normalizeInternalDashboardBreadcrumb() {
   });
 }
 
+function adoptInternalDashboardShell() {
+  const main = document.querySelector("main");
+  if (!main) return;
+
+  main.className = "min-h-screen bg-slate-50 px-6 py-8 text-slate-950";
+
+  Array.from(main.children).forEach((child) => {
+    if (!(child instanceof HTMLElement)) return;
+    child.classList.add("mx-auto", "max-w-7xl");
+  });
+
+  const header = Array.from(main.children).find((child): child is HTMLElement => {
+    if (!(child instanceof HTMLElement)) return false;
+    return child.querySelector("h1")?.textContent?.trim() === "Completion loyalty rewards";
+  });
+
+  if (!header) return;
+
+  header.className = "mx-auto mb-6 max-w-7xl overflow-hidden rounded-3xl border border-sky-100 bg-white shadow-sm";
+
+  if (!header.querySelector('[data-loyalty-dashboard-bar="true"]')) {
+    const bar = document.createElement("div");
+    bar.dataset.loyaltyDashboardBar = "true";
+    bar.className = "h-2 bg-gradient-to-r from-sky-500 via-cyan-400 to-emerald-300";
+    header.prepend(bar);
+  }
+
+  const content = Array.from(header.children).find((child): child is HTMLElement => {
+    if (!(child instanceof HTMLElement)) return false;
+    return child.querySelector("h1")?.textContent?.trim() === "Completion loyalty rewards";
+  });
+
+  if (content) {
+    content.className = "p-6";
+  }
+
+  const topRow = header.querySelector<HTMLDivElement>("div.p-6 > div");
+  if (topRow) {
+    topRow.className = "flex flex-wrap items-center justify-between gap-3";
+  }
+
+  const breadcrumb = header.querySelector<HTMLAnchorElement>('a[href="/internal"]');
+  if (breadcrumb) {
+    breadcrumb.className = "text-sm font-bold text-sky-700 hover:text-sky-900";
+  }
+
+  if (topRow && !topRow.querySelector('[data-loyalty-rejection-shortcut="true"]')) {
+    const shortcut = document.createElement("a");
+    shortcut.href = "/internal/completion-loyalty-rewards/rejections";
+    shortcut.dataset.loyaltyRejectionShortcut = "true";
+    shortcut.className = "rounded-xl border border-sky-200 bg-sky-50 px-4 py-2 text-sm font-bold text-sky-800 hover:bg-sky-100";
+    shortcut.textContent = "Reject rewards →";
+    topRow.appendChild(shortcut);
+  }
+
+  const h1 = header.querySelector("h1");
+  if (h1) {
+    h1.className = "mt-8 text-3xl font-semibold tracking-tight text-slate-950 sm:text-4xl";
+  }
+
+  const intro = h1?.nextElementSibling;
+  if (intro instanceof HTMLElement) {
+    intro.className = "mt-3 max-w-4xl text-sm leading-6 text-slate-600";
+  }
+
+  const signedIn = intro?.nextElementSibling;
+  if (signedIn instanceof HTMLElement) {
+    signedIn.className = "mt-4 rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700";
+  }
+}
+
 function syncApprovalForm(form: HTMLFormElement, changedName: string) {
   if (form.dataset.syncingApproval === "true") return;
 
@@ -67,6 +138,7 @@ function validateFundingProof(form: HTMLFormElement, event: Event) {
 
 export function WorkbenchClientEnhancements() {
   useEffect(() => {
+    adoptInternalDashboardShell();
     normalizeInternalDashboardBreadcrumb();
 
     const onInput = (event: Event) => {
