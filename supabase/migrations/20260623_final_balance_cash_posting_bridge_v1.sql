@@ -370,7 +370,7 @@ BEGIN
     SELECT ar.* FROM all_rows ar
     WHERE (v_direction = 'all' OR lower(ar.direction) = v_direction)
       AND (v_category = 'all' OR lower(ar.category) = v_category)
-      AND (v_status = 'all' OR lower(ar.posting_status) = v_status OR (v_status = 'blocked' AND lower(ar.posting_status) LIKE 'blocked%') OR (v_status = 'ready' AND lower(ar.posting_status) = 'ready_to_freeze')
+      AND (v_status = 'all' OR lower(ar.posting_status) = v_status OR (v_status = 'blocked' AND lower(ar.posting_status) LIKE 'blocked%') OR (v_status = 'ready' AND lower(ar.posting_status) = 'ready_to_freeze'))
       AND (v_search IS NULL OR lower(concat_ws(' ', ar.counterparty_name, ar.order_ref, ar.auth_ref, ar.reference_raw, ar.matched_target_ref, ar.category, ar.source_type, ar.blocker)) LIKE '%' || v_search || '%')
   )
   SELECT f.*, count(*) over() AS total_count
