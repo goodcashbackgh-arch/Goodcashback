@@ -2,6 +2,11 @@ import { createClient } from "@/utils/supabase/server";
 
 type Row = Record<string, unknown>;
 
+type Props = {
+  searchQuery?: string;
+  previewStatusFilter?: string;
+};
+
 const gbpFormatter = new Intl.NumberFormat("en-GB", {
   style: "currency",
   currency: "GBP",
@@ -43,6 +48,12 @@ function configuredBadge(value: unknown) {
   return configured ? "Configured" : "Not configured";
 }
 
+function debitConfigured(row: Row) {
+  const mapping = asObject(row.mapping_status_json);
+  const debit = asObject(mapping.debit_candidate);
+  return debit.configured === true || text(debit.configured).toLowerCase() === "true";
+}
+
 function firstCreditCandidateStatus(value: unknown) {
   const json = asObject(value);
   const candidates = json.credit_candidates;
@@ -55,16 +66,33 @@ function rowKey(row: Row) {
   return text(row.preview_row_id) || text(row.source_id) || `${text(row.order_ref)}-${text(row.amount_gbp)}`;
 }
 
-export default async function CompletionLoyaltyAppliedAccountingPreviewPanel() {
+function statusLabel(status: string) {
+  if (status === "blocked") return "Blocked from posting";
+  if (status === "debit_mapping_configured") return "Debit mapping configured";
+  if (status === "debit_mapping_missing") return "Debit mapping missing";
+  return "All preview rows";
+}
+
+function matchesPreviewStatus(row: Row, filter: string) {
+  if (!filter || filter === "all") return true;
+  if (filter === "blocked") return text(row.blocker) !== "" || text(row.readiness_status).startsWith("preview_only");
+  if (filter === "debit_mapping_configured") return debitConfigured(row);
+  if (filter === "debit_mapping_missing") return !debitConfigured(row);
+  return true;
+}
+
+export default async function CompletionLoyaltyAppliedAccountingPreviewPanel({ searchQuery = "", previewStatusFilter = "all" }: Props) {
   const supabase = await createClient();
+  const cleanSearch = searchQuery.trim() || null;
   const { data, error } = await (supabase as any).rpc("internal_completion_loyalty_applied_accounting_preview_v1", {
-    p_search: null,
-    p_limit: 50,
+    p_search: cleanSearch,
+    p_limit: 300,
     p_offset: 0,
   });
 
-  const rows = ((data ?? []) as Row[]);
-  const totalCount = rows.length > 0 ? Number(rows[0].total_count ?? rows.length) : 0;
+  const allRows = ((data ?? []) as Row[]);
+  const rows = allRows.filter((row) => matchesPreviewStatus(row, previewStatusFilter));
+  const totalCount = rows.length;
   const totalAmount = rows.reduce((sum, row) => sum + num(row.amount_gbp), 0);
   const blockedCount = rows.filter((row) => text(row.readiness_status).startsWith("preview_only") || text(row.blocker)).length;
 
@@ -79,9 +107,16 @@ export default async function CompletionLoyaltyAppliedAccountingPreviewPanel() {
           </p>
         </div>
         <div className="rounded-2xl bg-sky-50 px-4 py-3 text-sm font-semibold text-sky-900 ring-1 ring-sky-200">
-          {totalCount} preview rows · {gbp(totalAmount)}
+          {totalCount} shown · {gbp(totalAmount)}
         </div>
       </div>
+
+      {(cleanSearch || previewStatusFilter !== "all") ? (
+        <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+          Filtered by {cleanSearch ? <span className="font-semibold">search “{cleanSearch}”</span> : <span className="font-semibold">all search terms</span>}
+          {previewStatusFilter !== "all" ? <> · preview status <span className="font-semibold">{statusLabel(previewStatusFilter)}</span></> : null}
+        </div>
+      ) : null}
 
       {error ? (
         <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm font-semibold text-amber-900">
@@ -107,48 +142,47 @@ export default async function CompletionLoyaltyAppliedAccountingPreviewPanel() {
         </div>
       </div>
 
-      <div className="mt-5 space-y-3 md:hidden">
+      <div className="mt-5 space-y-2 md:hidden">
         {rows.length === 0 ? (
           <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-center text-sm text-slate-500">
-            No applied completion-loyalty accounting preview rows are currently visible.
+            No applied completion-loyalty accounting preview rows match the current filters.
           </div>
         ) : rows.map((row) => {
           const mapping = asObject(row.mapping_status_json);
           const debit = asObject(mapping.debit_candidate);
           return (
-            <article key={rowKey(row)} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-              <div className="flex flex-wrap items-start justify-between gap-2">
-                <div>
-                  <p className="font-bold text-slate-950">{text(row.order_ref) || "—"}</p>
-                  <p className="mt-1 text-sm text-slate-500">{text(row.importer_name) || "Importer/customer"}</p>
+            <details key={rowKey(row)} className="group rounded-2xl border border-slate-200 bg-white shadow-sm open:bg-slate-50">
+              <summary className="flex cursor-pointer list-none items-start justify-between gap-3 p-3">
+                <div className="min-w-0">
+                  <p className="truncate font-bold text-slate-950">{text(row.order_ref) || "—"}</p>
+                  <p className="mt-1 truncate text-xs text-slate-500">{text(row.importer_name) || "Importer/customer"}</p>
+                  <p className="mt-2 text-[11px] font-semibold text-amber-800">{pretty(row.readiness_status)}</p>
                 </div>
-                <span className="text-sm font-extrabold text-slate-950">{gbp(row.amount_gbp)}</span>
+                <div className="shrink-0 text-right">
+                  <p className="text-sm font-extrabold text-slate-950">{gbp(row.amount_gbp)}</p>
+                  <p className="mt-1 text-[11px] font-semibold text-slate-500">Details ▾</p>
+                </div>
+              </summary>
+              <div className="border-t border-slate-200 px-3 pb-3 pt-2 text-sm text-slate-700">
+                <div className="rounded-2xl bg-white p-3">
+                  <p className="font-semibold text-slate-950">Dr loyalty cost / reward expense</p>
+                  <p className="mt-1 font-semibold text-slate-950">Cr customer account / receivable</p>
+                  <p className="mt-1 text-slate-500">Non-cash loyalty settlement of customer balance.</p>
+                </div>
+                <div className="mt-3 grid gap-1">
+                  <p><span className="font-semibold text-slate-950">Debit mapping:</span> {configuredBadge(debit.configured)}</p>
+                  <p><span className="font-semibold text-slate-950">Credit mapping:</span> {firstCreditCandidateStatus(row.mapping_status_json)}</p>
+                  <p><span className="font-semibold text-slate-950">Policy:</span> {pretty(mapping.mapping_policy_status)}</p>
+                </div>
+                {text(row.blocker) ? <p className="mt-3 font-semibold text-rose-700">{pretty(row.blocker)}</p> : null}
+                <div className="mt-3">
+                  <span className="rounded-full border border-slate-200 bg-white px-2 py-1 text-[11px] font-bold text-slate-700">
+                    Read-only · not selectable · no posting
+                  </span>
+                </div>
+                <p className="mt-3 break-all text-[11px] text-slate-400">Event: {text(row.order_funding_event_id) || "—"}</p>
               </div>
-
-              <div className="mt-3 rounded-2xl bg-slate-50 p-3 text-sm text-slate-700">
-                <p className="font-semibold text-slate-950">Dr loyalty cost / reward expense</p>
-                <p className="mt-1 font-semibold text-slate-950">Cr customer account / receivable</p>
-                <p className="mt-1 text-slate-500">Non-cash loyalty settlement of customer balance.</p>
-              </div>
-
-              <div className="mt-3 grid gap-2 text-sm text-slate-700">
-                <div><span className="font-semibold text-slate-950">Debit mapping:</span> {configuredBadge(debit.configured)}</div>
-                <div><span className="font-semibold text-slate-950">Credit mapping:</span> {firstCreditCandidateStatus(row.mapping_status_json)}</div>
-                <div><span className="font-semibold text-slate-950">Policy:</span> {pretty(mapping.mapping_policy_status)}</div>
-              </div>
-
-              <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm">
-                <p className="font-semibold text-amber-800">{pretty(row.readiness_status)}</p>
-                <p className="mt-1 text-rose-700">{pretty(row.blocker)}</p>
-              </div>
-
-              <div className="mt-3">
-                <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-bold text-slate-700">
-                  Read-only · not selectable · no posting
-                </span>
-              </div>
-              <p className="mt-3 break-all text-[11px] text-slate-400">Event: {text(row.order_funding_event_id) || "—"}</p>
-            </article>
+            </details>
           );
         })}
       </div>
@@ -169,7 +203,7 @@ export default async function CompletionLoyaltyAppliedAccountingPreviewPanel() {
             {rows.length === 0 ? (
               <tr>
                 <td colSpan={6} className="px-3 py-6 text-center text-sm text-slate-500">
-                  No applied completion-loyalty accounting preview rows are currently visible.
+                  No applied completion-loyalty accounting preview rows match the current filters.
                 </td>
               </tr>
             ) : rows.map((row) => {
