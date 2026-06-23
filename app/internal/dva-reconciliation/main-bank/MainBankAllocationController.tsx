@@ -184,10 +184,10 @@ export default function MainBankAllocationController({
         {targetMode === "completion_loyalty" ? (
           <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
             <h2 className="text-xl font-semibold">2. Select one loyalty reward target</h2>
-            <p className="mt-1 border-b border-slate-100 pb-3 text-sm text-slate-500">Select a clean completed reward-ready order. Confirmation releases dashboard credit after matching the main-bank payment line.</p>
+            <p className="mt-1 border-b border-slate-100 pb-3 text-sm text-slate-500">Select a clean completed reward-ready order. This reserves the main-bank OUT only. Pair the DVA/virtual-card IN before release.</p>
             <div className="mt-4 grid gap-3">
               {loyaltyTargets.length === 0 ? (
-                <p className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm font-semibold text-slate-600">No completion loyalty targets are ready for main-bank payment match.</p>
+                <p className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm font-semibold text-slate-600">No completion loyalty targets are ready for main-bank OUT reservation.</p>
               ) : null}
               {loyaltyTargets.map((target) => {
                 const id = text(target.order_id);
@@ -259,7 +259,7 @@ export default function MainBankAllocationController({
             <p>{targetMode === "completion_loyalty" ? `Loyalty target selected: ${selectedLoyaltyTarget ? short(selectedLoyaltyTarget.order_ref, 42) : "none"} · ${gbp(selectedLoyaltyAmount)}` : `Shipper charges selected: ${selectedTargetIds.length} charge record(s) · ${gbp(selectedTargetTotal)}`}</p>
             <p>Residual selected: {gbp(residualAmount)} · {residualLabel(residualType)}</p>
             <p className="font-bold text-slate-950">Gap: {gbp(gap)}</p>
-            <p className="text-xs font-semibold text-amber-700">{exact ? "Balanced — ready to submit target and/or residual matches." : gap > 0 ? "Still has unexplained amount. Add residual or select a larger target." : "Over-selected. Reduce target/residual."}</p>
+            <p className="text-xs font-semibold text-amber-700">{exact ? (targetMode === "completion_loyalty" ? "Balanced — ready to reserve the main-bank OUT. DVA/virtual-card IN pairing is still required before release." : "Balanced — ready to submit target and/or residual matches.") : gap > 0 ? "Still has unexplained amount. Add residual or select a larger target." : "Over-selected. Reduce target/residual."}</p>
           </div>
 
           <div className="grid gap-2 sm:grid-cols-2 lg:min-w-[34rem]">
@@ -268,8 +268,8 @@ export default function MainBankAllocationController({
                 <input type="hidden" name="dva_statement_line_id" value={selectedLineId} />
                 <input type="hidden" name="order_id" value={selectedLoyaltyOrderId} />
                 <input type="hidden" name="reward_amount_gbp" value={selectedLoyaltyAmount > 0 ? selectedLoyaltyAmount.toFixed(2) : ""} />
-                <input type="hidden" name="notes" value="Main-bank payment matched to completion loyalty reward funding." />
-                <button type="submit" disabled={!canConfirmLoyalty} className="rounded-xl bg-sky-700 px-4 py-2 text-sm font-bold text-white disabled:bg-slate-200 disabled:text-slate-500">Release loyalty credit</button>
+                <input type="hidden" name="notes" value="Main-bank OUT reserved for completion loyalty reward. Destination DVA/virtual-card IN must be paired before release." />
+                <button type="submit" disabled={!canConfirmLoyalty} className="rounded-xl bg-sky-700 px-4 py-2 text-sm font-bold text-white disabled:bg-slate-200 disabled:text-slate-500">Reserve loyalty funding OUT</button>
               </form>
             ) : (
               <form action={allocateMainBankLineToShipperApAction} className="grid gap-2">
