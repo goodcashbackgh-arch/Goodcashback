@@ -6,6 +6,16 @@ This addendum authorises the next MVP accounting/Sage build for completion loyal
 
 It deliberately does not rewrite the 23 June 2026 completion-loyalty contract. It narrows how the next Sage/accounting layer plugs into the existing platform.
 
+This addendum does not invent a new Sage posting method. It creates dedicated completion-loyalty source lanes that feed existing proven Sage posting primitives already used elsewhere in the platform.
+
+Existing proven Sage posting primitives to reuse:
+
+```text
+POST /contact_payments
+POST /contact_allocations
+POST /journals
+```
+
 ---
 
 ## 1. Locked accounting conclusion
@@ -64,7 +74,7 @@ The only source for the loyalty internal-transfer accounting control is:
 main_bank_completion_loyalty_funding_matches
 ```
 
-A row is eligible for internal-transfer readiness only when:
+A row is eligible for internal-transfer journal materialisation only when:
 
 ```text
 transfer_pair_status = 'paired_released'
@@ -124,13 +134,15 @@ This is the first live-posting candidate because it is triggered by the existing
 
 The implementation must not treat it as ordinary cash receipt from the customer. It must use a dedicated non-cash loyalty settlement lane.
 
-### Phase 2 — Loyalty internal-transfer readiness
+### Phase 2 — Loyalty internal-transfer journal posting
 
-The internal-transfer accounting control must be visible and reconcilable, but live Sage posting for the internal bank transfer must remain disabled until the exact Sage method is proven.
+The internal-transfer journal uses the existing proven `/journals` posting primitive.
 
-This phase may materialise readiness rows and preview payloads.
+It does not need a new Sage posting mechanism.
 
-It must not add a live posting button until a later endpoint/mapping proof confirms the correct Sage treatment.
+It does require dedicated loyalty source rows, dedicated mappings, dry-run/local validation, admin approval, idempotency, and Sage request/response logging.
+
+Live posting may be enabled only after the loyalty main-bank and DVA/card ledger mappings are configured and a controlled dry-run passes.
 
 ---
 
@@ -176,12 +188,12 @@ completion_loyalty_non_cash_customer_settlement
 
 ### 5.1 Required Sage endpoints/patterns
 
-The applied-loyalty customer settlement lane may use the same mechanics already proven by the existing cash receipt/allocation and journal posting code paths:
+The applied-loyalty customer settlement lane uses the same mechanics already proven by the existing cash receipt/allocation and journal posting code paths:
 
 ```text
 POST /contact_payments
 POST /contact_allocations
-POST /journals or a separately proven clearing-offset endpoint
+POST /journals
 ```
 
 But it must remain a separate loyalty posting lane with separate tables, statuses, idempotency keys, and UI labels.
@@ -244,7 +256,7 @@ Dr LOYALTY_REWARD_EXPENSE_LEDGER
 Cr loyalty settlement clearing account/ledger
 ```
 
-The preferred endpoint for the clearing offset is the existing VAT-safe journal pattern if the Sage ledger mapping supports it:
+The clearing offset uses the existing VAT-safe journal primitive:
 
 ```text
 POST /journals
@@ -257,21 +269,19 @@ include_on_tax_return = false
 tax_rate_id = null
 ```
 
-If Sage does not allow the chosen clearing account/ledger to be cleared by journal, a later mini-proof must approve the alternative endpoint before live posting is enabled.
-
 ---
 
-## 6. Internal-transfer readiness mechanics
+## 6. Internal-transfer journal mechanics
 
 The internal transfer is not customer settlement. It is only the movement of company funds into the DVA/card/virtual-card account.
 
-For MVP, create or extend read-only/internal readiness rows using:
+For MVP, create dedicated loyalty internal-transfer posting rows using:
 
 ```text
 main_bank_completion_loyalty_funding_matches
 ```
 
-Minimum readiness output:
+Minimum output:
 
 ```text
 loyalty_match_id
@@ -288,39 +298,69 @@ destination_in_reference
 source_out_date
 destination_in_date
 internal_transfer_accounting_status
-posting_enabled = false
+posting_enabled
 blocker
 ```
 
 Readiness status examples:
 
 ```text
-ready_internal_transfer_accounting_preview
+ready_internal_transfer_journal_materialisation
 blocked_missing_source_out_line
 blocked_missing_destination_in_line
 blocked_unpaired_or_not_released
-blocked_internal_transfer_sage_method_not_proven
+blocked_missing_main_bank_ledger_mapping
+blocked_missing_dva_card_bank_ledger_mapping
 ```
 
 ### 6.1 Internal-transfer accounting treatment
 
-Preview accounting treatment:
+Journal accounting treatment:
 
 ```text
 Dr DVA/card/virtual-card bank / clearing asset
 Cr main bank
 ```
 
-### 6.2 No live internal-transfer posting yet
+### 6.2 Required internal-transfer mappings
 
-Do not live-post internal transfers until a later proof confirms one of:
+Add or confirm these mappings before live internal-transfer posting:
 
 ```text
-Sage bank-transfer endpoint exists and is tested; or
-Sage journal to the mapped bank/clearing ledger accounts is accepted and VAT-safe.
+LOYALTY_MAIN_BANK_LEDGER
+LOYALTY_DVA_CARD_BANK_LEDGER
 ```
 
-The first MVP must therefore keep internal-transfer live posting disabled.
+### 6.3 Required internal-transfer endpoint
+
+The internal transfer uses the existing proven journal endpoint:
+
+```text
+POST /journals
+```
+
+It is not routed through:
+
+```text
+customer_receipt_on_account
+supplier_invoice_payment
+shipper_invoice_payment
+bank_fee
+fx_card_difference
+```
+
+### 6.4 Internal-transfer feature gate
+
+Live internal-transfer posting is allowed only when:
+
+```text
+source OUT + destination IN are paired_released
+both ledger mappings are configured
+dry-run/local validation has passed
+admin approval has been recorded
+feature flag is enabled
+no Sage journal id already exists for the pair
+```
 
 ---
 
@@ -348,9 +388,9 @@ order_funding_events.funding_reversed
 
 Applied-loyalty settlement posting is not the VAT source.
 
-Internal-transfer posting/readiness is not the VAT source.
+Internal-transfer journal posting is not the VAT source.
 
-Sage journal lines used for loyalty clearing must be:
+Sage journal lines used for loyalty clearing or internal transfer must be:
 
 ```text
 include_on_tax_return = false
@@ -380,7 +420,7 @@ completion_loyalty_sage_posting_step_logs
 ```text
 id
 posting_group_ref
-posting_group_type = 'completion_loyalty_applied_settlement' | 'completion_loyalty_internal_transfer_preview'
+posting_group_type = 'completion_loyalty_applied_settlement' | 'completion_loyalty_internal_transfer_journal'
 order_id
 order_ref
 importer_id
@@ -433,13 +473,11 @@ loyalty_customer_allocation
 loyalty_clearing_offset
 ```
 
-Required internal-transfer readiness step:
+Required internal-transfer step:
 
 ```text
-loyalty_internal_transfer_preview
+loyalty_internal_transfer_journal
 ```
-
-Live internal-transfer step is reserved for a later endpoint-proof addendum.
 
 ---
 
@@ -493,7 +531,7 @@ For MVP:
 
 ```text
 SAGE_LIVE_COMPLETION_LOYALTY_SETTLEMENT_POSTING_ENABLED may be enabled only after controlled test approval.
-SAGE_LIVE_COMPLETION_LOYALTY_INTERNAL_TRANSFER_POSTING_ENABLED must remain false until endpoint/mapping proof is complete.
+SAGE_LIVE_COMPLETION_LOYALTY_INTERNAL_TRANSFER_POSTING_ENABLED may be enabled only after controlled journal dry-run approval.
 ```
 
 ---
@@ -510,7 +548,7 @@ Add sections:
 
 ```text
 Applied loyalty customer settlement posting
-Internal transfer accounting readiness
+Internal transfer journal posting
 ```
 
 Do not put these rows into the VAT return workbench.
@@ -545,7 +583,9 @@ never edit a posted Sage object silently.
 For internal transfer:
 
 ```text
-reverse by separate reversing internal-transfer entry only after the live method is proven.
+reverse by separate reversing internal-transfer journal;
+Dr main bank
+Cr DVA/card/virtual-card bank / clearing asset
 ```
 
 No reversal may directly edit locked VAT return rows.
@@ -616,21 +656,24 @@ Minimum tests before implementation acceptance:
 25. A receipt success with allocation failure leaves partially_posted_needs_review.
 26. A receipt/allocation success with clearing offset failure leaves partially_posted_needs_review.
 27. No duplicate receipt is posted on retry after partial success.
-28. Internal-transfer readiness appears only for paired_released loyalty matches.
-29. Internal-transfer live posting remains disabled in MVP.
-30. No loyalty posting creates vat_return_run_lines.
-31. No loyalty posting creates vat_return_adjustment_journals.
-32. No loyalty posting changes order_funding_events.
-33. No loyalty posting changes sales_invoices.
-34. VAT return still picks up credit_applied from order_funding_events.
-35. VAT return still picks up funding_reversed from order_funding_events.
-36. Existing customer cash receipt posting still works.
-37. Existing customer cash allocation still works.
-38. Existing VAT adjustment journal posting still works.
-39. Existing supplier/AP posting still works.
-40. Existing shipper/AP posting still works.
-41. Existing DVA review pack classifications remain unchanged.
-42. Existing completion-loyalty control rows remain unchanged.
+28. Internal-transfer journal materialises only for paired_released loyalty matches.
+29. Internal-transfer journal uses POST /journals only.
+30. Missing internal-transfer main-bank ledger mapping blocks posting.
+31. Missing internal-transfer DVA/card ledger mapping blocks posting.
+32. Internal-transfer journal has include_on_tax_return = false and tax_rate_id = null.
+33. No loyalty posting creates vat_return_run_lines.
+34. No loyalty posting creates vat_return_adjustment_journals.
+35. No loyalty posting changes order_funding_events.
+36. No loyalty posting changes sales_invoices.
+37. VAT return still picks up credit_applied from order_funding_events.
+38. VAT return still picks up funding_reversed from order_funding_events.
+39. Existing customer cash receipt posting still works.
+40. Existing customer cash allocation still works.
+41. Existing VAT adjustment journal posting still works.
+42. Existing supplier/AP posting still works.
+43. Existing shipper/AP posting still works.
+44. Existing DVA review pack classifications remain unchanged.
+45. Existing completion-loyalty control rows remain unchanged.
 ```
 
 ---
@@ -640,10 +683,11 @@ Minimum tests before implementation acceptance:
 The seamless MVP integration is:
 
 ```text
-Use the existing loyalty pairing tables only for internal-transfer readiness.
+Use the existing loyalty pairing tables for the internal-transfer journal source.
 Use the existing applied credit_applied event for customer settlement eligibility.
 Settle the Sage customer account through a dedicated non-cash loyalty settlement lane, not through generic customer cash.
 Clear the loyalty settlement clearing account to loyalty reward expense.
+Post the paired main-bank OUT and DVA/card IN transfer through the existing /journals primitive.
 Keep VAT timing on order_funding_events.
 Keep VAT workbench and VAT adjustment journals untouched.
 Keep generic cash, supplier/AP, shipper/AP, and customer sales posting untouched.
