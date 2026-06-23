@@ -561,7 +561,82 @@ Do not add generic posting buttons to the DVA review pack.
 
 ---
 
-## 12. Reversal rule
+## 12. Source workbench handoff rule
+
+The DVA/card and main-bank workbenches remain the source reconciliation, classification, and pairing workbenches.
+
+They are not the Sage posting workbench for completion loyalty.
+
+### 12.1 Main-bank workbench role
+
+The main-bank workbench may:
+
+```text
+show main-bank OUT statement lines
+reserve a main-bank OUT line against a completion-loyalty reward target
+show completion-loyalty classification/status
+show whether the OUT has been paired with a DVA/card IN
+show a link/status to the Accounting Command Centre loyalty posting group
+```
+
+The main-bank workbench must not:
+
+```text
+post the loyalty transfer to Sage directly
+send the loyalty OUT line to generic cash posting
+classify the loyalty OUT as shipper_invoice_payment
+classify the loyalty OUT as supplier_invoice_payment
+classify the loyalty OUT as bank_fee or fx_card_difference
+```
+
+### 12.2 DVA/card workbench role
+
+The DVA/card side may:
+
+```text
+show eligible DVA/card/virtual-card IN lines
+allow staff to pair the DVA/card IN line with the reserved loyalty OUT
+mark the IN line as consumed/explained by completion-loyalty internal transfer
+show a link/status to the Accounting Command Centre loyalty posting group
+```
+
+The DVA/card side must not:
+
+```text
+post the loyalty IN line to Sage directly
+send the loyalty IN line to customer_receipt_on_account
+classify the loyalty IN as real customer cash
+create order_funding_events.funding_contribution from the loyalty IN
+```
+
+### 12.3 Handoff to Accounting Command Centre
+
+Once the main-bank OUT and DVA/card IN are paired and released, the pair becomes a candidate for the dedicated Accounting Command Centre loyalty internal-transfer journal lane.
+
+The handoff source is:
+
+```text
+main_bank_completion_loyalty_funding_matches
+```
+
+The Sage posting workbench is:
+
+```text
+/internal/accounting-command-centre/loyalty-controls
+```
+
+The posted internal-transfer journal must include both sides:
+
+```text
+Dr DVA/card/virtual-card bank / clearing asset
+Cr main bank
+```
+
+This is how the IN is posted. It is the debit line of the internal-transfer journal, not a standalone customer receipt.
+
+---
+
+## 13. Reversal rule
 
 Operational reversal stays with the existing funding model:
 
@@ -594,7 +669,7 @@ VAT correction remains governed by the existing VAT workbench/source-line/curren
 
 ---
 
-## 13. Non-impact boundaries
+## 14. Non-impact boundaries
 
 This build must not change:
 
@@ -624,7 +699,7 @@ It may read from those areas, but must not mutate them except for its own dedica
 
 ---
 
-## 14. Required tests
+## 15. Required tests
 
 Minimum tests before implementation acceptance:
 
@@ -661,28 +736,32 @@ Minimum tests before implementation acceptance:
 30. Missing internal-transfer main-bank ledger mapping blocks posting.
 31. Missing internal-transfer DVA/card ledger mapping blocks posting.
 32. Internal-transfer journal has include_on_tax_return = false and tax_rate_id = null.
-33. No loyalty posting creates vat_return_run_lines.
-34. No loyalty posting creates vat_return_adjustment_journals.
-35. No loyalty posting changes order_funding_events.
-36. No loyalty posting changes sales_invoices.
-37. VAT return still picks up credit_applied from order_funding_events.
-38. VAT return still picks up funding_reversed from order_funding_events.
-39. Existing customer cash receipt posting still works.
-40. Existing customer cash allocation still works.
-41. Existing VAT adjustment journal posting still works.
-42. Existing supplier/AP posting still works.
-43. Existing shipper/AP posting still works.
-44. Existing DVA review pack classifications remain unchanged.
-45. Existing completion-loyalty control rows remain unchanged.
+33. Source workbenches show handoff/link/status but do not post loyalty to Sage directly.
+34. Loyalty IN is not routed to customer_receipt_on_account.
+35. Loyalty OUT is not routed to shipper_invoice_payment, supplier_invoice_payment, bank_fee, or fx_card_difference.
+36. No loyalty posting creates vat_return_run_lines.
+37. No loyalty posting creates vat_return_adjustment_journals.
+38. No loyalty posting changes order_funding_events.
+39. No loyalty posting changes sales_invoices.
+40. VAT return still picks up credit_applied from order_funding_events.
+41. VAT return still picks up funding_reversed from order_funding_events.
+42. Existing customer cash receipt posting still works.
+43. Existing customer cash allocation still works.
+44. Existing VAT adjustment journal posting still works.
+45. Existing supplier/AP posting still works.
+46. Existing shipper/AP posting still works.
+47. Existing DVA review pack classifications remain unchanged.
+48. Existing completion-loyalty control rows remain unchanged.
 ```
 
 ---
 
-## 15. Final implementation principle
+## 16. Final implementation principle
 
 The seamless MVP integration is:
 
 ```text
+Use the existing DVA/card and main-bank workbenches only to reconcile, classify, and pair the loyalty IN/OUT source lines.
 Use the existing loyalty pairing tables for the internal-transfer journal source.
 Use the existing applied credit_applied event for customer settlement eligibility.
 Settle the Sage customer account through a dedicated non-cash loyalty settlement lane, not through generic customer cash.
