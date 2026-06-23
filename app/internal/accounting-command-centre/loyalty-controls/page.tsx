@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
+import CompletionLoyaltyAppliedAccountingPreviewPanel from "../CompletionLoyaltyAppliedAccountingPreviewPanel";
 import LoyaltyAccountingControlPanel from "../LoyaltyAccountingControlPanel";
 
 type Row = Record<string, unknown>;
@@ -67,6 +68,8 @@ export default async function LoyaltyAccountingControlsPage() {
         </section>
 
         <LoyaltyAccountingControlPanel />
+
+        <CompletionLoyaltyAppliedAccountingPreviewPanel />
 
         <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-950">
           <h2 className="font-bold">Control boundary</h2>
