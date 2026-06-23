@@ -96,6 +96,12 @@ function friendly(value: string | null | undefined) {
   return value.replaceAll("_", " ").replace(/^./, (first) => first.toUpperCase());
 }
 
+function hasMeaningfulBlockerValue(value: string | null | undefined) {
+  const raw = String(value ?? "").trim().toLowerCase();
+  if (!raw) return false;
+  return !["—", "-", "none", "null", "ready", "ok", "clear", "no_blocker"].includes(raw);
+}
+
 function detailText(row: WorkbenchRow, key: string) {
   const value = row.blocker_details_json?.[key];
   return typeof value === "string" ? value : "";
@@ -129,6 +135,9 @@ function blockerReason(row: WorkbenchRow) {
     reasons.push(`Final settlement state: ${friendly(settlementState)}`);
   }
 
+  if (hasMeaningfulBlockerValue(row.completion_blocker)) reasons.push(`Completion blocker: ${friendly(row.completion_blocker)}`);
+  if (hasMeaningfulBlockerValue(row.basis_blocker)) reasons.push(`Basis blocker: ${friendly(row.basis_blocker)}`);
+  if (hasMeaningfulBlockerValue(row.approval_blocker)) reasons.push(`Approval blocker: ${friendly(row.approval_blocker)}`);
   if (missingCoding > 0) reasons.push(`Missing supplier accounting coding: ${missingCoding} line${missingCoding === 1 ? "" : "s"}`);
   if (defaultN > 0) reasons.push(`Unresolved default-N product treatment: ${defaultN} line${defaultN === 1 ? "" : "s"}`);
   if (adminReview > 0) reasons.push(`Admin review required: ${adminReview} line${adminReview === 1 ? "" : "s"}`);
@@ -137,8 +146,8 @@ function blockerReason(row: WorkbenchRow) {
   if (activeHolds > 0) reasons.push(`Active hold: ${activeHolds}`);
   if (non20Rate > 0) reasons.push(`Non-20%/unknown tax rate: ${non20Rate} line${non20Rate === 1 ? "" : "s"}`);
 
-  if (reasons.length > 0) return reasons.join(" · ");
-  return friendly(row.approval_blocker || row.basis_blocker || row.completion_blocker || row.workbench_status);
+  if (reasons.length > 0) return Array.from(new Set(reasons)).join(" · ");
+  return friendly(row.workbench_status);
 }
 
 function blockerNextStep(row: WorkbenchRow) {
@@ -152,8 +161,38 @@ function blockerNextStep(row: WorkbenchRow) {
   if (missingCoding > 0) {
     steps.push("Complete supplier accounting coding on the reconciliation page.");
   }
+  if (hasMeaningfulBlockerValue(row.completion_blocker)) {
+    steps.push("Complete the order lifecycle requirement before funding/release.");
+  }
+  if (hasMeaningfulBlockerValue(row.basis_blocker)) {
+    steps.push("Resolve the reward-basis blocker before funding/release.");
+  }
 
   return steps.length > 0 ? steps.join(" ") : "Resolve the listed blocker, then refresh this page.";
+}
+
+function hasCurrentBasisBlocker(row: WorkbenchRow) {
+  const settlementState = row.final_settlement_state || detailText(row, "final_settlement_state");
+  const pendingCredit = numeric(row.potential_credit_pending_review_gbp);
+  const settlementBlocked = Boolean(settlementState && !["settled_nil", "credit_added_to_account"].includes(settlementState));
+  const countBlocked = [
+    "missing_accounting_coding_count",
+    "unresolved_default_n_count",
+    "admin_review_required_count",
+    "unresolved_financial_treatment_count",
+    "open_dispute_count",
+    "active_hold_count",
+    "non_20_rate_count",
+  ].some((key) => detailNumber(row, key) > 0);
+
+  return Boolean(
+    hasMeaningfulBlockerValue(row.completion_blocker) ||
+    hasMeaningfulBlockerValue(row.basis_blocker) ||
+    hasMeaningfulBlockerValue(row.approval_blocker) ||
+    settlementBlocked ||
+    pendingCredit > 0.01 ||
+    countBlocked
+  );
 }
 
 function statusClass(value: string | null | undefined) {
@@ -188,14 +227,18 @@ function isReleased(row: WorkbenchRow) {
   return row.workbench_status === "dashboard_credit_released" || row.workbench_status === "released_available_dashboard_credit" || numeric(row.amount_released_gbp) > 0 || numeric(row.available_dashboard_credit_gbp) > 0;
 }
 
+function canConfirmFunding(row: WorkbenchRow) {
+  return isPendingFunding(row) && !hasCurrentBasisBlocker(row);
+}
+
 function isBlocked(row: WorkbenchRow) {
   const status = row.workbench_status ?? "";
-  return !isProposed(row) && !isPendingFunding(row) && !isReleased(row) && (status.includes("blocked") || status.includes("not_ready") || Boolean(row.completion_blocker) || Boolean(row.basis_blocker));
+  return !isReleased(row) && (hasCurrentBasisBlocker(row) || status.includes("blocked") || status.includes("not_ready"));
 }
 
 function rowMatchesStatus(row: WorkbenchRow, status: FilterStatus) {
   if (status === "proposed") return isProposed(row);
-  if (status === "pending_funding") return isPendingFunding(row);
+  if (status === "pending_funding") return canConfirmFunding(row);
   if (status === "released") return isReleased(row);
   if (status === "blocked") return isBlocked(row);
   return true;
@@ -365,6 +408,28 @@ function ApplyLoyaltyForm({ row, targetOrders }: { row: WorkbenchRow; targetOrde
   );
 }
 
+function FundingBlockedNotice({ row }: { row: WorkbenchRow }) {
+  return (
+    <div className="mt-5 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-950">
+      <p className="text-xs font-bold uppercase tracking-wide text-rose-700">Funding release blocked</p>
+      <p className="mt-1 font-semibold">Approved earlier, but the current reward basis is now blocked.</p>
+      <p className="mt-2 text-xs leading-5">{blockerReason(row)}</p>
+      <p className="mt-2 text-xs leading-5">Next step: {blockerNextStep(row)}</p>
+    </div>
+  );
+}
+
+function ReleasedWithBlockerNotice({ row }: { row: WorkbenchRow }) {
+  if (!hasCurrentBasisBlocker(row)) return null;
+  return (
+    <div className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
+      <p className="text-xs font-bold uppercase tracking-wide text-amber-700">Existing released loyalty credit</p>
+      <p className="mt-1 font-semibold">This credit already exists, but the current reward basis still shows blockers. Apply only if you intend to consume this already-released credit.</p>
+      <p className="mt-2 text-xs leading-5">Current blocker: {blockerReason(row)}</p>
+    </div>
+  );
+}
+
 export default async function CompletionLoyaltyRewardsPage({ searchParams }: { searchParams?: Promise<SearchParams> }) {
   const params = searchParams ? await searchParams : {};
   const filterStatus = normalizeFilterStatus(params.status);
@@ -471,7 +536,7 @@ export default async function CompletionLoyaltyRewardsPage({ searchParams }: { s
     },
     {
       label: "Approved pending funding",
-      count: rows.filter(isPendingFunding).length,
+      count: rows.filter(canConfirmFunding).length,
       detail: "Funding proof required for customer DVA/account top-up.",
       tone: "sky",
     },
@@ -560,7 +625,9 @@ export default async function CompletionLoyaltyRewardsPage({ searchParams }: { s
           <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-600">
             {rows.length === 0 ? "No completion loyalty reward rows are currently in the workbench." : "No completion loyalty reward rows match this filter."}
           </div>
-        ) : filteredRows.map((row) => (
+        ) : filteredRows.map((row) => {
+          const currentBasisBlocked = hasCurrentBasisBlocker(row);
+          return (
           <article key={`${row.order_id ?? row.order_ref}-${row.approval_id ?? "proposal"}`} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
@@ -596,10 +663,13 @@ export default async function CompletionLoyaltyRewardsPage({ searchParams }: { s
             </dl>
 
             {isProposed(row) ? <ApprovalForm row={row} /> : null}
-            {isPendingFunding(row) ? <FundingForm row={row} /> : null}
+            {isPendingFunding(row) && currentBasisBlocked ? <FundingBlockedNotice row={row} /> : null}
+            {canConfirmFunding(row) ? <FundingForm row={row} /> : null}
+            {isReleased(row) ? <ReleasedWithBlockerNotice row={row} /> : null}
             {isReleased(row) ? <ApplyLoyaltyForm row={row} targetOrders={targetOrders} /> : null}
           </article>
-        ))}
+        );
+        })}
       </section>
     </main>
   );
