@@ -2,7 +2,7 @@
 
 Status: locked implementation contract addendum to `COMPLETION_LOYALTY_MAIN_BANK_DVA_PAIRING_ACCOUNTING_CONTRACT_v1.md` and `COMPLETION_LOYALTY_APPLIED_ACCOUNTING_PREVIEW_ADDENDUM_v1.md`.
 
-This addendum authorises the next MVP accounting/Sage build for completion loyalty without changing the already-locked loyalty activation, credit application, VAT return, DVA/card reconciliation, customer sales, supplier/AP, shipper/AP, or cash-posting flows.
+This addendum authorises the next MVP accounting/Sage build for completion loyalty without changing the already-locked loyalty activation, credit application, VAT return, DVA/card reconciliation, customer sales, supplier/AP, shipper/AP, or cash-posting flows except where this addendum explicitly approves the shared customer-receivable allocation prerequisite and final-balance customer-receipt bridge.
 
 It deliberately does not rewrite the 23 June 2026 completion-loyalty contract. It narrows how the next Sage/accounting layer plugs into the existing platform.
 
@@ -14,6 +14,13 @@ Existing proven Sage posting primitives to reuse:
 POST /contact_payments
 POST /contact_allocations
 POST /journals
+```
+
+Approved shared customer-receivable prerequisites now form part of this contract:
+
+```text
+confirmed final_balance_payment DVA/card IN allocations may be bridged into the existing customer receipt cash-posting workbench as source_type = dva_final_balance_allocation;
+customer receipt allocation may allocate deterministically across multiple open posted customer_sales invoice snapshots for the same order and same Sage contact.
 ```
 
 ---
@@ -127,6 +134,18 @@ main-bank OUT line alone
 ## 3. MVP build order
 
 The MVP must be built in this order.
+
+### Phase 0 — Shared customer-receivable prerequisites
+
+Before the loyalty settlement lane is built, the existing customer-receivable cash infrastructure must be capable of:
+
+```text
+1. exposing confirmed final_balance_payment DVA/card IN allocations as customer receipt rows;
+2. freezing/posting those rows through the existing customer receipt cash-posting route;
+3. allocating a receipt/payment-on-account across one or more open posted customer_sales invoice snapshots for the same order and same Sage contact.
+```
+
+This prerequisite is already aligned with the final-balance bridge migration and the shared multi-invoice cash allocation resolver. It is not a loyalty posting lane and does not make loyalty IN/OUT lines generic cash.
 
 ### Phase 1 — Applied-loyalty customer settlement posting
 
@@ -247,7 +266,7 @@ The settlement payment-on-account must be allocated to posted Sage customer sale
 
 The allocation amount must equal the applied loyalty amount in total, capped only by the combined open receivable amount of the selected invoice snapshot(s).
 
-The implementation must not copy the generic cash allocation limitation that blocks merely because more than one posted customer sales invoice snapshot exists for the same order.
+The implementation must not copy the old generic cash allocation limitation that blocked merely because more than one posted customer sales invoice snapshot existed for the same order. The approved shared resolver must be used as the reference pattern.
 
 If one open posted customer sales invoice snapshot exists for the order, allocate to that invoice.
 
@@ -288,6 +307,96 @@ The journal lines must use:
 include_on_tax_return = false
 tax_rate_id = null
 ```
+
+---
+
+## 5A. Shared final-balance cash bridge and receivable allocation prerequisite
+
+This section locks the repo-aligned prerequisite discovered during the loyalty build simulation.
+
+### 5A.1 Final-balance DVA/card IN bridge
+
+A supplementary/final-balance customer invoice is an additional customer receivable. It is settled by a customer IN payment, not by an OUT transaction.
+
+Confirmed final-balance DVA/card IN allocations may be exposed to the existing Accounting Command Centre cash-posting workbench as customer receipt rows:
+
+```text
+source_type = 'dva_final_balance_allocation'
+category = 'customer_receipt_on_account'
+matched_target_type = 'payment_on_account_final_balance'
+```
+
+The source is:
+
+```text
+dva_statement_line_allocation_detail_vw
+where allocation_type = 'final_balance_payment'
+and allocation_status = 'confirmed'
+and statement_direction = 'in'
+```
+
+Readiness must require:
+
+```text
+positive allocated_gbp_amount
+active importer/customer Sage contact mapping
+DVA_CASH_BANK_ACCOUNT mapping
+same order_id carried from the final-balance allocation
+```
+
+This bridge is allowed to reuse the existing customer cash posting path:
+
+```text
+Cash Posting Workbench
+  -> freeze
+  -> cash posting batch
+  -> POST /contact_payments
+  -> customer receipt/payment-on-account
+  -> POST /contact_allocations
+```
+
+This bridge does not create or mutate:
+
+```text
+order_funding_events
+sales_invoices
+vat_return_runs
+vat_return_run_lines
+vat_return_adjustment_journals
+vat_return_adjustment_journal_lines
+```
+
+It is a Sage/customer-account bridge for confirmed customer cash that the platform has already classified as final-balance received.
+
+### 5A.2 Shared multi-invoice customer allocation resolver
+
+The existing customer cash allocation path, the final-balance customer receipt bridge, and the future loyalty non-cash settlement lane must all resolve open customer receivables using the same deterministic same-order/same-contact rule.
+
+The resolver must select target invoice snapshot(s) by:
+
+```text
+1. Same order_id as the receipt/settlement source.
+2. Same Sage contact as the payment-on-account/receipt.
+3. document_lane = customer_sales.
+4. sage_posting_status = posted.
+5. Positive open receivable amount only.
+6. Oldest invoice/document date first.
+7. created_at then snapshot id as tie-breakers.
+```
+
+The resolver may allocate one receipt/payment-on-account across more than one customer_sales invoice snapshot for the same order and same Sage contact.
+
+This is required for orders with both a main customer sales invoice and a supplementary/final-balance invoice under the same order_id.
+
+The resolver must not search by `parent_order_id` for normal customer cash. Replacement child order invoices must not be pulled into parent-order receipt allocation unless a later contract explicitly authorises that cross-order allocation.
+
+If no open posted customer_sales target exists, block.
+
+If Sage contact does not match, block.
+
+If positive open amount cannot be calculated safely, block.
+
+If the total open receivable amount is below the receipt/allocation amount and partial allocation has not been explicitly approved for that lane, block.
 
 ---
 
@@ -462,6 +571,8 @@ LC-<event6>   loyalty clearing
 
 Keep references compact so they fit restrictive Sage reference fields.
 
+The existing generic cash receipt references, including final-balance receipt references, are not completion-loyalty Sage references. This no-GCB rule applies to the new completion-loyalty Sage posting lane only.
+
 ### 7.4 Source IDs are the source of truth
 
 Full traceability must live in the platform posting tables/logs, not in the Sage reference text.
@@ -526,6 +637,8 @@ order_funding_events.funding_reversed
 Applied-loyalty settlement posting is not the VAT source.
 
 Internal-transfer journal posting is not the VAT source.
+
+The final-balance customer-receipt bridge is also not the VAT source. It posts customer cash already classified by the platform as final-balance received; VAT timing remains with the existing final-sale/funding/VAT engine.
 
 Sage journal lines used for loyalty clearing or internal transfer must be:
 
@@ -678,6 +791,8 @@ SAGE_LIVE_COMPLETION_LOYALTY_SETTLEMENT_POSTING_ENABLED may be enabled only afte
 SAGE_LIVE_COMPLETION_LOYALTY_INTERNAL_TRANSFER_POSTING_ENABLED may be enabled only after controlled journal dry-run approval.
 ```
 
+The existing cash receipt/final-balance bridge remains governed by the existing cash posting and cash allocation feature flags, not by the completion-loyalty feature flags.
+
 ---
 
 ## 12. UI placement
@@ -697,11 +812,13 @@ Internal transfer journal posting
 
 Do not put these rows into the VAT return workbench.
 
-Do not put these rows into generic cash posting batches.
+Do not put loyalty posting groups into generic cash posting batches.
 
-Do not make the existing preview rows selectable.
+Do not make the existing loyalty preview rows selectable.
 
-Do not add generic posting buttons to the DVA review pack.
+Do not add generic loyalty posting buttons to the DVA review pack.
+
+Final-balance customer receipt rows are not loyalty posting groups. They may remain in the existing Cash Posting Workbench because they are real customer cash receipts that settle supplementary/final-balance receivables.
 
 ---
 
@@ -753,6 +870,8 @@ classify the loyalty IN as real customer cash
 create order_funding_events.funding_contribution from the loyalty IN
 ```
 
+This restriction is for completion-loyalty transfer IN lines only. It does not block genuine customer final-balance IN payments from being bridged to customer_receipt_on_account through `source_type = dva_final_balance_allocation`.
+
 ### 13.3 Handoff to Accounting Command Centre
 
 Once the main-bank OUT and DVA/card IN are paired and released, the pair becomes a candidate for the dedicated Accounting Command Centre loyalty internal-transfer journal lane.
@@ -776,7 +895,7 @@ Dr DVA/card/virtual-card bank / clearing asset
 Cr main bank
 ```
 
-This is how the IN is posted. It is the debit line of the internal-transfer journal, not a standalone customer receipt.
+This is how the loyalty IN is posted. It is the debit line of the internal-transfer journal, not a standalone customer receipt.
 
 ---
 
@@ -828,8 +947,6 @@ customer sales Sage posting
 supplier goods/AP posting
 shipper/AP posting
 main-bank shipper/AP allocation
-normal customer cash receipt posting
-normal customer cash allocation
 supplier invoice payment posting
 bank fee posting
 FX/card residual posting
@@ -844,7 +961,15 @@ customer self-service credit display
 staff apply-loyalty-to-order logic
 ```
 
-It may read from those areas, but must not mutate them except for its own dedicated loyalty posting tables/logs.
+Approved shared prerequisite exceptions:
+
+```text
+normal customer cash receipt posting may read confirmed final_balance_payment DVA/card IN allocations through source_type = dva_final_balance_allocation;
+normal customer cash allocation may use the shared deterministic multi-invoice same-order/same-contact resolver;
+these changes must not alter supplier/AP, shipper/AP, bank fee, FX/card residual, VAT, order, shipment, loyalty approval, or loyalty application logic.
+```
+
+The loyalty Sage build may read from the approved shared customer-receivable resolver, but must not mutate non-loyalty areas except through its own dedicated loyalty posting tables/logs.
 
 ---
 
@@ -907,6 +1032,16 @@ Minimum tests before implementation acceptance:
 52. Existing shipper/AP posting still works.
 53. Existing DVA review pack classifications remain unchanged.
 54. Existing completion-loyalty control rows remain unchanged.
+55. Confirmed final_balance_payment DVA/card IN appears in the Cash Posting Workbench as customer_receipt_on_account with source_type = dva_final_balance_allocation.
+56. Unconfirmed final_balance_payment does not become selectable for cash posting.
+57. Final-balance OUT lines are blocked and cannot post as customer receipt.
+58. Final-balance customer receipt uses the same importer/customer Sage contact as the order.
+59. Final-balance customer receipt uses DVA_CASH_BANK_ACCOUNT mapping, not loyalty clearing or main-bank mapping.
+60. Final-balance customer receipt can be frozen and posted through the existing customer receipt cash-posting flow.
+61. Final-balance customer receipt can allocate to an open supplementary customer_sales invoice for the same order.
+62. Initial customer receipt plus final-balance receipt can clear main and supplementary customer_sales invoices for the same order.
+63. Replacement child invoice does not get pulled into parent receipt allocation through parent_order_id.
+64. Final-balance bridge does not create VAT rows, does not mutate order_funding_events, and does not mutate sales_invoices.
 ```
 
 ---
@@ -919,11 +1054,13 @@ The seamless MVP integration is:
 Use the existing DVA/card and main-bank workbenches only to reconcile, classify, and pair the loyalty IN/OUT source lines.
 Use the existing loyalty pairing tables for the internal-transfer journal source.
 Use the existing applied credit_applied event for customer settlement eligibility.
+Treat confirmed final_balance_payment DVA/card IN allocations as ordinary customer cash receipts through source_type = dva_final_balance_allocation, outside the loyalty lane.
+Use the shared deterministic customer-receivable allocation resolver for normal cash receipts, final-balance receipts, and loyalty non-cash settlement receipts.
 Settle the Sage customer account through a dedicated non-cash loyalty settlement lane, not through generic customer cash.
 Allocate applied loyalty against open posted customer_sales invoice snapshot(s) for the same order and same Sage contact using a deterministic frozen target list.
 Clear the loyalty settlement clearing account to loyalty reward expense.
 Post the paired main-bank OUT and DVA/card IN transfer through the existing /journals primitive, using in-transit clearing where statement dates differ.
 Keep VAT timing on order_funding_events.
 Keep VAT workbench and VAT adjustment journals untouched.
-Keep generic cash, supplier/AP, shipper/AP, and customer sales posting untouched.
+Keep supplier/AP, shipper/AP, bank fee, FX/card residual, customer sales posting, order, shipment, and DVA reconciliation core untouched.
 ```
