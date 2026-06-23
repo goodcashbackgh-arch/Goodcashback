@@ -97,7 +97,7 @@ export default async function MainBankShipperMatchingPage({
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Main bank matching workspace</p>
           <h1 className="mt-2 text-3xl font-semibold tracking-tight">Main bank matching</h1>
           <p className="mt-3 max-w-5xl text-sm leading-6 text-slate-600">
-            Shared main-company bank workspace. Shipper charge matching remains the default lane. Completion loyalty uses the same bank lines but a separate target mode, so the same bank amount cannot be reused twice.
+            Shared main-company bank workspace. Shipper charge matching remains the default lane. Completion loyalty uses the same bank lines but a separate target mode: reserve the main-bank OUT first, then pair the DVA/virtual-card IN before dashboard credit is released.
           </p>
           {success ? <p className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-900">{success}</p> : null}
           {error ? <p className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900">{error}</p> : null}
@@ -117,7 +117,7 @@ export default async function MainBankShipperMatchingPage({
           <Link href={targetHref("completion_loyalty", q)} className={`rounded-2xl border p-4 text-sm font-semibold shadow-sm ${modeClass(targetMode === "completion_loyalty")}`}>
             <span className="block text-xs uppercase tracking-wide opacity-70">Target mode</span>
             <span className="mt-1 block text-lg font-extrabold">Completion loyalty</span>
-            <span className="mt-1 block font-normal opacity-80">Match main-bank payment proof to clean completed reward targets and release dashboard credit.</span>
+            <span className="mt-1 block font-normal opacity-80">Reserve main-bank OUT against clean completed reward targets. DVA/virtual-card IN pairing is required before release.</span>
           </Link>
         </section>
 
@@ -148,7 +148,7 @@ export default async function MainBankShipperMatchingPage({
               </label>
             ) : (
               <div className="rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-semibold leading-5 text-sky-950">
-                Loyalty target list shows clean completed reward proposals only.
+                Loyalty target list shows clean completed reward proposals only. This page reserves the main-bank OUT; release still requires DVA/virtual-card IN pairing.
               </div>
             )}
             <button className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white" type="submit">Apply</button>
