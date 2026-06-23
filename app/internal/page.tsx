@@ -88,6 +88,27 @@ const shippingFlowSteps: FlowStep[] = [
   },
 ];
 
+const completionLoyaltyFlowSteps: FlowStep[] = [
+  {
+    step: "1",
+    title: "Reward workbench",
+    href: "/internal/completion-loyalty-rewards",
+    description: "Review reward proposals, approve in principle, confirm clean activation, and apply released loyalty to an order balance.",
+  },
+  {
+    step: "2",
+    title: "Reject rewards in principle",
+    href: "/internal/completion-loyalty-rewards/rejections",
+    description: "Record supervisor rejection before dashboard credit is released. This keeps customer-facing pending loyalty clean and audited.",
+  },
+  {
+    step: "3",
+    title: "Main-bank loyalty reservation",
+    href: "/internal/dva-reconciliation/main-bank?target=completion_loyalty",
+    description: "Reserve main-bank OUT for clean rewards, then pair the DVA/card top-up IN before dashboard credit is released.",
+  },
+];
+
 const cards: QueueCard[] = [
   {
     title: "Supervisor command centre",
@@ -326,6 +347,39 @@ export default async function InternalPage() {
               >
                 <div className="flex items-center gap-2">
                   <span className="inline-flex h-8 min-w-8 items-center justify-center rounded-full bg-white px-2 text-xs font-extrabold text-sky-700 ring-1 ring-sky-200">
+                    {step.step}
+                  </span>
+                  <h3 className="font-semibold text-slate-950">{step.title}</h3>
+                </div>
+                <p className="mt-2 text-xs leading-5 text-slate-600">{step.description}</p>
+              </Link>
+            ))}
+          </div>
+        </section>
+
+        <section className="rounded-3xl border border-cyan-200 bg-white p-5 shadow-sm">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-[0.22em] text-cyan-600">Completion loyalty workflow</p>
+              <h2 className="mt-2 text-2xl font-semibold tracking-tight">Reward approval, rejection and activation</h2>
+              <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
+                Use this grouped route for loyalty reward decisions. Approve or reject in principle first, then reserve main-bank OUT and pair the DVA/card top-up IN before customer dashboard credit is released.
+              </p>
+            </div>
+            <Link href="/internal/completion-loyalty-rewards" className="rounded-xl bg-cyan-700 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-cyan-800">
+              Open reward workbench →
+            </Link>
+          </div>
+
+          <div className="mt-5 grid gap-3 md:grid-cols-3">
+            {completionLoyaltyFlowSteps.map((step) => (
+              <Link
+                key={step.href}
+                href={step.href}
+                className="rounded-2xl border border-slate-200 bg-slate-50 p-4 transition hover:border-cyan-300 hover:bg-cyan-50"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="inline-flex h-8 min-w-8 items-center justify-center rounded-full bg-white px-2 text-xs font-extrabold text-cyan-700 ring-1 ring-cyan-200">
                     {step.step}
                   </span>
                   <h3 className="font-semibold text-slate-950">{step.title}</h3>
