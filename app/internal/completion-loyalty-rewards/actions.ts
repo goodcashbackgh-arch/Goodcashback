@@ -123,3 +123,29 @@ export async function confirmCompletionLoyaltyRewardFundingAction(formData: Form
   revalidatePath(PAGE_PATH);
   redirectWithResult({ success: "Funding proof accepted and dashboard credit released." }, path);
 }
+
+export async function applyCompletionLoyaltyToOrderAction(formData: FormData) {
+  const path = await returnPath();
+  const supabase = await requireSupervisorOrAdmin();
+
+  const orderId = readString(formData, "target_order_id");
+  const amount = readPositiveAmount(formData, "amount_gbp", "Loyalty amount");
+  const notes = readString(formData, "notes") || "Staff applied completion loyalty reward to order balance.";
+
+  if (!orderId) redirectWithResult({ error: "Select the order that should receive the loyalty reward." }, path);
+
+  const { data, error } = await supabase.rpc("staff_apply_completion_loyalty_to_order_v1", {
+    p_order_id: orderId,
+    p_amount_gbp: amount,
+    p_notes: notes,
+  });
+
+  if (error) redirectWithResult({ error: error.message }, path);
+
+  const applied = typeof data === "object" && data !== null && "applied_gbp" in data ? Number((data as { applied_gbp?: unknown }).applied_gbp ?? 0) : amount;
+
+  revalidatePath(PAGE_PATH);
+  revalidatePath("/customer");
+  revalidatePath(`/customer/orders/${orderId}/operations`);
+  redirectWithResult({ success: `Completion loyalty reward applied to order balance: £${Number.isFinite(applied) ? applied.toFixed(2) : amount.toFixed(2)}.` }, path);
+}
