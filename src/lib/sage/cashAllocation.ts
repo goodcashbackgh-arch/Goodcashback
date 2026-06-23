@@ -66,6 +66,20 @@ function retryableStatus(status: number) {
   return status === 408 || status === 429 || status >= 500;
 }
 
+function allocationArtefacts(value: unknown) {
+  const artefacts = getPath(value, ["contact_allocation", "allocated_artefacts"]);
+  return Array.isArray(artefacts) ? artefacts.map((item) => asObject(item)) : [];
+}
+
+function targetSortKey(target: Row) {
+  return firstText(target.resolved_payload, [
+    ["sage_header", "invoice_date"],
+    ["sage_header", "date"],
+    ["sage_invoice", "date"],
+    ["invoice", "date"],
+  ]) || text(target.created_at) || text(target.id);
+}
+
 function errorMessage(raw: unknown) {
   if (Array.isArray(raw)) {
     const messages = raw.map((item) => {
@@ -207,35 +221,78 @@ async function buildCustomerReceiptAllocation(rowId: string) {
 
   const { data: targetsRaw, error: targetsError } = await supabaseAdmin
     .from("sage_posting_snapshots")
-    .select("id, source_id, sage_invoice_id, resolved_payload, amount_gbp, reference_text, order_ref, order_id")
+    .select("id, source_id, sage_invoice_id, resolved_payload, amount_gbp, reference_text, order_ref, order_id, created_at")
     .eq("active", true)
     .eq("document_lane", "customer_sales")
     .eq("sage_posting_status", "posted")
     .eq("order_id", cashSnap.order_id);
   if (targetsError) throw new Error(targetsError.message);
-  const targets = (targetsRaw ?? []) as Row[];
+  const targets = ((targetsRaw ?? []) as Row[])
+    .slice()
+    .sort((a, b) => {
+      const dateCompare = targetSortKey(a).localeCompare(targetSortKey(b));
+      if (dateCompare !== 0) return dateCompare;
+      return text(a.id).localeCompare(text(b.id));
+    });
   if (targets.length === 0) throw new Error("Matched sales invoice has not been posted to Sage.");
-  if (targets.length > 1) throw new Error("Multiple posted sales invoices found for this order. Manual target selection is required before allocation.");
-  const target = targets[0];
 
-  const targetSageInvoiceId = text(target.sage_invoice_id);
-  const targetContactId = firstText(target.resolved_payload, [["sage_header", "contact_id"], ["customer_target", "sage_contact_id"]]);
-  if (!targetSageInvoiceId) throw new Error("Target Sage sales invoice id missing.");
-  if (!targetContactId) throw new Error("Target sales invoice Sage contact id missing.");
-  if (targetContactId !== contactId) throw new Error("Receipt/contact mismatch.");
+  const targetIds = targets.map((target) => text(target.sage_invoice_id)).filter(Boolean);
+  const targetIdSet = new Set(targetIds);
+  if (targetIds.length !== targets.length) throw new Error("One or more target Sage sales invoice ids are missing.");
 
-  const { data: previousRows, error: previousError } = await supabaseAdmin
-    .from("cash_posting_batch_rows")
-    .select("sage_allocation_amount_gbp")
+  for (const target of targets) {
+    const targetContactId = firstText(target.resolved_payload, [["sage_header", "contact_id"], ["customer_target", "sage_contact_id"]]);
+    if (!targetContactId) throw new Error("Target sales invoice Sage contact id missing.");
+    if (targetContactId !== contactId) throw new Error("Receipt/contact mismatch.");
+  }
+
+  const { data: previousRowsRaw, error: previousError } = await supabaseAdmin
+    .from("cash_posting_snapshots")
+    .select("sage_allocation_amount_gbp, sage_allocation_target_object_id, sage_allocation_request_payload")
     .eq("active", true)
     .eq("sage_allocation_status", "allocated")
-    .eq("sage_allocation_target_object_id", targetSageInvoiceId);
+    .eq("order_id", cashSnap.order_id);
   if (previousError) throw new Error(previousError.message);
-  const alreadyAllocatedToTarget = ((previousRows ?? []) as Row[]).reduce((sum, item) => sum + num(item.sage_allocation_amount_gbp), 0);
 
-  const receiptOpen = Math.max(0, num(row.amount_gbp) - num(row.sage_allocation_amount_gbp));
-  const targetOpen = Math.max(0, num(target.amount_gbp) - alreadyAllocatedToTarget);
-  const amount = money(Math.min(receiptOpen, targetOpen));
+  const allocatedByTarget = new Map<string, number>();
+  for (const previous of (previousRowsRaw ?? []) as Row[]) {
+    const artefacts = allocationArtefacts(previous.sage_allocation_request_payload);
+    if (artefacts.length > 0) {
+      for (const artefact of artefacts) {
+        const artefactId = text(artefact.artefact_id);
+        const amount = num(artefact.amount);
+        if (targetIdSet.has(artefactId) && amount > 0) {
+          allocatedByTarget.set(artefactId, money((allocatedByTarget.get(artefactId) ?? 0) + amount));
+        }
+      }
+      continue;
+    }
+
+    const legacyTargetId = text(previous.sage_allocation_target_object_id);
+    if (targetIdSet.has(legacyTargetId)) {
+      allocatedByTarget.set(legacyTargetId, money((allocatedByTarget.get(legacyTargetId) ?? 0) + num(previous.sage_allocation_amount_gbp)));
+    }
+  }
+
+  const receiptOpen = money(Math.max(0, num(row.amount_gbp) - num(row.sage_allocation_amount_gbp)));
+  let remainingReceipt = receiptOpen;
+  const allocationTargets: Array<{ target: Row; sageInvoiceId: string; amount: number }> = [];
+
+  for (const target of targets) {
+    if (!(remainingReceipt > 0)) break;
+    const targetSageInvoiceId = text(target.sage_invoice_id);
+    const alreadyAllocatedToTarget = allocatedByTarget.get(targetSageInvoiceId) ?? 0;
+    const targetOpen = money(Math.max(0, num(target.amount_gbp) - alreadyAllocatedToTarget));
+    if (!(targetOpen > 0)) continue;
+
+    const amount = money(Math.min(remainingReceipt, targetOpen));
+    if (!(amount > 0)) continue;
+
+    allocationTargets.push({ target, sageInvoiceId: targetSageInvoiceId, amount });
+    remainingReceipt = money(remainingReceipt - amount);
+  }
+
+  const amount = money(allocationTargets.reduce((sum, item) => sum + item.amount, 0));
   if (!(amount > 0)) throw new Error("No positive amount is available to allocate.");
 
   const requestBody = {
@@ -243,19 +300,23 @@ async function buildCustomerReceiptAllocation(rowId: string) {
       contact_id: contactId,
       transaction_type_id: "CUSTOMER_ALLOCATION",
       allocated_artefacts: [
-        { artefact_id: targetSageInvoiceId, amount },
+        ...allocationTargets.map((item) => ({ artefact_id: item.sageInvoiceId, amount: item.amount })),
         { artefact_id: paymentOnAccountId, amount: money(-amount) },
       ],
     },
   };
 
+  const targetSageInvoiceId = allocationTargets.map((item) => item.sageInvoiceId).join(",");
+  const targetSnapshotId = allocationTargets.length === 1 ? allocationTargets[0].target.id : null;
+
   return {
     row,
     cashSnap,
-    target,
+    target: allocationTargets[0].target,
     requestBody,
     amount,
     targetSageInvoiceId,
+    targetSnapshotId,
     paymentOnAccountId,
     receiptObjectId,
     reference: text(row.sage_reference) || text(cashSnap.short_reference),
@@ -321,7 +382,7 @@ export async function postCustomerReceiptAllocationsToSage(params: { cashBatchRo
       request_kind: "cash_allocation",
       http_method: "POST",
       endpoint_path: endpointPath,
-      idempotency_key: `cash-allocation:${built.row.id}:${built.targetSageInvoiceId}`,
+      idempotency_key: `cash-allocation:${built.row.id}:${bodyHash(built.requestBody)}`,
       request_payload_redacted: built.requestBody,
       request_headers_redacted: { accept: "application/json", content_type: "application/json", x_business: context.sageBusinessId },
       request_payload_hash: bodyHash(built.requestBody),
@@ -378,7 +439,7 @@ export async function postCustomerReceiptAllocationsToSage(params: { cashBatchRo
         sage_allocation_id: allocationId,
         sage_allocation_amount_gbp: built.amount,
         sage_allocation_target_object_id: built.targetSageInvoiceId,
-        sage_allocation_target_snapshot_id: built.target.id,
+        sage_allocation_target_snapshot_id: built.targetSnapshotId,
         sage_allocation_response_payload: raw as Row,
         sage_allocation_error_code: null,
         sage_allocation_error_message: null,
