@@ -105,12 +105,14 @@ export default function MainBankAllocationController({
   const selectedLoyaltyTarget = loyaltyTargets.find((row) => text(row.order_id) === selectedLoyaltyOrderId) ?? null;
   const selectedLoyaltyAmount = round2(num(selectedLoyaltyTarget?.suggested_reward_gbp));
   const selectedPrimaryTotal = targetMode === "completion_loyalty" ? selectedLoyaltyAmount : selectedTargetTotal;
-  const residualAmount = round2(manualResidual ? Number(manualResidual) || 0 : Math.max(selectedLineAvailable - selectedPrimaryTotal, 0));
+  const loyaltyModeNeedsTarget = targetMode === "completion_loyalty" && !selectedLoyaltyTarget;
+  const residualCanBeExplained = targetMode !== "completion_loyalty" || Boolean(selectedLoyaltyTarget);
+  const residualAmount = residualCanBeExplained ? round2(manualResidual ? Number(manualResidual) || 0 : Math.max(selectedLineAvailable - selectedPrimaryTotal, 0)) : 0;
   const explainedTotal = round2(selectedPrimaryTotal + residualAmount);
   const gap = round2(selectedLineAvailable - explainedTotal);
   const canConfirmAp = Boolean(targetMode === "shipper_ap" && selectedLineId && selectedTargetIds.length > 0 && selectedTargetTotal <= selectedLineAvailable + 0.01);
   const canConfirmLoyalty = Boolean(targetMode === "completion_loyalty" && selectedLineId && selectedLoyaltyOrderId && selectedLoyaltyAmount > 0 && selectedLoyaltyAmount <= selectedLineAvailable + 0.01);
-  const canConfirmResidual = Boolean(selectedLineId && residualAmount > 0 && residualAmount <= selectedLineAvailable + 0.01);
+  const canConfirmResidual = Boolean(residualCanBeExplained && selectedLineId && residualAmount > 0 && residualAmount <= selectedLineAvailable + 0.01);
   const exact = Math.abs(gap) < 0.01;
 
   function toggleTarget(id: string) {
@@ -142,7 +144,7 @@ export default function MainBankAllocationController({
         <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-amber-900 shadow-sm">
           <p className="text-[11px] font-bold uppercase tracking-wide opacity-70">Residual input</p>
           <p className="mt-1 text-2xl font-extrabold">{gbp(residualAmount)}</p>
-          <p className="mt-1 text-xs leading-4">{residualLabel(residualType)}</p>
+          <p className="mt-1 text-xs leading-4">{loyaltyModeNeedsTarget ? "Disabled until a loyalty target is selected" : residualLabel(residualType)}</p>
         </div>
         <div className={`rounded-2xl border p-3 shadow-sm ${exact ? "border-emerald-200 bg-emerald-50 text-emerald-900" : gap >= 0 ? "border-amber-200 bg-amber-50 text-amber-900" : "border-rose-200 bg-rose-50 text-rose-900"}`}>
           <p className="text-[11px] font-bold uppercase tracking-wide opacity-70">Gap</p>
@@ -257,9 +259,9 @@ export default function MainBankAllocationController({
           <div className="min-w-0 space-y-1 text-sm text-slate-700">
             <p className="font-bold text-slate-950">Bank selected: {selectedLine ? short(selectedLine.reference_raw, 54) : "none"} · available {gbp(selectedLineAvailable)}</p>
             <p>{targetMode === "completion_loyalty" ? `Loyalty target selected: ${selectedLoyaltyTarget ? short(selectedLoyaltyTarget.order_ref, 42) : "none"} · ${gbp(selectedLoyaltyAmount)}` : `Shipper charges selected: ${selectedTargetIds.length} charge record(s) · ${gbp(selectedTargetTotal)}`}</p>
-            <p>Residual selected: {gbp(residualAmount)} · {residualLabel(residualType)}</p>
+            <p>Residual selected: {loyaltyModeNeedsTarget ? "disabled until a loyalty target is selected" : `${gbp(residualAmount)} · ${residualLabel(residualType)}`}</p>
             <p className="font-bold text-slate-950">Gap: {gbp(gap)}</p>
-            <p className="text-xs font-semibold text-amber-700">{exact ? (targetMode === "completion_loyalty" ? "Balanced — ready to reserve the main-bank OUT. DVA/virtual-card IN pairing is still required before release." : "Balanced — ready to submit target and/or residual matches.") : gap > 0 ? "Still has unexplained amount. Add residual or select a larger target." : "Over-selected. Reduce target/residual."}</p>
+            <p className="text-xs font-semibold text-amber-700">{loyaltyModeNeedsTarget ? "Select a clean loyalty reward target before reserving the main-bank OUT or recording any residual." : exact ? (targetMode === "completion_loyalty" ? "Balanced — ready to reserve the main-bank OUT. DVA/virtual-card IN pairing is still required before release." : "Balanced — ready to submit target and/or residual matches.") : gap > 0 ? "Still has unexplained amount. Add residual or select a larger target." : "Over-selected. Reduce target/residual."}</p>
           </div>
 
           <div className="grid min-w-0 gap-2 sm:grid-cols-2 lg:w-full">
@@ -283,11 +285,11 @@ export default function MainBankAllocationController({
             <form action={allocateMainBankFxFeeAction} className="grid min-w-0 gap-2">
               <input type="hidden" name="target" value={targetMode} />
               <input type="hidden" name="dva_statement_line_id" value={selectedLineId} />
-              <select className="w-full min-w-0 rounded-xl border border-slate-300 px-3 py-2 text-sm" name="residual_allocation_type" value={residualType} onChange={(event) => setResidualType(event.target.value)}>
+              <select className="w-full min-w-0 rounded-xl border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-100 disabled:text-slate-400" name="residual_allocation_type" value={residualType} onChange={(event) => setResidualType(event.target.value)} disabled={loyaltyModeNeedsTarget}>
                 <option value="fx_card_difference">FX/payment variance</option>
                 <option value="bank_fee">Bank fee</option>
               </select>
-              <input className="w-full min-w-0 rounded-xl border border-slate-300 px-3 py-2 text-sm" name="residual_gbp_amount" value={manualResidual || (residualAmount > 0 ? residualAmount.toFixed(2) : "")} onChange={(event) => setManualResidual(event.target.value)} placeholder="Residual amount" />
+              <input className="w-full min-w-0 rounded-xl border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-100 disabled:text-slate-400" name="residual_gbp_amount" value={loyaltyModeNeedsTarget ? "" : manualResidual || (residualAmount > 0 ? residualAmount.toFixed(2) : "")} onChange={(event) => setManualResidual(event.target.value)} placeholder={loyaltyModeNeedsTarget ? "Select loyalty target first" : "Residual amount"} disabled={loyaltyModeNeedsTarget} />
               <input type="hidden" name="notes" value="Main-bank residual allocated separately from selected target." />
               <button type="submit" disabled={!canConfirmResidual} className="w-full rounded-xl bg-amber-700 px-4 py-2 text-sm font-bold text-white disabled:bg-slate-200 disabled:text-slate-500">Save FX/payment or fee residual</button>
             </form>
