@@ -134,7 +134,7 @@ export default async function LoyaltyAccountingControlsPage({ searchParams }: { 
             </label>
 
             <label className="text-sm font-semibold text-slate-700">
-              Applied preview status
+              Applied/Sage preview status
               <select
                 name="preview_status"
                 defaultValue={previewStatus}
