@@ -166,8 +166,8 @@ export default async function MainBankShipperMatchingPage({
   const dataError = linesResult.error || targetsResult.error || loyaltyTargetsResult.error || stagedLoyaltyResult.error || topUpCandidatesResult.error || residualsResult.error;
 
   return (
-    <main className="min-h-screen bg-slate-50 px-4 py-6 text-slate-950 sm:px-6 lg:px-8">
-      <div className="mx-auto max-w-7xl space-y-5">
+    <main className="min-h-screen overflow-x-hidden bg-slate-50 px-4 py-6 text-slate-950 sm:px-6 lg:px-8">
+      <div className="mx-auto w-full max-w-7xl space-y-5">
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <Link href="/internal" className="text-sm font-semibold text-sky-700">← Back to internal dashboard</Link>
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Main bank matching workspace</p>
@@ -198,15 +198,15 @@ export default async function MainBankShipperMatchingPage({
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
-          <form action="/internal/dva-reconciliation/main-bank" className="grid gap-3 md:grid-cols-[1fr_180px_180px_auto] md:items-end">
+          <form action="/internal/dva-reconciliation/main-bank" className="grid min-w-0 gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,180px)_minmax(0,180px)_auto] md:items-end">
             <input type="hidden" name="target" value={targetMode} />
-            <label className="grid gap-1 text-xs font-bold uppercase tracking-wide text-slate-500">
+            <label className="grid min-w-0 gap-1 text-xs font-bold uppercase tracking-wide text-slate-500">
               Search bank lines
-              <input className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-950" name="q" defaultValue={q} placeholder="Bank ref, date, amount, source bank" />
+              <input className="w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-950" name="q" defaultValue={q} placeholder="Bank ref, date, amount, source bank" />
             </label>
-            <label className="grid gap-1 text-xs font-bold uppercase tracking-wide text-slate-500">
+            <label className="grid min-w-0 gap-1 text-xs font-bold uppercase tracking-wide text-slate-500">
               Statement status
-              <select className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-950" name="status" defaultValue={status}>
+              <select className="w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-950" name="status" defaultValue={status}>
                 <option value="unmatched">Unmatched</option>
                 <option value="part_allocated">Part matched</option>
                 <option value="balanced">Balanced</option>
@@ -214,20 +214,20 @@ export default async function MainBankShipperMatchingPage({
               </select>
             </label>
             {targetMode === "shipper_ap" ? (
-              <label className="grid gap-1 text-xs font-bold uppercase tracking-wide text-slate-500">
+              <label className="grid min-w-0 gap-1 text-xs font-bold uppercase tracking-wide text-slate-500">
                 Shipper charge status
-                <select className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-950" name="target_status" defaultValue={targetStatus}>
+                <select className="w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-950" name="target_status" defaultValue={targetStatus}>
                   <option value="open">Open</option>
                   <option value="allocated">Matched</option>
                   <option value="all">All</option>
                 </select>
               </label>
             ) : (
-              <div className="rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-semibold leading-5 text-sky-950">
+              <div className="min-w-0 rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-semibold leading-5 text-sky-950">
                 Loyalty target list shows clean completed reward proposals only. This page reserves the main-bank OUT; release still requires DVA/card top-up IN pairing.
               </div>
             )}
-            <button className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white" type="submit">Apply</button>
+            <button className="w-full rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white md:w-auto" type="submit">Apply</button>
           </form>
         </section>
 
@@ -235,10 +235,10 @@ export default async function MainBankShipperMatchingPage({
           <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
             <h2 className="text-xl font-semibold">Pair reserved loyalty OUT with DVA/card top-up IN</h2>
             <p className="mt-2 text-sm leading-6 text-slate-600">Use this section after the main-bank OUT has been reserved. Select one reserved loyalty row and one importer DVA/card top-up IN line. The release happens only after this pair is submitted.</p>
-            <form action={releaseReservedLoyaltyTopUpAction} className="mt-4 grid gap-3 lg:grid-cols-[1fr_1fr_auto] lg:items-end">
-              <label className="grid gap-1 text-xs font-bold uppercase tracking-wide text-slate-500">
+            <form action={releaseReservedLoyaltyTopUpAction} className="mt-4 grid min-w-0 gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] lg:items-end">
+              <label className="grid min-w-0 gap-1 text-xs font-bold uppercase tracking-wide text-slate-500">
                 Reserved loyalty OUT
-                <select name="loyalty_match_id" className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-950" defaultValue="">
+                <select name="loyalty_match_id" className="w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-950" defaultValue="">
                   <option value="">Select reserved OUT</option>
                   {stagedLoyaltyRows.map((row) => (
                     <option key={text(row.loyalty_match_id)} value={text(row.loyalty_match_id)}>
@@ -247,9 +247,9 @@ export default async function MainBankShipperMatchingPage({
                   ))}
                 </select>
               </label>
-              <label className="grid gap-1 text-xs font-bold uppercase tracking-wide text-slate-500">
+              <label className="grid min-w-0 gap-1 text-xs font-bold uppercase tracking-wide text-slate-500">
                 DVA/card top-up IN
-                <select name="top_up_statement_line_id" className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-950" defaultValue="">
+                <select name="top_up_statement_line_id" className="w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-950" defaultValue="">
                   <option value="">Select top-up IN</option>
                   {topUpCandidateRows.map((row) => (
                     <option key={text(row.statement_line_id)} value={text(row.statement_line_id)}>
@@ -258,7 +258,7 @@ export default async function MainBankShipperMatchingPage({
                   ))}
                 </select>
               </label>
-              <button type="submit" disabled={stagedLoyaltyRows.length === 0 || topUpCandidateRows.length === 0} className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-bold text-white disabled:bg-slate-200 disabled:text-slate-500">Pair IN and release</button>
+              <button type="submit" disabled={stagedLoyaltyRows.length === 0 || topUpCandidateRows.length === 0} className="w-full rounded-xl bg-emerald-700 px-4 py-2 text-sm font-bold text-white disabled:bg-slate-200 disabled:text-slate-500 lg:w-auto">Pair IN and release</button>
             </form>
             <div className="mt-3 grid gap-3 text-xs font-semibold text-slate-600 md:grid-cols-2">
               <p>Reserved OUT rows waiting: <span className="text-slate-950">{stagedLoyaltyRows.length}</span></p>
