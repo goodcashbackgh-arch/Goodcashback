@@ -118,7 +118,7 @@ export default function MainBankAllocationController({
   }
 
   return (
-    <div className="space-y-5 pb-36">
+    <div className="space-y-5 pb-64 sm:pb-56">
       <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
         <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-emerald-900 shadow-sm">
           <p className="text-[11px] font-bold uppercase tracking-wide opacity-70">Main-bank lines</p>
@@ -252,9 +252,9 @@ export default function MainBankAllocationController({
         <p className="mt-2 text-sm text-slate-600">FX/payment: {gbp(residualByType.get("fx_card_difference") ?? 0)} · Bank fee: {gbp(residualByType.get("bank_fee") ?? 0)} · Hold: {gbp(residualByType.get("unmatched_hold") ?? 0)}</p>
       </section>
 
-      <div className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200 bg-white/95 px-4 py-3 shadow-[0_-10px_30px_rgba(15,23,42,0.12)] backdrop-blur">
-        <div className="mx-auto grid max-w-7xl gap-3 lg:grid-cols-[1fr_auto] lg:items-end">
-          <div className="space-y-1 text-sm text-slate-700">
+      <div className="fixed inset-x-0 bottom-0 z-40 px-4 pb-3 sm:px-6 lg:px-8">
+        <div className="mx-auto grid max-w-7xl gap-3 rounded-t-3xl border border-slate-200 bg-white/95 p-3 shadow-[0_-10px_30px_rgba(15,23,42,0.12)] backdrop-blur lg:grid-cols-[minmax(0,1fr)_minmax(0,34rem)] lg:items-end">
+          <div className="min-w-0 space-y-1 text-sm text-slate-700">
             <p className="font-bold text-slate-950">Bank selected: {selectedLine ? short(selectedLine.reference_raw, 54) : "none"} · available {gbp(selectedLineAvailable)}</p>
             <p>{targetMode === "completion_loyalty" ? `Loyalty target selected: ${selectedLoyaltyTarget ? short(selectedLoyaltyTarget.order_ref, 42) : "none"} · ${gbp(selectedLoyaltyAmount)}` : `Shipper charges selected: ${selectedTargetIds.length} charge record(s) · ${gbp(selectedTargetTotal)}`}</p>
             <p>Residual selected: {gbp(residualAmount)} · {residualLabel(residualType)}</p>
@@ -262,34 +262,34 @@ export default function MainBankAllocationController({
             <p className="text-xs font-semibold text-amber-700">{exact ? (targetMode === "completion_loyalty" ? "Balanced — ready to reserve the main-bank OUT. DVA/virtual-card IN pairing is still required before release." : "Balanced — ready to submit target and/or residual matches.") : gap > 0 ? "Still has unexplained amount. Add residual or select a larger target." : "Over-selected. Reduce target/residual."}</p>
           </div>
 
-          <div className="grid gap-2 sm:grid-cols-2 lg:min-w-[34rem]">
+          <div className="grid min-w-0 gap-2 sm:grid-cols-2 lg:w-full">
             {targetMode === "completion_loyalty" ? (
-              <form action={matchMainBankLineToCompletionLoyaltyAction} className="grid gap-2">
+              <form action={matchMainBankLineToCompletionLoyaltyAction} className="grid min-w-0 gap-2">
                 <input type="hidden" name="dva_statement_line_id" value={selectedLineId} />
                 <input type="hidden" name="order_id" value={selectedLoyaltyOrderId} />
                 <input type="hidden" name="reward_amount_gbp" value={selectedLoyaltyAmount > 0 ? selectedLoyaltyAmount.toFixed(2) : ""} />
                 <input type="hidden" name="notes" value="Main-bank OUT reserved for completion loyalty reward. Destination DVA/virtual-card IN must be paired before release." />
-                <button type="submit" disabled={!canConfirmLoyalty} className="rounded-xl bg-sky-700 px-4 py-2 text-sm font-bold text-white disabled:bg-slate-200 disabled:text-slate-500">Reserve loyalty funding OUT</button>
+                <button type="submit" disabled={!canConfirmLoyalty} className="w-full rounded-xl bg-sky-700 px-4 py-2 text-sm font-bold text-white disabled:bg-slate-200 disabled:text-slate-500">Reserve loyalty funding OUT</button>
               </form>
             ) : (
-              <form action={allocateMainBankLineToShipperApAction} className="grid gap-2">
+              <form action={allocateMainBankLineToShipperApAction} className="grid min-w-0 gap-2">
                 <input type="hidden" name="dva_statement_line_id" value={selectedLineId} />
                 {selectedTargetIds.map((id) => <input key={id} type="hidden" name="shipping_document_id" value={id} />)}
                 <input type="hidden" name="notes" value="Main bank payment matched to posted shipper AP invoice(s)." />
-                <button type="submit" disabled={!canConfirmAp} className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-bold text-white disabled:bg-slate-200 disabled:text-slate-500">Confirm shipper charge match</button>
+                <button type="submit" disabled={!canConfirmAp} className="w-full rounded-xl bg-emerald-700 px-4 py-2 text-sm font-bold text-white disabled:bg-slate-200 disabled:text-slate-500">Confirm shipper charge match</button>
               </form>
             )}
 
-            <form action={allocateMainBankFxFeeAction} className="grid gap-2">
+            <form action={allocateMainBankFxFeeAction} className="grid min-w-0 gap-2">
               <input type="hidden" name="target" value={targetMode} />
               <input type="hidden" name="dva_statement_line_id" value={selectedLineId} />
-              <select className="rounded-xl border border-slate-300 px-3 py-2 text-sm" name="residual_allocation_type" value={residualType} onChange={(event) => setResidualType(event.target.value)}>
+              <select className="w-full min-w-0 rounded-xl border border-slate-300 px-3 py-2 text-sm" name="residual_allocation_type" value={residualType} onChange={(event) => setResidualType(event.target.value)}>
                 <option value="fx_card_difference">FX/payment variance</option>
                 <option value="bank_fee">Bank fee</option>
               </select>
-              <input className="rounded-xl border border-slate-300 px-3 py-2 text-sm" name="residual_gbp_amount" value={manualResidual || (residualAmount > 0 ? residualAmount.toFixed(2) : "")} onChange={(event) => setManualResidual(event.target.value)} placeholder="Residual amount" />
+              <input className="w-full min-w-0 rounded-xl border border-slate-300 px-3 py-2 text-sm" name="residual_gbp_amount" value={manualResidual || (residualAmount > 0 ? residualAmount.toFixed(2) : "")} onChange={(event) => setManualResidual(event.target.value)} placeholder="Residual amount" />
               <input type="hidden" name="notes" value="Main-bank residual allocated separately from selected target." />
-              <button type="submit" disabled={!canConfirmResidual} className="rounded-xl bg-amber-700 px-4 py-2 text-sm font-bold text-white disabled:bg-slate-200 disabled:text-slate-500">Save FX/payment or fee residual</button>
+              <button type="submit" disabled={!canConfirmResidual} className="w-full rounded-xl bg-amber-700 px-4 py-2 text-sm font-bold text-white disabled:bg-slate-200 disabled:text-slate-500">Save FX/payment or fee residual</button>
             </form>
           </div>
         </div>
