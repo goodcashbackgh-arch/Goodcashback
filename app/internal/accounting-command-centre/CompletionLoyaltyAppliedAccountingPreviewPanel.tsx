@@ -51,6 +51,10 @@ function firstCreditCandidateStatus(value: unknown) {
   return configured > 0 ? `${configured} candidate configured` : "No credit candidate configured";
 }
 
+function rowKey(row: Row) {
+  return text(row.preview_row_id) || text(row.source_id) || `${text(row.order_ref)}-${text(row.amount_gbp)}`;
+}
+
 export default async function CompletionLoyaltyAppliedAccountingPreviewPanel() {
   const supabase = await createClient();
   const { data, error } = await (supabase as any).rpc("internal_completion_loyalty_applied_accounting_preview_v1", {
@@ -103,7 +107,53 @@ export default async function CompletionLoyaltyAppliedAccountingPreviewPanel() {
         </div>
       </div>
 
-      <div className="mt-5 overflow-x-auto rounded-2xl border border-slate-200">
+      <div className="mt-5 space-y-3 md:hidden">
+        {rows.length === 0 ? (
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-center text-sm text-slate-500">
+            No applied completion-loyalty accounting preview rows are currently visible.
+          </div>
+        ) : rows.map((row) => {
+          const mapping = asObject(row.mapping_status_json);
+          const debit = asObject(mapping.debit_candidate);
+          return (
+            <article key={rowKey(row)} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div>
+                  <p className="font-bold text-slate-950">{text(row.order_ref) || "—"}</p>
+                  <p className="mt-1 text-sm text-slate-500">{text(row.importer_name) || "Importer/customer"}</p>
+                </div>
+                <span className="text-sm font-extrabold text-slate-950">{gbp(row.amount_gbp)}</span>
+              </div>
+
+              <div className="mt-3 rounded-2xl bg-slate-50 p-3 text-sm text-slate-700">
+                <p className="font-semibold text-slate-950">Dr loyalty cost / reward expense</p>
+                <p className="mt-1 font-semibold text-slate-950">Cr customer account / receivable</p>
+                <p className="mt-1 text-slate-500">Non-cash loyalty settlement of customer balance.</p>
+              </div>
+
+              <div className="mt-3 grid gap-2 text-sm text-slate-700">
+                <div><span className="font-semibold text-slate-950">Debit mapping:</span> {configuredBadge(debit.configured)}</div>
+                <div><span className="font-semibold text-slate-950">Credit mapping:</span> {firstCreditCandidateStatus(row.mapping_status_json)}</div>
+                <div><span className="font-semibold text-slate-950">Policy:</span> {pretty(mapping.mapping_policy_status)}</div>
+              </div>
+
+              <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm">
+                <p className="font-semibold text-amber-800">{pretty(row.readiness_status)}</p>
+                <p className="mt-1 text-rose-700">{pretty(row.blocker)}</p>
+              </div>
+
+              <div className="mt-3">
+                <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-bold text-slate-700">
+                  Read-only · not selectable · no posting
+                </span>
+              </div>
+              <p className="mt-3 break-all text-[11px] text-slate-400">Event: {text(row.order_funding_event_id) || "—"}</p>
+            </article>
+          );
+        })}
+      </div>
+
+      <div className="mt-5 hidden overflow-x-auto rounded-2xl border border-slate-200 md:block">
         <table className="min-w-[1180px] divide-y divide-slate-200 text-xs">
           <thead className="bg-slate-100 text-[11px] uppercase tracking-wide text-slate-500">
             <tr>
@@ -126,7 +176,7 @@ export default async function CompletionLoyaltyAppliedAccountingPreviewPanel() {
               const mapping = asObject(row.mapping_status_json);
               const debit = asObject(mapping.debit_candidate);
               return (
-                <tr key={text(row.preview_row_id) || text(row.source_id)} className="align-top hover:bg-slate-50">
+                <tr key={rowKey(row)} className="align-top hover:bg-slate-50">
                   <td className="px-3 py-3">
                     <p className="font-bold text-slate-950">{text(row.order_ref) || "—"}</p>
                     <p className="mt-1 text-slate-500">{text(row.importer_name) || "Importer/customer"}</p>
