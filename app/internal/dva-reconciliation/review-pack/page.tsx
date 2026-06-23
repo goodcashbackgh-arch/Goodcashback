@@ -240,6 +240,8 @@ function controlClassification(row: StatementLineRow, state: ReadinessState, all
   const direction = text(row.direction).toLowerCase();
   const accountContext = text(row.statement_account_context);
   const controlReason = text(row.control_match_reason);
+  const rawReference = text(row.reference_raw).toLowerCase();
+  const authReference = text(row.auth_id_ref).toLowerCase();
   const loyaltyOut = num(row.loyalty_internal_transfer_out_gbp);
   const loyaltyIn = num(row.loyalty_internal_transfer_in_gbp);
   const loyaltyInCount = num(row.loyalty_internal_transfer_in_count);
@@ -299,6 +301,19 @@ function controlClassification(row: StatementLineRow, state: ReadinessState, all
       label: "FX/card/bank-fee residual",
       tone: "border-amber-200 bg-amber-50 text-amber-800",
       boundary: "Residual classification only. Needs deliberate accounting treatment before Sage payload readiness.",
+    };
+  }
+
+  if (
+    direction === "out" &&
+    accountContext === "main_company_bank_account" &&
+    (rawReference.includes("shipper") || rawReference.includes("joinv") || authReference.includes("joinv"))
+  ) {
+    return {
+      label: "Main-bank shipper/AP payment OUT",
+      tone: "border-indigo-200 bg-indigo-50 text-indigo-800",
+      boundary:
+        "Main-bank outbound shipper/AP control. Match to shipper invoice, shipment/payment evidence, or approved residual before Sage readiness; do not treat as customer funding or retailer supplier spend.",
     };
   }
 
