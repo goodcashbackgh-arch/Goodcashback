@@ -22,6 +22,11 @@ const navItems = [
     href: "/internal/accounting-command-centre/cash-posting/allocations",
   },
   {
+    title: "Loyalty controls",
+    detail: "Read-only completion-loyalty accounting controls",
+    href: "/internal/accounting-command-centre/loyalty-controls",
+  },
+  {
     title: "Frozen snapshots",
     detail: "Payload drill-down before posting",
     href: "/internal/accounting-command-centre/posting-preview",
@@ -40,9 +45,9 @@ export default function AccountingCommandCentreLayout({ children }: { children: 
         <div className="mx-auto flex max-w-[1600px] flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
           <div>
             <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-violet-500">Accounting Command Centre navigation</p>
-            <p className="mt-1 text-sm text-slate-600">Use these shortcuts to move between posting, closure, cash and allocation sections without guessing URLs.</p>
+            <p className="mt-1 text-sm text-slate-600">Use these shortcuts to move between posting, closure, cash, loyalty control and allocation sections without guessing URLs.</p>
           </div>
-          <nav className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6" aria-label="Accounting Command Centre sections">
+          <nav className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-7" aria-label="Accounting Command Centre sections">
             {navItems.map((item) => (
               <Link key={item.href} href={item.href} className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs shadow-sm transition hover:-translate-y-0.5 hover:border-violet-200 hover:bg-violet-50 hover:text-violet-900 hover:shadow-md">
                 <span className="block font-extrabold text-slate-950">{item.title}</span>
