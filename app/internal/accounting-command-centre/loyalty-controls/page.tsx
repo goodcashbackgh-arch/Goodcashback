@@ -5,12 +5,25 @@ import CompletionLoyaltyAppliedAccountingPreviewPanel from "../CompletionLoyalty
 import LoyaltyAccountingControlPanel from "../LoyaltyAccountingControlPanel";
 
 type Row = Record<string, unknown>;
+type SearchParams = Record<string, string | string[] | undefined>;
 
 function text(value: unknown) {
   if (typeof value === "string") return value;
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
   if (typeof value === "boolean") return value ? "true" : "false";
   return "";
+}
+
+function firstParam(value: string | string[] | undefined) {
+  return Array.isArray(value) ? value[0] ?? "" : value ?? "";
+}
+
+function cleanParam(value: string | string[] | undefined) {
+  return firstParam(value).trim();
+}
+
+function allowed(value: string, allowedValues: string[]) {
+  return allowedValues.includes(value) ? value : "all";
 }
 
 function bool(value: unknown) {
@@ -27,7 +40,22 @@ function accessFromPermissions(value: unknown) {
   return bool(permissions.accounting_admin_testing) || bool(permissions.admin_testing);
 }
 
-export default async function LoyaltyAccountingControlsPage() {
+export default async function LoyaltyAccountingControlsPage({ searchParams }: { searchParams?: Promise<SearchParams> | SearchParams }) {
+  const resolvedSearchParams = searchParams ? await searchParams : {};
+  const searchQuery = cleanParam(resolvedSearchParams.q);
+  const controlCategory = allowed(cleanParam(resolvedSearchParams.control_category), [
+    "all",
+    "bank_internal_transfer",
+    "non_cash_loyalty_customer_balance_settlement",
+    "released_unused_loyalty_control_balance",
+  ]);
+  const previewStatus = allowed(cleanParam(resolvedSearchParams.preview_status), [
+    "all",
+    "blocked",
+    "debit_mapping_configured",
+    "debit_mapping_missing",
+  ]);
+
   const supabase = await createClient();
   const {
     data: { user },
@@ -67,9 +95,69 @@ export default async function LoyaltyAccountingControlsPage() {
           </div>
         </section>
 
-        <LoyaltyAccountingControlPanel />
+        <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-medium uppercase tracking-[0.18em] text-slate-500">Review filters</p>
+              <h2 className="mt-1 text-xl font-semibold text-slate-950">Find items needing attention</h2>
+            </div>
+            {(searchQuery || controlCategory !== "all" || previewStatus !== "all") ? (
+              <Link href="/internal/accounting-command-centre/loyalty-controls" className="rounded-full border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-white">
+                Clear filters
+              </Link>
+            ) : null}
+          </div>
 
-        <CompletionLoyaltyAppliedAccountingPreviewPanel />
+          <form className="mt-4 grid gap-3 md:grid-cols-[1.3fr_1fr_1fr_auto]" action="/internal/accounting-command-centre/loyalty-controls">
+            <label className="text-sm font-semibold text-slate-700">
+              Search order / importer / event
+              <input
+                name="q"
+                defaultValue={searchQuery}
+                placeholder="ORD ref, importer, amount, event id"
+                className="mt-1 w-full rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-950 shadow-sm outline-none focus:border-sky-300 focus:ring-2 focus:ring-sky-100"
+              />
+            </label>
+
+            <label className="text-sm font-semibold text-slate-700">
+              Control category
+              <select
+                name="control_category"
+                defaultValue={controlCategory}
+                className="mt-1 w-full rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-950 shadow-sm outline-none focus:border-sky-300 focus:ring-2 focus:ring-sky-100"
+              >
+                <option value="all">All control rows</option>
+                <option value="bank_internal_transfer">Bank internal transfer</option>
+                <option value="non_cash_loyalty_customer_balance_settlement">Non-cash settlement</option>
+                <option value="released_unused_loyalty_control_balance">Released unused loyalty</option>
+              </select>
+            </label>
+
+            <label className="text-sm font-semibold text-slate-700">
+              Applied preview status
+              <select
+                name="preview_status"
+                defaultValue={previewStatus}
+                className="mt-1 w-full rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-950 shadow-sm outline-none focus:border-sky-300 focus:ring-2 focus:ring-sky-100"
+              >
+                <option value="all">All preview rows</option>
+                <option value="blocked">Blocked from posting</option>
+                <option value="debit_mapping_configured">Debit mapping configured</option>
+                <option value="debit_mapping_missing">Debit mapping missing</option>
+              </select>
+            </label>
+
+            <div className="flex items-end">
+              <button type="submit" className="w-full rounded-2xl bg-slate-950 px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-slate-800">
+                Apply
+              </button>
+            </div>
+          </form>
+        </section>
+
+        <LoyaltyAccountingControlPanel searchQuery={searchQuery} categoryFilter={controlCategory} />
+
+        <CompletionLoyaltyAppliedAccountingPreviewPanel searchQuery={searchQuery} previewStatusFilter={previewStatus} />
 
         <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-950">
           <h2 className="font-bold">Control boundary</h2>
