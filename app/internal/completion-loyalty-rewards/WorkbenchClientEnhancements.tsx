@@ -11,6 +11,14 @@ function formatAmount(value: number) {
   return Math.max(0, Math.round(value * 100) / 100).toFixed(2);
 }
 
+function normalizeInternalDashboardBreadcrumb() {
+  document.querySelectorAll<HTMLAnchorElement>('a[href="/internal"]').forEach((link) => {
+    if (link.textContent?.trim() === "← Internal tools") {
+      link.textContent = "← Internal dashboard";
+    }
+  });
+}
+
 function syncApprovalForm(form: HTMLFormElement, changedName: string) {
   if (form.dataset.syncingApproval === "true") return;
 
@@ -59,6 +67,8 @@ function validateFundingProof(form: HTMLFormElement, event: Event) {
 
 export function WorkbenchClientEnhancements() {
   useEffect(() => {
+    normalizeInternalDashboardBreadcrumb();
+
     const onInput = (event: Event) => {
       const target = event.target as HTMLInputElement | null;
       if (!target) return;
