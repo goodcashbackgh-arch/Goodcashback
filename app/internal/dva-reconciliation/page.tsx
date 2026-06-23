@@ -77,7 +77,26 @@ function progressed(line: Row) {
   return ["y", "yes", "true", "1"].includes(text(line.eligible_for_invoice_yn).toLowerCase());
 }
 
+function isLoyaltyControl(row: Row) {
+  const reason = text(row.control_match_reason);
+  return (
+    reason === "loyalty_internal_transfer_out" ||
+    reason === "loyalty_internal_transfer_in" ||
+    num(row.loyalty_credit_funding_allocated_gbp) > 0 ||
+    num(row.loyalty_internal_transfer_out_gbp) > 0 ||
+    num(row.loyalty_internal_transfer_in_gbp) > 0
+  );
+}
+
+function loyaltyControlLabel(row: Row) {
+  const reason = text(row.control_match_reason);
+  if (reason === "loyalty_internal_transfer_out" || num(row.loyalty_internal_transfer_out_gbp) > 0) return "loyalty transfer OUT";
+  if (reason === "loyalty_internal_transfer_in" || num(row.loyalty_internal_transfer_in_gbp) > 0) return "loyalty transfer IN";
+  return "loyalty transfer";
+}
+
 function statusClass(row: Row) {
+  if (isLoyaltyControl(row)) return bool(row.confirmed_balanced_yn) ? "bg-violet-50 text-violet-700 ring-violet-200" : "bg-amber-50 text-amber-800 ring-amber-200";
   if (bool(row.confirmed_balanced_yn)) return "bg-emerald-50 text-emerald-700 ring-emerald-200";
   if (num(row.open_allocated_gbp) > 0) return "bg-sky-50 text-sky-700 ring-sky-200";
   if (text(row.direction) === "in") return "bg-indigo-50 text-indigo-700 ring-indigo-200";
@@ -85,6 +104,7 @@ function statusClass(row: Row) {
 }
 
 function statusLabel(row: Row) {
+  if (isLoyaltyControl(row)) return bool(row.confirmed_balanced_yn) ? "loyalty transfer controlled" : "loyalty transfer pending balance";
   if (bool(row.confirmed_balanced_yn)) return "balanced";
   if (num(row.open_allocated_gbp) > 0) return "part matched / held";
   if (text(row.direction) === "in") return "payment route";
@@ -93,17 +113,22 @@ function statusLabel(row: Row) {
 
 function statusFilter(row: Row) {
   if (bool(row.confirmed_balanced_yn)) return "balanced";
+  if (isLoyaltyControl(row)) return "draft";
   if (num(row.open_allocated_gbp) > 0) return "draft";
   return "needs";
 }
 
 function actionMessage(row: Row) {
+  if (isLoyaltyControl(row)) {
+    return "Internal loyalty transfer control — do not treat this as customer cash or supplier spend. Use review pack proof; activation/release stays in the governed completion-loyalty flow.";
+  }
   if (bool(row.confirmed_balanced_yn)) return "Balanced — review pack can prove this line before accounting readiness.";
   if (text(row.direction) === "in") return "Customer/importer IN money uses Importer Payment Control.";
   return "OUT/refund/fee/hold lines use the Matching Workspace or Unmatched OUT triage.";
 }
 
 function primaryHref(row: Row, hasSuggestion: boolean) {
+  if (isLoyaltyControl(row)) return "/internal/dva-reconciliation/review-pack";
   if (bool(row.confirmed_balanced_yn)) return "/internal/dva-reconciliation/review-pack";
   if (text(row.direction) === "in") return "/internal/funding";
   if (!hasSuggestion) return "/internal/dva-reconciliation/unmatched";
@@ -111,6 +136,7 @@ function primaryHref(row: Row, hasSuggestion: boolean) {
 }
 
 function primaryCta(row: Row, hasSuggestion: boolean) {
+  if (isLoyaltyControl(row)) return "Open review pack";
   if (bool(row.confirmed_balanced_yn)) return "Open review pack";
   if (text(row.direction) === "in") return "Open payment control";
   if (!hasSuggestion) return "Open unmatched OUT triage";
@@ -118,6 +144,7 @@ function primaryCta(row: Row, hasSuggestion: boolean) {
 }
 
 function routeTone(row: Row) {
+  if (isLoyaltyControl(row)) return "border-violet-200 bg-violet-50";
   if (bool(row.confirmed_balanced_yn)) return "border-emerald-200 bg-emerald-50";
   if (num(row.open_allocated_gbp) > 0) return "border-sky-200 bg-sky-50";
   if (text(row.direction) === "in") return "border-indigo-200 bg-indigo-50";
@@ -125,6 +152,8 @@ function routeTone(row: Row) {
 }
 
 function preferredSuggestion(line: Row, suggestions: Row[]) {
+  if (isLoyaltyControl(line)) return undefined;
+
   if (text(line.direction) === "out") {
     return (
       suggestions.find((suggestion) => text(suggestion.suggested_match_type) === "supplier_invoice") ??
@@ -251,6 +280,7 @@ function LineControlCard({
   const href = primaryHref(line, hasSuggestion);
   const cta = primaryCta(line, hasSuggestion);
   const amountOpen = num(line.confirmed_unallocated_gbp);
+  const loyaltyControlled = isLoyaltyControl(line);
 
   return (
     <article className={`rounded-3xl border p-4 shadow-sm ${routeTone(line)}`}>
@@ -259,11 +289,17 @@ function LineControlCard({
           <div className="flex flex-wrap items-center gap-2">
             <span className={`rounded-full px-3 py-1 text-xs font-semibold ring-1 ${statusClass(line)}`}>{statusLabel(line)}</span>
             <span className="rounded-full bg-white/70 px-3 py-1 text-xs font-semibold text-slate-700 ring-1 ring-slate-200">{text(line.direction).toUpperCase() || "?"}</span>
+            {loyaltyControlled ? <span className="rounded-full bg-violet-100 px-3 py-1 text-xs font-bold text-violet-800 ring-1 ring-violet-200">{loyaltyControlLabel(line)}</span> : null}
           </div>
           <h3 className="mt-3 text-lg font-semibold text-slate-950">{text(line.statement_date) || "No date"} · {gbp(line.statement_gbp_amount)}</h3>
           <p className="mt-1 text-xs leading-5 text-slate-600">
             Local {num(line.amount_local_ccy).toLocaleString("en-GB")} {text(line.local_ccy)} · FX {text(line.fx_rate_applied) || "—"} · markup {num(line.card_markup_pct_applied)}%
           </p>
+          {text(line.statement_account_label) || text(line.source_bank) ? (
+            <p className="mt-1 text-xs leading-5 text-slate-500">
+              Account: {text(line.statement_account_label) || "—"} · Source: {text(line.source_bank) || "—"}
+            </p>
+          ) : null}
         </div>
         <Link className="rounded-xl bg-slate-950 px-4 py-2 text-xs font-semibold text-white" href={href}>{cta} →</Link>
       </div>
@@ -286,7 +322,7 @@ function LineControlCard({
 
         <div className="rounded-2xl bg-white/75 p-3 ring-1 ring-slate-200">
           <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Operational signal</p>
-          <p className="mt-2 text-sm font-semibold text-slate-900">{text(invoice?.invoice_ref) || text(invoice?.ocr_invoice_ref) || "No supplier charge link"}</p>
+          <p className="mt-2 text-sm font-semibold text-slate-900">{loyaltyControlled ? "Completion loyalty internal transfer" : (text(invoice?.invoice_ref) || text(invoice?.ocr_invoice_ref) || "No supplier charge link")}</p>
           <p className="mt-1 text-xs text-slate-500">Supplier charge/read: {gbp(invoice?.ocr_invoice_total_gbp || invoice?.reconciliation_gbp_total)}</p>
           <p className="text-xs text-slate-500">Progressed: {gbp(progressedTotal)}</p>
           <p className="text-xs text-slate-500">Open exception: {gbp(openExceptionTotal)}</p>
@@ -298,11 +334,16 @@ function LineControlCard({
           <p className="mt-1 text-xs text-slate-500">Confirmed: {gbp(line.confirmed_allocated_gbp)}</p>
           <p className="text-xs text-slate-500">Supplier: {gbp(line.supplier_invoice_allocated_gbp)} · Refund: {gbp(line.retailer_refund_allocated_gbp)}</p>
           <p className="text-xs text-slate-500">FX/fee: {gbp(line.fx_card_or_fee_allocated_gbp)} · Hold: {gbp(line.exception_or_hold_allocated_gbp)}</p>
+          {loyaltyControlled ? (
+            <p className="text-xs font-semibold text-violet-700">
+              Loyalty controlled: {gbp(line.loyalty_credit_funding_allocated_gbp)} · {cleanUiText(text(line.control_match_reason) || loyaltyControlLabel(line))}
+            </p>
+          ) : null}
           <p className="mt-2 text-xs italic text-slate-600">{actionMessage(line)}</p>
         </div>
       </div>
 
-      {suggestion ? (
+      {suggestion && !loyaltyControlled ? (
         <div className="mt-3 rounded-2xl bg-white/75 p-3 text-xs text-slate-600 ring-1 ring-slate-200">
           Suggested match: <span className="font-semibold text-slate-900">{cleanUiText(text(suggestion.suggested_match_type))}</span>
           {text(suggestion.confidence) ? <> · Confidence: <span className="font-semibold text-slate-900">{text(suggestion.confidence)}</span></> : null}
@@ -327,6 +368,7 @@ export default async function DvaReconciliationWorkbenchPage({
 
   const [
     allocationSummaryResult,
+    loyaltySummaryResult,
     statementsResult,
     suggestionsResult,
     importersResult,
@@ -343,6 +385,12 @@ export default async function DvaReconciliationWorkbenchPage({
         "dva_statement_line_id, dva_statement_id, importer_id, statement_date, reference_raw, direction, amount_local_ccy, local_ccy, fx_rate_applied, card_markup_pct_applied, statement_gbp_amount, auth_id_ref, retailer_name_ref, match_status, confirmed_allocated_gbp, open_allocated_gbp, supplier_invoice_allocated_gbp, retailer_refund_allocated_gbp, fx_card_or_fee_allocated_gbp, exception_or_hold_allocated_gbp, active_allocation_count, confirmed_unallocated_gbp, confirmed_balanced_yn"
       )
       .order("statement_date", { ascending: false })
+      .limit(100),
+    supabase
+      .from("dva_statement_line_allocation_summary_vw")
+      .select(
+        "dva_statement_line_id, statement_account_context, statement_account_label, source_bank, loyalty_credit_funding_allocated_gbp, main_bank_loyalty_match_count, control_match_reason, loyalty_internal_transfer_out_gbp, loyalty_internal_transfer_in_gbp, loyalty_internal_transfer_in_count"
+      )
       .limit(100),
     supabase
       .from("dva_statements")
@@ -384,6 +432,7 @@ export default async function DvaReconciliationWorkbenchPage({
 
   const readErrors: ReadError[] = [];
   addReadError(readErrors, "dva_statement_line_allocation_summary_vw", allocationSummaryResult.error);
+  addReadError(readErrors, "dva_statement_line_allocation_summary_vw loyalty transfer columns", loyaltySummaryResult.error);
   addReadError(readErrors, "dva_statements", statementsResult.error);
   addReadError(readErrors, "match_suggestions", suggestionsResult.error);
   addReadError(readErrors, "importers", importersResult.error);
@@ -394,7 +443,16 @@ export default async function DvaReconciliationWorkbenchPage({
   addReadError(readErrors, "disputes", disputesResult.error);
   addReadError(readErrors, "importer_credit_ledger", creditLedgerResult.error);
 
-  const allocationRows = (allocationSummaryResult.data ?? []) as unknown as Row[];
+  const loyaltyRowsByLineId = new Map<string, Row>();
+  for (const row of (loyaltySummaryResult.data ?? []) as unknown as Row[]) {
+    const id = text(row.dva_statement_line_id);
+    if (id) loyaltyRowsByLineId.set(id, row);
+  }
+
+  const allocationRows = ((allocationSummaryResult.data ?? []) as unknown as Row[]).map((row) => ({
+    ...row,
+    ...(loyaltyRowsByLineId.get(text(row.dva_statement_line_id)) ?? {}),
+  }));
   const statements = (statementsResult.data ?? []) as unknown as Row[];
   const suggestions = (suggestionsResult.data ?? []) as unknown as Row[];
   const importers = (importersResult.data ?? []) as unknown as Row[];
@@ -470,10 +528,12 @@ export default async function DvaReconciliationWorkbenchPage({
   const retailerRefundAllocated = scopedRows.reduce((sum, { line }) => sum + num(line.retailer_refund_allocated_gbp), 0);
   const fxCardFeeAllocated = scopedRows.reduce((sum, { line }) => sum + num(line.fx_card_or_fee_allocated_gbp), 0);
   const exceptionOrHoldAllocated = scopedRows.reduce((sum, { line }) => sum + num(line.exception_or_hold_allocated_gbp), 0);
+  const loyaltyTransferAllocated = scopedRows.reduce((sum, { line }) => sum + num(line.loyalty_credit_funding_allocated_gbp), 0);
+  const loyaltyTransferLineCount = scopedRows.filter(({ line }) => isLoyaltyControl(line)).length;
   const creditLedgerBalance = scopedCreditLedger.reduce((sum, row) => sum + creditSignedAmount(row), 0);
   const openExceptionTotalSummary = scopedOpenDisputes.reduce((sum, dispute) => sum + num(dispute.amount_impact_gbp), 0);
-  const unmatchedInCount = scopedRows.filter(({ line }) => text(line.direction) === "in" && !bool(line.confirmed_balanced_yn) && num(line.confirmed_allocated_gbp) === 0).length;
-  const unmatchedOutCount = scopedRows.filter(({ line }) => text(line.direction) === "out" && !bool(line.confirmed_balanced_yn) && num(line.confirmed_allocated_gbp) === 0).length;
+  const unmatchedInCount = scopedRows.filter(({ line }) => text(line.direction) === "in" && !isLoyaltyControl(line) && !bool(line.confirmed_balanced_yn) && num(line.confirmed_allocated_gbp) === 0).length;
+  const unmatchedOutCount = scopedRows.filter(({ line }) => text(line.direction) === "out" && !isLoyaltyControl(line) && !bool(line.confirmed_balanced_yn) && num(line.confirmed_allocated_gbp) === 0).length;
   const indicativeNetPosition = statementInTotal + creditLedgerBalance - statementOutTotal;
 
   const filteredRows = scopedRows.filter(({ line }) => selectedStatus === "all" || statusFilter(line) === selectedStatus);
@@ -495,7 +555,7 @@ export default async function DvaReconciliationWorkbenchPage({
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Payment control hub</p>
           <h1 className="mt-2 text-3xl font-semibold tracking-tight">Route committed statement lines to the right control path</h1>
           <p className="mt-3 max-w-5xl text-sm leading-6 text-slate-600">
-            This is the traffic-control page after statement rows are committed. It shows which lines need importer payment review, supplier/refund/fee/hold matching, match reversal, review-pack sign-off, or exception action. It does not replace the governed payment, matching, reversal or accounting-readiness actions.
+            This is the traffic-control page after statement rows are committed. It shows which lines need importer payment review, supplier/refund/fee/hold matching, loyalty internal-transfer proof, match reversal, review-pack sign-off, or exception action. It does not replace the governed payment, matching, reversal or accounting-readiness actions.
           </p>
         </section>
 
@@ -505,13 +565,14 @@ export default async function DvaReconciliationWorkbenchPage({
               <p className="text-sm font-medium uppercase tracking-[0.18em] text-sky-500">Where to act</p>
               <h2 className="mt-2 text-xl font-semibold">Choose the route based on the statement line</h2>
               <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
-                IN customer/importer money uses the payment path. Supplier purchases, refunds, FX/payment variances, bank fees and holds use the matching path. Review pack is the confidence checkpoint before accounting readiness.
+                IN customer/importer money uses the payment path. Supplier purchases, refunds, FX/payment variances, bank fees and holds use the matching path. Completion-loyalty OUT/IN lines are internal-transfer controls and should not be treated as customer cash or supplier spend.
               </p>
             </div>
           </div>
-          <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+          <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-6">
             <RouteCard title="Customer/importer IN" body="Apply received money to order payment gaps or importer credit." href="/internal/funding" cta="Open payment control" tone="emerald" />
             <RouteCard title="Supplier / refund / fee / hold" body="Match statement lines to supplier charge records, refund exceptions, FX/payment residuals, bank fees or holds." href="/internal/dva-reconciliation/workspace" cta="Open workspace" tone="sky" />
+            <RouteCard title="Loyalty internal transfer" body="Review source OUT and destination IN lines controlled by completion-loyalty pairing. Do not route as customer cash." href="/internal/dva-reconciliation/review-pack" cta="Open review pack" tone="violet" />
             <RouteCard title="Unmatched OUT" body="Investigate OUT lines before treating them as residuals or holds." href="/internal/dva-reconciliation/unmatched" cta="Open triage" tone="amber" />
             <RouteCard title="Active matches" body="Review or reverse confirmed matching rows without voiding statement batches." href="/internal/dva-reconciliation/allocations" cta="Open reversals" tone="violet" />
             <RouteCard title="Review pack" body="Prove each statement line is balanced, held or blocked before accounting readiness." href="/internal/dva-reconciliation/review-pack" cta="Open review pack" tone="slate" />
@@ -583,12 +644,12 @@ export default async function DvaReconciliationWorkbenchPage({
           <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <SummaryMetric label="IN statement lines" value={gbp(statementInTotal)} hint="Visible payment/credit inflows from committed statement lines." tone="emerald" />
             <SummaryMetric label="OUT statement lines" value={gbp(statementOutTotal)} hint="Visible card/supplier/refund/fee outflows from committed statement lines." tone="rose" />
+            <SummaryMetric label="Loyalty transfer controlled" value={`${gbp(loyaltyTransferAllocated)} · ${loyaltyTransferLineCount}`} hint="Source OUT and destination IN lines consumed by completion-loyalty pairing. Not customer cash." tone="violet" />
             <SummaryMetric label="Credit account balance" value={gbp(creditLedgerBalance)} hint="Importer credit account net from existing ledger rows." tone="sky" />
             <SummaryMetric label="Indicative net position" value={gbp(indicativeNetPosition)} hint="IN + credit account - OUT. Use as a review signal, not a posting figure." tone="violet" />
             <SummaryMetric label="Supplier matched" value={gbp(supplierInvoiceAllocated)} hint="Confirmed matches to supplier charge records." tone="slate" />
             <SummaryMetric label="Refunds / fees / holds" value={gbp(retailerRefundAllocated + fxCardFeeAllocated + exceptionOrHoldAllocated)} hint="Retailer refund, FX/payment/fee and exception/hold matches." tone="amber" />
-            <SummaryMetric label="Open exceptions" value={gbp(openExceptionTotalSummary)} hint="Open paper/commercial exception impact for this importer scope." tone="amber" />
-            <SummaryMetric label="Unmatched lines" value={`${unmatchedInCount} IN · ${unmatchedOutCount} OUT`} hint="Needs payment route or supplier/refund/fee/exception matching." tone={unmatchedInCount + unmatchedOutCount > 0 ? "rose" : "emerald"} />
+            <SummaryMetric label="Unmatched lines" value={`${unmatchedInCount} IN · ${unmatchedOutCount} OUT`} hint="Needs payment route or supplier/refund/fee/exception matching. Loyalty internal transfers are excluded." tone={unmatchedInCount + unmatchedOutCount > 0 ? "rose" : "emerald"} />
           </div>
         </section>
 
