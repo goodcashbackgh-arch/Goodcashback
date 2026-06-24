@@ -41,6 +41,12 @@ function accessFromPermissions(value: unknown) {
   return bool(permissions.accounting_admin_testing) || bool(permissions.admin_testing);
 }
 
+function staffAccessLabel(staff: Row) {
+  if (text(staff.role_type) === "admin") return "Admin · Accounting controls";
+  if (accessFromPermissions(staff.permissions_json)) return "Accounting controls";
+  return text(staff.role_type) || "Staff";
+}
+
 export default async function LoyaltyAccountingControlsPage({ searchParams }: { searchParams?: Promise<SearchParams> | SearchParams }) {
   const resolvedSearchParams = searchParams ? await searchParams : {};
   const searchQuery = cleanParam(resolvedSearchParams.q);
@@ -86,12 +92,12 @@ export default async function LoyaltyAccountingControlsPage({ searchParams }: { 
               <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-violet-500">Three-step Sage control flow</p>
               <h1 className="mt-2 text-3xl font-semibold tracking-tight sm:text-4xl">Completion loyalty accounting controls</h1>
               <p className="mt-3 max-w-5xl text-sm leading-6 text-slate-600">
-                This page is deliberately split into three steps: evidence first, eligibility second, and lifecycle actions last. Only Step 3 creates local Sage posting groups. Nothing on this page calls Sage, creates VAT rows, or sends loyalty lines into generic cash posting.
+                This page is split into three steps: evidence first, eligibility second, and lifecycle actions last. Step 3 creates local Sage posting groups and approved batches. Only the approved Step 3 batch post action calls Sage; Step 1 and Step 2 remain read-only control evidence.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700">
               <div className="font-medium text-slate-950">{text(staff.full_name) || "Staff"}</div>
-              <div>{text(staff.role_type)}{accessFromPermissions((staff as Row).permissions_json) ? " · accounting admin testing" : ""}</div>
+              <div>{staffAccessLabel(staff as Row)}</div>
             </div>
           </div>
         </section>
@@ -108,12 +114,12 @@ export default async function LoyaltyAccountingControlsPage({ searchParams }: { 
             <a href="#step-2-eligibility" className="rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sky-950 hover:bg-sky-100">
               <p className="text-xs font-bold uppercase tracking-wide opacity-70">Step 2</p>
               <p className="mt-1 font-bold">Applied-loyalty eligibility preview</p>
-              <p className="mt-1 text-xs leading-5 opacity-80">Shows which credit_applied loyalty rows could become Sage settlement candidates. Still read-only.</p>
+              <p className="mt-1 text-xs leading-5 opacity-80">Shows which credit_applied loyalty rows can move into Step 3. Still read-only.</p>
             </a>
             <a href="#step-3-lifecycle" className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-emerald-950 hover:bg-emerald-100">
               <p className="text-xs font-bold uppercase tracking-wide opacity-70">Step 3</p>
               <p className="mt-1 font-bold">Sage posting lifecycle actions</p>
-              <p className="mt-1 text-xs leading-5 opacity-80">Materialise/freeze, revalidate, approve, or supersede local Sage posting groups. Live posting comes later.</p>
+              <p className="mt-1 text-xs leading-5 opacity-80">Materialise/freeze, batch, approve, post, review responses, and retry failed steps only.</p>
             </a>
           </div>
         </section>
