@@ -1,6 +1,9 @@
+import Link from "next/link";
 import { createClient } from "@/utils/supabase/server";
+import SelectionControls from "./SelectionControls";
 import {
   approveCompletionLoyaltySageGroupAction,
+  createCompletionLoyaltySageBatchAction,
   materialiseAppliedLoyaltySettlementAction,
   supersedeCompletionLoyaltySageGroupAction,
   validateCompletionLoyaltySageGroupAction,
@@ -17,6 +20,17 @@ const gbpFormatter = new Intl.NumberFormat("en-GB", {
   currency: "GBP",
   minimumFractionDigits: 2,
 });
+
+const activeBatchStatuses = new Set([
+  "draft",
+  "validated",
+  "blocked",
+  "approved",
+  "posting_to_sage",
+  "partially_posted_needs_review",
+  "failed_retryable",
+  "failed_terminal",
+]);
 
 function text(value: unknown) {
   if (typeof value === "string") return value;
@@ -57,7 +71,7 @@ function groupKey(row: Row) {
 
 function badgeTone(status: string) {
   if (["blocked", "failed_terminal", "stale_reapproval_required", "invalidated"].includes(status)) return "border-rose-200 bg-rose-50 text-rose-700";
-  if (["admin_approved", "posted_to_sage", "ok_to_post", "approved"].includes(status)) return "border-emerald-200 bg-emerald-50 text-emerald-700";
+  if (["admin_approved", "approved", "posted_to_sage", "ok_to_post"].includes(status)) return "border-emerald-200 bg-emerald-50 text-emerald-700";
   if (["partially_posted_needs_review", "warning_only"].includes(status)) return "border-amber-200 bg-amber-50 text-amber-700";
   return "border-slate-200 bg-slate-50 text-slate-700";
 }
@@ -71,11 +85,19 @@ function HiddenGroupId({ group }: { group: Row }) {
   return <input type="hidden" name="posting_group_id" value={text(group.posting_group_id)} />;
 }
 
+function batchLink(batchId: unknown) {
+  return `/internal/accounting-command-centre/loyalty-controls/batches/${text(batchId)}`;
+}
+
 export default async function CompletionLoyaltySagePostingMaterialisationPanel({ searchQuery = "" }: Props) {
   const supabase = await createClient();
   const cleanSearch = searchQuery.trim() || null;
 
-  const [{ data: previewData, error: previewError }, { data: groupData, error: groupError }] = await Promise.all([
+  const [
+    { data: previewData, error: previewError },
+    { data: groupData, error: groupError },
+    { data: batchData, error: batchError },
+  ] = await Promise.all([
     (supabase as any).rpc("internal_completion_loyalty_applied_accounting_preview_v1", {
       p_search: cleanSearch,
       p_limit: 300,
@@ -87,9 +109,22 @@ export default async function CompletionLoyaltySagePostingMaterialisationPanel({
       p_limit: 300,
       p_offset: 0,
     }),
+    (supabase as any).rpc("internal_completion_loyalty_sage_batches_v1", {
+      p_search: cleanSearch,
+      p_status: "all",
+      p_limit: 100,
+      p_offset: 0,
+    }),
   ]);
 
   const groups = ((groupData ?? []) as Row[]).filter((row) => text(row.posting_group_type) === "completion_loyalty_applied_settlement");
+  const batches = ((batchData ?? []) as Row[]).filter((row) => text(row.batch_type) === "completion_loyalty_applied_settlement");
+  const activeBatchedGroupIds = new Set(
+    batches
+      .filter((row) => activeBatchStatuses.has(text(row.status)))
+      .flatMap((row) => asArray(row.posting_group_ids).map(text))
+      .filter(Boolean),
+  );
   const activeGroupedEventIds = new Set(
     groups
       .filter((row) => !["cancelled", "superseded", "reversed"].includes(text(row.status)))
@@ -99,20 +134,31 @@ export default async function CompletionLoyaltySagePostingMaterialisationPanel({
   const previews = ((previewData ?? []) as Row[]).filter((row) => !activeGroupedEventIds.has(text(row.order_funding_event_id)));
   const totalPreviewAmount = previews.reduce((sum, row) => sum + num(row.amount_gbp), 0);
   const totalGroupAmount = groups.reduce((sum, row) => sum + num(row.amount_gbp), 0);
+  const batchReadyGroups = groups.filter((group) => {
+    const status = text(group.status);
+    const validationStatus = text(group.validation_status);
+    return ["locally_validated", "admin_approved"].includes(status)
+      && ["ok_to_post", "warning_only"].includes(validationStatus)
+      && !text(group.blocker)
+      && num(group.posted_step_count) === 0
+      && !activeBatchedGroupIds.has(text(group.posting_group_id));
+  });
+  const batchReadyAmount = batchReadyGroups.reduce((sum, group) => sum + num(group.amount_gbp), 0);
 
   return (
     <section id="step-3-lifecycle" className="rounded-3xl border border-emerald-200 bg-white p-5 shadow-sm scroll-mt-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="text-sm font-medium uppercase tracking-[0.18em] text-emerald-600">Step 3 · Sage posting lifecycle actions</p>
-          <h2 className="mt-2 text-xl font-semibold text-slate-950">Freeze, validate, approve, supersede</h2>
+          <h2 className="mt-2 text-xl font-semibold text-slate-950">Freeze, batch, approve, later post</h2>
           <p className="mt-2 max-w-5xl text-sm leading-6 text-slate-600">
-            This is the action lane. It takes Step 2 eligible applied-loyalty rows and creates controlled local Sage posting groups: candidate → materialise/freeze → validate/revalidate → admin approve → later live post. It still does not call Sage or touch VAT rows.
+            This is the action lane. Step 2 eligible applied-loyalty rows are materialised into local Sage groups first. Locally validated groups are then batched for efficient approval and later feature-flagged Sage posting. It still does not call Sage or touch VAT rows.
           </p>
         </div>
         <div className="rounded-2xl bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-950 ring-1 ring-emerald-200">
           {previews.length} new candidates · {gbp(totalPreviewAmount)}<br />
-          {groups.length} lifecycle groups · {gbp(totalGroupAmount)}
+          {groups.length} lifecycle groups · {gbp(totalGroupAmount)}<br />
+          {batches.length} batch(es) · {batchReadyGroups.length} group(s) ready to batch
         </div>
       </div>
 
@@ -126,11 +172,16 @@ export default async function CompletionLoyaltySagePostingMaterialisationPanel({
           Posting lifecycle RPC unavailable: {groupError.message}. Run the lifecycle controls migration before using this section.
         </div>
       ) : null}
+      {batchError ? (
+        <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm font-semibold text-amber-900">
+          Loyalty Sage batch RPC unavailable: {batchError.message}. Run the batch controls migration before using batch creation.
+        </div>
+      ) : null}
 
       <div className="mt-5 grid gap-4 xl:grid-cols-2">
         <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
           <h3 className="font-bold text-slate-950">Candidates not yet materialised</h3>
-          <p className="mt-1 text-xs leading-5 text-slate-500">Safe first action only. This freezes a local lifecycle group and payload steps; it does not approve or post.</p>
+          <p className="mt-1 text-xs leading-5 text-slate-500">Safe first action only. This freezes a local lifecycle group and payload steps; it does not approve, batch or post.</p>
           <div className="mt-4 space-y-2">
             {previews.length === 0 ? (
               <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-500">No unapplied candidates match the current filters.</div>
@@ -161,8 +212,31 @@ export default async function CompletionLoyaltySagePostingMaterialisationPanel({
         </div>
 
         <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-          <h3 className="font-bold text-slate-950">Lifecycle posting groups</h3>
-          <p className="mt-1 text-xs leading-5 text-slate-500">Local groups only. Live Sage posting remains a later feature-gated step.</p>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 className="font-bold text-slate-950">Lifecycle posting groups</h3>
+              <p className="mt-1 text-xs leading-5 text-slate-500">Local groups only. Select locally validated groups and create a loyalty Sage batch before approval/posting.</p>
+            </div>
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-right text-xs font-bold text-emerald-900">
+              {batchReadyGroups.length} ready<br />{gbp(batchReadyAmount)}
+            </div>
+          </div>
+
+          <form id="create-loyalty-sage-batch-form" action={createCompletionLoyaltySageBatchAction} className="mt-3 rounded-2xl border border-emerald-200 bg-white p-3">
+            <div className="grid gap-2 sm:grid-cols-[1fr_auto] sm:items-end">
+              <label className="grid gap-1 text-xs font-bold uppercase tracking-wide text-slate-500">
+                Batch note
+                <input name="batch_notes" placeholder="Optional batch note" className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-950" />
+              </label>
+              <button type="submit" className="rounded-xl bg-emerald-700 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-800 disabled:bg-slate-200 disabled:text-slate-500">
+                Create loyalty Sage batch
+              </button>
+            </div>
+            <div className="mt-3">
+              <SelectionControls />
+            </div>
+          </form>
+
           <div className="mt-4 space-y-2">
             {groups.length === 0 ? (
               <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-500">No materialised applied-loyalty posting groups yet.</div>
@@ -172,19 +246,37 @@ export default async function CompletionLoyaltySagePostingMaterialisationPanel({
               const status = text(group.status);
               const validationStatus = text(group.validation_status);
               const approvalStatus = text(group.approval_status);
+              const groupId = text(group.posting_group_id);
+              const alreadyBatched = activeBatchedGroupIds.has(groupId);
               const canValidate = !["posted_to_sage", "posting_to_sage", "cancelled", "superseded", "reversed"].includes(status);
               const canApprove = status === "locally_validated" && ["ok_to_post", "warning_only"].includes(validationStatus) && !text(group.blocker);
-              const canSupersede = !["posted_to_sage", "posting_to_sage", "cancelled", "superseded", "reversed"].includes(status) && num(group.posted_step_count) === 0;
+              const canSupersede = !["posted_to_sage", "posting_to_sage", "cancelled", "superseded", "reversed"].includes(status) && num(group.posted_step_count) === 0 && !alreadyBatched;
+              const canBatch = ["locally_validated", "admin_approved"].includes(status) && ["ok_to_post", "warning_only"].includes(validationStatus) && !text(group.blocker) && num(group.posted_step_count) === 0 && !alreadyBatched;
               return (
                 <details key={groupKey(group)} className="group rounded-2xl border border-slate-200 bg-white p-4 shadow-sm open:bg-slate-50">
                   <summary className="flex cursor-pointer list-none items-start justify-between gap-3">
-                    <div>
-                      <p className="font-bold text-slate-950">{text(group.posting_group_ref) || "—"}</p>
-                      <p className="mt-1 text-sm text-slate-500">{text(group.order_ref) || "—"} · {text(group.importer_name) || "Importer/customer"}</p>
-                      <div className="mt-2 flex flex-wrap gap-2">
-                        <StatusBadge value={status} />
-                        <StatusBadge value={validationStatus} />
-                        <StatusBadge value={approvalStatus} />
+                    <div className="flex items-start gap-3">
+                      {canBatch ? (
+                        <input
+                          type="checkbox"
+                          name="posting_group_id"
+                          value={groupId}
+                          form="create-loyalty-sage-batch-form"
+                          defaultChecked
+                          data-accounting-row-select="true"
+                          className="mt-1 h-4 w-4 rounded border-slate-300"
+                          aria-label={`Select ${text(group.posting_group_ref)} for loyalty Sage batch`}
+                        />
+                      ) : <span className="mt-1 text-xs text-slate-300">—</span>}
+                      <div>
+                        <p className="font-bold text-slate-950">{text(group.posting_group_ref) || "—"}</p>
+                        <p className="mt-1 text-sm text-slate-500">{text(group.order_ref) || "—"} · {text(group.importer_name) || "Importer/customer"}</p>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          <StatusBadge value={status} />
+                          <StatusBadge value={validationStatus} />
+                          <StatusBadge value={approvalStatus} />
+                          {alreadyBatched ? <StatusBadge value="already_batched" /> : null}
+                        </div>
                       </div>
                     </div>
                     <div className="text-right">
@@ -239,7 +331,7 @@ export default async function CompletionLoyaltySagePostingMaterialisationPanel({
                           <HiddenGroupId group={group} />
                           <input type="hidden" name="approval_notes" value="Approved from loyalty controls lifecycle panel." />
                           <button type="submit" className="w-full rounded-2xl bg-emerald-700 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-800">
-                            Admin approve
+                            Admin approve group
                           </button>
                         </form>
                       ) : null}
@@ -258,6 +350,35 @@ export default async function CompletionLoyaltySagePostingMaterialisationPanel({
               );
             })}
           </div>
+        </div>
+      </div>
+
+      <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="font-bold text-slate-950">Loyalty Sage batch history</h3>
+            <p className="mt-1 text-xs leading-5 text-slate-500">Open a batch to approve it and review the future post section. Live Sage posting remains disabled until the adapter and feature flag are added.</p>
+          </div>
+          <StatusBadge value={batchError ? "batch_rpc_unavailable" : `${batches.length}_batch_rows`} />
+        </div>
+        <div className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+          {batches.length === 0 ? (
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-500 md:col-span-2 xl:col-span-3">No loyalty Sage batches yet.</div>
+          ) : batches.map((batch) => (
+            <Link key={text(batch.batch_id)} href={batchLink(batch.batch_id)} className="rounded-2xl border border-slate-200 bg-white p-4 text-sm shadow-sm hover:border-emerald-300 hover:bg-emerald-50">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="font-bold text-slate-950">{text(batch.batch_ref)}</p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <StatusBadge value={batch.status} />
+                    <StatusBadge value={batch.approval_status} />
+                  </div>
+                </div>
+                <p className="text-right font-extrabold text-slate-950">{gbp(batch.total_amount_gbp)}</p>
+              </div>
+              <p className="mt-3 text-xs text-slate-500">Rows: {text(batch.row_count)} · Posted: {text(batch.posted_count)} · Failed: {text(batch.failed_count)}</p>
+            </Link>
+          ))}
         </div>
       </div>
     </section>
