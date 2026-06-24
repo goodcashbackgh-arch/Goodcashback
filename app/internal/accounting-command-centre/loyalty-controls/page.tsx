@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 import CompletionLoyaltyAppliedAccountingPreviewPanel from "../CompletionLoyaltyAppliedAccountingPreviewPanel";
+import CompletionLoyaltySagePostingMaterialisationPanel from "../CompletionLoyaltySagePostingMaterialisationPanel";
 import LoyaltyAccountingControlPanel from "../LoyaltyAccountingControlPanel";
 
 type Row = Record<string, unknown>;
@@ -82,10 +83,10 @@ export default async function LoyaltyAccountingControlsPage({ searchParams }: { 
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <Link href="/internal/accounting-command-centre" className="text-sm font-semibold text-sky-700">← Accounting Command Centre</Link>
-              <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-violet-500">Read-only control lane</p>
+              <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-violet-500">Controlled Sage build lane</p>
               <h1 className="mt-2 text-3xl font-semibold tracking-tight sm:text-4xl">Completion loyalty accounting controls</h1>
               <p className="mt-3 max-w-5xl text-sm leading-6 text-slate-600">
-                This page exposes completion-loyalty accounting-control rows without making them selectable for freeze, batch creation, Sage posting, or cash-lane posting. It is evidence and review only.
+                This page exposes completion-loyalty accounting-control rows and the dedicated Sage posting-group materialisation lane. Materialisation creates local groups and payload steps only; it does not call Sage, approve live posting, create VAT rows, or send loyalty lines into generic cash posting.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700">
@@ -158,6 +159,8 @@ export default async function LoyaltyAccountingControlsPage({ searchParams }: { 
         <LoyaltyAccountingControlPanel searchQuery={searchQuery} categoryFilter={controlCategory} />
 
         <CompletionLoyaltyAppliedAccountingPreviewPanel searchQuery={searchQuery} previewStatusFilter={previewStatus} />
+
+        <CompletionLoyaltySagePostingMaterialisationPanel searchQuery={searchQuery} />
 
         <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-950">
           <h2 className="font-bold">Control boundary</h2>
