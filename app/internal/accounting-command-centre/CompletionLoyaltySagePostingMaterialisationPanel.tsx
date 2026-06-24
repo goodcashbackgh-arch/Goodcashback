@@ -32,6 +32,12 @@ const activeBatchStatuses = new Set([
   "failed_terminal",
 ]);
 
+const stepOrder = new Map([
+  ["loyalty_customer_receipt", 1],
+  ["loyalty_customer_allocation", 2],
+  ["loyalty_clearing_offset", 3],
+]);
+
 function text(value: unknown) {
   if (typeof value === "string") return value;
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
@@ -61,12 +67,40 @@ function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
+function asObject(value: unknown): Row {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Row : {};
+}
+
 function rowKey(row: Row) {
   return text(row.order_funding_event_id) || text(row.source_id) || `${text(row.order_ref)}-${text(row.amount_gbp)}`;
 }
 
 function groupKey(row: Row) {
   return text(row.posting_group_id) || text(row.posting_group_ref) || `${text(row.order_ref)}-${text(row.amount_gbp)}`;
+}
+
+function orderedSteps(value: unknown) {
+  return asArray(value).slice().sort((a, b) => {
+    const left = asObject(a);
+    const right = asObject(b);
+    return (stepOrder.get(text(left.step_type)) ?? 99) - (stepOrder.get(text(right.step_type)) ?? 99);
+  });
+}
+
+function stepLabel(value: unknown) {
+  const raw = text(value);
+  if (raw === "loyalty_customer_receipt") return "Create loyalty receipt";
+  if (raw === "loyalty_customer_allocation") return "Allocate receipt to invoice";
+  if (raw === "loyalty_clearing_offset") return "Clear loyalty bank to expense";
+  return pretty(raw);
+}
+
+function stepPlainMeaning(value: unknown) {
+  const raw = text(value);
+  if (raw === "loyalty_customer_receipt") return "Creates the non-cash loyalty receipt on the customer account.";
+  if (raw === "loyalty_customer_allocation") return "Matches that receipt against the posted Sage customer invoice.";
+  if (raw === "loyalty_clearing_offset") return "Moves the clearing balance to loyalty reward expense.";
+  return "Controlled Sage posting step.";
 }
 
 function badgeTone(status: string) {
@@ -150,9 +184,9 @@ export default async function CompletionLoyaltySagePostingMaterialisationPanel({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="text-sm font-medium uppercase tracking-[0.18em] text-emerald-600">Step 3 · Sage posting lifecycle actions</p>
-          <h2 className="mt-2 text-xl font-semibold text-slate-950">Freeze, batch, approve, later post</h2>
+          <h2 className="mt-2 text-xl font-semibold text-slate-950">Freeze, batch, approve and post</h2>
           <p className="mt-2 max-w-5xl text-sm leading-6 text-slate-600">
-            This is the action lane. Step 2 eligible applied-loyalty rows are materialised into local Sage groups first. Locally validated groups are then batched for efficient approval and later feature-flagged Sage posting. It still does not call Sage or touch VAT rows.
+            This is the action lane. Step 2 eligible applied-loyalty rows are materialised into local Sage groups first. Locally validated groups are batched, approved, then posted through the controlled loyalty Sage adapter. VAT rows are not created here.
           </p>
         </div>
         <div className="rounded-2xl bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-950 ring-1 ring-emerald-200">
@@ -242,7 +276,7 @@ export default async function CompletionLoyaltySagePostingMaterialisationPanel({
               <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-500">No materialised applied-loyalty posting groups yet.</div>
             ) : groups.map((group) => {
               const targets = asArray(group.target_allocation_json);
-              const steps = asArray(group.steps_json);
+              const steps = orderedSteps(group.steps_json);
               const status = text(group.status);
               const validationStatus = text(group.validation_status);
               const approvalStatus = text(group.approval_status);
@@ -290,27 +324,26 @@ export default async function CompletionLoyaltySagePostingMaterialisationPanel({
                     <p className="mt-2 text-xs font-semibold text-slate-600">Target customer invoice allocation(s):</p>
                     <ul className="mt-1 space-y-1 text-xs text-slate-500">
                       {targets.length === 0 ? <li>—</li> : targets.map((target, index) => {
-                        const targetObj = target && typeof target === "object" && !Array.isArray(target) ? target as Row : {};
+                        const targetObj = asObject(target);
                         return (
                           <li key={`${text(targetObj.target_sage_invoice_id)}-${index}`}>
-                            {text(targetObj.target_sage_invoice_id) || "Sage invoice"}: {gbp(targetObj.allocation_amount_gbp)}
+                            {text(targetObj.target_order_ref) || "Customer invoice"}: {gbp(targetObj.allocation_amount_gbp)}
                           </li>
                         );
                       })}
                     </ul>
 
-                    <p className="mt-4 text-xs font-semibold text-slate-600">Frozen Sage steps:</p>
+                    <p className="mt-4 text-xs font-semibold text-slate-600">Sage posting steps:</p>
                     <div className="mt-2 space-y-2">
                       {steps.length === 0 ? <p className="text-xs text-slate-500">No steps were created because the group is blocked.</p> : steps.map((step, index) => {
-                        const stepObj = step && typeof step === "object" && !Array.isArray(step) ? step as Row : {};
+                        const stepObj = asObject(step);
                         return (
                           <div key={`${text(stepObj.step_type)}-${index}`} className="rounded-2xl border border-slate-200 bg-white p-3 text-xs">
                             <div className="flex flex-wrap items-center justify-between gap-2">
-                              <span className="font-bold text-slate-800">{pretty(stepObj.step_type)}</span>
+                              <span className="font-bold text-slate-800">{stepLabel(stepObj.step_type)}</span>
                               <StatusBadge value={stepObj.status} />
                             </div>
-                            <p className="mt-1 text-slate-500">{text(stepObj.endpoint_path)} · {text(stepObj.sage_reference) || "—"}</p>
-                            <p className="mt-1 text-slate-400">Payload hash: {text(stepObj.request_payload_hash) || "—"}</p>
+                            <p className="mt-1 text-slate-500">{stepPlainMeaning(stepObj.step_type)}</p>
                             {text(stepObj.last_error) ? <p className="mt-1 font-semibold text-rose-700">{text(stepObj.last_error)}</p> : null}
                           </div>
                         );
@@ -357,7 +390,7 @@ export default async function CompletionLoyaltySagePostingMaterialisationPanel({
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h3 className="font-bold text-slate-950">Loyalty Sage batch history</h3>
-            <p className="mt-1 text-xs leading-5 text-slate-500">Open a batch to approve it and review the future post section. Live Sage posting remains disabled until the adapter and feature flag are added.</p>
+            <p className="mt-1 text-xs leading-5 text-slate-500">Open a batch to approve, post, review Sage responses, or retry failed steps only.</p>
           </div>
           <StatusBadge value={batchError ? "batch_rpc_unavailable" : `${batches.length}_batch_rows`} />
         </div>
