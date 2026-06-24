@@ -1,7 +1,9 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { headers } from "next/headers";
 import { redirect } from "next/navigation";
+import { postCompletionLoyaltySageBatchToSage } from "@/lib/sage/completionLoyaltyPosting";
 import { createClient } from "@/utils/supabase/server";
 
 const LOYALTY_CONTROLS_PATH = "/internal/accounting-command-centre/loyalty-controls";
@@ -12,6 +14,43 @@ function text(formData: FormData, key: string) {
 
 function textArray(formData: FormData, key: string) {
   return formData.getAll(key).map((value) => String(value ?? "").trim()).filter(Boolean);
+}
+
+function hasAccountingAdminTesting(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const permissions = value as Record<string, unknown>;
+  return permissions.accounting_admin_testing === true || permissions.admin_testing === true;
+}
+
+async function originFromHeaders() {
+  const headerStore = await headers();
+  const host = headerStore.get("x-forwarded-host") || headerStore.get("host") || "";
+  const proto = headerStore.get("x-forwarded-proto") || "https";
+  return host ? `${proto}://${host}` : "";
+}
+
+async function requireAccountingAdminAccess(returnPath = LOYALTY_CONTROLS_PATH) {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) redirect("/login");
+
+  const { data: staff, error: staffError } = await supabase
+    .from("staff")
+    .select("id, role_type, permissions_json")
+    .eq("auth_user_id", user.id)
+    .eq("active", true)
+    .maybeSingle();
+
+  if (staffError || !staff) {
+    redirect(`${returnPath}?error=${encodeURIComponent(staffError?.message || "Active staff account required")}`);
+  }
+
+  const canAccess = String(staff.role_type ?? "") === "admin" || hasAccountingAdminTesting((staff as Record<string, unknown>).permissions_json);
+  if (!canAccess) {
+    redirect(`${returnPath}?error=${encodeURIComponent("Accounting admin access required")}`);
+  }
+
+  return { supabase, staffId: String(staff.id) };
 }
 
 async function rpcOrThrow(name: string, args: Record<string, unknown>) {
@@ -127,4 +166,26 @@ export async function approveCompletionLoyaltySageBatchAction(formData: FormData
   });
 
   revalidatePath(`${LOYALTY_CONTROLS_PATH}/batches/${batchId}`);
+}
+
+export async function postCompletionLoyaltySageBatchAction(formData: FormData) {
+  const batchId = text(formData, "batch_id");
+  if (!batchId) redirect(`${LOYALTY_CONTROLS_PATH}?error=${encodeURIComponent("Missing completion-loyalty Sage batch id")}`);
+
+  const batchPath = `${LOYALTY_CONTROLS_PATH}/batches/${batchId}`;
+  const { staffId } = await requireAccountingAdminAccess(batchPath);
+  const origin = await originFromHeaders();
+
+  let result: Awaited<ReturnType<typeof postCompletionLoyaltySageBatchToSage>>;
+  try {
+    result = await postCompletionLoyaltySageBatchToSage({ batchId, staffId, origin });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Completion-loyalty Sage batch posting failed.";
+    revalidatePath(batchPath);
+    redirect(`${batchPath}?error=${encodeURIComponent(message)}`);
+  }
+
+  revalidatePath(LOYALTY_CONTROLS_PATH);
+  revalidatePath(batchPath);
+  redirect(`${batchPath}?success=${encodeURIComponent(`Completion-loyalty Sage posting finished: ${result.posted} posted, ${result.failed} failed, ${result.needsReview} needs review, ${result.total} total. Endpoint ${result.endpoint}.`)}`);
 }
