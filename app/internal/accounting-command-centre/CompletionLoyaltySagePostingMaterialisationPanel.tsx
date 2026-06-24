@@ -101,13 +101,13 @@ export default async function CompletionLoyaltySagePostingMaterialisationPanel({
   const totalGroupAmount = groups.reduce((sum, row) => sum + num(row.amount_gbp), 0);
 
   return (
-    <section className="rounded-3xl border border-emerald-200 bg-white p-5 shadow-sm">
+    <section id="step-3-lifecycle" className="rounded-3xl border border-emerald-200 bg-white p-5 shadow-sm scroll-mt-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="text-sm font-medium uppercase tracking-[0.18em] text-emerald-600">Applied loyalty Sage lifecycle lane</p>
-          <h2 className="mt-2 text-xl font-semibold text-slate-950">Materialise, validate, approve, supersede</h2>
+          <p className="text-sm font-medium uppercase tracking-[0.18em] text-emerald-600">Step 3 · Sage posting lifecycle actions</p>
+          <h2 className="mt-2 text-xl font-semibold text-slate-950">Freeze, validate, approve, supersede</h2>
           <p className="mt-2 max-w-5xl text-sm leading-6 text-slate-600">
-            This section mirrors the existing Sage control discipline: candidate → materialise/freeze → validate/revalidate → admin approve → later live post. It still does not call Sage or touch VAT rows.
+            This is the action lane. It takes Step 2 eligible applied-loyalty rows and creates controlled local Sage posting groups: candidate → materialise/freeze → validate/revalidate → admin approve → later live post. It still does not call Sage or touch VAT rows.
           </p>
         </div>
         <div className="rounded-2xl bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-950 ring-1 ring-emerald-200">
