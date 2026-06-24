@@ -77,13 +77,13 @@ export default async function LoyaltyAccountingControlPanel({ searchQuery = "", 
   const unusedCount = rows.filter((row) => text(row.category) === "released_unused_loyalty_control_balance").length;
 
   return (
-    <section className="rounded-3xl border border-violet-200 bg-white p-5 shadow-sm">
+    <section id="step-1-evidence" className="rounded-3xl border border-violet-200 bg-white p-5 shadow-sm scroll-mt-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="text-sm font-medium uppercase tracking-[0.18em] text-violet-500">Read-only loyalty accounting controls</p>
-          <h2 className="mt-2 text-xl font-semibold text-slate-950">Completion loyalty control rows</h2>
+          <p className="text-sm font-medium uppercase tracking-[0.18em] text-violet-500">Step 1 · Accounting control evidence</p>
+          <h2 className="mt-2 text-xl font-semibold text-slate-950">What loyalty accounting events exist?</h2>
           <p className="mt-2 max-w-5xl text-sm leading-6 text-slate-600">
-            These rows expose the accounting meaning of completion loyalty without adding them to the cash freeze/post grid. They are control evidence only until Sage mappings and posting endpoints are deliberately locked.
+            This is the evidence layer. It shows the accounting meaning of loyalty activity from main-bank/DVA transfer rows, applied non-cash settlement rows, and released unused loyalty rows. It is read-only: you do not post or freeze from this step.
           </p>
         </div>
         <div className="rounded-2xl bg-violet-50 px-4 py-3 text-sm font-semibold text-violet-900 ring-1 ring-violet-200">
@@ -108,12 +108,12 @@ export default async function LoyaltyAccountingControlPanel({ searchQuery = "", 
         <div className="rounded-2xl border border-violet-200 bg-violet-50 p-4 text-violet-950">
           <p className="text-xs font-bold uppercase tracking-wide opacity-70">Bank internal transfer</p>
           <p className="mt-2 text-2xl font-extrabold">{bankTransferCount}</p>
-          <p className="mt-1 text-xs leading-5 opacity-80">Dr DVA/card/virtual-card bank; Cr main bank. Not customer funding.</p>
+          <p className="mt-1 text-xs leading-5 opacity-80">Main-bank OUT and DVA/card IN pairing evidence. Dr DVA/card bank; Cr main bank.</p>
         </div>
         <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sky-950">
           <p className="text-xs font-bold uppercase tracking-wide opacity-70">Non-cash settlement</p>
           <p className="mt-2 text-2xl font-extrabold">{settlementCount}</p>
-          <p className="mt-1 text-xs leading-5 opacity-80">Loyalty applied to an order balance. This is where customer balance is settled.</p>
+          <p className="mt-1 text-xs leading-5 opacity-80">Applied loyalty that settles a customer balance. These rows feed Step 2 and Step 3.</p>
         </div>
         <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-amber-950">
           <p className="text-xs font-bold uppercase tracking-wide opacity-70">Released unused loyalty</p>
@@ -148,7 +148,7 @@ export default async function LoyaltyAccountingControlPanel({ searchQuery = "", 
               <p className="mt-1"><span className="font-semibold text-slate-950">Treatment:</span> {text(row.accounting_treatment) || "—"}</p>
               <div className="mt-3">
                 <span className="rounded-full border border-slate-200 bg-white px-2 py-1 text-[11px] font-bold text-slate-700">
-                  Read-only · not selectable
+                  Step 1 evidence · read-only
                 </span>
               </div>
             </div>
@@ -165,7 +165,7 @@ export default async function LoyaltyAccountingControlPanel({ searchQuery = "", 
               <th className="px-3 py-2 text-right">Amount</th>
               <th className="px-3 py-2 text-left">Control status</th>
               <th className="px-3 py-2 text-left">Accounting treatment</th>
-              <th className="px-3 py-2 text-left">Posting gate</th>
+              <th className="px-3 py-2 text-left">Gate</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 bg-white">
@@ -192,7 +192,7 @@ export default async function LoyaltyAccountingControlPanel({ searchQuery = "", 
                 <td className="px-3 py-3 text-slate-700">{text(row.accounting_treatment) || "—"}</td>
                 <td className="px-3 py-3">
                   <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-bold text-slate-700">
-                    Read-only · not selectable
+                    Step 1 evidence · read-only
                   </span>
                 </td>
               </tr>
