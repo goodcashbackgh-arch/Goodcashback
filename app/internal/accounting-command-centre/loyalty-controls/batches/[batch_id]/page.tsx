@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
-import { approveCompletionLoyaltySageBatchAction } from "../../actions";
+import { approveCompletionLoyaltySageBatchAction, postCompletionLoyaltySageBatchAction } from "../../actions";
 
 type Row = Record<string, unknown>;
 type Params = { batch_id: string } | Promise<{ batch_id: string }>;
@@ -13,6 +13,12 @@ const gbpFormatter = new Intl.NumberFormat("en-GB", {
   currency: "GBP",
   minimumFractionDigits: 2,
 });
+
+const stepOrder = new Map([
+  ["loyalty_customer_receipt", 1],
+  ["loyalty_customer_allocation", 2],
+  ["loyalty_clearing_offset", 3],
+]);
 
 function text(value: unknown) {
   if (Array.isArray(value)) return text(value[0]);
@@ -52,6 +58,14 @@ function asObject(value: unknown): Row {
 
 function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
+}
+
+function orderedSteps(value: unknown) {
+  return asArray(value).slice().sort((a, b) => {
+    const left = asObject(a);
+    const right = asObject(b);
+    return (stepOrder.get(text(left.step_type)) ?? 99) - (stepOrder.get(text(right.step_type)) ?? 99);
+  });
 }
 
 function messageParam(searchParams: Record<string, string | string[] | undefined>, key: "success" | "error") {
@@ -113,7 +127,7 @@ export default async function CompletionLoyaltySageBatchDetailPage({ params, sea
     && text(first.batch_status) === "validated"
     && text(first.batch_approval_status) !== "approved"
     && rows.every((row) => ["ok_to_post", "warning_only"].includes(text(row.group_validation_status)) && !text(row.blocker));
-  const livePostingEnabled = process.env.SAGE_LIVE_COMPLETION_LOYALTY_POSTING_ENABLED === "true";
+  const livePostingEnabled = process.env.SAGE_LIVE_COMPLETION_LOYALTY_POSTING_ENABLED === "true" || process.env.SAGE_LIVE_CASH_POSTING_ENABLED === "true";
   const canPost = rows.length > 0 && livePostingEnabled && text(first.batch_status) === "approved" && text(first.batch_approval_status) === "approved";
   const postedRows = rows.filter((row) => text(row.item_posting_status) === "posted_to_sage").length;
   const failedRows = rows.filter((row) => ["failed_retryable", "failed_terminal"].includes(text(row.item_posting_status))).length;
@@ -127,13 +141,13 @@ export default async function CompletionLoyaltySageBatchDetailPage({ params, sea
           <p className="mt-5 text-sm font-medium uppercase tracking-[0.2em] text-emerald-600">Completion loyalty · Sage batch detail</p>
           <h1 className="mt-2 text-3xl font-semibold tracking-tight">{text(first.batch_ref) || "Loyalty Sage batch"}</h1>
           <p className="mt-2 max-w-5xl text-sm leading-6 text-slate-600">
-            This batch wraps multiple materialised applied-loyalty Sage groups. Approval happens at batch level. Live Sage posting remains disabled until the dedicated loyalty posting adapter and feature flag are enabled.
+            This batch wraps multiple materialised applied-loyalty Sage groups. Approval happens at batch level. Live posting uses the same Sage OAuth/logging infrastructure as the existing workbench and is controlled by the existing cash-posting live flag or the optional dedicated loyalty flag.
           </p>
           <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-bold">
             <StatusBadge value={text(first.batch_status) || "not_loaded"} />
             <StatusBadge value={text(first.batch_validation_status) || "not_validated"} />
             <StatusBadge value={text(first.batch_approval_status) || "not_approved"} />
-            <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-slate-700">Feature flag: {livePostingEnabled ? "enabled" : "disabled"}</span>
+            <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-slate-700">Live flag: {livePostingEnabled ? "enabled" : "disabled"}</span>
           </div>
           {success ? <p className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-900">{success}</p> : null}
           {pageError ? <p className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900">{pageError}</p> : null}
@@ -158,7 +172,7 @@ export default async function CompletionLoyaltySageBatchDetailPage({ params, sea
               <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                 <div>
                   <h2 className="text-xl font-semibold">Batch actions</h2>
-                  <p className="mt-1 text-sm text-slate-500">Approve the whole batch here. The post button is intentionally disabled until the live loyalty Sage adapter is built and the production feature flag is enabled.</p>
+                  <p className="mt-1 text-sm text-slate-500">Approve the whole batch first. The post button runs the live adapter only when a live Sage flag is enabled and the batch is approved.</p>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <form action={approveCompletionLoyaltySageBatchAction}>
@@ -168,18 +182,21 @@ export default async function CompletionLoyaltySageBatchDetailPage({ params, sea
                       Approve batch
                     </button>
                   </form>
-                  <button disabled={!canPost} className="rounded-xl bg-slate-200 px-4 py-2 text-xs font-bold text-slate-500">
-                    Post loyalty Sage batch
-                  </button>
+                  <form action={postCompletionLoyaltySageBatchAction}>
+                    <input type="hidden" name="batch_id" value={batchId} />
+                    <button disabled={!canPost} className="rounded-xl bg-emerald-700 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-800 disabled:bg-slate-200 disabled:text-slate-500">
+                      Post loyalty Sage batch
+                    </button>
+                  </form>
                 </div>
               </div>
-              {!livePostingEnabled ? <p className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-900">Set SAGE_LIVE_COMPLETION_LOYALTY_POSTING_ENABLED=true only after the live adapter is built and controlled testing passes.</p> : null}
+              {!livePostingEnabled ? <p className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-900">Live posting is disabled. Use the already-approved SAGE_LIVE_CASH_POSTING_ENABLED=true environment switch, or set SAGE_LIVE_COMPLETION_LOYALTY_POSTING_ENABLED=true for a dedicated loyalty switch.</p> : null}
             </section>
 
             <section className="rounded-3xl border border-slate-200 bg-white shadow-sm">
               <div className="border-b border-slate-100 px-4 py-3">
                 <h2 className="text-xl font-semibold">Batch rows</h2>
-                <p className="mt-1 text-sm text-slate-500">Each row is one applied-loyalty Sage posting group. The future post adapter will execute receipt → allocation → journal per group and retry failed steps only.</p>
+                <p className="mt-1 text-sm text-slate-500">Each row is one applied-loyalty Sage posting group. The live adapter executes receipt → allocation → journal per group and retries failed steps only.</p>
               </div>
               <div className="overflow-x-auto">
                 <table className="min-w-[1320px] divide-y divide-slate-200 text-xs">
@@ -197,7 +214,7 @@ export default async function CompletionLoyaltySageBatchDetailPage({ params, sea
                   <tbody className="divide-y divide-slate-100 bg-white">
                     {rows.map((row) => {
                       const targets = asArray(row.target_allocation_json);
-                      const steps = asArray(row.steps_json);
+                      const steps = orderedSteps(row.steps_json);
                       return (
                         <tr key={text(row.item_id)} className="align-top">
                           <td className="px-3 py-3"><StatusBadge value={row.item_posting_status} /><p className="mt-1"><StatusBadge value={row.group_validation_status} /></p>{text(row.blocker) ? <p className="mt-1 text-[11px] font-semibold text-rose-700">{short(row.blocker, 90)}</p> : null}</td>
@@ -228,11 +245,11 @@ export default async function CompletionLoyaltySageBatchDetailPage({ params, sea
             </section>
 
             <section className="grid gap-3 lg:grid-cols-2">
-              {rows.map((row) => asArray(row.steps_json).map((step, index) => {
+              {rows.map((row) => orderedSteps(row.steps_json).map((step, index) => {
                 const stepObj = asObject(step);
                 return <PayloadBlock key={`${text(row.item_id)}-${index}-payload`} title={`${pretty(stepObj.step_type)} · request payload`} value={stepObj.request_payload} />;
               }))}
-              {rows.map((row) => asArray(row.steps_json).map((step, index) => {
+              {rows.map((row) => orderedSteps(row.steps_json).map((step, index) => {
                 const stepObj = asObject(step);
                 return <PayloadBlock key={`${text(row.item_id)}-${index}-response`} title={`${pretty(stepObj.step_type)} · Sage response`} value={stepObj.response_payload} />;
               }))}
