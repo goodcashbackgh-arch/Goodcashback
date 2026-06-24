@@ -98,6 +98,54 @@ function PayloadBlock({ title, value }: { title: string; value: unknown }) {
   );
 }
 
+function BatchRowCard({ row }: { row: Row }) {
+  const targets = asArray(row.target_allocation_json);
+  const steps = orderedSteps(row.steps_json);
+  return (
+    <article className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Order</p>
+          <p className="mt-1 break-all font-mono text-sm font-extrabold text-slate-950">{short(row.order_ref, 42)}</p>
+          <p className="mt-1 text-sm font-semibold text-slate-700">{short(row.importer_name, 52)}</p>
+        </div>
+        <p className="rounded-xl bg-slate-50 px-3 py-2 text-lg font-extrabold text-slate-950">{gbp(row.amount_gbp)}</p>
+      </div>
+
+      <div className="mt-3 flex flex-wrap gap-2">
+        <StatusBadge value={row.item_posting_status} />
+        <StatusBadge value={row.group_validation_status} />
+      </div>
+      {text(row.blocker) ? <p className="mt-2 rounded-xl border border-rose-200 bg-rose-50 p-2 text-xs font-semibold text-rose-700">{short(row.blocker, 120)}</p> : null}
+
+      <div className="mt-4 rounded-xl border border-slate-100 bg-slate-50 p-3">
+        <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Group</p>
+        <p className="mt-1 break-all font-mono text-[11px] font-bold text-slate-800">{short(row.posting_group_ref, 54)}</p>
+      </div>
+
+      <div className="mt-3 rounded-xl border border-slate-100 bg-slate-50 p-3">
+        <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Target allocation</p>
+        <div className="mt-2 grid gap-1">
+          {targets.length === 0 ? <span className="text-xs text-slate-400">—</span> : targets.map((target, index) => {
+            const targetObj = asObject(target);
+            return <p key={`${text(row.item_id)}-mobile-target-${index}`} className="break-all font-mono text-[11px] text-slate-700">{short(targetObj.target_sage_invoice_id, 44)} · {gbp(targetObj.allocation_amount_gbp)}</p>;
+          })}
+        </div>
+      </div>
+
+      <div className="mt-3 rounded-xl border border-slate-100 bg-slate-50 p-3">
+        <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Steps</p>
+        <div className="mt-2 grid gap-2">
+          {steps.map((step, index) => {
+            const stepObj = asObject(step);
+            return <div key={`${text(row.item_id)}-mobile-step-${index}`} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-white px-2 py-1.5"><span className="text-xs font-bold text-slate-900">{pretty(stepObj.step_type)}</span><StatusBadge value={stepObj.status} /></div>;
+          })}
+        </div>
+      </div>
+    </article>
+  );
+}
+
 export default async function CompletionLoyaltySageBatchDetailPage({ params, searchParams }: { params: Params; searchParams?: SearchParams }) {
   const resolvedParams = await Promise.resolve(params);
   const resolvedSearchParams = await Promise.resolve(searchParams ?? {});
@@ -198,7 +246,10 @@ export default async function CompletionLoyaltySageBatchDetailPage({ params, sea
                 <h2 className="text-xl font-semibold">Batch rows</h2>
                 <p className="mt-1 text-sm text-slate-500">Each row is one applied-loyalty Sage posting group. The live adapter executes receipt → allocation → journal per group and retries failed steps only.</p>
               </div>
-              <div className="overflow-x-auto">
+              <div className="grid gap-3 p-4 lg:hidden">
+                {rows.map((row) => <BatchRowCard key={text(row.item_id)} row={row} />)}
+              </div>
+              <div className="hidden overflow-x-auto lg:block">
                 <table className="min-w-[1320px] divide-y divide-slate-200 text-xs">
                   <thead className="bg-slate-100 text-[10px] uppercase tracking-wide text-slate-500">
                     <tr>
