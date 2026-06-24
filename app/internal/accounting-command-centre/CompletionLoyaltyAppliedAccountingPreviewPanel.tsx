@@ -97,13 +97,13 @@ export default async function CompletionLoyaltyAppliedAccountingPreviewPanel({ s
   const blockedCount = rows.filter((row) => text(row.readiness_status).startsWith("preview_only") || text(row.blocker)).length;
 
   return (
-    <section className="rounded-3xl border border-sky-200 bg-white p-5 shadow-sm">
+    <section id="step-2-eligibility" className="rounded-3xl border border-sky-200 bg-white p-5 shadow-sm scroll-mt-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="text-sm font-medium uppercase tracking-[0.18em] text-sky-500">Applied loyalty accounting / Sage mapping preview</p>
-          <h2 className="mt-2 text-xl font-semibold text-slate-950">Applied completion-loyalty preview</h2>
+          <p className="text-sm font-medium uppercase tracking-[0.18em] text-sky-500">Step 2 · Applied-loyalty eligibility preview</p>
+          <h2 className="mt-2 text-xl font-semibold text-slate-950">Which applied loyalty rows could become Sage settlement?</h2>
           <p className="mt-2 max-w-5xl text-sm leading-6 text-slate-600">
-            This section reads staff-applied completion loyalty from existing <code>credit_applied</code> order-funding events. It is preview only: no Sage posting, no cash freeze, no VAT source row, no credit unlock, and no queue posting is enabled here.
+            This step only reads staff-applied completion loyalty from existing <code>credit_applied</code> order-funding events. It proves eligibility and mapping readiness before Step 3. It is still read-only: no Sage posting, no cash freeze, no VAT source row, and no queue posting is enabled here.
           </p>
         </div>
         <div className="rounded-2xl bg-sky-50 px-4 py-3 text-sm font-semibold text-sky-900 ring-1 ring-sky-200">
@@ -131,14 +131,14 @@ export default async function CompletionLoyaltyAppliedAccountingPreviewPanel({ s
           <p className="mt-1 text-xs leading-5 opacity-80">Sourced only from completion-loyalty <code>credit_applied</code> events.</p>
         </div>
         <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-amber-950">
-          <p className="text-xs font-bold uppercase tracking-wide opacity-70">Preview blocked from posting</p>
+          <p className="text-xs font-bold uppercase tracking-wide opacity-70">Preview blocked</p>
           <p className="mt-2 text-2xl font-extrabold">{blockedCount}</p>
-          <p className="mt-1 text-xs leading-5 opacity-80">Mappings, endpoint, idempotency, logging, reversal, and feature flag are not locked here.</p>
+          <p className="mt-1 text-xs leading-5 opacity-80">Mapping or readiness issue before Step 3 can safely freeze a local posting group.</p>
         </div>
         <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-slate-950">
           <p className="text-xs font-bold uppercase tracking-wide opacity-70">Posting gate</p>
           <p className="mt-2 text-2xl font-extrabold">Off</p>
-          <p className="mt-1 text-xs leading-5 opacity-80">Rows are non-selectable and non-postable by contract.</p>
+          <p className="mt-1 text-xs leading-5 opacity-80">Step 2 rows are non-selectable and non-postable by contract.</p>
         </div>
       </div>
 
@@ -177,7 +177,7 @@ export default async function CompletionLoyaltyAppliedAccountingPreviewPanel({ s
                 {text(row.blocker) ? <p className="mt-3 font-semibold text-rose-700">{pretty(row.blocker)}</p> : null}
                 <div className="mt-3">
                   <span className="rounded-full border border-slate-200 bg-white px-2 py-1 text-[11px] font-bold text-slate-700">
-                    Read-only · not selectable · no posting
+                    Step 2 eligibility · read-only
                   </span>
                 </div>
                 <p className="mt-3 break-all text-[11px] text-slate-400">Event: {text(row.order_funding_event_id) || "—"}</p>
@@ -196,7 +196,7 @@ export default async function CompletionLoyaltyAppliedAccountingPreviewPanel({ s
               <th className="px-3 py-2 text-left">Accounting preview</th>
               <th className="px-3 py-2 text-left">Mapping status</th>
               <th className="px-3 py-2 text-left">Readiness</th>
-              <th className="px-3 py-2 text-left">Posting gate</th>
+              <th className="px-3 py-2 text-left">Gate</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 bg-white">
@@ -233,7 +233,7 @@ export default async function CompletionLoyaltyAppliedAccountingPreviewPanel({ s
                   </td>
                   <td className="px-3 py-3">
                     <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-bold text-slate-700">
-                      Read-only · not selectable · no posting
+                      Step 2 eligibility · read-only
                     </span>
                   </td>
                 </tr>
