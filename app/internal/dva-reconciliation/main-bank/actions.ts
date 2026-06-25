@@ -176,35 +176,101 @@ export async function matchMainBankLineToCompletionLoyaltyAction(formData: FormD
   }
 
   const statementLineId = readString(formData, "dva_statement_line_id");
-  const orderId = readString(formData, "order_id");
+  const orderIds = Array.from(new Set(readStringList(formData, "order_id")));
   const amountRaw = readString(formData, "reward_amount_gbp");
   const amount = amountRaw ? Number(amountRaw) : null;
   const notes = readString(formData, "notes") || "Main-bank OUT reserved for completion loyalty reward.";
 
-  if (!statementLineId || !orderId) {
-    redirectWithResult({ error: "Select one main-bank OUT line and one completion loyalty target.", target: "completion_loyalty" });
+  if (!statementLineId || orderIds.length === 0) {
+    redirectWithResult({ error: "Select one main-bank OUT line and at least one completion loyalty target.", target: "completion_loyalty" });
   }
 
   if (amountRaw && (!Number.isFinite(amount) || Number(amount) <= 0)) {
     redirectWithResult({ error: "Reward reserve amount must be greater than zero.", target: "completion_loyalty" });
   }
 
-  const { data, error } = await supabase.rpc("staff_stage_main_bank_line_to_completion_loyalty_v2", {
-    p_dva_statement_line_id: statementLineId,
-    p_order_id: orderId,
-    p_reward_amount_gbp: amount,
-    p_notes: notes,
-    p_activation_route: "dva_account_top_up",
-    p_card_used_by: "staff",
-  });
+  if (orderIds.length > 1 && amountRaw) {
+    redirectWithResult({ error: "Reward amount override is only allowed for one loyalty target. For multiple targets, each reward uses its own suggested reward amount.", target: "completion_loyalty" });
+  }
 
-  if (error) redirectWithResult({ error: error.message, target: "completion_loyalty" });
+  const [{ data: lineRows, error: lineError }, { data: targetRows, error: targetError }] = await Promise.all([
+    (supabase as any).rpc("internal_main_bank_shipper_statement_lines_v1", {
+      p_status: "all",
+      p_search: null,
+      p_limit: 300,
+      p_offset: 0,
+    }),
+    (supabase as any).rpc("internal_main_bank_completion_loyalty_targets_v1", {
+      p_search: null,
+      p_limit: 300,
+      p_offset: 0,
+    }),
+  ]);
 
-  const reservedAmount =
-    typeof data === "object" && data !== null && "matched_gbp_amount" in data
-      ? num((data as { matched_gbp_amount?: unknown }).matched_gbp_amount)
-      : amount ?? 0;
-  const orderRef = typeof data === "object" && data !== null ? text((data as { order_ref?: unknown }).order_ref) : "";
+  if (lineError) redirectWithResult({ error: lineError.message, target: "completion_loyalty" });
+  if (targetError) redirectWithResult({ error: targetError.message, target: "completion_loyalty" });
+
+  const selectedLine = ((lineRows ?? []) as Row[]).find((row) => text(row.statement_line_id) === statementLineId);
+  if (!selectedLine) redirectWithResult({ error: "Selected main-bank OUT line was not found.", target: "completion_loyalty" });
+
+  const selectedTargets = ((targetRows ?? []) as Row[]).filter((row) => orderIds.includes(text(row.order_id)));
+  if (selectedTargets.length !== orderIds.length) {
+    redirectWithResult({ error: "One or more selected loyalty targets were not found, already reserved, or no longer reward-ready.", target: "completion_loyalty" });
+  }
+
+  const uniqueImporters = new Set(selectedTargets.map((row) => text(row.importer_id)).filter(Boolean));
+  if (uniqueImporters.size !== 1) {
+    redirectWithResult({ error: "One main-bank OUT loyalty funding pot can only reserve rewards for one importer. Split different importers into separate OUT lines.", target: "completion_loyalty" });
+  }
+
+  const residualGbp = await confirmedResidualForLine(supabase, statementLineId);
+  const lineRemaining = safeLineRemaining(selectedLine, residualGbp);
+  const selectedTotal = round2(selectedTargets.reduce((sum, row) => sum + num(row.suggested_reward_gbp), 0));
+
+  if (selectedTotal <= 0) {
+    redirectWithResult({ error: "Selected loyalty reward total must be greater than zero.", target: "completion_loyalty" });
+  }
+
+  if (selectedTotal > lineRemaining + 0.01) {
+    redirectWithResult({ error: `Selected loyalty rewards total £${selectedTotal.toFixed(2)}, which exceeds the remaining main-bank OUT amount £${lineRemaining.toFixed(2)}.`, target: "completion_loyalty" });
+  }
+
+  let reservedTotal = 0;
+  let reservedCount = 0;
+  const orderRefs: string[] = [];
+
+  for (const target of selectedTargets) {
+    const targetOrderId = text(target.order_id);
+    const targetAmount = orderIds.length === 1 && amountRaw ? amount : round2(num(target.suggested_reward_gbp));
+    const targetNotes = orderIds.length > 1
+      ? `${notes}\nBulk main-bank OUT reservation group: ${orderIds.length} rewards selected.`
+      : notes;
+
+    if ((targetAmount ?? 0) > lineRemaining - reservedTotal + 0.01) {
+      redirectWithResult({ error: `Selected loyalty rewards exceed remaining main-bank OUT amount £${lineRemaining.toFixed(2)} after earlier reservations in this group.`, target: "completion_loyalty" });
+    }
+
+    const { data, error } = await supabase.rpc("staff_stage_main_bank_line_to_completion_loyalty_v2", {
+      p_dva_statement_line_id: statementLineId,
+      p_order_id: targetOrderId,
+      p_reward_amount_gbp: targetAmount,
+      p_notes: targetNotes,
+      p_activation_route: "dva_account_top_up",
+      p_card_used_by: "staff",
+    });
+
+    if (error) redirectWithResult({ error: error.message, target: "completion_loyalty" });
+
+    const returnedAmount =
+      typeof data === "object" && data !== null && "matched_gbp_amount" in data
+        ? num((data as { matched_gbp_amount?: unknown }).matched_gbp_amount)
+        : targetAmount ?? 0;
+    const orderRef = typeof data === "object" && data !== null ? text((data as { order_ref?: unknown }).order_ref) : text(target.order_ref);
+
+    reservedTotal = round2(reservedTotal + returnedAmount);
+    reservedCount += 1;
+    if (orderRef) orderRefs.push(orderRef);
+  }
 
   revalidatePath("/internal/dva-reconciliation/main-bank");
   revalidatePath("/internal/completion-loyalty-rewards");
@@ -212,6 +278,6 @@ export async function matchMainBankLineToCompletionLoyaltyAction(formData: FormD
 
   redirectWithResult({
     target: "completion_loyalty",
-    success: `Reserved main-bank OUT for ${reservedAmount.toFixed(2)} loyalty${orderRef ? ` on ${orderRef}` : ""}. Pair the DVA/virtual-card IN before release.`,
+    success: `Reserved one main-bank OUT for ${reservedCount} loyalty reward(s), total £${reservedTotal.toFixed(2)}${orderRefs.length ? ` on ${orderRefs.join(", ")}` : ""}. Pair the DVA/virtual-card IN before release.`,
   });
 }
