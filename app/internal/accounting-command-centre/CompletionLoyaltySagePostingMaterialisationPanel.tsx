@@ -282,7 +282,7 @@ export default async function CompletionLoyaltySagePostingMaterialisationPanel({
               const approvalStatus = text(group.approval_status);
               const groupId = text(group.posting_group_id);
               const alreadyBatched = activeBatchedGroupIds.has(groupId);
-              const canValidate = !["posted_to_sage", "posting_to_sage", "cancelled", "superseded", "reversed"].includes(status);
+              const canValidate = !alreadyBatched && num(group.posted_step_count) === 0 && !["posted_to_sage", "posting_to_sage", "cancelled", "superseded", "reversed"].includes(status);
               const canApprove = status === "locally_validated" && ["ok_to_post", "warning_only"].includes(validationStatus) && !text(group.blocker);
               const canSupersede = !["posted_to_sage", "posting_to_sage", "cancelled", "superseded", "reversed"].includes(status) && num(group.posted_step_count) === 0 && !alreadyBatched;
               const canBatch = ["locally_validated", "admin_approved"].includes(status) && ["ok_to_post", "warning_only"].includes(validationStatus) && !text(group.blocker) && num(group.posted_step_count) === 0 && !alreadyBatched;
@@ -320,6 +320,7 @@ export default async function CompletionLoyaltySagePostingMaterialisationPanel({
                   </summary>
                   <div className="mt-3 border-t border-slate-200 pt-3 text-sm text-slate-700">
                     {text(group.blocker) ? <p className="rounded-2xl border border-rose-200 bg-rose-50 p-3 font-semibold text-rose-700">Blocker: {pretty(group.blocker)}</p> : null}
+                    {alreadyBatched || num(group.posted_step_count) > 0 ? <p className="mt-2 rounded-2xl border border-slate-200 bg-slate-50 p-3 text-xs font-semibold text-slate-600">This group is already in a Sage batch or has posted Sage activity. Review and retry from the batch page only.</p> : null}
                     <p className="mt-2 text-xs text-slate-500">Posting date: {text(group.posting_date) || "—"}</p>
                     <p className="mt-2 text-xs font-semibold text-slate-600">Target customer invoice allocation(s):</p>
                     <ul className="mt-1 space-y-1 text-xs text-slate-500">
