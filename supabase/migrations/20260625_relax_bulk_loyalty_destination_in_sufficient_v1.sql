@@ -3,6 +3,7 @@ BEGIN;
 -- Relax bulk completion-loyalty destination-IN release from exact-only to sufficient-IN.
 -- Accounting rule: loyalty consumes only the selected GBP pot. Any excess remains on the DVA/card IN line.
 -- No loyalty FX/card residual is created by this release.
+-- Bulk per-row variance is forced to 0 after release because any excess is aggregate remaining statement-line balance, not per-reward FX.
 
 SET LOCAL lock_timeout = '15s';
 SET LOCAL statement_timeout = '0';
@@ -215,10 +216,17 @@ BEGIN
     v_result := public.staff_pair_loyalty_destination_in_and_release_v1(
       v_match_id,
       p_destination_in_statement_line_id,
-      concat_ws(E'\n', NULLIF(p_notes, ''), 'Bulk same-importer completion-loyalty funding-pot release. Sufficient-IN release consumes only the selected loyalty pot amount; any excess remains on the DVA/card line.')
+      concat_ws(E'\n', NULLIF(p_notes, ''), 'Bulk same-importer completion-loyalty funding-pot release. Sufficient-IN release consumes only the selected loyalty pot amount; any excess remains on the DVA/card line. Per-reward variance is not used for bulk accounting.')
     );
     v_results := v_results || jsonb_build_array(v_result);
   END LOOP;
+
+  -- The single-row release function records variance per reward by comparing that reward with the full remaining IN.
+  -- In a grouped sufficient-IN release that value is misleading, so force it to zero for the selected bulk rows.
+  UPDATE public.main_bank_completion_loyalty_funding_matches lm
+     SET variance_gbp = 0,
+         notes = concat_ws(E'\n', lm.notes, 'Bulk sufficient-IN release: per-row variance zeroed; aggregate excess remains on the DVA/card statement line and is not loyalty FX.')
+   WHERE lm.id = ANY(v_match_ids);
 
   RETURN jsonb_build_object(
     'ok', true,
@@ -231,6 +239,7 @@ BEGIN
     'destination_in_statement_line_id', p_destination_in_statement_line_id,
     'destination_remaining_before_gbp', v_remaining_dest,
     'destination_excess_after_release_gbp', v_destination_excess_gbp,
+    'per_row_variance_gbp', 0,
     'results', v_results
   );
 END;
@@ -239,7 +248,7 @@ $$;
 GRANT EXECUTE ON FUNCTION public.staff_pair_loyalty_funding_pot_and_release_v1(uuid[], uuid, text) TO authenticated;
 
 COMMENT ON FUNCTION public.staff_pair_loyalty_funding_pot_and_release_v1(uuid[], uuid, text) IS
-'Bulk completion-loyalty release is backend-gated by importer, source OUT, and sufficient destination IN balance. The release consumes only the selected loyalty pot amount; any excess remains on the DVA/card line and is not loyalty FX.';
+'Bulk completion-loyalty release is backend-gated by importer, source OUT, and sufficient destination IN balance. The release consumes only the selected loyalty pot amount; any excess remains on the DVA/card line and is not loyalty FX. Per-row variance is zeroed for bulk rows.';
 
 NOTIFY pgrst, 'reload schema';
 
