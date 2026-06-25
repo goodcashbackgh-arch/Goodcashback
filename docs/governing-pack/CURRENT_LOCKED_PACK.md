@@ -1,6 +1,6 @@
 # Current Locked Governing Pack — Multi Tenant Platform Build
 
-Status: current control reference for UI/API wiring after the live Day 2–9 backend pass, updated for the final settlement, partial-coverage, non-physical line-resolution, cash-backed completion-loyalty reward control, shipper customer-hold hard-block later control, resetless loyalty Sage-batch retirement, and completion-loyalty OUT/IN pairing UX control.
+Status: current control reference for UI/API wiring after the live Day 2–9 backend pass, updated for the final settlement, partial-coverage, non-physical line-resolution, cash-backed completion-loyalty reward control, shipper customer-hold hard-block later control, resetless loyalty Sage-batch retirement, completion-loyalty OUT/IN pairing UX control, and bulk loyalty funding-pot posting clarification.
 
 ## Source of truth
 
@@ -64,7 +64,8 @@ Later addendums and current build contracts:
 9. Shipper Customer Hold Hard Block Later Contract v1 (`docs/governing-pack/ui/SHIPPER_CUSTOMER_HOLD_HARD_BLOCK_LATER_CONTRACT_v1.md`) — later control only; not built.
 10. Completion Loyalty Resetless Supersede and Internal Transfer Journal Addendum v1 (`docs/governing-pack/ui/COMPLETION_LOYALTY_RESETLESS_SUPERSEDE_AND_INTERNAL_TRANSFER_JOURNAL_ADDENDUM_v1.md`) — corrective lock for keeping paired OUT/IN internal transfer separate from applied-loyalty customer settlement and for retiring failed unposted loyalty Sage batches without DB deletion.
 11. Main Bank Loyalty Reward Funding Integration Addendum v1 (`docs/governing-pack/ui/MAIN_BANK_LOYALTY_REWARD_FUNDING_INTEGRATION_ADDENDUM_v1.md`) — locked integration of completion-loyalty funding into the existing main-bank workspace while preserving shipper AP and residual flows.
-12. Completion Loyalty Pairing Suggestion UI Addendum v1 (`docs/governing-pack/ui/COMPLETION_LOYALTY_PAIRING_SUGGESTION_UI_ADDENDUM_v1.md`) — UI/read-model lock for same-importer DVA/card IN filtering, suggestion/rating cards, primary ready-to-release queue, and exact-match bulk-release constraints. Builds on items 8, 10, 11, the DVA Card Statement Control Workbench v2 contract, and the DVA Reconciliation Action Contract.
+12. Completion Loyalty Pairing Suggestion UI Addendum v1 (`docs/governing-pack/ui/COMPLETION_LOYALTY_PAIRING_SUGGESTION_UI_ADDENDUM_v1.md`) — UI/read-model lock for same-importer DVA/card IN filtering, suggestion/rating cards, primary ready-to-release queue, and manual review. Builds on items 8, 10, 11, the DVA Card Statement Control Workbench v2 contract, and the DVA Reconciliation Action Contract.
+13. Completion Loyalty Bulk Funding Pot and Posting Clarification v1 (`docs/governing-pack/ui/COMPLETION_LOYALTY_BULK_FUNDING_POT_AND_POSTING_CLARIFICATION_v1.md`) — clarifies that one main-bank OUT and one DVA/card IN may fund multiple same-importer completion-loyalty rewards, that the applied-loyalty Sage batch lane does not need a code change for that, and that future internal-transfer posting should aggregate by funding pot rather than naïvely post one internal-transfer journal per reward match.
 
 ## Non-negotiable UI wiring rules
 
@@ -90,8 +91,8 @@ Later addendums and current build contracts:
 20. Completion-loyalty paired main-bank OUT + DVA/card IN is an internal transfer proof/release control. Applied-loyalty customer settlement is a separate Sage lane from `order_funding_events.credit_applied`; do not mix the two.
 21. Failed unposted completion-loyalty Sage batches must be retired/superseded through the resetless control. Do not manually delete batch/group/step rows unless performing an explicit emergency data repair.
 22. Completion-loyalty pairing suggestions are advisory/read-only until a staff action is submitted. Default candidate suggestions must be same-importer only; no automatic release is allowed; any release must use `staff_pair_loyalty_destination_in_and_release_v1(...)` or a wrapper preserving the same validations.
-23. In completion-loyalty mode, existing reserved OUT rows are the primary action. The new OUT reservation card workspace must be secondary and should appear only when clean reward targets are available or staff explicitly opens a manual reservation path.
-24. Bulk pairing/release, if added, is limited to exact, one-to-one, same-importer matches. Ambiguous, different-importer, amount-mismatch, or bulk-top-up cases must remain manual review unless a later explicit exception contract is added.
+23. In completion-loyalty mode, existing reserved OUT rows are the primary action. The new OUT reservation card workspace must be secondary but must remain accessible because it also preserves the existing manual residual allocation path.
+24. Same-importer bulk funding-pot cases are allowed: one source OUT and one destination IN may fund multiple same-importer rewards, provided each reward release still passes the existing remaining-balance and destination-IN validations. Future internal-transfer posting must aggregate by funding pot. The applied-loyalty Sage batch lane remains driven by `order_funding_events.credit_applied` and is not changed by the funding-pot arrangement.
 
 ## Funding page read-only sources
 
@@ -125,10 +126,11 @@ The next durable build must follow this corrected order:
 8. Customer/order details and sale document UI patches.
 9. Importer order list and importer operations page patches.
 10. DVA/card reconciliation final-balance-first logic plus loyalty-funding match controls.
-11. Completion-loyalty pairing suggestion UI: same-importer DVA/card IN filtering, suggestion/rating cards, exact/strong/review/no-match states, and exact-match bulk-release constraints using the existing release RPC.
+11. Completion-loyalty pairing suggestion UI: same-importer DVA/card IN filtering, suggestion/rating cards, exact/strong/review/no-match states, bulk funding-pot awareness, and existing release RPC preservation.
 12. Supervisor credit readiness gate.
 13. Reuse existing future-order credit application machinery after funded loyalty credit is released.
 14. Sage/customer-account posting must follow the cash-backed v2 addendum; do not use the v1 reward-approval journal trigger.
+15. Future completion-loyalty internal-transfer Sage posting must use the bulk funding-pot clarification before live build; do not naïvely post one internal-transfer journal per reward when one OUT/IN pair funded many rewards.
 
 The final sale settlement read model is first because customer display, DVA/card classification, supervisor credit readiness, loyalty reward eligibility, and posting controls must all consume one settlement truth.
 
@@ -145,8 +147,9 @@ The final sale settlement read model is first because customer display, DVA/card
 1. Confirm the governing documents above are in the repo and aligned.
 2. Treat v1 completion-loyalty Sage-at-approval code as superseded for future work.
 3. Treat the main-bank OUT + DVA/card IN funding-proof layer as built; improve it through the locked pairing-suggestion UI/read-model layer without changing write-path accounting.
-4. Run SQL simulations against real orders before wiring write actions.
-5. Keep `/internal/funding` and `/internal/sage-ready` read-only for new lanes until live function signatures are confirmed.
-6. Run `npm run build` locally before deployment where possible.
-7. Deploy only after build passes.
-8. Then add staff-only action wiring one function at a time.
+4. Treat the applied-loyalty Sage batch solution as unchanged by bulk funding pots; update only the future internal-transfer posting materialisation to aggregate by funding pot when that phase is built.
+5. Run SQL simulations against real orders before wiring write actions.
+6. Keep `/internal/funding` and `/internal/sage-ready` read-only for new lanes until live function signatures are confirmed.
+7. Run `npm run build` locally before deployment where possible.
+8. Deploy only after build passes.
+9. Then add staff-only action wiring one function at a time.
