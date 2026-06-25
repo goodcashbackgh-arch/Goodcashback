@@ -9,6 +9,7 @@ type Row = Record<string, unknown>;
 type SearchParamsValue = Record<string, string | string[] | undefined>;
 type TargetMode = "shipper_ap" | "completion_loyalty";
 type MatchBand = "Exact" | "Strong" | "Review" | "No match";
+type PotMatchBand = "Exact pot" | "Strong pot" | "Review" | "No match";
 
 type LoyaltyPairingSuggestion = {
   reservedOut: Row;
@@ -18,6 +19,22 @@ type LoyaltyPairingSuggestion = {
   matchScore: number;
   matchReason: string;
   canRelease: boolean;
+};
+
+type LoyaltyFundingPotSuggestion = {
+  potKey: string;
+  importerId: string;
+  importerName: string;
+  sourceOutLineId: string;
+  sourceOutReference: string;
+  sourceOutDate: string;
+  rows: Row[];
+  rewardCount: number;
+  totalRewardGbp: number;
+  candidates: Row[];
+  suggestedCandidate: Row | null;
+  matchBand: PotMatchBand;
+  matchReason: string;
 };
 
 const RESIDUAL_TYPES = ["fx_card_difference", "bank_fee", "unmatched_hold"];
@@ -37,6 +54,10 @@ function num(value: unknown) {
     return Number.isFinite(parsed) ? parsed : 0;
   }
   return 0;
+}
+
+function round2(value: number) {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
 }
 
 function gbp(value: unknown) {
@@ -74,6 +95,13 @@ function matchBandClass(matchBand: MatchBand) {
   return "border-slate-200 bg-slate-100 text-slate-700";
 }
 
+function potBandClass(matchBand: PotMatchBand) {
+  if (matchBand === "Exact pot") return "border-emerald-200 bg-emerald-100 text-emerald-900";
+  if (matchBand === "Strong pot") return "border-sky-200 bg-sky-100 text-sky-900";
+  if (matchBand === "Review") return "border-amber-200 bg-amber-100 text-amber-900";
+  return "border-slate-200 bg-slate-100 text-slate-700";
+}
+
 function dateValue(value: unknown) {
   const raw = text(value);
   if (!raw) return 0;
@@ -94,7 +122,7 @@ function candidateRank(reservedOut: Row, candidate: Row) {
   const remainingAmount = num(candidate.remaining_gbp);
   const exactAmount = amountDiff(remainingAmount, rewardAmount) <= 0.01;
   const sufficientAmount = remainingAmount + 0.01 >= rewardAmount;
-  const sourceDate = dateValue(reservedOut.statement_date || reservedOut.created_at || reservedOut.paired_at);
+  const sourceDate = dateValue(reservedOut.source_out_date || reservedOut.statement_date || reservedOut.created_at || reservedOut.paired_at);
   const candidateDate = dateValue(candidate.statement_date);
   const dateDistance = sourceDate && candidateDate ? Math.abs(candidateDate - sourceDate) : 0;
   const reference = referenceText(candidate);
@@ -164,6 +192,71 @@ function buildLoyaltyPairingSuggestions(stagedRows: Row[], topUpRows: Row[]): Lo
       canRelease: !!suggested && sufficientCandidates.length > 0,
     };
   });
+}
+
+function buildLoyaltyFundingPotSuggestions(stagedRows: Row[], topUpRows: Row[]): LoyaltyFundingPotSuggestion[] {
+  const grouped = new Map<string, Row[]>();
+
+  for (const row of stagedRows) {
+    const importerId = text(row.importer_id);
+    const sourceOutLineId = text(row.source_out_statement_line_id);
+    if (!importerId || !sourceOutLineId) continue;
+    const key = `${importerId}:${sourceOutLineId}`;
+    grouped.set(key, [...(grouped.get(key) ?? []), row]);
+  }
+
+  return Array.from(grouped.entries())
+    .map(([potKey, rows]) => {
+      const first = rows[0] ?? {};
+      const importerId = text(first.importer_id);
+      const totalRewardGbp = round2(rows.reduce((sum, row) => sum + num(row.matched_gbp_amount), 0));
+      const sameImporterCandidates = topUpRows
+        .filter((candidate) => text(candidate.importer_id) === importerId)
+        .filter((candidate) => num(candidate.remaining_gbp) + 0.01 >= totalRewardGbp)
+        .sort((left, right) => {
+          const leftExact = amountDiff(left.remaining_gbp, totalRewardGbp) <= 0.01 ? 1 : 0;
+          const rightExact = amountDiff(right.remaining_gbp, totalRewardGbp) <= 0.01 ? 1 : 0;
+          if (rightExact !== leftExact) return rightExact - leftExact;
+          return dateValue(right.statement_date) - dateValue(left.statement_date);
+        });
+
+      const exactCandidates = sameImporterCandidates.filter((candidate) => amountDiff(candidate.remaining_gbp, totalRewardGbp) <= 0.01);
+      const suggestedCandidate = sameImporterCandidates[0] ?? null;
+      let matchBand: PotMatchBand = "No match";
+      let matchReason = "No same-importer DVA/card IN candidate has enough remaining value for this funding pot.";
+
+      if (exactCandidates.length === 1) {
+        matchBand = "Exact pot";
+        matchReason = "Same importer and exact remaining IN value for the selected reserved OUT pot.";
+      } else if (exactCandidates.length > 1) {
+        matchBand = "Review";
+        matchReason = "Multiple same-importer exact funding-pot IN candidates exist. Staff should choose the correct one.";
+      } else if (sameImporterCandidates.length === 1) {
+        matchBand = "Strong pot";
+        matchReason = "Same importer and sufficient IN value. This may be a bulk top-up with remaining balance after selected rewards.";
+      } else if (sameImporterCandidates.length > 1) {
+        matchBand = "Review";
+        matchReason = "Multiple same-importer sufficient IN candidates exist. Staff should review before using this as a funding pot.";
+      }
+
+      return {
+        potKey,
+        importerId,
+        importerName: text(first.importer_name) || "Importer/customer",
+        sourceOutLineId: text(first.source_out_statement_line_id),
+        sourceOutReference: text(first.source_out_reference),
+        sourceOutDate: text(first.source_out_date),
+        rows,
+        rewardCount: rows.length,
+        totalRewardGbp,
+        candidates: sameImporterCandidates,
+        suggestedCandidate,
+        matchBand,
+        matchReason,
+      };
+    })
+    .filter((pot) => pot.rewardCount > 1)
+    .sort((left, right) => right.rewardCount - left.rewardCount || right.totalRewardGbp - left.totalRewardGbp);
 }
 
 async function releaseReservedLoyaltyTopUpAction(formData: FormData) {
@@ -263,6 +356,7 @@ export default async function MainBankShipperMatchingPage({
   const stagedLoyaltyRows = (stagedLoyaltyResult.data ?? []) as Row[];
   const topUpCandidateRows = (topUpCandidatesResult.data ?? []) as Row[];
   const loyaltySuggestions = buildLoyaltyPairingSuggestions(stagedLoyaltyRows, topUpCandidateRows);
+  const loyaltyFundingPotSuggestions = buildLoyaltyFundingPotSuggestions(stagedLoyaltyRows, topUpCandidateRows);
   const exactSuggestionCount = loyaltySuggestions.filter((item) => item.matchBand === "Exact").length;
   const strongSuggestionCount = loyaltySuggestions.filter((item) => item.matchBand === "Strong").length;
   const reviewSuggestionCount = loyaltySuggestions.filter((item) => item.matchBand === "Review").length;
@@ -332,6 +426,45 @@ export default async function MainBankShipperMatchingPage({
               </div>
             </div>
 
+            {loyaltyFundingPotSuggestions.length > 0 ? (
+              <div className="mt-4 rounded-2xl border border-indigo-200 bg-indigo-50 p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-bold uppercase tracking-[0.18em] text-indigo-700">Funding pot view</p>
+                    <h3 className="mt-1 text-lg font-extrabold text-indigo-950">Same-importer bulk funding pots detected</h3>
+                    <p className="mt-1 text-sm leading-6 text-indigo-900">
+                      This is read-only. It shows when one main-bank OUT may fund multiple same-importer loyalty rewards. Release still happens through the single-row cards until a controlled bulk wrapper is built.
+                    </p>
+                  </div>
+                </div>
+                <div className="mt-3 grid gap-3">
+                  {loyaltyFundingPotSuggestions.map((pot) => {
+                    const suggested = pot.suggestedCandidate;
+                    return (
+                      <article key={pot.potKey} className="rounded-2xl border border-indigo-100 bg-white p-4 shadow-sm">
+                        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className={`rounded-full border px-3 py-1 text-[11px] font-extrabold ${potBandClass(pot.matchBand)}`}>{pot.matchBand}</span>
+                              <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-bold text-slate-700">{pot.rewardCount} rewards</span>
+                            </div>
+                            <h4 className="mt-3 text-base font-extrabold text-slate-950">{short(pot.importerName, 80)}</h4>
+                            <p className="mt-1 text-xs text-slate-500">Source OUT: <span className="font-bold text-slate-900">{gbp(pot.totalRewardGbp)}</span> selected rewards · {short(pot.sourceOutReference, 70)}</p>
+                            <p className="mt-2 rounded-xl border border-slate-100 bg-slate-50 p-2 text-xs font-semibold leading-5 text-slate-600">{pot.matchReason}</p>
+                          </div>
+                          <div className="grid min-w-0 gap-1 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600 lg:w-[420px]">
+                            <p className="font-bold uppercase tracking-wide text-slate-500">Suggested same-importer DVA/card IN</p>
+                            <p className="font-semibold text-slate-900">{suggested ? `${text(suggested.statement_date)} · ${gbp(suggested.remaining_gbp)} · ${short(suggested.reference_raw, 60)}` : "No sufficient same-importer IN candidate"}</p>
+                            <p>Individual release remains controlled by each reward card below.</p>
+                          </div>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
+
             <div className="mt-4 grid gap-3">
               {loyaltySuggestions.length === 0 ? (
                 <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-600">
@@ -381,7 +514,7 @@ export default async function MainBankShipperMatchingPage({
 
             <div className="mt-3 grid gap-3 text-xs font-semibold text-slate-600 md:grid-cols-2">
               <p>Reserved OUT rows waiting: <span className="text-slate-950">{stagedLoyaltyRows.length}</span></p>
-              <p>DVA/card top-up IN candidates loaded for suggestion engine: <span className="text-slate-950">{topUpCandidateRows.length}</span> · card suggestions are same-importer only</p>
+              <p>DVA/card top-up IN candidates loaded for suggestion engine: <span className="text-slate-950">{topUpCandidateRows.length}</span> · card suggestions are same-importer only · funding-pot groups: <span className="text-slate-950">{loyaltyFundingPotSuggestions.length}</span></p>
             </div>
           </section>
         ) : null}
