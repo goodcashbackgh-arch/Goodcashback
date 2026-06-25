@@ -2,6 +2,8 @@
 
 import { useEffect } from "react";
 
+const BULK_SUMMARY_MARKER = "data-loyalty-bulk-summary-card";
+
 const replacements: Record<string, string> = {
   "Raw DB status partially progressed": "System status invoice reconciled; tracking open",
   "Raw DB status pending dva funding": "System status payment pending",
@@ -44,16 +46,75 @@ function patchStatusText(root: ParentNode) {
   for (const node of textNodes) replaceTextNode(node);
 }
 
+function findTextNode(root: ParentNode, needle: string) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  while (walker.nextNode()) {
+    const node = walker.currentNode;
+    if (node instanceof Text && (node.nodeValue ?? "").includes(needle)) return node;
+  }
+  return null;
+}
+
+function makeSummaryCard(label: string, value: string, tone: "indigo" | "emerald") {
+  const card = document.createElement("div");
+  card.setAttribute(BULK_SUMMARY_MARKER, "true");
+  card.className = tone === "indigo"
+    ? "rounded-xl border border-indigo-200 bg-white px-3 py-2 text-indigo-900"
+    : "rounded-xl border border-emerald-200 bg-white px-3 py-2 text-emerald-900";
+
+  const labelSpan = document.createElement("span");
+  labelSpan.textContent = label;
+  card.appendChild(labelSpan);
+  card.appendChild(document.createElement("br"));
+
+  const valueSpan = document.createElement("span");
+  valueSpan.className = "text-lg";
+  valueSpan.textContent = value;
+  card.appendChild(valueSpan);
+
+  return card;
+}
+
+function patchLoyaltyBulkSummary(root: ParentNode) {
+  if (!(root instanceof HTMLElement) && root !== document.body) return;
+
+  document.querySelectorAll(`[${BULK_SUMMARY_MARKER}="true"]`).forEach((node) => node.remove());
+
+  const singleExactNode = findTextNode(document.body, "Single exact reward");
+  if (!singleExactNode?.parentElement?.parentElement) return;
+
+  const bulkHeadingNode = findTextNode(document.body, "Bulk reward groups detected");
+  const bulkSection = bulkHeadingNode?.parentElement?.closest('[class*="border-indigo-200"]') as HTMLElement | null;
+  if (!bulkSection) return;
+
+  const bulkText = bulkSection.innerText || "";
+  const rewardMatches = Array.from(bulkText.matchAll(/\b(\d+)\s+rewards\b/g));
+  const bulkGroups = rewardMatches.length;
+  const bulkRewards = rewardMatches.reduce((sum, match) => sum + Number(match[1] || 0), 0);
+
+  if (bulkGroups <= 0 || bulkRewards <= 0) return;
+
+  const summaryGrid = singleExactNode.parentElement.parentElement;
+  summaryGrid.appendChild(makeSummaryCard("Bulk exact pots", String(bulkGroups), "indigo"));
+  summaryGrid.appendChild(makeSummaryCard("Bulk rewards", String(bulkRewards), "emerald"));
+}
+
+function patchPage(root: ParentNode) {
+  patchStatusText(root);
+  patchLoyaltyBulkSummary(root);
+}
+
 export default function StatusTextPatch() {
   useEffect(() => {
-    patchStatusText(document.body);
+    patchPage(document.body);
     const observer = new MutationObserver((mutations) => {
       for (const mutation of mutations) {
         for (const node of Array.from(mutation.addedNodes)) {
           if (node instanceof Text) replaceTextNode(node);
-          else if (node instanceof HTMLElement) patchStatusText(node);
+          else if (node instanceof HTMLElement) patchPage(node);
         }
       }
+      patchLoyaltyBulkSummary(document.body);
     });
     observer.observe(document.body, { childList: true, subtree: true, characterData: true });
     return () => observer.disconnect();
