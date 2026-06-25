@@ -281,7 +281,6 @@ export default async function MainBankShipperMatchingPage({
   const dataError = linesResult.error || targetsResult.error || loyaltyTargetsResult.error || stagedLoyaltyResult.error || topUpCandidatesResult.error || residualsResult.error;
   const hasPendingLoyaltyRelease = targetMode === "completion_loyalty" && stagedLoyaltyRows.length > 0;
   const hasNewLoyaltyTargets = targetMode === "completion_loyalty" && loyaltyTargets.length > 0;
-  const shouldShowReservationWorkspace = targetMode === "shipper_ap" || hasNewLoyaltyTargets;
 
   return (
     <main className="min-h-screen overflow-x-hidden bg-slate-50 px-4 py-6 text-slate-950 sm:px-6 lg:px-8">
@@ -382,7 +381,7 @@ export default async function MainBankShipperMatchingPage({
 
             <div className="mt-3 grid gap-3 text-xs font-semibold text-slate-600 md:grid-cols-2">
               <p>Reserved OUT rows waiting: <span className="text-slate-950">{stagedLoyaltyRows.length}</span></p>
-              <p>Same-page DVA/card top-up IN candidates loaded: <span className="text-slate-950">{topUpCandidateRows.length}</span></p>
+              <p>DVA/card top-up IN candidates loaded for suggestion engine: <span className="text-slate-950">{topUpCandidateRows.length}</span> · card suggestions are same-importer only</p>
             </div>
           </section>
         ) : null}
@@ -414,7 +413,7 @@ export default async function MainBankShipperMatchingPage({
               </label>
             ) : (
               <div className="min-w-0 rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-semibold leading-5 text-sky-950">
-                Completion loyalty: use the ready-to-release cards above for existing reservations. The reservation workspace appears only when a new reward target is available.
+                Completion loyalty: ready-to-release cards above do not replace the manual reservation/residual workspace below. FX/fee/hold residual posting remains available through the lower workspace.
               </div>
             )}
             <button className="w-full rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white md:w-auto" type="submit">Apply</button>
@@ -423,23 +422,21 @@ export default async function MainBankShipperMatchingPage({
 
         {targetMode === "completion_loyalty" && !hasNewLoyaltyTargets ? (
           <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-            <p className="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">Create new OUT reservation</p>
+            <p className="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">Manual reservation and residual allocation</p>
             <h2 className="mt-2 text-xl font-semibold">No new loyalty targets to reserve</h2>
             <p className="mt-2 text-sm leading-6 text-slate-600">
-              There are no clean completed reward proposals waiting for a new main-bank OUT reservation. Existing reserved OUT rows should be completed in the ready-to-release queue above.
+              Existing reserved OUT rows should be completed in the ready-to-release queue above. The manual workspace remains below so main-bank residuals such as FX/payment variance, bank fees, and holds are still available.
             </p>
           </section>
         ) : null}
 
-        {shouldShowReservationWorkspace ? (
-          <MainBankAllocationController
-            lines={lines}
-            targets={targets}
-            loyaltyTargets={loyaltyTargets}
-            residualRows={residualRows}
-            targetMode={targetMode}
-          />
-        ) : null}
+        <MainBankAllocationController
+          lines={lines}
+          targets={targets}
+          loyaltyTargets={loyaltyTargets}
+          residualRows={residualRows}
+          targetMode={targetMode}
+        />
       </div>
     </main>
   );
