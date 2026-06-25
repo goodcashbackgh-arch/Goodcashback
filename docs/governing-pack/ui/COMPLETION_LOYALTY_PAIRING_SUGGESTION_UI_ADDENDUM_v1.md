@@ -1,12 +1,14 @@
 # Completion Loyalty Pairing Suggestion UI Addendum v1
 
-Status: locked UI/UX addendum for improving the completion-loyalty main-bank OUT + DVA/card IN pairing workflow without changing the accounting, credit release, Sage, VAT, or shipper AP write logic.
+Status: locked UI/UX addendum for improving the completion-loyalty main-bank OUT + DVA/card IN pairing workflow without changing the accounting, credit release, Sage, VAT, residual, or shipper AP write logic.
 
 This addendum governs the next UI/read-model build on:
 
 `/internal/dva-reconciliation/main-bank?target=completion_loyalty`
 
 It does **not** supersede the existing funding controls. It narrows how the interface should present and accelerate those controls.
+
+This revision is aligned to `COMPLETION_LOYALTY_BULK_FUNDING_POT_AND_POSTING_CLARIFICATION_v1.md`, so it no longer assumes all bulk work is one reserved reward to one DVA/card IN line. Same-importer funding pots are allowed where one main-bank OUT and one DVA/card IN fund multiple same-importer rewards.
 
 ---
 
@@ -47,7 +49,12 @@ This addendum must be read together with the following existing contracts, adden
 7. `docs/governing-pack/ui/DVA_RECONCILIATION_ACTION_CONTRACT.md`
    - Governs DVA reconciliation action discipline and staff-only reconciliation controls.
 
-If any of these documents conflict, this addendum is subordinate to the accounting/funding principles in the Current Locked Pack, the Cash-Backed Credit Addendum v2, and the Main Bank Loyalty Reward Funding Integration Addendum v1.
+8. `docs/governing-pack/ui/COMPLETION_LOYALTY_BULK_FUNDING_POT_AND_POSTING_CLARIFICATION_v1.md`
+   - Clarifies that one main-bank OUT plus one DVA/card IN may fund many same-importer completion-loyalty rewards.
+   - Confirms the applied-loyalty Sage batch lane is still driven by `order_funding_events.credit_applied` and does not need a runtime change for bulk funding pots.
+   - Locks that future internal-transfer Sage posting should aggregate by funding pot rather than naïvely post one internal-transfer journal per reward match.
+
+If any of these documents conflict, this addendum is subordinate to the accounting/funding principles in the Current Locked Pack, the Cash-Backed Credit Addendum v2, the Main Bank Loyalty Reward Funding Integration Addendum v1, and the Bulk Funding Pot clarification.
 
 ---
 
@@ -84,7 +91,8 @@ The UI/read-model work must not change:
 - Sage posting behaviour;
 - accepted-estimate funding thresholds;
 - final sale settlement calculations;
-- DVA/card statement import or reconciliation write semantics.
+- DVA/card statement import or reconciliation write semantics;
+- FX/payment variance, bank fee, or hold residual posting.
 ```
 
 ---
@@ -100,51 +108,69 @@ Completion loyalty funding queue
 
 1. Create new OUT reservation, if needed.
 2. Complete existing OUT reservation, if already staged.
+3. For same-importer funding pots, review grouped source OUT/destination IN capacity and release selected reward rows through the existing validations.
 ```
 
 When reserved OUT rows exist, the primary UI must be:
 
 ```text
-Complete existing reservation
-→ show reserved OUT row
-→ show best DVA/card IN suggestion
-→ staff clicks Pair IN and release
+Ready to release queue
+→ show reserved OUT row or funding-pot group
+→ show best same-importer DVA/card IN suggestion
+→ staff clicks Pair IN and release, or later bulk action that preserves the same validations
 ```
 
 The page must not force the user to scroll through the new-reservation card workflow when the current task is already at the pairing/release stage.
+
+The manual reservation/residual workspace must remain accessible because it contains existing residual allocation controls.
 
 ---
 
 ## 4. Primary panel rule
 
-In completion-loyalty mode, the top operational panel must prioritise existing reserved OUT rows.
+In completion-loyalty mode, the top operational panel must prioritise existing reserved OUT rows and funding-pot release opportunities.
 
 Primary panel name:
 
 ```text
-Complete existing reservation
+Ready to release queue
 ```
 
-It must show:
+It must show for single-row cases:
 
 ```text
 - order reference;
 - importer/customer name;
 - reward amount;
 - reserved main-bank OUT reference/date/amount;
-- suggested DVA/card IN candidate;
+- suggested same-importer DVA/card IN candidate;
 - match quality label;
 - reason for the suggestion;
 - Pair IN and release action.
 ```
 
-The lower/main-bank card reservation workspace may appear only where a new reward target is available or where staff explicitly opens a secondary/manual section.
+It must show for funding-pot cases:
+
+```text
+- importer/customer name;
+- source main-bank OUT line;
+- destination DVA/card IN line;
+- total source OUT amount;
+- total destination IN amount;
+- amount already consumed by released rewards;
+- remaining source/destination capacity;
+- selected reward rows and total selected reward value;
+- pot match quality label;
+- review/release action only where same-importer and remaining-balance validations pass.
+```
+
+The lower/main-bank reservation workspace may appear as a secondary/manual section. It must not be removed because it also preserves the existing residual controls for FX/payment variance, bank fee, and hold allocation.
 
 ---
 
 ## 5. Importer filtering rule
 
-DVA/card IN candidates must default-filter by the importer on the reserved OUT row.
+DVA/card IN candidates must default-filter by the importer on the reserved OUT row or funding-pot group.
 
 For a reserved OUT row:
 
@@ -171,27 +197,35 @@ A future manual override may allow staff/admin to inspect different-importer lin
 
 The UI should not present a flat dropdown of every available DVA/card IN candidate as the default experience.
 
-For each reserved OUT row, show a ranked suggestion card.
+For each reserved OUT row or funding-pot group, show a ranked suggestion card.
 
 Minimum scoring bands:
 
 ```text
-Exact
+Exact single-row
 - same importer;
 - remaining IN amount equals reserved reward amount;
 - IN amount is sufficient;
 - candidate is not already consumed.
 
+Exact funding-pot
+- same importer;
+- one source OUT plus one destination IN can fund all selected same-importer reward rows;
+- total selected reward equals or is within available remaining source/destination capacity;
+- no different-importer rows included.
+
 Strong
 - same importer;
 - remaining IN amount is sufficient;
-- date is close or reference strongly suggests top-up/order/importer link.
+- date is close or reference strongly suggests top-up/order/importer link;
+- or source/destination IN appears to be a bulk top-up with enough remaining capacity.
 
 Review
 - same importer;
 - amount/date/reference are plausible but ambiguous;
 - multiple candidates have similar score;
-- amount is higher than the reward and may represent a bulk top-up.
+- amount is higher than one reward and may represent a bulk top-up;
+- selected rewards do not yet equal the pot amount exactly.
 
 No match
 - no same-importer IN candidate with sufficient remaining amount.
@@ -201,9 +235,19 @@ The score is advisory only. It must not release credit automatically.
 
 ---
 
-## 7. Bulk handling for 50+ orders
+## 7. Bulk handling for many orders
 
-For a high-volume case, such as 50 qualifying orders and 50 OUT payments, the page must not require 50 manual searches across unrelated candidates.
+For a high-volume case, such as one importer/customer with 50 qualifying orders in one shipment, the page must not require 50 manual searches across unrelated candidates.
+
+The UI must support two valid patterns:
+
+```text
+Single-row pattern:
+1 reserved reward OUT amount -> 1 same-importer DVA/card IN candidate
+
+Funding-pot pattern:
+1 source main-bank OUT + 1 destination DVA/card IN -> many same-importer rewards
+```
 
 Required high-volume layout:
 
@@ -211,7 +255,8 @@ Required high-volume layout:
 Ready to release queue
 
 Summary:
-- Exact matches
+- Exact single-row matches
+- Exact funding-pot matches
 - Strong matches
 - Review needed
 - No IN found yet
@@ -219,21 +264,21 @@ Summary:
 Grouped by importer.
 ```
 
-Bulk release may be added only for exact matches.
+Bulk release may be added only after single-row release is proven.
 
-Bulk exact release constraints:
+Bulk release constraints:
 
 ```text
 - same importer;
-- exact remaining amount match;
-- one reserved OUT row maps to one DVA/card IN candidate;
-- one DVA/card IN candidate maps to one reserved OUT row;
-- no ambiguity;
-- staff explicitly clicks bulk release;
-- backend still calls staff_pair_loyalty_destination_in_and_release_v1 row-by-row or through a wrapper that preserves the same validations.
+- sufficient remaining source OUT capacity;
+- sufficient remaining destination IN capacity;
+- no different-importer rewards included;
+- staff explicitly selects/approves the rows;
+- no automatic/background release;
+- backend still calls staff_pair_loyalty_destination_in_and_release_v1 row-by-row, or a later wrapper that preserves the same validations for each contributing match.
 ```
 
-No automatic/background release is allowed.
+Do not require one DVA/card IN line per reward where a same-importer funding pot legitimately funds multiple rewards.
 
 ---
 
@@ -249,6 +294,7 @@ Manual review rows must show why the row is not exact:
 - date distance;
 - reference mismatch;
 - bulk top-up amount greater than one reward;
+- selected reward total does not equal the funding pot amount;
 - no same-importer candidate.
 ```
 
@@ -259,6 +305,8 @@ The write action must still route through:
 ```text
 staff_pair_loyalty_destination_in_and_release_v1(...)
 ```
+
+or a later wrapper that preserves the same importer, remaining source/destination capacity, locking, and staff-authority validations.
 
 ---
 
@@ -298,6 +346,11 @@ match_score
 match_reason
 candidate_count_same_importer
 candidate_count_exact_amount
+funding_pot_key
+funding_pot_total_gbp
+funding_pot_remaining_source_gbp
+funding_pot_remaining_destination_gbp
+funding_pot_selected_reward_total_gbp
 can_bulk_release
 blocker
 ```
@@ -340,7 +393,7 @@ Expected:
 Expected:
 
 ```text
-- create-new-reservation workspace appears;
+- create-new-reservation workspace appears or is accessible as secondary/manual reservation;
 - user can select main-bank OUT and reward target;
 - action creates source_out_reserved only;
 - dashboard credit is still not available.
@@ -356,16 +409,25 @@ Expected:
 - unrelated different-importer IN lines are not suggested as normal matches.
 ```
 
-### D. 50 reserved OUT rows and 50 IN candidates
+### D. One importer, many rewards, one OUT and one IN funding pot
+
+Given:
+
+```text
+50 same-importer qualifying reward rows
+one main-bank OUT large enough to fund the selected rows
+one DVA/card IN large enough to fund the selected rows
+```
 
 Expected:
 
 ```text
-- rows grouped by importer;
-- exact/strong/review/no-match counts shown;
-- exact one-to-one matches can be bulk released only after staff confirmation;
-- ambiguous rows remain manual review;
-- no duplicate release or reused DVA/card IN line is possible.
+- rows grouped by importer/funding pot;
+- selected reward total, source OUT remaining, and destination IN remaining are visible;
+- system does not demand one DVA/card IN per reward;
+- staff can release selected same-importer rows only through existing validations or a wrapper preserving them;
+- no duplicate release or reused over-capacity DVA/card IN line is possible;
+- no Sage posting is triggered by the pairing UI.
 ```
 
 ---
@@ -382,9 +444,11 @@ Do not:
 - reuse main_bank_shipper_ap_allocations for loyalty;
 - bypass main-bank remaining balance checks;
 - bypass destination IN remaining balance checks;
+- remove or hide FX/payment variance, bank fee, or hold residual posting controls;
 - post to Sage from this suggestion UI;
 - create VAT or customer invoice effects from this suggestion UI;
-- change credit application to future orders.
+- change credit application to future orders;
+- change applied-loyalty Sage batch materialisation.
 ```
 
 ---
@@ -396,6 +460,9 @@ The next UI build should be a safe presentation/read-model layer first:
 ```text
 1. Read-only suggestion queue.
 2. Single-row pair/release from suggestion card using existing RPC.
-3. Exact-match bulk release only after the single-row behaviour is proven.
-4. Manual-review controls only after exact/strong suggestion behaviour is proven.
+3. Funding-pot grouping/readiness display for same-importer bulk cases.
+4. Bulk release only after single-row behaviour is proven, and only through existing validations or a wrapper preserving them.
+5. Manual-review controls only after exact/strong suggestion behaviour is proven.
 ```
+
+No applied-loyalty posting code change is required for this UI layer.
