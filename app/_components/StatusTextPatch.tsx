@@ -23,6 +23,11 @@ const replacements: Record<string, string> = {
   "Single strong": "Single strong reward",
   "Funding pot view": "Bulk pot group view",
   "Same-importer bulk funding pots detected": "Bulk reward groups detected",
+  "Exact pots can be released in one controlled staff action. The action preserves the existing single-row validations for every selected reward and does not post to Sage.":
+    "Exact and single strong sufficient-IN pots can be released in one controlled staff action. The action preserves the existing validations and does not post to Sage.",
+  "Release selected IN for exact pot": "Release selected IN for pot",
+  "Only exact same-importer pots are bulk-enabled; strong/review pots remain manual.":
+    "Exact and single strong same-importer sufficient-IN pots are bulk-enabled; review pots remain manual. Any excess remains on the DVA/card line; no loyalty FX is posted.",
   "funding-pot groups:": "bulk pot groups:",
 };
 
@@ -44,8 +49,27 @@ function patchStatusText(root: ParentNode) {
   for (const node of textNodes) replaceTextNode(node);
 }
 
+function patchSufficientInPotButtons(root: ParentNode) {
+  const scope = root instanceof Element || root instanceof Document ? root : document;
+  const buttons = Array.from(scope.querySelectorAll("button"));
+
+  for (const button of buttons) {
+    if (!button.textContent?.includes("Release selected IN for pot")) continue;
+
+    const article = button.closest("article");
+    const articleText = article?.textContent ?? "";
+    const isBulkExactOrStrongPot = articleText.includes("Exact pot") || articleText.includes("Strong pot");
+
+    if (!isBulkExactOrStrongPot) continue;
+
+    button.removeAttribute("disabled");
+    button.disabled = false;
+  }
+}
+
 function patchPage(root: ParentNode) {
   patchStatusText(root);
+  patchSufficientInPotButtons(root);
 }
 
 export default function StatusTextPatch() {
@@ -53,6 +77,9 @@ export default function StatusTextPatch() {
     patchPage(document.body);
     const observer = new MutationObserver((mutations) => {
       for (const mutation of mutations) {
+        if (mutation.target instanceof Text) replaceTextNode(mutation.target);
+        else if (mutation.target instanceof HTMLElement) patchPage(mutation.target);
+
         for (const node of Array.from(mutation.addedNodes)) {
           if (node instanceof Text) replaceTextNode(node);
           else if (node instanceof HTMLElement) patchPage(node);
