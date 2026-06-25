@@ -4,10 +4,12 @@ import { createClient } from "@/utils/supabase/server";
 import { reopenCompletionLoyaltySageBatchAction } from "../reopenActions";
 
 type Params = { batch_id: string } | Promise<{ batch_id: string }>;
+type SearchParams = Record<string, string | string[] | undefined> | Promise<Record<string, string | string[] | undefined>>;
 
 type Row = Record<string, unknown>;
 
 function text(value: unknown) {
+  if (Array.isArray(value)) return text(value[0]);
   if (typeof value === "string") return value;
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
   if (typeof value === "boolean") return value ? "true" : "false";
@@ -23,8 +25,10 @@ function hasAccountingAccess(value: unknown) {
   return permissions.accounting_admin_testing === true || permissions.admin_testing === true;
 }
 
-export default async function RetireCompletionLoyaltyBatchPage({ params }: { params: Params }) {
+export default async function RetireCompletionLoyaltyBatchPage({ params, searchParams }: { params: Params; searchParams?: SearchParams }) {
   const { batch_id: batchId } = await Promise.resolve(params);
+  const resolvedSearchParams = await Promise.resolve(searchParams ?? {});
+  const pageError = text(resolvedSearchParams.error);
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
@@ -54,6 +58,11 @@ export default async function RetireCompletionLoyaltyBatchPage({ params }: { par
           <p className="mt-3 text-sm leading-6 text-slate-600">
             Use this only where the loyalty Sage batch did not create any Sage object. The database function blocks the action if a linked step has a Sage object id, posted timestamp, or posted status.
           </p>
+          {pageError ? (
+            <div className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm font-semibold leading-6 text-amber-950">
+              {pageError}
+            </div>
+          ) : null}
           <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
             <p><span className="font-semibold">Batch:</span> {text(first.batch_ref) || batchId}</p>
             <p><span className="font-semibold">Status:</span> {text(first.batch_status) || "not loaded"}</p>
