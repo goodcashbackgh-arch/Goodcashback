@@ -171,14 +171,21 @@ export default async function CompletionLoyaltySageBatchDetailPage({ params, sea
   const { data, error } = await (supabase as any).rpc("internal_completion_loyalty_sage_batch_detail_v1", { p_batch_id: batchId });
   const rows = (data ?? []) as Row[];
   const first = rows[0] ?? {};
+  const batchStatus = text(first.batch_status);
+  const isRetryBatch = ["failed_retryable", "partially_posted_needs_review"].includes(batchStatus);
   const canApprove = rows.length > 0
-    && text(first.batch_status) === "validated"
+    && batchStatus === "validated"
     && text(first.batch_approval_status) !== "approved"
     && rows.every((row) => ["ok_to_post", "warning_only"].includes(text(row.group_validation_status)) && !text(row.blocker));
   const livePostingEnabled = process.env.SAGE_LIVE_COMPLETION_LOYALTY_POSTING_ENABLED === "true" || process.env.SAGE_LIVE_CASH_POSTING_ENABLED === "true";
-  const canPost = rows.length > 0 && livePostingEnabled && text(first.batch_status) === "approved" && text(first.batch_approval_status) === "approved";
+  const canPost = rows.length > 0
+    && livePostingEnabled
+    && text(first.batch_approval_status) === "approved"
+    && ["approved", "failed_retryable", "partially_posted_needs_review"].includes(batchStatus);
+  const postButtonLabel = isRetryBatch ? "Retry failed / remaining steps" : "Post loyalty Sage batch";
   const postedRows = rows.filter((row) => text(row.item_posting_status) === "posted_to_sage").length;
   const failedRows = rows.filter((row) => ["failed_retryable", "failed_terminal"].includes(text(row.item_posting_status))).length;
+  const reviewRows = rows.filter((row) => text(row.item_posting_status) === "partially_posted_needs_review").length;
   const blockedRows = rows.filter((row) => text(row.blocker) || text(row.group_validation_status).startsWith("blocked")).length;
 
   return (
@@ -189,10 +196,10 @@ export default async function CompletionLoyaltySageBatchDetailPage({ params, sea
           <p className="mt-5 text-sm font-medium uppercase tracking-[0.2em] text-emerald-600">Completion loyalty · Sage batch detail</p>
           <h1 className="mt-2 text-3xl font-semibold tracking-tight">{text(first.batch_ref) || "Loyalty Sage batch"}</h1>
           <p className="mt-2 max-w-5xl text-sm leading-6 text-slate-600">
-            This batch wraps multiple materialised applied-loyalty Sage groups. Approval happens at batch level. Live posting uses the same Sage OAuth/logging infrastructure as the existing workbench and is controlled by the existing cash-posting live flag or the optional dedicated loyalty flag.
+            This batch wraps multiple materialised applied-loyalty Sage groups. Approval happens at batch level. The first post creates the receipt → allocation → journal chain; retry continues the same batch and skips Sage steps that already have object ids.
           </p>
           <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-bold">
-            <StatusBadge value={text(first.batch_status) || "not_loaded"} />
+            <StatusBadge value={batchStatus || "not_loaded"} />
             <StatusBadge value={text(first.batch_validation_status) || "not_validated"} />
             <StatusBadge value={text(first.batch_approval_status) || "not_approved"} />
             <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-slate-700">Live flag: {livePostingEnabled ? "enabled" : "disabled"}</span>
@@ -209,18 +216,18 @@ export default async function CompletionLoyaltySageBatchDetailPage({ params, sea
         ) : (
           <>
             <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-              <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-emerald-900"><p className="text-[11px] font-bold uppercase tracking-wide opacity-70">Status</p><p className="mt-1 text-xl font-extrabold">{pretty(first.batch_status)}</p></div>
+              <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-emerald-900"><p className="text-[11px] font-bold uppercase tracking-wide opacity-70">Status</p><p className="mt-1 text-xl font-extrabold">{pretty(batchStatus)}</p></div>
               <div className="rounded-2xl border border-slate-200 bg-white p-3"><p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Rows</p><p className="mt-1 text-xl font-extrabold">{text(first.batch_row_count)}</p></div>
               <div className="rounded-2xl border border-slate-200 bg-white p-3"><p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Total</p><p className="mt-1 text-xl font-extrabold">{gbp(first.batch_total_amount_gbp)}</p></div>
               <div className="rounded-2xl border border-slate-200 bg-white p-3"><p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Posted / failed</p><p className="mt-1 text-xl font-extrabold">{postedRows} / {failedRows}</p></div>
-              <div className="rounded-2xl border border-slate-200 bg-white p-3"><p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Blocked</p><p className="mt-1 text-xl font-extrabold">{blockedRows}</p></div>
+              <div className="rounded-2xl border border-slate-200 bg-white p-3"><p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Needs review / blocked</p><p className="mt-1 text-xl font-extrabold">{reviewRows} / {blockedRows}</p></div>
             </section>
 
             <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
               <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                 <div>
                   <h2 className="text-xl font-semibold">Batch actions</h2>
-                  <p className="mt-1 text-sm text-slate-500">Approve the whole batch first. The post button runs the live adapter only when a live Sage flag is enabled and the batch is approved.</p>
+                  <p className="mt-1 text-sm text-slate-500">Approve the whole batch first. If the first post partially fails, use retry on the same batch. Posted Sage steps are not reposted; the adapter continues from the next missing step.</p>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <form action={approveCompletionLoyaltySageBatchAction}>
@@ -233,12 +240,13 @@ export default async function CompletionLoyaltySageBatchDetailPage({ params, sea
                   <form action={postCompletionLoyaltySageBatchAction}>
                     <input type="hidden" name="batch_id" value={batchId} />
                     <button disabled={!canPost} className="rounded-xl bg-emerald-700 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-800 disabled:bg-slate-200 disabled:text-slate-500">
-                      Post loyalty Sage batch
+                      {postButtonLabel}
                     </button>
                   </form>
                 </div>
               </div>
               {!livePostingEnabled ? <p className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-900">Live posting is disabled. Use the already-approved SAGE_LIVE_CASH_POSTING_ENABLED=true environment switch, or set SAGE_LIVE_COMPLETION_LOYALTY_POSTING_ENABLED=true for a dedicated loyalty switch.</p> : null}
+              {isRetryBatch ? <p className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-900">Retry keeps this same batch and skips any step already posted to Sage. Do not retire this batch if any Sage object exists.</p> : null}
             </section>
 
             <section className="rounded-3xl border border-slate-200 bg-white shadow-sm">
