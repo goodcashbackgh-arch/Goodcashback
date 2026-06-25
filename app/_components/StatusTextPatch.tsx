@@ -13,9 +13,12 @@ const replacements: Record<string, string> = {
   "Pending dva funding": "Payment pending",
   "pending dva funding": "payment pending",
   "not built yet": "not assessed in this control",
-  "Ready to release queue": "Ready to release: single rewards and bulk pots",
+  "Ready to release queue": "Ready to release",
+  "Ready to release: single rewards and bulk pots": "Ready to release",
   "Each single-row card is an already reserved main-bank OUT that is not part of a bulk pot. Funding-pot rows are grouped separately and use the bulk pot action.":
-    "Single reward cards and bulk funding pots are separate. Single counts do not include the grouped rewards shown in the bulk pot section.",
+    "Single rewards and bulk pots are shown separately. Use the purple bulk button for grouped rewards.",
+  "Single reward cards and bulk funding pots are separate. Single counts do not include the grouped rewards shown in the bulk pot section.":
+    "Single rewards and bulk pots are shown separately. Use the purple bulk button for grouped rewards.",
   "Single exact": "Single exact reward",
   "Single strong": "Single strong reward",
   "Funding pot view": "Bulk pot group view",
