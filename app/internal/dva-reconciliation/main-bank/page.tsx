@@ -164,6 +164,9 @@ export default async function MainBankShipperMatchingPage({
 
   const residualRows = (residualsResult.data ?? []) as Row[];
   const dataError = linesResult.error || targetsResult.error || loyaltyTargetsResult.error || stagedLoyaltyResult.error || topUpCandidatesResult.error || residualsResult.error;
+  const hasPendingLoyaltyRelease = targetMode === "completion_loyalty" && stagedLoyaltyRows.length > 0;
+  const hasNewLoyaltyTargets = targetMode === "completion_loyalty" && loyaltyTargets.length > 0;
+  const shouldShowReservationWorkspace = targetMode === "shipper_ap" || hasNewLoyaltyTargets;
 
   return (
     <main className="min-h-screen overflow-x-hidden bg-slate-50 px-4 py-6 text-slate-950 sm:px-6 lg:px-8">
@@ -173,7 +176,7 @@ export default async function MainBankShipperMatchingPage({
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Main bank matching workspace</p>
           <h1 className="mt-2 text-3xl font-semibold tracking-tight">Main bank matching</h1>
           <p className="mt-3 max-w-5xl text-sm leading-6 text-slate-600">
-            Shared main-company bank workspace. Shipper charge matching remains the default lane. Completion loyalty uses the same bank lines but a separate target mode: reserve the main-bank OUT first, then pair the DVA/card top-up IN before dashboard credit is released.
+            Shared main-company bank workspace. Shipper charge matching remains the default lane. Completion loyalty uses a two-stage funding control: reserve the main-bank OUT first, then pair the DVA/card top-up IN before dashboard credit is released.
           </p>
           {success ? <p className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-900">{success}</p> : null}
           {error ? <p className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900">{error}</p> : null}
@@ -193,9 +196,48 @@ export default async function MainBankShipperMatchingPage({
           <Link href={targetHref("completion_loyalty", q)} className={`rounded-2xl border p-4 text-sm font-semibold shadow-sm ${modeClass(targetMode === "completion_loyalty")}`}>
             <span className="block text-xs uppercase tracking-wide opacity-70">Target mode</span>
             <span className="mt-1 block text-lg font-extrabold">Completion loyalty</span>
-            <span className="mt-1 block font-normal opacity-80">Reserve main-bank OUT against clean completed reward targets. DVA/card top-up IN pairing is required before release.</span>
+            <span className="mt-1 block font-normal opacity-80">Complete existing reserved OUT rows first. Create a new OUT reservation only when a clean reward target is available.</span>
           </Link>
         </section>
+
+        {targetMode === "completion_loyalty" ? (
+          <section className={`rounded-3xl border p-5 shadow-sm ${hasPendingLoyaltyRelease ? "border-emerald-300 bg-emerald-50" : "border-slate-200 bg-white"}`}>
+            <p className="text-xs font-bold uppercase tracking-[0.18em] text-emerald-700">Primary loyalty action</p>
+            <h2 className="mt-2 text-2xl font-semibold">Complete existing reservation</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-600">
+              Use this when the main-bank OUT has already been reserved. Select the reserved OUT row and the matching importer DVA/card top-up IN line. This is the step that releases dashboard loyalty credit.
+            </p>
+            <form action={releaseReservedLoyaltyTopUpAction} className="mt-4 grid min-w-0 gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] lg:items-end">
+              <label className="grid min-w-0 gap-1 text-xs font-bold uppercase tracking-wide text-slate-500">
+                Reserved loyalty OUT waiting to release
+                <select name="loyalty_match_id" className="w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-950" defaultValue={text(stagedLoyaltyRows[0]?.loyalty_match_id)}>
+                  <option value="">Select reserved OUT</option>
+                  {stagedLoyaltyRows.map((row) => (
+                    <option key={text(row.loyalty_match_id)} value={text(row.loyalty_match_id)}>
+                      {short(row.order_ref, 34)} · {gbp(row.matched_gbp_amount)} · {short(row.importer_name, 36)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="grid min-w-0 gap-1 text-xs font-bold uppercase tracking-wide text-slate-500">
+                Matching DVA/card top-up IN
+                <select name="top_up_statement_line_id" className="w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-950" defaultValue={text(topUpCandidateRows[0]?.statement_line_id)}>
+                  <option value="">Select top-up IN</option>
+                  {topUpCandidateRows.map((row) => (
+                    <option key={text(row.statement_line_id)} value={text(row.statement_line_id)}>
+                      {text(row.statement_date)} · {gbp(row.remaining_gbp)} · {short(row.reference_raw, 52)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button type="submit" disabled={stagedLoyaltyRows.length === 0 || topUpCandidateRows.length === 0} className="w-full rounded-xl bg-emerald-700 px-4 py-2 text-sm font-bold text-white disabled:bg-slate-200 disabled:text-slate-500 lg:w-auto">Pair IN and release</button>
+            </form>
+            <div className="mt-3 grid gap-3 text-xs font-semibold text-slate-600 md:grid-cols-2">
+              <p>Reserved OUT rows waiting: <span className="text-slate-950">{stagedLoyaltyRows.length}</span></p>
+              <p>Available DVA/card top-up IN lines: <span className="text-slate-950">{topUpCandidateRows.length}</span></p>
+            </div>
+          </section>
+        ) : null}
 
         <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
           <form action="/internal/dva-reconciliation/main-bank" className="grid min-w-0 gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,180px)_minmax(0,180px)_auto] md:items-end">
@@ -224,56 +266,32 @@ export default async function MainBankShipperMatchingPage({
               </label>
             ) : (
               <div className="min-w-0 rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-semibold leading-5 text-sky-950">
-                Loyalty target list shows clean completed reward proposals only. This page reserves the main-bank OUT; release still requires DVA/card top-up IN pairing.
+                Completion loyalty: use the primary release panel above for existing reservations. The reservation workspace appears only when a new reward target is available.
               </div>
             )}
             <button className="w-full rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white md:w-auto" type="submit">Apply</button>
           </form>
         </section>
 
-        {targetMode === "completion_loyalty" ? (
+        {targetMode === "completion_loyalty" && !hasNewLoyaltyTargets ? (
           <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-            <h2 className="text-xl font-semibold">Pair reserved loyalty OUT with DVA/card top-up IN</h2>
-            <p className="mt-2 text-sm leading-6 text-slate-600">Use this section after the main-bank OUT has been reserved. Select one reserved loyalty row and one importer DVA/card top-up IN line. The release happens only after this pair is submitted.</p>
-            <form action={releaseReservedLoyaltyTopUpAction} className="mt-4 grid min-w-0 gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] lg:items-end">
-              <label className="grid min-w-0 gap-1 text-xs font-bold uppercase tracking-wide text-slate-500">
-                Reserved loyalty OUT
-                <select name="loyalty_match_id" className="w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-950" defaultValue="">
-                  <option value="">Select reserved OUT</option>
-                  {stagedLoyaltyRows.map((row) => (
-                    <option key={text(row.loyalty_match_id)} value={text(row.loyalty_match_id)}>
-                      {short(row.order_ref, 34)} · {gbp(row.matched_gbp_amount)} · {short(row.importer_name, 36)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="grid min-w-0 gap-1 text-xs font-bold uppercase tracking-wide text-slate-500">
-                DVA/card top-up IN
-                <select name="top_up_statement_line_id" className="w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-950" defaultValue="">
-                  <option value="">Select top-up IN</option>
-                  {topUpCandidateRows.map((row) => (
-                    <option key={text(row.statement_line_id)} value={text(row.statement_line_id)}>
-                      {text(row.statement_date)} · {gbp(row.remaining_gbp)} · {short(row.reference_raw, 52)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button type="submit" disabled={stagedLoyaltyRows.length === 0 || topUpCandidateRows.length === 0} className="w-full rounded-xl bg-emerald-700 px-4 py-2 text-sm font-bold text-white disabled:bg-slate-200 disabled:text-slate-500 lg:w-auto">Pair IN and release</button>
-            </form>
-            <div className="mt-3 grid gap-3 text-xs font-semibold text-slate-600 md:grid-cols-2">
-              <p>Reserved OUT rows waiting: <span className="text-slate-950">{stagedLoyaltyRows.length}</span></p>
-              <p>Available DVA/card top-up IN lines: <span className="text-slate-950">{topUpCandidateRows.length}</span></p>
-            </div>
+            <p className="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">Create new OUT reservation</p>
+            <h2 className="mt-2 text-xl font-semibold">No new loyalty targets to reserve</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-600">
+              There are no clean completed reward proposals waiting for a new main-bank OUT reservation. Existing reserved OUT rows should be completed in the primary release panel above.
+            </p>
           </section>
         ) : null}
 
-        <MainBankAllocationController
-          lines={lines}
-          targets={targets}
-          loyaltyTargets={loyaltyTargets}
-          residualRows={residualRows}
-          targetMode={targetMode}
-        />
+        {shouldShowReservationWorkspace ? (
+          <MainBankAllocationController
+            lines={lines}
+            targets={targets}
+            loyaltyTargets={loyaltyTargets}
+            residualRows={residualRows}
+            targetMode={targetMode}
+          />
+        ) : null}
       </div>
     </main>
   );
