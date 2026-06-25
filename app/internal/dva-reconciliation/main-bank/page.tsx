@@ -497,16 +497,22 @@ export default async function MainBankShipperMatchingPage({
                             <p className="mt-2 rounded-xl border border-slate-100 bg-slate-50 p-2 text-xs font-semibold leading-5 text-slate-600">{pot.matchReason}</p>
                           </div>
                           <div className="grid min-w-0 gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600 lg:w-[420px]">
-                            <p className="font-bold uppercase tracking-wide text-slate-500">Suggested same-importer DVA/card IN</p>
-                            <p className="font-semibold text-slate-900">{suggested ? `${text(suggested.statement_date)} · ${gbp(suggested.remaining_gbp)} · ${short(suggested.reference_raw, 60)}` : "No sufficient same-importer IN candidate"}</p>
+                            <p className="font-bold uppercase tracking-wide text-slate-500">Select same-importer DVA/card IN</p>
                             <form action={releaseLoyaltyFundingPotAction} className="grid gap-2">
                               <input type="hidden" name="loyalty_match_ids" value={loyaltyMatchIds} />
-                              <input type="hidden" name="top_up_statement_line_id" value={suggestedId} />
+                              <select name="top_up_statement_line_id" defaultValue={suggestedId} disabled={pot.candidates.length === 0 || pot.matchBand === "No match"} className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-950 disabled:bg-slate-100 disabled:text-slate-400">
+                                {pot.candidates.length === 0 ? <option value="">No sufficient same-importer IN candidate</option> : null}
+                                {pot.candidates.map((candidate) => (
+                                  <option key={text(candidate.statement_line_id)} value={text(candidate.statement_line_id)}>
+                                    {text(candidate.statement_date)} · {gbp(candidate.remaining_gbp)} · {short(candidate.reference_raw, 60)}
+                                  </option>
+                                ))}
+                              </select>
                               <button type="submit" disabled={!exactPot} className="rounded-xl bg-indigo-700 px-4 py-2 text-sm font-bold text-white hover:bg-indigo-800 disabled:bg-slate-200 disabled:text-slate-500">
-                                Bulk release exact pot
+                                Release selected IN for exact pot
                               </button>
                             </form>
-                            <p>Only exact same-importer pots are bulk-enabled. Strong/review pots remain manual.</p>
+                            <p>Staff must review/select the same-importer DVA/card IN before grouped release. Only exact same-importer pots are bulk-enabled; strong/review pots remain manual.</p>
                           </div>
                         </div>
                       </article>
