@@ -302,7 +302,7 @@ async function releaseLoyaltyFundingPotAction(formData: FormData) {
   const matchIds = rawIds.split(",").map((item) => item.trim()).filter(Boolean);
 
   if (matchIds.length < 2 || !topUpLineId) {
-    const params = new URLSearchParams({ target: "completion_loyalty", error: "Select an exact funding pot with at least two reserved rewards and one DVA/card top-up IN line." });
+    const params = new URLSearchParams({ target: "completion_loyalty", error: "Select a funding pot with at least two reserved rewards and one same-importer DVA/card top-up IN line." });
     redirect(`/internal/dva-reconciliation/main-bank?${params.toString()}`);
   }
 
@@ -474,7 +474,7 @@ export default async function MainBankShipperMatchingPage({
                     <p className="text-xs font-bold uppercase tracking-[0.18em] text-indigo-700">Funding pot view</p>
                     <h3 className="mt-1 text-lg font-extrabold text-indigo-950">Same-importer bulk funding pots detected</h3>
                     <p className="mt-1 text-sm leading-6 text-indigo-900">
-                      Exact pots can be released in one controlled staff action. The action preserves the existing single-row validations for every selected reward and does not post to Sage.
+                      Exact and single strong sufficient-IN pots can be released in one controlled staff action. The action preserves the existing validations, consumes only the selected loyalty amount, and does not post to Sage.
                     </p>
                   </div>
                 </div>
@@ -482,7 +482,9 @@ export default async function MainBankShipperMatchingPage({
                   {loyaltyFundingPotSuggestions.map((pot) => {
                     const suggested = pot.suggestedCandidate;
                     const suggestedId = text(suggested?.statement_line_id);
-                    const exactPot = pot.matchBand === "Exact pot" && !!suggestedId;
+                    const canBulkRelease = (pot.matchBand === "Exact pot" || pot.matchBand === "Strong pot") && !!suggestedId;
+                    const destinationRemainingGbp = suggested ? num(suggested.remaining_gbp) : 0;
+                    const destinationExcessGbp = suggested ? round2(Math.max(destinationRemainingGbp - pot.totalRewardGbp, 0)) : 0;
                     const loyaltyMatchIds = pot.rows.map((row) => text(row.loyalty_match_id)).filter(Boolean).join(",");
                     return (
                       <article key={pot.potKey} className="rounded-2xl border border-indigo-100 bg-white p-4 shadow-sm">
@@ -508,11 +510,19 @@ export default async function MainBankShipperMatchingPage({
                                   </option>
                                 ))}
                               </select>
-                              <button type="submit" disabled={!exactPot} className="rounded-xl bg-indigo-700 px-4 py-2 text-sm font-bold text-white hover:bg-indigo-800 disabled:bg-slate-200 disabled:text-slate-500">
-                                Release selected IN for exact pot
+                              {suggested ? (
+                                <div className="grid gap-1 rounded-xl border border-indigo-100 bg-white p-3 font-semibold text-slate-700">
+                                  <p>DVA/card IN remaining: <span className="font-extrabold text-slate-950">{gbp(destinationRemainingGbp)}</span></p>
+                                  <p>Selected loyalty pot: <span className="font-extrabold text-slate-950">{gbp(pot.totalRewardGbp)}</span></p>
+                                  <p>Excess remaining after release: <span className="font-extrabold text-slate-950">{gbp(destinationExcessGbp)}</span></p>
+                                  <p className="text-indigo-800">No loyalty FX is posted by this release.</p>
+                                </div>
+                              ) : null}
+                              <button type="submit" disabled={!canBulkRelease} className="rounded-xl bg-indigo-700 px-4 py-2 text-sm font-bold text-white hover:bg-indigo-800 disabled:bg-slate-200 disabled:text-slate-500">
+                                Release selected IN for pot
                               </button>
                             </form>
-                            <p>Staff must review/select the same-importer DVA/card IN before grouped release. Only exact same-importer pots are bulk-enabled; strong/review pots remain manual.</p>
+                            <p>Staff must review/select the same-importer DVA/card IN before grouped release. Exact and single strong same-importer sufficient-IN pots are bulk-enabled; review/multiple-candidate pots remain manual. Any excess remains on the DVA/card line; no loyalty FX is posted.</p>
                           </div>
                         </div>
                       </article>
