@@ -14,6 +14,7 @@ export async function reopenCompletionLoyaltySageBatchAction(formData: FormData)
     throw new Error("Missing batch id.");
   }
 
+  const retirePath = `${BASE_PATH}/batches/${batchId}/retire`;
   const supabase = await createClient();
   const { data, error } = await (supabase as any).rpc("staff_supersede_completion_loyalty_sage_batch_resetless_v1", {
     p_batch_id: batchId,
@@ -21,7 +22,8 @@ export async function reopenCompletionLoyaltySageBatchAction(formData: FormData)
   });
 
   if (error) {
-    throw new Error(error.message || "Could not retire loyalty Sage batch.");
+    revalidatePath(retirePath);
+    redirect(`${retirePath}?error=${encodeURIComponent(error.message || "Could not retire loyalty Sage batch.")}`);
   }
 
   const result = (data ?? {}) as Record<string, unknown>;
