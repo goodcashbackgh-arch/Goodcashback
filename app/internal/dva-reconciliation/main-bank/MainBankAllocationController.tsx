@@ -72,10 +72,9 @@ export default function MainBankAllocationController({
   targetMode: TargetMode;
 }) {
   const firstLineId = text(lines[0]?.statement_line_id);
-  const firstLoyaltyOrderId = text(loyaltyTargets[0]?.order_id);
   const [selectedLineId, setSelectedLineId] = useState(firstLineId);
   const [selectedTargetIds, setSelectedTargetIds] = useState<string[]>([]);
-  const [selectedLoyaltyOrderId, setSelectedLoyaltyOrderId] = useState(firstLoyaltyOrderId);
+  const [selectedLoyaltyOrderIds, setSelectedLoyaltyOrderIds] = useState<string[]>([]);
   const [residualType, setResidualType] = useState("fx_card_difference");
   const [manualResidual, setManualResidual] = useState("");
 
@@ -102,21 +101,34 @@ export default function MainBankAllocationController({
   const selectedLineAvailable = safeAvailable(selectedLine, selectedResidualExisting);
   const selectedTargets = targets.filter((row) => selectedTargetIds.includes(text(row.shipping_document_id)));
   const selectedTargetTotal = round2(selectedTargets.reduce((sum, row) => sum + num(row.remaining_gbp), 0));
-  const selectedLoyaltyTarget = loyaltyTargets.find((row) => text(row.order_id) === selectedLoyaltyOrderId) ?? null;
-  const selectedLoyaltyAmount = round2(num(selectedLoyaltyTarget?.suggested_reward_gbp));
+  const selectedLoyaltyTargets = loyaltyTargets.filter((row) => selectedLoyaltyOrderIds.includes(text(row.order_id)));
+  const selectedLoyaltyAmount = round2(selectedLoyaltyTargets.reduce((sum, row) => sum + num(row.suggested_reward_gbp), 0));
+  const selectedLoyaltyImporters = new Set(selectedLoyaltyTargets.map((row) => text(row.importer_id)).filter(Boolean));
+  const loyaltySelectionMixedImporter = selectedLoyaltyImporters.size > 1;
   const selectedPrimaryTotal = targetMode === "completion_loyalty" ? selectedLoyaltyAmount : selectedTargetTotal;
-  const loyaltyModeNeedsTarget = targetMode === "completion_loyalty" && !selectedLoyaltyTarget;
-  const residualCanBeExplained = targetMode !== "completion_loyalty" || Boolean(selectedLoyaltyTarget);
+  const loyaltyModeNeedsTarget = targetMode === "completion_loyalty" && selectedLoyaltyTargets.length === 0;
+  const residualCanBeExplained = targetMode !== "completion_loyalty" || selectedLoyaltyTargets.length > 0;
   const residualAmount = residualCanBeExplained ? round2(manualResidual ? Number(manualResidual) || 0 : Math.max(selectedLineAvailable - selectedPrimaryTotal, 0)) : 0;
   const explainedTotal = round2(selectedPrimaryTotal + residualAmount);
   const gap = round2(selectedLineAvailable - explainedTotal);
   const canConfirmAp = Boolean(targetMode === "shipper_ap" && selectedLineId && selectedTargetIds.length > 0 && selectedTargetTotal <= selectedLineAvailable + 0.01);
-  const canConfirmLoyalty = Boolean(targetMode === "completion_loyalty" && selectedLineId && selectedLoyaltyOrderId && selectedLoyaltyAmount > 0 && selectedLoyaltyAmount <= selectedLineAvailable + 0.01);
+  const canConfirmLoyalty = Boolean(
+    targetMode === "completion_loyalty" &&
+      selectedLineId &&
+      selectedLoyaltyOrderIds.length > 0 &&
+      selectedLoyaltyAmount > 0 &&
+      !loyaltySelectionMixedImporter &&
+      selectedLoyaltyAmount <= selectedLineAvailable + 0.01,
+  );
   const canConfirmResidual = Boolean(residualCanBeExplained && selectedLineId && residualAmount > 0 && residualAmount <= selectedLineAvailable + 0.01);
   const exact = Math.abs(gap) < 0.01;
 
   function toggleTarget(id: string) {
     setSelectedTargetIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
+  }
+
+  function toggleLoyaltyTarget(id: string) {
+    setSelectedLoyaltyOrderIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
   }
 
   return (
@@ -139,7 +151,7 @@ export default function MainBankAllocationController({
         <div className="rounded-2xl border border-sky-200 bg-sky-50 p-3 text-sky-900 shadow-sm">
           <p className="text-[11px] font-bold uppercase tracking-wide opacity-70">Selected target</p>
           <p className="mt-1 text-2xl font-extrabold">{gbp(selectedPrimaryTotal)}</p>
-          <p className="mt-1 text-xs leading-4">{targetMode === "completion_loyalty" ? (selectedLoyaltyTarget ? "1 reward target selected" : "No reward target") : `${selectedTargetIds.length} charge record(s) selected`}</p>
+          <p className="mt-1 text-xs leading-4">{targetMode === "completion_loyalty" ? `${selectedLoyaltyTargets.length} reward target(s) selected` : `${selectedTargetIds.length} charge record(s) selected`}</p>
         </div>
         <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-amber-900 shadow-sm">
           <p className="text-[11px] font-bold uppercase tracking-wide opacity-70">Residual input</p>
@@ -185,30 +197,38 @@ export default function MainBankAllocationController({
 
         {targetMode === "completion_loyalty" ? (
           <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
-            <h2 className="text-xl font-semibold">2. Select one loyalty reward target</h2>
-            <p className="mt-1 border-b border-slate-100 pb-3 text-sm text-slate-500">Select a clean completed reward-ready order. This reserves the main-bank OUT only. Pair the DVA/virtual-card IN before release.</p>
+            <h2 className="text-xl font-semibold">2. Tick loyalty reward target(s)</h2>
+            <p className="mt-1 border-b border-slate-100 pb-3 text-sm text-slate-500">Tick one or more clean completed reward-ready orders for the same importer. This reserves the selected main-bank OUT only. Pair the DVA/virtual-card IN before release.</p>
+            {loyaltySelectionMixedImporter ? (
+              <p className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">Selected rewards include more than one importer. Use a separate OUT line per importer.</p>
+            ) : null}
             <div className="mt-4 grid gap-3">
               {loyaltyTargets.length === 0 ? (
                 <p className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm font-semibold text-slate-600">No completion loyalty targets are ready for main-bank OUT reservation.</p>
               ) : null}
               {loyaltyTargets.map((target) => {
                 const id = text(target.order_id);
-                const selected = id === selectedLoyaltyOrderId;
+                const selected = selectedLoyaltyOrderIds.includes(id);
                 return (
-                  <button key={id} type="button" onClick={() => setSelectedLoyaltyOrderId(id)} className={`rounded-2xl border p-4 text-left shadow-sm transition hover:border-emerald-300 hover:bg-emerald-50 ${cardClass(selected, "target")}`}>
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div>
-                        <p className="text-lg font-bold text-slate-950">{short(target.order_ref, 80)}</p>
-                        <p className="mt-1 text-sm text-slate-600">{short(target.importer_name, 72)}</p>
+                  <label key={id} className={`block cursor-pointer rounded-2xl border p-4 shadow-sm transition hover:border-emerald-300 hover:bg-emerald-50 ${cardClass(selected, "target")}`}>
+                    <div className="flex items-start gap-3">
+                      <input className="mt-1 h-4 w-4 rounded border-slate-300" type="checkbox" checked={selected} onChange={() => toggleLoyaltyTarget(id)} />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <p className="text-lg font-bold text-slate-950">{short(target.order_ref, 80)}</p>
+                            <p className="mt-1 text-sm text-slate-600">{short(target.importer_name, 72)}</p>
+                          </div>
+                          <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-bold text-emerald-800">Reward-ready</span>
+                        </div>
+                        <div className="mt-3 grid gap-2 text-sm text-slate-700 sm:grid-cols-3">
+                          <p>Qualifying net <span className="font-bold text-slate-950">{gbp(target.qualifying_net_spend_gbp)}</span></p>
+                          <p>Reward <span className="font-bold text-slate-950">{gbp(target.suggested_reward_gbp)}</span></p>
+                          <p>Status <span className="font-bold text-slate-950">{short(target.target_status, 30)}</span></p>
+                        </div>
                       </div>
-                      <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-bold text-emerald-800">Reward-ready</span>
                     </div>
-                    <div className="mt-3 grid gap-2 text-sm text-slate-700 sm:grid-cols-3">
-                      <p>Qualifying net <span className="font-bold text-slate-950">{gbp(target.qualifying_net_spend_gbp)}</span></p>
-                      <p>Reward <span className="font-bold text-slate-950">{gbp(target.suggested_reward_gbp)}</span></p>
-                      <p>Status <span className="font-bold text-slate-950">{short(target.target_status, 30)}</span></p>
-                    </div>
-                  </button>
+                  </label>
                 );
               })}
             </div>
@@ -258,20 +278,19 @@ export default function MainBankAllocationController({
         <div className="mx-auto grid max-w-7xl gap-3 rounded-t-3xl border border-slate-200 bg-white/95 p-3 shadow-[0_-10px_30px_rgba(15,23,42,0.12)] backdrop-blur lg:grid-cols-[minmax(0,1fr)_minmax(0,34rem)] lg:items-end">
           <div className="min-w-0 space-y-1 text-sm text-slate-700">
             <p className="font-bold text-slate-950">Bank selected: {selectedLine ? short(selectedLine.reference_raw, 54) : "none"} · available {gbp(selectedLineAvailable)}</p>
-            <p>{targetMode === "completion_loyalty" ? `Loyalty target selected: ${selectedLoyaltyTarget ? short(selectedLoyaltyTarget.order_ref, 42) : "none"} · ${gbp(selectedLoyaltyAmount)}` : `Shipper charges selected: ${selectedTargetIds.length} charge record(s) · ${gbp(selectedTargetTotal)}`}</p>
+            <p>{targetMode === "completion_loyalty" ? `Loyalty rewards selected: ${selectedLoyaltyTargets.length} · ${gbp(selectedLoyaltyAmount)}` : `Shipper charges selected: ${selectedTargetIds.length} charge record(s) · ${gbp(selectedTargetTotal)}`}</p>
             <p>Residual selected: {loyaltyModeNeedsTarget ? "disabled until a loyalty target is selected" : `${gbp(residualAmount)} · ${residualLabel(residualType)}`}</p>
             <p className="font-bold text-slate-950">Gap: {gbp(gap)}</p>
-            <p className="text-xs font-semibold text-amber-700">{loyaltyModeNeedsTarget ? "Select a clean loyalty reward target before reserving the main-bank OUT or recording any residual." : exact ? (targetMode === "completion_loyalty" ? "Balanced — ready to reserve the main-bank OUT. DVA/virtual-card IN pairing is still required before release." : "Balanced — ready to submit target and/or residual matches.") : gap > 0 ? "Still has unexplained amount. Add residual or select a larger target." : "Over-selected. Reduce target/residual."}</p>
+            <p className="text-xs font-semibold text-amber-700">{loyaltyModeNeedsTarget ? "Select at least one clean loyalty reward target before reserving the main-bank OUT or recording any residual." : loyaltySelectionMixedImporter ? "Selected loyalty rewards must belong to one importer. Split different importers into separate OUT lines." : exact ? (targetMode === "completion_loyalty" ? "Balanced — ready to reserve selected rewards against this main-bank OUT. DVA/virtual-card IN pairing is still required before release." : "Balanced — ready to submit target and/or residual matches.") : gap > 0 ? "Still has unexplained amount. Add residual or select a larger target." : "Over-selected. Reduce target/residual."}</p>
           </div>
 
           <div className="grid min-w-0 gap-2 sm:grid-cols-2 lg:w-full">
             {targetMode === "completion_loyalty" ? (
               <form action={matchMainBankLineToCompletionLoyaltyAction} className="grid min-w-0 gap-2">
                 <input type="hidden" name="dva_statement_line_id" value={selectedLineId} />
-                <input type="hidden" name="order_id" value={selectedLoyaltyOrderId} />
-                <input type="hidden" name="reward_amount_gbp" value={selectedLoyaltyAmount > 0 ? selectedLoyaltyAmount.toFixed(2) : ""} />
-                <input type="hidden" name="notes" value="Main-bank OUT reserved for completion loyalty reward. Destination DVA/virtual-card IN must be paired before release." />
-                <button type="submit" disabled={!canConfirmLoyalty} className="w-full rounded-xl bg-sky-700 px-4 py-2 text-sm font-bold text-white disabled:bg-slate-200 disabled:text-slate-500">Reserve loyalty funding OUT</button>
+                {selectedLoyaltyOrderIds.map((id) => <input key={id} type="hidden" name="order_id" value={id} />)}
+                <input type="hidden" name="notes" value="Main-bank OUT reserved for selected completion-loyalty reward(s). Destination DVA/virtual-card IN must be paired before release." />
+                <button type="submit" disabled={!canConfirmLoyalty} className="w-full rounded-xl bg-sky-700 px-4 py-2 text-sm font-bold text-white disabled:bg-slate-200 disabled:text-slate-500">Reserve selected reward(s) OUT</button>
               </form>
             ) : (
               <form action={allocateMainBankLineToShipperApAction} className="grid min-w-0 gap-2">
