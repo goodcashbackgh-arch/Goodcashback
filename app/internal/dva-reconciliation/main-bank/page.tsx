@@ -294,6 +294,43 @@ async function releaseReservedLoyaltyTopUpAction(formData: FormData) {
   redirect(`/internal/dva-reconciliation/main-bank?${params.toString()}`);
 }
 
+async function releaseLoyaltyFundingPotAction(formData: FormData) {
+  "use server";
+
+  const rawIds = firstParam(formData.get("loyalty_match_ids"));
+  const topUpLineId = firstParam(formData.get("top_up_statement_line_id"));
+  const matchIds = rawIds.split(",").map((item) => item.trim()).filter(Boolean);
+
+  if (matchIds.length < 2 || !topUpLineId) {
+    const params = new URLSearchParams({ target: "completion_loyalty", error: "Select an exact funding pot with at least two reserved rewards and one DVA/card top-up IN line." });
+    redirect(`/internal/dva-reconciliation/main-bank?${params.toString()}`);
+  }
+
+  const supabase = await createClient();
+  const { data, error } = await supabase.rpc("staff_pair_loyalty_funding_pot_and_release_v1", {
+    p_loyalty_match_ids: matchIds,
+    p_destination_in_statement_line_id: topUpLineId,
+    p_notes: "Bulk same-importer completion-loyalty funding-pot release.",
+  });
+
+  if (error) {
+    const params = new URLSearchParams({ target: "completion_loyalty", error: error.message });
+    redirect(`/internal/dva-reconciliation/main-bank?${params.toString()}`);
+  }
+
+  const result = (data ?? {}) as Row;
+  const releasedCount = text(result.released_count) || String(matchIds.length);
+  const releasedTotal = gbp(result.released_total_gbp);
+
+  revalidatePath("/internal/dva-reconciliation/main-bank");
+  revalidatePath("/internal/completion-loyalty-rewards");
+  revalidatePath("/internal/accounting-command-centre/cash-posting");
+  revalidatePath("/customer");
+
+  const params = new URLSearchParams({ target: "completion_loyalty", success: `Bulk released ${releasedCount} same-importer loyalty rewards totalling ${releasedTotal}.` });
+  redirect(`/internal/dva-reconciliation/main-bank?${params.toString()}`);
+}
+
 export default async function MainBankShipperMatchingPage({
   searchParams,
 }: {
@@ -433,13 +470,16 @@ export default async function MainBankShipperMatchingPage({
                     <p className="text-xs font-bold uppercase tracking-[0.18em] text-indigo-700">Funding pot view</p>
                     <h3 className="mt-1 text-lg font-extrabold text-indigo-950">Same-importer bulk funding pots detected</h3>
                     <p className="mt-1 text-sm leading-6 text-indigo-900">
-                      This is read-only. It shows when one main-bank OUT may fund multiple same-importer loyalty rewards. Release still happens through the single-row cards until a controlled bulk wrapper is built.
+                      Exact pots can be released in one controlled staff action. The action preserves the existing single-row validations for every selected reward and does not post to Sage.
                     </p>
                   </div>
                 </div>
                 <div className="mt-3 grid gap-3">
                   {loyaltyFundingPotSuggestions.map((pot) => {
                     const suggested = pot.suggestedCandidate;
+                    const suggestedId = text(suggested?.statement_line_id);
+                    const exactPot = pot.matchBand === "Exact pot" && !!suggestedId;
+                    const loyaltyMatchIds = pot.rows.map((row) => text(row.loyalty_match_id)).filter(Boolean).join(",");
                     return (
                       <article key={pot.potKey} className="rounded-2xl border border-indigo-100 bg-white p-4 shadow-sm">
                         <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -452,10 +492,17 @@ export default async function MainBankShipperMatchingPage({
                             <p className="mt-1 text-xs text-slate-500">Source OUT: <span className="font-bold text-slate-900">{gbp(pot.totalRewardGbp)}</span> selected rewards · {short(pot.sourceOutReference, 70)}</p>
                             <p className="mt-2 rounded-xl border border-slate-100 bg-slate-50 p-2 text-xs font-semibold leading-5 text-slate-600">{pot.matchReason}</p>
                           </div>
-                          <div className="grid min-w-0 gap-1 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600 lg:w-[420px]">
+                          <div className="grid min-w-0 gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600 lg:w-[420px]">
                             <p className="font-bold uppercase tracking-wide text-slate-500">Suggested same-importer DVA/card IN</p>
                             <p className="font-semibold text-slate-900">{suggested ? `${text(suggested.statement_date)} · ${gbp(suggested.remaining_gbp)} · ${short(suggested.reference_raw, 60)}` : "No sufficient same-importer IN candidate"}</p>
-                            <p>Individual release remains controlled by each reward card below.</p>
+                            <form action={releaseLoyaltyFundingPotAction} className="grid gap-2">
+                              <input type="hidden" name="loyalty_match_ids" value={loyaltyMatchIds} />
+                              <input type="hidden" name="top_up_statement_line_id" value={suggestedId} />
+                              <button type="submit" disabled={!exactPot} className="rounded-xl bg-indigo-700 px-4 py-2 text-sm font-bold text-white hover:bg-indigo-800 disabled:bg-slate-200 disabled:text-slate-500">
+                                Bulk release exact pot
+                              </button>
+                            </form>
+                            <p>Only exact same-importer pots are bulk-enabled. Strong/review pots remain manual.</p>
                           </div>
                         </div>
                       </article>
