@@ -394,10 +394,14 @@ export default async function MainBankShipperMatchingPage({
   const topUpCandidateRows = (topUpCandidatesResult.data ?? []) as Row[];
   const loyaltySuggestions = buildLoyaltyPairingSuggestions(stagedLoyaltyRows, topUpCandidateRows);
   const loyaltyFundingPotSuggestions = buildLoyaltyFundingPotSuggestions(stagedLoyaltyRows, topUpCandidateRows);
-  const exactSuggestionCount = loyaltySuggestions.filter((item) => item.matchBand === "Exact").length;
-  const strongSuggestionCount = loyaltySuggestions.filter((item) => item.matchBand === "Strong").length;
-  const reviewSuggestionCount = loyaltySuggestions.filter((item) => item.matchBand === "Review").length;
-  const noMatchSuggestionCount = loyaltySuggestions.filter((item) => item.matchBand === "No match").length;
+  const fundingPotMemberMatchIds = new Set(
+    loyaltyFundingPotSuggestions.flatMap((pot) => pot.rows.map((row) => text(row.loyalty_match_id)).filter(Boolean)),
+  );
+  const singleRowLoyaltySuggestions = loyaltySuggestions.filter((item) => !fundingPotMemberMatchIds.has(text(item.reservedOut.loyalty_match_id)));
+  const exactSuggestionCount = singleRowLoyaltySuggestions.filter((item) => item.matchBand === "Exact").length;
+  const strongSuggestionCount = singleRowLoyaltySuggestions.filter((item) => item.matchBand === "Strong").length;
+  const reviewSuggestionCount = singleRowLoyaltySuggestions.filter((item) => item.matchBand === "Review").length;
+  const noMatchSuggestionCount = singleRowLoyaltySuggestions.filter((item) => item.matchBand === "No match").length;
   const lineIds = lines.map((line) => text(line.statement_line_id)).filter(Boolean);
   const residualsResult = lineIds.length
     ? await supabase
@@ -452,12 +456,12 @@ export default async function MainBankShipperMatchingPage({
               <div>
                 <h2 className="mt-2 text-2xl font-semibold">Ready to release queue</h2>
                 <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
-                  Each card is an already reserved main-bank OUT. The suggested DVA/card IN lines are same-importer only. Match bands are advisory; credit is released only when staff clicks Pair IN and release.
+                  Each single-row card is an already reserved main-bank OUT that is not part of a bulk pot. Funding-pot rows are grouped separately and use the bulk pot action.
                 </p>
               </div>
               <div className="grid grid-cols-2 gap-2 text-xs font-bold sm:grid-cols-4">
-                <div className="rounded-xl border border-emerald-200 bg-white px-3 py-2 text-emerald-900">Exact<br /><span className="text-lg">{exactSuggestionCount}</span></div>
-                <div className="rounded-xl border border-sky-200 bg-white px-3 py-2 text-sky-900">Strong<br /><span className="text-lg">{strongSuggestionCount}</span></div>
+                <div className="rounded-xl border border-emerald-200 bg-white px-3 py-2 text-emerald-900">Single exact<br /><span className="text-lg">{exactSuggestionCount}</span></div>
+                <div className="rounded-xl border border-sky-200 bg-white px-3 py-2 text-sky-900">Single strong<br /><span className="text-lg">{strongSuggestionCount}</span></div>
                 <div className="rounded-xl border border-amber-200 bg-white px-3 py-2 text-amber-900">Review<br /><span className="text-lg">{reviewSuggestionCount}</span></div>
                 <div className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-slate-700">No match<br /><span className="text-lg">{noMatchSuggestionCount}</span></div>
               </div>
@@ -513,11 +517,11 @@ export default async function MainBankShipperMatchingPage({
             ) : null}
 
             <div className="mt-4 grid gap-3">
-              {loyaltySuggestions.length === 0 ? (
+              {singleRowLoyaltySuggestions.length === 0 ? (
                 <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-600">
-                  No reserved completion-loyalty OUT rows are waiting for DVA/card IN pairing.
+                  No single-row reserved completion-loyalty OUT rows are waiting outside a funding pot.
                 </div>
-              ) : loyaltySuggestions.map((suggestion) => {
+              ) : singleRowLoyaltySuggestions.map((suggestion) => {
                 const reservedOut = suggestion.reservedOut;
                 const suggested = suggestion.suggestedCandidate;
                 const loyaltyMatchId = text(reservedOut.loyalty_match_id);
@@ -561,7 +565,7 @@ export default async function MainBankShipperMatchingPage({
 
             <div className="mt-3 grid gap-3 text-xs font-semibold text-slate-600 md:grid-cols-2">
               <p>Reserved OUT rows waiting: <span className="text-slate-950">{stagedLoyaltyRows.length}</span></p>
-              <p>DVA/card top-up IN candidates loaded for suggestion engine: <span className="text-slate-950">{topUpCandidateRows.length}</span> · card suggestions are same-importer only · funding-pot groups: <span className="text-slate-950">{loyaltyFundingPotSuggestions.length}</span></p>
+              <p>DVA/card top-up IN candidates loaded for suggestion engine: <span className="text-slate-950">{topUpCandidateRows.length}</span> · single cards and funding pots are same-importer only · funding-pot groups: <span className="text-slate-950">{loyaltyFundingPotSuggestions.length}</span></p>
             </div>
           </section>
         ) : null}
