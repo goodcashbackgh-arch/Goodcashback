@@ -62,6 +62,7 @@ Later addendums and current build contracts:
 7. Final Sale Value and Balance Due Addendum v1 (`docs/governing-pack/ui/FINAL_SALE_VALUE_AND_BALANCE_DUE_ADDENDUM_v1.md`).
 8. Completion Loyalty Reward Cash-Backed Credit Addendum v2 (`docs/governing-pack/ui/COMPLETION_LOYALTY_REWARD_CASH_BACKED_CREDIT_ADDENDUM_v2.md`) — supersedes `COMPLETION_LOYALTY_REWARD_AND_SAGE_POSTING_ADDENDUM_v1.md` for future build work.
 9. Shipper Customer Hold Hard Block Later Contract v1 (`docs/governing-pack/ui/SHIPPER_CUSTOMER_HOLD_HARD_BLOCK_LATER_CONTRACT_v1.md`) — later control only; not built.
+10. Completion Loyalty Resetless Supersede and Internal Transfer Journal Addendum v1 (`docs/governing-pack/ui/COMPLETION_LOYALTY_RESETLESS_SUPERSEDE_AND_INTERNAL_TRANSFER_JOURNAL_ADDENDUM_v1.md`) — corrective lock for keeping paired OUT/IN internal transfer separate from applied-loyalty customer settlement and for retiring failed unposted loyalty Sage batches without DB deletion.
 
 ## Non-negotiable UI wiring rules
 
@@ -84,6 +85,8 @@ Later addendums and current build contracts:
 17. Completion loyalty reward is not dashboard-available merely on clean completion or approval-in-principle; supervisor/admin must fund/pay the customer DVA/customer account and confirm evidence before available dashboard credit is released.
 18. Completion loyalty reward v1 Sage-at-approval treatment is superseded; do not queue approval itself for Sage posting in future work.
 19. Shipper customer-hold hard block is not built; current control is visible shipper set-aside instruction plus SOP/audit trail, with hard block documented as a later control.
+20. Completion-loyalty paired main-bank OUT + DVA/card IN is an internal transfer proof/release control. Applied-loyalty customer settlement is a separate Sage lane from `order_funding_events.credit_applied`; do not mix the two.
+21. Failed unposted completion-loyalty Sage batches must be retired/superseded through the resetless control. Do not manually delete batch/group/step rows unless performing an explicit emergency data repair.
 
 ## Funding page read-only sources
 
