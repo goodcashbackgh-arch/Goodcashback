@@ -50,6 +50,8 @@ function staffAccessLabel(staff: Row) {
 export default async function LoyaltyAccountingControlsPage({ searchParams }: { searchParams?: Promise<SearchParams> | SearchParams }) {
   const resolvedSearchParams = searchParams ? await searchParams : {};
   const searchQuery = cleanParam(resolvedSearchParams.q);
+  const success = cleanParam(resolvedSearchParams.success);
+  const pageError = cleanParam(resolvedSearchParams.error);
   const controlCategory = allowed(cleanParam(resolvedSearchParams.control_category), [
     "all",
     "bank_internal_transfer",
@@ -100,6 +102,8 @@ export default async function LoyaltyAccountingControlsPage({ searchParams }: { 
               <div>{staffAccessLabel(staff as Row)}</div>
             </div>
           </div>
+          {success ? <p className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-900">{success}</p> : null}
+          {pageError ? <p className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900">{pageError}</p> : null}
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
