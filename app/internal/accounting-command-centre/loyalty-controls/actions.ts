@@ -16,6 +16,14 @@ function textArray(formData: FormData, key: string) {
   return formData.getAll(key).map((value) => String(value ?? "").trim()).filter(Boolean);
 }
 
+function actionMessage(error: unknown, fallback: string) {
+  return error instanceof Error ? error.message : fallback;
+}
+
+function controlsActionRedirect(kind: "success" | "error", message: string) {
+  redirect(`${LOYALTY_CONTROLS_PATH}?${kind}=${encodeURIComponent(message)}#step-3-lifecycle`);
+}
+
 function hasAccountingAdminTesting(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const permissions = value as Record<string, unknown>;
@@ -94,12 +102,18 @@ export async function validateCompletionLoyaltySageGroupAction(formData: FormDat
   const groupId = text(formData, "posting_group_id");
 
   if (!groupId) {
-    throw new Error("Missing completion-loyalty Sage posting group id for validation.");
+    controlsActionRedirect("error", "Missing completion-loyalty Sage posting group id for validation.");
   }
 
-  await rpcOrThrow("staff_validate_completion_loyalty_sage_group_v1", {
-    p_posting_group_id: groupId,
-  });
+  try {
+    await rpcOrThrow("staff_validate_completion_loyalty_sage_group_v1", {
+      p_posting_group_id: groupId,
+    });
+  } catch (error) {
+    controlsActionRedirect("error", actionMessage(error, "Could not revalidate completion-loyalty Sage group."));
+  }
+
+  controlsActionRedirect("success", "Completion-loyalty Sage group revalidated.");
 }
 
 export async function approveCompletionLoyaltySageGroupAction(formData: FormData) {
