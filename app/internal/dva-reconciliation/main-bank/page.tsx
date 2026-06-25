@@ -8,6 +8,17 @@ import MainBankAllocationController from "./MainBankAllocationController";
 type Row = Record<string, unknown>;
 type SearchParamsValue = Record<string, string | string[] | undefined>;
 type TargetMode = "shipper_ap" | "completion_loyalty";
+type MatchBand = "Exact" | "Strong" | "Review" | "No match";
+
+type LoyaltyPairingSuggestion = {
+  reservedOut: Row;
+  candidates: Row[];
+  suggestedCandidate: Row | null;
+  matchBand: MatchBand;
+  matchScore: number;
+  matchReason: string;
+  canRelease: boolean;
+};
 
 const RESIDUAL_TYPES = ["fx_card_difference", "bank_fee", "unmatched_hold"];
 const gbpFormatter = new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" });
@@ -54,6 +65,105 @@ function modeClass(active: boolean) {
   return active
     ? "border-sky-300 bg-sky-50 text-sky-950 ring-2 ring-sky-100"
     : "border-slate-200 bg-white text-slate-700 hover:border-sky-200 hover:bg-sky-50";
+}
+
+function matchBandClass(matchBand: MatchBand) {
+  if (matchBand === "Exact") return "border-emerald-200 bg-emerald-100 text-emerald-900";
+  if (matchBand === "Strong") return "border-sky-200 bg-sky-100 text-sky-900";
+  if (matchBand === "Review") return "border-amber-200 bg-amber-100 text-amber-900";
+  return "border-slate-200 bg-slate-100 text-slate-700";
+}
+
+function dateValue(value: unknown) {
+  const raw = text(value);
+  if (!raw) return 0;
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function amountDiff(left: unknown, right: unknown) {
+  return Math.abs(num(left) - num(right));
+}
+
+function referenceText(row: Row) {
+  return `${text(row.reference_raw)} ${text(row.order_ref)} ${text(row.importer_name)}`.toLowerCase();
+}
+
+function candidateRank(reservedOut: Row, candidate: Row) {
+  const rewardAmount = num(reservedOut.matched_gbp_amount);
+  const remainingAmount = num(candidate.remaining_gbp);
+  const exactAmount = amountDiff(remainingAmount, rewardAmount) <= 0.01;
+  const sufficientAmount = remainingAmount + 0.01 >= rewardAmount;
+  const sourceDate = dateValue(reservedOut.statement_date || reservedOut.created_at || reservedOut.paired_at);
+  const candidateDate = dateValue(candidate.statement_date);
+  const dateDistance = sourceDate && candidateDate ? Math.abs(candidateDate - sourceDate) : 0;
+  const reference = referenceText(candidate);
+  const orderRef = text(reservedOut.order_ref).toLowerCase();
+  const importerName = text(reservedOut.importer_name).toLowerCase();
+  const referenceHint = (!!orderRef && reference.includes(orderRef)) || (!!importerName && reference.includes(importerName));
+
+  return {
+    exactAmount,
+    sufficientAmount,
+    referenceHint,
+    dateDistance,
+    score: (exactAmount ? 70 : 0) + (sufficientAmount ? 15 : 0) + (referenceHint ? 15 : 0),
+  };
+}
+
+function buildLoyaltyPairingSuggestions(stagedRows: Row[], topUpRows: Row[]): LoyaltyPairingSuggestion[] {
+  return stagedRows.map((reservedOut) => {
+    const importerId = text(reservedOut.importer_id);
+    const rewardAmount = num(reservedOut.matched_gbp_amount);
+    const sameImporterCandidates = topUpRows
+      .filter((candidate) => text(candidate.importer_id) === importerId)
+      .filter((candidate) => num(candidate.remaining_gbp) > 0.01)
+      .map((candidate) => ({ candidate, rank: candidateRank(reservedOut, candidate) }))
+      .sort((left, right) => {
+        if (right.rank.score !== left.rank.score) return right.rank.score - left.rank.score;
+        if (left.rank.dateDistance !== right.rank.dateDistance) return left.rank.dateDistance - right.rank.dateDistance;
+        return dateValue(right.candidate.statement_date) - dateValue(left.candidate.statement_date);
+      });
+
+    const exactCandidates = sameImporterCandidates.filter((item) => item.rank.exactAmount);
+    const sufficientCandidates = sameImporterCandidates.filter((item) => item.rank.sufficientAmount);
+    const suggested = sameImporterCandidates[0]?.candidate ?? null;
+    const suggestedRank = suggested ? candidateRank(reservedOut, suggested) : null;
+
+    let matchBand: MatchBand = "No match";
+    let matchScore = 0;
+    let matchReason = "No same-importer DVA/card IN candidate with enough remaining value.";
+
+    if (exactCandidates.length === 1) {
+      matchBand = "Exact";
+      matchScore = 100;
+      matchReason = "Same importer and exact remaining amount.";
+    } else if (exactCandidates.length > 1) {
+      matchBand = "Review";
+      matchScore = 70;
+      matchReason = "Multiple same-importer exact-amount IN candidates exist. Staff should choose the correct one.";
+    } else if (sufficientCandidates.length === 1) {
+      matchBand = "Strong";
+      matchScore = suggestedRank?.score ?? 75;
+      matchReason = num(suggested?.remaining_gbp) > rewardAmount + 0.01
+        ? "Same importer and sufficient IN value, but amount is higher than this reward. Treat as possible bulk top-up."
+        : "Same importer and sufficient IN value.";
+    } else if (sufficientCandidates.length > 1) {
+      matchBand = "Review";
+      matchScore = suggestedRank?.score ?? 60;
+      matchReason = "Multiple same-importer sufficient IN candidates exist. Staff should choose the correct one.";
+    }
+
+    return {
+      reservedOut,
+      candidates: sameImporterCandidates.map((item) => item.candidate),
+      suggestedCandidate: suggested,
+      matchBand,
+      matchScore,
+      matchReason,
+      canRelease: !!suggested && sufficientCandidates.length > 0,
+    };
+  });
 }
 
 async function releaseReservedLoyaltyTopUpAction(formData: FormData) {
@@ -152,6 +262,11 @@ export default async function MainBankShipperMatchingPage({
   const loyaltyTargets = (loyaltyTargetsResult.data ?? []) as Row[];
   const stagedLoyaltyRows = (stagedLoyaltyResult.data ?? []) as Row[];
   const topUpCandidateRows = (topUpCandidatesResult.data ?? []) as Row[];
+  const loyaltySuggestions = buildLoyaltyPairingSuggestions(stagedLoyaltyRows, topUpCandidateRows);
+  const exactSuggestionCount = loyaltySuggestions.filter((item) => item.matchBand === "Exact").length;
+  const strongSuggestionCount = loyaltySuggestions.filter((item) => item.matchBand === "Strong").length;
+  const reviewSuggestionCount = loyaltySuggestions.filter((item) => item.matchBand === "Review").length;
+  const noMatchSuggestionCount = loyaltySuggestions.filter((item) => item.matchBand === "No match").length;
   const lineIds = lines.map((line) => text(line.statement_line_id)).filter(Boolean);
   const residualsResult = lineIds.length
     ? await supabase
@@ -203,38 +318,71 @@ export default async function MainBankShipperMatchingPage({
         {targetMode === "completion_loyalty" ? (
           <section className={`rounded-3xl border p-5 shadow-sm ${hasPendingLoyaltyRelease ? "border-emerald-300 bg-emerald-50" : "border-slate-200 bg-white"}`}>
             <p className="text-xs font-bold uppercase tracking-[0.18em] text-emerald-700">Primary loyalty action</p>
-            <h2 className="mt-2 text-2xl font-semibold">Complete existing reservation</h2>
-            <p className="mt-2 text-sm leading-6 text-slate-600">
-              Use this when the main-bank OUT has already been reserved. Select the reserved OUT row and the matching importer DVA/card top-up IN line. This is the step that releases dashboard loyalty credit.
-            </p>
-            <form action={releaseReservedLoyaltyTopUpAction} className="mt-4 grid min-w-0 gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] lg:items-end">
-              <label className="grid min-w-0 gap-1 text-xs font-bold uppercase tracking-wide text-slate-500">
-                Reserved loyalty OUT waiting to release
-                <select name="loyalty_match_id" className="w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-950" defaultValue={text(stagedLoyaltyRows[0]?.loyalty_match_id)}>
-                  <option value="">Select reserved OUT</option>
-                  {stagedLoyaltyRows.map((row) => (
-                    <option key={text(row.loyalty_match_id)} value={text(row.loyalty_match_id)}>
-                      {short(row.order_ref, 34)} · {gbp(row.matched_gbp_amount)} · {short(row.importer_name, 36)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="grid min-w-0 gap-1 text-xs font-bold uppercase tracking-wide text-slate-500">
-                Matching DVA/card top-up IN
-                <select name="top_up_statement_line_id" className="w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-950" defaultValue={text(topUpCandidateRows[0]?.statement_line_id)}>
-                  <option value="">Select top-up IN</option>
-                  {topUpCandidateRows.map((row) => (
-                    <option key={text(row.statement_line_id)} value={text(row.statement_line_id)}>
-                      {text(row.statement_date)} · {gbp(row.remaining_gbp)} · {short(row.reference_raw, 52)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button type="submit" disabled={stagedLoyaltyRows.length === 0 || topUpCandidateRows.length === 0} className="w-full rounded-xl bg-emerald-700 px-4 py-2 text-sm font-bold text-white disabled:bg-slate-200 disabled:text-slate-500 lg:w-auto">Pair IN and release</button>
-            </form>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className="mt-2 text-2xl font-semibold">Ready to release queue</h2>
+                <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
+                  Each card is an already reserved main-bank OUT. The suggested DVA/card IN lines are same-importer only. Match bands are advisory; credit is released only when staff clicks Pair IN and release.
+                </p>
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-xs font-bold sm:grid-cols-4">
+                <div className="rounded-xl border border-emerald-200 bg-white px-3 py-2 text-emerald-900">Exact<br /><span className="text-lg">{exactSuggestionCount}</span></div>
+                <div className="rounded-xl border border-sky-200 bg-white px-3 py-2 text-sky-900">Strong<br /><span className="text-lg">{strongSuggestionCount}</span></div>
+                <div className="rounded-xl border border-amber-200 bg-white px-3 py-2 text-amber-900">Review<br /><span className="text-lg">{reviewSuggestionCount}</span></div>
+                <div className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-slate-700">No match<br /><span className="text-lg">{noMatchSuggestionCount}</span></div>
+              </div>
+            </div>
+
+            <div className="mt-4 grid gap-3">
+              {loyaltySuggestions.length === 0 ? (
+                <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-600">
+                  No reserved completion-loyalty OUT rows are waiting for DVA/card IN pairing.
+                </div>
+              ) : loyaltySuggestions.map((suggestion) => {
+                const reservedOut = suggestion.reservedOut;
+                const suggested = suggestion.suggestedCandidate;
+                const loyaltyMatchId = text(reservedOut.loyalty_match_id);
+                const suggestedLineId = text(suggested?.statement_line_id);
+                return (
+                  <article key={loyaltyMatchId} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                    <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className={`rounded-full border px-3 py-1 text-[11px] font-extrabold ${matchBandClass(suggestion.matchBand)}`}>{suggestion.matchBand}</span>
+                          <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-bold text-slate-700">Score {suggestion.matchScore}</span>
+                        </div>
+                        <h3 className="mt-3 text-lg font-extrabold text-slate-950">{short(reservedOut.order_ref, 42)}</h3>
+                        <p className="mt-1 text-sm font-semibold text-slate-700">{short(reservedOut.importer_name, 64)}</p>
+                        <p className="mt-1 text-xs text-slate-500">Reserved OUT amount: <span className="font-bold text-slate-900">{gbp(reservedOut.matched_gbp_amount)}</span></p>
+                        <p className="mt-2 rounded-xl border border-slate-100 bg-slate-50 p-2 text-xs font-semibold leading-5 text-slate-600">{suggestion.matchReason}</p>
+                      </div>
+
+                      <form action={releaseReservedLoyaltyTopUpAction} className="grid min-w-0 gap-2 lg:w-[460px]">
+                        <input type="hidden" name="loyalty_match_id" value={loyaltyMatchId} />
+                        <label className="grid gap-1 text-xs font-bold uppercase tracking-wide text-slate-500">
+                          Suggested same-importer DVA/card IN
+                          <select name="top_up_statement_line_id" defaultValue={suggestedLineId} disabled={suggestion.candidates.length === 0} className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-950 disabled:bg-slate-100 disabled:text-slate-400">
+                            {suggestion.candidates.length === 0 ? <option value="">No same-importer IN candidate</option> : null}
+                            {suggestion.candidates.map((candidate) => (
+                              <option key={text(candidate.statement_line_id)} value={text(candidate.statement_line_id)}>
+                                {text(candidate.statement_date)} · {gbp(candidate.remaining_gbp)} · {short(candidate.reference_raw, 56)}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <button type="submit" disabled={!suggestion.canRelease} className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-800 disabled:bg-slate-200 disabled:text-slate-500">
+                          Pair IN and release
+                        </button>
+                      </form>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+
             <div className="mt-3 grid gap-3 text-xs font-semibold text-slate-600 md:grid-cols-2">
               <p>Reserved OUT rows waiting: <span className="text-slate-950">{stagedLoyaltyRows.length}</span></p>
-              <p>Available DVA/card top-up IN lines: <span className="text-slate-950">{topUpCandidateRows.length}</span></p>
+              <p>Same-page DVA/card top-up IN candidates loaded: <span className="text-slate-950">{topUpCandidateRows.length}</span></p>
             </div>
           </section>
         ) : null}
@@ -266,7 +414,7 @@ export default async function MainBankShipperMatchingPage({
               </label>
             ) : (
               <div className="min-w-0 rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-semibold leading-5 text-sky-950">
-                Completion loyalty: use the primary release panel above for existing reservations. The reservation workspace appears only when a new reward target is available.
+                Completion loyalty: use the ready-to-release cards above for existing reservations. The reservation workspace appears only when a new reward target is available.
               </div>
             )}
             <button className="w-full rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white md:w-auto" type="submit">Apply</button>
@@ -278,7 +426,7 @@ export default async function MainBankShipperMatchingPage({
             <p className="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">Create new OUT reservation</p>
             <h2 className="mt-2 text-xl font-semibold">No new loyalty targets to reserve</h2>
             <p className="mt-2 text-sm leading-6 text-slate-600">
-              There are no clean completed reward proposals waiting for a new main-bank OUT reservation. Existing reserved OUT rows should be completed in the primary release panel above.
+              There are no clean completed reward proposals waiting for a new main-bank OUT reservation. Existing reserved OUT rows should be completed in the ready-to-release queue above.
             </p>
           </section>
         ) : null}
