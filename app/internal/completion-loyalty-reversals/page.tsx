@@ -136,7 +136,7 @@ export default async function CompletionLoyaltyReversalsPage({
             Reset released but unapplied completion-loyalty credits back to before funding selection. This is for correcting wrong same-importer OUT/IN/reward selections before the credit is applied to an order or posted downstream.
           </p>
           <div className="mt-4 flex flex-wrap gap-2 text-sm font-semibold">
-            <Link href="/internal/dva-reconciliation/main-bank?target=completion_loyalty&status=all" className="rounded-xl border border-sky-200 bg-sky-50 px-4 py-2 text-sky-900">Open main-bank loyalty workspace</Link>
+            <Link href="/internal/dva-reconciliation/main-bank?target=completion_loyalty" className="rounded-xl border border-sky-200 bg-sky-50 px-4 py-2 text-sky-900">Open main-bank loyalty workspace</Link>
             <Link href="/internal/completion-loyalty-rewards" className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-2 text-slate-700">Open loyalty reward workbench</Link>
           </div>
           {success ? <p className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-900">{success}</p> : null}
