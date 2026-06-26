@@ -10,7 +10,7 @@ export default function CompletionLoyaltyRewardsLayout({ children }: { children:
           <Link href="/internal/completion-loyalty-reversals" className="rounded-xl border border-amber-300 bg-white px-3 py-1 text-amber-900 underline-offset-2 hover:underline">
             Release reversal review
           </Link>
-          <Link href="/internal/dva-reconciliation/main-bank?target=completion_loyalty&status=all" className="rounded-xl border border-sky-200 bg-white px-3 py-1 text-sky-900 underline-offset-2 hover:underline">
+          <Link href="/internal/dva-reconciliation/main-bank?target=completion_loyalty" className="rounded-xl border border-sky-200 bg-white px-3 py-1 text-sky-900 underline-offset-2 hover:underline">
             Main-bank loyalty workspace
           </Link>
         </div>
