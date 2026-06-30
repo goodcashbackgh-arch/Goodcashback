@@ -153,6 +153,8 @@ export default async function CompletionLoyaltyInternalTransferJournalPanel({ se
       && !activeBatchedGroupIds.has(text(group.posting_group_id));
   });
   const batchReadyAmount = batchReadyGroups.reduce((sum, group) => sum + num(group.amount_gbp), 0);
+  const hasRows = candidates.length > 0 || groups.length > 0 || batches.length > 0;
+  const hasRpcError = Boolean(candidateError || groupError || batchError);
 
   return (
     <section id="step-3-internal-transfer" className="rounded-3xl border border-cyan-200 bg-white p-5 shadow-sm scroll-mt-6">
@@ -187,186 +189,200 @@ export default async function CompletionLoyaltyInternalTransferJournalPanel({ se
         </div>
       ) : null}
 
-      <div className="mt-5 grid gap-4 xl:grid-cols-2">
-        <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-          <h3 className="font-bold text-slate-950">Paired transfer candidates</h3>
-          <p className="mt-1 text-xs leading-5 text-slate-500">Currency selected at statement upload resolves the debit side: GBP means Virtual GBP wallet; GHS means DVA GHS wallet. GL numbers are not used.</p>
-          <div className="mt-4 space-y-2">
-            {candidates.length === 0 ? (
-              <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-500">No paired released internal-transfer candidates match the current filters.</div>
-            ) : candidates.map((row) => {
-              const blocker = text(row.blocker);
-              const alreadyMaterialised = Boolean(text(row.existing_posting_group_id));
-              const canMaterialise = !blocker && !alreadyMaterialised;
-              return (
-                <div key={candidateKey(row)} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      <p className="font-bold text-slate-950">{text(row.importer_name) || "Importer/customer"}</p>
-                      <p className="mt-1 text-sm text-slate-500">Debit: {walletLabel(row.destination_wallet_code)} · Credit: Main GBP bank</p>
-                      <p className="mt-2 text-xs text-slate-400">OUT {text(row.source_out_date) || "-"} · IN {text(row.destination_in_date) || "-"}</p>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-lg font-extrabold text-slate-950">{gbp(row.transfer_amount_gbp)}</p>
-                      <StatusBadge value={alreadyMaterialised ? "already_materialised" : row.materialisation_status} />
-                    </div>
-                  </div>
-                  <div className="mt-3 grid gap-2 text-xs text-slate-600 sm:grid-cols-3">
-                    <div className="rounded-xl bg-slate-50 p-2"><span className="font-bold">Released loyalty:</span><br />{gbp(row.loyalty_released_amount_gbp)}</div>
-                    <div className="rounded-xl bg-slate-50 p-2"><span className="font-bold">Wallet excess:</span><br />{gbp(row.excess_remaining_gbp)}</div>
-                    <div className="rounded-xl bg-slate-50 p-2"><span className="font-bold">Mappings:</span><br />{text(row.source_mapping_code) || "-"} / {text(row.destination_mapping_code) || "-"}</div>
-                  </div>
-                  <p className="mt-2 break-all text-xs text-slate-500">OUT ref: {text(row.source_out_reference) || "-"}</p>
-                  <p className="mt-1 break-all text-xs text-slate-500">IN ref: {text(row.destination_in_reference) || "-"}</p>
-                  {blocker ? <p className="mt-3 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-xs font-semibold text-rose-700">Blocker: {pretty(blocker)}</p> : null}
-                  {alreadyMaterialised ? <p className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-900">Existing group: {text(row.existing_posting_group_ref)}</p> : null}
-                  <form action={materialiseInternalTransferJournalAction} className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto]">
-                    <input type="hidden" name="source_out_statement_line_id" value={text(row.source_out_statement_line_id)} />
-                    <input type="hidden" name="destination_in_statement_line_id" value={text(row.destination_in_statement_line_id)} />
-                    <input name="notes" placeholder="Optional materialisation note" className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-950 outline-none focus:border-cyan-300 focus:ring-2 focus:ring-cyan-100" />
-                    <button type="submit" disabled={!canMaterialise} className="rounded-2xl bg-cyan-700 px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-cyan-800 disabled:bg-slate-200 disabled:text-slate-500">
-                      Materialise / freeze
-                    </button>
-                  </form>
-                </div>
-              );
-            })}
-          </div>
+      {!hasRows && !hasRpcError ? (
+        <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-5 text-sm text-slate-600">
+          No paired released internal-transfer candidates, materialised transfer groups, or transfer batches match the current filters.
         </div>
-
-        <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <h3 className="font-bold text-slate-950">Internal-transfer journal groups</h3>
-              <p className="mt-1 text-xs leading-5 text-slate-500">Select locally validated internal-transfer groups and create a loyalty Sage batch. The existing batch page handles approval/post/retry.</p>
-            </div>
-            <div className="rounded-xl border border-cyan-200 bg-cyan-50 px-3 py-2 text-right text-xs font-bold text-cyan-900">
-              {batchReadyGroups.length} ready<br />{gbp(batchReadyAmount)}
-            </div>
-          </div>
-
-          <form id="create-loyalty-internal-transfer-batch-form" action={createCompletionLoyaltySageBatchAction} className="mt-3 rounded-2xl border border-cyan-200 bg-white p-3">
-            <div className="grid gap-2 sm:grid-cols-[1fr_auto] sm:items-end">
-              <label className="grid gap-1 text-xs font-bold uppercase tracking-wide text-slate-500">
-                Batch note
-                <input name="batch_notes" placeholder="Optional batch note" className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-950" />
-              </label>
-              <button type="submit" className="rounded-xl bg-cyan-700 px-4 py-2 text-xs font-bold text-white hover:bg-cyan-800 disabled:bg-slate-200 disabled:text-slate-500">
-                Create transfer Sage batch
-              </button>
-            </div>
-            <div className="mt-3">
-              <SelectionControls />
-            </div>
-          </form>
-
-          <div className="mt-4 space-y-2">
-            {groups.length === 0 ? (
-              <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-500">No materialised internal-transfer journal groups yet.</div>
-            ) : groups.map((group) => {
-              const status = text(group.status);
-              const validationStatus = text(group.validation_status);
-              const groupId = text(group.posting_group_id);
-              const alreadyBatched = activeBatchedGroupIds.has(groupId);
-              const canBatch = ["locally_validated", "admin_approved"].includes(status) && ["ok_to_post", "warning_only"].includes(validationStatus) && !text(group.blocker) && num(group.posted_step_count) === 0 && !alreadyBatched;
-              const canValidate = !alreadyBatched && num(group.posted_step_count) === 0 && !["posted_to_sage", "posting_to_sage", "cancelled", "superseded", "reversed"].includes(status);
-              const canSupersede = !["posted_to_sage", "posting_to_sage", "cancelled", "superseded", "reversed"].includes(status) && num(group.posted_step_count) === 0 && !alreadyBatched;
-              return (
-                <details key={groupKey(group)} className="group rounded-2xl border border-slate-200 bg-white p-4 shadow-sm open:bg-slate-50">
-                  <summary className="flex cursor-pointer list-none items-start justify-between gap-3">
-                    <div className="flex items-start gap-3">
-                      {canBatch ? (
-                        <input
-                          type="checkbox"
-                          name="posting_group_id"
-                          value={groupId}
-                          form="create-loyalty-internal-transfer-batch-form"
-                          defaultChecked
-                          data-accounting-row-select="true"
-                          className="mt-1 h-4 w-4 rounded border-slate-300"
-                          aria-label={`Select ${text(group.posting_group_ref)} for internal transfer Sage batch`}
-                        />
-                      ) : <span className="mt-1 text-xs text-slate-300">-</span>}
-                      <div>
-                        <p className="font-bold text-slate-950">{text(group.posting_group_ref) || "-"}</p>
-                        <p className="mt-1 text-sm text-slate-500">Dr {walletLabel(contextValue(group, "destination_wallet_code"))} · Cr Main GBP bank</p>
-                        <div className="mt-2 flex flex-wrap gap-2">
-                          <StatusBadge value={status} />
-                          <StatusBadge value={validationStatus} />
-                          <StatusBadge value={group.approval_status} />
-                          {alreadyBatched ? <StatusBadge value="already_batched" /> : null}
+      ) : (
+        <>
+          <div className="mt-5 grid gap-4 xl:grid-cols-2">
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <h3 className="font-bold text-slate-950">Paired transfer candidates</h3>
+              <p className="mt-1 text-xs leading-5 text-slate-500">Currency selected at statement upload resolves the debit side: GBP means Virtual GBP wallet; GHS means DVA GHS wallet. GL numbers are not used.</p>
+              <div className="mt-4 space-y-2">
+                {candidates.length === 0 ? (
+                  <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-500">No paired released internal-transfer candidates match the current filters.</div>
+                ) : candidates.map((row) => {
+                  const blocker = text(row.blocker);
+                  const alreadyMaterialised = Boolean(text(row.existing_posting_group_id));
+                  const canMaterialise = !blocker && !alreadyMaterialised;
+                  return (
+                    <div key={candidateKey(row)} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <p className="font-bold text-slate-950">{text(row.importer_name) || "Importer/customer"}</p>
+                          <p className="mt-1 text-sm text-slate-500">Debit: {walletLabel(row.destination_wallet_code)} · Credit: Main GBP bank</p>
+                          <p className="mt-2 text-xs text-slate-400">OUT {text(row.source_out_date) || "-"} · IN {text(row.destination_in_date) || "-"}</p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-lg font-extrabold text-slate-950">{gbp(row.transfer_amount_gbp)}</p>
+                          <StatusBadge value={alreadyMaterialised ? "already_materialised" : row.materialisation_status} />
                         </div>
                       </div>
+                      <div className="mt-3 grid gap-2 text-xs text-slate-600 sm:grid-cols-3">
+                        <div className="rounded-xl bg-slate-50 p-2"><span className="font-bold">Released loyalty:</span><br />{gbp(row.loyalty_released_amount_gbp)}</div>
+                        <div className="rounded-xl bg-slate-50 p-2"><span className="font-bold">Wallet excess:</span><br />{gbp(row.excess_remaining_gbp)}</div>
+                        <div className="rounded-xl bg-slate-50 p-2"><span className="font-bold">Mappings:</span><br />{text(row.source_mapping_code) || "-"} / {text(row.destination_mapping_code) || "-"}</div>
+                      </div>
+                      <p className="mt-2 break-all text-xs text-slate-500">OUT ref: {text(row.source_out_reference) || "-"}</p>
+                      <p className="mt-1 break-all text-xs text-slate-500">IN ref: {text(row.destination_in_reference) || "-"}</p>
+                      {blocker ? <p className="mt-3 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-xs font-semibold text-rose-700">Blocker: {pretty(blocker)}</p> : null}
+                      {alreadyMaterialised ? <p className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-900">Existing group: {text(row.existing_posting_group_ref)}</p> : null}
+                      <form action={materialiseInternalTransferJournalAction} className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto]">
+                        <input type="hidden" name="source_out_statement_line_id" value={text(row.source_out_statement_line_id)} />
+                        <input type="hidden" name="destination_in_statement_line_id" value={text(row.destination_in_statement_line_id)} />
+                        <input name="notes" placeholder="Optional materialisation note" className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-950 outline-none focus:border-cyan-300 focus:ring-2 focus:ring-cyan-100" />
+                        <button type="submit" disabled={!canMaterialise} className="rounded-2xl bg-cyan-700 px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-cyan-800 disabled:bg-slate-200 disabled:text-slate-500">
+                          Materialise / freeze
+                        </button>
+                      </form>
                     </div>
-                    <p className="text-right text-lg font-extrabold text-slate-950">{gbp(group.amount_gbp)}</p>
-                  </summary>
-                  <div className="mt-3 border-t border-slate-200 pt-3 text-sm text-slate-700">
-                    {text(group.blocker) ? <p className="rounded-2xl border border-rose-200 bg-rose-50 p-3 font-semibold text-rose-700">Blocker: {pretty(group.blocker)}</p> : null}
-                    <div className="mt-2 grid gap-2 text-xs text-slate-500 sm:grid-cols-3">
-                      <p>Posting date: {text(group.posting_date) || "-"}</p>
-                      <p>Source OUT: {text(contextValue(group, "source_out_date")) || "-"}</p>
-                      <p>Destination IN: {text(contextValue(group, "destination_in_date")) || "-"}</p>
-                    </div>
-                    <div className="mt-2 grid gap-2 text-xs text-slate-500 sm:grid-cols-3">
-                      <p>Released loyalty: {gbp(contextValue(group, "loyalty_released_amount_gbp"))}</p>
-                      <p>Wallet excess: {gbp(contextValue(group, "excess_remaining_gbp"))}</p>
-                      <p>Posted steps: {text(group.posted_step_count)} / {text(group.step_count)}</p>
-                    </div>
-                    <div className="mt-4 grid gap-2 sm:grid-cols-2">
-                      {canValidate ? (
-                        <form action={validateCompletionLoyaltySageGroupAction}>
-                          <HiddenGroupId group={group} />
-                          <button type="submit" className="w-full rounded-2xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-bold text-sky-800 hover:bg-sky-100">
-                            Revalidate
-                          </button>
-                        </form>
-                      ) : null}
-                      {canSupersede ? (
-                        <form action={supersedeCompletionLoyaltySageGroupAction}>
-                          <HiddenGroupId group={group} />
-                          <input type="hidden" name="supersede_reason" value="Superseded from loyalty controls internal-transfer panel before Sage posting." />
-                          <button type="submit" className="w-full rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700 hover:bg-rose-100">
-                            Supersede
-                          </button>
-                        </form>
-                      ) : null}
-                    </div>
-                  </div>
-                </details>
-              );
-            })}
-          </div>
-        </div>
-      </div>
-
-      <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h3 className="font-bold text-slate-950">Internal-transfer batch history</h3>
-            <p className="mt-1 text-xs leading-5 text-slate-500">Open a batch to approve, post, review Sage responses, or retry failed journal steps only.</p>
-          </div>
-          <StatusBadge value={batchError ? "batch_rpc_unavailable" : `${batches.length}_batch_rows`} />
-        </div>
-        <div className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-          {batches.length === 0 ? (
-            <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-500 md:col-span-2 xl:col-span-3">No internal-transfer Sage batches yet.</div>
-          ) : batches.map((batch) => (
-            <Link key={text(batch.batch_id)} href={batchLink(batch.batch_id)} className="rounded-2xl border border-slate-200 bg-white p-4 text-sm shadow-sm hover:border-cyan-300 hover:bg-cyan-50">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="font-bold text-slate-950">{text(batch.batch_ref)}</p>
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    <StatusBadge value={batch.status} />
-                    <StatusBadge value={batch.approval_status} />
-                  </div>
-                </div>
-                <p className="text-right font-extrabold text-slate-950">{gbp(batch.total_amount_gbp)}</p>
+                  );
+                })}
               </div>
-              <p className="mt-3 text-xs text-slate-500">Rows: {text(batch.row_count)} · Posted: {text(batch.posted_count)} · Failed: {text(batch.failed_count)}</p>
-            </Link>
-          ))}
-        </div>
-      </div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h3 className="font-bold text-slate-950">Internal-transfer journal groups</h3>
+                  <p className="mt-1 text-xs leading-5 text-slate-500">Select locally validated internal-transfer groups and create a loyalty Sage batch. The existing batch page handles approval/post/retry.</p>
+                </div>
+                <div className="rounded-xl border border-cyan-200 bg-cyan-50 px-3 py-2 text-right text-xs font-bold text-cyan-900">
+                  {batchReadyGroups.length} ready<br />{gbp(batchReadyAmount)}
+                </div>
+              </div>
+
+              {batchReadyGroups.length > 0 ? (
+                <form id="create-loyalty-internal-transfer-batch-form" action={createCompletionLoyaltySageBatchAction} className="mt-3 rounded-2xl border border-cyan-200 bg-white p-3">
+                  <div className="grid gap-2 sm:grid-cols-[1fr_auto] sm:items-end">
+                    <label className="grid gap-1 text-xs font-bold uppercase tracking-wide text-slate-500">
+                      Batch note
+                      <input name="batch_notes" placeholder="Optional batch note" className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-950" />
+                    </label>
+                    <button type="submit" className="rounded-xl bg-cyan-700 px-4 py-2 text-xs font-bold text-white hover:bg-cyan-800 disabled:bg-slate-200 disabled:text-slate-500">
+                      Create transfer Sage batch
+                    </button>
+                  </div>
+                  <div className="mt-3">
+                    <SelectionControls />
+                  </div>
+                </form>
+              ) : groups.length > 0 ? (
+                <div className="mt-3 rounded-2xl border border-slate-200 bg-white p-3 text-xs font-semibold text-slate-500">
+                  No locally validated unbatched transfer groups are ready for batching.
+                </div>
+              ) : null}
+
+              <div className="mt-4 space-y-2">
+                {groups.length === 0 ? (
+                  <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-500">No materialised internal-transfer journal groups yet.</div>
+                ) : groups.map((group) => {
+                  const status = text(group.status);
+                  const validationStatus = text(group.validation_status);
+                  const groupId = text(group.posting_group_id);
+                  const alreadyBatched = activeBatchedGroupIds.has(groupId);
+                  const canBatch = ["locally_validated", "admin_approved"].includes(status) && ["ok_to_post", "warning_only"].includes(validationStatus) && !text(group.blocker) && num(group.posted_step_count) === 0 && !alreadyBatched;
+                  const canValidate = !alreadyBatched && num(group.posted_step_count) === 0 && !["posted_to_sage", "posting_to_sage", "cancelled", "superseded", "reversed"].includes(status);
+                  const canSupersede = !["posted_to_sage", "posting_to_sage", "cancelled", "superseded", "reversed"].includes(status) && num(group.posted_step_count) === 0 && !alreadyBatched;
+                  return (
+                    <details key={groupKey(group)} className="group rounded-2xl border border-slate-200 bg-white p-4 shadow-sm open:bg-slate-50">
+                      <summary className="flex cursor-pointer list-none items-start justify-between gap-3">
+                        <div className="flex items-start gap-3">
+                          {canBatch ? (
+                            <input
+                              type="checkbox"
+                              name="posting_group_id"
+                              value={groupId}
+                              form="create-loyalty-internal-transfer-batch-form"
+                              defaultChecked
+                              data-accounting-row-select="true"
+                              className="mt-1 h-4 w-4 rounded border-slate-300"
+                              aria-label={`Select ${text(group.posting_group_ref)} for internal transfer Sage batch`}
+                            />
+                          ) : <span className="mt-1 text-xs text-slate-300">-</span>}
+                          <div>
+                            <p className="font-bold text-slate-950">{text(group.posting_group_ref) || "-"}</p>
+                            <p className="mt-1 text-sm text-slate-500">Dr {walletLabel(contextValue(group, "destination_wallet_code"))} · Cr Main GBP bank</p>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              <StatusBadge value={status} />
+                              <StatusBadge value={validationStatus} />
+                              <StatusBadge value={group.approval_status} />
+                              {alreadyBatched ? <StatusBadge value="already_batched" /> : null}
+                            </div>
+                          </div>
+                        </div>
+                        <p className="text-right text-lg font-extrabold text-slate-950">{gbp(group.amount_gbp)}</p>
+                      </summary>
+                      <div className="mt-3 border-t border-slate-200 pt-3 text-sm text-slate-700">
+                        {text(group.blocker) ? <p className="rounded-2xl border border-rose-200 bg-rose-50 p-3 font-semibold text-rose-700">Blocker: {pretty(group.blocker)}</p> : null}
+                        <div className="mt-2 grid gap-2 text-xs text-slate-500 sm:grid-cols-3">
+                          <p>Posting date: {text(group.posting_date) || "-"}</p>
+                          <p>Source OUT: {text(contextValue(group, "source_out_date")) || "-"}</p>
+                          <p>Destination IN: {text(contextValue(group, "destination_in_date")) || "-"}</p>
+                        </div>
+                        <div className="mt-2 grid gap-2 text-xs text-slate-500 sm:grid-cols-3">
+                          <p>Released loyalty: {gbp(contextValue(group, "loyalty_released_amount_gbp"))}</p>
+                          <p>Wallet excess: {gbp(contextValue(group, "excess_remaining_gbp"))}</p>
+                          <p>Posted steps: {text(group.posted_step_count)} / {text(group.step_count)}</p>
+                        </div>
+                        <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                          {canValidate ? (
+                            <form action={validateCompletionLoyaltySageGroupAction}>
+                              <HiddenGroupId group={group} />
+                              <button type="submit" className="w-full rounded-2xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-bold text-sky-800 hover:bg-sky-100">
+                                Revalidate
+                              </button>
+                            </form>
+                          ) : null}
+                          {canSupersede ? (
+                            <form action={supersedeCompletionLoyaltySageGroupAction}>
+                              <HiddenGroupId group={group} />
+                              <input type="hidden" name="supersede_reason" value="Superseded from loyalty controls internal-transfer panel before Sage posting." />
+                              <button type="submit" className="w-full rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700 hover:bg-rose-100">
+                                Supersede
+                              </button>
+                            </form>
+                          ) : null}
+                        </div>
+                      </div>
+                    </details>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+
+          {batches.length > 0 ? (
+            <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h3 className="font-bold text-slate-950">Internal-transfer batch history</h3>
+                  <p className="mt-1 text-xs leading-5 text-slate-500">Open a batch to approve, post, review Sage responses, or retry failed journal steps only.</p>
+                </div>
+                <StatusBadge value={`${batches.length}_batch_rows`} />
+              </div>
+              <div className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+                {batches.map((batch) => (
+                  <Link key={text(batch.batch_id)} href={batchLink(batch.batch_id)} className="rounded-2xl border border-slate-200 bg-white p-4 text-sm shadow-sm hover:border-cyan-300 hover:bg-cyan-50">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="font-bold text-slate-950">{text(batch.batch_ref)}</p>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          <StatusBadge value={batch.status} />
+                          <StatusBadge value={batch.approval_status} />
+                        </div>
+                      </div>
+                      <p className="text-right font-extrabold text-slate-950">{gbp(batch.total_amount_gbp)}</p>
+                    </div>
+                    <p className="mt-3 text-xs text-slate-500">Rows: {text(batch.row_count)} · Posted: {text(batch.posted_count)} · Failed: {text(batch.failed_count)}</p>
+                  </Link>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </>
+      )}
     </section>
   );
 }
