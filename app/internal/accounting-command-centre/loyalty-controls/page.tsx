@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 import CompletionLoyaltyAppliedAccountingPreviewPanel from "../CompletionLoyaltyAppliedAccountingPreviewPanel";
+import CompletionLoyaltyInternalTransferJournalPanel from "../CompletionLoyaltyInternalTransferJournalPanel";
 import CompletionLoyaltySagePostingMaterialisationPanel from "../CompletionLoyaltySagePostingMaterialisationPanel";
 import LoyaltyAccountingControlPanel from "../LoyaltyAccountingControlPanel";
 
@@ -194,6 +195,8 @@ export default async function LoyaltyAccountingControlsPage({ searchParams }: { 
         <CompletionLoyaltyAppliedAccountingPreviewPanel searchQuery={searchQuery} previewStatusFilter={previewStatus} />
 
         <CompletionLoyaltySagePostingMaterialisationPanel searchQuery={searchQuery} />
+
+        <CompletionLoyaltyInternalTransferJournalPanel searchQuery={searchQuery} />
 
         <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-950">
           <h2 className="font-bold">Control boundary</h2>
