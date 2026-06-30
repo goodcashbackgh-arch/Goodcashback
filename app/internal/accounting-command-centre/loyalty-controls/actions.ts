@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { postCompletionLoyaltySageBatchToSage } from "@/lib/sage/completionLoyaltyPosting";
+import { postCompletionLoyaltySageBatchToSage } from "@/lib/sage/completionLoyaltyBatchPosting";
 import { createClient } from "@/utils/supabase/server";
 
 const LOYALTY_CONTROLS_PATH = "/internal/accounting-command-centre/loyalty-controls";
