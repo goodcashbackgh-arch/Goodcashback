@@ -292,6 +292,113 @@ importer_dva_card_account + GHS -> DVA GHS wallet ledger, posted in GBP equivale
 
 ---
 
+## 8A. Internal-transfer candidate card layout
+
+The internal-transfer candidate card is an action card, not an audit pack.
+
+Main card surface should show only:
+
+```text
+selection checkbox
+importer/customer name
+amount
+Debit wallet -> Credit main bank
+released loyalty amount
+wallet excess amount
+current status
+Materialise this row / Materialise freeze action
+```
+
+The following must be collapsed under `Audit details` by default:
+
+```text
+OUT date
+IN date
+OUT reference
+IN reference
+mapping codes
+Sage long ledger ids
+source/destination statement-line ids
+loyalty match ids
+completed order ids
+credit ledger ids
+```
+
+The bulk materialise control must be visually separate from the single-row action:
+
+```text
+Materialise / freeze selected
+Materialise this row
+```
+
+Do not use one label that makes staff think a row-level button acts on all selected checkboxes.
+
+---
+
+## 8B. Internal-transfer Sage journal batch detail layout
+
+The batch detail page for `completion_loyalty_internal_transfer_journal` must be an approval/posting workbench first and an audit page second.
+
+Primary identity should be:
+
+```text
+Completion loyalty · Sage journal batch
+Internal-transfer Sage journal batch
+Endpoint: /journals
+```
+
+Primary action bar must be visible before detailed audit content:
+
+```text
+Approve batch
+Post Sage journal batch
+```
+
+`Post Sage journal batch` must remain disabled until the batch is approved and the dedicated internal-transfer journal live flag is enabled.
+
+The first screen must avoid a stack of large metric cards. Use one compact summary row or compact chips:
+
+```text
+status
+approval status
+rows
+total
+posted / failed
+needs review / blocked
+endpoint: /journals
+live flag state
+```
+
+Batch rows should come next and should show operational detail only:
+
+```text
+transfer group reference
+importer/customer
+amount
+Dr wallet
+Cr main bank
+step status
+validation status
+```
+
+These sections must be collapsed by default below the row:
+
+```text
+request payload
+Sage response
+full group/audit metadata
+step logs
+retire/supersede control
+```
+
+The generic label `Post loyalty Sage batch` should not be used on the internal-transfer journal batch page because completion loyalty has multiple Sage posting lanes. Use:
+
+```text
+Post Sage journal batch
+```
+
+---
+
 ## 9. Read-only evidence
 
 Step 1 and Step 2 must remain available for audit/review, but should be secondary by default.
@@ -377,5 +484,8 @@ A compliant implementation must prove:
 10. no new live Sage posting path is created;
 11. Action Queue labels do not claim direct materialisation/batching/approval/posting unless a real form submits to the existing approved action;
 12. queue navigation to a lane preserves the posting-workbench sequence: candidate -> materialise/freeze -> validate -> batch -> approve -> post/retry;
-13. bulk materialise/freeze, if added, uses existing action semantics and does not bypass validated group batching.
+13. bulk materialise/freeze, if added, uses existing action semantics and does not bypass validated group batching;
+14. internal-transfer candidate cards hide OUT/IN references and mapping codes under collapsed Audit details by default;
+15. internal-transfer batch detail page shows action bar and compact summary before payload/response/audit sections;
+16. internal-transfer batch page labels the action as `Post Sage journal batch` and shows endpoint `/journals`.
 ```
