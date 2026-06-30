@@ -7,6 +7,7 @@ import { postCompletionLoyaltySageBatchToSage } from "@/lib/sage/completionLoyal
 import { createClient } from "@/utils/supabase/server";
 
 const LOYALTY_CONTROLS_PATH = "/internal/accounting-command-centre/loyalty-controls";
+const INTERNAL_TRANSFER_MATERIALISE_RPC = "staff_materialise_completion_loyalty_internal_transfer_journal_";
 
 function text(formData: FormData, key: string) {
   return String(formData.get(key) ?? "").trim();
@@ -93,13 +94,19 @@ export async function materialiseAppliedLoyaltySettlementAction(formData: FormDa
   const notes = text(formData, "notes");
 
   if (!eventId) {
-    throw new Error("Missing order funding event id for completion-loyalty materialisation.");
+    controlsActionRedirect("error", "Missing order funding event id for completion-loyalty materialisation.", "step-3-lifecycle");
   }
 
-  await rpcOrThrow("staff_materialise_completion_loyalty_applied_settlement_v1", {
-    p_order_funding_event_id: eventId,
-    p_notes: notes || null,
-  });
+  try {
+    await rpcOrThrow("staff_materialise_completion_loyalty_applied_settlement_v1", {
+      p_order_funding_event_id: eventId,
+      p_notes: notes || null,
+    });
+  } catch (error) {
+    controlsActionRedirect("error", actionMessage(error, "Could not materialise applied-loyalty settlement."), "step-3-lifecycle");
+  }
+
+  controlsActionRedirect("success", "Applied-loyalty settlement materialised/frozen locally. No Sage API call was made.", "step-3-lifecycle");
 }
 
 export async function materialiseSelectedAppliedLoyaltySettlementsAction(formData: FormData) {
@@ -143,14 +150,20 @@ export async function materialiseInternalTransferJournalAction(formData: FormDat
   const notes = text(formData, "notes");
 
   if (!sourceOutStatementLineId || !destinationInStatementLineId) {
-    throw new Error("Missing source OUT or destination IN statement line id for internal-transfer materialisation.");
+    controlsActionRedirect("error", "Missing source OUT or destination IN statement line id for internal-transfer materialisation.", "step-3-internal-transfer");
   }
 
-  await rpcOrThrow("staff_materialise_completion_loyalty_internal_transfer_journal_v1", {
-    p_source_out_statement_line_id: sourceOutStatementLineId,
-    p_destination_in_statement_line_id: destinationInStatementLineId,
-    p_notes: notes || null,
-  });
+  try {
+    await rpcOrThrow(INTERNAL_TRANSFER_MATERIALISE_RPC, {
+      p_source_out_statement_line_id: sourceOutStatementLineId,
+      p_destination_in_statement_line_id: destinationInStatementLineId,
+      p_notes: notes || null,
+    });
+  } catch (error) {
+    controlsActionRedirect("error", actionMessage(error, "Could not materialise internal-transfer journal."), "step-3-internal-transfer");
+  }
+
+  controlsActionRedirect("success", "Internal-transfer journal materialised/frozen locally. No Sage API call was made.", "step-3-internal-transfer");
 }
 
 function parseInternalTransferCandidateKey(value: string) {
@@ -174,7 +187,7 @@ export async function materialiseSelectedInternalTransferJournalsAction(formData
   let firstBlocker = "";
 
   for (const pair of selectedPairs) {
-    const { error } = await (supabase as any).rpc("staff_materialise_completion_loyalty_internal_transfer_journal_v1", {
+    const { error } = await (supabase as any).rpc(INTERNAL_TRANSFER_MATERIALISE_RPC, {
       p_source_out_statement_line_id: pair.sourceOutStatementLineId,
       p_destination_in_statement_line_id: pair.destinationInStatementLineId,
       p_notes: notes || "Bulk materialised from internal-transfer controls. No Sage API call.",
