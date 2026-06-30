@@ -4,14 +4,11 @@ import { createClient } from "@/utils/supabase/server";
 import { approveCompletionLoyaltySageBatchAction, postCompletionLoyaltySageBatchAction } from "../../actions";
 
 type Row = Record<string, unknown>;
+type Tone = "complete" | "action" | "blocked" | "review" | "muted";
 type Params = { batch_id: string } | Promise<{ batch_id: string }>;
 type SearchParams = Record<string, string | string[] | undefined> | Promise<Record<string, string | string[] | undefined>>;
 
-const gbpFormatter = new Intl.NumberFormat("en-GB", {
-  style: "currency",
-  currency: "GBP",
-  minimumFractionDigits: 2,
-});
+const gbpFormatter = new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP", minimumFractionDigits: 2 });
 
 const stepOrder = new Map([
   ["loyalty_internal_transfer_journal", 1],
@@ -82,25 +79,29 @@ function journalLines(row: Row) {
   return asArray(journal.journal_lines).map(asObject);
 }
 
-function journalLineLabel(line: Row) {
-  return short(line.details || line.ledger_account_id, 58);
+function walletName(details: unknown) {
+  const raw = text(details).toLowerCase();
+  if (raw.includes("virtual gbp")) return "Virtual GBP wallet";
+  if (raw.includes("dva ghs")) return "DVA GHS wallet";
+  if (raw.includes("main gbp bank")) return "Main GBP bank";
+  if (raw.includes("main bank")) return "Main bank";
+  return short(details, 38);
 }
 
-function debitJournalLine(row: Row) {
+function debitLine(row: Row) {
   return journalLines(row).find((line) => num(line.debit) > 0) ?? {};
 }
 
-function creditJournalLine(row: Row) {
+function creditLine(row: Row) {
   return journalLines(row).find((line) => num(line.credit) > 0) ?? {};
 }
 
-function journalSummary(row: Row) {
-  const debit = debitJournalLine(row);
-  const credit = creditJournalLine(row);
-  const debitText = journalLineLabel(debit);
-  const creditText = journalLineLabel(credit);
-  if (debitText === "—" && creditText === "—") return "Dr wallet · Cr main bank";
-  return `Dr ${debitText} · Cr ${creditText}`;
+function movementSummary(row: Row) {
+  const debit = debitLine(row);
+  const credit = creditLine(row);
+  const to = walletName(debit.details || debit.ledger_account_id) || "destination wallet";
+  const from = walletName(credit.details || credit.ledger_account_id) || "main bank";
+  return `${from} → ${to}`;
 }
 
 function messageParam(searchParams: Record<string, string | string[] | undefined>, key: "success" | "error") {
@@ -112,16 +113,34 @@ function hasAccountingAccess(value: unknown) {
   return permissions.accounting_admin_testing === true || permissions.admin_testing === true;
 }
 
-function badgeTone(status: string) {
-  if (["blocked", "failed_terminal", "stale_reapproval_required", "invalidated", "cancelled", "superseded"].includes(status)) return "border-rose-200 bg-rose-50 text-rose-700";
-  if (["approved", "admin_approved", "posted_to_sage", "ok_to_post"].includes(status)) return "border-emerald-200 bg-emerald-50 text-emerald-700";
-  if (["partially_posted_needs_review", "warning_only", "posting_to_sage"].includes(status)) return "border-amber-200 bg-amber-50 text-amber-700";
+function toneClass(tone: Tone) {
+  if (tone === "complete") return "border-emerald-200 bg-emerald-50 text-emerald-900";
+  if (tone === "action") return "border-amber-200 bg-amber-50 text-amber-900";
+  if (tone === "blocked") return "border-rose-200 bg-rose-50 text-rose-900";
+  if (tone === "review") return "border-violet-200 bg-violet-50 text-violet-900";
   return "border-slate-200 bg-slate-50 text-slate-700";
 }
 
-function StatusBadge({ value }: { value: unknown }) {
-  const raw = text(value) || "unknown";
-  return <span className={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-bold ${badgeTone(raw)}`}>{pretty(raw)}</span>;
+function statusTone(value: unknown): Tone {
+  const raw = text(value);
+  if (["included", "validated", "locally_validated", "posted", "posted_to_sage", "approved", "admin_approved", "ok_to_post", "source_evidence_available", "present"].includes(raw)) return "complete";
+  if (["blocked", "failed_retryable", "failed_terminal", "dry_run_failed", "missing", "cancelled", "superseded", "invalidated"].includes(raw)) return "blocked";
+  if (["posting", "posting_to_sage", "not_approved", "not_posted", "not_dry_run_validated"].includes(raw)) return "action";
+  if (["partially_posted_needs_review", "warning_only", "stale_reapproval_required"].includes(raw)) return "review";
+  return "muted";
+}
+
+function Chip({ value }: { value: unknown }) {
+  return <span className={`inline-flex max-w-[220px] truncate rounded-full border px-2 py-0.5 text-[10px] font-bold leading-4 ${toneClass(statusTone(value))}`}>{pretty(value)}</span>;
+}
+
+function StatPill({ label, value, tone }: { label: string; value: string; tone: Tone }) {
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] font-bold leading-4 ${toneClass(tone)}`}>
+      <span className="opacity-70">{label}</span>
+      <span>{value}</span>
+    </span>
+  );
 }
 
 function PayloadBlock({ title, value }: { title: string; value: unknown }) {
@@ -133,64 +152,64 @@ function PayloadBlock({ title, value }: { title: string; value: unknown }) {
   );
 }
 
-function SummaryChip({ label, value }: { label: string; value: string }) {
+function StepList({ row }: { row: Row }) {
+  const steps = orderedSteps(row.steps_json);
+  if (steps.length === 0) return <span className="text-[11px] font-semibold text-rose-700">No steps</span>;
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white px-3 py-2">
-      <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">{label}</p>
-      <p className="mt-1 text-sm font-extrabold text-slate-950">{value}</p>
+    <div className="space-y-1">
+      {steps.map((step, index) => {
+        const stepObj = asObject(step);
+        return <p key={`${text(row.item_id)}-step-${index}`} className="flex flex-wrap items-center gap-1"><span className="font-semibold text-slate-900">{pretty(stepObj.step_type)}</span><Chip value={stepObj.status} /></p>;
+      })}
     </div>
   );
 }
 
-function BatchRowCard({ row, isInternalTransfer }: { row: Row; isInternalTransfer: boolean }) {
-  const targets = asArray(row.target_allocation_json);
-  const steps = orderedSteps(row.steps_json);
+function SourceCell({ row, isInternalTransfer }: { row: Row; isInternalTransfer: boolean }) {
+  if (isInternalTransfer) {
+    return (
+      <div className="space-y-1 text-[11px] leading-4">
+        <p className="font-bold text-slate-900">{movementSummary(row)}</p>
+        <p className="text-slate-600">Group: {short(row.posting_group_ref, 34)}</p>
+      </div>
+    );
+  }
   return (
-    <article className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-xs font-bold uppercase tracking-wide text-slate-500">{isInternalTransfer ? "Journal group" : "Order"}</p>
-          <p className="mt-1 break-all font-mono text-sm font-extrabold text-slate-950">{short(isInternalTransfer ? row.posting_group_ref : row.order_ref, 42)}</p>
-          <p className="mt-1 text-sm font-semibold text-slate-700">{short(row.importer_name, 52)}</p>
-        </div>
-        <p className="rounded-xl bg-slate-50 px-3 py-2 text-lg font-extrabold text-slate-950">{gbp(row.amount_gbp)}</p>
-      </div>
-
-      <div className="mt-3 flex flex-wrap gap-2">
-        <StatusBadge value={row.item_posting_status} />
-        <StatusBadge value={row.group_validation_status} />
-      </div>
-      {text(row.blocker) ? <p className="mt-2 rounded-xl border border-rose-200 bg-rose-50 p-2 text-xs font-semibold text-rose-700">{short(row.blocker, 120)}</p> : null}
-
-      {isInternalTransfer ? (
-        <div className="mt-4 rounded-xl border border-slate-100 bg-slate-50 p-3">
-          <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Journal</p>
-          <p className="mt-1 text-xs font-semibold text-slate-700">{journalSummary(row)}</p>
-          <p className="mt-2 text-[11px] font-bold text-slate-500">Endpoint: {text(firstStep(row).endpoint_path) || "/journals"}</p>
-        </div>
-      ) : (
-        <div className="mt-4 rounded-xl border border-slate-100 bg-slate-50 p-3">
-          <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Target allocation</p>
-          <div className="mt-2 grid gap-1">
-            {targets.length === 0 ? <span className="text-xs text-slate-400">—</span> : targets.map((target, index) => {
-              const targetObj = asObject(target);
-              return <p key={`${text(row.item_id)}-mobile-target-${index}`} className="break-all font-mono text-[11px] text-slate-700">{short(targetObj.target_sage_invoice_id, 44)} · {gbp(targetObj.allocation_amount_gbp)}</p>;
-            })}
-          </div>
-        </div>
-      )}
-
-      <details className="mt-3 rounded-xl border border-slate-100 bg-slate-50 p-3">
-        <summary className="cursor-pointer text-xs font-bold uppercase tracking-wide text-slate-500">Steps / audit</summary>
-        <div className="mt-2 grid gap-2">
-          {steps.map((step, index) => {
-            const stepObj = asObject(step);
-            return <div key={`${text(row.item_id)}-mobile-step-${index}`} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-white px-2 py-1.5"><span className="text-xs font-bold text-slate-900">{pretty(stepObj.step_type)}</span><StatusBadge value={stepObj.status} /></div>;
-          })}
-        </div>
-      </details>
-    </article>
+    <div className="space-y-1 text-[11px] leading-4">
+      <p className="font-bold text-slate-900">Order: {text(row.order_ref) || "—"}</p>
+      <p className="text-slate-600">Group: {short(row.posting_group_ref, 34)}</p>
+    </div>
   );
+}
+
+function TargetCell({ row, isInternalTransfer }: { row: Row; isInternalTransfer: boolean }) {
+  if (isInternalTransfer) {
+    return (
+      <div className="space-y-1 text-[11px] leading-4">
+        <p className="font-semibold text-slate-900">Internal bank movement</p>
+        <p className="text-slate-600">No customer invoice allocation.</p>
+      </div>
+    );
+  }
+
+  const targets = asArray(row.target_allocation_json);
+  return (
+    <div className="space-y-1 text-[11px] leading-4">
+      {targets.length === 0 ? <span className="text-slate-400">—</span> : targets.map((target, index) => {
+        const targetObj = asObject(target);
+        return <p key={`${text(row.item_id)}-${index}`} className="font-mono text-[11px]">{short(targetObj.target_sage_invoice_id, 34)} · {gbp(targetObj.allocation_amount_gbp)}</p>;
+      })}
+    </div>
+  );
+}
+
+function disabledPostingReason(args: { livePostingEnabled: boolean; approved: boolean; postableStatus: boolean; rows: number }) {
+  const reasons: string[] = [];
+  if (args.rows === 0) reasons.push("no batch rows");
+  if (!args.approved) reasons.push("batch is not approved");
+  if (!args.postableStatus) reasons.push("batch status is not postable");
+  if (!args.livePostingEnabled) reasons.push("live posting is disabled");
+  return reasons;
 }
 
 export default async function CompletionLoyaltySageBatchDetailPage({ params, searchParams }: { params: Params; searchParams?: SearchParams }) {
@@ -222,172 +241,153 @@ export default async function CompletionLoyaltySageBatchDetailPage({ params, sea
   const batchType = text(first.batch_type);
   const isInternalTransfer = batchType === "completion_loyalty_internal_transfer_journal";
   const isRetryBatch = ["failed_retryable", "partially_posted_needs_review"].includes(batchStatus);
-  const canApprove = rows.length > 0
-    && batchStatus === "validated"
-    && text(first.batch_approval_status) !== "approved"
-    && rows.every((row) => ["ok_to_post", "warning_only"].includes(text(row.group_validation_status)) && !text(row.blocker));
-  const livePostingEnabled = isInternalTransfer
-    ? process.env.SAGE_LIVE_BANK_GL_POSTING_ENABLED === "true"
-    : process.env.SAGE_LIVE_COMPLETION_LOYALTY_POSTING_ENABLED === "true" || process.env.SAGE_LIVE_CASH_POSTING_ENABLED === "true";
-  const canPost = rows.length > 0
-    && livePostingEnabled
-    && text(first.batch_approval_status) === "approved"
-    && ["approved", "failed_retryable", "partially_posted_needs_review"].includes(batchStatus);
-  const postButtonLabel = isRetryBatch ? "Retry failed / remaining steps" : isInternalTransfer ? "Post Sage journal batch" : "Post applied-loyalty Sage batch";
+  const includedRows = rows;
   const postedRows = rows.filter((row) => text(row.item_posting_status) === "posted_to_sage").length;
   const failedRows = rows.filter((row) => ["failed_retryable", "failed_terminal"].includes(text(row.item_posting_status))).length;
   const reviewRows = rows.filter((row) => text(row.item_posting_status) === "partially_posted_needs_review").length;
   const blockedRows = rows.filter((row) => text(row.blocker) || text(row.group_validation_status).startsWith("blocked")).length;
-  const pageTitle = isInternalTransfer ? "Internal-transfer Sage journal batch" : "Applied-loyalty Sage batch";
-  const endpointLabel = isInternalTransfer ? "/journals" : "/contact_payments → /contact_allocations → /journals";
-  const liveFlagLabel = isInternalTransfer ? "SAGE_LIVE_BANK_GL_POSTING_ENABLED" : "SAGE_LIVE_COMPLETION_LOYALTY_POSTING_ENABLED";
-  const introCopy = isInternalTransfer
-    ? "This is a controlled Sage journal batch. It reuses the existing /journals primitive and posts one journal per validated internal-transfer group."
-    : "This batch wraps materialised applied-loyalty Sage groups. The post creates the receipt → allocation → journal chain; retry continues the same batch and skips Sage steps that already have object ids.";
-  const rowsCopy = isInternalTransfer
-    ? "Each row is one internal-transfer Sage journal group. Payloads, Sage responses and audit metadata are collapsed below."
-    : "Each row is one applied-loyalty Sage posting group. Payloads, Sage responses and audit metadata are collapsed below.";
+  const livePostingEnabled = isInternalTransfer
+    ? process.env.SAGE_LIVE_BANK_GL_POSTING_ENABLED === "true"
+    : process.env.SAGE_LIVE_COMPLETION_LOYALTY_POSTING_ENABLED === "true" || process.env.SAGE_LIVE_CASH_POSTING_ENABLED === "true";
+  const approved = text(first.batch_approval_status) === "approved";
+  const postableStatus = ["approved", "failed_retryable", "partially_posted_needs_review"].includes(batchStatus);
+  const canApprove = rows.length > 0
+    && batchStatus === "validated"
+    && !approved
+    && rows.every((row) => ["ok_to_post", "warning_only"].includes(text(row.group_validation_status)) && !text(row.blocker));
+  const canPost = rows.length > 0 && livePostingEnabled && approved && postableStatus;
+  const canRetire = rows.length > 0 && rows.every((row) => text(row.item_posting_status) !== "posted_to_sage" && !text(firstStep(row).sage_object_id));
+  const postingBlockedReasons = disabledPostingReason({ livePostingEnabled, approved, postableStatus, rows: rows.length });
+  const laneLabel = isInternalTransfer ? "internal transfer" : "applied loyalty";
+  const postButtonLabel = isRetryBatch ? "Retry failed / remaining steps" : isInternalTransfer ? "Post internal transfer to Sage" : "Post applied loyalty to Sage";
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-5 text-slate-950 sm:px-6 lg:px-8">
-      <div className="mx-auto max-w-[1500px] space-y-4">
-        <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-          <Link href="/internal/accounting-command-centre/loyalty-controls#step-3-lifecycle" className="text-sm font-semibold text-sky-700">← Loyalty controls</Link>
-          <p className="mt-5 text-sm font-medium uppercase tracking-[0.2em] text-emerald-600">Completion loyalty · Sage batch</p>
-          <div className="mt-2 flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">{text(first.batch_ref) || "Loyalty Sage batch"}</h1>
-              <p className="mt-1 text-base font-bold text-slate-700">{pageTitle}</p>
-              <p className="mt-2 max-w-5xl text-sm leading-6 text-slate-600">{introCopy}</p>
+      <div className="mx-auto max-w-[1900px] space-y-3">
+        <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-3">
+                <Link href="/internal/accounting-command-centre" className="text-sm font-semibold text-sky-700">← Accounting Command Centre</Link>
+                <Link href="/internal/accounting-command-centre/loyalty-controls#step-3-lifecycle" className="text-sm font-semibold text-sky-700">Loyalty controls</Link>
+              </div>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <p className="text-xs font-bold uppercase tracking-[0.2em] text-violet-500">Posting batch detail</p>
+                <span className="rounded-full border border-violet-200 bg-violet-50 px-2 py-1 text-[10px] font-bold text-violet-900">Completion loyalty</span>
+                <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-[10px] font-bold text-slate-700">Lane-aware Sage action</span>
+              </div>
+              <h1 className="mt-1 truncate text-3xl font-semibold tracking-tight sm:text-4xl">{text(first.batch_ref) || "Posting batch"}</h1>
+              <p className="mt-1 max-w-5xl text-sm leading-5 text-slate-600">Local batch lock plus approval. The correct posting button appears here after the selected lane is approved; retry continues the same batch and skips posted steps.</p>
+              <p className="mt-1 text-xs font-semibold text-slate-500">Batch id {batchId}</p>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <form action={approveCompletionLoyaltySageBatchAction} className="flex flex-wrap items-center gap-2">
+                  <input type="hidden" name="batch_id" value={batchId} />
+                  <input type="hidden" name="approval_notes" value="Approved from completion loyalty batch detail." />
+                  <button type="submit" disabled={!canApprove} className="rounded-2xl bg-violet-700 px-4 py-2 text-sm font-bold text-white shadow-sm disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-600">
+                    Approve batch
+                  </button>
+                </form>
+                <form action={postCompletionLoyaltySageBatchAction} className="flex flex-wrap items-center gap-2">
+                  <input type="hidden" name="batch_id" value={batchId} />
+                  <button type="submit" disabled={!canPost} className="rounded-2xl bg-emerald-700 px-4 py-2 text-sm font-bold text-white shadow-sm disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-600" title={canPost ? `Posts ${laneLabel} batch to Sage.` : postingBlockedReasons.join("; ") || "Posting is not available for this batch."}>
+                    {postButtonLabel}
+                  </button>
+                </form>
+                <Link href={`/internal/accounting-command-centre/loyalty-controls/batches/${batchId}/retire`} aria-disabled={!canRetire} className={`rounded-2xl px-4 py-2 text-sm font-bold shadow-sm ${canRetire ? "border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100" : "pointer-events-none bg-slate-200 text-slate-500"}`}>
+                  Retire local batch
+                </Link>
+                {livePostingEnabled ? (
+                  <span className="rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-900">Live Sage posting enabled.</span>
+                ) : (
+                  <span className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-900">Live Sage posting disabled.</span>
+                )}
+              </div>
             </div>
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-bold text-slate-800">
-              Endpoint: {endpointLabel}<br />
-              Live gate: {livePostingEnabled ? "enabled" : "disabled"}
+            <div className="flex shrink-0 flex-wrap gap-1.5 xl:max-w-[900px] xl:justify-end">
+              <StatPill label="Status" value={pretty(batchStatus)} tone={statusTone(batchStatus)} />
+              <StatPill label="Lane" value={pretty(laneLabel)} tone="review" />
+              <StatPill label="Rows" value={String(first.batch_row_count ?? rows.length)} tone={rows.length > 0 ? "complete" : "muted"} />
+              <StatPill label="Total" value={gbp(first.batch_total_amount_gbp)} tone={rows.length > 0 ? "complete" : "muted"} />
+              <StatPill label="Approved" value={approved ? "yes" : "no"} tone={approved ? "complete" : "action"} />
+              <StatPill label="Posted" value={String(postedRows)} tone={postedRows > 0 ? "complete" : "muted"} />
+              <StatPill label="Failed" value={String(failedRows)} tone={failedRows > 0 ? "blocked" : "complete"} />
+              <StatPill label="Review" value={String(reviewRows)} tone={reviewRows > 0 ? "review" : "complete"} />
+              <StatPill label="Blocked" value={String(blockedRows)} tone={blockedRows > 0 ? "blocked" : "complete"} />
             </div>
           </div>
-          <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-bold">
-            <StatusBadge value={batchStatus || "not_loaded"} />
-            <StatusBadge value={isInternalTransfer ? "sage_journal_batch" : batchType || "unknown_batch_type"} />
-            <StatusBadge value={text(first.batch_validation_status) || "not_validated"} />
-            <StatusBadge value={text(first.batch_approval_status) || "not_approved"} />
-            <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-slate-700">{liveFlagLabel}: {livePostingEnabled ? "true" : "false"}</span>
-          </div>
-
-          {success ? <p className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-900">{success}</p> : null}
-          {pageError ? <p className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900">{pageError}</p> : null}
-          {error ? <p className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">Batch detail unavailable: {error.message}. Run the loyalty Sage batch migration.</p> : null}
+          {success ? <p className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-900">{success}</p> : null}
+          {pageError ? <p className="mt-3 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-900">{pageError}</p> : null}
+          {postingBlockedReasons.length > 0 && rows.length > 0 ? <p className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">Posting blocked: {postingBlockedReasons.join("; ")}.</p> : null}
+          {isRetryBatch ? <p className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">Retry keeps this same batch and skips any step already posted to Sage. Do not retire this batch if any Sage object exists.</p> : null}
+          {error ? <p className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">Batch detail RPC unavailable: {error.message}. Run the latest loyalty Sage batch migration before testing this page.</p> : null}
+          {!error && rows.length === 0 ? <p className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">No batch rows found for this batch id.</p> : null}
         </section>
 
-        {rows.length === 0 ? (
-          <section className="rounded-3xl border border-slate-200 bg-white p-5 text-sm text-slate-600 shadow-sm">
-            No batch rows found for this batch id.
-          </section>
-        ) : (
-          <>
-            <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
-              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                <div>
-                  <h2 className="text-xl font-semibold">Approve / post</h2>
-                  <p className="mt-1 text-sm text-slate-500">Approve the whole batch first. Posting uses the frozen endpoint and skips any Sage step that already has an object id on retry.</p>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <form action={approveCompletionLoyaltySageBatchAction}>
-                    <input type="hidden" name="batch_id" value={batchId} />
-                    <input type="hidden" name="approval_notes" value="Approved from completion loyalty Sage batch detail." />
-                    <button type="submit" disabled={!canApprove} className="rounded-xl bg-emerald-700 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-800 disabled:bg-slate-200 disabled:text-slate-500">
-                      Approve batch
-                    </button>
-                  </form>
-                  <form action={postCompletionLoyaltySageBatchAction}>
-                    <input type="hidden" name="batch_id" value={batchId} />
-                    <button disabled={!canPost} className="rounded-xl bg-slate-950 px-4 py-2 text-xs font-bold text-white hover:bg-slate-800 disabled:bg-slate-200 disabled:text-slate-500">
-                      {postButtonLabel}
-                    </button>
-                  </form>
-                </div>
-              </div>
-              {!livePostingEnabled ? <p className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-900">Live posting is disabled. {isInternalTransfer ? "Enable the existing journal switch SAGE_LIVE_BANK_GL_POSTING_ENABLED=true after the controlled journal test is approved." : "Enable the approved applied-loyalty posting switch before posting."}</p> : null}
-              {isRetryBatch ? <p className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-900">Retry keeps this same batch and skips any step already posted to Sage. Do not retire this batch if any Sage object exists.</p> : null}
-            </section>
+        <section className="rounded-3xl border border-slate-200 bg-white shadow-sm">
+          <div className="flex flex-col gap-2 border-b border-slate-100 px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <h2 className="text-xl font-semibold">Batch rows</h2>
+              <p className="mt-1 text-sm text-slate-500">Each row shows source facts, Sage target/control status and posting status. If blocked, stop before Sage posting.</p>
+            </div>
+          </div>
+          <div className="overflow-x-auto rounded-b-3xl">
+            <table className="min-w-[1320px] table-fixed divide-y divide-slate-200 text-xs">
+              <colgroup>
+                <col className="w-[112px]" />
+                <col className="w-[150px]" />
+                <col className="w-[260px]" />
+                <col className="w-[260px]" />
+                <col className="w-[96px]" />
+                <col className="w-[180px]" />
+                <col className="w-[180px]" />
+                <col className="w-[250px]" />
+              </colgroup>
+              <thead className="sticky top-0 z-10 bg-slate-100 text-[11px] uppercase tracking-wide text-slate-500">
+                <tr>
+                  <th className="px-2 py-2 text-left">Status</th>
+                  <th className="px-2 py-2 text-left">Lane</th>
+                  <th className="px-2 py-2 text-left">Source facts</th>
+                  <th className="px-2 py-2 text-left">Sage target / control</th>
+                  <th className="px-2 py-2 text-right">Amount</th>
+                  <th className="px-2 py-2 text-left">Validation</th>
+                  <th className="px-2 py-2 text-left">Steps</th>
+                  <th className="px-2 py-2 text-left">Reason / error</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 bg-white">
+                {rows.length === 0 ? <tr><td colSpan={8} className="px-3 py-8 text-center text-sm text-slate-500">No rows.</td></tr> : includedRows.map((row) => (
+                  <tr key={text(row.item_id) || text(row.posting_group_ref)} className="align-top hover:bg-slate-50">
+                    <td className="px-2 py-2"><Chip value={row.item_posting_status} /></td>
+                    <td className="px-2 py-2"><p className="truncate font-bold text-slate-950">{pretty(laneLabel)}</p><p className="mt-0.5 truncate text-[11px] text-slate-500">{pretty(batchType)}</p></td>
+                    <td className="px-2 py-2"><SourceCell row={row} isInternalTransfer={isInternalTransfer} /></td>
+                    <td className="px-2 py-2"><TargetCell row={row} isInternalTransfer={isInternalTransfer} /></td>
+                    <td className="px-2 py-2 text-right font-bold text-slate-950">{gbp(row.amount_gbp)}<p className="text-[11px] font-normal text-slate-500">GBP</p></td>
+                    <td className="px-2 py-2"><Chip value={row.group_validation_status} />{text(row.blocker) ? <p className="mt-1 line-clamp-3 text-[11px] font-semibold text-rose-700">{text(row.blocker)}</p> : null}</td>
+                    <td className="px-2 py-2"><StepList row={row} /></td>
+                    <td className="px-2 py-2"><p className="line-clamp-4 text-[11px] font-semibold leading-4 text-slate-600">{text(row.last_posting_error) || text(row.blocker) || "—"}</p></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
 
-            <section className="grid gap-2 sm:grid-cols-3 lg:grid-cols-7">
-              <SummaryChip label="Status" value={pretty(batchStatus)} />
-              <SummaryChip label="Rows" value={text(first.batch_row_count)} />
-              <SummaryChip label="Total" value={gbp(first.batch_total_amount_gbp)} />
-              <SummaryChip label="Posted" value={String(postedRows)} />
-              <SummaryChip label="Failed" value={String(failedRows)} />
-              <SummaryChip label="Review / blocked" value={`${reviewRows} / ${blockedRows}`} />
-              <SummaryChip label="Endpoint" value={endpointLabel} />
-            </section>
-
-            <section className="rounded-3xl border border-slate-200 bg-white shadow-sm">
-              <div className="border-b border-slate-100 px-4 py-3">
-                <h2 className="text-xl font-semibold">Batch rows</h2>
-                <p className="mt-1 text-sm text-slate-500">{rowsCopy}</p>
-              </div>
-              <div className="grid gap-3 p-4 lg:hidden">
-                {rows.map((row) => <BatchRowCard key={text(row.item_id)} row={row} isInternalTransfer={isInternalTransfer} />)}
-              </div>
-              <div className="hidden overflow-x-auto lg:block">
-                <table className="min-w-[1120px] divide-y divide-slate-200 text-xs">
-                  <thead className="bg-slate-100 text-[10px] uppercase tracking-wide text-slate-500">
-                    <tr>
-                      <th className="px-3 py-2 text-left">Status</th>
-                      <th className="px-3 py-2 text-left">Group</th>
-                      <th className="px-3 py-2 text-left">{isInternalTransfer ? "Journal" : "Order"}</th>
-                      <th className="px-3 py-2 text-left">Importer</th>
-                      <th className="px-3 py-2 text-right">Amount</th>
-                      <th className="px-3 py-2 text-left">Steps</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 bg-white">
-                    {rows.map((row) => {
-                      const targets = asArray(row.target_allocation_json);
-                      const steps = orderedSteps(row.steps_json);
-                      return (
-                        <tr key={text(row.item_id)} className="align-top">
-                          <td className="px-3 py-3"><StatusBadge value={row.item_posting_status} /><p className="mt-1"><StatusBadge value={row.group_validation_status} /></p>{text(row.blocker) ? <p className="mt-1 text-[11px] font-semibold text-rose-700">{short(row.blocker, 90)}</p> : null}</td>
-                          <td className="px-3 py-3 font-mono text-[11px] font-bold">{short(row.posting_group_ref, 34)}</td>
-                          <td className="px-3 py-3 text-[11px] font-semibold text-slate-700">
-                            {isInternalTransfer ? journalSummary(row) : targets.length === 0 ? short(row.order_ref, 32) : targets.map((target, index) => {
-                              const targetObj = asObject(target);
-                              return <p key={`${text(row.item_id)}-${index}`} className="font-mono text-[11px]">{short(targetObj.target_sage_invoice_id, 34)} · {gbp(targetObj.allocation_amount_gbp)}</p>;
-                            })}
-                          </td>
-                          <td className="px-3 py-3 font-bold">{short(row.importer_name, 36)}</td>
-                          <td className="px-3 py-3 text-right font-bold">{gbp(row.amount_gbp)}</td>
-                          <td className="px-3 py-3">
-                            <div className="grid gap-1">
-                              {steps.map((step, index) => {
-                                const stepObj = asObject(step);
-                                return <p key={`${text(row.item_id)}-step-${index}`}><span className="font-bold">{pretty(stepObj.step_type)}</span> · <StatusBadge value={stepObj.status} /></p>;
-                              })}
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </section>
-
-            <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
-              <h2 className="text-xl font-semibold">Payloads and Sage responses</h2>
-              <p className="mt-1 text-sm text-slate-500">Collapsed by default. Open only when checking the frozen request, Sage response, or retry/audit evidence.</p>
-              <div className="mt-4 grid gap-3 lg:grid-cols-2">
-                {rows.map((row) => orderedSteps(row.steps_json).map((step, index) => {
-                  const stepObj = asObject(step);
-                  return <PayloadBlock key={`${text(row.item_id)}-${index}-payload`} title={`${pretty(stepObj.step_type)} · request payload`} value={stepObj.request_payload} />;
-                }))}
-                {rows.map((row) => orderedSteps(row.steps_json).map((step, index) => {
-                  const stepObj = asObject(step);
-                  return <PayloadBlock key={`${text(row.item_id)}-${index}-response`} title={`${pretty(stepObj.step_type)} · Sage response`} value={stepObj.response_payload} />;
-                }))}
-              </div>
-            </section>
-          </>
-        )}
+        <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+          <details>
+            <summary className="cursor-pointer text-lg font-semibold text-slate-950">Technical audit</summary>
+            <p className="mt-1 text-sm text-slate-500">Frozen request payloads and Sage responses are kept here for audit/retry checks. They are not part of the normal posting workflow view.</p>
+            <div className="mt-4 grid gap-3 lg:grid-cols-2">
+              {rows.map((row) => orderedSteps(row.steps_json).map((step, index) => {
+                const stepObj = asObject(step);
+                return <PayloadBlock key={`${text(row.item_id)}-${index}-payload`} title={`${pretty(stepObj.step_type)} · request payload`} value={stepObj.request_payload} />;
+              }))}
+              {rows.map((row) => orderedSteps(row.steps_json).map((step, index) => {
+                const stepObj = asObject(step);
+                return <PayloadBlock key={`${text(row.item_id)}-${index}-response`} title={`${pretty(stepObj.step_type)} · Sage response`} value={stepObj.response_payload} />;
+              }))}
+            </div>
+          </details>
+        </section>
       </div>
     </main>
   );
