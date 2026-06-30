@@ -119,9 +119,19 @@ function batchNeedsReview(batch: Row) {
     || num(batch.failed_count) > 0;
 }
 
+function laneHref(lane: "applied_settlement" | "internal_transfer", searchQuery: string, anchor: string) {
+  const params = new URLSearchParams();
+  const cleanSearch = searchQuery.trim();
+  if (cleanSearch) params.set("q", cleanSearch);
+  params.set("lane", lane);
+  return `/internal/accounting-command-centre/loyalty-controls?${params.toString()}#${anchor}`;
+}
+
 export default async function CompletionLoyaltyActionQueuePanel({ searchQuery = "", statusFilter = "needs_action" }: Props) {
   const supabase = await createClient();
   const cleanSearch = searchQuery.trim() || null;
+  const appliedLaneHref = laneHref("applied_settlement", searchQuery, "step-3-lifecycle");
+  const transferLaneHref = laneHref("internal_transfer", searchQuery, "step-3-internal-transfer");
 
   const [
     { data: appliedPreviewData, error: appliedPreviewError },
@@ -186,7 +196,7 @@ export default async function CompletionLoyaltyActionQueuePanel({ searchQuery = 
       detail: text(row.importer_name) || "Importer/customer",
       amount: num(row.amount_gbp),
       nextAction: blocker ? "Resolve blocker before Step 3" : "Materialise / freeze in applied lane",
-      href: "#step-3-lifecycle",
+      href: appliedLaneHref,
       blocker,
     });
   }
@@ -203,7 +213,7 @@ export default async function CompletionLoyaltyActionQueuePanel({ searchQuery = 
       detail: `Dr ${pretty(row.destination_wallet_code)}; Cr Main GBP bank`,
       amount: num(row.transfer_amount_gbp),
       nextAction: blocker ? "Resolve blocker before materialising" : "Materialise / freeze in transfer lane",
-      href: "#step-3-internal-transfer",
+      href: transferLaneHref,
       blocker,
     });
   }
@@ -219,7 +229,7 @@ export default async function CompletionLoyaltyActionQueuePanel({ searchQuery = 
         detail: isTransfer ? "Validated internal-transfer journal group" : text(group.order_ref) || "Validated applied-loyalty settlement group",
         amount: num(group.amount_gbp),
         nextAction: isTransfer ? "Create transfer Sage batch" : "Create loyalty Sage batch",
-        href: isTransfer ? "#step-3-internal-transfer" : "#step-3-lifecycle",
+        href: isTransfer ? transferLaneHref : appliedLaneHref,
       });
     } else if (text(group.blocker)) {
       queueRows.push({
@@ -230,7 +240,7 @@ export default async function CompletionLoyaltyActionQueuePanel({ searchQuery = 
         detail: isTransfer ? "Internal-transfer journal group" : text(group.order_ref) || "Applied-loyalty settlement group",
         amount: num(group.amount_gbp),
         nextAction: "Resolve blocker / revalidate",
-        href: isTransfer ? "#step-3-internal-transfer" : "#step-3-lifecycle",
+        href: isTransfer ? transferLaneHref : appliedLaneHref,
         blocker: text(group.blocker),
       });
     }
