@@ -99,8 +99,7 @@ function journalReference(raw: unknown, fallback: string) {
 
 function internalTransferLivePostingEnabled() {
   return process.env.SAGE_LIVE_COMPLETION_LOYALTY_INTERNAL_TRANSFER_POSTING_ENABLED === "true"
-    || process.env.SAGE_LIVE_COMPLETION_LOYALTY_POSTING_ENABLED === "true"
-    || process.env.SAGE_LIVE_CASH_POSTING_ENABLED === "true";
+    || process.env.SAGE_LIVE_BANK_GL_POSTING_ENABLED === "true";
 }
 
 async function activeSageContext(origin: string): Promise<SageContext> {
@@ -311,7 +310,7 @@ async function updateBatchStatus(batchId: string) {
 
 async function postInternalTransferBatchToSage(params: { batchId: string; staffId: string; origin: string }) {
   if (!internalTransferLivePostingEnabled()) {
-    throw new Error("Live completion-loyalty internal-transfer posting is disabled. Set SAGE_LIVE_COMPLETION_LOYALTY_INTERNAL_TRANSFER_POSTING_ENABLED=true after approving the controlled journal test.");
+    throw new Error("Live completion-loyalty internal-transfer journal posting is disabled. Set SAGE_LIVE_BANK_GL_POSTING_ENABLED=true or SAGE_LIVE_COMPLETION_LOYALTY_INTERNAL_TRANSFER_POSTING_ENABLED=true after approving the controlled journal test.");
   }
 
   const { data: batchRaw, error: batchError } = await supabaseAdmin.from("completion_loyalty_sage_posting_batches").select("*").eq("id", params.batchId).eq("active", true).maybeSingle();
