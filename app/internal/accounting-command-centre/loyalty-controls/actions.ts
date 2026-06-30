@@ -312,5 +312,5 @@ export async function postCompletionLoyaltySageBatchAction(formData: FormData) {
 
   revalidatePath(LOYALTY_CONTROLS_PATH);
   revalidatePath(batchPath);
-  redirect(`${batchPath}?success=${encodeURIComponent(`Completion-loyalty Sage posting finished: ${result.posted} posted, ${result.failed} failed, ${result.needsReview} needs review, ${result.total} total. Endpoint ${result.endpoint}.`)}`);
+  redirect(`${batchPath}?success=${encodeURIComponent(`Completion-loyalty Sage posting finished: ${result.posted} posted, ${result.failed} failed, ${result.needsReview} needs review, ${result.total} total.`)}`);
 }
