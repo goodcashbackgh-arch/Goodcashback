@@ -116,9 +116,17 @@ function batchNeedsReview(batch: Row) {
     || num(batch.failed_count) > 0;
 }
 
-function laneHref(lane: "applied_settlement" | "internal_transfer", searchQuery: string, anchor: string) {
+function rowSearch(...values: unknown[]) {
+  for (const value of values) {
+    const raw = text(value).trim();
+    if (raw) return raw;
+  }
+  return "";
+}
+
+function laneHref(lane: "applied_settlement" | "internal_transfer", searchQuery: string, anchor: string, focusedSearch?: string) {
   const params = new URLSearchParams();
-  const cleanSearch = searchQuery.trim();
+  const cleanSearch = (focusedSearch ?? searchQuery).trim();
   if (cleanSearch) params.set("q", cleanSearch);
   params.set("lane", lane);
   return `/internal/accounting-command-centre/loyalty-controls?${params.toString()}#${anchor}`;
@@ -185,6 +193,7 @@ export default async function CompletionLoyaltyActionQueuePanel({ searchQuery = 
   for (const row of ((appliedPreviewData ?? []) as Row[])) {
     if (activeAppliedEventIds.has(text(row.order_funding_event_id))) continue;
     const blocker = visibleBlocker(row.blocker) || visibleBlocker(row.readiness_status);
+    const focus = rowSearch(row.order_funding_event_id, row.order_ref, row.source_id);
     queueRows.push({
       key: `applied-preview-${text(row.order_funding_event_id) || text(row.source_id)}`,
       lane: "applied_settlement",
@@ -192,8 +201,8 @@ export default async function CompletionLoyaltyActionQueuePanel({ searchQuery = 
       title: text(row.order_ref) || "Applied loyalty settlement",
       detail: text(row.importer_name) || "Importer/customer",
       amount: num(row.amount_gbp),
-      nextAction: blocker ? "Resolve blocker before Step 3" : "Materialise / freeze in applied lane",
-      href: appliedLaneHref,
+      nextAction: blocker ? "Open applied blocker" : "Open applied lane",
+      href: laneHref("applied_settlement", searchQuery, "step-3-lifecycle", focus),
       blocker,
     });
   }
@@ -202,6 +211,7 @@ export default async function CompletionLoyaltyActionQueuePanel({ searchQuery = 
     const blocker = text(row.blocker);
     const alreadyMaterialised = Boolean(text(row.existing_posting_group_id));
     if (alreadyMaterialised) continue;
+    const focus = rowSearch(row.source_out_reference, row.destination_in_reference, row.importer_name);
     queueRows.push({
       key: `transfer-candidate-${text(row.source_out_statement_line_id)}-${text(row.destination_in_statement_line_id)}`,
       lane: "internal_transfer",
@@ -209,14 +219,15 @@ export default async function CompletionLoyaltyActionQueuePanel({ searchQuery = 
       title: text(row.importer_name) || "Internal bank transfer",
       detail: `Dr ${pretty(row.destination_wallet_code)}; Cr Main GBP bank`,
       amount: num(row.transfer_amount_gbp),
-      nextAction: blocker ? "Resolve blocker before materialising" : "Materialise / freeze in transfer lane",
-      href: transferLaneHref,
+      nextAction: blocker ? "Open transfer blocker" : "Open transfer lane",
+      href: laneHref("internal_transfer", searchQuery, "step-3-internal-transfer", focus),
       blocker,
     });
   }
 
   for (const group of [...appliedGroups, ...transferGroups]) {
     const isTransfer = text(group.posting_group_type) === "completion_loyalty_internal_transfer_journal";
+    const groupFocus = rowSearch(group.posting_group_ref, group.order_ref, group.posting_group_id);
     if (groupReadyForBatch(group, activeBatchedGroupIds)) {
       queueRows.push({
         key: `group-ready-${text(group.posting_group_id)}`,
@@ -225,8 +236,10 @@ export default async function CompletionLoyaltyActionQueuePanel({ searchQuery = 
         title: text(group.posting_group_ref) || "Posting group",
         detail: isTransfer ? "Validated internal-transfer journal group" : text(group.order_ref) || "Validated applied-loyalty settlement group",
         amount: num(group.amount_gbp),
-        nextAction: isTransfer ? "Create transfer Sage batch" : "Create loyalty Sage batch",
-        href: isTransfer ? transferLaneHref : appliedLaneHref,
+        nextAction: isTransfer ? "Open transfer batching lane" : "Open applied batching lane",
+        href: isTransfer
+          ? laneHref("internal_transfer", searchQuery, "step-3-internal-transfer", groupFocus)
+          : laneHref("applied_settlement", searchQuery, "step-3-lifecycle", groupFocus),
       });
     } else if (text(group.blocker)) {
       queueRows.push({
@@ -236,8 +249,10 @@ export default async function CompletionLoyaltyActionQueuePanel({ searchQuery = 
         title: text(group.posting_group_ref) || "Blocked posting group",
         detail: isTransfer ? "Internal-transfer journal group" : text(group.order_ref) || "Applied-loyalty settlement group",
         amount: num(group.amount_gbp),
-        nextAction: "Resolve blocker / revalidate",
-        href: isTransfer ? transferLaneHref : appliedLaneHref,
+        nextAction: "Open group / revalidate",
+        href: isTransfer
+          ? laneHref("internal_transfer", searchQuery, "step-3-internal-transfer", groupFocus)
+          : laneHref("applied_settlement", searchQuery, "step-3-lifecycle", groupFocus),
         blocker: text(group.blocker),
       });
     }
@@ -280,7 +295,7 @@ export default async function CompletionLoyaltyActionQueuePanel({ searchQuery = 
           <p className="text-sm font-medium uppercase tracking-[0.18em] text-slate-500">Action queue</p>
           <h2 className="mt-2 text-xl font-semibold text-slate-950">Items needing accounting attention</h2>
           <p className="mt-2 max-w-5xl text-sm leading-6 text-slate-600">
-            Operational view across both loyalty Sage lanes. This queue only points to existing materialise, batch, review and retry controls.
+            Operational view across both loyalty Sage lanes. Queue links open the relevant lane and filter to the row where possible; real materialise, batch, approve and post actions stay inside the existing lane/batch controls.
           </p>
         </div>
         <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm font-semibold text-slate-800 ring-1 ring-slate-200">
