@@ -74,6 +74,7 @@ function visibleBlocker(value: unknown) {
   const raw = text(value);
   const lower = raw.toLowerCase();
   if (!raw) return "";
+  if (lower.startsWith("ready")) return "";
   if (lower.includes("mapping endpoint idempotency logging and reversal contract not locked")) return "";
   if (lower.includes("preview only mapping not confirmed")) return "";
   return raw;
