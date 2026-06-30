@@ -166,6 +166,77 @@ The queue may call existing actions only. It must not introduce new posting sema
 
 ---
 
+## 6A. Action Queue direct-action boundary
+
+The Action Queue must not imply that a row has been posted, batched, or materialised merely because staff clicked it.
+
+Unless a proper queue-level form submits the same required identifiers to the existing server action, queue rows are navigation/deep-link rows only.
+
+Current safe interpretation:
+
+```text
+Action Queue row click
+-> opens the correct lane/filter/detail target
+-> staff reviews the exact candidate or group inside that lane
+-> staff then performs the real action from the lane form
+```
+
+Labels must therefore be unambiguous:
+
+```text
+Use: Open transfer lane
+Use: Open applied settlement lane
+Use: Open batch review
+Avoid: Materialise / freeze
+Avoid: Create batch
+Avoid: Approve
+Avoid: Post
+```
+
+The avoided labels may only be used in the Action Queue if the row itself contains a real form that submits to the existing approved action with the exact required source identifiers.
+
+For internal-transfer materialisation, a direct queue action must submit the same data currently required by the lane action:
+
+```text
+source_out_statement_line_id
+destination_in_statement_line_id
+```
+
+For applied-settlement materialisation, a direct queue action must submit the same applied-loyalty event/source identifiers required by the existing applied-settlement lifecycle action.
+
+If direct queue actions are added later, they must remain equivalent to existing lane actions and must not create a second posting path.
+
+---
+
+## 6B. Posting-workbench sequence boundary
+
+The completion-loyalty controls page must preserve the existing posting-workbench sequence:
+
+```text
+candidate/source row
+-> materialise/freeze local posting group and Sage payload steps
+-> validate/revalidate local group
+-> select materialised validated group(s)
+-> create Sage batch
+-> approve batch
+-> post/retry from batch detail page only
+```
+
+The Action Queue is allowed to shorten navigation to the relevant step, but it must not skip any control step.
+
+Bulk actions must follow the same sequence:
+
+```text
+bulk materialise/freeze selected candidates
+-> produce local posting groups
+-> select validated groups
+-> create batch from selected groups
+```
+
+Bulk materialise/freeze must not be faked by opening the lane with all rows visible. If bulk materialise is not yet implemented, the UI must say so through navigation wording rather than action wording.
+
+---
+
 ## 7. Applied Settlement lane
 
 Applied-loyalty settlement remains governed by:
@@ -303,5 +374,8 @@ A compliant implementation must prove:
 7. default view is less visually dense and prioritises actionable Step 3 work;
 8. empty internal-transfer controls/history are hidden or compact;
 9. failed/retryable/blocked rows are easy to find through filters;
-10. no new live Sage posting path is created.
+10. no new live Sage posting path is created;
+11. Action Queue labels do not claim direct materialisation/batching/approval/posting unless a real form submits to the existing approved action;
+12. queue navigation to a lane preserves the posting-workbench sequence: candidate -> materialise/freeze -> validate -> batch -> approve -> post/retry;
+13. bulk materialise/freeze, if added, uses existing action semantics and does not bypass validated group batching.
 ```
