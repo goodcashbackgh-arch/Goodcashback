@@ -16,12 +16,16 @@ function textArray(formData: FormData, key: string) {
   return formData.getAll(key).map((value) => String(value ?? "").trim()).filter(Boolean);
 }
 
+function unique(values: string[]) {
+  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
+}
+
 function actionMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback;
 }
 
-function controlsActionRedirect(kind: "success" | "error", message: string) {
-  redirect(`${LOYALTY_CONTROLS_PATH}?${kind}=${encodeURIComponent(message)}#step-3-lifecycle`);
+function controlsActionRedirect(kind: "success" | "error", message: string, anchor = "step-3-lifecycle") {
+  redirect(`${LOYALTY_CONTROLS_PATH}?${kind}=${encodeURIComponent(message)}#${anchor}`);
 }
 
 function hasAccountingAdminTesting(value: unknown) {
@@ -98,6 +102,41 @@ export async function materialiseAppliedLoyaltySettlementAction(formData: FormDa
   });
 }
 
+export async function materialiseSelectedAppliedLoyaltySettlementsAction(formData: FormData) {
+  const eventIds = unique(textArray(formData, "order_funding_event_id"));
+  const notes = text(formData, "notes");
+
+  if (eventIds.length === 0) {
+    controlsActionRedirect("error", "Select at least one applied-loyalty candidate to materialise/freeze.", "step-3-lifecycle");
+  }
+
+  const { supabase } = await requireAccountingAdminAccess();
+  let materialisedCount = 0;
+  let blockedCount = 0;
+  let firstBlocker = "";
+
+  for (const eventId of eventIds) {
+    const { error } = await (supabase as any).rpc("staff_materialise_completion_loyalty_applied_settlement_v1", {
+      p_order_funding_event_id: eventId,
+      p_notes: notes || "Bulk materialised from applied-loyalty controls. No Sage API call.",
+    });
+
+    if (error) {
+      blockedCount += 1;
+      if (!firstBlocker) firstBlocker = error.message;
+    } else {
+      materialisedCount += 1;
+    }
+  }
+
+  revalidatePath(LOYALTY_CONTROLS_PATH);
+
+  const message = blockedCount > 0
+    ? `Applied-loyalty materialise/freeze: materialised ${materialisedCount}, blocked ${blockedCount}${firstBlocker ? ` — ${firstBlocker}` : ""}. No Sage API call was made.`
+    : `Applied-loyalty materialise/freeze: materialised ${materialisedCount}. No Sage API call was made.`;
+  controlsActionRedirect(blockedCount > 0 ? "error" : "success", message, "step-3-lifecycle");
+}
+
 export async function materialiseInternalTransferJournalAction(formData: FormData) {
   const sourceOutStatementLineId = text(formData, "source_out_statement_line_id");
   const destinationInStatementLineId = text(formData, "destination_in_statement_line_id");
@@ -112,6 +151,49 @@ export async function materialiseInternalTransferJournalAction(formData: FormDat
     p_destination_in_statement_line_id: destinationInStatementLineId,
     p_notes: notes || null,
   });
+}
+
+function parseInternalTransferCandidateKey(value: string) {
+  const [sourceOutStatementLineId = "", destinationInStatementLineId = ""] = value.split("|").map((part) => part.trim());
+  return { sourceOutStatementLineId, destinationInStatementLineId };
+}
+
+export async function materialiseSelectedInternalTransferJournalsAction(formData: FormData) {
+  const selectedPairs = unique(textArray(formData, "internal_transfer_candidate_key"))
+    .map(parseInternalTransferCandidateKey)
+    .filter((pair) => pair.sourceOutStatementLineId && pair.destinationInStatementLineId);
+  const notes = text(formData, "notes");
+
+  if (selectedPairs.length === 0) {
+    controlsActionRedirect("error", "Select at least one internal-transfer candidate to materialise/freeze.", "step-3-internal-transfer");
+  }
+
+  const { supabase } = await requireAccountingAdminAccess();
+  let materialisedCount = 0;
+  let blockedCount = 0;
+  let firstBlocker = "";
+
+  for (const pair of selectedPairs) {
+    const { error } = await (supabase as any).rpc("staff_materialise_completion_loyalty_internal_transfer_journal_v1", {
+      p_source_out_statement_line_id: pair.sourceOutStatementLineId,
+      p_destination_in_statement_line_id: pair.destinationInStatementLineId,
+      p_notes: notes || "Bulk materialised from internal-transfer controls. No Sage API call.",
+    });
+
+    if (error) {
+      blockedCount += 1;
+      if (!firstBlocker) firstBlocker = error.message;
+    } else {
+      materialisedCount += 1;
+    }
+  }
+
+  revalidatePath(LOYALTY_CONTROLS_PATH);
+
+  const message = blockedCount > 0
+    ? `Internal-transfer materialise/freeze: materialised ${materialisedCount}, blocked ${blockedCount}${firstBlocker ? ` — ${firstBlocker}` : ""}. No Sage API call was made.`
+    : `Internal-transfer materialise/freeze: materialised ${materialisedCount}. No Sage API call was made.`;
+  controlsActionRedirect(blockedCount > 0 ? "error" : "success", message, "step-3-internal-transfer");
 }
 
 export async function validateCompletionLoyaltySageGroupAction(formData: FormData) {
