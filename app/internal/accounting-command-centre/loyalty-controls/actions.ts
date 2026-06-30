@@ -98,6 +98,22 @@ export async function materialiseAppliedLoyaltySettlementAction(formData: FormDa
   });
 }
 
+export async function materialiseInternalTransferJournalAction(formData: FormData) {
+  const sourceOutStatementLineId = text(formData, "source_out_statement_line_id");
+  const destinationInStatementLineId = text(formData, "destination_in_statement_line_id");
+  const notes = text(formData, "notes");
+
+  if (!sourceOutStatementLineId || !destinationInStatementLineId) {
+    throw new Error("Missing source OUT or destination IN statement line id for internal-transfer materialisation.");
+  }
+
+  await rpcOrThrow("staff_materialise_completion_loyalty_internal_transfer_journal_v1", {
+    p_source_out_statement_line_id: sourceOutStatementLineId,
+    p_destination_in_statement_line_id: destinationInStatementLineId,
+    p_notes: notes || null,
+  });
+}
+
 export async function validateCompletionLoyaltySageGroupAction(formData: FormData) {
   const groupId = text(formData, "posting_group_id");
 
