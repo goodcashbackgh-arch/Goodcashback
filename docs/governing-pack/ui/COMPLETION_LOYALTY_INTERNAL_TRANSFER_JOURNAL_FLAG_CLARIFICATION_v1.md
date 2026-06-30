@@ -24,21 +24,13 @@ Do not create a new Sage endpoint, route, or external posting method for the com
 
 The live-posting environment flag is a safety gate inside the platform. It is not the Sage endpoint.
 
-The internal-transfer lane may post only when a journal-specific live flag is enabled.
+For this MVP, do not create a new Vercel environment variable per posting category.
 
-Allowed live gates:
-
-```text
-SAGE_LIVE_COMPLETION_LOYALTY_INTERNAL_TRANSFER_POSTING_ENABLED=true
-```
-
-or the already existing journal-style bank/GL gate:
+The completion-loyalty internal-transfer lane is a controlled bank/internal-transfer GL journal posted through `POST /journals`, so it must use the existing journal-style bank/GL gate:
 
 ```text
 SAGE_LIVE_BANK_GL_POSTING_ENABLED=true
 ```
-
-The second flag is allowed because this lane posts a controlled bank/internal-transfer GL journal through `POST /journals`.
 
 ---
 
@@ -46,13 +38,13 @@ The second flag is allowed because this lane posts a controlled bank/internal-tr
 
 This lane must not become live merely because customer/vendor cash posting is enabled.
 
-Prohibited live gate:
+Do not use this as the live gate for internal-transfer Sage journals:
 
 ```text
 SAGE_LIVE_CASH_POSTING_ENABLED
 ```
 
-`SAGE_LIVE_CASH_POSTING_ENABLED` controls cash/customer/vendor receipt/payment-style posting paths. It must not imply permission to post completion-loyalty internal-transfer Sage journals.
+That flag controls cash/customer/vendor receipt/payment-style posting paths. It must not imply permission to post completion-loyalty internal-transfer Sage journals.
 
 ---
 
@@ -65,7 +57,7 @@ reuse Sage OAuth/business context;
 reuse request/response logging;
 read endpoint_path from the frozen step;
 fail closed unless endpoint_path = /journals;
-allow only SAGE_LIVE_COMPLETION_LOYALTY_INTERNAL_TRANSFER_POSTING_ENABLED or SAGE_LIVE_BANK_GL_POSTING_ENABLED;
+allow SAGE_LIVE_BANK_GL_POSTING_ENABLED as the MVP live gate;
 reject cash-posting flag fallback.
 ```
 
