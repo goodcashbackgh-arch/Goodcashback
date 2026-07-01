@@ -8,6 +8,7 @@ const STATEMENT_STORAGE_BUCKET = "invoice-evidence";
 const VALID_SOURCE_BANKS = new Set(["gcb", "firstbank", "zenith", "other"]);
 const VALID_FILE_TYPES = new Set(["pdf", "csv", "xlsx", "text", "unknown"]);
 const VALID_ACCOUNT_CONTEXTS = new Set(["importer_dva_card_account", "main_company_bank_account"]);
+const VALID_STATEMENT_SOURCE_WALLETS = new Set(["dva_cash", "dva_ghs_wallet", "virtual_gbp_wallet"]);
 
 function redirectWithResult(params: Record<string, string>): never {
   const query = new URLSearchParams(params);
@@ -57,6 +58,12 @@ function readMoney(formData: FormData, key: string, fallback = 0) {
   return Number.isFinite(value) && value >= 0 ? value : fallback;
 }
 
+function statementSourceLabel(value: string) {
+  if (value === "dva_ghs_wallet") return "Loyalty DVA GHS wallet";
+  if (value === "virtual_gbp_wallet") return "Loyalty virtual GBP wallet";
+  return "Real DVA cash";
+}
+
 export async function createRealStatementImportBatchAction(formData: FormData) {
   const supabase = await createClient();
 
@@ -71,6 +78,7 @@ export async function createRealStatementImportBatchAction(formData: FormData) {
   const statementAccountContext = readString(formData, "statement_account_context") || "importer_dva_card_account";
   const importerId = readString(formData, "importer_id");
   const sourceBank = readString(formData, "source_bank") || "other";
+  const statementSourceWalletCode = readString(formData, "statement_source_wallet_code") || "dva_cash";
   const statementPeriodFrom = readString(formData, "statement_period_from");
   const statementPeriodTo = readString(formData, "statement_period_to");
   const statementAlreadyGbp = checked(formData, "statement_already_gbp");
@@ -79,7 +87,7 @@ export async function createRealStatementImportBatchAction(formData: FormData) {
   const defaultCardMarkupPct = statementAlreadyGbp ? 0 : readMoney(formData, "default_card_markup_pct", 0);
   const rawFxSourceContext = readString(formData, "fx_source_context");
   const fxSourceContext = statementAlreadyGbp
-    ? "GBP statement — no FX conversion or settlement-card markup applied."
+    ? "GBP statement - no FX conversion or settlement-card markup applied."
     : rawFxSourceContext || null;
   const notes = readString(formData, "notes") || null;
   const statementFile = formData.get("statement_file");
@@ -87,6 +95,7 @@ export async function createRealStatementImportBatchAction(formData: FormData) {
   if (!VALID_ACCOUNT_CONTEXTS.has(statementAccountContext)) redirectWithResult({ import_error: "Unsupported statement account type." });
   if (statementAccountContext === "importer_dva_card_account" && !importerId) redirectWithResult({ import_error: "Select an importer before uploading an importer DVA/card statement." });
   if (!VALID_SOURCE_BANKS.has(sourceBank)) redirectWithResult({ import_error: "Unsupported source bank." });
+  if (statementAccountContext === "importer_dva_card_account" && !VALID_STATEMENT_SOURCE_WALLETS.has(statementSourceWalletCode)) redirectWithResult({ import_error: "Unsupported statement source." });
   if (!/^\d{4}-\d{2}-\d{2}$/.test(statementPeriodFrom)) redirectWithResult({ import_error: "Statement period from date is required." });
   if (!/^\d{4}-\d{2}-\d{2}$/.test(statementPeriodTo)) redirectWithResult({ import_error: "Statement period to date is required." });
   if (statementPeriodTo < statementPeriodFrom) redirectWithResult({ import_error: "Statement period to date cannot be before from date." });
@@ -132,6 +141,7 @@ export async function createRealStatementImportBatchAction(formData: FormData) {
         p_default_card_markup_pct: defaultCardMarkupPct,
         p_fx_source_context: fxSourceContext,
         p_notes: notes,
+        p_statement_source_wallet_code: null,
       }
     : {
         p_importer_id: importerId,
@@ -145,6 +155,7 @@ export async function createRealStatementImportBatchAction(formData: FormData) {
         p_default_card_markup_pct: defaultCardMarkupPct,
         p_fx_source_context: fxSourceContext,
         p_notes: notes,
+        p_statement_source_wallet_code: statementSourceWalletCode,
       };
 
   const { data: batchResult, error: batchError } = await supabase.rpc(rpcName, rpcArgs);
@@ -168,10 +179,11 @@ export async function createRealStatementImportBatchAction(formData: FormData) {
       ? String((batchResult as { parser_route?: unknown }).parser_route)
       : detectedFileType;
   const accountLabel = statementAccountContext === "main_company_bank_account" ? "Main company bank" : "Importer DVA/card";
+  const sourceLabel = statementAccountContext === "main_company_bank_account" ? "main company bank" : statementSourceLabel(statementSourceWalletCode);
   const gbpNote = statementAlreadyGbp ? " No FX conversion was applied." : "";
 
   redirectWithResult({
-    import_success: `${accountLabel} statement uploaded and import batch created. Parser route: ${parserRoute}.${gbpNote} Extraction is the next step.`,
+    import_success: `${accountLabel} statement uploaded as ${sourceLabel} and import batch created. Parser route: ${parserRoute}.${gbpNote} Extraction is the next step.`,
     batch_id: importBatchId,
   });
 }
