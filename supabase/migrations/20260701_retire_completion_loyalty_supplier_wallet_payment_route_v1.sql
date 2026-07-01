@@ -11,11 +11,6 @@ BEGIN;
 SET LOCAL lock_timeout = '15s';
 SET LOCAL statement_timeout = '0';
 
-REVOKE ALL ON FUNCTION public.internal_completion_loyalty_supplier_wallet_payment_candidates_(text, integer, integer) FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.internal_completion_loyalty_supplier_wallet_payment_candidates_v1(text, integer, integer) FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.staff_create_completion_loyalty_supplier_wallet_cash_batch_v1(uuid[], text) FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.test_completion_loyalty_supplier_wallet_payment_candidates_v1() FROM PUBLIC;
-
 DROP FUNCTION IF EXISTS public.test_completion_loyalty_supplier_wallet_payment_candidates_v1();
 DROP FUNCTION IF EXISTS public.staff_create_completion_loyalty_supplier_wallet_cash_batch_v1(uuid[], text);
 DROP FUNCTION IF EXISTS public.internal_completion_loyalty_supplier_wallet_payment_candidates_v1(text, integer, integer);
