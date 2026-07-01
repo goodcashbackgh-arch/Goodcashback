@@ -49,6 +49,7 @@ Default view should prioritise rows requiring staff action:
 needs action
 ready to materialise / freeze
 ready to batch
+ready to post
 blocked by mapping/source validation
 failed or retryable batch/step
 ```
@@ -76,8 +77,10 @@ Recommended values:
 
 ```text
 lane = all | action_queue | applied_settlement | internal_transfer | evidence
-status = needs_action | ready_to_materialise | ready_to_batch | blocked | batched_or_posted | all
+status = needs_action | ready_to_materialise | ready_to_batch | ready_to_post | blocked | batched_or_posted | all
 ```
+
+`ready_to_post` is a distinct operational state. It must not be hidden under `batched_or_posted` because approved, postable batches are the immediate next action.
 
 Existing filters may remain for compatibility:
 
@@ -123,6 +126,7 @@ The page should show compact counts rather than large explanatory cards:
 Evidence rows
 Applied settlement ready / blocked
 Internal transfer ready / blocked
+Batches ready to post
 Batches needing review
 Failed / retryable steps
 ```
@@ -145,6 +149,7 @@ Rows may include:
 ```text
 candidate ready to materialise/freeze
 materialised group ready to batch
+approved batch ready to post
 blocked mapping/source row
 batch needing approval
 failed retryable step/batch
@@ -178,7 +183,7 @@ Current safe interpretation:
 Action Queue row click
 -> opens the correct lane/filter/detail target
 -> staff reviews the exact candidate or group inside that lane
--> staff then performs the real action from the lane form
+-> staff then performs the real action from the lane form or batch detail page
 ```
 
 Labels must therefore be unambiguous:
@@ -186,6 +191,7 @@ Labels must therefore be unambiguous:
 ```text
 Use: Open transfer lane
 Use: Open applied settlement lane
+Use: Open batch to post
 Use: Open batch review
 Avoid: Materialise / freeze
 Avoid: Create batch
@@ -480,12 +486,13 @@ A compliant implementation must prove:
 6. Step 1 and Step 2 data remain reachable;
 7. default view is less visually dense and prioritises actionable Step 3 work;
 8. empty internal-transfer controls/history are hidden or compact;
-9. failed/retryable/blocked rows are easy to find through filters;
-10. no new live Sage posting path is created;
-11. Action Queue labels do not claim direct materialisation/batching/approval/posting unless a real form submits to the existing approved action;
-12. queue navigation to a lane preserves the posting-workbench sequence: candidate -> materialise/freeze -> validate -> batch -> approve -> post/retry;
-13. bulk materialise/freeze, if added, uses existing action semantics and does not bypass validated group batching;
-14. internal-transfer candidate cards hide OUT/IN references and mapping codes under collapsed Audit details by default;
-15. internal-transfer batch detail page shows action bar and compact summary before payload/response/audit sections;
-16. internal-transfer batch page labels the action as `Post Sage journal batch` and shows endpoint `/journals`.
+9. ready-to-post approved batches are easy to find through the `ready_to_post` status filter;
+10. failed/retryable/blocked rows are easy to find through filters;
+11. no new live Sage posting path is created;
+12. Action Queue labels do not claim direct materialisation/batching/approval/posting unless a real form submits to the existing approved action;
+13. queue navigation to a lane preserves the posting-workbench sequence: candidate -> materialise/freeze -> validate -> batch -> approve -> post/retry;
+14. bulk materialise/freeze, if added, uses existing action semantics and does not bypass validated group batching;
+15. internal-transfer candidate cards hide OUT/IN references and mapping codes under collapsed Audit details by default;
+16. internal-transfer batch detail page shows action bar and compact summary before payload/response/audit sections;
+17. internal-transfer batch page labels the action as `Post Sage journal batch` and shows endpoint `/journals`.
 ```
