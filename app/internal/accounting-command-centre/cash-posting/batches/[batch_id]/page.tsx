@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
-import { postCustomerReceiptCashBatchAction } from "../../actions";
+import { postCustomerReceiptCashBatchAction, supersedeCashPostingBatchAction } from "../../actions";
 
 type Row = Record<string, unknown>;
 type Params = { batch_id: string } | Promise<{ batch_id: string }>;
@@ -64,6 +64,15 @@ function isBankGlPostable(row: Row) {
 
 function rowSourceId(row: Row) {
   return text(row.source_id);
+}
+
+function rowHasPostedToSage(row: Row) {
+  return ["posted", "posted_needs_review"].includes(text(row.row_posting_status))
+    || Boolean(text(row.sage_object_id))
+    || Boolean(text(row.sage_payment_on_account_id))
+    || Boolean(text(row.posted_at))
+    || Boolean(text(row.sage_allocation_id))
+    || Boolean(text(row.sage_allocation_posted_at));
 }
 
 function Pill({ value }: { value: unknown }) {
@@ -236,6 +245,9 @@ export default async function CashPostingBatchDetailPage({ params, searchParams 
         : rows.filter(isStandardPostable);
   const refundBlockedCount = isRetailerRefundBatch ? rows.filter((row) => isRetailerRefundPostable(row) && !refundReadyBySource.has(rowSourceId(row))).length : 0;
   const canPost = !isBlockedResidualControlBatch && livePostingEnabled && postableRows.length > 0 && ["validated", "failed", "partially_posted"].includes(text(first.batch_status));
+  const canSupersede = rows.length > 0
+    && ["validated", "failed", "partially_posted"].includes(text(first.batch_status))
+    && rows.every((row) => !rowHasPostedToSage(row));
   const endpointText = isRetailerRefundBatch
     ? `POST /contact_payments · ${retailerRefundInTransactionTypeId} · allocated_artefacts[]`
     : isBankGlBatch
@@ -295,6 +307,14 @@ export default async function CashPostingBatchDetailPage({ params, searchParams 
                     {isRetailerRefundBatch ? "Post eligible retailer refund IN rows" : isBankGlBatch ? "Post bank/GL transaction to Sage" : isBlockedResidualControlBatch ? "Control-only batch · Sage posting blocked" : isOutBatch ? "Post supplier/shipper vendor payment to Sage" : "Post customer receipt batch to Sage"}
                   </button>
                   <span className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-[11px] font-bold text-slate-600">{liveFlagLabel}</span>
+                </form>
+                <form action={supersedeCashPostingBatchAction} className="mt-2 flex flex-wrap items-center gap-2">
+                  <input type="hidden" name="batch_id" value={batchId} />
+                  <input type="hidden" name="supersede_reason" value="Supersede local cash batch and re-freeze from current resolver." />
+                  <button type="submit" disabled={!canSupersede} className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-[11px] font-bold text-amber-900 disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400">
+                    Supersede local batch
+                  </button>
+                  <span className="text-[11px] font-semibold text-slate-500">No Sage API call; available only before any row posts.</span>
                 </form>
                 {!livePostingEnabled && !isBlockedResidualControlBatch ? <p className="mt-2 text-xs font-semibold text-amber-700">Set {flagName}=true before live posting this cash batch category.</p> : null}
               </div>
