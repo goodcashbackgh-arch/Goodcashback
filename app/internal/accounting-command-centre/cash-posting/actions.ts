@@ -37,6 +37,16 @@ type CashPostingResult = {
   endpoint: string;
 };
 
+type SupersedeCashBatchResult = {
+  batch_id?: string | null;
+  batch_ref?: string | null;
+  previous_status?: string | null;
+  new_status?: string | null;
+  cancelled_row_count?: number | null;
+  deactivated_snapshot_count?: number | null;
+  detail_href?: string | null;
+};
+
 const outPaymentCategories = new Set(["supplier_invoice_payment", "shipper_invoice_payment"]);
 const controlCashCategories = new Set(["retailer_refund_received", "bank_fee", "fx_card_difference", "unmatched_hold"]);
 const singleCategoryOnly = new Set([
@@ -176,7 +186,7 @@ export async function freezeSelectedCustomerReceiptCashRowsAction(formData: Form
   revalidatePath("/internal/accounting-command-centre/cash-posting");
 
   const message = blockedCount > 0
-    ? `Cash freeze: frozen ${frozenCount}, already frozen ${alreadyFrozenCount}, blocked ${blockedCount}${firstBlocker ? ` — ${firstBlocker}` : ""}`
+    ? `Cash freeze: frozen ${frozenCount}, already frozen ${alreadyFrozenCount}, blocked ${blockedCount}${firstBlocker ? ` - ${firstBlocker}` : ""}`
     : `Cash freeze: frozen and validated ${frozenCount}; already frozen ${alreadyFrozenCount}; categories ${categories.join(", ") || "cash"}. No Sage API call was made.`;
 
   redirect(cashReturnPath(formData, blockedCount > 0 ? "error" : "success", message));
@@ -217,7 +227,7 @@ export async function createCustomerReceiptCashBatchAction(formData: FormData) {
   revalidatePath("/internal/accounting-command-centre/cash-posting");
 
   const message = blockedCount > 0
-    ? `Cash batch: batched ${batchedCount}, already batched ${alreadyBatchedCount}, blocked ${blockedCount}${firstBlocker ? ` — ${firstBlocker}` : ""}`
+    ? `Cash batch: batched ${batchedCount}, already batched ${alreadyBatchedCount}, blocked ${blockedCount}${firstBlocker ? ` - ${firstBlocker}` : ""}`
     : `Cash batch created: ${batchRefs.join(", ") || "validated batch"}; rows ${batchedCount}; already batched ${alreadyBatchedCount}; categories ${categories.join(", ") || "cash"}. No Sage API call was made.`;
 
   redirect(cashReturnPath(formData, blockedCount > 0 ? "error" : "success", message));
@@ -290,6 +300,34 @@ export async function postCustomerReceiptCashBatchAction(formData: FormData) {
   revalidatePath("/internal/accounting-command-centre/cash-posting");
   revalidatePath(`/internal/accounting-command-centre/cash-posting/batches/${batchId}`);
   redirect(`/internal/accounting-command-centre/cash-posting/batches/${batchId}?success=${encodeURIComponent(`Cash Sage posting finished: ${result.posted} posted, ${result.failed} failed, ${result.needsReview} needs review, ${result.total} total. Endpoint ${result.endpoint}.`)}`);
+}
+
+export async function supersedeCashPostingBatchAction(formData: FormData) {
+  const batchId = formText(formData, "batch_id");
+  const reason = formText(formData, "supersede_reason", "Supersede local cash batch and re-freeze from current resolver.");
+  if (!batchId) redirect("/internal/accounting-command-centre/cash-posting?error=Missing cash batch id");
+
+  const { supabase } = await requireAccountingAdminAccess();
+  const { data, error } = await (supabase as any).rpc("internal_supersede_cash_posting_batch_v1", {
+    p_batch_id: batchId,
+    p_reason: reason,
+  });
+
+  if (error) {
+    revalidatePath(`/internal/accounting-command-centre/cash-posting/batches/${batchId}`);
+    redirect(`/internal/accounting-command-centre/cash-posting/batches/${batchId}?error=${encodeURIComponent(error.message)}`);
+  }
+
+  const rows = ((data ?? []) as SupersedeCashBatchResult[]);
+  const first = rows[0] ?? {};
+  const batchRef = String(first.batch_ref ?? "cash batch");
+  const cancelled = Number(first.cancelled_row_count ?? 0);
+  const deactivated = Number(first.deactivated_snapshot_count ?? 0);
+
+  revalidatePath("/internal/accounting-command-centre/cash-posting");
+  revalidatePath(`/internal/accounting-command-centre/cash-posting/batches/${batchId}`);
+
+  redirect(`/internal/accounting-command-centre/cash-posting?status=ready&success=${encodeURIComponent(`Superseded ${batchRef}: cancelled ${cancelled} row(s), deactivated ${deactivated} snapshot(s). Re-freeze from current resolver.`)}`);
 }
 
 export async function postSelectedCashAllocationsAction(formData: FormData) {
