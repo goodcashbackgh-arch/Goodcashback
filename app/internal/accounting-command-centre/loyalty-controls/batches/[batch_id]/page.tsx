@@ -158,12 +158,13 @@ export default async function CompletionLoyaltySageBatchDetailPage({ params, sea
   const approved = text(first.batch_approval_status) === "approved";
   const livePostingEnabled = internal ? process.env.SAGE_LIVE_BANK_GL_POSTING_ENABLED === "true" : process.env.SAGE_LIVE_COMPLETION_LOYALTY_POSTING_ENABLED === "true" || process.env.SAGE_LIVE_CASH_POSTING_ENABLED === "true";
   const canApprove = rows.length > 0 && batchStatus === "validated" && !approved && rows.every((row) => ["ok_to_post", "warning_only"].includes(text(row.group_validation_status)) && !text(row.blocker));
+  const postedBatchStatus = batchStatus === "posted_to_sage";
   const postableStatus = ["approved", "failed_retryable", "partially_posted_needs_review"].includes(batchStatus);
   const canPost = rows.length > 0 && approved && postableStatus && livePostingEnabled;
   const canRetire = rows.length > 0 && rows.every((row) => text(row.item_posting_status) !== "posted_to_sage");
   const laneLabel = internal ? "internal transfer" : "applied loyalty";
   const postButtonLabel = internal ? "Post internal transfer to Sage" : "Post applied loyalty to Sage";
-  const notice = canPost || rows.length === 0 ? "" : !approved && canApprove ? "Approve this batch to enable posting." : !approved ? "Batch must be approved before posting." : !livePostingEnabled ? "Live Sage posting is disabled." : !postableStatus ? `Batch status is ${pretty(batchStatus)}. Posting is available only after approval or for retryable batches.` : "Posting is not available for this batch.";
+  const notice = canPost || rows.length === 0 || postedBatchStatus ? "" : !approved && canApprove ? "Approve this batch to enable posting." : !approved ? "Batch must be approved before posting." : !livePostingEnabled ? "Live Sage posting is disabled." : !postableStatus ? `Batch status is ${pretty(batchStatus)}. Posting is available only after approval or for retryable batches.` : "Posting is not available for this batch.";
   const posted = rows.filter((row) => text(row.item_posting_status) === "posted_to_sage").length;
   const failed = rows.filter((row) => ["failed_retryable", "failed_terminal"].includes(text(row.item_posting_status))).length;
   const blocked = rows.filter((row) => text(row.blocker) || text(row.group_validation_status).startsWith("blocked")).length;
