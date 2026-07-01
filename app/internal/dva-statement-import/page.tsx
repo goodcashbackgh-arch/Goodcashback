@@ -78,14 +78,6 @@ function statusLabel(status: unknown) {
   return cleanUiText(value.replaceAll("_", " "));
 }
 
-function statementSourceLabel(value: unknown) {
-  const source = text(value);
-  if (source === "dva_ghs_wallet") return "Loyalty DVA GHS wallet";
-  if (source === "virtual_gbp_wallet") return "Loyalty virtual GBP wallet";
-  if (source === "dva_cash") return "Real DVA cash";
-  return "Source not captured";
-}
-
 function nextAction(batch: Row) {
   const fileType = text(batch.detected_file_type);
   const rowCount = num(batch.row_count);
@@ -153,7 +145,7 @@ export default async function DvaStatementImportPage({
 
   let batchQuery = supabase
     .from("dva_statement_import_batches")
-    .select("id, importer_id, source_bank, statement_source_wallet_code, statement_source_bank_account_mapping_code, statement_period_from, statement_period_to, local_ccy, source_file_url, original_filename, detected_file_type, parser_route, status, row_count, clean_count, error_count, duplicate_count, committed_count, uploaded_at, parsed_at, committed_at, voided_at, void_reason, notes", { count: "exact" })
+    .select("id, importer_id, source_bank, statement_period_from, statement_period_to, local_ccy, source_file_url, original_filename, detected_file_type, parser_route, status, row_count, clean_count, error_count, duplicate_count, committed_count, uploaded_at, parsed_at, committed_at, voided_at, void_reason, notes", { count: "exact" })
     .order("uploaded_at", { ascending: false });
 
   if (selectedBatchStatus === "active") {
@@ -244,15 +236,6 @@ export default async function DvaStatementImportPage({
               </select>
             </div>
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Statement source</label>
-              <select className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" name="statement_source_wallet_code" defaultValue="dva_cash">
-                <option value="dva_cash">Real DVA cash</option>
-                <option value="dva_ghs_wallet">Loyalty DVA GHS wallet</option>
-                <option value="virtual_gbp_wallet">Loyalty virtual GBP wallet</option>
-              </select>
-              <p className="mt-1 text-xs leading-5 text-slate-500">Controls the Sage bank used later for supplier invoice payment rows.</p>
-            </div>
-            <div>
               <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Period from</label>
               <input className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" name="statement_period_from" type="date" defaultValue={today} required />
             </div>
@@ -331,10 +314,6 @@ export default async function DvaStatementImportPage({
                   <div className="min-w-0 flex-1">
                     <h3 className="break-words text-lg font-semibold [overflow-wrap:anywhere]">{text(batch.original_filename) || text(batch.id)}</h3>
                     <p className="mt-1 break-words text-sm text-slate-600">{text(batch.source_bank).toUpperCase()} · {text(batch.local_ccy)} · {text(batch.statement_period_from)} → {text(batch.statement_period_to)}</p>
-                    <p className="mt-1 break-words text-xs font-semibold text-slate-500">
-                      Source: {statementSourceLabel(batch.statement_source_wallet_code)}
-                      {text(batch.statement_source_bank_account_mapping_code) ? ` · ${text(batch.statement_source_bank_account_mapping_code)}` : ""}
-                    </p>
                     {voided ? <p className="mt-2 break-words text-xs font-semibold text-rose-700">Voided: {cleanUiText(text(batch.void_reason)) || "No reason captured"}</p> : null}
                   </div>
                   <span className={`shrink-0 rounded-full px-3 py-1 text-sm font-semibold ring-1 ${statusClass(text(batch.status))}`}>{statusLabel(batch.status)}</span>
