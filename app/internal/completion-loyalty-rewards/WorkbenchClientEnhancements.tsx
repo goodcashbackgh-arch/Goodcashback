@@ -65,6 +65,15 @@ function adoptInternalDashboardShell() {
     breadcrumb.className = "text-sm font-bold text-sky-700 hover:text-sky-900";
   }
 
+  if (topRow && !topRow.querySelector('[data-loyalty-supplier-wallet-shortcut="true"]')) {
+    const shortcut = document.createElement("a");
+    shortcut.href = "/internal/completion-loyalty-rewards/supplier-wallet-payments";
+    shortcut.dataset.loyaltySupplierWalletShortcut = "true";
+    shortcut.className = "rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-bold text-emerald-800 hover:bg-emerald-100";
+    shortcut.textContent = "Supplier wallet payments";
+    topRow.appendChild(shortcut);
+  }
+
   if (topRow && !topRow.querySelector('[data-loyalty-rejection-shortcut="true"]')) {
     const shortcut = document.createElement("a");
     shortcut.href = "/internal/completion-loyalty-rewards/rejections";
