@@ -87,8 +87,7 @@ BEGIN
   UPDATE public.dva_statement_line_allocations
   SET source_bank_account_mapping_code = v_mapping_code,
       source_wallet_code = v_wallet_code,
-      notes = concat_ws(E'\n', NULLIF(notes, ''), NULLIF(trim(COALESCE(p_notes, '')), '')),
-      updated_at = now()
+      notes = concat_ws(E'\n', NULLIF(notes, ''), NULLIF(trim(COALESCE(p_notes, '')), ''))
   WHERE id = p_allocation_id;
 
   RETURN jsonb_build_object(
