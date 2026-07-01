@@ -8,6 +8,7 @@ Related contracts / implementation references:
 
 - `docs/governing-pack/accounting/DVA_SUPPLIER_PAYMENT_SOURCE_SPLIT_CONTRACT_v1.md`
 - `docs/governing-pack/backend/staff_dva_statement_allocation_wrappers_v2.sql`
+- `supabase/migrations/20260701_dva_supplier_payment_source_auto_resolution_v1.sql`
 - `supabase/migrations/20260701_dva_supplier_payment_source_bank_split_v1.sql`
 - `supabase/migrations/20260630_completion_loyalty_internal_transfer_resolver_nullsafe_v1.sql`
 - `supabase/migrations/20260630_completion_loyalty_internal_transfer_journal_lane_v1.sql`
@@ -51,6 +52,10 @@ Patch `public.staff_allocate_statement_line_to_supplier_invoice(uuid, uuid, nume
 - `source_bank_account_mapping_code`.
 
 The function should derive those values from the locked statement line and its parent `dva_statements.statement_account_context`.
+
+Implementation migration:
+
+- `supabase/migrations/20260701_dva_supplier_payment_source_auto_resolution_v1.sql`
 
 ## Impact Surface
 
