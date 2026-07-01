@@ -49,6 +49,7 @@ Default view should prioritise rows requiring staff action:
 needs action
 ready to materialise / freeze
 ready to batch
+ready to approve
 ready to post
 blocked by mapping/source validation
 failed or retryable batch/step
@@ -77,10 +78,14 @@ Recommended values:
 
 ```text
 lane = all | action_queue | applied_settlement | internal_transfer | evidence
-status = needs_action | ready_to_materialise | ready_to_batch | ready_to_post | blocked | batched_or_posted | all
+status = needs_action | ready_to_materialise | ready_to_batch | ready_to_approve | ready_to_post | blocked | batched_or_posted | all
 ```
 
-`ready_to_post` is a distinct operational state. It must not be hidden under `batched_or_posted` because approved, postable batches are the immediate next action.
+`ready_to_approve` is the state for validated local Sage batches that have not yet been admin-approved.
+
+`ready_to_post` is the state for approved, postable batches. It must not include validated-but-unapproved batches.
+
+`batched_or_posted` is retained as the route-compatible value for the “All batches” filter. It must show batches regardless of success, failure, approval, retry, posted, or review status so staff can always open a batch detail page.
 
 Existing filters may remain for compatibility:
 
@@ -126,6 +131,7 @@ The page should show compact counts rather than large explanatory cards:
 Evidence rows
 Applied settlement ready / blocked
 Internal transfer ready / blocked
+Batches ready to approve
 Batches ready to post
 Batches needing review
 Failed / retryable steps
@@ -149,11 +155,12 @@ Rows may include:
 ```text
 candidate ready to materialise/freeze
 materialised group ready to batch
+validated batch ready to approve
 approved batch ready to post
 blocked mapping/source row
-batch needing approval
 failed retryable step/batch
 partial post needing review
+historical batch open/review row
 ```
 
 Each row must clearly show:
@@ -173,7 +180,7 @@ The queue may call existing actions only. It must not introduce new posting sema
 
 ## 6A. Action Queue direct-action boundary
 
-The Action Queue must not imply that a row has been posted, batched, or materialised merely because staff clicked it.
+The Action Queue must not imply that a row has been posted, batched, approved, or materialised merely because staff clicked it.
 
 Unless a proper queue-level form submits the same required identifiers to the existing server action, queue rows are navigation/deep-link rows only.
 
@@ -182,7 +189,7 @@ Current safe interpretation:
 ```text
 Action Queue row click
 -> opens the correct lane/filter/detail target
--> staff reviews the exact candidate or group inside that lane
+-> staff reviews the exact candidate, group, or batch inside that lane/detail page
 -> staff then performs the real action from the lane form or batch detail page
 ```
 
@@ -191,8 +198,9 @@ Labels must therefore be unambiguous:
 ```text
 Use: Open transfer lane
 Use: Open applied settlement lane
+Use: Open batch to approve
 Use: Open batch to post
-Use: Open batch review
+Use: Open batch review / retry page
 Avoid: Materialise / freeze
 Avoid: Create batch
 Avoid: Approve
@@ -295,6 +303,15 @@ main_company_bank_account -> Main GBP bank ledger
 importer_dva_card_account + GBP -> Virtual GBP wallet ledger
 importer_dva_card_account + GHS -> DVA GHS wallet ledger, posted in GBP equivalent
 ```
+
+Internal-transfer references must distinguish the workflow layers:
+
+```text
+CLIT-*  = materialised internal-transfer journal group / frozen payload source row
+CLITB-* = Sage batch wrapper containing one or more CLIT groups
+```
+
+These are not duplicates. If a CLIT group is already batched, the staff action should move to the CLITB batch detail page for approval, posting, response review, or retry.
 
 ---
 
@@ -486,13 +503,16 @@ A compliant implementation must prove:
 6. Step 1 and Step 2 data remain reachable;
 7. default view is less visually dense and prioritises actionable Step 3 work;
 8. empty internal-transfer controls/history are hidden or compact;
-9. ready-to-post approved batches are easy to find through the `ready_to_post` status filter;
-10. failed/retryable/blocked rows are easy to find through filters;
-11. no new live Sage posting path is created;
-12. Action Queue labels do not claim direct materialisation/batching/approval/posting unless a real form submits to the existing approved action;
-13. queue navigation to a lane preserves the posting-workbench sequence: candidate -> materialise/freeze -> validate -> batch -> approve -> post/retry;
-14. bulk materialise/freeze, if added, uses existing action semantics and does not bypass validated group batching;
-15. internal-transfer candidate cards hide OUT/IN references and mapping codes under collapsed Audit details by default;
-16. internal-transfer batch detail page shows action bar and compact summary before payload/response/audit sections;
-17. internal-transfer batch page labels the action as `Post Sage journal batch` and shows endpoint `/journals`.
+9. ready-to-approve validated batches are easy to find through the `ready_to_approve` status filter;
+10. ready-to-post approved batches are easy to find through the `ready_to_post` status filter;
+11. all batch detail pages remain reachable through the “All batches” filter, regardless of posting/approval/error status;
+12. failed/retryable/blocked rows are easy to find through filters;
+13. no new live Sage posting path is created;
+14. Action Queue labels do not claim direct materialisation/batching/approval/posting unless a real form submits to the existing approved action;
+15. queue navigation to a lane preserves the posting-workbench sequence: candidate -> materialise/freeze -> validate -> batch -> approve -> post/retry;
+16. bulk materialise/freeze, if added, uses existing action semantics and does not bypass validated group batching;
+17. internal-transfer candidate cards hide OUT/IN references and mapping codes under collapsed Audit details by default;
+18. internal-transfer batch detail page shows action bar and compact summary before payload/response/audit sections;
+19. internal-transfer batch page labels the action as `Post Sage journal batch` and shows endpoint `/journals`;
+20. CLIT group references and CLITB batch references are labelled as separate workflow layers, not as duplicate postings.
 ```
