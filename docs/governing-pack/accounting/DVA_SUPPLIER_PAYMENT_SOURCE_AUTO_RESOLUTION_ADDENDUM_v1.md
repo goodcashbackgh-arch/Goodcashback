@@ -4,6 +4,14 @@
 
 This addendum extends `docs/governing-pack/accounting/DVA_SUPPLIER_PAYMENT_SOURCE_SPLIT_CONTRACT_v1.md`.
 
+Related contracts / implementation references:
+
+- `docs/governing-pack/accounting/DVA_SUPPLIER_PAYMENT_SOURCE_SPLIT_CONTRACT_v1.md`
+- `docs/governing-pack/backend/staff_dva_statement_allocation_wrappers_v2.sql`
+- `supabase/migrations/20260701_dva_supplier_payment_source_bank_split_v1.sql`
+- `supabase/migrations/20260630_completion_loyalty_internal_transfer_resolver_nullsafe_v1.sql`
+- `supabase/migrations/20260630_completion_loyalty_internal_transfer_journal_lane_v1.sql`
+
 ## Decision
 
 Supplier invoice payment source bank selection should be automatic for the existing DVA reconciliation supplier-allocation route.
@@ -43,6 +51,31 @@ Patch `public.staff_allocate_statement_line_to_supplier_invoice(uuid, uuid, nume
 - `source_bank_account_mapping_code`.
 
 The function should derive those values from the locked statement line and its parent `dva_statements.statement_account_context`.
+
+## Impact Surface
+
+This patch impacts the normal DVA statement allocation path only:
+
+1. `staff_allocate_statement_line_to_supplier_invoice(...)`
+   - writes the source mapping onto the allocation row at creation time.
+
+2. `public.dva_statement_line_allocations`
+   - stores `source_wallet_code` and `source_bank_account_mapping_code` for supplier invoice allocations.
+
+3. `internal_cash_posting_workbench_rows_v1(...)`
+   - already reads `dva_statement_line_allocations.source_bank_account_mapping_code` in its `allocation_rows` CTE.
+   - keeps using `DVA_CASH_BANK_ACCOUNT` only when the allocation source mapping is blank/default.
+
+4. Cash posting row union
+   - `customer_receipts` stays unchanged.
+   - `final_balance_receipts` stays unchanged.
+   - `allocation_rows` is the only union branch affected because supplier invoice payment rows come from confirmed statement-line allocations.
+
+5. Cash freeze / batch / Sage posting
+   - unchanged code path.
+   - receives the corrected `sage_bank_account_id` from the workbench row.
+
+No UI page, route, table write from the browser, or separate completion-loyalty supplier-wallet path is required.
 
 ## Cash Posting Requirement
 
