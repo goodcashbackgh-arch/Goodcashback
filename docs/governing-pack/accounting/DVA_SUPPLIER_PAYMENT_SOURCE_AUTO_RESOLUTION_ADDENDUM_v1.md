@@ -8,6 +8,7 @@ Related contracts / implementation references:
 
 - `docs/governing-pack/accounting/DVA_SUPPLIER_PAYMENT_SOURCE_SPLIT_CONTRACT_v1.md`
 - `docs/governing-pack/backend/staff_dva_statement_allocation_wrappers_v2.sql`
+- `supabase/migrations/20260701_dva_supplier_payment_explicit_source_selector_v1.sql`
 - `supabase/migrations/20260701_dva_supplier_payment_source_auto_resolution_v1.sql`
 - `supabase/migrations/20260701_dva_supplier_payment_source_bank_split_v1.sql`
 - `supabase/migrations/20260630_completion_loyalty_internal_transfer_resolver_nullsafe_v1.sql`
@@ -15,78 +16,86 @@ Related contracts / implementation references:
 
 ## Decision
 
-Supplier invoice payment source bank selection should be automatic for the existing DVA reconciliation supplier-allocation route.
+Supplier invoice payment source bank selection must remain inside the normal DVA statement allocation route.
 
-Do not add a separate supplier-wallet workbench, page, or cash posting route.
+Do not add or revive a separate supplier-wallet workbench, page, or cash posting route.
 
-Do not require staff to manually choose the source bank during supplier allocation for the initial virtual GBP split case.
+The source is selected once when the statement upload batch is created. Supplier allocation then inherits that source automatically, and cash posting uses the source stored on the confirmed `dva_statement_line_allocations` row.
+
+## Explicit Source Selector
+
+For importer payment statement uploads, staff must classify the statement source as one of:
+
+| Upload source | Wallet code stored | Bank mapping code stored | Required Sage bank account id |
+| --- | --- | --- | --- |
+| Real DVA cash | `dva_cash` | `DVA_CASH_BANK_ACCOUNT` | `1d21e52bed0a4fedb1b1dc21044b7d07` |
+| Loyalty DVA GHS wallet | `dva_ghs_wallet` | `LOYALTY_DVA_GHS_BANK_ACCOUNT` | `c7e2c4be463b4b41a9eca5ad39a06c18` |
+| Loyalty virtual GBP wallet | `virtual_gbp_wallet` | `LOYALTY_VIRTUAL_GBP_BANK_ACCOUNT` | `1cf4a2cb34fe4775986ba7c5e0ead260` |
+
+`DVA_CASH_BANK_ACCOUNT` is the default only for real DVA cash. It must not be used for loyalty DVA/GHS or loyalty virtual GBP supplier-payment legs.
 
 ## Source Resolution Rule
 
-When `staff_allocate_statement_line_to_supplier_invoice(...)` creates a confirmed `supplier_invoice` allocation, it must set the source fields on `public.dva_statement_line_allocations` before the row reaches cash posting.
+The source classification is carried through this chain:
 
-For importer payment statements:
+1. `public.dva_statement_import_batches`
+   - stores `statement_source_wallet_code` and `statement_source_bank_account_mapping_code` from the upload selection.
 
-| Statement context | Statement line currency | Allocation source wallet | Allocation source bank mapping |
-| --- | --- | --- | --- |
-| `importer_dva_card_account` | `GBP` | `virtual_gbp_wallet` | `LOYALTY_VIRTUAL_GBP_BANK_ACCOUNT` |
-| `importer_dva_card_account` | anything else | `NULL` | `DVA_CASH_BANK_ACCOUNT` |
+2. `public.dva_statements`
+   - receives the same source fields when `staff_commit_dva_statement_import_batch(...)` creates the committed statement.
 
-This rule reuses the same GBP/virtual-wallet convention already used by the completion-loyalty internal-transfer resolver, but applies it only inside the normal DVA statement supplier-allocation path.
+3. `public.dva_statement_line_import_links`
+   - receives the same source fields for traceability from staged/imported rows to committed lines.
 
-## Current Scope
+4. `staff_allocate_statement_line_to_supplier_invoice(...)`
+   - reads the committed statement source fields for the selected statement line.
+   - writes `source_wallet_code` and `source_bank_account_mapping_code` onto the confirmed `supplier_invoice` allocation row.
 
-This addendum intentionally solves the immediate seamless case:
+5. `internal_cash_posting_workbench_rows_v1(...)`
+   - reads `dva_statement_line_allocations.source_bank_account_mapping_code` in its supplier `allocation_rows` branch.
+   - resolves the Sage bank account from `sage_mapping_settings`.
 
-- uploaded/imported importer payment statement is marked as already GBP/sterling,
-- statement line is allocated to a supplier invoice,
-- cash posting must credit the virtual GBP Sage bank account for that payment leg.
+Fallback behavior exists only for older committed statements that have no source metadata:
 
-It does not attempt to infer `LOYALTY_DVA_GHS_BANK_ACCOUNT` from all GHS lines, because normal real DVA cash can also be GHS. A future explicit source marker can extend the rule for GHS loyalty-wallet lines without changing the normal supplier-allocation route.
+| Legacy context | Legacy line currency | Fallback source |
+| --- | --- | --- |
+| `importer_dva_card_account` | `GBP` | `virtual_gbp_wallet` / `LOYALTY_VIRTUAL_GBP_BANK_ACCOUNT` |
+| `importer_dva_card_account` | anything else | `dva_cash` / `DVA_CASH_BANK_ACCOUNT` |
 
-## Required Backend Patch
-
-Patch `public.staff_allocate_statement_line_to_supplier_invoice(uuid, uuid, numeric, text)` so the `INSERT INTO public.dva_statement_line_allocations` includes:
-
-- `source_wallet_code`,
-- `source_bank_account_mapping_code`.
-
-The function should derive those values from the locked statement line and its parent `dva_statements.statement_account_context`.
-
-Implementation migration:
-
-- `supabase/migrations/20260701_dva_supplier_payment_source_auto_resolution_v1.sql`
+The legacy fallback is not the desired long-term source of truth. New uploads must use the explicit source selector.
 
 ## Impact Surface
 
 This patch impacts the normal DVA statement allocation path only:
 
-1. `staff_allocate_statement_line_to_supplier_invoice(...)`
-   - writes the source mapping onto the allocation row at creation time.
+1. Upload page/action
+   - `app/internal/dva-statement-import/page.tsx` exposes the statement source selector.
+   - `app/internal/dva-statement-import/actions.ts` passes `p_statement_source_wallet_code` to the batch-create RPCs.
 
-2. `public.dva_statement_line_allocations`
-   - stores `source_wallet_code` and `source_bank_account_mapping_code` for supplier invoice allocations.
+2. Import batch and committed statement metadata
+   - `dva_statement_import_batches` stores selected source metadata.
+   - `dva_statements` stores selected source metadata after commit.
+   - `dva_statement_line_import_links` stores selected source metadata for audit trace.
 
-3. `internal_cash_posting_workbench_rows_v1(...)`
-   - already reads `dva_statement_line_allocations.source_bank_account_mapping_code` in its `allocation_rows` CTE.
-   - keeps using `DVA_CASH_BANK_ACCOUNT` only when the allocation source mapping is blank/default.
+3. Supplier allocation RPC
+   - `staff_allocate_statement_line_to_supplier_invoice(...)` stamps source mapping onto `dva_statement_line_allocations`.
 
-4. Cash posting row union
-   - `customer_receipts` stays unchanged.
-   - `final_balance_receipts` stays unchanged.
-   - `allocation_rows` is the only union branch affected because supplier invoice payment rows come from confirmed statement-line allocations.
+4. Cash posting workbench union
+   - `customer_receipts` branch is unchanged.
+   - `final_balance_receipts` branch is unchanged.
+   - `allocation_rows` is the affected branch, because supplier invoice payment rows come from confirmed statement-line allocations.
 
 5. Cash freeze / batch / Sage posting
    - unchanged code path.
    - receives the corrected `sage_bank_account_id` from the workbench row.
 
-No UI page, route, table write from the browser, or separate completion-loyalty supplier-wallet path is required.
+No browser write to allocation source fields is required during supplier matching. The selected upload source is the upstream source of truth.
 
 ## Cash Posting Requirement
 
 The cash posting workbench must continue to use `dva_statement_line_allocations.source_bank_account_mapping_code` when present.
 
-Existing frozen snapshots are immutable for this purpose. If a row was frozen before source resolution was corrected, it must be recreated or otherwise safely superseded before posting.
+Existing frozen snapshots are immutable for this purpose. If a row was frozen before source resolution was corrected, it must be recreated or superseded before posting.
 
 ## Regression Scenario
 
@@ -100,6 +109,12 @@ Canonical test:
 Expected cash posting rows:
 
 ```text
-GBP 180.00  -> DVA_CASH_BANK_ACCOUNT
-GBP 19.99   -> LOYALTY_VIRTUAL_GBP_BANK_ACCOUNT
+GBP 180.00  -> DVA_CASH_BANK_ACCOUNT -> 1d21e52bed0a4fedb1b1dc21044b7d07
+GBP 19.99   -> LOYALTY_VIRTUAL_GBP_BANK_ACCOUNT -> 1cf4a2cb34fe4775986ba7c5e0ead260
+```
+
+If the second leg is loyalty DVA/GHS instead of virtual GBP, expected cash posting is:
+
+```text
+GBP 19.99   -> LOYALTY_DVA_GHS_BANK_ACCOUNT -> c7e2c4be463b4b41a9eca5ad39a06c18
 ```
