@@ -11,7 +11,7 @@ type Props = {
 type QueueRow = {
   key: string;
   lane: "applied_settlement" | "internal_transfer";
-  status: "ready_to_materialise" | "ready_to_batch" | "blocked" | "batched_or_posted";
+  status: "ready_to_materialise" | "ready_to_batch" | "ready_to_post" | "blocked" | "batched_or_posted";
   title: string;
   detail: string;
   amount: number;
@@ -84,13 +84,14 @@ function laneLabel(lane: QueueRow["lane"]) {
 function statusLabel(status: QueueRow["status"]) {
   if (status === "ready_to_materialise") return "Ready to materialise";
   if (status === "ready_to_batch") return "Ready to batch";
+  if (status === "ready_to_post") return "Ready to post";
   if (status === "blocked") return "Blocked";
   return "Batched / posted";
 }
 
 function statusTone(status: QueueRow["status"]) {
   if (status === "blocked") return "border-amber-200 bg-amber-50 text-amber-900";
-  if (status === "ready_to_batch" || status === "ready_to_materialise") return "border-emerald-200 bg-emerald-50 text-emerald-900";
+  if (status === "ready_to_batch" || status === "ready_to_materialise" || status === "ready_to_post") return "border-emerald-200 bg-emerald-50 text-emerald-900";
   return "border-slate-200 bg-slate-50 text-slate-700";
 }
 
@@ -110,9 +111,17 @@ function groupReadyForBatch(group: Row, activeBatchedGroupIds: Set<string>) {
     && !activeBatchedGroupIds.has(text(group.posting_group_id));
 }
 
+function batchReadyToPost(batch: Row) {
+  const status = text(batch.status);
+  const approvalStatus = text(batch.approval_status);
+  return approvalStatus === "approved"
+    && ["approved", "failed_retryable", "partially_posted_needs_review"].includes(status)
+    && num(batch.row_count) > 0;
+}
+
 function batchNeedsReview(batch: Row) {
   const status = text(batch.status);
-  return ["blocked", "partially_posted_needs_review", "failed_retryable", "failed_terminal"].includes(status)
+  return ["blocked", "failed_terminal"].includes(status)
     || num(batch.failed_count) > 0;
 }
 
@@ -135,8 +144,6 @@ function laneHref(lane: "applied_settlement" | "internal_transfer", searchQuery:
 export default async function CompletionLoyaltyActionQueuePanel({ searchQuery = "", statusFilter = "needs_action" }: Props) {
   const supabase = await createClient();
   const cleanSearch = searchQuery.trim() || null;
-  const appliedLaneHref = laneHref("applied_settlement", searchQuery, "step-3-lifecycle");
-  const transferLaneHref = laneHref("internal_transfer", searchQuery, "step-3-internal-transfer");
 
   const [
     { data: appliedPreviewData, error: appliedPreviewError },
@@ -259,8 +266,24 @@ export default async function CompletionLoyaltyActionQueuePanel({ searchQuery = 
   }
 
   for (const batch of [...appliedBatches, ...transferBatches]) {
-    if (!batchNeedsReview(batch)) continue;
     const isTransfer = text(batch.batch_type) === "completion_loyalty_internal_transfer_journal";
+    const batchPath = `/internal/accounting-command-centre/loyalty-controls/batches/${text(batch.batch_id)}`;
+    if (batchReadyToPost(batch)) {
+      queueRows.push({
+        key: `batch-ready-post-${text(batch.batch_id)}`,
+        lane: isTransfer ? "internal_transfer" : "applied_settlement",
+        status: "ready_to_post",
+        title: text(batch.batch_ref) || "Sage batch",
+        detail: `${text(batch.status) || "approved"} · ${text(batch.row_count) || "0"} row(s)`,
+        amount: num(batch.total_amount_gbp),
+        nextAction: "Open batch to post",
+        href: batchPath,
+        blocker: text(batch.last_posting_error),
+      });
+      continue;
+    }
+
+    if (!batchNeedsReview(batch)) continue;
     queueRows.push({
       key: `batch-review-${text(batch.batch_id)}`,
       lane: isTransfer ? "internal_transfer" : "applied_settlement",
@@ -269,7 +292,7 @@ export default async function CompletionLoyaltyActionQueuePanel({ searchQuery = 
       detail: `${text(batch.status) || "batch"} · ${text(batch.row_count) || "0"} row(s)`,
       amount: num(batch.total_amount_gbp),
       nextAction: "Open batch review / retry page",
-      href: `/internal/accounting-command-centre/loyalty-controls/batches/${text(batch.batch_id)}`,
+      href: batchPath,
       blocker: text(batch.last_posting_error),
     });
   }
@@ -277,13 +300,14 @@ export default async function CompletionLoyaltyActionQueuePanel({ searchQuery = 
   const filteredRows = queueRows
     .filter((row) => statusMatches(row, statusFilter))
     .sort((a, b) => {
-      const order = { blocked: 0, ready_to_materialise: 1, ready_to_batch: 2, batched_or_posted: 3 } as const;
+      const order = { blocked: 0, ready_to_materialise: 1, ready_to_batch: 2, ready_to_post: 3, batched_or_posted: 4 } as const;
       return order[a.status] - order[b.status] || b.amount - a.amount;
     });
 
   const appliedCount = queueRows.filter((row) => row.lane === "applied_settlement").length;
   const transferCount = queueRows.filter((row) => row.lane === "internal_transfer").length;
   const blockedCount = queueRows.filter((row) => row.status === "blocked").length;
+  const postCount = queueRows.filter((row) => row.status === "ready_to_post").length;
   const readyCount = queueRows.filter((row) => row.status === "ready_to_materialise" || row.status === "ready_to_batch").length;
   const reviewCount = queueRows.filter((row) => row.status === "batched_or_posted").length;
   const totalAmount = filteredRows.reduce((sum, row) => sum + row.amount, 0);
@@ -300,7 +324,7 @@ export default async function CompletionLoyaltyActionQueuePanel({ searchQuery = 
         </div>
         <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm font-semibold text-slate-800 ring-1 ring-slate-200">
           {filteredRows.length} shown · {gbp(totalAmount)}<br />
-          {readyCount} ready · {blockedCount} blocked · {reviewCount} review
+          {readyCount} ready · {postCount} post · {blockedCount} blocked · {reviewCount} review
         </div>
       </div>
 
@@ -310,10 +334,14 @@ export default async function CompletionLoyaltyActionQueuePanel({ searchQuery = 
         </div>
       ) : null}
 
-      <div className="mt-4 grid gap-3 sm:grid-cols-4">
+      <div className="mt-4 grid gap-3 sm:grid-cols-5">
         <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-950">
           <p className="text-xs font-bold uppercase tracking-wide opacity-70">Ready</p>
           <p className="mt-1 text-xl font-extrabold">{readyCount}</p>
+        </div>
+        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-950">
+          <p className="text-xs font-bold uppercase tracking-wide opacity-70">Ready to post</p>
+          <p className="mt-1 text-xl font-extrabold">{postCount}</p>
         </div>
         <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
           <p className="text-xs font-bold uppercase tracking-wide opacity-70">Blocked</p>
