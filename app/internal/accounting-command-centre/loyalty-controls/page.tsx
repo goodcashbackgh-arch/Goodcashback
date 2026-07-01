@@ -11,7 +11,7 @@ type Row = Record<string, unknown>;
 type SearchParams = Record<string, string | string[] | undefined>;
 
 const laneOptions = ["action_queue", "applied_settlement", "internal_transfer", "evidence", "all"];
-const statusOptions = ["needs_action", "ready_to_materialise", "ready_to_batch", "blocked", "batched_or_posted", "all"];
+const statusOptions = ["needs_action", "ready_to_materialise", "ready_to_batch", "ready_to_post", "blocked", "batched_or_posted", "all"];
 
 function text(value: unknown) {
   if (typeof value === "string") return value;
@@ -68,6 +68,7 @@ function statusLabel(value: string) {
   if (value === "needs_action") return "Needs action";
   if (value === "ready_to_materialise") return "Ready to materialise";
   if (value === "ready_to_batch") return "Ready to batch";
+  if (value === "ready_to_post") return "Ready to post";
   if (value === "blocked") return "Blocked";
   if (value === "batched_or_posted") return "Batched / posted";
   return "All statuses";
@@ -189,6 +190,7 @@ export default async function LoyaltyAccountingControlsPage({ searchParams }: { 
                 <option value="needs_action">Needs action</option>
                 <option value="ready_to_materialise">Ready to materialise</option>
                 <option value="ready_to_batch">Ready to batch</option>
+                <option value="ready_to_post">Ready to post</option>
                 <option value="blocked">Blocked</option>
                 <option value="batched_or_posted">Batched / posted</option>
                 <option value="all">All statuses</option>
