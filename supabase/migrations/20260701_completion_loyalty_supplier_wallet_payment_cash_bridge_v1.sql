@@ -171,10 +171,9 @@ BEGIN
       COALESCE(NULLIF(trim(i.trading_name), ''), NULLIF(trim(i.company_name), ''), 'Importer/customer')::text AS importer_name,
       o.retailer_id,
       COALESCE(r.name::text, 'Retailer/supplier')::text AS retailer_name,
-      debit.id AS debit_ledger_id,
       source_credit.id AS source_credit_ledger_id,
       round(abs(COALESCE(ofe.amount_gbp, 0))::numeric, 2) AS amount_gbp,
-      COALESCE(ofe.created_at::date, now()::date) AS posting_date
+      COALESCE(NULLIF(to_jsonb(ofe)->>'created_at', '')::timestamptz::date, now()::date) AS posting_date
     FROM public.order_funding_events ofe
     JOIN public.orders o ON o.id = ofe.order_id
     LEFT JOIN public.importers i ON i.id = o.importer_id
@@ -196,7 +195,7 @@ BEGIN
         AND m.transfer_pair_status = 'paired_released'
         AND m.match_status = 'released_available_dashboard_credit'
         AND m.destination_in_statement_line_id IS NOT NULL
-      ORDER BY m.created_at DESC NULLS LAST, m.id DESC
+      ORDER BY m.id DESC
       LIMIT 1
     ) fm ON true
   ), supplier_target AS (
@@ -213,7 +212,11 @@ BEGIN
       FROM public.supplier_invoices si0
       WHERE si0.order_id = f.order_id
         AND (si0.review_status IN ('approved_current','ref_corrected_approved') OR COALESCE(si0.is_current_for_order, false) = true)
-      ORDER BY COALESCE(si0.updated_at, si0.created_at) DESC NULLS LAST, si0.created_at DESC NULLS LAST
+      ORDER BY COALESCE(
+        NULLIF(to_jsonb(si0)->>'reviewed_at', '')::timestamptz,
+        NULLIF(to_jsonb(si0)->>'created_at', '')::timestamptz,
+        now()
+      ) DESC
       LIMIT 1
     ) si ON true
     LEFT JOIN LATERAL (
@@ -235,9 +238,9 @@ BEGIN
       wr.bank_account_mapping_code,
       wr.sage_bank_account_id,
       wr.blocker AS wallet_blocker,
-      existing.id AS existing_snapshot_id,
-      existing_batch.id AS existing_batch_id,
-      existing_batch.batch_ref AS existing_batch_ref
+      existing.existing_snapshot_id,
+      existing.existing_batch_id,
+      existing.existing_batch_ref
     FROM supplier_target st
     LEFT JOIN LATERAL (
       SELECT spm0.*
@@ -249,15 +252,19 @@ BEGIN
       LIMIT 1
     ) spm ON true
     LEFT JOIN LATERAL public.internal_completion_loyalty_wallet_bank_account_resolver_v1(st.destination_in_statement_line_id) wr ON true
-    LEFT JOIN public.cash_posting_snapshots existing
-      ON existing.active = true
-     AND existing.idempotency_key = ('completion-loyalty-supplier-wallet:' || st.order_funding_event_id::text || ':' || COALESCE(st.supplier_invoice_id::text, 'missing') || ':' || COALESCE(wr.wallet_code, 'missing'))
-    LEFT JOIN public.cash_posting_batch_rows existing_row
-      ON existing_row.active = true
-     AND existing_row.snapshot_id = existing.id
-    LEFT JOIN public.cash_posting_batches existing_batch
-      ON existing_batch.id = existing_row.batch_id
-     AND existing_batch.active = true
+    LEFT JOIN LATERAL (
+      SELECT
+        cps.id AS existing_snapshot_id,
+        cb.id AS existing_batch_id,
+        cb.batch_ref AS existing_batch_ref
+      FROM public.cash_posting_snapshots cps
+      LEFT JOIN public.cash_posting_batch_rows cbr ON cbr.snapshot_id = cps.id AND cbr.active = true
+      LEFT JOIN public.cash_posting_batches cb ON cb.id = cbr.batch_id AND cb.active = true
+      WHERE cps.active = true
+        AND cps.idempotency_key = ('completion-loyalty-supplier-wallet:' || st.order_funding_event_id::text || ':' || COALESCE(st.supplier_invoice_id::text, 'missing') || ':' || COALESCE(wr.wallet_code, 'missing'))
+      ORDER BY cps.created_at DESC, cbr.created_at DESC NULLS LAST
+      LIMIT 1
+    ) existing ON true
   ), finalised AS (
     SELECT
       e.*,
@@ -300,7 +307,12 @@ BEGIN
     f.sage_bank_account_id,
     f.amount_gbp,
     f.posting_date,
-    CASE WHEN f.final_blocker IS NULL THEN 'ready_to_freeze_loyalty_supplier_wallet_payment' ELSE 'blocked' END::text,
+    CASE
+      WHEN f.final_blocker IS NULL THEN 'ready_to_freeze_loyalty_supplier_wallet_payment'
+      WHEN f.final_blocker = 'already_frozen' AND f.existing_batch_id IS NULL THEN 'frozen_ready_to_batch'
+      WHEN f.final_blocker = 'already_frozen' AND f.existing_batch_id IS NOT NULL THEN 'already_batched'
+      ELSE 'blocked'
+    END::text,
     f.final_blocker,
     f.existing_snapshot_id,
     f.existing_batch_id,
@@ -346,123 +358,137 @@ BEGIN
     RAISE EXCEPTION 'Select at least one completion-loyalty credit_applied event.';
   END IF;
 
-  WITH selected AS (
-    SELECT DISTINCT unnest(p_order_funding_event_ids)::uuid AS order_funding_event_id
-  ), candidates AS (
-    SELECT c.*
-    FROM selected s
-    LEFT JOIN LATERAL (
-      SELECT c0.*
-      FROM public.internal_completion_loyalty_supplier_wallet_payment_candidates_v1(NULL, 300, 0) c0
-      WHERE c0.order_funding_event_id = s.order_funding_event_id
-      LIMIT 1
-    ) c ON true
-  ), inserted AS (
-    INSERT INTO public.cash_posting_snapshots (
-      posting_category,
-      source_type,
-      source_id,
-      statement_line_id,
-      order_id,
-      order_ref,
-      counterparty_type,
-      counterparty_id,
-      counterparty_name,
-      sage_contact_id,
-      sage_contact_name,
-      sage_bank_account_id,
-      amount_gbp,
-      posting_date,
-      short_reference,
-      idempotency_key,
-      request_payload,
-      internal_reference_json,
-      freeze_status,
-      validation_status,
-      validation_errors,
-      notes,
-      validated_at,
-      created_by_staff_id
-    )
-    SELECT
-      'supplier_invoice_payment',
-      'completion_loyalty_supplier_wallet_payment',
-      c.order_funding_event_id,
-      c.destination_in_statement_line_id,
-      c.order_id,
-      c.order_ref,
-      'retailer_supplier',
-      c.retailer_id,
-      c.retailer_name,
-      c.supplier_sage_contact_id,
-      c.supplier_sage_contact_name,
-      c.wallet_sage_bank_account_id,
-      c.amount_gbp,
-      c.posting_date,
-      ('CLSP-' || left(c.order_funding_event_id::text, 8))::text,
-      ('completion-loyalty-supplier-wallet:' || c.order_funding_event_id::text || ':' || c.supplier_invoice_id::text || ':' || c.wallet_code)::text,
-      jsonb_build_object(
-        'endpoint', '/contact_payments',
-        'method', 'POST',
-        'posting_category', 'supplier_invoice_payment',
-        'source_lane', 'completion_loyalty_supplier_wallet_payment',
-        'contact_payment', jsonb_build_object(
-          'transaction_type_id', 'VENDOR_PAYMENT',
-          'contact_id', c.supplier_sage_contact_id,
-          'bank_account_id', c.wallet_sage_bank_account_id,
-          'date', c.posting_date::text,
-          'total_amount', c.amount_gbp,
-          'reference', ('CLSP-' || left(c.order_funding_event_id::text, 8)),
-          'allocated_artefacts', jsonb_build_array(jsonb_build_object('artefact_id', c.target_sage_purchase_invoice_id, 'amount', c.amount_gbp))
-        ),
-        'allocation_target', jsonb_build_object(
-          'purchase_invoice_id', c.target_sage_purchase_invoice_id,
-          'target_sage_object_id', c.target_sage_purchase_invoice_id,
-          'supplier_invoice_id', c.supplier_invoice_id,
-          'supplier_ap_snapshot_id', c.supplier_ap_snapshot_id,
-          'amount', c.amount_gbp,
-          'matched_target_ref', c.supplier_invoice_ref
-        )
-      ),
-      jsonb_build_object(
-        'source_lane', 'completion_loyalty_supplier_wallet_payment',
-        'order_funding_event_id', c.order_funding_event_id,
-        'source_credit_ledger_id', c.source_credit_ledger_id,
-        'destination_in_statement_line_id', c.destination_in_statement_line_id,
-        'wallet_code', c.wallet_code,
-        'wallet_bank_account_mapping_code', c.wallet_bank_account_mapping_code,
-        'wallet_sage_bank_account_id', c.wallet_sage_bank_account_id,
-        'supplier_invoice_id', c.supplier_invoice_id,
-        'supplier_invoice_ref', c.supplier_invoice_ref,
-        'supplier_ap_snapshot_id', c.supplier_ap_snapshot_id,
-        'target_sage_purchase_invoice_id', c.target_sage_purchase_invoice_id,
-        'notes', p_notes
-      ),
-      'frozen',
-      'validated',
-      '[]'::jsonb,
-      p_notes,
-      now(),
-      v_staff_id
-    FROM candidates c
-    WHERE c.blocker IS NULL
-    ON CONFLICT (idempotency_key) WHERE active = true DO NOTHING
-    RETURNING id, source_id, amount_gbp
-  ), batchable AS (
-    SELECT s.id AS snapshot_id, s.source_id, s.amount_gbp, s.idempotency_key, s.request_payload, s.posting_category
-    FROM public.cash_posting_snapshots s
-    JOIN selected sel ON sel.order_funding_event_id = s.source_id
-    LEFT JOIN public.cash_posting_batch_rows existing_row ON existing_row.snapshot_id = s.id AND existing_row.active = true
-    WHERE s.active = true
-      AND s.source_type = 'completion_loyalty_supplier_wallet_payment'
-      AND s.posting_category = 'supplier_invoice_payment'
-      AND s.validation_status = 'validated'
-      AND s.sage_posting_status <> 'posted'
-      AND existing_row.id IS NULL
+  DROP TABLE IF EXISTS pg_temp._clsp_selected;
+  DROP TABLE IF EXISTS pg_temp._clsp_candidates;
+  DROP TABLE IF EXISTS pg_temp._clsp_batchable;
+
+  CREATE TEMP TABLE pg_temp._clsp_selected ON COMMIT DROP AS
+  SELECT DISTINCT unnest(p_order_funding_event_ids)::uuid AS order_funding_event_id;
+
+  CREATE TEMP TABLE pg_temp._clsp_candidates ON COMMIT DROP AS
+  SELECT
+    s.order_funding_event_id AS selected_order_funding_event_id,
+    c.*
+  FROM pg_temp._clsp_selected s
+  LEFT JOIN LATERAL (
+    SELECT c0.*
+    FROM public.internal_completion_loyalty_supplier_wallet_payment_candidates_v1(NULL, 300, 0) c0
+    WHERE c0.order_funding_event_id = s.order_funding_event_id
+    LIMIT 1
+  ) c ON true;
+
+  INSERT INTO public.cash_posting_snapshots (
+    posting_category,
+    source_type,
+    source_id,
+    statement_line_id,
+    order_id,
+    order_ref,
+    counterparty_type,
+    counterparty_id,
+    counterparty_name,
+    sage_contact_id,
+    sage_contact_name,
+    sage_bank_account_id,
+    amount_gbp,
+    posting_date,
+    short_reference,
+    idempotency_key,
+    request_payload,
+    internal_reference_json,
+    freeze_status,
+    validation_status,
+    validation_errors,
+    notes,
+    validated_at,
+    created_by_staff_id
   )
+  SELECT
+    'supplier_invoice_payment',
+    'completion_loyalty_supplier_wallet_payment',
+    c.order_funding_event_id,
+    c.destination_in_statement_line_id,
+    c.order_id,
+    c.order_ref,
+    'retailer_supplier',
+    c.retailer_id,
+    c.retailer_name,
+    c.supplier_sage_contact_id,
+    c.supplier_sage_contact_name,
+    c.wallet_sage_bank_account_id,
+    c.amount_gbp,
+    c.posting_date,
+    ('CLSP-' || left(c.order_funding_event_id::text, 8))::text,
+    ('completion-loyalty-supplier-wallet:' || c.order_funding_event_id::text || ':' || c.supplier_invoice_id::text || ':' || c.wallet_code)::text,
+    jsonb_build_object(
+      'endpoint', '/contact_payments',
+      'method', 'POST',
+      'posting_category', 'supplier_invoice_payment',
+      'source_lane', 'completion_loyalty_supplier_wallet_payment',
+      'contact_payment', jsonb_build_object(
+        'transaction_type_id', 'VENDOR_PAYMENT',
+        'contact_id', c.supplier_sage_contact_id,
+        'bank_account_id', c.wallet_sage_bank_account_id,
+        'date', c.posting_date::text,
+        'total_amount', c.amount_gbp,
+        'reference', ('CLSP-' || left(c.order_funding_event_id::text, 8)),
+        'allocated_artefacts', jsonb_build_array(jsonb_build_object('artefact_id', c.target_sage_purchase_invoice_id, 'amount', c.amount_gbp))
+      ),
+      'allocation_target', jsonb_build_object(
+        'purchase_invoice_id', c.target_sage_purchase_invoice_id,
+        'target_sage_object_id', c.target_sage_purchase_invoice_id,
+        'supplier_invoice_id', c.supplier_invoice_id,
+        'supplier_ap_snapshot_id', c.supplier_ap_snapshot_id,
+        'amount', c.amount_gbp,
+        'matched_target_ref', c.supplier_invoice_ref
+      )
+    ),
+    jsonb_build_object(
+      'source_lane', 'completion_loyalty_supplier_wallet_payment',
+      'order_funding_event_id', c.order_funding_event_id,
+      'source_credit_ledger_id', c.source_credit_ledger_id,
+      'destination_in_statement_line_id', c.destination_in_statement_line_id,
+      'wallet_code', c.wallet_code,
+      'wallet_bank_account_mapping_code', c.wallet_bank_account_mapping_code,
+      'wallet_sage_bank_account_id', c.wallet_sage_bank_account_id,
+      'supplier_invoice_id', c.supplier_invoice_id,
+      'supplier_invoice_ref', c.supplier_invoice_ref,
+      'supplier_ap_snapshot_id', c.supplier_ap_snapshot_id,
+      'target_sage_purchase_invoice_id', c.target_sage_purchase_invoice_id,
+      'notes', p_notes
+    ),
+    'frozen',
+    'validated',
+    '[]'::jsonb,
+    p_notes,
+    now(),
+    v_staff_id
+  FROM pg_temp._clsp_candidates c
+  WHERE c.order_funding_event_id IS NOT NULL
+    AND c.blocker IS NULL
+  ON CONFLICT (idempotency_key) WHERE active = true DO NOTHING;
+
+  CREATE TEMP TABLE pg_temp._clsp_batchable ON COMMIT DROP AS
+  SELECT
+    s.id AS snapshot_id,
+    s.source_id,
+    s.amount_gbp,
+    s.idempotency_key,
+    s.request_payload,
+    s.posting_category
+  FROM public.cash_posting_snapshots s
+  JOIN pg_temp._clsp_selected sel ON sel.order_funding_event_id = s.source_id
+  LEFT JOIN public.cash_posting_batch_rows existing_row ON existing_row.snapshot_id = s.id AND existing_row.active = true
+  WHERE s.active = true
+    AND s.source_type = 'completion_loyalty_supplier_wallet_payment'
+    AND s.posting_category = 'supplier_invoice_payment'
+    AND s.validation_status = 'validated'
+    AND COALESCE(s.sage_posting_status, 'not_posted') <> 'posted'
+    AND existing_row.id IS NULL;
+
   SELECT count(*)::integer, round(COALESCE(sum(amount_gbp), 0)::numeric, 2)
   INTO v_valid_count, v_total_amount
-  FROM batchable;
+  FROM pg_temp._clsp_batchable;
 
   IF v_valid_count > 0 THEN
     v_batch_ref := 'CLSPB-' || to_char(now(), 'YYYYMMDD-HH24MISS') || '-' || substr(md5(gen_random_uuid()::text), 1, 6);
@@ -506,35 +532,31 @@ BEGIN
       'validated',
       'not_posted',
       b.request_payload
-    FROM batchable b;
+    FROM pg_temp._clsp_batchable b;
   END IF;
 
   RETURN QUERY
-  WITH selected AS (
-    SELECT DISTINCT unnest(p_order_funding_event_ids)::uuid AS order_funding_event_id
-  ), candidates AS (
-    SELECT s.order_funding_event_id, c.*
-    FROM selected s
-    LEFT JOIN LATERAL (
-      SELECT c0.*
-      FROM public.internal_completion_loyalty_supplier_wallet_payment_candidates_v1(NULL, 300, 0) c0
-      WHERE c0.order_funding_event_id = s.order_funding_event_id
-      LIMIT 1
-    ) c ON true
-  ), snapshots AS (
-    SELECT c.order_funding_event_id, cps.id AS snapshot_id, cps.amount_gbp, cps.internal_reference_json->>'wallet_code' AS wallet_code
-    FROM candidates c
+  WITH snapshots AS (
+    SELECT
+      c.selected_order_funding_event_id,
+      cps.id AS snapshot_id,
+      cps.amount_gbp,
+      cps.internal_reference_json->>'wallet_code' AS wallet_code
+    FROM pg_temp._clsp_candidates c
     LEFT JOIN public.cash_posting_snapshots cps
       ON cps.active = true
      AND cps.idempotency_key = ('completion-loyalty-supplier-wallet:' || c.order_funding_event_id::text || ':' || COALESCE(c.supplier_invoice_id::text, 'missing') || ':' || COALESCE(c.wallet_code, 'missing'))
   ), batch_rows AS (
-    SELECT s.order_funding_event_id, br.batch_id, b.batch_ref
+    SELECT
+      s.selected_order_funding_event_id,
+      br.batch_id,
+      b.batch_ref
     FROM snapshots s
     LEFT JOIN public.cash_posting_batch_rows br ON br.snapshot_id = s.snapshot_id AND br.active = true
     LEFT JOIN public.cash_posting_batches b ON b.id = br.batch_id AND b.active = true
   )
   SELECT
-    c.order_funding_event_id,
+    c.selected_order_funding_event_id AS order_funding_event_id,
     s.snapshot_id,
     br.batch_id,
     br.batch_ref,
@@ -554,10 +576,10 @@ BEGIN
     COALESCE(s.amount_gbp, c.amount_gbp),
     COALESCE(s.wallet_code, c.wallet_code),
     CASE WHEN br.batch_id IS NOT NULL THEN ('/internal/accounting-command-centre/cash-posting/batches/' || br.batch_id::text) ELSE NULL::text END AS detail_href
-  FROM candidates c
-  LEFT JOIN snapshots s ON s.order_funding_event_id = c.order_funding_event_id
-  LEFT JOIN batch_rows br ON br.order_funding_event_id = c.order_funding_event_id
-  ORDER BY c.order_funding_event_id;
+  FROM pg_temp._clsp_candidates c
+  LEFT JOIN snapshots s ON s.selected_order_funding_event_id = c.selected_order_funding_event_id
+  LEFT JOIN batch_rows br ON br.selected_order_funding_event_id = c.selected_order_funding_event_id
+  ORDER BY c.selected_order_funding_event_id;
 END;
 $$;
 
