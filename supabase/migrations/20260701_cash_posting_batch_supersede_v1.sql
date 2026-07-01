@@ -21,6 +21,9 @@ BEGIN
   IF to_regprocedure('public.internal_has_accounting_admin_access_v1()') IS NULL THEN
     RAISE EXCEPTION 'Missing public.internal_has_accounting_admin_access_v1()';
   END IF;
+  IF to_regprocedure('public.internal_current_staff_id_v1()') IS NULL THEN
+    RAISE EXCEPTION 'Missing public.internal_current_staff_id_v1()';
+  END IF;
 END $$;
 
 CREATE OR REPLACE FUNCTION public.internal_supersede_cash_posting_batch_v1(
@@ -125,7 +128,7 @@ BEGIN
     FROM public.cash_posting_batch_rows r
     WHERE r.batch_id = p_batch_id
       AND r.snapshot_id IS NOT NULL
-      AND r.posting_status <> 'posted'
+      AND r.posting_status NOT IN ('posted', 'posted_needs_review')
   )
     AND s.active = true
     AND COALESCE(s.sage_posting_status, 'not_posted') <> 'posted'
