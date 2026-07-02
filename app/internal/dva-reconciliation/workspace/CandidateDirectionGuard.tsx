@@ -8,9 +8,17 @@ function cardText(anchor: HTMLAnchorElement) {
   return (anchor.innerText || "").trim();
 }
 
+function firstContentLine(body: string) {
+  return body
+    .split("\n")
+    .map((part) => part.trim())
+    .filter(Boolean)[0] || "";
+}
+
 function isStatementCard(anchor: HTMLAnchorElement) {
   const body = cardText(anchor);
-  return /\b(IN|OUT)\b/.test(body) && !body.startsWith("Invoice") && !body.startsWith("Exception");
+  const header = firstContentLine(body);
+  return /\b(IN|OUT)\b/.test(header) && !body.startsWith("Invoice") && !body.startsWith("Exception");
 }
 
 function isTargetCard(anchor: HTMLAnchorElement) {
@@ -19,9 +27,9 @@ function isTargetCard(anchor: HTMLAnchorElement) {
 }
 
 function statementDirection(anchor: HTMLAnchorElement): Direction {
-  const body = cardText(anchor);
-  if (/\bIN\b/.test(body)) return "IN";
-  if (/\bOUT\b/.test(body)) return "OUT";
+  const header = firstContentLine(cardText(anchor));
+  if (/\bOUT\b/.test(header)) return "OUT";
+  if (/\bIN\b/.test(header)) return "IN";
   return "UNKNOWN";
 }
 
