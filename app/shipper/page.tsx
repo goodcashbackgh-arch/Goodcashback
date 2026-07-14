@@ -27,6 +27,10 @@ type PackageRow = {
   latest_receipt_note?: string | null;
   latest_receipt_evidence_url?: string | null;
   latest_receipt_recorded_at?: string | null;
+  active_shipment_batch_id?: string | null;
+  active_shipment_booking_ref?: string | null;
+  active_shipment_batch_status?: string | null;
+  in_active_shipment_yn?: boolean | null;
 };
 
 function formatDate(value: string | null | undefined) {
@@ -155,7 +159,7 @@ export default async function ShipperPage({
   const unallocatedPackages = packageRows.length - allocatedPackages.length;
   const awaitingReceiptPackages = packageRows.filter((row) => !row.latest_receipt_status);
   const receiptIssuePackages = packageRows.filter((row) => ["received_damaged", "held_query", "not_received"].includes(String(row.latest_receipt_status ?? "")));
-  const receivedCleanPackages = packageRows.filter((row) => row.latest_receipt_status === "received_clean");
+  const readyToShipPackages = packageRows.filter((row) => row.latest_receipt_status === "received_clean" && !row.in_active_shipment_yn);
   const importerGroups = groupByImporter(filteredRows);
   const importerOptions = groupByImporter(rows);
   const shipper = Array.isArray((shipperUser as any).shippers) ? (shipperUser as any).shippers[0] : (shipperUser as any).shippers;
@@ -224,7 +228,7 @@ export default async function ShipperPage({
           </div>
           <div className="rounded-3xl border border-emerald-200 bg-emerald-50 p-4 shadow-sm">
             <p className="text-xs uppercase tracking-wide text-emerald-700">Ready to ship</p>
-            <p className="mt-1 text-2xl font-semibold text-emerald-950">{receivedCleanPackages.length}</p>
+            <p className="mt-1 text-2xl font-semibold text-emerald-950">{readyToShipPackages.length}</p>
           </div>
           <div className={`rounded-3xl border p-4 shadow-sm ${receiptIssuePackages.length > 0 ? "border-rose-200 bg-rose-50" : "border-slate-200 bg-white"}`}>
             <p className="text-xs uppercase tracking-wide text-slate-500">Receipt issues</p>
@@ -336,9 +340,15 @@ export default async function ShipperPage({
                                     Record receipt
                                   </Link>
                                   {row.latest_receipt_status === "received_clean" ? (
-                                    <Link href={`/shipper/shipments/new?importer=${row.importer_id}`} className="rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-900 hover:bg-emerald-100">
-                                      Add to shipment
-                                    </Link>
+                                    row.in_active_shipment_yn ? (
+                                      <span className="rounded-xl border border-slate-300 bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-700">
+                                        Added to {row.active_shipment_booking_ref ?? "shipment"}
+                                      </span>
+                                    ) : (
+                                      <Link href={`/shipper/shipments/new?importer=${row.importer_id}`} className="rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-900 hover:bg-emerald-100">
+                                        Add to shipment
+                                      </Link>
+                                    )
                                   ) : null}
                                 </div>
                               ) : (
