@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ChangeEvent } from "react";
 
 type Option = { id: string; name: string };
 type Hub = { id: string; name: string; city?: string | null };
@@ -26,7 +26,7 @@ export default function OrderForm({
 }) {
   const [attachmentSummary, setAttachmentSummary] = useState({ count: 0, totalBytes: 0, error: "" });
 
-  function handleAttachmentChange(event: React.ChangeEvent<HTMLInputElement>) {
+  function handleAttachmentChange(event: ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.currentTarget.files ?? []);
     const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
 
