@@ -1,7 +1,15 @@
 "use client";
 
+import { useState } from "react";
+
 type Option = { id: string; name: string };
 type Hub = { id: string; name: string; city?: string | null };
+
+const MAX_ATTACHMENT_BYTES = 3.5 * 1024 * 1024;
+
+function formatMb(bytes: number) {
+  return (bytes / 1024 / 1024).toFixed(2);
+}
 
 export default function OrderForm({
   retailers,
@@ -16,6 +24,25 @@ export default function OrderForm({
   emptyMessages: string[];
   action: (formData: FormData) => void;
 }) {
+  const [attachmentSummary, setAttachmentSummary] = useState({ count: 0, totalBytes: 0, error: "" });
+
+  function handleAttachmentChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.currentTarget.files ?? []);
+    const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
+
+    if (totalBytes > MAX_ATTACHMENT_BYTES) {
+      event.currentTarget.value = "";
+      setAttachmentSummary({
+        count: 0,
+        totalBytes: 0,
+        error: `Attachments total ${formatMb(totalBytes)} MB. The maximum allowed is 3.50 MB. Please select smaller files.`,
+      });
+      return;
+    }
+
+    setAttachmentSummary({ count: files.length, totalBytes, error: "" });
+  }
+
   return (
     <form action={action} className="space-y-4 max-w-3xl" encType="multipart/form-data">
       {emptyMessages.length > 0 && <div className="rounded border border-amber-500 bg-amber-50 p-3 text-sm">{emptyMessages.join(" ")}</div>}
@@ -33,7 +60,12 @@ export default function OrderForm({
       <input type="hidden" name="destination_hub_id" value={assignedHub?.id ?? ""} />
 
       <div className="space-y-2 rounded border p-3">
-        <label htmlFor="screenshots" className="text-sm font-medium">Order attachments</label>
+        <div className="flex items-center justify-between gap-3">
+          <label htmlFor="screenshots" className="text-sm font-medium">Order attachments</label>
+          <span className="text-xs font-semibold text-slate-700" aria-live="polite">
+            {attachmentSummary.count} {attachmentSummary.count === 1 ? "attachment" : "attachments"} · {formatMb(attachmentSummary.totalBytes)} MB
+          </span>
+        </div>
         <input
           id="screenshots"
           name="screenshots"
@@ -42,8 +74,15 @@ export default function OrderForm({
           multiple
           required
           className="border p-2 w-full"
+          onChange={handleAttachmentChange}
+          aria-describedby="attachment-guidance attachment-error"
         />
-        <p className="text-xs text-slate-600">Select all required screenshots in one selection.</p>
+        <p id="attachment-guidance" className="text-xs text-slate-600">Select all required screenshots in one selection. Maximum combined size: 3.50 MB.</p>
+        {attachmentSummary.error ? (
+          <p id="attachment-error" role="alert" className="rounded border border-red-300 bg-red-50 p-2 text-sm font-medium text-red-800">
+            {attachmentSummary.error}
+          </p>
+        ) : null}
       </div>
 
       <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
@@ -67,7 +106,7 @@ export default function OrderForm({
         <p className="font-semibold">Goods Pro Forma Estimate</p>
         <p>This estimate is based on the goods value you submitted. Shipping is excluded at this stage. Shipping will be quoted separately after goods are received and checked by the shipper.</p>
       </div>
-      <button className="rounded bg-sky-600 text-white px-4 py-2" disabled={retailers.length === 0 || !assignedHub}>Create order / Goods Pro Forma Estimate</button>
+      <button className="rounded bg-sky-600 text-white px-4 py-2 disabled:bg-slate-300" disabled={retailers.length === 0 || !assignedHub || Boolean(attachmentSummary.error)}>Create order / Goods Pro Forma Estimate</button>
     </form>
   );
 }
