@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 import { approveShippingApportionmentAction } from "../actions";
+import LiveApportionmentPreview from "../LiveApportionmentPreview";
 
 type PreviewRow = {
   shipping_document_id: string;
@@ -40,11 +41,6 @@ function n(value: number | string | null | undefined) {
 
 function money(value: number | string | null | undefined, currency = "GBP") {
   return new Intl.NumberFormat("en-GB", { style: "currency", currency: currency || "GBP" }).format(n(value));
-}
-
-function qty(value: number | string | null | undefined) {
-  const parsed = n(value);
-  return parsed % 1 === 0 ? String(Math.trunc(parsed)) : parsed.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
 }
 
 function friendly(value: string | null | undefined) {
@@ -92,9 +88,6 @@ export default async function ShippingApportionmentPage({ params, searchParams }
   const canApprove = rows.length > 0 && blockers.length === 0 && first?.review_status === "accepted_current";
   const sourceCurrency = first?.source_currency_code ?? "GBP";
   const sourceTotal = n(first?.source_total_amount);
-  const itemQty = rows.reduce((sum, row) => sum + n(row.qty_allocated), 0);
-  const weightedTotal = rows.reduce((sum, row) => sum + n(row.weighted_basis), 0);
-  const previewAllocatedTotal = rows.reduce((sum, row) => sum + n(row.preview_allocated_amount), 0);
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-6 text-slate-950 sm:px-6 sm:py-8">
@@ -140,56 +133,15 @@ export default async function ShippingApportionmentPage({ params, searchParams }
             ) : null}
 
             <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-              <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-                <div>
-                  <h2 className="text-xl font-semibold">Category-weighted allocation preview</h2>
-                  <p className="mt-2 text-sm leading-6 text-slate-600">Default method uses adjusted shipped value × category factor. Supervisor can override category with a reason before approval.</p>
-                </div>
-                <div className="grid gap-2 text-sm sm:grid-cols-3">
-                  <div className="rounded-2xl bg-slate-50 p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Item qty</p><p className="font-semibold">{qty(itemQty)}</p></div>
-                  <div className="rounded-2xl bg-slate-50 p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Weighted basis</p><p className="font-semibold">{weightedTotal.toFixed(4)}</p></div>
-                  <div className="rounded-2xl bg-slate-50 p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Preview total</p><p className="font-semibold">{money(previewAllocatedTotal, sourceCurrency)}</p></div>
-                </div>
-              </div>
-
-              <form action={approveShippingApportionmentAction} className="mt-5 space-y-5">
+              <form action={approveShippingApportionmentAction} className="space-y-5">
                 <input type="hidden" name="shipping_document_id" value={shippingDocumentId} />
-                <div className="overflow-x-auto rounded-2xl border border-slate-200">
-                  <table className="min-w-full divide-y divide-slate-200 text-sm">
-                    <thead className="bg-slate-100 text-xs uppercase tracking-wide text-slate-500">
-                      <tr>
-                        <th className="px-3 py-2 text-left">Order / package</th>
-                        <th className="px-3 py-2 text-left">Item</th>
-                        <th className="px-3 py-2 text-right">Qty</th>
-                        <th className="px-3 py-2 text-right">Adjusted value</th>
-                        <th className="px-3 py-2 text-left">Category</th>
-                        <th className="px-3 py-2 text-right">Factor</th>
-                        <th className="px-3 py-2 text-right">Allocated shipping</th>
-                        <th className="px-3 py-2 text-left">Override reason</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 bg-white">
-                      {rows.map((row, index) => (
-                        <tr key={`${row.tracking_submission_id}-${row.supplier_invoice_line_id}-${index}`}>
-                          <td className="px-3 py-3 align-top"><p className="font-semibold">{row.order_ref ?? row.order_id ?? "—"}</p><p className="text-xs text-slate-500">{row.tracking_ref ?? row.tracking_submission_id ?? "—"}</p></td>
-                          <td className="px-3 py-3 align-top"><p className="font-medium">{row.item_description ?? "Unlabelled item"}</p>{row.blocker ? <p className="mt-1 text-xs font-semibold text-amber-700">{friendly(row.blocker)}</p> : null}</td>
-                          <td className="px-3 py-3 text-right align-top">{qty(row.qty_allocated)}</td>
-                          <td className="px-3 py-3 text-right align-top">{money(row.adjusted_net_value_gbp, "GBP")}</td>
-                          <td className="px-3 py-3 align-top">
-                            <input type="hidden" name="tracking_submission_id" value={row.tracking_submission_id ?? ""} />
-                            <input type="hidden" name="supplier_invoice_line_id" value={row.supplier_invoice_line_id ?? ""} />
-                            <select name="category_code" defaultValue={row.suggested_category_code ?? "unclassified"} className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm" disabled={!canApprove}>
-                              {rules.map((rule) => <option key={rule.rule_code} value={rule.rule_code}>{rule.label} × {n(rule.default_factor).toFixed(1)}</option>)}
-                            </select>
-                          </td>
-                          <td className="px-3 py-3 text-right align-top">{n(row.suggested_category_factor).toFixed(3)}</td>
-                          <td className="px-3 py-3 text-right align-top font-semibold">{money(row.preview_allocated_amount, sourceCurrency)}</td>
-                          <td className="px-3 py-3 align-top"><input name="override_reason" placeholder="Required if changing category" className="w-56 rounded-xl border border-slate-300 px-3 py-2 text-sm" disabled={!canApprove} /></td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                <LiveApportionmentPreview
+                  rows={rows}
+                  rules={rules}
+                  canApprove={canApprove}
+                  sourceCurrency={sourceCurrency}
+                  sourceTotal={sourceTotal}
+                />
 
                 <label className="block text-sm">
                   <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Approval note</span>
