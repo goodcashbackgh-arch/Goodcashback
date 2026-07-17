@@ -474,8 +474,10 @@ export async function POST(request: Request) {
 
   try {
     if (typedBatch.detected_file_type === "pdf") {
-      await stageUnsupportedRow(supabase, typedBatch, "PDF statement OCR is gated. Configure and test the Mindee statement model before consuming pages; CSV/text extraction is active now.");
-      return redirectToImportPage(request, { import_success: "PDF batch staged with OCR-gated row-level error. No Mindee pages consumed.", batch_id: batchId });
+      return redirectToImportPage(request, {
+        import_error: "PDF statements must use PDF statement extraction. No rows were created.",
+        batch_id: batchId,
+      });
     }
 
     if (typedBatch.detected_file_type === "xlsx") {

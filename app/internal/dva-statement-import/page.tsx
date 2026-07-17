@@ -85,7 +85,7 @@ function nextAction(batch: Row) {
   if (isVoidedBatch(batch)) return "Voided — audit trail only. Upload a fresh statement if this was wrong.";
   if (status === "committed") return "Committed — available for matching. Void only if this import was uploaded in error.";
   if (status === "failed") return "Failed — open detail or upload a corrected batch.";
-  if (fileType === "pdf" && rowCount === 0) return "Run PDF statement extraction / parse rows, then review detail.";
+  if (fileType === "pdf" && rowCount === 0) return "Start PDF statement extraction, then parse and review the extracted rows.";
   if (rowCount > 0) return "Open detail to review balance chain and staged rows.";
   return "Extract rows, then review detail.";
 }
@@ -308,6 +308,7 @@ export default async function DvaStatementImportPage({
             ) : batches.map((batch) => {
               const voided = isVoidedBatch(batch);
               const hasRows = num(batch.row_count) > 0;
+              const fileType = text(batch.detected_file_type);
               return (
               <article key={text(batch.id)} className={`max-w-full overflow-hidden rounded-2xl border p-4 shadow-sm ${voided ? "border-slate-200 bg-slate-50 opacity-80" : "border-slate-200 bg-white"}`}>
                 <div className="flex flex-wrap items-start justify-between gap-3">
@@ -328,7 +329,10 @@ export default async function DvaStatementImportPage({
                 <p className="mt-3 text-sm font-medium text-slate-600">Next: {nextAction(batch)}</p>
                 <div className="mt-4 grid max-w-full gap-2 sm:flex sm:flex-wrap">
                   <Link className="w-full rounded-xl bg-slate-950 px-4 py-2 text-center text-sm font-semibold text-white sm:w-auto" href={`/internal/dva-statement-import/${text(batch.id)}`}>Open detail</Link>
-                  {!voided && !hasRows && text(batch.status) !== "committed" ? (
+                  {!voided && !hasRows && text(batch.status) !== "committed" && fileType === "pdf" ? (
+                    <Link className="w-full rounded-xl bg-sky-600 px-4 py-2 text-center text-sm font-semibold text-white sm:w-auto" href="/internal/dva-statement-import/mindee-control">Start PDF extraction</Link>
+                  ) : null}
+                  {!voided && !hasRows && text(batch.status) !== "committed" && ["csv", "text"].includes(fileType) ? (
                     <form action={`/internal/dva-statement-import/extract`} method="post" className="grid w-full max-w-full gap-2 rounded-xl border border-slate-200 bg-slate-50 p-2 sm:w-auto sm:grid-cols-[minmax(0,10rem)_auto] sm:items-end">
                       <input type="hidden" name="import_batch_id" value={text(batch.id)} />
                       <label className="grid min-w-0 gap-1 text-xs font-semibold text-slate-500">
