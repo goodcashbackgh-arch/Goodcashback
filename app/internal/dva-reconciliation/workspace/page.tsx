@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { createClient } from "@/utils/supabase/server";
+import { allocateStatementLineToSupplierInvoiceAction } from "../actions";
 import { allocateStatementLineToFinalBalancePaymentAction } from "../finalBalanceActions";
 
 type Row = Record<string, unknown>;
@@ -175,7 +176,7 @@ function importerLabel(importer?: Row) {
 function isUsefulOperationalCandidate(row: OperationalRow) {
   if (row.kind === "final_balance") return row.amount > 0 && row.status === "balance_due";
   if (row.kind === "exception") return row.openExceptionTotal > 0 && row.status !== "resolved" && row.status !== "closed";
-  return row.status === "approved_current" && (row.amount > 0 || row.progressedTotal > 0);
+  return bool(row.raw.selectable_yn);
 }
 
 function targetKindLabel(kind: OperationalKind) {
@@ -205,8 +206,7 @@ export default async function DvaMatchingWorkspacePage({
     importersResult,
     ordersResult,
     retailersResult,
-    invoicesResult,
-    invoiceLinesResult,
+    supplierCandidatesResult,
     disputesResult,
     suggestionsResult,
     creditLedgerResult,
@@ -219,8 +219,11 @@ export default async function DvaMatchingWorkspacePage({
     supabase.from("importers").select("id, company_name, trading_name, gcb_dva_ref, dva_card_last_4").limit(200),
     supabase.from("orders").select("id, order_ref, importer_id, retailer_id, order_total_gbp_declared, status, payment_auth_id, order_type, created_at").order("created_at", { ascending: false }).limit(500),
     supabase.from("retailers").select("id, name").limit(500),
-    supabase.from("supplier_invoices").select("id, order_id, invoice_ref, invoice_pdf_url, ocr_invoice_ref, ocr_invoice_total_gbp, reconciliation_gbp_total, review_status, uploaded_at").order("uploaded_at", { ascending: false }).limit(500),
-    supabase.from("supplier_invoice_lines").select("id, supplier_invoice_id, amount_inc_vat_gbp, amount_confirmed, eligible_for_invoice_yn").limit(1500),
+    supabase
+      .from("supplier_payment_candidate_status_vw")
+      .select("supplier_invoice_id, order_id, order_ref, importer_id, retailer_id, order_type, invoice_ref, review_status, invoice_total_gbp, confirmed_matched_gbp, remaining_unmatched_gbp, funding_required_yn, threshold_met_yn, funding_provenance_ready_yn, supplier_payment_ready_yn, blocker, selectable_yn")
+      .order("order_ref", { ascending: false })
+      .limit(500),
     supabase.from("disputes").select("id, order_id, desired_outcome, status, amount_impact_gbp, resolved_at, raised_at").order("raised_at", { ascending: false }).limit(500),
     supabase.from("match_suggestions").select("id, dva_statement_line_id, suggested_match_type, suggested_match_id, confidence, variance_gbp, variance_days").limit(500),
     supabase.from("importer_credit_ledger").select("id, importer_id, entry_type, direction, amount_gbp, lock_reason").limit(500),
@@ -235,8 +238,7 @@ export default async function DvaMatchingWorkspacePage({
   const orders = ((ordersResult.data ?? []) as unknown as Row[]).filter((row) => !selectedImporterId || text(row.importer_id) === selectedImporterId);
   const orderIds = new Set(orders.map((row) => text(row.id)).filter(Boolean));
   const retailersById = byId((retailersResult.data ?? []) as unknown as Row[]);
-  const invoices = ((invoicesResult.data ?? []) as unknown as Row[]).filter((row) => orderIds.has(text(row.order_id)));
-  const invoiceLinesByInvoiceId = groupBy((invoiceLinesResult.data ?? []) as unknown as Row[], "supplier_invoice_id");
+  const supplierCandidates = ((supplierCandidatesResult.data ?? []) as unknown as Row[]).filter((row) => orderIds.has(text(row.order_id)));
   const disputes = ((disputesResult.data ?? []) as unknown as Row[]).filter((row) => orderIds.has(text(row.order_id)));
   const suggestionsByLineId = groupBy((suggestionsResult.data ?? []) as unknown as Row[], "dva_statement_line_id");
   const creditLedger = ((creditLedgerResult.data ?? []) as unknown as Row[]).filter((row) => !selectedImporterId || text(row.importer_id) === selectedImporterId);
@@ -272,30 +274,25 @@ export default async function DvaMatchingWorkspacePage({
   const settlementV2Result = await supabase.rpc("internal_order_final_sale_settlement_v2", { p_order_id: null });
   const settlementRows = ((settlementV2Result.data ?? []) as unknown as Row[]).filter((row) => !selectedImporterId || text(row.importer_id) === selectedImporterId);
 
-  const invoiceRows: OperationalRow[] = invoices.map((invoice) => {
-    const order = orders.find((row) => text(row.id) === text(invoice.order_id));
-    const retailer = order ? retailersById.get(text(order.retailer_id)) : undefined;
-    const relatedLines = invoiceLinesByInvoiceId.get(text(invoice.id)) ?? [];
-    const progressedTotal = relatedLines.reduce((sum, line) => {
-      const eligible = ["y", "yes", "true", "1"].includes(text(line.eligible_for_invoice_yn).toLowerCase());
-      return eligible ? sum + (num(line.amount_confirmed) || num(line.amount_inc_vat_gbp)) : sum;
-    }, 0);
+  const invoiceRows: OperationalRow[] = supplierCandidates.map((candidate) => {
+    const order = orders.find((row) => text(row.id) === text(candidate.order_id));
+    const retailer = retailersById.get(text(candidate.retailer_id)) || (order ? retailersById.get(text(order.retailer_id)) : undefined);
     const openExceptionTotal = disputes
-      .filter((dispute) => text(dispute.order_id) === text(order?.id) && !text(dispute.resolved_at))
+      .filter((dispute) => text(dispute.order_id) === text(candidate.order_id) && !text(dispute.resolved_at))
       .reduce((sum, dispute) => sum + num(dispute.amount_impact_gbp), 0);
 
     return {
       kind: "invoice",
-      id: text(invoice.id),
-      title: text(invoice.invoice_ref) || text(invoice.ocr_invoice_ref) || "Supplier invoice",
+      id: text(candidate.supplier_invoice_id),
+      title: text(candidate.invoice_ref) || "Supplier invoice",
       retailerName: text(retailer?.name),
-      orderRef: text(order?.order_ref),
-      orderId: text(order?.id),
-      status: text(invoice.review_status),
-      amount: num(invoice.ocr_invoice_total_gbp) || num(invoice.reconciliation_gbp_total),
-      progressedTotal,
+      orderRef: text(candidate.order_ref) || text(order?.order_ref),
+      orderId: text(candidate.order_id),
+      status: text(candidate.review_status),
+      amount: num(candidate.invoice_total_gbp),
+      progressedTotal: num(candidate.confirmed_matched_gbp),
       openExceptionTotal,
-      raw: invoice,
+      raw: candidate,
     };
   });
 
@@ -356,7 +353,23 @@ export default async function DvaMatchingWorkspacePage({
 
   const selectedTarget = operationalRows.find((row) => row.id === activeSelectedTargetId);
   const selectedTargetAmount = selectedTarget ? selectedTarget.amount || selectedTarget.progressedTotal || selectedTarget.openExceptionTotal : 0;
-  const suggestedAllocation = selectedTarget ? Math.min(selectedStatementRemaining, selectedTargetAmount || selectedStatementRemaining) : 0;
+  const selectedTargetIsSupplierInvoice = selectedTarget?.kind === "invoice";
+  const selectedSupplierRemaining = selectedTargetIsSupplierInvoice ? num(selectedTarget.raw.remaining_unmatched_gbp) : 0;
+  const supplierAllocationBlocker = (() => {
+    if (!selectedTargetIsSupplierInvoice) return "Select a supplier invoice target before supplier allocation.";
+    if (text(selectedLine?.direction) !== "out") return "Supplier invoice allocation requires an OUT statement line.";
+    if (num(selectedLine?.active_allocation_count) > 0) return "This statement line already has an active allocation and cannot be submitted again.";
+    if (!bool(selectedTarget.raw.selectable_yn)) return text(selectedTarget.raw.blocker) || "Supplier invoice candidate is not selectable.";
+    if (selectedStatementAmount <= 0) return "Statement GBP amount must be positive.";
+    if (selectedSupplierRemaining + 0.005 < selectedStatementAmount) return `Supplier invoice remaining unmatched amount ${gbp(selectedSupplierRemaining)} does not cover the full statement amount ${gbp(selectedStatementAmount)}.`;
+    return "";
+  })();
+  const canApplySupplierInvoice = selectedTargetIsSupplierInvoice && !supplierAllocationBlocker;
+  const suggestedAllocation = selectedTargetIsSupplierInvoice
+    ? (canApplySupplierInvoice ? selectedStatementAmount : 0)
+    : selectedTarget
+      ? Math.min(selectedStatementRemaining, selectedTargetAmount || selectedStatementRemaining)
+      : 0;
   const remainingAfterSelection = Math.max(0, selectedStatementRemaining - suggestedAllocation);
   const selectedTargetIsFinalBalance = selectedTarget?.kind === "final_balance";
   const finalBalanceFxExcess = selectedTargetIsFinalBalance ? Math.max(0, selectedStatementRemaining - selectedTargetAmount) : 0;
@@ -549,6 +562,12 @@ export default async function DvaMatchingWorkspacePage({
                       <p>Final sale value {gbp(row.raw.signed_final_sale_value_gbp)} · Received so far {gbp(row.raw.amount_received_gbp)} · Balance due {gbp(row.raw.final_balance_due_gbp)}</p>
                       {text(selectedLine?.direction) === "in" ? <p>Selected line preview: apply {gbp(Math.min(selectedStatementRemaining, row.amount))} · balance after {gbp(Math.max(0, row.amount - selectedStatementRemaining))} · FX/card excess {gbp(Math.max(0, selectedStatementRemaining - row.amount))}</p> : <p className="font-semibold text-amber-700">Final-balance payment requires an IN statement line.</p>}
                     </div>
+                  ) : row.kind === "invoice" ? (
+                    <div className="mt-2 space-y-1 text-xs text-slate-500">
+                      <p>Invoice total {gbp(row.raw.invoice_total_gbp)} · Confirmed matched {gbp(row.raw.confirmed_matched_gbp)} · Remaining unmatched {gbp(row.raw.remaining_unmatched_gbp)}</p>
+                      <p>Payment ready {bool(row.raw.supplier_payment_ready_yn) ? "Yes" : "No"} · Selectable {bool(row.raw.selectable_yn) ? "Yes" : "No"}</p>
+                      {text(row.raw.blocker) ? <p className="font-semibold text-amber-700">Blocker: {text(row.raw.blocker)}</p> : null}
+                    </div>
                   ) : (
                     <p className="mt-2 text-xs text-slate-500">Amount {gbp(row.amount)} · Progressed {gbp(row.progressedTotal)} · Open exception {gbp(row.openExceptionTotal)}</p>
                   )}
@@ -574,9 +593,19 @@ export default async function DvaMatchingWorkspacePage({
             {selectedTargetIsFinalBalance ? <p className="text-slate-600">Final balance after: {gbp(finalBalanceAfterSelection)} · FX/card excess: {gbp(finalBalanceFxExcess)}</p> : null}
             {!selectedTarget ? <p className="text-xs font-semibold text-amber-700">Select a right-side target before allocation.</p> : null}
             {selectedTargetIsFinalBalance && text(selectedLine?.direction) !== "in" ? <p className="text-xs font-semibold text-amber-700">Final-balance payment requires an IN statement line.</p> : null}
+            {selectedTargetIsSupplierInvoice && supplierAllocationBlocker ? <p className="text-xs font-semibold text-amber-700">Supplier allocation unavailable: {supplierAllocationBlocker}</p> : null}
           </div>
           <div className="flex flex-wrap gap-2">
-            {selectedTargetIsFinalBalance ? (
+            {selectedTargetIsSupplierInvoice ? (
+              <form action={allocateStatementLineToSupplierInvoiceAction}>
+                <input type="hidden" name="return_path" value={activeReturnPath} />
+                <input type="hidden" name="dva_statement_line_id" value={activeLineId} />
+                <input type="hidden" name="supplier_invoice_id" value={selectedTarget?.id ?? ""} />
+                <input type="hidden" name="allocated_gbp_amount" value={selectedStatementAmount.toFixed(2)} />
+                <input type="hidden" name="notes" value="DVA/card workspace supplier invoice allocation." />
+                <button className="rounded-xl bg-slate-950 px-4 py-2 font-semibold text-white disabled:bg-slate-200 disabled:text-slate-500" type="submit" disabled={!canApplySupplierInvoice} title={supplierAllocationBlocker || undefined}>Allocate full OUT to supplier invoice</button>
+              </form>
+            ) : selectedTargetIsFinalBalance ? (
               <form action={allocateStatementLineToFinalBalancePaymentAction}>
                 <input type="hidden" name="return_path" value={activeReturnPath} />
                 <input type="hidden" name="dva_statement_line_id" value={activeLineId} />
