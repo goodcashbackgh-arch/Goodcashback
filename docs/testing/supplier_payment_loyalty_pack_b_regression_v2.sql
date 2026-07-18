@@ -1,0 +1,7 @@
+-- Supplier payment behavioural regression closure pack B v2
+--
+-- Scenarios:
+--   1. Released loyalty only: a retailer-labelled physical OUT is suggested to the
+--      correct same-importer/same-retailer supplier invoice, then resolves to the
+--      exact paired-released loyalty wallet.
+--   2. Mixed cash + loyalty: the same governed
