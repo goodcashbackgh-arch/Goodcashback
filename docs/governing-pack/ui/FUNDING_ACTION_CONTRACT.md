@@ -196,3 +196,22 @@ Observed post-action state:
 Rule going forward:
 
 - Future staff UI writes should use a server action plus a staff-only `SECURITY DEFINER` wrapper unless proven otherwise.
+
+## 2026-07-18 source-lot and supplier-payment clarification
+
+The governing extension is:
+
+- `docs/governing-pack/accounting/SUPPLIER_PAYMENT_FUNDING_PROVENANCE_GOVERNING_ADDENDUM_v1.md`
+
+It is authoritative where the earlier description above refers to one aggregate credit debit or an explicit funding-event insert.
+
+Locked implementation rule:
+
+- the existing staff RPC name, arguments, permissions, gap cap and £500 escalation remain unchanged;
+- normal account credit must be consumed through `internal_importer_available_account_credit_lots_v1(...)`;
+- the RPC creates one debit per exact normal credit lot;
+- `trg_sync_order_funding_event_from_importer_credit_ledger()` remains the single event-sync mechanism and creates one `credit_applied` event per debit;
+- the RPC must not insert duplicate funding events;
+- completion loyalty remains in its existing dedicated approval/release/application lane and is not merged back into normal account credit;
+- order creation remains unchanged; and
+- supplier-payment matching, not the wider operational workflow, is gated by full funding and complete provenance for original orders.
