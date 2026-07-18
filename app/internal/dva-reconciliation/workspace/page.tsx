@@ -351,7 +351,7 @@ export default async function DvaMatchingWorkspacePage({
       return Number(isUsefulOperationalCandidate(b)) - Number(isUsefulOperationalCandidate(a)) || b.amount - a.amount;
     });
 
-  const selectedTarget = operationalRows.find((row) => row.id === activeSelectedTargetId);
+  const selectedTarget = operationalRows.find((row) => row.id === activeSelectedTargetId && (row.kind !== "invoice" || bool(row.raw.selectable_yn)));
   const selectedTargetAmount = selectedTarget ? selectedTarget.amount || selectedTarget.progressedTotal || selectedTarget.openExceptionTotal : 0;
   const selectedTargetIsSupplierInvoice = selectedTarget?.kind === "invoice";
   const selectedSupplierRemaining = selectedTargetIsSupplierInvoice ? num(selectedTarget.raw.remaining_unmatched_gbp) : 0;
@@ -536,6 +536,28 @@ export default async function DvaMatchingWorkspacePage({
             <div className="mt-4 space-y-3">
               {operationalRows.length === 0 ? <p className="text-sm text-slate-500">No candidate orders, invoices, exceptions, or final-balance targets match the current filters.</p> : null}
               {operationalRows.map((row) => (
+                row.kind === "invoice" && !bool(row.raw.selectable_yn) ? (
+                  <article
+                    key={`${row.kind}-${row.id}`}
+                    className="block rounded-2xl border border-amber-200 bg-amber-50/50 p-4"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="font-semibold">{targetKindLabel(row.kind)} · {row.title}</p>
+                        <p className="mt-1 text-sm text-slate-600">{row.retailerName || "No retailer"} · {row.orderRef || "No order ref"}</p>
+                      </div>
+                      <span className="rounded-full bg-white px-2 py-1 text-xs font-semibold text-slate-700 ring-1 ring-slate-200">{row.status || "open"}</span>
+                    </div>
+                    <div className="mt-2 space-y-1 text-xs text-slate-500">
+                      <p>Invoice total {gbp(row.raw.invoice_total_gbp)} · Confirmed matched {gbp(row.raw.confirmed_matched_gbp)} · Remaining unmatched {gbp(row.raw.remaining_unmatched_gbp)}</p>
+                      <p>Payment ready {bool(row.raw.supplier_payment_ready_yn) ? "Yes" : "No"} · Selectable {bool(row.raw.selectable_yn) ? "Yes" : "No"}</p>
+                      {text(row.raw.blocker) ? <p className="font-semibold text-amber-700">Blocker: {text(row.raw.blocker)}</p> : null}
+                    </div>
+                    {merchantScore(row, selectedMerchantTokens) > 0 ? <p className="mt-2 rounded-xl bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800">Merchant match score: {merchantScore(row, selectedMerchantTokens)}</p> : null}
+                    {amountScore(selectedStatementAmount, row) > 0 ? <p className="mt-2 rounded-xl bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">Amount closeness score: {amountScore(selectedStatementAmount, row)}</p> : null}
+                    <p className="mt-2 rounded-xl bg-amber-100 px-3 py-2 text-xs font-semibold text-amber-900">Not selectable</p>
+                  </article>
+                ) : (
                 <Link
                   key={`${row.kind}-${row.id}`}
                   href={workspaceHref({
@@ -575,6 +597,7 @@ export default async function DvaMatchingWorkspacePage({
                   {amountScore(selectedStatementAmount, row) > 0 ? <p className="mt-2 rounded-xl bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">Amount closeness score: {amountScore(selectedStatementAmount, row)}</p> : null}
                   {row.id === activeSelectedTargetId ? <p className="mt-2 rounded-xl bg-sky-100 px-3 py-2 text-xs font-semibold text-sky-900">Selected target</p> : null}
                 </Link>
+                )
               ))}
             </div>
           </div>
