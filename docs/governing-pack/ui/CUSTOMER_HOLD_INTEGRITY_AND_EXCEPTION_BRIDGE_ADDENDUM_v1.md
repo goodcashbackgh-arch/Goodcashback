@@ -122,7 +122,7 @@ The bridge must reuse an existing open `raised` refund dispute for the same orde
 It must be idempotent:
 
 - repeated trigger execution must not duplicate dispute lines;
-- dispute amount must be recalculated from the active dispute lines rather than incremented blindly;
+- dispute amount must be recalculated from the dispute's linked lines rather than incremented blindly;
 - `customer_pre_shipment_hold_requests.converted_dispute_id` must point to the reused/created dispute.
 
 ## 6. Existing-exception conflict rule
