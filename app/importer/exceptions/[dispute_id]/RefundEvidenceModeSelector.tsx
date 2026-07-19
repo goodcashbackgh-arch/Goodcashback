@@ -434,7 +434,7 @@ export default function RefundEvidenceModeSelector({ disputeId, originalOrderId,
           <div className="grid gap-4 md:grid-cols-2">
             <label className="block text-sm font-semibold text-slate-700">Credit note ref<input name="credit_note_ref" required className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="e.g. CN-12345" /></label>
             <label className="block text-sm font-semibold text-slate-700">Expected credit note total GBP<input name="expected_credit_note_total_gbp" type="number" step="0.01" min="0" required className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="0.00" /></label>
-            <label className="block text-sm font-semibold text-slate-700">Credit note date optional<input name="credit_note_date" type="date" className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" /></label>
+            <label className="block text-sm font-semibold text-slate-700">Credit note date <span className="text-rose-700" aria-hidden="true">*</span><input name="credit_note_date" type="date" required aria-required="true" className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" /></label>
             <label className="block text-sm font-semibold text-slate-700">Credit note file<input name="credit_note_file" type="file" required className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
           </div>
           <AdjustmentInputs />

@@ -269,6 +269,7 @@ export async function uploadOperatorCreditNoteEvidenceAction(formData: FormData)
   const refundProofFile = readFile(formData, "refund_proof_file");
 
   if (documentMode === "credit_note" && !creditNoteRef) redirectWithResult(disputeId, { error: "Credit note reference is required when a credit note exists." });
+  if (documentMode === "credit_note" && !creditNoteDate) redirectWithResult(disputeId, { error: "Credit note date is required when a credit note exists." });
   if (documentMode === "credit_note" && expectedCreditNoteTotalGbp <= 0) redirectWithResult(disputeId, { error: "Expected credit note total is required when a credit note exists." });
   if (documentMode === "credit_note" && !creditNoteFile) redirectWithResult(disputeId, { error: "Credit note file upload is required when a credit note exists." });
   if (documentMode === "refund_proof_no_credit_note" && !refundProofFile && !notes) {
