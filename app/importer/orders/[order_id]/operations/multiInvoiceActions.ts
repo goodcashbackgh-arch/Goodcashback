@@ -200,10 +200,11 @@ export async function submitAdditionalInvoiceEvidenceAction(formData: FormData) 
   if (process.env.MINDEE_AUTO_RUN_ON_UPLOAD === "true") {
     try {
       await runMindeeOcrAfterUpload({
-        supabase,
         supplierInvoiceId,
+        orderId,
         invoicePdfUrl,
-        uploadedFile: invoiceFile,
+        enteredInvoiceTotal: invoiceTotal,
+        operatorId,
       });
     } catch (error) {
       redirect(`/importer/orders/${orderId}/operations?error=${encodeURIComponent(error instanceof Error ? error.message : "OCR failed")}`);
