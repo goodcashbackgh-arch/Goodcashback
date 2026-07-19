@@ -11,4 +11,5 @@ SET search_path = public, pg_temp
 AS $$
 DECLARE
   v_link_id uuid;
-  v_order_id uuid
+  v_order_id uuid;
+  v_result
