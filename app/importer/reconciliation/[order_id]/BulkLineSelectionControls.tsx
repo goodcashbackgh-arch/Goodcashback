@@ -9,7 +9,7 @@ type BulkLineSelectionControlsProps = {
 function selectableCheckboxes() {
   return Array.from(
     document.querySelectorAll<HTMLInputElement>(
-      'input[name="line_ids"][data-bulk-line-checkbox="true"]:not(:disabled)'
+      'input[name="line_ids"][form="bulk-progress-form"]:not(:disabled)'
     )
   );
 }
@@ -21,30 +21,21 @@ export default function BulkLineSelectionControls({ selectableCount }: BulkLineS
     setSelectedCount(selectableCheckboxes().filter((checkbox) => checkbox.checked).length);
   }
 
-  function selectAllUnresolvedProgressableLines() {
+  function setSelection(checked: boolean) {
     selectableCheckboxes().forEach((checkbox) => {
-      checkbox.checked = true;
-    });
-    refreshSelectedCount();
-  }
-
-  function clearSelection() {
-    selectableCheckboxes().forEach((checkbox) => {
-      checkbox.checked = false;
+      checkbox.checked = checked;
+      checkbox.dispatchEvent(new Event("change", { bubbles: true }));
     });
     refreshSelectedCount();
   }
 
   useEffect(() => {
-    const checkboxes = selectableCheckboxes();
-    checkboxes.forEach((checkbox) => checkbox.addEventListener("change", refreshSelectedCount));
-    const timer = window.setTimeout(() => {
-      refreshSelectedCount();
-    }, 0);
+    const handleChange = () => refreshSelectedCount();
+    document.addEventListener("change", handleChange);
+    refreshSelectedCount();
 
     return () => {
-      window.clearTimeout(timer);
-      checkboxes.forEach((checkbox) => checkbox.removeEventListener("change", refreshSelectedCount));
+      document.removeEventListener("change", handleChange);
     };
   }, [selectableCount]);
 
@@ -52,14 +43,14 @@ export default function BulkLineSelectionControls({ selectableCount }: BulkLineS
     <div className="mt-3 flex flex-wrap items-center gap-3">
       <button
         type="button"
-        onClick={selectAllUnresolvedProgressableLines}
+        onClick={() => setSelection(true)}
         className="rounded-xl border border-emerald-300 bg-white px-3 py-2 text-sm font-semibold text-emerald-900 hover:bg-emerald-100"
       >
         Select all unresolved progressable lines
       </button>
       <button
         type="button"
-        onClick={clearSelection}
+        onClick={() => setSelection(false)}
         className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-100"
       >
         Clear selection
