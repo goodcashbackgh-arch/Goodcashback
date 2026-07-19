@@ -151,16 +151,19 @@ function buildPreview(args: {
   const codedGross = round2(num(totals?.total_coded_gross_gbp));
   const refundInAllocated = round2(confirmedRefundAllocations(allocations, text(submission.dispute_id)).reduce((sum, row) => sum + num(row.allocated_gbp_amount), 0));
   const refundStatementDate = firstRefundStatementDate(allocations, text(submission.dispute_id));
+  const isFormalCreditNote = text(submission.document_mode) === "credit_note";
+  const explicitCreditNoteDate = dateOnly(submission.credit_note_date);
 
   const blockers: string[] = [];
   const warnings: string[] = [];
+  if (isFormalCreditNote && !explicitCreditNoteDate) blockers.push("blocked_supplier_credit_note_date_missing");
   if (text(submission.supplier_approval_status) !== "approved_current") blockers.push("supplier refund evidence is not approved current");
   if (text(submission.supplier_control_status) !== "approved_current") blockers.push("supplier control status is not approved current");
   if (!bool(totals?.gross_reconciled_to_document_yn)) blockers.push("coded gross does not reconcile to accepted refund document gross");
   if (progressedLines.length === 0) blockers.push("no refund document lines released to supplier control");
   if (codedLines.length !== progressedLines.length) blockers.push("not all released refund document lines are coded");
   if (refundInAllocated + 0.01 < acceptedGross) blockers.push("confirmed refund-IN allocation is below accepted refund amount");
-  if (!refundStatementDate) warnings.push("No DVA/card refund-IN statement date found; document date is falling back to approval/submission date");
+  if (!isFormalCreditNote && !refundStatementDate) warnings.push("No DVA/card refund-IN statement date found; document date is falling back to approval/submission date");
 
   for (const line of progressedLines) {
     const code = codesByLineId.get(text(line.id));
@@ -169,14 +172,17 @@ function buildPreview(args: {
   }
 
   const orderRef = text(order?.order_ref) || shortId(dispute?.order_id) || shortId(submission.id);
-  const documentDate = dateOnly(submission.credit_note_date) || refundStatementDate || dateOnly(submission.supplier_approved_at) || dateOnly(submission.submitted_at) || dateOnly(new Date().toISOString());
-  const documentDateSource = dateOnly(submission.credit_note_date)
+  const fallbackDocumentDate = refundStatementDate || dateOnly(submission.supplier_approved_at) || dateOnly(submission.submitted_at) || dateOnly(new Date().toISOString());
+  const documentDate = isFormalCreditNote ? explicitCreditNoteDate : explicitCreditNoteDate || fallbackDocumentDate;
+  const documentDateSource = explicitCreditNoteDate
     ? "credit_note_date"
-    : refundStatementDate
-      ? "dva_refund_in_statement_date"
-      : dateOnly(submission.supplier_approved_at)
-        ? "supplier_approved_at_fallback"
-        : "submitted_at_fallback";
+    : isFormalCreditNote
+      ? "missing_formal_credit_note_date"
+      : refundStatementDate
+        ? "dva_refund_in_statement_date"
+        : dateOnly(submission.supplier_approved_at)
+          ? "supplier_approved_at_fallback"
+          : "submitted_at_fallback";
 
   const payload = {
     preview_version: "supplier_credit_equivalent_preview_v0",
