@@ -16,10 +16,12 @@ type HoldRow = {
   hold_scope: string | null;
   hold_status: string | null;
   set_aside_instruction: string | null;
+  converted_dispute_id?: string | null;
 };
 
 type ReturnActionRow = {
   return_tracking_submission_id?: string | null;
+  dispute_id: string;
   order_id: string;
   tracking_ref: string | null;
   task_status: string | null;
@@ -48,10 +50,16 @@ function groupByOrder(rows: HoldRow[]) {
 
 function returnActionMatchesHold(action: ReturnActionRow, hold: HoldRow) {
   if (action.order_id !== hold.order_id) return false;
+  if (hold.converted_dispute_id && action.dispute_id === hold.converted_dispute_id) return true;
+
   const affectedLineIds = new Set((action.affected_lines ?? []).map((line) => line.supplier_invoice_line_id).filter(Boolean) as string[]);
   if (hold.supplier_invoice_line_id && affectedLineIds.has(hold.supplier_invoice_line_id)) return true;
+
+  // Legacy fallback only. A return courier reference is normally different from
+  // the inbound package reference, so dispute identity is authoritative above.
   if (hold.tracking_ref && action.tracking_ref === hold.tracking_ref) return true;
-  return !hold.supplier_invoice_line_id && !hold.tracking_ref;
+
+  return !hold.converted_dispute_id && !hold.supplier_invoice_line_id && !hold.tracking_ref;
 }
 
 function returnActionHref(action: ReturnActionRow | undefined, status: string) {
@@ -122,13 +130,20 @@ export default async function ShipperCustomerHoldsPage() {
 
   if (!shipperUser) redirect("/auth/check");
 
-  let { data, error } = await (supabase as any).rpc("shipper_customer_hold_set_aside_v2");
+  let { data, error } = await (supabase as any).rpc("shipper_customer_hold_set_aside_v3");
   let usingFallback = false;
 
   if (error) {
-    const fallback = await (supabase as any).rpc("shipper_customer_hold_set_aside_v1");
-    data = fallback.data;
-    error = fallback.error;
+    const fallbackV2 = await (supabase as any).rpc("shipper_customer_hold_set_aside_v2");
+    data = fallbackV2.data;
+    error = fallbackV2.error;
+    usingFallback = true;
+  }
+
+  if (error) {
+    const fallbackV1 = await (supabase as any).rpc("shipper_customer_hold_set_aside_v1");
+    data = fallbackV1.data;
+    error = fallbackV1.error;
     usingFallback = true;
   }
 
@@ -156,7 +171,7 @@ export default async function ShipperCustomerHoldsPage() {
           <p className="mt-3 text-sm text-slate-600">Welcome: <span className="font-semibold text-slate-900">{shipperUser.full_name}</span> · {shipper?.name ?? "Shipper"}</p>
           {error ? <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">Customer hold set-aside queue unavailable: {error.message}. Apply the latest migration before testing this page.</p> : null}
           {returnActionError ? <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">Return actions state unavailable: {returnActionError.message}. Apply the latest return-action migration before testing next-state links.</p> : null}
-          {usingFallback && !error ? <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">Showing fallback hold data. Apply the detailed shipper hold migration to see item descriptions, qty, and values.</p> : null}
+          {usingFallback && !error ? <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">Showing compatibility hold data. Apply the latest shipper hold identity migration for dispute-linked next-state matching.</p> : null}
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
