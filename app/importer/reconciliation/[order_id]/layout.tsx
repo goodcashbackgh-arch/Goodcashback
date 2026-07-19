@@ -1,5 +1,6 @@
 import CompactInvoiceLinesPatch from "./CompactInvoiceLinesPatch";
 import ConfirmedSurplusCreditPatch from "./ConfirmedSurplusCreditPatch";
+import ExistingExceptionCases from "./ExistingExceptionCases";
 import { createClient } from "@/utils/supabase/server";
 
 type SurplusEvidenceRow = {
@@ -62,6 +63,7 @@ export default async function ImporterReconciliationLayout({
         </div>
       ) : null}
       {children}
+      <ExistingExceptionCases orderId={orderId} />
     </>
   );
 }
