@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 
 export type InvoiceTotalPresentation = {
+  invoiceId: string;
   invoiceRef: string;
   goodsQty: number;
   lineTotalGbp: number;
@@ -20,6 +21,7 @@ export type BundleSummary = {
 };
 
 type Props = {
+  orderId: string;
   fallbackRetailerName?: string;
   invoiceTotals?: InvoiceTotalPresentation[];
   bundleSummary?: BundleSummary | null;
@@ -45,6 +47,7 @@ function setLabelValue(container: Element, label: string, value: string) {
 }
 
 export default function OrderOperationsUxCleanup({
+  orderId,
   fallbackRetailerName = "",
   invoiceTotals = [],
   bundleSummary = null,
@@ -93,6 +96,13 @@ export default function OrderOperationsUxCleanup({
       );
       const card = referenceNode?.closest("div.rounded-2xl.border.p-4");
       if (!card) continue;
+
+      const matchLink = Array.from(card.querySelectorAll("a")).find(
+        (node) => node.textContent?.trim() === "Match evidence",
+      );
+      if (matchLink) {
+        matchLink.setAttribute("href", `/importer/reconciliation/${orderId}?supplier_invoice_id=${encodeURIComponent(invoice.invoiceId)}`);
+      }
 
       const expectedInvoiceTotal = invoice.lineTotalGbp;
       const enteredVariance = invoice.enteredTotalGbp === null ? null : expectedInvoiceTotal - invoice.enteredTotalGbp;
@@ -146,7 +156,7 @@ export default function OrderOperationsUxCleanup({
       `;
       evidenceHeading?.parentElement?.insertAdjacentElement("afterend", summary);
     }
-  }, [bundleSummary, fallbackRetailerName, invoiceTotals]);
+  }, [bundleSummary, fallbackRetailerName, invoiceTotals, orderId]);
 
   return null;
 }
