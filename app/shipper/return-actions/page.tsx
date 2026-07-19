@@ -45,6 +45,7 @@ type HoldRow = {
   order_id: string;
   supplier_invoice_line_id: string | null;
   tracking_ref: string | null;
+  converted_dispute_id?: string | null;
 };
 
 function friendly(value: string | null | undefined) {
@@ -78,14 +79,19 @@ function taskIsCustomerHoldReturn(task: ReturnAction, holdRows: HoldRow[]) {
   const orderHoldRows = holdRows.filter((row) => row.order_id === task.order_id);
   if (orderHoldRows.length === 0) return false;
 
+  if (orderHoldRows.some((row) => row.converted_dispute_id && row.converted_dispute_id === task.dispute_id)) return true;
+
   const heldLineIds = new Set(orderHoldRows.map((row) => row.supplier_invoice_line_id).filter(Boolean) as string[]);
   const heldTrackingRefs = new Set(orderHoldRows.map((row) => row.tracking_ref).filter(Boolean) as string[]);
   const lineIds = taskLineIds(task);
 
   if (heldLineIds.size > 0 && Array.from(lineIds).some((id) => heldLineIds.has(id))) return true;
+
+  // Legacy fallback only. A return courier reference is normally different from
+  // the inbound package reference, so converted dispute identity is authoritative.
   if (heldTrackingRefs.size > 0 && task.tracking_ref && heldTrackingRefs.has(task.tracking_ref)) return true;
 
-  return heldLineIds.size === 0 && heldTrackingRefs.size === 0;
+  return orderHoldRows.some((row) => !row.converted_dispute_id && !row.supplier_invoice_line_id && !row.tracking_ref);
 }
 
 function taskMatchesSource(task: ReturnAction, source: string, holdRows: HoldRow[]) {
@@ -132,10 +138,16 @@ export default async function ShipperReturnActionsPage({
 
   if (!shipperUser) redirect("/auth/check");
 
-  const [{ data, error }, { data: holdData }] = await Promise.all([
+  const [{ data, error }, holdV3] = await Promise.all([
     (supabase as any).rpc("shipper_return_tasks_v1"),
-    (supabase as any).rpc("shipper_customer_hold_set_aside_v2"),
+    (supabase as any).rpc("shipper_customer_hold_set_aside_v3"),
   ]);
+
+  let holdData = holdV3.data;
+  if (holdV3.error) {
+    const fallbackV2 = await (supabase as any).rpc("shipper_customer_hold_set_aside_v2");
+    holdData = fallbackV2.data;
+  }
 
   const allActions = (data ?? []) as ReturnAction[];
   const holdRows = (holdData ?? []) as HoldRow[];
