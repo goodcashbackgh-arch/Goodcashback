@@ -9,9 +9,17 @@ export type DeliveryAllocationOrder = {
   retailer_name: string | null;
 };
 
+export type DeliveryAllocationInvoice = {
+  id: string;
+  invoice_ref: string | null;
+  uploaded_at: string | null;
+  review_status: string | null;
+};
+
 export type DeliveryAllocationLine = {
   id: string;
   supplier_invoice_id: string;
+  supplier_invoice_ref: string | null;
   line_order: number;
   description: string;
   qty: number;
@@ -56,12 +64,15 @@ export type DeliveryAllocationAdjustmentTotals = {
 
 export type DeliveryAllocationData = {
   order: DeliveryAllocationOrder;
-  invoice: { id: string; invoice_ref: string | null; uploaded_at: string | null } | null;
+  invoice: DeliveryAllocationInvoice | null;
+  invoices: DeliveryAllocationInvoice[];
   lines: DeliveryAllocationLine[];
   tracking: DeliveryAllocationTracking[];
   allocations: DeliveryAllocationRow[];
   adjustments: DeliveryAllocationAdjustmentTotals;
 };
+
+const retiredInvoiceStatuses = new Set(["rejected_resubmit_required", "duplicate_blocked", "superseded"]);
 
 export function isProgressedFlag(value: string | null | undefined) {
   return ["y", "yes", "true", "1"].includes((value ?? "").trim().toLowerCase());
@@ -96,23 +107,33 @@ export async function loadDeliveryAllocationData(
   const importer = firstRelated(order.importers as { company_name?: string | null; trading_name?: string | null }[] | { company_name?: string | null; trading_name?: string | null } | null);
   const retailer = firstRelated(order.retailers as { name?: string | null }[] | { name?: string | null } | null);
 
-  const { data: invoice, error: invoiceError } = await db
+  const { data: invoiceRows, error: invoiceError } = await db
     .from("supplier_invoices")
-    .select("id, invoice_ref, uploaded_at")
+    .select("id, invoice_ref, uploaded_at, review_status")
     .eq("order_id", orderId)
-    .order("uploaded_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .order("uploaded_at", { ascending: true });
 
   if (invoiceError) {
     return { data: null, error: invoiceError.message };
   }
 
-  const { data: lines, error: linesError } = invoice
+  const invoices: DeliveryAllocationInvoice[] = ((invoiceRows ?? []) as any[])
+    .filter((row) => !retiredInvoiceStatuses.has(String(row.review_status ?? "pending_review")))
+    .map((row) => ({
+      id: String(row.id),
+      invoice_ref: row.invoice_ref ?? null,
+      uploaded_at: row.uploaded_at ?? null,
+      review_status: row.review_status ?? null,
+    }));
+  const invoiceIds = invoices.map((invoice) => invoice.id);
+  const invoiceRefById = new Map(invoices.map((invoice) => [invoice.id, invoice.invoice_ref]));
+
+  const { data: lines, error: linesError } = invoiceIds.length > 0
     ? await db
         .from("supplier_invoice_lines")
         .select("id, supplier_invoice_id, line_order, description, qty, amount_inc_vat_gbp, eligible_for_invoice_yn")
-        .eq("supplier_invoice_id", invoice.id)
+        .in("supplier_invoice_id", invoiceIds)
+        .order("supplier_invoice_id", { ascending: true })
         .order("line_order", { ascending: true })
     : { data: [], error: null };
 
@@ -163,10 +184,12 @@ export async function loadDeliveryAllocationData(
       importer_name: importer?.trading_name || importer?.company_name || null,
       retailer_name: retailer?.name ?? null,
     },
-    invoice: invoice ? { id: invoice.id, invoice_ref: invoice.invoice_ref ?? null, uploaded_at: invoice.uploaded_at ?? null } : null,
+    invoice: invoices[0] ?? null,
+    invoices,
     lines: ((lines ?? []) as any[]).map((line) => ({
       id: line.id,
       supplier_invoice_id: line.supplier_invoice_id,
+      supplier_invoice_ref: invoiceRefById.get(String(line.supplier_invoice_id)) ?? null,
       line_order: Number(line.line_order ?? 0),
       description: String(line.description ?? ""),
       qty: Number(line.qty ?? 0),
