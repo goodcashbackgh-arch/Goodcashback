@@ -14,4 +14,3 @@ DECLARE
   v_order_id uuid;
   v_result jsonb;
 BEGIN
-  SELECT l.id, l.order
