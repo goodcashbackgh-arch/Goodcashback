@@ -183,6 +183,7 @@ export default async function OrderOperationsLayout({
     const summary = latestSummary.get(invoice.id);
     const adjustments = invoiceAdjustments.get(invoice.id) ?? { delivery: 0, discount: 0 };
     return {
+      invoiceId: invoice.id,
       invoiceRef: invoice.invoice_ref,
       goodsQty: lineTotal.qty,
       lineTotalGbp: lineTotal.amount,
@@ -207,6 +208,7 @@ export default async function OrderOperationsLayout({
 
   const cleanup = (
     <OrderOperationsUxCleanup
+      orderId={orderId}
       fallbackRetailerName={retailerName(order?.retailers) !== "—" ? retailerName(order?.retailers) : ""}
       invoiceTotals={invoiceTotals}
       bundleSummary={bundleSummary}
@@ -236,6 +238,7 @@ export default async function OrderOperationsLayout({
   return (
     <>
       <OrderOperationsUxCleanup
+        orderId={orderId}
         fallbackRetailerName={displayRetailer !== "—" ? displayRetailer : ""}
         invoiceTotals={invoiceTotals}
         bundleSummary={bundleSummary}
@@ -264,7 +267,7 @@ export default async function OrderOperationsLayout({
                   Parent exception
                 </Link>
               ) : null}
-              <Link href={`/importer/reconciliation/${order.id}`} className="rounded-xl bg-slate-950 px-4 py-2 font-semibold text-white hover:bg-slate-800">
+              <Link href={`/importer/reconciliation/${order.id}${activeInvoices[0]?.id ? `?supplier_invoice_id=${activeInvoices[0].id}` : ""}`} className="rounded-xl bg-slate-950 px-4 py-2 font-semibold text-white hover:bg-slate-800">
                 Reconcile child invoice
               </Link>
             </div>
