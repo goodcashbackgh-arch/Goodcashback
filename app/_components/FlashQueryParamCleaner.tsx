@@ -3,10 +3,7 @@
 import { useEffect, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
-type FlashQueryParamCleanerProps = {
-  keys?: string[];
-};
-
+type FlashQueryParamCleanerProps = { keys?: string[] };
 type FinancialCheck = {
   has_invoice: boolean;
   invoice_ref?: string | null;
@@ -27,11 +24,7 @@ type FinancialCheck = {
 };
 
 function gbp(value: number | null | undefined) {
-  return new Intl.NumberFormat("en-GB", {
-    style: "currency",
-    currency: "GBP",
-    minimumFractionDigits: 2,
-  }).format(Number(value ?? 0));
+  return new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP", minimumFractionDigits: 2 }).format(Number(value ?? 0));
 }
 
 function signedGbp(value: number | null | undefined) {
@@ -40,7 +33,7 @@ function signedGbp(value: number | null | undefined) {
   return `${n > 0 ? "+" : ""}${gbp(n)}`;
 }
 
-function FinancialCheckPanel({ pathname }: { pathname: string | null }) {
+function FinancialCheckPanel({ pathname, supplierInvoiceId }: { pathname: string | null; supplierInvoiceId: string }) {
   const [data, setData] = useState<FinancialCheck | null>(null);
 
   useEffect(() => {
@@ -49,22 +42,17 @@ function FinancialCheckPanel({ pathname }: { pathname: string | null }) {
     if (!match?.[1]) return;
 
     let cancelled = false;
-    fetch(`/api/importer/reconciliation-financial-check?order_id=${encodeURIComponent(match[1])}`)
+    const query = new URLSearchParams({ order_id: match[1] });
+    if (supplierInvoiceId) query.set("supplier_invoice_id", supplierInvoiceId);
+    fetch(`/api/importer/reconciliation-financial-check?${query.toString()}`)
       .then((response) => response.json())
-      .then((payload) => {
-        if (!cancelled) setData(payload);
-      })
-      .catch(() => {
-        if (!cancelled) setData({ has_invoice: false, error: "Could not load financial check." });
-      });
+      .then((payload) => { if (!cancelled) setData(payload); })
+      .catch(() => { if (!cancelled) setData({ has_invoice: false, error: "Could not load financial check." }); });
 
-    return () => {
-      cancelled = true;
-    };
-  }, [pathname]);
+    return () => { cancelled = true; };
+  }, [pathname, supplierInvoiceId]);
 
   if (!pathname?.startsWith("/importer/reconciliation/") || !data || !data.has_invoice) return null;
-
   const financialMatched = Boolean(data.financial_matched);
   const pendingSupervisor = Number(data.pending_supervisor_count ?? 0);
 
@@ -72,61 +60,45 @@ function FinancialCheckPanel({ pathname }: { pathname: string | null }) {
     <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <p className="text-sm font-medium uppercase tracking-[0.16em] text-slate-500">Financial check</p>
-          <h2 className="mt-1 text-xl font-semibold">Supplier invoice total match</h2>
-          <p className="mt-2 text-sm text-slate-600">
-            This separates item/order variance from the full supplier invoice total. Formula: goods lines + delivery - discount = invoice total.
-          </p>
+          <p className="text-sm font-medium uppercase tracking-[0.16em] text-slate-500">Selected invoice financial check</p>
+          <h2 className="mt-1 text-xl font-semibold">{data.invoice_ref ?? "Supplier invoice"} total match</h2>
+          <p className="mt-2 text-sm text-slate-600">This check uses only the selected invoice: goods lines + its delivery − its discount = its entered invoice total.</p>
         </div>
         <span className={`w-fit rounded-full px-3 py-1 text-xs font-semibold ${financialMatched ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>
           {financialMatched ? "Financially matched" : "Financial variance"}
         </span>
       </div>
-
       <div className="mt-5 grid gap-3 md:grid-cols-4">
         <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase tracking-wide text-slate-500">Invoice ref</p><p className="mt-1 font-semibold">{data.invoice_ref ?? "—"}</p></div>
         <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase tracking-wide text-slate-500">Goods lines</p><p className="mt-1 text-xl font-semibold">{gbp(data.goods_amount_gbp)}</p></div>
         <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase tracking-wide text-slate-500">Delivery</p><p className="mt-1 text-xl font-semibold">{gbp(data.delivery_total_gbp)}</p></div>
         <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase tracking-wide text-slate-500">Discount</p><p className="mt-1 text-xl font-semibold">-{gbp(data.discount_total_gbp)}</p></div>
         <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase tracking-wide text-slate-500">Expected invoice total</p><p className="mt-1 text-xl font-semibold">{gbp(data.expected_invoice_total_gbp)}</p></div>
-        <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase tracking-wide text-slate-500">Supplier invoice total</p><p className="mt-1 text-xl font-semibold">{data.invoice_total_gbp === null ? "—" : gbp(data.invoice_total_gbp)}</p></div>
+        <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-xs uppercase tracking-wide text-slate-500">Entered invoice total</p><p className="mt-1 text-xl font-semibold">{data.invoice_total_gbp === null ? "—" : gbp(data.invoice_total_gbp)}</p></div>
         <div className={`rounded-2xl border p-4 ${financialMatched ? "border-emerald-200 bg-emerald-50" : "border-amber-200 bg-amber-50"}`}><p className="text-xs uppercase tracking-wide text-slate-500">Financial variance</p><p className="mt-1 text-xl font-semibold">{signedGbp(data.invoice_variance_gbp)}</p></div>
         <div className={`rounded-2xl border p-4 ${pendingSupervisor === 0 ? "border-emerald-200 bg-emerald-50" : "border-amber-200 bg-amber-50"}`}><p className="text-xs uppercase tracking-wide text-slate-500">Supervisor review</p><p className="mt-1 text-xl font-semibold">{pendingSupervisor}</p></div>
       </div>
-
-      <p className="mt-4 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm leading-6 text-slate-700">
-        Order estimate variance can exist while the supplier invoice is financially matched. Pending discounts or high delivery charges still require supervisor approval before final invoice drafting.
-      </p>
     </section>
   );
 }
 
-export default function FlashQueryParamCleaner({
-  keys = ["success", "error"],
-}: FlashQueryParamCleanerProps) {
+export default function FlashQueryParamCleaner({ keys = ["success", "error"] }: FlashQueryParamCleanerProps) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const supplierInvoiceId = searchParams?.get("supplier_invoice_id") ?? "";
 
   useEffect(() => {
     if (!pathname || !searchParams) return;
-
     const current = new URLSearchParams(searchParams.toString());
     let changed = false;
-
     for (const key of keys) {
-      if (current.has(key)) {
-        current.delete(key);
-        changed = true;
-      }
+      if (current.has(key)) { current.delete(key); changed = true; }
     }
-
     if (!changed) return;
-
     const nextQuery = current.toString();
-    const nextUrl = nextQuery ? `${pathname}?${nextQuery}` : pathname;
-    router.replace(nextUrl, { scroll: false });
+    router.replace(nextQuery ? `${pathname}?${nextQuery}` : pathname, { scroll: false });
   }, [keys, pathname, router, searchParams]);
 
-  return <FinancialCheckPanel pathname={pathname} />;
+  return <FinancialCheckPanel pathname={pathname} supplierInvoiceId={supplierInvoiceId} />;
 }
