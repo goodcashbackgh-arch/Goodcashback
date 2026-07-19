@@ -19,4 +19,4 @@ BEGIN
   FROM public.customer_order_review_links l
   WHERE l.secure_token = p_secure_token
     AND l.is_active = true
-    AND (l.expires_at IS NULL OR l.expires_at > now
+    AND (l.expires_at IS NULL OR l.expires_at > now())
