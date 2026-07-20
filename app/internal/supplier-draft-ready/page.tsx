@@ -32,7 +32,6 @@ type InvoiceRow = {
   ocr_invoice_ref: string | null;
   ocr_invoice_total_gbp: number | null;
   review_status: string;
-  is_current_for_order: boolean;
   orders: OrderRelation | OrderRelation[] | null;
   supplier_invoice_financial_summary: FinancialSummary[] | FinancialSummary | null;
   supplier_invoice_review_flags: { flag_type: string; status: string }[] | null;
@@ -315,19 +314,19 @@ function statusHref(status: StatusFilter) {
 }
 
 function invoiceStatusLabel(invoice: InvoiceRow) {
-  if (invoice.is_current_for_order) return "Current";
+  if (reviewStatusesForFilter("approved").includes(invoice.review_status)) return "Current";
   return invoice.review_status.replaceAll("_", " ");
 }
 
 function invoiceStatusBadgeClass(invoice: InvoiceRow, blocker: string | null) {
   if (blocker) return "bg-amber-100 text-amber-800";
-  if (invoice.is_current_for_order || ["approved_current", "ref_corrected_approved"].includes(invoice.review_status)) return "bg-emerald-100 text-emerald-800";
+  if (reviewStatusesForFilter("approved").includes(invoice.review_status)) return "bg-emerald-100 text-emerald-800";
   if (["rejected_resubmit_required", "superseded"].includes(invoice.review_status)) return "bg-slate-100 text-slate-700";
   return "bg-sky-100 text-sky-800";
 }
 
 function isActionedInvoice(invoice: InvoiceRow) {
-  return invoice.is_current_for_order || ["approved_current", "ref_corrected_approved", "rejected_resubmit_required", "superseded"].includes(invoice.review_status);
+  return reviewStatusesForFilter("actioned").includes(invoice.review_status);
 }
 
 function isHttpUrl(value: string | null | undefined) {
@@ -365,7 +364,6 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
       ocr_invoice_ref,
       ocr_invoice_total_gbp,
       review_status,
-      is_current_for_order,
       orders(order_ref, order_total_gbp_declared, total_qty_declared, retailers(name), importers(company_name)),
       supplier_invoice_financial_summary(invoice_total_gbp),
       supplier_invoice_review_flags(flag_type, status),
@@ -393,8 +391,15 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
   );
   const codingReadinessById = new Map(codingReadinessEntries);
 
-  const readyInvoices = invoices.filter((invoice) => !approvalBlocker(invoice.id, invoiceReadinessById, codingReadinessById) && !invoice.is_current_for_order);
-  const blockedInvoices = invoices.filter((invoice) => approvalBlocker(invoice.id, invoiceReadinessById, codingReadinessById) && !invoice.is_current_for_order);
+  const readyInvoices = invoices.filter((invoice) => {
+    if (invoice.review_status !== "pending_review") return false;
+    return !approvalBlocker(invoice.id, invoiceReadinessById, codingReadinessById);
+  });
+  const blockedInvoices = invoices.filter((invoice) => {
+    if (invoice.review_status === "duplicate_blocked") return true;
+    if (invoice.review_status !== "pending_review") return false;
+    return Boolean(approvalBlocker(invoice.id, invoiceReadinessById, codingReadinessById));
+  });
   const actionedInvoices = invoices.filter(isActionedInvoice);
   const visibleReadyInvoices = ["open", "ready", "all"].includes(statusFilter) ? readyInvoices : [];
   const visibleBlockedInvoices = ["open", "blocked", "all"].includes(statusFilter) ? blockedInvoices : [];
