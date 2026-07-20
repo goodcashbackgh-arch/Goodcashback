@@ -109,7 +109,7 @@ function isProgressed(value: string | null | undefined) {
 
 function splitGross(grossValue: unknown, rateValue: unknown) {
   const gross = num(grossValue);
-  const rate = num(rateValue || 20);
+  const rate = num(rateValue ?? 20);
   const net = Math.round((gross / (1 + rate / 100)) * 100) / 100;
   const vat = Math.round((gross - net) * 100) / 100;
   return { net, vat };

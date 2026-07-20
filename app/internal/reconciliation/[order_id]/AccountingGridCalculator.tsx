@@ -35,8 +35,6 @@ function taxId(rate: number) {
 
 export default function AccountingGridCalculator() {
   useEffect(() => {
-    const rows = Array.from(document.querySelectorAll<HTMLElement>("[data-accounting-row]"));
-
     function recalcFromRate(row: HTMLElement) {
       const gross = parseMoney(row.dataset.gross);
       const rateInput = row.querySelector<HTMLSelectElement | HTMLInputElement>("[data-vat-rate]");
@@ -81,60 +79,49 @@ export default function AccountingGridCalculator() {
       const sageLedger = (document.querySelector<HTMLInputElement>("[data-bulk-sage-ledger]")?.value ?? "").trim();
       const rate = document.querySelector<HTMLSelectElement>("[data-bulk-vat-rate]")?.value ?? "20";
 
-      rows.forEach((row) => {
+      document.querySelectorAll<HTMLElement>("[data-accounting-row]").forEach((row) => {
         const nominalInput = row.querySelector<HTMLInputElement>("[data-nominal]");
         const sageInput = row.querySelector<HTMLInputElement>("[data-sage-ledger]");
-        const rateInput = row.querySelector<HTMLSelectElement>("[data-vat-rate]");
-        if (nominalInput && nominal) nominalInput.value = nominal;
-        if (sageInput && sageLedger) sageInput.value = sageLedger;
+        const rateInput = row.querySelector<HTMLSelectElement | HTMLInputElement>("[data-vat-rate]");
+        if (nominalInput && nominal) {
+          nominalInput.value = nominal;
+          nominalInput.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+        if (sageInput && sageLedger) {
+          sageInput.value = sageLedger;
+          sageInput.dispatchEvent(new Event("change", { bubbles: true }));
+        }
         if (rateInput) {
           rateInput.value = rate;
-          recalcFromRate(row);
+          rateInput.dispatchEvent(new Event("change", { bubbles: true }));
         }
       });
     }
 
-    const cleanups: Array<() => void> = [];
+    function handleRowUpdate(event: Event) {
+      const control = event.target instanceof Element ? event.target : null;
+      const row = control?.closest<HTMLElement>("[data-accounting-row]");
+      if (!control || !row) return;
 
-    rows.forEach((row) => {
-      const rateInput = row.querySelector<HTMLSelectElement | HTMLInputElement>("[data-vat-rate]");
-      const netInput = row.querySelector<HTMLInputElement>("[data-net]");
-      const vatInput = row.querySelector<HTMLInputElement>("[data-vat]");
-
-      if (rateInput) {
-        const handler = () => recalcFromRate(row);
-        rateInput.addEventListener("change", handler);
-        cleanups.push(() => rateInput.removeEventListener("change", handler));
-      }
-
-      if (netInput) {
-        const handler = () => recalcFromNet(row);
-        netInput.addEventListener("change", handler);
-        netInput.addEventListener("blur", handler);
-        cleanups.push(() => {
-          netInput.removeEventListener("change", handler);
-          netInput.removeEventListener("blur", handler);
-        });
-      }
-
-      if (vatInput) {
-        const handler = () => recalcFromVat(row);
-        vatInput.addEventListener("change", handler);
-        vatInput.addEventListener("blur", handler);
-        cleanups.push(() => {
-          vatInput.removeEventListener("change", handler);
-          vatInput.removeEventListener("blur", handler);
-        });
-      }
-    });
-
-    const applyButton = document.querySelector<HTMLButtonElement>("[data-apply-bulk-defaults]");
-    if (applyButton) {
-      applyButton.addEventListener("click", applyDefaults);
-      cleanups.push(() => applyButton.removeEventListener("click", applyDefaults));
+      if (control.matches("[data-vat-rate]")) recalcFromRate(row);
+      if (control.matches("[data-net]")) recalcFromNet(row);
+      if (control.matches("[data-vat]")) recalcFromVat(row);
     }
 
-    return () => cleanups.forEach((cleanup) => cleanup());
+    function handleClick(event: MouseEvent) {
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest("[data-apply-bulk-defaults]")) applyDefaults();
+    }
+
+    document.addEventListener("change", handleRowUpdate);
+    document.addEventListener("blur", handleRowUpdate, true);
+    document.addEventListener("click", handleClick);
+
+    return () => {
+      document.removeEventListener("change", handleRowUpdate);
+      document.removeEventListener("blur", handleRowUpdate, true);
+      document.removeEventListener("click", handleClick);
+    };
   }, []);
 
   return null;
