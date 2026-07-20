@@ -125,11 +125,13 @@ export default function ManualAdjustmentRows({
               <div className="flex gap-2">
                 <form id={updateFormId} action={updateSupplierAccountingAdjustmentLineAction}>
                   <input type="hidden" name="order_id" value={orderId} />
+                  <input type="hidden" name="supplier_invoice_id" value={invoiceId} />
                   <input type="hidden" name="adjustment_line_id" value={line.id} />
                   <button className="rounded-lg bg-slate-900 px-3 py-1 font-semibold text-white">Save</button>
                 </form>
                 <form id={deleteFormId} action={deleteSupplierAccountingAdjustmentLineAction}>
                   <input type="hidden" name="order_id" value={orderId} />
+                  <input type="hidden" name="supplier_invoice_id" value={invoiceId} />
                   <input type="hidden" name="adjustment_line_id" value={line.id} />
                   <button className="rounded-lg border border-rose-300 bg-rose-50 px-3 py-1 font-semibold text-rose-800">Delete</button>
                 </form>

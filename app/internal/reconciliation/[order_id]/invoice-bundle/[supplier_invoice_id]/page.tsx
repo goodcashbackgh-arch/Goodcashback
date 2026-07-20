@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
+import { supplierInvoiceReconciliationHref } from "../../../reconciliationHref";
 import {
   approveCurrentSupplierInvoiceFromReconciliationAction,
   supervisorProgressSupplierInvoiceLinesAction,
@@ -89,7 +90,7 @@ export default async function ExactSupplierInvoiceSupervisorPage({
           <div className="mt-4 flex flex-wrap gap-2">
             <a href={invoice.invoice_pdf_url} target="_blank" rel="noreferrer" className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white">Open invoice</a>
             <Link href="/internal/invoice-review" className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-800">Document review queue</Link>
-            <Link href={`/internal/reconciliation/${orderId}`} className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-800">Accounting workspace</Link>
+            <Link href={supplierInvoiceReconciliationHref(orderId, invoiceId)} className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-800">Accounting workspace</Link>
           </div>
         </section>
 
