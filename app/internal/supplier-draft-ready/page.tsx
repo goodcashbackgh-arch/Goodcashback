@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
+import { supplierInvoiceReconciliationHref } from "../reconciliation/reconciliationHref";
 import {
   assertInvoiceReadyForCurrentApproval,
   assertSupplierInvoiceAccountingCodingReady,
@@ -744,7 +745,7 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
                   </div>
                   <div className="flex flex-wrap gap-2">
                     <Link href={`/internal/evidence/${invoice.order_id}`} className="rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">Open order</Link>
-                    <Link href={`/internal/reconciliation/${invoice.order_id}`} className="rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">Open reconciliation</Link>
+                    <Link href={supplierInvoiceReconciliationHref(invoice.order_id, invoice.id)} className="rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">Open reconciliation</Link>
                     {isHttpUrl(invoice.invoice_pdf_url) ? <a href={invoice.invoice_pdf_url} target="_blank" rel="noreferrer" className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white">Open invoice</a> : null}
                     <button form={singleApproveFormId} className="rounded-xl bg-emerald-700 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-600">Approve current</button>
                   </div>
@@ -786,7 +787,7 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
                         </div>
                         <div className="flex flex-wrap gap-2">
                           <Link href={`/internal/evidence/${invoice.order_id}`} className="rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">Open order</Link>
-                          <Link href={`/internal/reconciliation/${invoice.order_id}`} className="rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">Open reconciliation/coding</Link>
+                          <Link href={supplierInvoiceReconciliationHref(invoice.order_id, invoice.id)} className="rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">Open reconciliation/coding</Link>
                           {isHttpUrl(invoice.invoice_pdf_url) ? <a href={invoice.invoice_pdf_url} target="_blank" rel="noreferrer" className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white">Open invoice</a> : null}
                         </div>
                       </div>
@@ -830,7 +831,7 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
                         </div>
                         <div className="flex flex-wrap gap-2">
                           <Link href={`/internal/evidence/${invoice.order_id}`} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">Open order</Link>
-                          <Link href={`/internal/reconciliation/${invoice.order_id}`} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">Open reconciliation/coding</Link>
+                          <Link href={supplierInvoiceReconciliationHref(invoice.order_id, invoice.id)} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">Open reconciliation/coding</Link>
                           {isHttpUrl(invoice.invoice_pdf_url) ? <a href={invoice.invoice_pdf_url} target="_blank" rel="noreferrer" className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white">Open invoice</a> : null}
                         </div>
                       </div>

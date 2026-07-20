@@ -1,11 +1,12 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
+import { supplierInvoiceReconciliationHref } from "../reconciliationHref";
 import AccountingGridCalculator from "./AccountingGridCalculator";
 import ManualAdjustmentRows from "./ManualAdjustmentRows";
 import { saveAllSupplierLineAccountingCodesAction } from "./actions";
 
-type SearchParams = { success?: string; error?: string };
+type SearchParams = { success?: string; error?: string; supplier_invoice_id?: string };
 
 type Line = {
   id: string;
@@ -159,13 +160,29 @@ export default async function InternalReconciliationPage({
 
   if (orderError || !order) redirect("/internal?error=Order+not+found");
 
-  const { data: invoice } = await supabase
+  const requestedInvoiceId = qp.supplier_invoice_id?.trim() ?? "";
+  const { data: invoiceRows } = await supabase
     .from("supplier_invoices")
     .select("id, invoice_ref, invoice_pdf_url, uploaded_at, ocr_invoice_ref, ocr_retailer_name, ocr_invoice_total_gbp, ocr_extracted_at, review_status, is_current_for_order, blocked_from_sage_yn")
     .eq("order_id", orderId)
-    .order("uploaded_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .order("uploaded_at", { ascending: false });
+
+  const retiredStatuses = new Set(["rejected_resubmit_required", "duplicate_blocked", "superseded"]);
+  const activeInvoices = (invoiceRows ?? []).filter(
+    (candidate) => !retiredStatuses.has(String(candidate.review_status ?? "pending_review")),
+  );
+
+  if (!requestedInvoiceId && activeInvoices.length > 1) {
+    redirect(`/internal/reconciliation/${orderId}/invoice-bundle`);
+  }
+
+  const invoice = requestedInvoiceId
+    ? activeInvoices.find((candidate) => candidate.id === requestedInvoiceId) ?? null
+    : activeInvoices[0] ?? null;
+
+  if (requestedInvoiceId && !invoice) {
+    redirect(`/internal/supplier-draft-ready?error=${encodeURIComponent("Selected supplier invoice is not active for this order.")}`);
+  }
 
   const { data: screenshots } = await supabase
     .from("order_screenshots")
@@ -254,6 +271,20 @@ export default async function InternalReconciliationPage({
           <h1 className="mt-2 text-3xl font-semibold">{order.order_ref ?? orderId}</h1>
           <p className="mt-2 text-sm text-slate-600">{staff.full_name} · {staff.role_type}</p>
           <p className="mt-2 text-sm text-slate-600">Importer: {importer} · Retailer: {retailer}</p>
+          {invoice ? <p className="mt-2 text-sm font-semibold text-slate-800">Selected invoice: {invoice.ocr_invoice_ref || invoice.invoice_ref}</p> : null}
+          {activeInvoices.length > 1 ? (
+            <div className="mt-4 flex flex-wrap gap-2">
+              {activeInvoices.map((candidate) => (
+                <Link
+                  key={candidate.id}
+                  href={supplierInvoiceReconciliationHref(orderId, candidate.id)}
+                  className={`rounded-full px-3 py-1.5 text-xs font-semibold ${candidate.id === invoice?.id ? "bg-sky-700 text-white" : "border border-sky-200 bg-sky-50 text-sky-800"}`}
+                >
+                  {candidate.ocr_invoice_ref || candidate.invoice_ref}
+                </Link>
+              ))}
+            </div>
+          ) : null}
           {qp.success ? <p className="mt-4 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">{qp.success}</p> : null}
           {qp.error ? <p className="mt-4 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-900">{qp.error}</p> : null}
         </section>

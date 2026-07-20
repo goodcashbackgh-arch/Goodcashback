@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
+import { supplierInvoiceReconciliationHref } from "../reconciliationHref";
 
 function asString(value: FormDataEntryValue | null) {
   return typeof value === "string" ? value : "";
@@ -23,6 +24,7 @@ function asNumber(value: FormDataEntryValue | null, fallback = 0) {
 export async function updateSupplierAccountingAdjustmentLineAction(formData: FormData) {
   const supabase = await createClient();
   const orderId = asString(formData.get("order_id"));
+  const invoiceId = asString(formData.get("supplier_invoice_id"));
   const adjustmentLineId = asString(formData.get("adjustment_line_id"));
   const description = asString(formData.get("description"));
   const qty = asNumber(formData.get("qty"), 1);
@@ -30,10 +32,10 @@ export async function updateSupplierAccountingAdjustmentLineAction(formData: For
   const vat = asNullableNumber(formData.get("vat_amount_gbp"));
   const vatRate = asNullableNumber(formData.get("vat_rate_percent")) ?? 20;
 
-  if (!orderId || !adjustmentLineId) redirect(`/internal/reconciliation/${orderId || ""}?error=Missing+adjustment+line+id`);
-  if (!description.trim()) redirect(`/internal/reconciliation/${orderId}?error=Adjustment+description+is+required`);
-  if (!Number.isFinite(qty) || qty <= 0) redirect(`/internal/reconciliation/${orderId}?error=Adjustment+quantity+must+be+greater+than+zero`);
-  if (net === null || vat === null) redirect(`/internal/reconciliation/${orderId}?error=Adjustment+net+and+VAT+are+required`);
+  if (!orderId || !invoiceId || !adjustmentLineId) redirect(`/internal/reconciliation/${orderId || ""}?error=Missing+adjustment+line+id`);
+  if (!description.trim()) redirect(supplierInvoiceReconciliationHref(orderId, invoiceId, { error: "Adjustment description is required" }));
+  if (!Number.isFinite(qty) || qty <= 0) redirect(supplierInvoiceReconciliationHref(orderId, invoiceId, { error: "Adjustment quantity must be greater than zero" }));
+  if (net === null || vat === null) redirect(supplierInvoiceReconciliationHref(orderId, invoiceId, { error: "Adjustment net and VAT are required" }));
 
   const { error } = await supabase.rpc("staff_update_supplier_invoice_accounting_adjustment_line_v2", {
     p_adjustment_line_id: adjustmentLineId,
@@ -50,9 +52,9 @@ export async function updateSupplierAccountingAdjustmentLineAction(formData: For
     p_vat_amount_gbp: vat,
   });
 
-  if (error) redirect(`/internal/reconciliation/${orderId}?error=${encodeURIComponent(error.message)}`);
+  if (error) redirect(supplierInvoiceReconciliationHref(orderId, invoiceId, { error: error.message }));
 
   revalidatePath(`/internal/reconciliation/${orderId}`);
   revalidatePath("/internal/supplier-draft-ready");
-  redirect(`/internal/reconciliation/${orderId}?success=Adjustment+line+updated`);
+  redirect(supplierInvoiceReconciliationHref(orderId, invoiceId, { success: "Adjustment line updated" }));
 }

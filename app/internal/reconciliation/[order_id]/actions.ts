@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 import { assertInvoiceReadyForCurrentApproval } from "../../invoice-review/readiness";
+import { supplierInvoiceReconciliationHref } from "../reconciliationHref";
 
 function asString(value: FormDataEntryValue | null) {
   return typeof value === "string" ? value : "";
@@ -60,10 +61,10 @@ export async function supervisorProgressSupplierInvoiceLinesAction(formData: For
   const progressNotes = asString(formData.get("progress_notes")).trim();
 
   if (!orderId || !invoiceId) redirect(`/internal/reconciliation/${orderId || ""}?error=Missing+invoice+or+order+id`);
-  if (lineIds.length === 0) redirect(`/internal/reconciliation/${orderId}?error=Select+at+least+one+blocked+line+to+progress`);
+  if (lineIds.length === 0) redirect(supplierInvoiceReconciliationHref(orderId, invoiceId, { error: "Select at least one blocked line to progress" }));
 
   const guard = await requireSupervisorOrAdmin();
-  if (!guard.ok) redirect(`/internal/reconciliation/${orderId}?error=${encodeURIComponent(guard.error)}`);
+  if (!guard.ok) redirect(supplierInvoiceReconciliationHref(orderId, invoiceId, { error: guard.error }));
 
   const { data, error } = await guard.supabase.rpc("staff_progress_supplier_invoice_lines", {
     p_order_id: orderId,
@@ -72,7 +73,7 @@ export async function supervisorProgressSupplierInvoiceLinesAction(formData: For
     p_progress_notes: progressNotes || null,
   });
 
-  if (error) redirect(`/internal/reconciliation/${orderId}?error=${encodeURIComponent(error.message)}`);
+  if (error) redirect(supplierInvoiceReconciliationHref(orderId, invoiceId, { error: error.message }));
 
   const count = Number(data ?? lineIds.length);
 
@@ -81,7 +82,7 @@ export async function supervisorProgressSupplierInvoiceLinesAction(formData: For
   revalidatePath("/internal/invoice-review");
   revalidatePath("/internal");
 
-  redirect(`/internal/reconciliation/${orderId}?success=${encodeURIComponent(`${count} line(s) progressed by supervisor takeover. Continue accounting coding.`)}`);
+  redirect(supplierInvoiceReconciliationHref(orderId, invoiceId, { success: `${count} line(s) progressed by supervisor takeover. Continue accounting coding.` }));
 }
 
 export async function approveCurrentSupplierInvoiceFromReconciliationAction(formData: FormData) {
@@ -91,10 +92,10 @@ export async function approveCurrentSupplierInvoiceFromReconciliationAction(form
   if (!orderId || !invoiceId) redirect(`/internal/reconciliation/${orderId || ""}?error=Missing+invoice+or+order+id`);
 
   const guard = await requireSupervisorOrAdmin();
-  if (!guard.ok) redirect(`/internal/reconciliation/${orderId}?error=${encodeURIComponent(guard.error)}`);
+  if (!guard.ok) redirect(supplierInvoiceReconciliationHref(orderId, invoiceId, { error: guard.error }));
 
   const readinessError = await assertInvoiceReadyForCurrentApproval(guard.supabase, invoiceId);
-  if (readinessError) redirect(`/internal/reconciliation/${orderId}?error=${encodeURIComponent(readinessError)}`);
+  if (readinessError) redirect(supplierInvoiceReconciliationHref(orderId, invoiceId, { error: readinessError }));
 
   const { data: totals, error: totalsError } = await guard.supabase
     .from("supplier_invoice_accounting_coding_totals_vw")
@@ -103,16 +104,16 @@ export async function approveCurrentSupplierInvoiceFromReconciliationAction(form
     .maybeSingle();
 
   if (totalsError || !totals) {
-    redirect(`/internal/reconciliation/${orderId}?error=${encodeURIComponent(totalsError?.message ?? "Accounting coding totals not found.")}`);
+    redirect(supplierInvoiceReconciliationHref(orderId, invoiceId, { error: totalsError?.message ?? "Accounting coding totals not found." }));
   }
 
   if (!totals.all_progressed_lines_coded_yn) {
-    redirect(`/internal/reconciliation/${orderId}?error=All+progressed+lines+must+be+accounting+coded+before+approval`);
+    redirect(supplierInvoiceReconciliationHref(orderId, invoiceId, { error: "All progressed lines must be accounting coded before approval" }));
   }
 
   if (!totals.net_reconciled_to_invoice_yn || !totals.vat_reconciled_to_invoice_yn || !totals.gross_reconciled_to_invoice_yn) {
     const msg = `Net/VAT/Gross coding does not reconcile. Net variance ${totals.net_variance_gbp ?? 0}, VAT variance ${totals.vat_variance_gbp ?? 0}, gross variance ${totals.gross_variance_gbp ?? 0}.`;
-    redirect(`/internal/reconciliation/${orderId}?error=${encodeURIComponent(msg)}`);
+    redirect(supplierInvoiceReconciliationHref(orderId, invoiceId, { error: msg }));
   }
 
   const { data: invoice, error: invoiceError } = await guard.supabase
@@ -122,7 +123,7 @@ export async function approveCurrentSupplierInvoiceFromReconciliationAction(form
     .maybeSingle();
 
   if (invoiceError || !invoice) {
-    redirect(`/internal/reconciliation/${orderId}?error=${encodeURIComponent(invoiceError?.message ?? "Supplier invoice not found.")}`);
+    redirect(supplierInvoiceReconciliationHref(orderId, invoiceId, { error: invoiceError?.message ?? "Supplier invoice not found." }));
   }
 
   const summary = firstRelated(invoice.supplier_invoice_financial_summary as { invoice_total_gbp: number | null }[] | { invoice_total_gbp: number | null } | null);
@@ -138,7 +139,7 @@ export async function approveCurrentSupplierInvoiceFromReconciliationAction(form
     p_review_notes: "Approved from supervisor reconciliation accounting coding page.",
   });
 
-  if (error) redirect(`/internal/reconciliation/${orderId}?error=${encodeURIComponent(error.message)}`);
+  if (error) redirect(supplierInvoiceReconciliationHref(orderId, invoiceId, { error: error.message }));
 
   revalidatePath(`/internal/reconciliation/${orderId}`);
   revalidatePath("/internal/supplier-draft-ready");
@@ -155,7 +156,7 @@ export async function saveAllSupplierLineAccountingCodesAction(formData: FormDat
   const lineIds = formData.getAll("line_ids").map((value) => asString(value)).filter(Boolean);
 
   if (!orderId || !invoiceId) redirect(`/internal/reconciliation/${orderId || ""}?error=Missing+invoice+or+order+id`);
-  if (lineIds.length === 0) redirect(`/internal/reconciliation/${orderId}?error=No+codable+lines+to+save`);
+  if (lineIds.length === 0) redirect(supplierInvoiceReconciliationHref(orderId, invoiceId, { error: "No codable lines to save" }));
 
   const lines = lineIds.map((lineId) => ({
     supplier_invoice_line_id: lineId,
@@ -178,10 +179,10 @@ export async function saveAllSupplierLineAccountingCodesAction(formData: FormDat
     p_lines: lines,
   });
 
-  if (error) redirect(`/internal/reconciliation/${orderId}?error=${encodeURIComponent(error.message)}`);
+  if (error) redirect(supplierInvoiceReconciliationHref(orderId, invoiceId, { error: error.message }));
   revalidatePath(`/internal/reconciliation/${orderId}`);
   revalidatePath("/internal/supplier-draft-ready");
-  redirect(`/internal/reconciliation/${orderId}?success=All+codable+supplier+invoice+lines+saved+and+balanced`);
+  redirect(supplierInvoiceReconciliationHref(orderId, invoiceId, { success: "All codable supplier invoice lines saved and balanced" }));
 }
 
 export async function saveSupplierLineAccountingCodeAction(formData: FormData) {
@@ -228,9 +229,9 @@ export async function addSupplierAccountingAdjustmentLineAction(formData: FormDa
   const vatRate = asNullableNumber(formData.get("vat_rate_percent")) ?? 20;
 
   if (!orderId || !invoiceId) redirect(`/internal/reconciliation/${orderId || ""}?error=Missing+invoice+or+order+id`);
-  if (!description.trim()) redirect(`/internal/reconciliation/${orderId}?error=Adjustment+description+is+required`);
-  if (!Number.isFinite(qty) || qty <= 0) redirect(`/internal/reconciliation/${orderId}?error=Adjustment+quantity+must+be+greater+than+zero`);
-  if (net === null || vat === null) redirect(`/internal/reconciliation/${orderId}?error=Adjustment+net+and+VAT+are+required`);
+  if (!description.trim()) redirect(supplierInvoiceReconciliationHref(orderId, invoiceId, { error: "Adjustment description is required" }));
+  if (!Number.isFinite(qty) || qty <= 0) redirect(supplierInvoiceReconciliationHref(orderId, invoiceId, { error: "Adjustment quantity must be greater than zero" }));
+  if (net === null || vat === null) redirect(supplierInvoiceReconciliationHref(orderId, invoiceId, { error: "Adjustment net and VAT are required" }));
 
   const { error } = await supabase.rpc("staff_create_supplier_invoice_accounting_adjustment_line_v2", {
     p_supplier_invoice_id: invoiceId,
@@ -247,26 +248,27 @@ export async function addSupplierAccountingAdjustmentLineAction(formData: FormDa
     p_vat_amount_gbp: vat,
   });
 
-  if (error) redirect(`/internal/reconciliation/${orderId}?error=${encodeURIComponent(error.message)}`);
+  if (error) redirect(supplierInvoiceReconciliationHref(orderId, invoiceId, { error: error.message }));
   revalidatePath(`/internal/reconciliation/${orderId}`);
   revalidatePath("/internal/supplier-draft-ready");
-  redirect(`/internal/reconciliation/${orderId}?success=Adjustment+line+added`);
+  redirect(supplierInvoiceReconciliationHref(orderId, invoiceId, { success: "Adjustment line added" }));
 }
 
 export async function deleteSupplierAccountingAdjustmentLineAction(formData: FormData) {
   const supabase = await createClient();
   const orderId = asString(formData.get("order_id"));
+  const invoiceId = asString(formData.get("supplier_invoice_id"));
   const adjustmentLineId = asString(formData.get("adjustment_line_id"));
 
-  if (!orderId || !adjustmentLineId) redirect(`/internal/reconciliation/${orderId || ""}?error=Missing+adjustment+line+id`);
+  if (!orderId || !invoiceId || !adjustmentLineId) redirect(`/internal/reconciliation/${orderId || ""}?error=Missing+adjustment+line+id`);
 
   const { error } = await supabase
     .from("supplier_invoice_accounting_adjustment_lines")
     .delete()
     .eq("id", adjustmentLineId);
 
-  if (error) redirect(`/internal/reconciliation/${orderId}?error=${encodeURIComponent(error.message)}`);
+  if (error) redirect(supplierInvoiceReconciliationHref(orderId, invoiceId, { error: error.message }));
   revalidatePath(`/internal/reconciliation/${orderId}`);
   revalidatePath("/internal/supplier-draft-ready");
-  redirect(`/internal/reconciliation/${orderId}?success=Adjustment+line+deleted`);
+  redirect(supplierInvoiceReconciliationHref(orderId, invoiceId, { success: "Adjustment line deleted" }));
 }
