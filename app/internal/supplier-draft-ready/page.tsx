@@ -159,16 +159,19 @@ function evidenceStatus(body: string | null | undefined) {
 function authoritativeRefundStatus(body: string | null | undefined) {
   const matchStatus = bodyValue(body, "match_status") || bodyValue(body, "resulting_match_status");
 
-  if (matchStatus === "pending_ocr") return "Pending OCR";
+  if (matchStatus === "matched_ready_to_release") return "Ready for supplier control";
   if (matchStatus === "needs_operator_review") return "Operator review required";
   if (matchStatus === "needs_supervisor_review") return "Supervisor review required";
-  if (matchStatus === "matched_ready_to_release") return "Ready for supplier control";
+  if (matchStatus === "pending_ocr") return "Pending OCR";
 
   return evidenceStatus(body);
 }
 
 function evidenceBadgeClass(body: string | null | undefined, approved: boolean) {
   if (approved) return "bg-emerald-100 text-emerald-800";
+  const matchStatus = bodyValue(body, "match_status") || bodyValue(body, "resulting_match_status");
+  if (["pending_ocr", "needs_operator_review", "needs_supervisor_review"].includes(matchStatus)) return "bg-amber-100 text-amber-800";
+  if (matchStatus === "matched_ready_to_release") return "bg-emerald-100 text-emerald-800";
   const text = body ?? "";
   if (text.includes("refund_adjustment_ready_no_credit_note")) return "bg-emerald-100 text-emerald-800";
   if (text.includes("credit_note_uploaded_pending_ocr_compare")) return "bg-sky-100 text-sky-800";
