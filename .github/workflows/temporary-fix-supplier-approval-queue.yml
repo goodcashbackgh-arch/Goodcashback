@@ -1,4 +1,4 @@
-name: Temporary supplier approval queue patch
+name: Apply supplier approval queue classification fix
 
 on:
   push:
@@ -17,7 +17,7 @@ jobs:
           ref: agent/fix-supplier-approval-queue-classification
           fetch-depth: 0
 
-      - name: Apply narrow page correction
+      - name: Apply exact one-file correction
         shell: python
         run: |
           from pathlib import Path
@@ -27,4 +27,44 @@ jobs:
 
           replacements = [
               (
-                  "  review_status: string;\n  is_current_for_order: boolean;\n  orders: Order
+                  "  review_status: string;\n  is_current_for_order: boolean;\n  orders: OrderRelation | OrderRelation[] | null;",
+                  "  review_status: string;\n  orders: OrderRelation | OrderRelation[] | null;",
+              ),
+              (
+                  "      review_status,\n      is_current_for_order,\n      orders(order_ref, order_total_gbp_declared, total_qty_declared, retailers(name), importers(company_name)),",
+                  "      review_status,\n      orders(order_ref, order_total_gbp_declared, total_qty_declared, retailers(name), importers(company_name)),",
+              ),
+              (
+                  '''function invoiceStatusLabel(invoice: InvoiceRow) {\n  if (invoice.is_current_for_order) return "Current";\n  return invoice.review_status.replaceAll("_", " ");\n}\n\nfunction invoiceStatusBadgeClass(invoice: InvoiceRow, blocker: string | null) {\n  if (blocker) return "bg-amber-100 text-amber-800";\n  if (invoice.is_current_for_order || ["approved_current", "ref_corrected_approved"].includes(invoice.review_status)) return "bg-emerald-100 text-emerald-800";\n  if (["rejected_resubmit_required", "superseded"].includes(invoice.review_status)) return "bg-slate-100 text-slate-700";\n  return "bg-sky-100 text-sky-800";\n}\n\nfunction isActionedInvoice(invoice: InvoiceRow) {\n  return invoice.is_current_for_order || ["approved_current", "ref_corrected_approved", "rejected_resubmit_required", "superseded"].includes(invoice.review_status);\n}''',
+                  '''function invoiceStatusLabel(invoice: InvoiceRow) {\n  if (reviewStatusesForFilter("approved").includes(invoice.review_status)) return "Current";\n  return invoice.review_status.replaceAll("_", " ");\n}\n\nfunction invoiceStatusBadgeClass(invoice: InvoiceRow, blocker: string | null) {\n  if (blocker) return "bg-amber-100 text-amber-800";\n  if (reviewStatusesForFilter("approved").includes(invoice.review_status)) return "bg-emerald-100 text-emerald-800";\n  if (["rejected_resubmit_required", "superseded"].includes(invoice.review_status)) return "bg-slate-100 text-slate-700";\n  return "bg-sky-100 text-sky-800";\n}\n\nfunction isActionedInvoice(invoice: InvoiceRow) {\n  return reviewStatusesForFilter("actioned").includes(invoice.review_status);\n}''',
+              ),
+              (
+                  '''  const readyInvoices = invoices.filter((invoice) => !approvalBlocker(invoice.id, invoiceReadinessById, codingReadinessById) && !invoice.is_current_for_order);\n  const blockedInvoices = invoices.filter((invoice) => approvalBlocker(invoice.id, invoiceReadinessById, codingReadinessById) && !invoice.is_current_for_order);\n  const actionedInvoices = invoices.filter(isActionedInvoice);''',
+                  '''  const readyInvoices = invoices.filter((invoice) => {\n    if (invoice.review_status !== "pending_review") return false;\n    return !approvalBlocker(invoice.id, invoiceReadinessById, codingReadinessById);\n  });\n  const blockedInvoices = invoices.filter((invoice) => {\n    if (invoice.review_status === "duplicate_blocked") return true;\n    if (invoice.review_status !== "pending_review") return false;\n    return Boolean(approvalBlocker(invoice.id, invoiceReadinessById, codingReadinessById));\n  });\n  const actionedInvoices = invoices.filter(isActionedInvoice);''',
+              ),
+          ]
+
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"Expected exactly one match, found {count}: {old[:120]!r}")
+              text = text.replace(old, new, 1)
+
+          if "is_current_for_order" in text:
+              raise SystemExit("Legacy is_current_for_order reference remains in supplier draft ready page")
+
+          page.write_text(text)
+
+      - name: Remove temporary workflow and verify scope
+        run: |
+          rm .github/workflows/temporary-fix-supplier-approval-queue.yml
+          git diff --check
+          test "$(git diff --name-only | sort)" = "app/internal/supplier-draft-ready/page.tsx"
+
+      - name: Commit direct page fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/internal/supplier-draft-ready/page.tsx .github/workflows/temporary-fix-supplier-approval-queue.yml
+          git commit -m "Fix supplier approval queue classification"
+          git push origin HEAD:agent/fix-supplier-approval-queue-classification
