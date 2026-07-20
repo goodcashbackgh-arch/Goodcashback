@@ -7,7 +7,6 @@ import {
 } from "../invoice-review/readiness";
 import {
   approveSupplierInvoiceCurrentAction,
-  approveSupplierRefundEvidenceCurrentAction,
   bulkApproveSupplierInvoicesCurrentAction,
 } from "./actions";
 
@@ -157,6 +156,17 @@ function evidenceStatus(body: string | null | undefined) {
   return "Evidence uploaded";
 }
 
+function authoritativeRefundStatus(body: string | null | undefined) {
+  const matchStatus = bodyValue(body, "match_status") || bodyValue(body, "resulting_match_status");
+
+  if (matchStatus === "pending_ocr") return "Pending OCR";
+  if (matchStatus === "needs_operator_review") return "Operator review required";
+  if (matchStatus === "needs_supervisor_review") return "Supervisor review required";
+  if (matchStatus === "matched_ready_to_release") return "Ready for supplier control";
+
+  return evidenceStatus(body);
+}
+
 function evidenceBadgeClass(body: string | null | undefined, approved: boolean) {
   if (approved) return "bg-emerald-100 text-emerald-800";
   const text = body ?? "";
@@ -178,10 +188,6 @@ function isCreditNotePending(body: string | null | undefined) {
 function isReviewRequired(body: string | null | undefined) {
   const text = body ?? "";
   return text.includes("variance_supervisor_review_required") || text.includes("no_document_supervisor_review_required") || text.includes("supplier_refund_adjustment_review_required");
-}
-
-function isRefundAdjustmentReady(body: string | null | undefined) {
-  return (body ?? "").includes("refund_adjustment_ready_no_credit_note");
 }
 
 function approvalReferencesEvidence(approval: ApprovalMessage, evidenceId: string) {
@@ -398,7 +404,7 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
               <p className="text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Refund / credit-note readiness</p>
               <h2 className="mt-2 text-xl font-semibold">Supplier-side refund evidence routed from exceptions</h2>
               <p className="mt-2 max-w-3xl text-sm text-slate-600">
-                Credit notes must be OCR-compared before supplier credit-note approval. Refunds without credit notes can be approved current here when balanced to the exception. DVA/card refund IN matching still clears the money position.
+                Current authoritative refund and credit-note submissions are reviewed and approved through the dedicated credit/refund control page, not inline on Supplier Draft Ready. DVA/card refund IN matching still clears the money position.
               </p>
             </div>
           </div>
@@ -417,7 +423,6 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
                 const creditNoteRef = bodyValue(evidence.body, "credit_note_ref") || "—";
                 const route = evidenceRoute(evidence.body);
                 const approvedCurrent = refundApprovals.some((approval) => approvalReferencesEvidence(approval, evidence.id));
-                const canApproveNow = !approvedCurrent && isRefundAdjustmentReady(evidence.body) && !isCreditNotePending(evidence.body) && !isReviewRequired(evidence.body);
                 const reviewNeeded = isReviewRequired(evidence.body);
                 const creditNotePending = isCreditNotePending(evidence.body);
 
@@ -427,7 +432,7 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
                       <div>
                         <div className="flex flex-wrap items-center gap-2">
                           <h3 className="text-lg font-semibold">{order?.order_ref ?? dispute?.order_id ?? evidence.dispute_id}</h3>
-                          <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${evidenceBadgeClass(evidence.body, approvedCurrent)}`}>{approvedCurrent ? "Approved current" : evidenceStatus(evidence.body)}</span>
+                          <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${evidenceBadgeClass(evidence.body, approvedCurrent)}`}>{approvedCurrent ? "Approved current" : authoritativeRefundStatus(evidence.body)}</span>
                         </div>
                         <p className="mt-2 text-sm text-slate-600">Importer: {importer} · Retailer: {retailer}</p>
                         <p className="text-sm text-slate-600">Document mode: {documentMode} · Credit note ref: {creditNoteRef}</p>
@@ -436,13 +441,7 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
                       <div className="flex flex-wrap gap-2">
                         <Link href={`/internal/exceptions/${evidence.dispute_id}`} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">Open exception</Link>
                         {dispute?.order_id ? <Link href={`/internal/evidence/${dispute.order_id}`} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">Open order</Link> : null}
-                        {canApproveNow ? (
-                          <form action={approveSupplierRefundEvidenceCurrentAction}>
-                            <input type="hidden" name="evidence_message_id" value={evidence.id} />
-                            <input type="hidden" name="dispute_id" value={evidence.dispute_id} />
-                            <button className="rounded-xl bg-emerald-700 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-600">Approve refund adjustment current</button>
-                          </form>
-                        ) : null}
+                        <Link href="/internal/refund-document-control" className="rounded-xl bg-sky-700 px-3 py-2 text-sm font-semibold text-white hover:bg-sky-600">Open credit/refund control</Link>
                       </div>
                     </div>
 
