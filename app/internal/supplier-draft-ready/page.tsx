@@ -261,8 +261,9 @@ function authoritativeRefundStatus(submission: RefundSubmission, totals: RefundA
   }
 
   const reviewRequired = submission.supervisor_review_status === "pending_review"
-    || submission.match_status === "needs_supervisor_review"
-    || statuses.some((value) => value.includes("review_required"));
+  || submission.match_status === "needs_supervisor_review"
+  || submission.match_status === "needs_operator_review"
+  || statuses.some((value) => value.includes("review_required"));
   if (reviewRequired) {
     return { label: "Supervisor review required", badgeClass: "bg-amber-100 text-amber-800", explanation: "Supervisor review must be completed before supplier approval can proceed.", approvedCurrent: false };
   }
@@ -278,8 +279,9 @@ function authoritativeRefundStatus(submission: RefundSubmission, totals: RefundA
     return { label: "Released — coding required", badgeClass: "bg-amber-100 text-amber-800", explanation: "Released to supplier control, but progressed lines are not fully coded and reconciled to the document gross.", approvedCurrent: false };
   }
 
-  const readyForControl = submission.match_status === "matched"
-    || statuses.some((value) => value.includes("ready") || value.includes("matched"));
+  const readyForControl = submission.match_status === "matched_ready_to_release"
+  || submission.match_status === "matched"
+  || statuses.some((value) => value.includes("ready") || value.includes("matched"));
   if (readyForControl) {
     return { label: "Ready for supplier control", badgeClass: "bg-sky-100 text-sky-800", explanation: "Document checks are ready. Open the dedicated supplier control page to continue.", approvedCurrent: false };
   }
@@ -572,7 +574,8 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
               <p className="text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Refund / credit-note readiness</p>
               <h2 className="mt-2 text-xl font-semibold">Supplier-side refund evidence routed from exceptions</h2>
               <p className="mt-2 max-w-3xl text-sm text-slate-600">
-                Credit notes must be OCR-compared before supplier credit-note approval. Refunds without credit notes can be approved current here when balanced to the exception. DVA/card refund IN matching still clears the money position.
+  Current refund and credit-note submissions are reviewed and approved through the dedicated credit/refund control page. Credit notes must complete OCR comparison before approval. DVA/card refund IN matching remains required to clear the money position.
+</p>
               </p>
             </div>
           </div>
