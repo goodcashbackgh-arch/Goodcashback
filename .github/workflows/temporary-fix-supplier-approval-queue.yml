@@ -64,7 +64,9 @@ jobs:
         run: |
           rm .github/workflows/temporary-fix-supplier-approval-queue.yml
           git diff --check
-          test "$(git diff --name-only | sort)" = "app/internal/supplier-draft-ready/page.tsx"
+          printf '%s\n' ".github/workflows/temporary-fix-supplier-approval-queue.yml" "app/internal/supplier-draft-ready/page.tsx" > /tmp/expected-files
+          git diff --name-only | sort > /tmp/actual-files
+          diff -u /tmp/expected-files /tmp/actual-files
 
       - name: Commit direct page fix
         run: |
