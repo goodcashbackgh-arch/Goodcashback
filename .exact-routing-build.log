@@ -1,0 +1,35 @@
+
+> goodcashback@0.1.0 build
+> next build
+
+⚠ No build cache found. Please configure build caching for faster rebuilds. Read more: https://nextjs.org/docs/messages/no-cache
+Attention: Next.js now collects completely anonymous telemetry regarding usage.
+This information is used to shape Next.js' roadmap and prioritize features.
+You can learn more, including how to opt-out if you'd not like to participate in this anonymous program, by visiting the following URL:
+https://nextjs.org/telemetry
+
+▲ Next.js 16.2.4 (Turbopack)
+- Experiments (use with caution):
+  · serverActions
+
+  Creating an optimized production build ...
+✓ Compiled successfully in 9.7s
+  Running TypeScript ...
+  Finished TypeScript in 20.9s ...
+  Collecting page data using 3 workers ...
+  Generating static pages using 3 workers (0/94) ...
+Error occurred prerendering page "/_not-found". Read more: https://nextjs.org/docs/messages/prerender-error
+Error: @supabase/ssr: Your project's URL and API key are required to create a Supabase client!
+
+Check your Supabase project's API settings to find these values
+
+https://supabase.com/dashboard/project/_/settings/api
+    at <unknown> (https://supabase.com/dashboard/project/_/settings/api)
+    at <unknown> (.next/server/chunks/ssr/_0e94537._.js:55:80)
+    at <unknown> (.next/server/chunks/ssr/_0e94537._.js:59:4581)
+    at <unknown> (.next/server/chunks/ssr/[root-of-the-server]__0r1h607._.js:1:4152)
+    at <unknown> (.next/server/chunks/ssr/[root-of-the-server]__0r1h607._.js:1:4129) {
+  digest: '1538694781'
+}
+Export encountered an error on /_not-found/page: /_not-found, exiting the build.
+⨯ Next.js build worker exited with code: 1 and signal: null
