@@ -49,6 +49,52 @@ type RefundEvidenceMessage = {
   generated_by: string | null;
 };
 
+type RefundSubmission = {
+  id: string;
+  dispute_id: string;
+  document_mode: string | null;
+  credit_note_ref: string | null;
+  credit_note_date: string | null;
+  expected_credit_note_total_gbp: number | null;
+  captured_refund_amount_abs_gbp: number | null;
+  expected_exception_amount_abs_gbp: number | null;
+  amount_balance_status: string | null;
+  evidence_control_status: string | null;
+  supplier_readiness_route: string | null;
+  supplier_approval_status: string | null;
+  supervisor_review_status: string | null;
+  ocr_status: string | null;
+  match_status: string | null;
+  supplier_control_status: string | null;
+  ocr_credit_note_ref: string | null;
+  ocr_retailer_name: string | null;
+  ocr_credit_note_date: string | null;
+  ocr_credit_note_total_gbp: number | null;
+  credit_note_file_url: string | null;
+  refund_proof_file_url: string | null;
+  created_at: string | null;
+};
+
+type RefundAccountingTotals = {
+  refund_evidence_submission_id: string;
+  accepted_document_gross_gbp: number | null;
+  total_coded_net_gbp: number | null;
+  total_coded_vat_gbp: number | null;
+  total_coded_gross_gbp: number | null;
+  progressed_line_count: number | null;
+  coded_line_count: number | null;
+  all_progressed_lines_coded_yn: boolean | null;
+  gross_reconciled_to_document_yn: boolean | null;
+  gross_variance_gbp: number | null;
+};
+
+type AuthoritativeRefundStatus = {
+  label: string;
+  badgeClass: string;
+  explanation: string | null;
+  approvedCurrent: boolean;
+};
+
 type DisputeRow = {
   id: string;
   order_id: string;
@@ -188,6 +234,65 @@ function approvalReferencesEvidence(approval: ApprovalMessage, evidenceId: strin
   return String(approval.body ?? "").includes(`source_evidence_message_id: ${evidenceId}`);
 }
 
+function authoritativeRefundStatus(submission: RefundSubmission, totals: RefundAccountingTotals | undefined): AuthoritativeRefundStatus {
+  const approvedCurrent = submission.supplier_approval_status === "approved_current" || submission.supplier_control_status === "approved_current";
+  if (approvedCurrent) {
+    return { label: "Approved current", badgeClass: "bg-emerald-100 text-emerald-800", explanation: null, approvedCurrent: true };
+  }
+
+  const statuses = [submission.evidence_control_status, submission.supplier_readiness_route, submission.supplier_control_status].map((value) => String(value ?? ""));
+  const rejected = submission.supervisor_review_status === "rejected"
+    || submission.evidence_control_status === "staff_rejected_resubmission_required"
+    || submission.supplier_readiness_route === "operator_resubmission_required"
+    || statuses.some((value) => value.includes("rejected") || value.includes("resubmission_required"));
+  if (rejected) {
+    return { label: "Operator resubmission required", badgeClass: "bg-rose-100 text-rose-800", explanation: "The refund document was rejected or returned for operator resubmission.", approvedCurrent: false };
+  }
+
+  const ocrStatus = String(submission.ocr_status ?? "").toLowerCase();
+  const creditNotePending = submission.document_mode === "credit_note" && (
+    (ocrStatus !== "completed" && ocrStatus !== "complete")
+    || submission.match_status === "pending_ocr"
+    || submission.supplier_readiness_route === "supplier_credit_note_readiness_pending_ocr"
+    || submission.evidence_control_status === "credit_note_uploaded_pending_ocr_compare"
+  );
+  if (creditNotePending) {
+    return { label: "Credit note pending OCR/compare", badgeClass: "bg-sky-100 text-sky-800", explanation: "Credit-note control is blocked until OCR and document comparison complete.", approvedCurrent: false };
+  }
+
+  const reviewRequired = submission.supervisor_review_status === "pending_review"
+  || submission.match_status === "needs_supervisor_review"
+  || submission.match_status === "needs_operator_review"
+  || statuses.some((value) => value.includes("review_required"));
+  if (reviewRequired) {
+    return { label: "Supervisor review required", badgeClass: "bg-amber-100 text-amber-800", explanation: "Supervisor review must be completed before supplier approval can proceed.", approvedCurrent: false };
+  }
+
+  const accountingReady = Boolean(totals)
+    && money(totals?.progressed_line_count) > 0
+    && totals?.all_progressed_lines_coded_yn === true
+    && totals?.gross_reconciled_to_document_yn === true;
+  if (submission.supplier_control_status === "released_to_supplier_control" && accountingReady) {
+    return { label: "Ready for approval", badgeClass: "bg-emerald-100 text-emerald-800", explanation: "Coding and document gross reconciliation are complete. Open supplier control to approve.", approvedCurrent: false };
+  }
+  if (submission.supplier_control_status === "released_to_supplier_control") {
+    return { label: "Released — coding required", badgeClass: "bg-amber-100 text-amber-800", explanation: "Released to supplier control, but progressed lines are not fully coded and reconciled to the document gross.", approvedCurrent: false };
+  }
+
+  const readyForControl = submission.match_status === "matched_ready_to_release"
+  || submission.match_status === "matched"
+  || statuses.some((value) => value.includes("ready") || value.includes("matched"));
+  if (readyForControl) {
+    return { label: "Ready for supplier control", badgeClass: "bg-sky-100 text-sky-800", explanation: "Document checks are ready. Open the dedicated supplier control page to continue.", approvedCurrent: false };
+  }
+
+  return { label: "Blocked / pending", badgeClass: "bg-slate-100 text-slate-800", explanation: "Refund-document readiness is still blocked or pending in the current workflow.", approvedCurrent: false };
+}
+
+function firstRefundTotal(...values: (number | null | undefined)[]) {
+  return values.find((value) => value !== null && value !== undefined) ?? null;
+}
+
 function approvalBlocker(invoiceId: string, invoiceReadinessById: Map<string, string | null>, codingReadinessById: Map<string, string | null>) {
   return invoiceReadinessById.get(invoiceId) || codingReadinessById.get(invoiceId) || null;
 }
@@ -296,7 +401,68 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
   const visibleActionedInvoices = ["approved", "actioned", "all"].includes(statusFilter) ? actionedInvoices : [];
   const blockedCount = blockedInvoices.length;
 
-  const { data: refundEvidenceRaw } = await supabase
+  const { data: refundSubmissionsRaw, error: refundSubmissionsError } = await supabase
+    .from("dispute_refund_evidence_submissions")
+    .select(`
+      id,
+      dispute_id,
+      document_mode,
+      credit_note_ref,
+      credit_note_date,
+      expected_credit_note_total_gbp,
+      captured_refund_amount_abs_gbp,
+      expected_exception_amount_abs_gbp,
+      amount_balance_status,
+      evidence_control_status,
+      supplier_readiness_route,
+      supplier_approval_status,
+      supervisor_review_status,
+      ocr_status,
+      match_status,
+      supplier_control_status,
+      ocr_credit_note_ref,
+      ocr_retailer_name,
+      ocr_credit_note_date,
+      ocr_credit_note_total_gbp,
+      credit_note_file_url,
+      refund_proof_file_url,
+      created_at
+    `)
+    .order("created_at", { ascending: false })
+    .order("id", { ascending: false })
+    .limit(100);
+
+  const refundSubmissions = (refundSubmissionsRaw ?? []) as RefundSubmission[];
+  const latestSubmissionByDispute = new Map<string, RefundSubmission>();
+  for (const submission of refundSubmissions) {
+    if (!latestSubmissionByDispute.has(submission.dispute_id)) latestSubmissionByDispute.set(submission.dispute_id, submission);
+  }
+  const authoritativeSubmissions = [...latestSubmissionByDispute.values()];
+  const authoritativeDisputeIds = new Set(authoritativeSubmissions.map((row) => row.dispute_id));
+  const submissionIds = authoritativeSubmissions.map((row) => row.id);
+
+  const { data: refundTotalsRaw, error: refundTotalsError } = submissionIds.length
+    ? await supabase
+        .from("dispute_refund_document_accounting_totals_vw")
+        .select(`
+          refund_evidence_submission_id,
+          accepted_document_gross_gbp,
+          total_coded_net_gbp,
+          total_coded_vat_gbp,
+          total_coded_gross_gbp,
+          progressed_line_count,
+          coded_line_count,
+          all_progressed_lines_coded_yn,
+          gross_reconciled_to_document_yn,
+          gross_variance_gbp
+        `)
+        .in("refund_evidence_submission_id", submissionIds)
+    : { data: [], error: null };
+  const refundTotalsBySubmissionId = new Map(
+    ((refundTotalsRaw ?? []) as RefundAccountingTotals[]).map((row) => [row.refund_evidence_submission_id, row]),
+  );
+
+  const { data: refundEvidenceRaw, error: legacyRefundEvidenceError } = await supabase
     .from("dispute_messages")
     .select("id, dispute_id, message_type, body, created_at, generated_by")
     .in("message_type", ["credit_note_evidence", "refund_evidence"])
@@ -304,18 +470,28 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
     .limit(50);
 
   const refundEvidence = (refundEvidenceRaw ?? []) as RefundEvidenceMessage[];
-  const disputeIds = [...new Set(refundEvidence.map((row) => row.dispute_id).filter(Boolean))];
+  const latestLegacyEvidenceByDispute = new Map<string, RefundEvidenceMessage>();
+  for (const row of refundEvidence) {
+    if (!authoritativeDisputeIds.has(row.dispute_id) && !latestLegacyEvidenceByDispute.has(row.dispute_id)) {
+      latestLegacyEvidenceByDispute.set(row.dispute_id, row);
+    }
+  }
+  const legacyRefundRows = [...latestLegacyEvidenceByDispute.values()];
+  const legacyDisputeIds = legacyRefundRows.map((row) => row.dispute_id);
 
-  const { data: refundApprovalRaw } = disputeIds.length
+  const { data: refundApprovalRaw } = legacyDisputeIds.length
     ? await supabase
         .from("dispute_messages")
         .select("id, dispute_id, body")
         .eq("message_type", "supplier_refund_current_approved")
-        .in("dispute_id", disputeIds)
+        .in("dispute_id", legacyDisputeIds)
     : { data: [] };
-
   const refundApprovals = (refundApprovalRaw ?? []) as ApprovalMessage[];
 
+  const disputeIds = [...new Set([
+    ...authoritativeSubmissions.map((row) => row.dispute_id),
+    ...legacyDisputeIds,
+  ].filter(Boolean))];
   const { data: disputesRaw } = disputeIds.length
     ? await supabase
         .from("disputes")
@@ -325,7 +501,6 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
 
   const disputes = (disputesRaw ?? []) as DisputeRow[];
   const orderIds = [...new Set(disputes.map((row) => row.order_id).filter(Boolean))];
-
   const { data: ordersRaw } = orderIds.length
     ? await supabase
         .from("orders")
@@ -335,11 +510,12 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
 
   const disputeById = new Map(disputes.map((row) => [row.id, row]));
   const orderById = new Map(((ordersRaw ?? []) as unknown as OrderLite[]).map((row) => [row.id, row]));
-  const latestEvidenceByDispute = new Map<string, RefundEvidenceMessage>();
-  for (const row of refundEvidence) {
-    if (!latestEvidenceByDispute.has(row.dispute_id)) latestEvidenceByDispute.set(row.dispute_id, row);
-  }
-  const refundReadinessRows = [...latestEvidenceByDispute.values()];
+  const refundPanelErrors = [
+    refundSubmissionsError ? `Failed to load current refund submissions: ${refundSubmissionsError.message}` : null,
+    refundTotalsError ? `Failed to load refund accounting totals: ${refundTotalsError.message}` : null,
+    legacyRefundEvidenceError ? `Failed to load historic refund evidence fallback: ${legacyRefundEvidenceError.message}` : null,
+  ].filter((message): message is string => Boolean(message));
+
 
   return (
     <main className="min-h-screen bg-slate-50 px-6 py-8 text-slate-950">
@@ -398,16 +574,73 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
               <p className="text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Refund / credit-note readiness</p>
               <h2 className="mt-2 text-xl font-semibold">Supplier-side refund evidence routed from exceptions</h2>
               <p className="mt-2 max-w-3xl text-sm text-slate-600">
-                Credit notes must be OCR-compared before supplier credit-note approval. Refunds without credit notes can be approved current here when balanced to the exception. DVA/card refund IN matching still clears the money position.
+  Current refund and credit-note submissions are reviewed and approved through the dedicated credit/refund control page. Credit notes must complete OCR comparison before approval. DVA/card refund IN matching remains required to clear the money position.
               </p>
             </div>
           </div>
 
-          {refundReadinessRows.length === 0 ? (
+          {refundPanelErrors.length > 0 ? (
+            <div className="mt-5 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-900">
+              <p className="font-semibold">Some refund readiness data could not be loaded.</p>
+              {refundPanelErrors.map((message) => <p key={message} className="mt-1">{message}</p>)}
+            </div>
+          ) : null}
+
+          {authoritativeSubmissions.length === 0 && legacyRefundRows.length === 0 && refundPanelErrors.length === 0 ? (
             <p className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">No refund or credit-note evidence has been routed here yet.</p>
           ) : (
             <div className="mt-5 grid gap-4">
-              {refundReadinessRows.map((evidence) => {
+              {authoritativeSubmissions.map((submission) => {
+                const dispute = disputeById.get(submission.dispute_id);
+                const order = dispute ? orderById.get(dispute.order_id) : null;
+                const retailer = firstRelated(order?.retailers)?.name ?? submission.ocr_retailer_name ?? "—";
+                const importer = firstRelated(order?.importers)?.company_name ?? "—";
+                const totals = refundTotalsBySubmissionId.get(submission.id);
+                const currentStatus = authoritativeRefundStatus(submission, totals);
+                const acceptedTotal = firstRefundTotal(
+                  totals?.accepted_document_gross_gbp,
+                  submission.ocr_credit_note_total_gbp,
+                  submission.expected_credit_note_total_gbp,
+                  submission.captured_refund_amount_abs_gbp,
+                  submission.expected_exception_amount_abs_gbp,
+                );
+                const documentUrl = isHttpUrl(submission.credit_note_file_url)
+                  ? submission.credit_note_file_url
+                  : isHttpUrl(submission.refund_proof_file_url) ? submission.refund_proof_file_url : null;
+
+                return (
+                  <article key={submission.id} className="rounded-3xl border border-sky-100 bg-sky-50 p-5 shadow-sm">
+                    <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                      <div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <h3 className="text-lg font-semibold">{order?.order_ref ?? dispute?.order_id ?? submission.dispute_id}</h3>
+                          <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${currentStatus.badgeClass}`}>{currentStatus.label}</span>
+                        </div>
+                        <p className="mt-2 text-sm text-slate-600">Importer: {importer} · Retailer: {retailer}</p>
+                        <p className="text-sm text-slate-600">Document mode: {submission.document_mode ?? "—"} · Credit note ref: {submission.ocr_credit_note_ref ?? submission.credit_note_ref ?? "—"}</p>
+                        <p className="text-sm text-slate-600">Route: {submission.supplier_readiness_route ?? "—"}</p>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <Link href={`/internal/exceptions/${submission.dispute_id}`} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">Open exception</Link>
+                        {dispute?.order_id ? <Link href={`/internal/evidence/${dispute.order_id}`} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">Open order</Link> : null}
+                        <Link href={`/internal/refund-document-control/${submission.id}`} className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-700">Open credit/refund control</Link>
+                        {documentUrl ? <a href={documentUrl} target="_blank" rel="noreferrer" className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">Open document</a> : null}
+                      </div>
+                    </div>
+
+                    <div className="mt-4 grid gap-3 md:grid-cols-3">
+                      <div className="rounded-2xl bg-white p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Exception amount</p><p className="mt-1 font-semibold">{gbp(dispute?.amount_impact_gbp)}</p></div>
+                      <div className="rounded-2xl bg-white p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Accepted / captured total</p><p className="mt-1 font-semibold">{acceptedTotal === null ? "—" : gbp(acceptedTotal)}</p></div>
+                      <div className="rounded-2xl bg-white p-3"><p className="text-xs uppercase tracking-wide text-slate-500">Submission date</p><p className="mt-1 font-semibold">{submission.created_at ? new Date(submission.created_at).toLocaleDateString("en-GB") : "—"}</p></div>
+                    </div>
+
+                    {currentStatus.explanation ? <p className="mt-3 rounded-xl border border-amber-200 bg-white p-3 text-sm text-amber-800">{currentStatus.explanation}</p> : null}
+                    {currentStatus.approvedCurrent ? <p className="mt-3 rounded-xl border border-emerald-200 bg-white p-3 text-sm text-emerald-800">Supplier-side refund evidence is approved current. DVA/card refund IN still needs matching for money clearance.</p> : null}
+                  </article>
+                );
+              })}
+
+              {legacyRefundRows.map((evidence) => {
                 const dispute = disputeById.get(evidence.dispute_id);
                 const order = dispute ? orderById.get(dispute.order_id) : null;
                 const retailer = firstRelated(order?.retailers)?.name ?? "—";
@@ -428,6 +661,7 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
                         <div className="flex flex-wrap items-center gap-2">
                           <h3 className="text-lg font-semibold">{order?.order_ref ?? dispute?.order_id ?? evidence.dispute_id}</h3>
                           <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${evidenceBadgeClass(evidence.body, approvedCurrent)}`}>{approvedCurrent ? "Approved current" : evidenceStatus(evidence.body)}</span>
+                          <span className="rounded-full bg-slate-200 px-2.5 py-1 text-xs font-semibold text-slate-700">Historic fallback</span>
                         </div>
                         <p className="mt-2 text-sm text-slate-600">Importer: {importer} · Retailer: {retailer}</p>
                         <p className="text-sm text-slate-600">Document mode: {documentMode} · Credit note ref: {creditNoteRef}</p>
