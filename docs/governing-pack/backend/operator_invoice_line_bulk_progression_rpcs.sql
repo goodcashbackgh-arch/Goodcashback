@@ -3,16 +3,14 @@
 -- =============================================================================
 -- Scope:
 --   * Stage 9 bulk clean-subset release for importer/operator OCR reconciliation.
---   * Bulk marks selected supplier_invoice_lines rows as progressed/invoiceable.
---   * Uses existing schema only.
+--   * Validates the selected order lines once and progresses them in one set-based
+--     UPDATE statement.
+--   * Prevents per-line intermediate order-state recalculation while a bulk action
+--     is still in progress.
+--   * Uses existing schema and the existing operator ownership guard only.
 --   * No child exception creation in this file.
---   * No funding, DVA, shipping, POD, accounting, VAT, Sage, order status, or
---     evidence-query side effects.
---
--- Governing basis:
---   * importer_role_stage_matrix_v7: importer can bulk progress correct lines.
---   * INVOICE_LINE_RECONCILIATION_ACTION_CONTRACT.md: progressed lines are
---     represented by confirmed commercial values and eligible_for_invoice_yn.
+--   * No funding, DVA, shipping, POD, accounting, VAT, Sage, order-status, or
+--     evidence-query side effects are introduced here.
 -- =============================================================================
 
 BEGIN;
@@ -22,8 +20,16 @@ SET LOCAL statement_timeout = '0';
 
 DO $$
 BEGIN
-  IF to_regprocedure('public.operator_mark_supplier_invoice_line_progressed(uuid, uuid)') IS NULL THEN
-    RAISE EXCEPTION 'Prerequisite missing: public.operator_mark_supplier_invoice_line_progressed(uuid, uuid). Apply operator_invoice_line_progression_rpcs.sql first.';
+  IF to_regprocedure('public.assert_current_operator_can_reconcile_order(uuid)') IS NULL THEN
+    RAISE EXCEPTION 'Prerequisite missing: public.assert_current_operator_can_reconcile_order(uuid). Apply operator_invoice_line_reconciliation_rpcs.sql first.';
+  END IF;
+
+  IF to_regclass('public.supplier_invoice_lines') IS NULL THEN
+    RAISE EXCEPTION 'Prerequisite missing: public.supplier_invoice_lines';
+  END IF;
+
+  IF to_regclass('public.supplier_invoices') IS NULL THEN
+    RAISE EXCEPTION 'Prerequisite missing: public.supplier_invoices';
   END IF;
 END $$;
 
@@ -37,8 +43,9 @@ SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $$
 DECLARE
-  v_line_id uuid;
-  v_count integer := 0;
+  v_requested_count integer := 0;
+  v_valid_count integer := 0;
+  v_updated_count integer := 0;
 BEGIN
   IF p_order_id IS NULL THEN
     RAISE EXCEPTION 'Order is required';
@@ -48,17 +55,85 @@ BEGIN
     RAISE EXCEPTION 'Select at least one invoice line to progress';
   END IF;
 
-  FOREACH v_line_id IN ARRAY p_line_ids LOOP
-    PERFORM public.operator_mark_supplier_invoice_line_progressed(p_order_id, v_line_id);
-    v_count := v_count + 1;
-  END LOOP;
+  IF EXISTS (
+    SELECT 1
+    FROM unnest(p_line_ids) AS requested(line_id)
+    WHERE requested.line_id IS NULL
+  ) THEN
+    RAISE EXCEPTION 'Selected invoice lines cannot contain a blank line id';
+  END IF;
 
-  RETURN v_count;
+  PERFORM public.assert_current_operator_can_reconcile_order(p_order_id);
+
+  SELECT COUNT(*)::integer
+    INTO v_requested_count
+  FROM (
+    SELECT DISTINCT requested.line_id
+    FROM unnest(p_line_ids) AS requested(line_id)
+  ) selected;
+
+  SELECT COUNT(*)::integer
+    INTO v_valid_count
+  FROM (
+    SELECT DISTINCT requested.line_id
+    FROM unnest(p_line_ids) AS requested(line_id)
+  ) selected
+  JOIN public.supplier_invoice_lines sil
+    ON sil.id = selected.line_id
+  JOIN public.supplier_invoices si
+    ON si.id = sil.supplier_invoice_id
+   AND si.order_id = p_order_id;
+
+  IF v_valid_count <> v_requested_count THEN
+    RAISE EXCEPTION 'One or more selected supplier invoice lines do not belong to this order';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM (
+      SELECT DISTINCT requested.line_id
+      FROM unnest(p_line_ids) AS requested(line_id)
+    ) selected
+    JOIN public.supplier_invoice_lines sil
+      ON sil.id = selected.line_id
+    JOIN public.supplier_invoices si
+      ON si.id = sil.supplier_invoice_id
+     AND si.order_id = p_order_id
+    WHERE sil.qty IS NULL
+       OR sil.qty < 0
+       OR sil.amount_inc_vat_gbp IS NULL
+       OR sil.amount_inc_vat_gbp < 0
+  ) THEN
+    RAISE EXCEPTION 'Selected lines require non-negative quantity and amount before progression';
+  END IF;
+
+  WITH selected AS (
+    SELECT DISTINCT requested.line_id
+    FROM unnest(p_line_ids) AS requested(line_id)
+  )
+  UPDATE public.supplier_invoice_lines sil
+  SET qty_confirmed = sil.qty,
+      amount_confirmed = sil.amount_inc_vat_gbp,
+      eligible_for_invoice_yn = 'Y',
+      updated_at = now()
+  FROM selected,
+       public.supplier_invoices si
+  WHERE sil.id = selected.line_id
+    AND si.id = sil.supplier_invoice_id
+    AND si.order_id = p_order_id;
+
+  GET DIAGNOSTICS v_updated_count = ROW_COUNT;
+
+  IF v_updated_count <> v_requested_count THEN
+    RAISE EXCEPTION 'Bulk progression did not update every selected supplier invoice line';
+  END IF;
+
+  RETURN v_updated_count;
 END;
 $$;
 
 COMMENT ON FUNCTION public.operator_bulk_mark_supplier_invoice_lines_progressed(uuid, uuid[]) IS
-'Bulk marks selected operator-owned supplier invoice lines as progressed/invoiceable. No child exception, funding, shipping, accounting, VAT, Sage, order status, or evidence-query side effects.';
+'Atomically validates and progresses the selected operator-owned supplier invoice lines in one set-based UPDATE. It does not loop through the single-line RPC and introduces no direct order-status, exception, funding, shipping, accounting, VAT, Sage, or evidence-query side effects.';
 
 REVOKE ALL ON FUNCTION public.operator_bulk_mark_supplier_invoice_lines_progressed(uuid, uuid[]) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.operator_bulk_mark_supplier_invoice_lines_progressed(uuid, uuid[]) TO authenticated;
