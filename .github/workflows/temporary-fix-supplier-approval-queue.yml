@@ -1,0 +1,30 @@
+name: Temporary supplier approval queue patch
+
+on:
+  push:
+    branches:
+      - agent/fix-supplier-approval-queue-classification
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-supplier-approval-queue-classification
+          fetch-depth: 0
+
+      - name: Apply narrow page correction
+        shell: python
+        run: |
+          from pathlib import Path
+
+          page = Path("app/internal/supplier-draft-ready/page.tsx")
+          text = page.read_text()
+
+          replacements = [
+              (
+                  "  review_status: string;\n  is_current_for_order: boolean;\n  orders: Order
