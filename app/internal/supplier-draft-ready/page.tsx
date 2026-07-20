@@ -575,7 +575,6 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
               <h2 className="mt-2 text-xl font-semibold">Supplier-side refund evidence routed from exceptions</h2>
               <p className="mt-2 max-w-3xl text-sm text-slate-600">
   Current refund and credit-note submissions are reviewed and approved through the dedicated credit/refund control page. Credit notes must complete OCR comparison before approval. DVA/card refund IN matching remains required to clear the money position.
-</p>
               </p>
             </div>
           </div>
