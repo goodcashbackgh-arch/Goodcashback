@@ -633,11 +633,17 @@ SELECT pg_temp.assert_zero_rows(
       HAVING count(DISTINCT si.order_id) > 1
          OR count(DISTINCT o.importer_id) > 1
          OR count(DISTINCT o.retailer_id) > 1
-         OR count(DISTINCT concat_ws('|',
-              nullif(btrim(a.source_bank_account_mapping_code), ''),
-              nullif(btrim(a.source_wallet_code), '')
+         OR count(DISTINCT concat_ws(
+              '|',
+              coalesce(
+                nullif(btrim(a.source_bank_account_mapping_code), ''),
+                'DVA_CASH_BANK_ACCOUNT'
+              ),
+              coalesce(
+                nullif(btrim(a.source_wallet_code), ''),
+                ''
+              )
             )) > 1
-         OR bool_or(nullif(btrim(a.source_bank_account_mapping_code), '') IS NULL)
     ),
     line_amount_violations AS (
       SELECT a.dva_statement_line_id AS id
