@@ -20,46 +20,70 @@ const flowLinks = [
     hint: "See what needs payment, matching, review or exception action",
   },
   {
+    href: "/internal/dva-reconciliation/control-summary",
+    step: "3A",
+    label: "Treasury summary",
+    hint: "Effective interpretation, amount-aware position, blockers and governed next action",
+  },
+  {
+    href: "/internal/dva-reconciliation/statement-interpretation",
+    step: "3B",
+    label: "Interpretation control",
+    hint: "Audited direction, classification and display correction while raw evidence remains immutable",
+  },
+  {
     href: "/internal/dva-reconciliation/workspace",
     step: "4",
     label: "Importer matching",
-    hint: "Importer payment matching for supplier charges, refunds, FX/payment variance, fees and hold items",
+    hint: "Supplier charges, refunds, FX/payment variance, fees and hold items",
   },
   {
     href: "/internal/dva-reconciliation/multi-invoice",
     step: "4A",
-    label: "Split invoice OUT",
-    hint: "Allocate one physical retailer OUT atomically across several supplier invoices from one order",
+    label: "Atomic split OUT",
+    hint: "Allocate one physical retailer OUT atomically across several invoices from one order",
+  },
+  {
+    href: "/internal/dva-reconciliation/sequential-allocation",
+    step: "4B",
+    label: "Sequential OUT",
+    hint: "Apply one physical OUT invoice-by-invoice under one locked order, importer, retailer and source",
   },
   {
     href: "/internal/dva-reconciliation/main-bank",
-    step: "4B",
+    step: "4C",
     label: "Main bank / shipper",
-    hint: "Main company bank OUT lines matched to approved shipper charge records",
+    hint: "Main-company-bank OUT matched to approved shipper AP or completion-loyalty transfer evidence",
   },
   {
     href: "/internal/funding",
     step: "5",
-    label: "Importer payment matching",
-    hint: "Apply customer/importer IN money to orders or credit",
+    label: "Order funding",
+    hint: "Apply eligible importer DVA/card IN value to orders or governed credit",
   },
   {
     href: "/internal/dva-reconciliation/allocations",
     step: "6",
-    label: "Matching & reversals",
-    hint: "Review or reverse active matching records",
+    label: "Allocation register",
+    hint: "Review active supplier, refund, fee, variance and hold matching records",
+  },
+  {
+    href: "/internal/dva-reconciliation/reversal-control",
+    step: "6A",
+    label: "Reversal control",
+    hint: "Reverse one incorrect economic-use row while preserving statement and allocation history",
   },
   {
     href: "/internal/dva-reconciliation/review-pack",
     step: "7",
     label: "Review pack",
-    hint: "Prove statement lines are explained before accounting readiness",
+    hint: "Prove each statement line is explained before accounting readiness",
   },
   {
     href: "/internal/dva-reconciliation/exception-actions",
     step: "8",
     label: "Exception actions",
-    hint: "Route refund/replacement outcomes to supervisor review",
+    hint: "Route refund and replacement outcomes to supervisor review",
   },
 ];
 
@@ -70,14 +94,16 @@ export default function DvaSupervisorFlowNav() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-sky-600">Supervisor payment flow</p>
-            <p className="mt-1 text-xs text-slate-500">Import statement truth → document read/commit → control hub → importer match, split-invoice OUT or main-bank shipper match → pay/review/reverse → review pack → exception actions → accounting readiness.</p>
+            <p className="mt-1 text-xs text-slate-500">
+              Import immutable statement truth → audited interpretation → amount-aware treasury control → governed funding, supplier, loyalty, shipper or exception lane → review/reverse → accounting readiness.
+            </p>
           </div>
           <Link href="/internal" className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50">
             Internal home
           </Link>
         </div>
 
-        <nav className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5 xl:grid-cols-10" aria-label="Supervisor payment flow">
+        <nav className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5 xl:grid-cols-12" aria-label="Supervisor payment flow">
           {flowLinks.map((link) => (
             <Link
               key={link.href}
