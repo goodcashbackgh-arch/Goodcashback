@@ -127,15 +127,16 @@ export async function reconcileDvaLineToOrderAction(formData: FormData) {
   const exceedsGap =
     Number.isFinite(parsedGap) && parsedGap >= 0 && reconciledAmount > parsedGap;
 
-  if (exceedsGap && !fxGainConfirmed) {
-    redirectWithFundingResult({
-      dva_error:
-        "Amount exceeds remaining gap. Confirm the surplus should be recognised as FX gain before reconciliation.",
-    });
-  }
-
   const { data, error } = exceedsGap
-    ? await supabase.rpc("staff_reconcile_dva_line_to_order_customer_fx_gain_v1", {
+    ? fxGainConfirmed
+      ? await supabase.rpc("staff_reconcile_dva_line_to_order_customer_fx_gain_v1", {
+        p_dva_statement_line_id: dvaStatementLineId,
+        p_order_id: orderId,
+        p_reconciled_gbp_amount: reconciledAmount,
+        p_match_suggestion_id: matchSuggestionId,
+        p_notes: notes,
+      })
+      : await supabase.rpc("staff_reconcile_dva_line_to_order_pending_surplus_v1", {
         p_dva_statement_line_id: dvaStatementLineId,
         p_order_id: orderId,
         p_reconciled_gbp_amount: reconciledAmount,
@@ -179,7 +180,14 @@ export async function reconcileDvaLineToOrderAction(formData: FormData) {
       ? Number((data as { fx_gain_gbp?: unknown }).fx_gain_gbp)
       : 0;
 
-  const message = Number.isFinite(fxGainAmount) && fxGainAmount > 0
+  const pendingSurplusAmount =
+    typeof data === "object" && data !== null && "pending_surplus_gbp" in data
+      ? Number((data as { pending_surplus_gbp?: unknown }).pending_surplus_gbp)
+      : 0;
+
+  const message = Number.isFinite(pendingSurplusAmount) && pendingSurplusAmount > 0
+    ? `Reconciled £${appliedAmount} DVA funding to order and preserved £${pendingSurplusAmount.toFixed(2)} as pending evidence-based surplus.`
+    : Number.isFinite(fxGainAmount) && fxGainAmount > 0
     ? `Reconciled £${appliedAmount} DVA funding to order and routed £${fxGainAmount.toFixed(2)} surplus as FX gain.`
     : `Reconciled £${appliedAmount} DVA funding to order.`;
 

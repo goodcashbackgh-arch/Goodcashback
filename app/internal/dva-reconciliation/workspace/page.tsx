@@ -358,15 +358,14 @@ export default async function DvaMatchingWorkspacePage({
   const supplierAllocationBlocker = (() => {
     if (!selectedTargetIsSupplierInvoice) return "Select a supplier invoice target before supplier allocation.";
     if (text(selectedLine?.direction) !== "out") return "Supplier invoice allocation requires an OUT statement line.";
-    if (num(selectedLine?.active_allocation_count) > 0) return "This statement line already has an active allocation and cannot be submitted again.";
     if (!bool(selectedTarget.raw.selectable_yn)) return text(selectedTarget.raw.blocker) || "Supplier invoice candidate is not selectable.";
-    if (selectedStatementAmount <= 0) return "Statement GBP amount must be positive.";
-    if (selectedSupplierRemaining + 0.005 < selectedStatementAmount) return `Supplier invoice remaining unmatched amount ${gbp(selectedSupplierRemaining)} does not cover the full statement amount ${gbp(selectedStatementAmount)}.`;
+    if (selectedStatementRemaining <= 0) return "Statement line has no remaining balance.";
+    if (selectedSupplierRemaining <= 0) return "Supplier invoice has no remaining unmatched balance.";
     return "";
   })();
   const canApplySupplierInvoice = selectedTargetIsSupplierInvoice && !supplierAllocationBlocker;
   const suggestedAllocation = selectedTargetIsSupplierInvoice
-    ? (canApplySupplierInvoice ? selectedStatementAmount : 0)
+    ? (canApplySupplierInvoice ? Math.min(selectedStatementRemaining, selectedSupplierRemaining) : 0)
     : selectedTarget
       ? Math.min(selectedStatementRemaining, selectedTargetAmount || selectedStatementRemaining)
       : 0;
@@ -624,9 +623,9 @@ export default async function DvaMatchingWorkspacePage({
                 <input type="hidden" name="return_path" value={activeReturnPath} />
                 <input type="hidden" name="dva_statement_line_id" value={activeLineId} />
                 <input type="hidden" name="supplier_invoice_id" value={selectedTarget?.id ?? ""} />
-                <input type="hidden" name="allocated_gbp_amount" value={selectedStatementAmount.toFixed(2)} />
+                <input type="hidden" name="allocated_gbp_amount" value={suggestedAllocation.toFixed(2)} />
                 <input type="hidden" name="notes" value="DVA/card workspace supplier invoice allocation." />
-                <button className="rounded-xl bg-slate-950 px-4 py-2 font-semibold text-white disabled:bg-slate-200 disabled:text-slate-500" type="submit" disabled={!canApplySupplierInvoice} title={supplierAllocationBlocker || undefined}>Allocate full OUT to supplier invoice</button>
+                <button className="rounded-xl bg-slate-950 px-4 py-2 font-semibold text-white disabled:bg-slate-200 disabled:text-slate-500" type="submit" disabled={!canApplySupplierInvoice} title={supplierAllocationBlocker || undefined}>Confirm supplier allocation</button>
               </form>
             ) : selectedTargetIsFinalBalance ? (
               <form action={allocateStatementLineToFinalBalancePaymentAction}>
