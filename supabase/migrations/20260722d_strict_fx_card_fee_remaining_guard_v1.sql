@@ -189,6 +189,9 @@ BEGIN
       v_unallocated_after;
   END IF;
 
+  -- Preserve the established RPC contract: confirmed_allocated_* reports the
+  -- confirmed dva_statement_line_allocations total. Main-bank consumption is
+  -- exposed separately and remains included in the unallocated calculation.
   RETURN jsonb_build_object(
     'ok', true,
     'allocation_id', v_allocation_id,
@@ -196,10 +199,10 @@ BEGIN
     'allocation_type', p_allocation_type,
     'allocated_gbp_amount', v_amount,
     'statement_gbp_amount', ROUND(v_line.amount_gbp_equivalent::numeric, 2),
-    'confirmed_residual_allocated_before_gbp', v_existing_residual_total,
+    'confirmed_allocated_before_gbp', v_existing_residual_total,
     'external_main_bank_consumed_gbp', v_external_consumed_total,
     'confirmed_unallocated_before_gbp', v_unallocated_before,
-    'confirmed_residual_allocated_after_gbp', v_confirmed_total_after,
+    'confirmed_allocated_after_gbp', v_confirmed_total_after,
     'confirmed_unallocated_after_gbp', v_unallocated_after,
     'balanced_yn', ABS(v_unallocated_after) < 0.01
   );

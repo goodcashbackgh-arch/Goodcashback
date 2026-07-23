@@ -92,8 +92,10 @@ BEGIN
 
   IF position('statement line has no remaining balance' in v_definition) = 0
      OR position('v_unallocated_before + 0.005' in v_definition) = 0
-     OR position('v_unallocated_after < -0.005' in v_definition) = 0 THEN
-    RAISE EXCEPTION 'REGRESSION: FX/card residual RPC is missing the strict penny-safe remaining guard';
+     OR position('v_unallocated_after < -0.005' in v_definition) = 0
+     OR position('confirmed_allocated_before_gbp' in v_definition) = 0
+     OR position('confirmed_allocated_after_gbp' in v_definition) = 0 THEN
+    RAISE EXCEPTION 'REGRESSION: FX/card residual RPC is missing the strict penny-safe guard or legacy JSON contract';
   END IF;
 
   IF to_regprocedure('public.staff_reverse_dva_statement_line_allocation(uuid,text)') IS NULL THEN
@@ -573,11 +575,26 @@ BEGIN
   -- The exact rounded £95.03 remaining balance must be accepted in full.
   v_result := public.staff_allocate_statement_line_to_fx_card_or_fee(
     v_bundle_out_id, 'fx_card_difference', 95.03, 'Regression final FX/card residual');
-  IF (v_result->>'allocated_gbp_amount')::numeric <> 95.03
+  IF NOT (v_result ?& ARRAY[
+       'ok',
+       'allocation_id',
+       'dva_statement_line_id',
+       'allocation_type',
+       'allocated_gbp_amount',
+       'statement_gbp_amount',
+       'confirmed_allocated_before_gbp',
+       'confirmed_unallocated_before_gbp',
+       'confirmed_allocated_after_gbp',
+       'confirmed_unallocated_after_gbp',
+       'balanced_yn'
+     ])
+     OR (v_result->>'allocated_gbp_amount')::numeric <> 95.03
+     OR (v_result->>'confirmed_allocated_before_gbp')::numeric <> 794.97
      OR (v_result->>'confirmed_unallocated_before_gbp')::numeric <> 95.03
+     OR (v_result->>'confirmed_allocated_after_gbp')::numeric <> 890.00
      OR (v_result->>'confirmed_unallocated_after_gbp')::numeric <> 0
      OR COALESCE((v_result->>'balanced_yn')::boolean, false) IS DISTINCT FROM true THEN
-    RAISE EXCEPTION 'REGRESSION supplier FX £95.03 acceptance: final residual did not balance line: %', v_result;
+    RAISE EXCEPTION 'REGRESSION supplier FX £95.03 acceptance or legacy JSON contract failed: %', v_result;
   END IF;
 
   -- At £0.00 remaining, a further real £0.01 write must be rejected.
