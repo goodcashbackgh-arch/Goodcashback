@@ -158,7 +158,7 @@ export default async function InternalShippingBatchDetailPage({
 
             <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
               <h2 className="text-xl font-semibold">Selected packages</h2>
-              <p className="mt-2 text-sm text-slate-600">Package-level movement truth only. Use Review delivery allocation to inspect or correct order/item allocation before shipping fee apportionment.</p>
+              <p className="mt-2 text-sm text-slate-600">Package quantities shown here are shipment-effective quantities. Review delivery allocation inspects or corrects order/item allocation before shipping fee apportionment. View package contents shows the original tracking package contents, which may include held or non-shipped items.</p>
               {packageRows.length === 0 ? (
                 <p className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">No active packages linked to this batch.</p>
               ) : (
@@ -209,7 +209,7 @@ export default async function InternalShippingBatchDetailPage({
                                 ) : null}
                                 {row.tracking_submission_id ? (
                                   <Link href={`/internal/shipping-control/package-contents/${row.tracking_submission_id}`} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50">
-                                    View contents
+                                    View package contents
                                   </Link>
                                 ) : null}
                               </div>
