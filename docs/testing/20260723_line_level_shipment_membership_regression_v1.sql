@@ -1,5 +1,5 @@
 -- Rollback-only regression for line-level shipment membership.
--- Apply migrations 20260723f, 20260723g and 20260723h before running.
+-- Apply migrations 20260723f, 20260723g, 20260723h and 20260723i before running.
 
 BEGIN;
 
@@ -36,6 +36,13 @@ BEGIN
      OR position('v_eligible_count' in v_def) = 0
      OR position('customer_line_has_active_hold_conflict_v1' in v_def) = 0 THEN
     RAISE EXCEPTION 'FAIL: shipment creation does not re-check and snapshot every eligible line';
+  END IF;
+
+  SELECT pg_get_functiondef('public.shipper_shipment_batch_effective_lines_v1(uuid)'::regprocedure)
+  INTO v_def;
+  IF position('p.active = true' in v_def) = 0
+     OR position('b.status <> ''voided''' in v_def) = 0 THEN
+    RAISE EXCEPTION 'FAIL: effective shipment lines do not enforce active package and non-voided batch guards';
   END IF;
 
   SELECT pg_get_functiondef('public.internal_shipping_apportionment_preview_v1(uuid)'::regprocedure)
@@ -155,6 +162,9 @@ BEGIN
   END IF;
 END $$;
 
-RAISE NOTICE 'PASS: line-level shipment membership cardinality, downstream scope and known Ninja hold assertions completed';
+DO $$
+BEGIN
+  RAISE NOTICE 'PASS: line-level shipment membership cardinality, downstream scope and known Ninja hold assertions completed';
+END $$;
 
 ROLLBACK;
