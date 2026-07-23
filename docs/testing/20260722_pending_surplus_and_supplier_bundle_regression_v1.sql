@@ -667,7 +667,13 @@ BEGIN
   END IF;
 
   IF (SELECT COUNT(DISTINCT a.order_id) FROM public.dva_statement_line_allocations a WHERE a.dva_statement_line_id = v_bundle_out_id AND a.allocation_type = 'supplier_invoice' AND a.allocation_status = 'confirmed') <> 1
-     OR (SELECT MIN(a.order_id) FROM public.dva_statement_line_allocations a WHERE a.dva_statement_line_id = v_bundle_out_id AND a.allocation_type = 'supplier_invoice' AND a.allocation_status = 'confirmed') IS DISTINCT FROM v_bundle_order_id
+     OR (SELECT a.order_id
+         FROM public.dva_statement_line_allocations a
+         WHERE a.dva_statement_line_id = v_bundle_out_id
+           AND a.allocation_type = 'supplier_invoice'
+           AND a.allocation_status = 'confirmed'
+         ORDER BY a.id
+         LIMIT 1) IS DISTINCT FROM v_bundle_order_id
      OR (SELECT COUNT(DISTINCT a.source_bank_account_mapping_code) FROM public.dva_statement_line_allocations a WHERE a.dva_statement_line_id = v_bundle_out_id AND a.allocation_type = 'supplier_invoice' AND a.allocation_status = 'confirmed') <> 1
      OR EXISTS (
        SELECT 1
