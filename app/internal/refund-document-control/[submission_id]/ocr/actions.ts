@@ -18,6 +18,15 @@ function redirectBack(submissionId: string, params: Record<string, string>): nev
   redirect(`/internal/refund-document-control/${submissionId}/ocr?${query.toString()}`);
 }
 
+function revalidateRefundDocumentControl(submissionId: string) {
+  revalidatePath(`/internal/refund-document-control/${submissionId}/ocr`);
+  revalidatePath(`/internal/refund-document-control/${submissionId}`);
+  revalidatePath("/internal/refund-document-control");
+  revalidatePath("/internal/supplier-draft-ready");
+  revalidatePath("/internal/status-control/pre-sage-financial-readiness");
+  revalidatePath("/internal/status-control/supplier-credit-payload-preview");
+}
+
 export async function correctRefundCreditNoteHeaderAction(formData: FormData) {
   const submissionId = asString(formData.get("refund_evidence_submission_id"));
   const creditNoteRef = asString(formData.get("credit_note_ref"));
@@ -55,12 +64,41 @@ export async function correctRefundCreditNoteHeaderAction(formData: FormData) {
   if (error) redirectBack(submissionId, { error: error.message });
   if (!data?.ok) redirectBack(submissionId, { error: "Credit-note header correction failed." });
 
-  revalidatePath(`/internal/refund-document-control/${submissionId}/ocr`);
-  revalidatePath(`/internal/refund-document-control/${submissionId}`);
-  revalidatePath("/internal/refund-document-control");
-  revalidatePath("/internal/supplier-draft-ready");
-  revalidatePath("/internal/status-control/pre-sage-financial-readiness");
+  revalidateRefundDocumentControl(submissionId);
 
   const resultStatus = typeof data.match_status === "string" ? data.match_status : "recalculated";
   redirectBack(submissionId, { success: `Credit-note header corrected. Match status: ${resultStatus}.` });
+}
+
+export async function setRefundDocumentLineInclusionAction(formData: FormData) {
+  const submissionId = asString(formData.get("refund_evidence_submission_id"));
+  const action = asString(formData.get("inclusion_action"));
+  const lineIds = formData.getAll("line_ids").map((value) => asString(value)).filter(Boolean);
+  const reason = asString(formData.get("inclusion_reason"));
+
+  if (!submissionId) redirect("/internal/refund-document-control?error=Missing+refund+evidence+submission");
+  if (!["exclude", "restore"].includes(action)) redirectBack(submissionId, { error: "Choose exclude or restore." });
+  if (lineIds.length === 0) redirectBack(submissionId, { error: `Select at least one line to ${action}.` });
+  if (!reason) redirectBack(submissionId, { error: `A reason is required to ${action} refund-document lines.` });
+
+  const supabase = await createClient();
+  const { data, error } = await supabase.rpc("staff_set_refund_line_inclusion_v1", {
+    p_refund_evidence_submission_id: submissionId,
+    p_line_ids: lineIds,
+    p_include: action === "restore",
+    p_reason: reason,
+  });
+
+  if (error) redirectBack(submissionId, { error: error.message });
+  if (!data?.ok) redirectBack(submissionId, { error: `Failed to ${action} refund-document lines.` });
+
+  revalidateRefundDocumentControl(submissionId);
+
+  const changedCount = Number(data.changed_line_count ?? lineIds.length);
+  const acceptedGross = Number(data.accepted_supplier_credit_gbp ?? 0);
+  const status = typeof data.match_status === "string" ? data.match_status : "recalculated";
+  const verb = action === "restore" ? "Restored" : "Excluded";
+  redirectBack(submissionId, {
+    success: `${verb} ${changedCount} line(s). Accepted supplier credit £${acceptedGross.toFixed(2)}. Match status: ${status}.`,
+  });
 }

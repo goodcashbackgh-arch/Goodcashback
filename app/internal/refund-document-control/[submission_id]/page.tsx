@@ -48,6 +48,7 @@ type RefundLine = {
   qty: number | null;
   amount_gbp: number | null;
   progressed_to_supplier_control_yn: boolean | null;
+  included_in_supplier_credit_yn: boolean | null;
 };
 
 type LineCode = {
@@ -94,6 +95,8 @@ type Totals = {
   all_progressed_lines_coded_yn: boolean | null;
   gross_reconciled_to_document_yn: boolean | null;
   gross_variance_gbp: number | null;
+  included_line_count?: number | null;
+  excluded_line_count?: number | null;
 };
 
 type Dispute = {
@@ -251,11 +254,13 @@ export default async function RefundDocumentControlPage({
 
   const { data: linesRaw, error: linesError } = await supabase
     .from("dispute_refund_document_lines")
-    .select("id, line_order, line_source, description, qty, amount_gbp, progressed_to_supplier_control_yn")
+    .select("id, line_order, line_source, description, qty, amount_gbp, progressed_to_supplier_control_yn, included_in_supplier_credit_yn")
     .eq("refund_evidence_submission_id", submissionId)
     .order("line_order", { ascending: true });
 
-  const lines = (linesRaw ?? []) as RefundLine[];
+  const allEvidenceLines = (linesRaw ?? []) as RefundLine[];
+  const lines = allEvidenceLines.filter((line) => line.included_in_supplier_credit_yn !== false);
+  const excludedLineCount = allEvidenceLines.length - lines.length;
   const lineIds = lines.map((line) => line.id);
   const unreleasedLines = lines.filter((line) => !line.progressed_to_supplier_control_yn);
   const progressedLines = lines.filter((line) => line.progressed_to_supplier_control_yn);
@@ -275,7 +280,7 @@ export default async function RefundDocumentControlPage({
 
   const { data: totalsRaw } = await supabase
     .from("dispute_refund_document_accounting_totals_vw")
-    .select("accepted_document_gross_gbp, total_coded_net_gbp, total_coded_vat_gbp, total_coded_gross_gbp, adjustment_gross_gbp, progressed_line_count, coded_line_count, adjustment_line_count, all_progressed_lines_coded_yn, gross_reconciled_to_document_yn, gross_variance_gbp")
+    .select("accepted_document_gross_gbp, total_coded_net_gbp, total_coded_vat_gbp, total_coded_gross_gbp, adjustment_gross_gbp, progressed_line_count, coded_line_count, adjustment_line_count, all_progressed_lines_coded_yn, gross_reconciled_to_document_yn, gross_variance_gbp, included_line_count, excluded_line_count")
     .eq("refund_evidence_submission_id", submissionId)
     .maybeSingle();
 
@@ -286,13 +291,19 @@ export default async function RefundDocumentControlPage({
   const totals = totalsRaw as Totals | null;
   const retailer = first(order?.retailers)?.name ?? "—";
   const importer = first(order?.importers)?.company_name ?? "—";
-  const acceptedGross = num(totals?.accepted_document_gross_gbp ?? submission.ocr_credit_note_total_gbp ?? submission.expected_credit_note_total_gbp ?? submission.captured_refund_amount_abs_gbp ?? submission.expected_exception_amount_abs_gbp);
+  const acceptedGross = num(totals?.accepted_document_gross_gbp ?? submission.ocr_credit_note_total_gbp ?? submission.expected_credit_note_total_gbp ?? submission.captured_refund_amount_abs_gbp);
   const codedNet = num(totals?.total_coded_net_gbp);
   const codedVat = num(totals?.total_coded_vat_gbp);
   const codedGross = num(totals?.total_coded_gross_gbp);
   const grossVariance = num(totals?.gross_variance_gbp ?? codedGross - acceptedGross);
   const grossOk = Math.abs(grossVariance) <= 0.01;
-  const canApprove = Boolean(totals?.all_progressed_lines_coded_yn && totals?.gross_reconciled_to_document_yn && num(totals?.progressed_line_count) > 0);
+  const canApprove = Boolean(
+    lines.length > 0 &&
+    unreleasedLines.length === 0 &&
+    totals?.all_progressed_lines_coded_yn &&
+    totals?.gross_reconciled_to_document_yn &&
+    num(totals?.progressed_line_count) > 0
+  );
   const allReleased = lines.length > 0 && unreleasedLines.length === 0;
 
   return (
@@ -308,8 +319,9 @@ export default async function RefundDocumentControlPage({
               <p className="mt-1 text-sm text-slate-600">Staff: {staff.full_name} · {staff.role_type}</p>
             </div>
             <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-950 lg:w-[430px]">
-              <p className="font-semibold">Same control pattern as supplier invoice coding</p>
-              <p className="mt-1 leading-6">This page codes a supplier credit / credit-note-equivalent document. The Sage payload should later treat it as a credit, not a normal AP invoice.</p>
+              <p className="font-semibold">Included supplier-credit scope only</p>
+              <p className="mt-1 leading-6">This page releases and codes only evidence retained in the accepted supplier credit. Excluded evidence remains audit-only on the OCR page.</p>
+              <Link href={`/internal/refund-document-control/${submissionId}/ocr`} className="mt-3 inline-flex font-semibold text-sky-800 underline underline-offset-2">Review included / excluded evidence</Link>
             </div>
           </div>
           {qp.success ? <p className="mt-4 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">{qp.success}</p> : null}
@@ -357,17 +369,17 @@ export default async function RefundDocumentControlPage({
         <section className="rounded-3xl border bg-white p-5 shadow-sm">
           <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
             <div>
-              <h2 className="text-xl font-semibold">Supplier credit document lines</h2>
-              <p className="mt-2 text-sm text-slate-600">Same concept as progressing clean supplier invoice lines: release the clean refund/credit lines before coding them.</p>
+              <h2 className="text-xl font-semibold">Included supplier credit document lines</h2>
+              <p className="mt-2 text-sm text-slate-600">Only included evidence is available here. Excluded duplicate or irrelevant lines remain on the OCR audit page and cannot be released or coded.</p>
             </div>
-            <div className="text-sm text-slate-600">Lines {lines.length} · Released {progressedLines.length}</div>
+            <div className="text-sm text-slate-600">Included {lines.length} · Excluded {excludedLineCount} · Released {progressedLines.length}</div>
           </div>
 
           {linesError ? <p className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-900">Could not read refund document lines: {linesError.message}</p> : null}
 
           {lines.length === 0 ? (
             <p className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-              No structured refund document lines exist yet. For credit notes, OCR/compare must create lines first. For refund proof/no-document, the operator prefilled lines should appear here.
+              No included refund-document lines are available. Complete OCR and review line inclusion before release.
             </p>
           ) : (
             <form action={releaseRefundDocumentLinesAction} className="mt-4 space-y-4">
@@ -388,7 +400,7 @@ export default async function RefundDocumentControlPage({
                   <tbody>
                     {lines.map((line) => (
                       <tr key={line.id} className="border-t">
-                        <td className="p-3"><input type="checkbox" name="line_ids" value={line.id} defaultChecked={Boolean(line.progressed_to_supplier_control_yn)} /></td>
+                        <td className="p-3"><input type="checkbox" name="line_ids" value={line.id} defaultChecked={Boolean(line.progressed_to_supplier_control_yn)} disabled={Boolean(line.progressed_to_supplier_control_yn)} /></td>
                         <td className="p-3">{line.line_order}</td>
                         <td className="p-3">{statusLabel(line.line_source)}</td>
                         <td className="p-3 font-medium">{line.description}</td>
@@ -400,14 +412,16 @@ export default async function RefundDocumentControlPage({
                   </tbody>
                 </table>
               </div>
-              <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-                <label className="block flex-1 text-sm font-semibold text-slate-700">
-                  Release notes optional
-                  <textarea name="notes" rows={2} className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
-                </label>
-                <button className="rounded-xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white">Release selected lines</button>
-              </div>
-              {allReleased ? <p className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900">All refund document lines are released to supplier control.</p> : null}
+              {unreleasedLines.length > 0 ? (
+                <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+                  <label className="block flex-1 text-sm font-semibold text-slate-700">
+                    Release notes optional
+                    <textarea name="notes" rows={2} className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
+                  </label>
+                  <button className="rounded-xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white">Release selected included lines</button>
+                </div>
+              ) : null}
+              {allReleased ? <p className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900">All included refund-document lines are released to supplier control.</p> : null}
             </form>
           )}
         </section>
@@ -416,31 +430,20 @@ export default async function RefundDocumentControlPage({
           <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
             <div>
               <h2 className="text-xl font-semibold">Accounting coding</h2>
-              <p className="mt-2 text-sm text-slate-600">Code released supplier credit/refund lines using the same net/VAT/gross discipline as supplier invoice coding. Gross is locked to the refund/credit line amount.</p>
+              <p className="mt-2 text-sm text-slate-600">Code released included supplier-credit lines using the existing net/VAT/gross discipline. Gross remains locked to the included evidence amount.</p>
             </div>
             <div className="text-sm text-slate-600">Released {progressedLines.length} · Coded {totals?.coded_line_count ?? 0}</div>
           </div>
 
           {progressedLines.length === 0 ? (
-            <p className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">Release at least one refund document line before coding.</p>
+            <p className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">Release at least one included refund-document line before coding.</p>
           ) : (
             <form action={saveAllRefundDocumentLineAccountingCodesAction} className="mt-5 overflow-x-auto rounded-2xl border">
               <input type="hidden" name="refund_evidence_submission_id" value={submission.id} />
               <table className="min-w-[1450px] text-left text-sm">
                 <thead className="bg-slate-100 text-xs uppercase text-slate-500">
                   <tr>
-                    <th className="p-2">Line</th>
-                    <th className="p-2">Description</th>
-                    <th className="p-2">SKU</th>
-                    <th className="p-2">Size</th>
-                    <th className="p-2 text-right">Gross</th>
-                    <th className="p-2">Nominal</th>
-                    <th className="p-2">Sage ledger</th>
-                    <th className="p-2">VAT rate</th>
-                    <th className="p-2">Net</th>
-                    <th className="p-2">VAT</th>
-                    <th className="p-2">Review?</th>
-                    <th className="p-2">Reason</th>
+                    <th className="p-2">Line</th><th className="p-2">Description</th><th className="p-2">SKU</th><th className="p-2">Size</th><th className="p-2 text-right">Gross</th><th className="p-2">Nominal</th><th className="p-2">Sage ledger</th><th className="p-2">VAT rate</th><th className="p-2">Net</th><th className="p-2">VAT</th><th className="p-2">Review?</th><th className="p-2">Reason</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -458,11 +461,7 @@ export default async function RefundDocumentControlPage({
                         <td className="p-2"><input name={`nominal_code_${line.id}`} defaultValue={code?.nominal_code ?? ""} className="w-24 rounded-lg border px-2 py-1" /></td>
                         <td className="p-2"><input name={`sage_ledger_account_id_${line.id}`} defaultValue={code?.sage_ledger_account_id ?? ""} className="w-36 rounded-lg border px-2 py-1" /></td>
                         <td className="p-2">
-                          <select name={`vat_rate_percent_${line.id}`} defaultValue={String(rate)} className="w-32 rounded-lg border px-2 py-1">
-                            <option value="20">20% std</option>
-                            <option value="5">5% reduced</option>
-                            <option value="0">0%</option>
-                          </select>
+                          <select name={`vat_rate_percent_${line.id}`} defaultValue={String(rate)} className="w-32 rounded-lg border px-2 py-1"><option value="20">20% std</option><option value="5">5% reduced</option><option value="0">0%</option></select>
                           <input type="hidden" name={`tax_rate_label_${line.id}`} value={code?.tax_rate_label ?? taxLabel(rate)} />
                           <input type="hidden" name={`tax_rate_id_${line.id}`} value={code?.tax_rate_id ?? taxId(rate)} />
                         </td>
@@ -481,8 +480,8 @@ export default async function RefundDocumentControlPage({
         </section>
 
         <section className="rounded-3xl border bg-white p-5 shadow-sm">
-          <h2 className="text-xl font-semibold">Manual accounting adjustment rows</h2>
-          <p className="mt-2 text-sm text-slate-600">Use this for rounding, delivery/refund adjustments, or controlled credit adjustments, same as supplier invoice coding adjustments.</p>
+          <h2 className="text-xl font-semibold">Accounting reconciliation rows</h2>
+          <p className="mt-2 text-sm text-slate-600">Use only for controlled accounting reconciliation such as rounding. Do not use these rows to remove duplicate evidence or manufacture accepted supplier credit.</p>
 
           {adjustments.length > 0 ? (
             <div className="mt-4 overflow-x-auto rounded-2xl border">
@@ -491,19 +490,8 @@ export default async function RefundDocumentControlPage({
                 <tbody>
                   {adjustments.map((line) => (
                     <tr key={line.id} className="border-t bg-amber-50">
-                      <td className="p-3 font-medium">{line.description}</td>
-                      <td className="p-3">{line.nominal_code ?? "—"}</td>
-                      <td className="p-3">{line.sage_ledger_account_id ?? "—"}</td>
-                      <td className="p-3 text-right">{gbp(line.net_amount_gbp)}</td>
-                      <td className="p-3 text-right">{gbp(line.vat_amount_gbp)}</td>
-                      <td className="p-3 text-right font-semibold">{gbp(line.gross_amount_gbp)}</td>
-                      <td className="p-3">
-                        <form action={deleteRefundDocumentAccountingAdjustmentLineAction}>
-                          <input type="hidden" name="refund_evidence_submission_id" value={submission.id} />
-                          <input type="hidden" name="adjustment_line_id" value={line.id} />
-                          <button className="rounded-lg border border-rose-300 bg-rose-50 px-3 py-1 font-semibold text-rose-800">Delete</button>
-                        </form>
-                      </td>
+                      <td className="p-3 font-medium">{line.description}</td><td className="p-3">{line.nominal_code ?? "—"}</td><td className="p-3">{line.sage_ledger_account_id ?? "—"}</td><td className="p-3 text-right">{gbp(line.net_amount_gbp)}</td><td className="p-3 text-right">{gbp(line.vat_amount_gbp)}</td><td className="p-3 text-right font-semibold">{gbp(line.gross_amount_gbp)}</td>
+                      <td className="p-3"><form action={deleteRefundDocumentAccountingAdjustmentLineAction}><input type="hidden" name="refund_evidence_submission_id" value={submission.id} /><input type="hidden" name="adjustment_line_id" value={line.id} /><button className="rounded-lg border border-rose-300 bg-rose-50 px-3 py-1 font-semibold text-rose-800">Delete</button></form></td>
                     </tr>
                   ))}
                 </tbody>
@@ -513,7 +501,7 @@ export default async function RefundDocumentControlPage({
 
           <form action={addRefundDocumentAccountingAdjustmentLineAction} className="mt-4 grid gap-3 md:grid-cols-[1fr_110px_90px_110px_140px_120px_120px_auto]">
             <input type="hidden" name="refund_evidence_submission_id" value={submission.id} />
-            <input name="description" className="rounded-lg border px-2 py-2 text-sm" placeholder="Rounding / adjustment" />
+            <input name="description" className="rounded-lg border px-2 py-2 text-sm" placeholder="Rounding / accounting reconciliation" />
             <input name="sku" className="rounded-lg border px-2 py-2 text-sm" placeholder="SKU" />
             <input name="size" className="rounded-lg border px-2 py-2 text-sm" placeholder="Size" />
             <input name="nominal_code" className="rounded-lg border px-2 py-2 text-sm" placeholder="Nominal" />
@@ -528,8 +516,8 @@ export default async function RefundDocumentControlPage({
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <div>
               <h2 className="text-xl font-semibold">Approve current</h2>
-              <p className="mt-1 text-sm text-slate-600">Approval is blocked unless all released lines are coded and gross reconciles to the accepted refund document amount.</p>
-              <p className="mt-2 text-sm">Variance: <strong>{gbp(grossVariance)}</strong> · Ready: <strong>{canApprove ? "Yes" : "No"}</strong></p>
+              <p className="mt-1 text-sm text-slate-600">Approval is blocked unless every included line is released, every released included line is coded, and coded gross reconciles to the accepted supplier-credit amount.</p>
+              <p className="mt-2 text-sm">Included: <strong>{lines.length}</strong> · Excluded audit-only: <strong>{excludedLineCount}</strong> · Variance: <strong>{gbp(grossVariance)}</strong> · Ready: <strong>{canApprove ? "Yes" : "No"}</strong></p>
             </div>
             <form action={approveRefundDocumentCurrentAction} className="flex flex-col gap-2 md:w-[420px]">
               <input type="hidden" name="refund_evidence_submission_id" value={submission.id} />

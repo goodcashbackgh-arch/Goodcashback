@@ -1,6 +1,6 @@
 # Current Locked Governing Pack — Multi Tenant Platform Build
 
-Status: current control reference for UI/API wiring after the live Day 2–9 backend pass, updated for the final settlement, partial-coverage, non-physical line-resolution, cash-backed completion-loyalty reward control, shipper customer-hold hard-block later control, resetless loyalty Sage-batch retirement, completion-loyalty OUT/IN pairing UX control, bulk loyalty funding-pot posting clarification, multi-reward OUT reservation UX, completion-loyalty accounting-controls page UX, and completion-loyalty internal-transfer Sage journal posting/batch-detail boundary.
+Status: current control reference for UI/API wiring after the live Day 2–9 backend pass, updated for the final settlement, partial-coverage, non-physical line-resolution, cash-backed completion-loyalty reward control, shipper customer-hold hard-block later control, resetless loyalty Sage-batch retirement, completion-loyalty OUT/IN pairing UX control, bulk loyalty funding-pot posting clarification, multi-reward OUT reservation UX, completion-loyalty accounting-controls page UX, completion-loyalty internal-transfer Sage journal posting/batch-detail boundary, and refund-document line inclusion / accepted supplier-credit total control.
 
 ## Source of truth
 
@@ -70,6 +70,7 @@ Later addendums and current build contracts:
 15. Completion Loyalty Accounting Controls Page UX Addendum v1 (`docs/governing-pack/ui/COMPLETION_LOYALTY_ACCOUNTING_CONTROLS_PAGE_UX_ADDENDUM_v1.md`) — locks the operational queue layout for `/internal/accounting-command-centre/loyalty-controls`: action-first filters/lanes, separate but not visually duplicated applied-settlement and internal-transfer Step 3 lanes, compact evidence sections, compact internal-transfer candidate cards, and journal-batch detail as an approval/posting workbench before audit detail.
 16. Completion Loyalty Sage Accounting Posting Addendum v1 (`docs/governing-pack/ui/COMPLETION_LOYALTY_SAGE_ACCOUNTING_POSTING_ADDENDUM_v1.md`) — locks the completion-loyalty Sage endpoint boundaries: applied settlement uses the existing contact-payment/allocation/journal primitives; internal-transfer posting is a Sage journal batch using `POST /journals`, dedicated internal-transfer source rows, request/response logging, and the existing journal live gate `SAGE_LIVE_BANK_GL_POSTING_ENABLED`.
 17. Completion Loyalty Internal-Transfer Journal Flag Clarification v1 (`docs/governing-pack/ui/COMPLETION_LOYALTY_INTERNAL_TRANSFER_JOURNAL_FLAG_CLARIFICATION_v1.md`) — clarifies that `/journals` is the reused Sage endpoint and that MVP live posting uses the existing bank/GL journal gate rather than a new Vercel variable per posting category.
+18. Refund Document Line Inclusion and Supplier Credit Total Control Addendum v1 (`docs/governing-pack/architecture/REFUND_DOCUMENT_LINE_INCLUSION_AND_SUPPLIER_CREDIT_TOTAL_CONTROL_ADDENDUM_v1.md`) — locks reversible audited inclusion/exclusion of refund-document lines, formal credit-note OCR alignment, one accepted supplier-credit amount for coding/refund-IN/Sage, and the boundary between evidence lines and accounting-only adjustments.
 
 ## Non-negotiable UI wiring rules
 
@@ -102,6 +103,7 @@ Later addendums and current build contracts:
 27. Completion-loyalty internal-transfer batch detail must present itself as an internal-transfer Sage journal batch, show endpoint `/journals`, expose `Approve batch` and `Post Sage journal batch` before audit detail, and keep payload/response/audit logs collapsed by default.
 28. Completion-loyalty internal-transfer live posting must use the existing journal-style live gate `SAGE_LIVE_BANK_GL_POSTING_ENABLED`. Do not create a new Vercel environment variable per posting category, and do not enable this journal lane through generic cash-posting flags.
 29. New database RPC/function names must stay within PostgreSQL identifier limits. Do not rely on silent truncation of long names; add explicit short wrappers where needed.
+30. Refund-document evidence rows must never be deleted merely to remove a duplicate from supplier-credit processing. Use the locked audited inclusion/exclusion control, and use one accepted supplier-credit total consistently for release, coding, refund-IN matching and Sage.
 
 ## Funding page read-only sources
 
