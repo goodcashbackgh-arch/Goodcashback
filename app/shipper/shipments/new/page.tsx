@@ -67,7 +67,7 @@ export default async function NewShipperShipmentPage({
           <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">Create shipment batch</h1>
           <p className="mt-2 text-sm text-slate-600">{shipperUser.full_name} · {shipper?.name ?? "Shipper"}</p>
           <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-600">
-            Select received-clean packages for one importer and group them under a booking ref. This creates package/shipment truth only. It does not create COS/BOL/POD, post to Sage, clear VAT, or lock item-content allocation.
+            Select received-clean packages for one importer and group them under a booking ref. The quantity and contents shown here are shipment eligible after active hold conflicts are removed. This does not create COS/BOL/POD, post to Sage, clear VAT, or change receipt history.
           </p>
           {queryParams.success ? <p className="mt-4 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">{queryParams.success}</p> : null}
           {queryParams.error ? <p className="mt-4 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-900">{queryParams.error}</p> : null}
@@ -79,7 +79,7 @@ export default async function NewShipperShipmentPage({
             <div>
               <h2 className="text-xl font-semibold">Eligible received packages</h2>
               <p className="mt-2 text-sm leading-6 text-slate-600">
-                Only latest received-clean packages not already in an active shipment batch are shown. Contents preview shows description and quantity only — no values.
+                Only latest received-clean packages not already in an active shipment batch are shown. Shipment-eligible contents show description and quantity only — no values.
               </p>
             </div>
             <form action="/shipper/shipments/new" className="flex flex-wrap items-end gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
@@ -138,8 +138,8 @@ export default async function NewShipperShipmentPage({
                       <th className="px-3 py-2 text-left">Retailer</th>
                       <th className="px-3 py-2 text-left">Tracking/package</th>
                       <th className="px-3 py-2 text-left">Date</th>
-                      <th className="px-3 py-2 text-right">Allocated qty</th>
-                      <th className="px-3 py-2 text-left">Contents</th>
+                      <th className="px-3 py-2 text-right">Eligible qty</th>
+                      <th className="px-3 py-2 text-left">Shipment-eligible contents</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">

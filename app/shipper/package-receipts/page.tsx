@@ -2,7 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 import { recordPackageReceiptAction } from "../actions";
-import { PackageContentsPreview } from "../PackageContentsPreview";
+import { OriginalPackageContentsPreview } from "../OriginalPackageContentsPreview";
 
 type PackageRow = {
   order_id: string;
@@ -23,11 +23,11 @@ type PackageRow = {
 
 function receiptLabel(status: string | null | undefined) {
   switch (status) {
-    case "received_clean": return "Received clean";
-    case "received_damaged": return "Received damaged";
-    case "held_query": return "Held / query";
-    case "not_received": return "Not received";
-    default: return "Awaiting receipt";
+    case "received_clean": return "Package received clean";
+    case "received_damaged": return "Package received damaged";
+    case "held_query": return "Package held / query";
+    case "not_received": return "Package not received";
+    default: return "Awaiting package receipt";
   }
 }
 
@@ -74,7 +74,7 @@ export default async function ShipperPackageReceiptsPage({
           <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">Package receipt actions</h1>
           <p className="mt-2 text-sm text-slate-600">{shipperUser.full_name} · {shipper?.name ?? "Shipper"}</p>
           <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-600">
-            Record package-level physical truth only. Contents preview shows description and quantity only. This does not lock operator/supervisor item-content allocation and does not create shipment, final export evidence or downstream accounting effects.
+            Record package-level physical truth only. Original contents remain visible even when an item later moves to a hold, return or refund path. This does not create a shipment, final export evidence or downstream accounting effects.
           </p>
           {queryParams.success ? <p className="mt-4 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">{queryParams.success}</p> : null}
           {queryParams.error ? <p className="mt-4 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-900">{queryParams.error}</p> : null}
@@ -94,13 +94,13 @@ export default async function ShipperPackageReceiptsPage({
                       <p className="text-sm font-semibold text-slate-900">{row.courier_name ?? "Courier"} · {row.tracking_ref}</p>
                       <p className="mt-1 text-sm text-slate-600">{row.order_ref ?? row.order_id} · {row.retailer_name ?? "Retailer"}</p>
                       <p className="mt-1 text-sm text-slate-600">{row.importer_name ?? "Importer"} · tracking date {row.tracking_date ?? "—"}</p>
-                      <p className="mt-1 text-sm text-slate-600">Allocated qty: {Number(row.allocated_qty ?? 0)}</p>
+                      <p className="mt-1 text-sm text-slate-600">Original package allocation: {Number(row.allocated_qty ?? 0)} unit{Number(row.allocated_qty ?? 0) === 1 ? "" : "s"}</p>
                     </div>
                     <span className={`w-fit rounded-full px-3 py-1 text-xs font-semibold ${receiptClass(row.latest_receipt_status)}`}>{receiptLabel(row.latest_receipt_status)}</span>
                   </div>
 
                   <div className="mt-3">
-                    <PackageContentsPreview trackingSubmissionId={row.tracking_submission_id} />
+                    <OriginalPackageContentsPreview trackingSubmissionId={row.tracking_submission_id} />
                   </div>
 
                   <div className="mt-3 flex flex-wrap gap-3 text-sm">
@@ -114,12 +114,12 @@ export default async function ShipperPackageReceiptsPage({
                     <input type="hidden" name="tracking_submission_id" value={row.tracking_submission_id ?? ""} />
                     <div className="grid gap-3 md:grid-cols-2">
                       <label className="space-y-1 text-sm">
-                        <span className="text-xs uppercase tracking-wide text-slate-500">Receipt status</span>
+                        <span className="text-xs uppercase tracking-wide text-slate-500">Package receipt status</span>
                         <select name="receipt_status" defaultValue={row.latest_receipt_status ?? "received_clean"} className="w-full rounded-xl border border-slate-300 px-3 py-2">
-                          <option value="received_clean">Received clean</option>
-                          <option value="received_damaged">Received damaged</option>
-                          <option value="held_query">Held / query</option>
-                          <option value="not_received">Not received</option>
+                          <option value="received_clean">Package received clean</option>
+                          <option value="received_damaged">Package received damaged</option>
+                          <option value="held_query">Package held / query</option>
+                          <option value="not_received">Package not received</option>
                         </select>
                       </label>
                       <label className="space-y-1 text-sm">
