@@ -62,8 +62,8 @@ export async function allocateNextSupplierInvoiceAction(formData: FormData) {
   }
 
   const supabase = await requireSupervisorOrAdmin();
-  const { data, error } = await (supabase as any).rpc(
-    "staff_allocate_statement_line_to_supplier_invoice_incremental_v1",
+  const { data, error } = await supabase.rpc(
+    "staff_allocate_statement_line_to_supplier_invoice_incremental_v",
     {
       p_dva_statement_line_id: statementLineId,
       p_supplier_invoice_id: supplierInvoiceId,

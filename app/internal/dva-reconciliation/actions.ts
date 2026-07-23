@@ -367,20 +367,23 @@ export async function allocateStatementLineToSupplierInvoiceAction(formData: For
   }
 
   const statementLineId = readString(formData, "dva_statement_line_id");
-  const supplierInvoiceId = readString(formData, "supplier_invoice_id");
+  const supplierInvoiceIds = Array.from(new Set(
+    formData
+      .getAll("supplier_invoice_ids")
+      .map((value) => String(value).trim())
+      .filter(Boolean),
+  ));
+  const legacySupplierInvoiceId = readString(formData, "supplier_invoice_id");
+  if (supplierInvoiceIds.length === 0 && legacySupplierInvoiceId) {
+    supplierInvoiceIds.push(legacySupplierInvoiceId);
+  }
   const amountRaw = readString(formData, "allocated_gbp_amount");
   const notes = readString(formData, "notes") || null;
   const allocatedAmount = Number(amountRaw);
 
-  if (!statementLineId || !supplierInvoiceId) {
+  if (!statementLineId || supplierInvoiceIds.length === 0) {
     redirectWithAllocationResult({
       allocation_error: "Missing statement line or supplier invoice reference.",
-    }, path);
-  }
-
-  if (!Number.isFinite(allocatedAmount) || allocatedAmount <= 0) {
-    redirectWithAllocationResult({
-      allocation_error: "Allocation amount must be greater than zero.",
     }, path);
   }
 
@@ -394,32 +397,95 @@ export async function allocateStatementLineToSupplierInvoiceAction(formData: For
     redirectWithAllocationResult({ allocation_error: statementError.message }, path);
   }
 
-  const { data: invoicePosition, error: invoiceError } = await supabase
-    .from("supplier_payment_candidate_status_vw")
-    .select("remaining_unmatched_gbp")
-    .eq("supplier_invoice_id", supplierInvoiceId)
-    .single();
-
-  if (invoiceError) {
-    redirectWithAllocationResult({ allocation_error: invoiceError.message }, path);
+  const statementRemaining = numeric(statementPosition?.confirmed_unallocated_gbp);
+  if (statementRemaining <= 0) {
+    redirectWithAllocationResult({ allocation_error: "Statement line must have a remaining balance." }, path);
   }
 
-  const incrementalAmount = Math.min(
-    numeric(statementPosition?.confirmed_unallocated_gbp),
-    numeric(invoicePosition?.remaining_unmatched_gbp),
-    allocatedAmount
-  );
+  let data: unknown;
+  let error: { message: string } | null;
+  let fallbackAppliedAmount = 0;
 
-  if (incrementalAmount <= 0) {
-    redirectWithAllocationResult({ allocation_error: "Statement line and supplier invoice must both have a remaining balance." }, path);
+  if (supplierInvoiceIds.length === 1) {
+    if (!Number.isFinite(allocatedAmount) || allocatedAmount <= 0) {
+      redirectWithAllocationResult({
+        allocation_error: "Allocation amount must be greater than zero.",
+      }, path);
+    }
+
+    const supplierInvoiceId = supplierInvoiceIds[0];
+    const { data: invoicePosition, error: invoiceError } = await supabase
+      .from("supplier_payment_candidate_status_vw")
+      .select("remaining_unmatched_gbp, selectable_yn")
+      .eq("supplier_invoice_id", supplierInvoiceId)
+      .single();
+
+    if (invoiceError) {
+      redirectWithAllocationResult({ allocation_error: invoiceError.message }, path);
+    }
+    if (!booleanish(invoicePosition?.selectable_yn)) {
+      redirectWithAllocationResult({ allocation_error: "Supplier invoice candidate is not selectable." }, path);
+    }
+
+    const incrementalAmount = Math.min(
+      statementRemaining,
+      numeric(invoicePosition?.remaining_unmatched_gbp),
+      allocatedAmount,
+    );
+
+    if (incrementalAmount <= 0) {
+      redirectWithAllocationResult({ allocation_error: "Statement line and supplier invoice must both have a remaining balance." }, path);
+    }
+
+    fallbackAppliedAmount = incrementalAmount;
+    ({ data, error } = await supabase.rpc("staff_allocate_statement_line_to_supplier_invoice_incremental_v", {
+      p_dva_statement_line_id: statementLineId,
+      p_supplier_invoice_id: supplierInvoiceId,
+      p_allocated_gbp_amount: incrementalAmount,
+      p_notes: notes,
+    }));
+  } else {
+    const { data: invoicePositions, error: invoiceError } = await supabase
+      .from("supplier_payment_candidate_status_vw")
+      .select("supplier_invoice_id, remaining_unmatched_gbp, selectable_yn")
+      .in("supplier_invoice_id", supplierInvoiceIds);
+
+    if (invoiceError) {
+      redirectWithAllocationResult({ allocation_error: invoiceError.message }, path);
+    }
+
+    const positionsById = new Map(
+      (invoicePositions ?? []).map((position) => [String(position.supplier_invoice_id), position]),
+    );
+    let unassignedStatementAmount = statementRemaining;
+    const allocations = supplierInvoiceIds.flatMap((supplierInvoiceId) => {
+      const position = positionsById.get(supplierInvoiceId);
+      if (!position || !booleanish(position.selectable_yn)) return [];
+
+      const amount = Math.min(
+        unassignedStatementAmount,
+        numeric(position.remaining_unmatched_gbp),
+      );
+      if (amount <= 0) return [];
+
+      const roundedAmount = Math.round(amount * 100) / 100;
+      unassignedStatementAmount = Math.round((unassignedStatementAmount - roundedAmount) * 100) / 100;
+      return [{ supplier_invoice_id: supplierInvoiceId, allocated_gbp_amount: roundedAmount }];
+    });
+
+    if (allocations.length !== supplierInvoiceIds.length) {
+      redirectWithAllocationResult({
+        allocation_error: "Every selected supplier invoice must be selectable and have a remaining balance.",
+      }, path);
+    }
+
+    fallbackAppliedAmount = allocations.reduce((total, allocation) => total + allocation.allocated_gbp_amount, 0);
+    ({ data, error } = await supabase.rpc("staff_allocate_statement_line_to_supplier_invoice_bundle", {
+      p_dva_statement_line_id: statementLineId,
+      p_allocations: allocations,
+      p_notes: notes,
+    }));
   }
-
-  const { data, error } = await supabase.rpc("staff_allocate_statement_line_to_supplier_invoice_incremental_v1", {
-    p_dva_statement_line_id: statementLineId,
-    p_supplier_invoice_id: supplierInvoiceId,
-    p_allocated_gbp_amount: incrementalAmount,
-    p_notes: notes,
-  });
 
   if (error) {
     redirectWithAllocationResult({
@@ -436,9 +502,11 @@ export async function allocateStatementLineToSupplierInvoiceAction(formData: For
     data !== null &&
     "allocated_gbp_amount" in data
       ? String((data as { allocated_gbp_amount?: unknown }).allocated_gbp_amount)
-      : incrementalAmount.toFixed(2);
+      : fallbackAppliedAmount.toFixed(2);
 
   redirectWithAllocationResult({
-    allocation_success: `Allocated £${appliedAmount} to supplier invoice.`,
+    allocation_success: supplierInvoiceIds.length === 1
+      ? `Allocated £${appliedAmount} to supplier invoice.`
+      : `Allocated £${appliedAmount} across ${supplierInvoiceIds.length} supplier invoices.`,
   }, path);
 }

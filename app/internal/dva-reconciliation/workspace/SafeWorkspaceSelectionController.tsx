@@ -145,6 +145,9 @@ function classifyAnchor(anchor: HTMLAnchorElement): ClassifiedCard | null {
       targetType === "final_balance"
         ? parseFinalBalanceDue(body)
         : parseGbp(body.match(/Amount\s+£[\d,.]+/)?.[0] || body);
+    const remainingAmount = targetType === "invoice"
+      ? parseLabeledGbp(body, "Remaining unmatched") ?? amount
+      : undefined;
     return {
       anchor,
       id: targetId,
@@ -154,6 +157,7 @@ function classifyAnchor(anchor: HTMLAnchorElement): ClassifiedCard | null {
       kind: "target",
       direction,
       targetType,
+      remainingAmount,
       selectable: true,
     };
   }
@@ -215,6 +219,25 @@ function countDirection(items: Map<string, PickedItem>, direction: Direction) {
 function singleItem(items: Map<string, PickedItem>) {
   const values = [...items.values()];
   return values.length === 1 ? values[0] : null;
+}
+
+function supplierAllocationRows(statement: PickedItem | null, targets: Map<string, PickedItem>) {
+  let statementRemainingPence = Math.round(
+    Math.max(0, statement?.remainingAmount ?? statement?.amount ?? 0) * 100,
+  );
+
+  return [...targets.values()].flatMap((target) => {
+    if (target.targetType !== "invoice" || target.selectable === false) return [];
+
+    const invoiceRemainingPence = Math.round(
+      Math.max(0, target.remainingAmount ?? target.amount) * 100,
+    );
+    const allocatedPence = Math.min(statementRemainingPence, invoiceRemainingPence);
+    if (allocatedPence <= 0) return [];
+
+    statementRemainingPence -= allocatedPence;
+    return [{ supplierInvoiceId: target.id, allocatedAmount: allocatedPence / 100 }];
+  });
 }
 
 function resetCardVisual(anchor: HTMLAnchorElement) {
@@ -285,16 +308,13 @@ export default function SafeWorkspaceSelectionController() {
   const searchParams = useSearchParams();
   const searchKey = searchParams.toString();
   const routeKey = `${pathname}?${searchKey}`;
+  const currentPath = searchKey ? `${pathname}?${searchKey}` : pathname;
 
   const [cards, setCards] = useState<ClassifiedCard[]>([]);
   const [statements, setStatements] = useState<Map<string, PickedItem>>(new Map());
   const [targets, setTargets] = useState<Map<string, PickedItem>>(new Map());
-  const [currentPath, setCurrentPath] = useState("/internal/dva-reconciliation/workspace");
 
   useEffect(() => {
-    const path = searchKey ? `${pathname}?${searchKey}` : pathname;
-    setCurrentPath(path);
-
     const anchors = Array.from(
       document.querySelectorAll<HTMLAnchorElement>('a[href*="/internal/dva-reconciliation/workspace?"]'),
     );
@@ -397,10 +417,20 @@ export default function SafeWorkspaceSelectionController() {
   const hasPrimaryTarget = targets.size > 0;
   const selectedTargetIsFinalBalance = target?.targetType === "final_balance";
   const finalBalanceOrderId = selectedTargetIsFinalBalance ? targetOrderId(target) : "";
-  const canConfirmSupplier = Boolean(statement && target?.targetType === "invoice");
+  const selectedSupplierTargets = [...targets.values()].filter((item) => item.targetType === "invoice");
+  const supplierAllocations = supplierAllocationRows(statement, targets);
+  const canConfirmSupplier = Boolean(
+    statement &&
+      statement.direction === "out" &&
+      statement.selectable !== false &&
+      targets.size > 0 &&
+      selectedSupplierTargets.length === targets.size &&
+      supplierAllocations.length === targets.size,
+  );
   const operationalType = operationalAllocationType(statement, target);
   const canConfirmOperational = Boolean(statement && target?.targetType === "exception" && operationalType);
   const allocationAmount = Math.min(statement?.remainingAmount ?? statement?.amount ?? 0, target?.amount ?? 0);
+  const supplierAllocationTotal = supplierAllocations.reduce((total, allocation) => total + allocation.allocatedAmount, 0);
   const statementRemainingForFinalBalance = statement?.remainingAmount ?? statement?.amount ?? 0;
   const postBalanceSurplus = selectedTargetIsFinalBalance ? Math.max(0, statementRemainingForFinalBalance - (target?.amount ?? 0)) : 0;
   const finalBalanceAfterSelection = selectedTargetIsFinalBalance ? Math.max(0, (target?.amount ?? 0) - statementRemainingForFinalBalance) : 0;
@@ -490,8 +520,16 @@ export default function SafeWorkspaceSelectionController() {
           <form action={allocateStatementLineToSupplierInvoiceAction}>
             <input type="hidden" name="return_path" value={currentPath} />
             <input type="hidden" name="dva_statement_line_id" value={statement?.id ?? ""} />
-            <input type="hidden" name="supplier_invoice_id" value={target?.id ?? ""} />
-            <input type="hidden" name="allocated_gbp_amount" value={allocationAmount ? allocationAmount.toFixed(2) : ""} />
+            <input type="hidden" name="supplier_invoice_id" value={supplierAllocations.length === 1 ? supplierAllocations[0].supplierInvoiceId : ""} />
+            {supplierAllocations.map((allocation) => (
+              <input
+                key={allocation.supplierInvoiceId}
+                type="hidden"
+                name="supplier_invoice_ids"
+                value={allocation.supplierInvoiceId}
+              />
+            ))}
+            <input type="hidden" name="allocated_gbp_amount" value={supplierAllocationTotal ? supplierAllocationTotal.toFixed(2) : ""} />
             <input type="hidden" name="notes" value="Allocated from DVA/card matching workspace." />
             <button
               type="submit"
