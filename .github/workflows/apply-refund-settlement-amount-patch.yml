@@ -1,0 +1,243 @@
+name: Apply refund settlement amount patch
+
+on:
+  push:
+    branches:
+      - agent/fix-refund-workbench-settlement-amount
+    paths:
+      - .github/workflows/apply-refund-settlement-amount-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-refund-workbench-settlement-amount
+          fetch-depth: 0
+
+      - name: Apply narrow workbench read correction
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path("app/internal/dva-reconciliation/workspace/page.tsx")
+          source = path.read_text()
+
+          replacements = [
+            (
+              '''    disputesResult,
+              suggestionsResult,
+              creditLedgerResult,
+            ] = await Promise.all([''',
+              '''    disputesResult,
+              suggestionsResult,
+              creditLedgerResult,
+              refundSubmissionsResult,
+              refundTotalsResult,
+            ] = await Promise.all([''',
+            ),
+            (
+              '''    supabase.from("match_suggestions").select("id, dva_statement_line_id, suggested_match_type, suggested_match_id, confidence, variance_gbp, variance_days").limit(500),
+              supabase.from("importer_credit_ledger").select("id, importer_id, entry_type, direction, amount_gbp, lock_reason").limit(500),
+            ]);''',
+              '''    supabase.from("match_suggestions").select("id, dva_statement_line_id, suggested_match_type, suggested_match_id, confidence, variance_gbp, variance_days").limit(500),
+              supabase.from("importer_credit_ledger").select("id, importer_id, entry_type, direction, amount_gbp, lock_reason").limit(500),
+              supabase
+                .from("dispute_refund_evidence_submissions")
+                .select("id, dispute_id, supplier_approval_status, supplier_control_status, supplier_approved_at, submitted_at")
+                .eq("supplier_approval_status", "approved_current")
+                .eq("supplier_control_status", "approved_current")
+                .order("supplier_approved_at", { ascending: false })
+                .order("submitted_at", { ascending: false })
+                .limit(500),
+              supabase
+                .from("dispute_refund_document_accounting_totals_vw")
+                .select("refund_evidence_submission_id, dispute_id, accepted_document_gross_gbp")
+                .limit(500),
+            ]);''',
+            ),
+            (
+              '''  const suggestionsByLineId = groupBy((suggestionsResult.data ?? []) as unknown as Row[], "dva_statement_line_id");
+            const creditLedger = ((creditLedgerResult.data ?? []) as unknown as Row[]).filter((row) => !selectedImporterId || text(row.importer_id) === selectedImporterId);
+            const filteredStatementLines = statementLines.filter((row) => {''',
+              '''  const suggestionsByLineId = groupBy((suggestionsResult.data ?? []) as unknown as Row[], "dva_statement_line_id");
+            const creditLedger = ((creditLedgerResult.data ?? []) as unknown as Row[]).filter((row) => !selectedImporterId || text(row.importer_id) === selectedImporterId);
+            const refundTotalsBySubmissionId = new Map<string, Row>();
+            for (const row of (refundTotalsResult.data ?? []) as unknown as Row[]) {
+              const submissionId = text(row.refund_evidence_submission_id);
+              if (submissionId) refundTotalsBySubmissionId.set(submissionId, row);
+            }
+            const acceptedRefundByDisputeId = new Map<string, number>();
+            for (const submission of (refundSubmissionsResult.data ?? []) as unknown as Row[]) {
+              const disputeId = text(submission.dispute_id);
+              if (!disputeId || acceptedRefundByDisputeId.has(disputeId)) continue;
+              const totals = refundTotalsBySubmissionId.get(text(submission.id));
+              const acceptedSupplierCredit = num(totals?.accepted_document_gross_gbp);
+              if (acceptedSupplierCredit > 0) acceptedRefundByDisputeId.set(disputeId, acceptedSupplierCredit);
+            }
+            const filteredStatementLines = statementLines.filter((row) => {''',
+            ),
+            (
+              '''  const exceptionRows: OperationalRow[] = disputes.map((dispute) => {
+              const order = orders.find((row) => text(row.id) === text(dispute.order_id));
+              const retailer = order ? retailersById.get(text(order.retailer_id)) : undefined;
+              return {
+                kind: "exception",
+                id: text(dispute.id),
+                title: `${text(dispute.desired_outcome) || "Exception"} · ${text(dispute.status)}`,
+                retailerName: text(retailer?.name),
+                orderRef: text(order?.order_ref),
+                orderId: text(order?.id),
+                status: text(dispute.status),
+                amount: num(dispute.amount_impact_gbp),
+                progressedTotal: 0,
+                openExceptionTotal: num(dispute.amount_impact_gbp),
+                raw: dispute,
+              };
+            });''',
+              '''  const exceptionRows: OperationalRow[] = disputes.map((dispute) => {
+              const disputeId = text(dispute.id);
+              const order = orders.find((row) => text(row.id) === text(dispute.order_id));
+              const retailer = order ? retailersById.get(text(order.retailer_id)) : undefined;
+              const operationalExceptionAmount = num(dispute.amount_impact_gbp);
+              const acceptedSupplierCredit =
+                text(dispute.desired_outcome) === "refund"
+                  ? (acceptedRefundByDisputeId.get(disputeId) ?? 0)
+                  : 0;
+              const refundSettlementTarget = acceptedSupplierCredit > 0
+                ? acceptedSupplierCredit
+                : operationalExceptionAmount;
+
+              return {
+                kind: "exception",
+                id: disputeId,
+                title: `${text(dispute.desired_outcome) || "Exception"} · ${text(dispute.status)}`,
+                retailerName: text(retailer?.name),
+                orderRef: text(order?.order_ref),
+                orderId: text(order?.id),
+                status: text(dispute.status),
+                amount: refundSettlementTarget,
+                progressedTotal: 0,
+                openExceptionTotal: refundSettlementTarget,
+                raw: {
+                  ...dispute,
+                  operational_exception_amount_gbp: operationalExceptionAmount,
+                  accepted_supplier_credit_gbp: acceptedSupplierCredit || null,
+                  workbench_target_amount_source: acceptedSupplierCredit > 0
+                    ? "accepted_supplier_credit"
+                    : "dispute_amount",
+                },
+              };
+            });''',
+            ),
+            (
+              '''                  ) : (
+                        <p className="mt-2 text-xs text-slate-500">Amount {gbp(row.amount)} · Progressed {gbp(row.progressedTotal)} · Open exception {gbp(row.openExceptionTotal)}</p>
+                      )}''',
+              '''                  ) : text(row.raw.workbench_target_amount_source) === "accepted_supplier_credit" ? (
+                        <div className="mt-2 space-y-1 text-xs text-slate-500">
+                          <p>Amount {gbp(row.amount)} · Refund settlement target from approved supplier credit</p>
+                          <p>Operational exception {gbp(row.raw.operational_exception_amount_gbp)} · Accepted supplier credit {gbp(row.raw.accepted_supplier_credit_gbp)}</p>
+                        </div>
+                      ) : (
+                        <p className="mt-2 text-xs text-slate-500">Amount {gbp(row.amount)} · Progressed {gbp(row.progressedTotal)} · Open exception {gbp(row.openExceptionTotal)}</p>
+                      )}''',
+            ),
+          ]
+
+          for before, after in replacements:
+            if before not in source:
+              raise SystemExit(f"Required anchor not found:\n{before[:240]}")
+            source = source.replace(before, after, 1)
+
+          path.write_text(source)
+
+          test = Path("docs/testing/20260723_dva_refund_settlement_amount_regression_v1.mjs")
+          test.write_text(r'''import assert from "node:assert/strict";
+          import { readFileSync } from "node:fs";
+
+          const page = readFileSync("app/internal/dva-reconciliation/workspace/page.tsx", "utf8");
+
+          assert.match(
+            page,
+            /\.from\("dispute_refund_evidence_submissions"\)[\s\S]*\.eq\("supplier_approval_status", "approved_current"\)[\s\S]*\.eq\("supplier_control_status", "approved_current"\)/,
+            "workbench must use only approved-current refund evidence",
+          );
+          assert.match(
+            page,
+            /\.from\("dispute_refund_document_accounting_totals_vw"\)[\s\S]*accepted_document_gross_gbp/,
+            "workbench must reuse the existing authoritative refund accounting total",
+          );
+          assert.match(
+            page,
+            /const refundSettlementTarget = acceptedSupplierCredit > 0[\s\S]*\? acceptedSupplierCredit[\s\S]*: operationalExceptionAmount;/,
+            "approved accepted supplier credit must override only the refund settlement target",
+          );
+          assert.match(
+            page,
+            /operational_exception_amount_gbp: operationalExceptionAmount/,
+            "the original operational exception amount must remain visible for audit",
+          );
+          assert.match(
+            page,
+            /amount: refundSettlementTarget,[\s\S]*openExceptionTotal: refundSettlementTarget/,
+            "the selectable card amount and completion target must use the same settlement amount",
+          );
+          assert.match(
+            page,
+            /Amount \{gbp\(row\.amount\)\} · Refund settlement target from approved supplier credit/,
+            "the existing selection controller must continue to parse the authoritative Amount label",
+          );
+
+          assert.match(
+            page,
+            /const autoRetailerOk = row\.kind === "final_balance" \|\| !hasAutoMerchantMatches \|\| merchantScore\(row, selectedMerchantTokens\) > 0;/,
+            "this patch must not alter existing merchant filtering",
+          );
+          assert.match(
+            page,
+            /return manualRetailerOk && autoRetailerOk && statusOk;/,
+            "this patch must not alter existing right-pane routing",
+          );
+          assert.match(
+            page,
+            /allocateStatementLineToOperationalTargetAction/,
+            "the existing operational allocation action must remain wired",
+          );
+
+          const operationalExceptionAmount = 179.99;
+          const acceptedSupplierCredit = 184.99;
+          const refundSettlementTarget = acceptedSupplierCredit > 0
+            ? acceptedSupplierCredit
+            : operationalExceptionAmount;
+          assert.equal(refundSettlementTarget, 184.99);
+
+          const fallbackAcceptedSupplierCredit = 0;
+          const fallbackTarget = fallbackAcceptedSupplierCredit > 0
+            ? fallbackAcceptedSupplierCredit
+            : operationalExceptionAmount;
+          assert.equal(fallbackTarget, 179.99, "legacy/no-approved-evidence exceptions must retain the existing amount");
+
+          console.log("PASS: DVA refund settlement amount uses approved supplier credit with safe fallback");
+          ''')
+          PY
+
+      - name: Run focused regressions
+        run: |
+          node docs/testing/20260723_dva_refund_settlement_amount_regression_v1.mjs
+          node docs/testing/20260722_dva_workspace_page_regression_v1.mjs
+
+      - name: Commit page-only correction
+        shell: bash
+        run: |
+          git config user.name "goodcashback-patch-bot"
+          git config user.email "goodcashback-patch-bot@users.noreply.github.com"
+          git add app/internal/dva-reconciliation/workspace/page.tsx docs/testing/20260723_dva_refund_settlement_amount_regression_v1.mjs
+          git rm .github/workflows/apply-refund-settlement-amount-patch.yml
+          git commit -m "Use accepted supplier credit for refund settlement target"
+          git push origin HEAD:agent/fix-refund-workbench-settlement-amount
