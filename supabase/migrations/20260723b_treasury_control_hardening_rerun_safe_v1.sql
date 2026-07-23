@@ -39,8 +39,11 @@ BEGIN
     'gi'
   );
 
-  IF position('PERFORM 1 FROM public.dva_statement_lines dsl' in v_allocator_patched) = 0
-     OR v_allocator_patched !~* 'FOR[[:space:]]+UPDATE[[:space:]]*;' THEN
+  IF v_allocator_patched ~* 'FOR[[:space:]]+UPDATE[[:space:]]+OF[[:space:]]+e' THEN
+    RAISE EXCEPTION 'Invalid view lock remains in the incremental supplier allocator.';
+  END IF;
+
+  IF v_allocator_patched !~* 'PERFORM[[:space:]]+1[[:space:]]+FROM[[:space:]]+public[.]dva_statement_lines[[:space:]]+dsl[[:space:]]+WHERE[[:space:]]+dsl[.]id[[:space:]]*=[[:space:]]*p_dva_statement_line_id[[:space:]]+FOR[[:space:]]+UPDATE[[:space:]]*;' THEN
     RAISE EXCEPTION 'Physical statement-line lock is missing from the incremental supplier allocator.';
   END IF;
 
