@@ -76,10 +76,13 @@ assert.match(controller, /Bank selected: \{statements\.size\} · gross/, "existi
 assert.match(controller, /Operational selected: \{targets\.size\} · gross/, "existing operational footer totals must remain present");
 assert.match(controller, /Net position gap:/, "existing net footer total must remain present");
 assert.match(controller, /Absolute\/gross gap:/, "existing gross footer total must remain present");
-assert.match(atomicMigration, /staff_allocate_statement_line_to_supplier_invoice_bundle/, "multiple selections must reuse the existing atomic bundle RPC");
+assert.match(atomicMigration, /CREATE OR REPLACE FUNCTION public\.staff_allocate_statement_line_to_supplier_invoice_bundle/, "atomic migration must replace the controlled bundle RPC explicitly");
+assert.doesNotMatch(atomicMigration, /pg_get_functiondef|v_bundle_definition|definition anchors/, "atomic migration must not depend on deparser text or formatting-sensitive anchors");
+assert.match(atomicMigration, new RegExp(`to_regprocedure\\('public\\.${incrementalRpc}\\(uuid,uuid,numeric,text\\)'\\)`), "atomic migration must fail clearly when the incremental prerequisite is absent");
 assert.match(atomicMigration, /v_requested_total > v_statement_total \+ 0\.005/, "atomic supplier total must not exceed the physical OUT");
 assert.match(atomicMigration, /ARRAY_AGG\(si\.order_id ORDER BY si\.order_id\)/, "atomic bundle must select its UUID order without an unsupported UUID aggregate");
 assert.match(atomicMigration, /ABS\(v_statement_total - v_requested_total\) < 0\.01/, "atomic result must expose a remaining residual as unbalanced");
+assert.match(atomicMigration, /NOTIFY pgrst, 'reload schema'/, "successful migration must refresh the PostgREST schema cache");
 
 const statementPence = 89000;
 const invoicePence = [44998, 18499, 24999];
