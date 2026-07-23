@@ -451,9 +451,9 @@ SELECT pg_temp.record_treasury_test(63, 'compatibility', 'Sequential allocator i
     WHERE n.nspname = 'public'
       AND p.proname = 'staff_allocate_statement_line_to_supplier_invoice'
   ));
-SELECT pg_temp.assert_function_definition(64, 'compatibility', 'Atomic bundle composes the installed incremental allocator without Sage or VAT posting',
+SELECT pg_temp.assert_function_definition(64, 'compatibility', 'Atomic bundle permits a governed residual without Sage or VAT posting',
   'public.staff_allocate_statement_line_to_supplier_invoice_bundle(uuid,jsonb,text)',
-  ARRAY['staff_allocate_statement_line_to_supplier_invoice_incremental_v', 'source_bank_account_mapping_code', 'source_wallet_code'],
+  ARRAY['jsonb_to_recordset', 'v_requested_total > v_statement_total + 0.005', 'array_agg(si.order_id order by si.order_id)', 'source_bank_account_mapping_code', 'source_wallet_code', 'approved_current'],
   ARRAY['insert into public.sage', 'update public.sage', 'vat_return', 'vat_posting']);
 SELECT pg_temp.assert_function_definition(65, 'compatibility', 'Sequential allocator contains no Sage or VAT posting writes',
   'public.staff_allocate_statement_line_to_supplier_invoice_incremental_v(uuid,uuid,numeric,text)',

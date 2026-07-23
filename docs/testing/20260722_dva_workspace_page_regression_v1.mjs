@@ -76,7 +76,10 @@ assert.match(controller, /Bank selected: \{statements\.size\} · gross/, "existi
 assert.match(controller, /Operational selected: \{targets\.size\} · gross/, "existing operational footer totals must remain present");
 assert.match(controller, /Net position gap:/, "existing net footer total must remain present");
 assert.match(controller, /Absolute\/gross gap:/, "existing gross footer total must remain present");
-assert.match(atomicMigration, new RegExp(incrementalRpc), "atomic bundle must compose the installed incremental allocator in one database call");
+assert.match(atomicMigration, /staff_allocate_statement_line_to_supplier_invoice_bundle/, "multiple selections must reuse the existing atomic bundle RPC");
+assert.match(atomicMigration, /v_requested_total > v_statement_total \+ 0\.005/, "atomic supplier total must not exceed the physical OUT");
+assert.match(atomicMigration, /ARRAY_AGG\(si\.order_id ORDER BY si\.order_id\)/, "atomic bundle must select its UUID order without an unsupported UUID aggregate");
+assert.match(atomicMigration, /ABS\(v_statement_total - v_requested_total\) < 0\.01/, "atomic result must expose a remaining residual as unbalanced");
 
 const statementPence = 89000;
 const invoicePence = [44998, 18499, 24999];
