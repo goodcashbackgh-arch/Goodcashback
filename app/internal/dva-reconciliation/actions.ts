@@ -158,7 +158,7 @@ export async function allocateStatementLineToFxCardOrFeeAction(formData: FormDat
 
   const { data: summaryRow, error: summaryError } = await supabase
     .from("dva_statement_line_allocation_summary_vw")
-    .select("direction, confirmed_allocated_gbp, confirmed_unallocated_gbp, confirmed_balanced_yn")
+    .select("direction, supplier_invoice_allocated_gbp, retailer_refund_allocated_gbp, exception_or_hold_allocated_gbp, confirmed_unallocated_gbp, confirmed_balanced_yn")
     .eq("dva_statement_line_id", statementLineId)
     .single();
 
@@ -180,7 +180,12 @@ export async function allocateStatementLineToFxCardOrFeeAction(formData: FormDat
     }, path);
   }
 
-  if (allocationType === "fx_card_difference" && numeric(summaryRow.confirmed_allocated_gbp) <= 0) {
+  const confirmedOperationalAllocation =
+    numeric(summaryRow.supplier_invoice_allocated_gbp) +
+    numeric(summaryRow.retailer_refund_allocated_gbp) +
+    numeric(summaryRow.exception_or_hold_allocated_gbp);
+
+  if (allocationType === "fx_card_difference" && confirmedOperationalAllocation <= 0) {
     redirectWithAllocationResult({
       allocation_error: "FX/card residual allocation is only allowed after a supplier invoice, refund, exception, or hold allocation already exists. Use bank fee for standalone bank/card charges.",
     }, path);

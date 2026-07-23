@@ -35,7 +35,7 @@ export default async function FundingLayout({ children }: { children: ReactNode 
 
   const [{ data: surplusRows, error: surplusError }, { data: creditRows }] = await Promise.all([
     supabase
-      .from("order_surplus_evidence_position_v2")
+      .from("order_surplus_evidence_position_v3")
       .select("order_id,evidence_status,evidence_surplus_gbp,open_dispute_count,active_hold_count")
       .in("evidence_status", ["ready_posted_invoice_surplus", "ready_draft_invoice_surplus", "ready_strong_in_out_surplus", "blocked_by_open_issue", "credit_created"])
       .limit(500),

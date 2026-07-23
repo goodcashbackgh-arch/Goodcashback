@@ -1,6 +1,9 @@
 import Link from "next/link";
 import { createClient } from "@/utils/supabase/server";
-import { allocateStatementLineToSupplierInvoiceAction } from "../actions";
+import {
+  allocateStatementLineToFxCardOrFeeAction,
+  allocateStatementLineToSupplierInvoiceAction,
+} from "../actions";
 import { allocateStatementLineToFinalBalancePaymentAction } from "../finalBalanceActions";
 
 type Row = Record<string, unknown>;
@@ -250,13 +253,7 @@ export default async function DvaMatchingWorkspacePage({
   });
 
   const selectedLineFromUrl = statementLines.find((row) => text(row.dva_statement_line_id) === selectedLineId);
-  const selectedLineIsVisible =
-    !!selectedLineFromUrl &&
-    filteredStatementLines.some((row) => text(row.dva_statement_line_id) === selectedLineId);
-
-  const selectedLine = selectedLineIsVisible
-    ? selectedLineFromUrl
-    : filteredStatementLines[0] ?? statementLines[0];
+  const selectedLine = selectedLineFromUrl ?? filteredStatementLines[0] ?? statementLines[0];
 
   const activeLineId = text(selectedLine?.dva_statement_line_id);
   const urlLineStillActive = !!selectedLineId && selectedLineId === activeLineId;
@@ -267,6 +264,10 @@ export default async function DvaMatchingWorkspacePage({
   const selectedLineSuggestions = suggestionsByLineId.get(activeLineId) ?? [];
   const selectedStatementAmount = num(selectedLine?.statement_gbp_amount);
   const selectedStatementAllocated = num(selectedLine?.confirmed_allocated_gbp);
+  const selectedOperationalAllocation =
+    num(selectedLine?.supplier_invoice_allocated_gbp) +
+    num(selectedLine?.retailer_refund_allocated_gbp) +
+    num(selectedLine?.exception_or_hold_allocated_gbp);
   const selectedStatementRemaining = Math.max(0, selectedStatementAmount - selectedStatementAllocated);
   const selectedMerchantTokens = merchantTokens(selectedLine?.retailer_name_ref, selectedLine?.reference_raw);
   const rightRetailer = activeManualRightRetailer || leftRetailer;
@@ -374,6 +375,11 @@ export default async function DvaMatchingWorkspacePage({
   const finalBalanceFxExcess = selectedTargetIsFinalBalance ? Math.max(0, selectedStatementRemaining - selectedTargetAmount) : 0;
   const finalBalanceAfterSelection = selectedTargetIsFinalBalance ? Math.max(0, selectedTargetAmount - selectedStatementRemaining) : 0;
   const canApplyFinalBalance = selectedTargetIsFinalBalance && text(selectedLine?.direction) === "in" && selectedStatementRemaining > 0 && selectedTargetAmount > 0;
+  const canApplyFxCardResidual =
+    text(selectedLine?.direction) === "out" &&
+    selectedStatementRemaining > 0 &&
+    selectedOperationalAllocation > 0 &&
+    !bool(selectedLine?.confirmed_balanced_yn);
   const activeReturnPath = workspaceHref({
     importer_id: selectedImporterId,
     line_id: activeLineId,
@@ -639,7 +645,14 @@ export default async function DvaMatchingWorkspacePage({
             ) : (
               <button className="rounded-xl bg-slate-200 px-4 py-2 font-semibold text-slate-500" type="button" disabled>Confirm allocation next</button>
             )}
-            <button className="rounded-xl bg-slate-100 px-4 py-2 font-semibold text-slate-500" type="button" disabled>Add FX/card diff next</button>
+            <form action={allocateStatementLineToFxCardOrFeeAction}>
+              <input type="hidden" name="return_path" value={activeReturnPath} />
+              <input type="hidden" name="dva_statement_line_id" value={activeLineId} />
+              <input type="hidden" name="allocation_type" value="fx_card_difference" />
+              <input type="hidden" name="allocated_gbp_amount" value={selectedStatementRemaining.toFixed(2)} />
+              <input type="hidden" name="notes" value="DVA/card workspace residual after confirmed operational allocation." />
+              <button className="rounded-xl bg-slate-100 px-4 py-2 font-semibold text-slate-500" type="submit" disabled={!canApplyFxCardResidual}>Add FX/card diff next</button>
+            </form>
           </div>
         </div>
       </aside>
