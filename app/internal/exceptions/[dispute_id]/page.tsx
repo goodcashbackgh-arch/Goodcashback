@@ -220,15 +220,17 @@ const { data: linkedInvoiceLine } =
   activeDisputeLine?.supplier_invoice_line_id
     ? await supabase
         .from("supplier_invoice_lines")
-        .select(`
-          supplier_invoices (
-            id,
-            invoice_ref,
-            invoice_pdf_url,
-            uploaded_at,
-            review_status
-          )
-        `)
+       .select(`
+  id,
+  description,
+  supplier_invoices (
+    id,
+    invoice_ref,
+    invoice_pdf_url,
+    uploaded_at,
+    review_status
+  )
+`)
         .eq("id", activeDisputeLine.supplier_invoice_line_id)
         .maybeSingle()
     : { data: null };
