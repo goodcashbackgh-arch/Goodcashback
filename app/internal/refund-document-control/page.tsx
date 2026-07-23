@@ -140,8 +140,9 @@ export default async function RefundDocumentControlQueuePage({ searchParams }: {
 
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
           <h2 className="text-xl font-semibold">Open refund document submissions</h2>
-          <div className="mt-5 overflow-hidden rounded-2xl border border-slate-200">
-            <table className="min-w-full text-left text-sm">
+          <p className="mt-2 text-sm text-slate-600">On smaller screens, swipe left or right across the table to see every column and action.</p>
+          <div className="mt-5 overflow-x-auto rounded-2xl border border-slate-200">
+            <table className="min-w-[1100px] text-left text-sm">
               <thead className="bg-slate-100 text-xs uppercase tracking-wide text-slate-500">
                 <tr>
                   <th className="p-3">Order</th>
@@ -168,7 +169,12 @@ export default async function RefundDocumentControlQueuePage({ searchParams }: {
                       <td className="p-3 font-semibold">{gbp(amount)}</td>
                       <td className="p-3"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${badgeClass(submission.match_status)}`}>{statusLabel(submission.match_status)}</span></td>
                       <td className="p-3"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${badgeClass(submission.supplier_control_status)}`}>{statusLabel(submission.supplier_control_status)}</span></td>
-                      <td className="p-3"><Link href={`/internal/refund-document-control/${submission.id}`} className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white">Open control</Link></td>
+                      <td className="p-3">
+                        <div className="flex min-w-[170px] flex-col gap-2">
+                          <Link href={`/internal/refund-document-control/${submission.id}`} className="rounded-lg bg-slate-900 px-3 py-2 text-center text-xs font-semibold text-white">Open control</Link>
+                          <Link href={`/internal/refund-document-control/${submission.id}/request-resubmission`} className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-center text-xs font-semibold text-amber-900">Request resubmission</Link>
+                        </div>
+                      </td>
                     </tr>
                   );
                 })}
