@@ -158,7 +158,7 @@ export async function allocateStatementLineToFxCardOrFeeAction(formData: FormDat
 
   const { data: summaryRow, error: summaryError } = await supabase
     .from("dva_statement_line_allocation_summary_vw")
-    .select("direction, confirmed_allocated_gbp, confirmed_unallocated_gbp, confirmed_balanced_yn")
+    .select("direction, supplier_invoice_allocated_gbp, retailer_refund_allocated_gbp, exception_or_hold_allocated_gbp, confirmed_unallocated_gbp, confirmed_balanced_yn")
     .eq("dva_statement_line_id", statementLineId)
     .single();
 
@@ -180,7 +180,12 @@ export async function allocateStatementLineToFxCardOrFeeAction(formData: FormDat
     }, path);
   }
 
-  if (allocationType === "fx_card_difference" && numeric(summaryRow.confirmed_allocated_gbp) <= 0) {
+  const confirmedOperationalAllocation =
+    numeric(summaryRow.supplier_invoice_allocated_gbp) +
+    numeric(summaryRow.retailer_refund_allocated_gbp) +
+    numeric(summaryRow.exception_or_hold_allocated_gbp);
+
+  if (allocationType === "fx_card_difference" && confirmedOperationalAllocation <= 0) {
     redirectWithAllocationResult({
       allocation_error: "FX/card residual allocation is only allowed after a supplier invoice, refund, exception, or hold allocation already exists. Use bank fee for standalone bank/card charges.",
     }, path);
@@ -379,10 +384,40 @@ export async function allocateStatementLineToSupplierInvoiceAction(formData: For
     }, path);
   }
 
-  const { data, error } = await supabase.rpc("staff_allocate_statement_line_to_supplier_invoice", {
+  const { data: statementPosition, error: statementError } = await supabase
+    .from("dva_statement_line_allocation_summary_vw")
+    .select("confirmed_unallocated_gbp")
+    .eq("dva_statement_line_id", statementLineId)
+    .single();
+
+  if (statementError) {
+    redirectWithAllocationResult({ allocation_error: statementError.message }, path);
+  }
+
+  const { data: invoicePosition, error: invoiceError } = await supabase
+    .from("supplier_payment_candidate_status_vw")
+    .select("remaining_unmatched_gbp")
+    .eq("supplier_invoice_id", supplierInvoiceId)
+    .single();
+
+  if (invoiceError) {
+    redirectWithAllocationResult({ allocation_error: invoiceError.message }, path);
+  }
+
+  const incrementalAmount = Math.min(
+    numeric(statementPosition?.confirmed_unallocated_gbp),
+    numeric(invoicePosition?.remaining_unmatched_gbp),
+    allocatedAmount
+  );
+
+  if (incrementalAmount <= 0) {
+    redirectWithAllocationResult({ allocation_error: "Statement line and supplier invoice must both have a remaining balance." }, path);
+  }
+
+  const { data, error } = await supabase.rpc("staff_allocate_statement_line_to_supplier_invoice_incremental_v1", {
     p_dva_statement_line_id: statementLineId,
     p_supplier_invoice_id: supplierInvoiceId,
-    p_allocated_gbp_amount: allocatedAmount,
+    p_allocated_gbp_amount: incrementalAmount,
     p_notes: notes,
   });
 
@@ -401,7 +436,7 @@ export async function allocateStatementLineToSupplierInvoiceAction(formData: For
     data !== null &&
     "allocated_gbp_amount" in data
       ? String((data as { allocated_gbp_amount?: unknown }).allocated_gbp_amount)
-      : allocatedAmount.toFixed(2);
+      : incrementalAmount.toFixed(2);
 
   redirectWithAllocationResult({
     allocation_success: `Allocated £${appliedAmount} to supplier invoice.`,

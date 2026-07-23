@@ -38,20 +38,8 @@ const flowLinks = [
     hint: "Supplier charges, refunds, FX/payment variance, fees and hold items",
   },
   {
-    href: "/internal/dva-reconciliation/multi-invoice",
-    step: "4A",
-    label: "Atomic split OUT",
-    hint: "Allocate one physical retailer OUT atomically across several invoices from one order",
-  },
-  {
-    href: "/internal/dva-reconciliation/sequential-allocation",
-    step: "4B",
-    label: "Sequential OUT",
-    hint: "Apply one physical OUT invoice-by-invoice under one locked order, importer, retailer and source",
-  },
-  {
     href: "/internal/dva-reconciliation/main-bank",
-    step: "4C",
+    step: "4A",
     label: "Main bank / shipper",
     hint: "Main-company-bank OUT matched to approved shipper AP or completion-loyalty transfer evidence",
   },

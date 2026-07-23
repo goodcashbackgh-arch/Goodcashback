@@ -1270,3 +1270,9 @@ This addendum does not:
 - allow statement amount edits;
 - delete historical evidence;
 - treat repository files as proof of live deployment.
+
+## 20. Unified funding and supplier-allocation clarification
+
+Funding has three valid, explicit outcomes: exact funding, immediate FX classification when the existing FX confirmation is selected, or a neutral pending-surplus determination when an entered receipt exceeds the order gap without FX confirmation. Evidence must precede every non-FX surplus classification and any resulting customer credit.
+
+The physical statement line remains immutable. Its governed uses may be multiple, but their confirmed total must never exceed its remaining physical balance. Supplier allocations are applied sequentially in the main importer-matching workspace, with each invoice leg independently auditable and reversible. Database transaction atomicity is a commit property; it is not a separate operator workflow or navigation lane.

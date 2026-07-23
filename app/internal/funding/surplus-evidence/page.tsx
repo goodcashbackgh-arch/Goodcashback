@@ -39,8 +39,8 @@ export default async function SurplusEvidencePage({ searchParams }: { searchPara
   if (staffError || !staff || !["admin", "supervisor"].includes(String(staff.role_type))) redirect("/internal");
 
   const { data, error } = await supabase
-    .from("order_surplus_evidence_position_v2")
-    .select("order_id,order_ref,payment_auth_id,declared_order_gbp,funding_total_gbp,supplier_out_gbp,posted_invoice_gbp,draft_invoice_gbp,evidence_value_gbp,evidence_surplus_gbp,evidence_status,evidence_basis,open_dispute_count,active_hold_count")
+    .from("order_surplus_evidence_position_v3")
+    .select("order_id,order_ref,payment_auth_id,declared_order_gbp,funding_total_gbp,effective_receipt_gbp,pending_surplus_gbp,supplier_out_gbp,posted_invoice_gbp,draft_invoice_gbp,evidence_value_gbp,evidence_surplus_gbp,evidence_status,evidence_basis,open_dispute_count,active_hold_count")
     .in("evidence_status", ["ready_posted_invoice_surplus", "ready_draft_invoice_surplus", "ready_strong_in_out_surplus", "blocked_by_open_issue", "credit_created"])
     .order("evidence_surplus_gbp", { ascending: false });
 
@@ -83,7 +83,7 @@ export default async function SurplusEvidencePage({ searchParams }: { searchPara
               <summary className="cursor-pointer list-none p-4">
                 <div className="grid gap-3 md:grid-cols-[1.2fr_0.7fr_0.7fr_0.7fr_auto] md:items-center">
                   <div><p className="text-xs font-black uppercase text-cyan-700">{label(row.evidence_basis)}</p><h3 className="text-lg font-black">{row.order_ref ?? row.order_id}</h3><p className="text-xs text-slate-600">Auth: {row.payment_auth_id ?? "—"}</p></div>
-                  <div><p className="text-xs font-black uppercase text-slate-500">IN</p><p className="font-black">{gbp(row.funding_total_gbp)}</p></div>
+                  <div><p className="text-xs font-black uppercase text-slate-500">IN</p><p className="font-black">{gbp(row.effective_receipt_gbp)}</p></div>
                   <div><p className="text-xs font-black uppercase text-slate-500">Evidence</p><p className="font-black">{gbp(row.evidence_value_gbp)}</p></div>
                   <div><p className="text-xs font-black uppercase text-slate-500">Surplus</p><p className="font-black text-cyan-800">{gbp(row.evidence_surplus_gbp)}</p></div>
                   <span className="rounded-full bg-white px-3 py-1 text-xs font-black text-cyan-800 ring-1 ring-cyan-200">Review</span>
@@ -106,7 +106,7 @@ export default async function SurplusEvidencePage({ searchParams }: { searchPara
                     <option value="item_removed_before_charge">Item removed before charge</option>
                     <option value="customer_hold_excluded">Customer hold excluded</option>
                   </select>
-                  <input name="notes" className="rounded-xl border border-cyan-200 bg-white px-3 py-2 text-sm" defaultValue={`Funding ${gbp(row.funding_total_gbp)} less evidence value ${gbp(row.evidence_value_gbp)} = ${gbp(row.evidence_surplus_gbp)}.`} />
+                  <input name="notes" className="rounded-xl border border-cyan-200 bg-white px-3 py-2 text-sm" defaultValue={`Effective receipt ${gbp(row.effective_receipt_gbp)} less evidence value ${gbp(row.evidence_value_gbp)} = ${gbp(row.evidence_surplus_gbp)}.`} />
                   <button className="rounded-xl bg-cyan-700 px-4 py-2 text-sm font-black text-white">Confirm balance</button>
                 </form>
               </div>

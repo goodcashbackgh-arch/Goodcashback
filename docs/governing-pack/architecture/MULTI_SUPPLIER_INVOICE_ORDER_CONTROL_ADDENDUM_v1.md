@@ -846,3 +846,9 @@ and what remains unresolved
 ```
 
 No status, total, release, refund, or posting may be inferred solely from “latest supplier invoice”, order-wide dynamic JSON, or the existence of one successful sibling document.
+
+## 21. One physical OUT across multiple supplier invoices
+
+One physical OUT may cover supplier invoices A, B and C plus a final FX/card residual. Each invoice allocation is capped at `min(statement remaining, invoice remaining)`, and the same OUT remains available in the main importer-matching workspace until its balance is exhausted. Every supplier and residual allocation remains an individually auditable and reversible economic-use row, while the final invariant is strict: total confirmed uses must not exceed the physical OUT.
+
+Existing atomic bundle routines remain available for a one-click, multi-leg database commit. They are transaction guarantees and are not a separate normal operator workbench.
