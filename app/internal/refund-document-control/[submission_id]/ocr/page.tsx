@@ -1,7 +1,10 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
-import { correctRefundCreditNoteHeaderAction } from "./actions";
+import {
+  correctRefundCreditNoteHeaderAction,
+  setRefundDocumentLineInclusionAction,
+} from "./actions";
 
 type SearchParamsValue = Record<string, string | string[] | undefined>;
 
@@ -40,6 +43,10 @@ type LineRow = {
   qty: string | number | null;
   amount_gbp: string | number | null;
   progressed_to_supplier_control_yn: boolean | null;
+  included_in_supplier_credit_yn: boolean | null;
+  exclusion_reason: string | null;
+  excluded_by_staff_id: string | null;
+  excluded_at: string | null;
 };
 
 function text(value: unknown) {
@@ -55,9 +62,13 @@ function firstParam(value: unknown) {
   return text(value);
 }
 
-function gbp(value: unknown) {
+function numberValue(value: unknown) {
   const parsed = Number(value ?? 0);
-  return new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" }).format(Number.isFinite(parsed) ? parsed : 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function gbp(value: unknown) {
+  return new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" }).format(numberValue(value));
 }
 
 function inputNumber(value: unknown) {
@@ -127,10 +138,10 @@ export default async function RefundCreditNoteOcrPage({
   }
 
   const submission = submissionRaw as SubmissionRow;
-  const [{ data: linesRaw }, { data: snapshotsRaw }] = await Promise.all([
+  const [{ data: linesRaw, error: linesError }, { data: snapshotsRaw }] = await Promise.all([
     supabase
       .from("dispute_refund_document_lines")
-      .select("id, line_order, line_source, description, qty, amount_gbp, progressed_to_supplier_control_yn")
+      .select("id, line_order, line_source, description, qty, amount_gbp, progressed_to_supplier_control_yn, included_in_supplier_credit_yn, exclusion_reason, excluded_by_staff_id, excluded_at")
       .eq("refund_evidence_submission_id", submissionId)
       .order("line_order", { ascending: true }),
     supabase
@@ -138,11 +149,35 @@ export default async function RefundCreditNoteOcrPage({
       .select("id")
       .eq("source_table", "dispute_refund_evidence_submissions")
       .eq("source_id", submissionId)
+      .eq("active", true)
       .limit(1),
   ]);
 
   const lines = (linesRaw ?? []) as LineRow[];
+  const lineIds = lines.map((line) => line.id);
+  const { data: accountingCodesRaw } = lineIds.length
+    ? await supabase
+        .from("dispute_refund_document_line_accounting_codes")
+        .select("id")
+        .in("refund_document_line_id", lineIds)
+        .limit(1)
+    : { data: [] as Array<{ id: string }> };
+
+  const includedLines = lines.filter((line) => line.included_in_supplier_credit_yn !== false);
+  const excludedLines = lines.filter((line) => line.included_in_supplier_credit_yn === false);
+  const includedOcrTotal = includedLines
+    .filter((line) => line.line_source === "ocr_extracted")
+    .reduce((sum, line) => sum + Math.abs(numberValue(line.amount_gbp)), 0);
+  const includedSupplementaryTotal = includedLines
+    .filter((line) => ["delivery_adjustment", "discount_adjustment"].includes(String(line.line_source ?? "")))
+    .reduce((sum, line) => sum + Math.abs(numberValue(line.amount_gbp)), 0);
+  const includedEvidenceTotal = includedLines.reduce((sum, line) => sum + Math.abs(numberValue(line.amount_gbp)), 0);
+  const acceptedSupplierCredit = submission.document_mode === "credit_note"
+    ? numberValue(submission.ocr_credit_note_total_gbp) + includedSupplementaryTotal
+    : includedEvidenceTotal;
+
   const hasReleasedLines = lines.some((line) => Boolean(line.progressed_to_supplier_control_yn));
+  const hasAccountingCodes = Boolean(accountingCodesRaw?.length);
   const hasSageSnapshot = Boolean(snapshotsRaw?.length);
   const isRejected =
     submission.supervisor_review_status === "rejected" ||
@@ -155,23 +190,27 @@ export default async function RefundCreditNoteOcrPage({
     submission.document_mode === "credit_note" &&
     submission.ocr_status === "completed" &&
     !hasReleasedLines &&
+    !hasAccountingCodes &&
     !hasSageSnapshot &&
     !isRejected &&
     !isReleasedOrApproved;
+  const canManageLineScope = canCorrectHeader;
   const canStart = submission.document_mode === "credit_note" && Boolean(submission.credit_note_file_url) && !submission.mindee_job_id;
   const canFetch = submission.document_mode === "credit_note" && Boolean(submission.mindee_job_id);
 
   const correctionLockReason = submission.ocr_status !== "completed"
-    ? "Complete OCR before correcting the header."
+    ? "Complete OCR before correcting the header or reviewing line inclusion."
     : isRejected
       ? "This rejected submission is audit-only. Submit corrected evidence instead."
       : hasReleasedLines || isReleasedOrApproved
-        ? "Header values are locked after release or approval."
-        : hasSageSnapshot
-          ? "Header values are locked after a Sage snapshot is created."
-          : submission.document_mode !== "credit_note"
-            ? "Header correction only applies to formal credit notes."
-            : "";
+        ? "Header values and line scope are locked after release or approval."
+        : hasAccountingCodes
+          ? "Header values and line scope are locked after accounting coding starts."
+          : hasSageSnapshot
+            ? "Header values and line scope are locked after a Sage snapshot is created."
+            : submission.document_mode !== "credit_note"
+              ? "This page only applies to formal credit notes."
+              : "";
 
   return (
     <main className="min-h-screen bg-slate-50 px-6 py-8 text-slate-950">
@@ -182,12 +221,12 @@ export default async function RefundCreditNoteOcrPage({
             {submission.dispute_id ? <Link href={`/internal/exceptions/${submission.dispute_id}`} className="text-sky-700 underline underline-offset-2">Open internal exception</Link> : null}
             <Link href="/internal/refund-document-control" className="text-slate-600 underline underline-offset-2">Open refund document queue</Link>
           </div>
-          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Credit-note OCR only</p>
+          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Credit-note OCR and line scope</p>
           <div className="mt-3 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
             <div>
               <h1 className="text-3xl font-semibold tracking-tight">Credit-note OCR extraction</h1>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-                Start or fetch Mindee OCR here. Before any line is released, an admin or supervisor can correct the submitted and OCR header values in place; the save recalculates matching and records the reason in the audit trail.
+                Start or fetch OCR, correct the header, then exclude duplicate or irrelevant evidence lines before anything is released. Excluded rows remain visible for audit and can be restored while the submission is still unlocked.
               </p>
             </div>
             <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm text-slate-700">
@@ -199,11 +238,19 @@ export default async function RefundCreditNoteOcrPage({
 
         {success ? <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-semibold text-emerald-900">{success}</div> : null}
         {error ? <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm font-semibold text-rose-900">{error}</div> : null}
+        {linesError ? <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm font-semibold text-rose-900">Could not load refund-document lines: {linesError.message}</div> : null}
 
         <section className="grid gap-4 md:grid-cols-3">
           <StatusPill label="OCR status" value={submission.ocr_status} />
           <StatusPill label="Match status" value={submission.match_status} />
           <StatusPill label="Amount balance" value={submission.amount_balance_status} />
+        </section>
+
+        <section className="grid gap-4 md:grid-cols-4">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Included OCR total</p><p className="mt-2 text-2xl font-semibold">{gbp(includedOcrTotal)}</p></div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Included supplementary</p><p className="mt-2 text-2xl font-semibold">{gbp(includedSupplementaryTotal)}</p></div>
+          <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4 shadow-sm"><p className="text-xs font-bold uppercase tracking-wide text-sky-700">Accepted supplier credit</p><p className="mt-2 text-2xl font-semibold text-sky-950">{gbp(acceptedSupplierCredit)}</p></div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Line scope</p><p className="mt-2 text-lg font-semibold">{includedLines.length} included · {excludedLines.length} excluded</p></div>
         </section>
 
         <form action={correctRefundCreditNoteHeaderAction} className="space-y-5">
@@ -271,19 +318,10 @@ export default async function RefundCreditNoteOcrPage({
             {!canCorrectHeader && correctionLockReason ? <p className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">{correctionLockReason}</p> : null}
             <div className="mt-4 flex flex-wrap items-center gap-3">
               <button disabled={!canCorrectHeader} className="rounded-xl bg-sky-700 px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">Save corrected header</button>
-              <span className="text-xs text-slate-500">Saving recalculates reference, date, retailer, amount and extracted-line alignment.</span>
+              <span className="text-xs text-slate-500">Saving recalculates reference, date, retailer, amount and included OCR-line alignment.</span>
             </div>
           </section>
         </form>
-
-        <section className="rounded-3xl border border-sky-200 bg-sky-50 p-5 shadow-sm">
-          <p className="text-sm font-semibold uppercase tracking-[0.2em] text-sky-700">Next action</p>
-          <div className="mt-3 flex flex-wrap gap-3">
-            <Link href={`/internal/refund-document-control/${submissionId}`} className="rounded-xl bg-sky-700 px-5 py-3 text-sm font-semibold text-white">Go to release / coding / approval control</Link>
-            {submission.dispute_id ? <Link href={`/internal/exceptions/${submission.dispute_id}`} className="rounded-xl border border-sky-300 bg-white px-5 py-3 text-sm font-semibold text-sky-800">Back to exception review</Link> : null}
-          </div>
-          <p className="mt-3 text-sm text-slate-600">Only continue to release when the match status is matched_ready_to_release and the amount is balanced.</p>
-        </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
           <h2 className="text-lg font-semibold">OCR actions</h2>
@@ -302,26 +340,83 @@ export default async function RefundCreditNoteOcrPage({
           {submission.mindee_error_message ? <p className="mt-3 rounded-xl bg-rose-50 p-3 text-sm text-rose-800">{submission.mindee_error_message}</p> : null}
         </section>
 
-        <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-          <h2 className="text-lg font-semibold">OCR extracted refund document lines</h2>
-          <p className="mt-1 text-xs text-slate-500">Header correction does not rewrite extracted lines. Their absolute total remains part of the alignment check.</p>
-          <div className="mt-4 overflow-x-auto">
-            <table className="min-w-full text-left text-sm">
-              <thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr><th className="p-3">Line</th><th className="p-3">Source</th><th className="p-3">Description</th><th className="p-3 text-right">Qty</th><th className="p-3 text-right">Amount</th></tr></thead>
+        <form action={setRefundDocumentLineInclusionAction} className="rounded-3xl border border-emerald-200 bg-white p-5 shadow-sm">
+          <input type="hidden" name="refund_evidence_submission_id" value={submissionId} />
+          <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+            <div>
+              <h2 className="text-lg font-semibold">Included refund-document lines</h2>
+              <p className="mt-1 text-sm text-slate-600">These rows remain eligible for release and coding. Select only duplicate or irrelevant rows to exclude.</p>
+            </div>
+            <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-800 ring-1 ring-emerald-200">{includedLines.length} included</span>
+          </div>
+          <div className="mt-4 overflow-x-auto rounded-2xl border border-slate-200">
+            <table className="min-w-[900px] text-left text-sm">
+              <thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr><th className="p-3">Exclude</th><th className="p-3">Line</th><th className="p-3">Source</th><th className="p-3">Description</th><th className="p-3 text-right">Qty</th><th className="p-3 text-right">Amount</th><th className="p-3">Release status</th></tr></thead>
               <tbody>
-                {lines.length === 0 ? <tr><td colSpan={5} className="p-4 text-slate-500">No OCR extracted refund document lines yet.</td></tr> : null}
-                {lines.map((line) => (
+                {includedLines.length === 0 ? <tr><td colSpan={7} className="p-4 text-slate-500">No included refund-document lines.</td></tr> : null}
+                {includedLines.map((line) => (
                   <tr key={line.id} className="border-t">
+                    <td className="p-3"><input type="checkbox" name="line_ids" value={line.id} disabled={!canManageLineScope} className="h-4 w-4 rounded border-slate-300" /></td>
                     <td className="p-3">{line.line_order}</td>
                     <td className="p-3">{line.line_source}</td>
                     <td className="p-3 font-medium">{line.description}</td>
-                    <td className="p-3 text-right">{line.qty}</td>
+                    <td className="p-3 text-right">{line.qty ?? "—"}</td>
                     <td className="p-3 text-right font-semibold">{gbp(line.amount_gbp)}</td>
+                    <td className="p-3">{line.progressed_to_supplier_control_yn ? "Released" : "Not released"}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
+          <label className="mt-4 block text-sm font-semibold text-slate-700">Exclusion reason required
+            <textarea name="inclusion_reason" rows={3} required disabled={!canManageLineScope} className={`${inputClass} resize-y`} placeholder="Explain why the selected line is duplicated, irrelevant or outside the accepted supplier credit." />
+          </label>
+          {!canManageLineScope && correctionLockReason ? <p className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">{correctionLockReason}</p> : null}
+          <button name="inclusion_action" value="exclude" disabled={!canManageLineScope || includedLines.length === 0} className="mt-4 rounded-xl bg-rose-700 px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">Exclude selected lines</button>
+        </form>
+
+        <form action={setRefundDocumentLineInclusionAction} className="rounded-3xl border border-amber-200 bg-amber-50 p-5 shadow-sm">
+          <input type="hidden" name="refund_evidence_submission_id" value={submissionId} />
+          <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+            <div>
+              <h2 className="text-lg font-semibold">Excluded lines — audit only</h2>
+              <p className="mt-1 text-sm text-slate-600">Excluded evidence is retained but cannot be released, coded or posted. Select rows to restore while the submission remains unlocked.</p>
+            </div>
+            <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-900 ring-1 ring-amber-300">{excludedLines.length} excluded</span>
+          </div>
+          <div className="mt-4 overflow-x-auto rounded-2xl border border-amber-200 bg-white">
+            <table className="min-w-[1100px] text-left text-sm">
+              <thead className="bg-amber-100 text-xs uppercase text-amber-900"><tr><th className="p-3">Restore</th><th className="p-3">Line</th><th className="p-3">Source</th><th className="p-3">Description</th><th className="p-3 text-right">Amount</th><th className="p-3">Exclusion reason</th><th className="p-3">Excluded at</th><th className="p-3">Staff ID</th></tr></thead>
+              <tbody>
+                {excludedLines.length === 0 ? <tr><td colSpan={8} className="p-4 text-slate-500">No excluded lines.</td></tr> : null}
+                {excludedLines.map((line) => (
+                  <tr key={line.id} className="border-t border-amber-100">
+                    <td className="p-3"><input type="checkbox" name="line_ids" value={line.id} disabled={!canManageLineScope} className="h-4 w-4 rounded border-slate-300" /></td>
+                    <td className="p-3">{line.line_order}</td>
+                    <td className="p-3">{line.line_source}</td>
+                    <td className="p-3 font-medium">{line.description}</td>
+                    <td className="p-3 text-right font-semibold">{gbp(line.amount_gbp)}</td>
+                    <td className="p-3">{line.exclusion_reason ?? "—"}</td>
+                    <td className="p-3">{line.excluded_at ?? "—"}</td>
+                    <td className="p-3 font-mono text-xs">{line.excluded_by_staff_id ?? "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <label className="mt-4 block text-sm font-semibold text-slate-700">Restoration reason required
+            <textarea name="inclusion_reason" rows={3} required disabled={!canManageLineScope} className={`${inputClass} resize-y`} placeholder="Explain why the selected evidence line should return to the accepted supplier credit." />
+          </label>
+          <button name="inclusion_action" value="restore" disabled={!canManageLineScope || excludedLines.length === 0} className="mt-4 rounded-xl bg-amber-700 px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">Restore selected lines</button>
+        </form>
+
+        <section className="rounded-3xl border border-sky-200 bg-sky-50 p-5 shadow-sm">
+          <p className="text-sm font-semibold uppercase tracking-[0.2em] text-sky-700">Next action</p>
+          <div className="mt-3 flex flex-wrap gap-3">
+            <Link href={`/internal/refund-document-control/${submissionId}`} className="rounded-xl bg-sky-700 px-5 py-3 text-sm font-semibold text-white">Go to release / coding / approval control</Link>
+            {submission.dispute_id ? <Link href={`/internal/exceptions/${submission.dispute_id}`} className="rounded-xl border border-sky-300 bg-white px-5 py-3 text-sm font-semibold text-sky-800">Back to exception review</Link> : null}
+          </div>
+          <p className="mt-3 text-sm text-slate-600">Continue only when the included OCR total equals the credit-note face total and the match status is matched_ready_to_release.</p>
         </section>
       </div>
     </main>
