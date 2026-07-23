@@ -190,7 +190,7 @@ SELECT pg_temp.record_treasury_test(4, 'installation', 'Treasury worklist exists
 SELECT pg_temp.record_treasury_test(5, 'installation', 'Interpretation correction RPC exists',
   to_regprocedure('public.staff_correct_statement_line_interpretation_v1(uuid,text,text,text,text)') IS NOT NULL);
 SELECT pg_temp.record_treasury_test(6, 'installation', 'Sequential supplier allocator exists',
-  to_regprocedure('public.staff_allocate_statement_line_to_supplier_invoice_incremental_v1(uuid,uuid,numeric,text)') IS NOT NULL);
+  to_regprocedure('public.staff_allocate_statement_line_to_supplier_invoice_incremental_v(uuid,uuid,numeric,text)') IS NOT NULL);
 SELECT pg_temp.record_treasury_test(7, 'installation', 'Next-invoice eligibility and ranking function exists',
   to_regprocedure('public.internal_supplier_payment_next_invoice_candidates_v1(uuid)') IS NOT NULL);
 SELECT pg_temp.record_treasury_test(8, 'installation', 'Existing reversal RPC exists',
@@ -252,9 +252,9 @@ SELECT pg_temp.record_treasury_test(21, 'security', 'Authenticated role can exec
     ELSE has_function_privilege('authenticated', 'public.staff_correct_statement_line_interpretation_v1(uuid,text,text,text,text)', 'EXECUTE')
   END);
 SELECT pg_temp.record_treasury_test(22, 'security', 'Authenticated role can execute sequential allocator',
-  CASE WHEN to_regprocedure('public.staff_allocate_statement_line_to_supplier_invoice_incremental_v1(uuid,uuid,numeric,text)') IS NULL
+  CASE WHEN to_regprocedure('public.staff_allocate_statement_line_to_supplier_invoice_incremental_v(uuid,uuid,numeric,text)') IS NULL
     THEN false
-    ELSE has_function_privilege('authenticated', 'public.staff_allocate_statement_line_to_supplier_invoice_incremental_v1(uuid,uuid,numeric,text)', 'EXECUTE')
+    ELSE has_function_privilege('authenticated', 'public.staff_allocate_statement_line_to_supplier_invoice_incremental_v(uuid,uuid,numeric,text)', 'EXECUTE')
   END);
 SELECT pg_temp.record_treasury_test(23, 'security', 'Authenticated role can execute eligibility and ranking',
   CASE WHEN to_regprocedure('public.internal_supplier_payment_next_invoice_candidates_v1(uuid)') IS NULL
@@ -271,8 +271,8 @@ SELECT pg_temp.record_treasury_test(25, 'security', 'Anonymous role cannot execu
     CASE WHEN to_regprocedure('public.staff_correct_statement_line_interpretation_v1(uuid,text,text,text,text)') IS NULL THEN false
       ELSE NOT has_function_privilege('anon', 'public.staff_correct_statement_line_interpretation_v1(uuid,text,text,text,text)', 'EXECUTE') END
   ) AND (
-    CASE WHEN to_regprocedure('public.staff_allocate_statement_line_to_supplier_invoice_incremental_v1(uuid,uuid,numeric,text)') IS NULL THEN false
-      ELSE NOT has_function_privilege('anon', 'public.staff_allocate_statement_line_to_supplier_invoice_incremental_v1(uuid,uuid,numeric,text)', 'EXECUTE') END
+    CASE WHEN to_regprocedure('public.staff_allocate_statement_line_to_supplier_invoice_incremental_v(uuid,uuid,numeric,text)') IS NULL THEN false
+      ELSE NOT has_function_privilege('anon', 'public.staff_allocate_statement_line_to_supplier_invoice_incremental_v(uuid,uuid,numeric,text)', 'EXECUTE') END
   ) AND (
     CASE WHEN to_regprocedure('public.internal_supplier_payment_next_invoice_candidates_v1(uuid)') IS NULL THEN false
       ELSE NOT has_function_privilege('anon', 'public.internal_supplier_payment_next_invoice_candidates_v1(uuid)', 'EXECUTE') END
@@ -445,66 +445,67 @@ SELECT pg_temp.record_treasury_test(63, 'compatibility', 'Sequential allocator i
     SELECT count(*) = 1
     FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
     WHERE n.nspname = 'public'
-      AND p.proname = 'staff_allocate_statement_line_to_supplier_invoice_incremental_v1'
+      AND p.proname = 'staff_allocate_statement_line_to_supplier_invoice_incremental_v'
   ) AND EXISTS (
     SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
     WHERE n.nspname = 'public'
       AND p.proname = 'staff_allocate_statement_line_to_supplier_invoice'
   ));
-SELECT pg_temp.assert_function_definition(64, 'compatibility', 'Atomic bundle still requires one full physical OUT and shared source provenance',
+SELECT pg_temp.assert_function_definition(64, 'compatibility', 'Atomic bundle composes the installed incremental allocator without Sage or VAT posting',
   'public.staff_allocate_statement_line_to_supplier_invoice_bundle(uuid,jsonb,text)',
-  ARRAY['jsonb_to_recordset', 'full amount', 'source_bank_account_mapping_code', 'source_wallet_code', 'approved_current']);
+  ARRAY['staff_allocate_statement_line_to_supplier_invoice_incremental_v', 'source_bank_account_mapping_code', 'source_wallet_code'],
+  ARRAY['insert into public.sage', 'update public.sage', 'vat_return', 'vat_posting']);
 SELECT pg_temp.assert_function_definition(65, 'compatibility', 'Sequential allocator contains no Sage or VAT posting writes',
-  'public.staff_allocate_statement_line_to_supplier_invoice_incremental_v1(uuid,uuid,numeric,text)',
+  'public.staff_allocate_statement_line_to_supplier_invoice_incremental_v(uuid,uuid,numeric,text)',
   ARRAY['insert into public.dva_statement_line_allocations'],
   ARRAY['insert into public.sage', 'update public.sage', 'vat_return', 'vat_posting']);
 
 -- 66-80: sequential allocator write-time guards.
 SELECT pg_temp.assert_function_definition(66, 'sequential', 'Sequential writes are admin/supervisor only',
-  'public.staff_allocate_statement_line_to_supplier_invoice_incremental_v1(uuid,uuid,numeric,text)',
+  'public.staff_allocate_statement_line_to_supplier_invoice_incremental_v(uuid,uuid,numeric,text)',
   ARRAY['admin', 'supervisor', 'active']);
 SELECT pg_temp.assert_function_definition(67, 'sequential', 'Sequential allocator locks the physical statement row',
-  'public.staff_allocate_statement_line_to_supplier_invoice_incremental_v1(uuid,uuid,numeric,text)',
+  'public.staff_allocate_statement_line_to_supplier_invoice_incremental_v(uuid,uuid,numeric,text)',
   ARRAY['public.dva_statement_lines dsl', 'for update']);
 SELECT pg_temp.assert_function_definition(68, 'sequential', 'Sequential allocator does not try to lock the interpretation view',
-  'public.staff_allocate_statement_line_to_supplier_invoice_incremental_v1(uuid,uuid,numeric,text)',
+  'public.staff_allocate_statement_line_to_supplier_invoice_incremental_v(uuid,uuid,numeric,text)',
   ARRAY['from public.statement_line_effective_interpretation_v1 e'],
   ARRAY['for update of e']);
 SELECT pg_temp.assert_function_definition(69, 'sequential', 'Sequential route requires importer DVA/card OUT',
-  'public.staff_allocate_statement_line_to_supplier_invoice_incremental_v1(uuid,uuid,numeric,text)',
+  'public.staff_allocate_statement_line_to_supplier_invoice_incremental_v(uuid,uuid,numeric,text)',
   ARRAY['sequential supplier allocation requires effective importer dva/card out']);
 SELECT pg_temp.assert_function_definition(70, 'sequential', 'Sequential route accepts only unclassified or supplier-payment interpretation',
-  'public.staff_allocate_statement_line_to_supplier_invoice_incremental_v1(uuid,uuid,numeric,text)',
+  'public.staff_allocate_statement_line_to_supplier_invoice_incremental_v(uuid,uuid,numeric,text)',
   ARRAY['effective_economic_classification not in (''unclassified'', ''supplier_payment'')']);
 SELECT pg_temp.assert_function_definition(71, 'sequential', 'Draft and held allocation rows block sequential use',
-  'public.staff_allocate_statement_line_to_supplier_invoice_incremental_v1(uuid,uuid,numeric,text)',
+  'public.staff_allocate_statement_line_to_supplier_invoice_incremental_v(uuid,uuid,numeric,text)',
   ARRAY['allocation_status in (''draft'', ''held'')', 'resolve draft/held allocations']);
 SELECT pg_temp.assert_function_definition(72, 'sequential', 'Active non-supplier use blocks sequential allocation',
-  'public.staff_allocate_statement_line_to_supplier_invoice_incremental_v1(uuid,uuid,numeric,text)',
+  'public.staff_allocate_statement_line_to_supplier_invoice_incremental_v(uuid,uuid,numeric,text)',
   ARRAY['allocation_type <> ''supplier_invoice''', 'incompatible active non-supplier allocation']);
 SELECT pg_temp.assert_function_definition(73, 'sequential', 'Statement remaining amount is enforced',
-  'public.staff_allocate_statement_line_to_supplier_invoice_incremental_v1(uuid,uuid,numeric,text)',
+  'public.staff_allocate_statement_line_to_supplier_invoice_incremental_v(uuid,uuid,numeric,text)',
   ARRAY['exceeds statement-line remaining amount', 'no remaining amount to allocate']);
 SELECT pg_temp.assert_function_definition(74, 'sequential', 'Only approved-current invoices may be allocated',
-  'public.staff_allocate_statement_line_to_supplier_invoice_incremental_v1(uuid,uuid,numeric,text)',
+  'public.staff_allocate_statement_line_to_supplier_invoice_incremental_v(uuid,uuid,numeric,text)',
   ARRAY['review_status is distinct from ''approved_current''']);
 SELECT pg_temp.assert_function_definition(75, 'sequential', 'Supplier-invoice remaining amount is enforced',
-  'public.staff_allocate_statement_line_to_supplier_invoice_incremental_v1(uuid,uuid,numeric,text)',
+  'public.staff_allocate_statement_line_to_supplier_invoice_incremental_v(uuid,uuid,numeric,text)',
   ARRAY['already fully allocated', 'exceeds supplier-invoice remaining amount']);
 SELECT pg_temp.assert_function_definition(76, 'sequential', 'Duplicate active line-to-invoice allocation is rejected',
-  'public.staff_allocate_statement_line_to_supplier_invoice_incremental_v1(uuid,uuid,numeric,text)',
+  'public.staff_allocate_statement_line_to_supplier_invoice_incremental_v(uuid,uuid,numeric,text)',
   ARRAY['already has an active allocation to invoice']);
 SELECT pg_temp.assert_function_definition(77, 'sequential', 'Statement importer must match order importer',
-  'public.staff_allocate_statement_line_to_supplier_invoice_incremental_v1(uuid,uuid,numeric,text)',
+  'public.staff_allocate_statement_line_to_supplier_invoice_incremental_v(uuid,uuid,numeric,text)',
   ARRAY['statement-line importer', 'does not match order importer']);
 SELECT pg_temp.assert_function_definition(78, 'sequential', 'Archived and cancelled orders are rejected at write time',
-  'public.staff_allocate_statement_line_to_supplier_invoice_incremental_v1(uuid,uuid,numeric,text)',
+  'public.staff_allocate_statement_line_to_supplier_invoice_incremental_v(uuid,uuid,numeric,text)',
   ARRAY['v_order.status in (''archived'', ''cancelled'')']);
 SELECT pg_temp.assert_function_definition(79, 'sequential', 'Supplier-payment funding readiness is repeated at write time',
-  'public.staff_allocate_statement_line_to_supplier_invoice_incremental_v1(uuid,uuid,numeric,text)',
+  'public.staff_allocate_statement_line_to_supplier_invoice_incremental_v(uuid,uuid,numeric,text)',
   ARRAY['internal_supplier_payment_readiness_v1', 'supplier_payment_ready_yn', 'source_funding_required_for_supplier_payment_bank_resolution']);
 SELECT pg_temp.assert_function_definition(80, 'sequential', 'Later allocations inherit one order/importer/retailer and source mapping',
-  'public.staff_allocate_statement_line_to_supplier_invoice_incremental_v1(uuid,uuid,numeric,text)',
+  'public.staff_allocate_statement_line_to_supplier_invoice_incremental_v(uuid,uuid,numeric,text)',
   ARRAY['same order, importer and retailer', 'existing sequential allocation source mapping is missing or inconsistent', 'inherited_from_first_statement_line_supplier_allocation']);
 
 -- 81-90: hard eligibility and non-binding ranking.

@@ -79,7 +79,7 @@ BEGIN
   IF to_regprocedure('public.staff_confirm_surplus_from_evidence_min_v1(uuid,text,text)') IS NULL THEN
     RAISE EXCEPTION 'REGRESSION: surplus confirmation RPC is missing';
   END IF;
-  IF to_regprocedure('public.staff_allocate_statement_line_to_supplier_invoice_incremental_v1(uuid,uuid,numeric,text)') IS NULL THEN
+  IF to_regprocedure('public.staff_allocate_statement_line_to_supplier_invoice_incremental_v(uuid,uuid,numeric,text)') IS NULL THEN
     RAISE EXCEPTION 'REGRESSION: incremental supplier allocation RPC is missing';
   END IF;
   IF to_regprocedure('public.staff_allocate_statement_line_to_fx_card_or_fee(uuid,character varying,numeric,text)') IS NULL THEN
@@ -377,7 +377,7 @@ BEGIN
 
   -- Evidence appears only after an actual approved invoice allocation. Effective
   -- receipt is £900, authoritative supplier evidence is £884.96, surplus £15.04.
-  PERFORM public.staff_allocate_statement_line_to_supplier_invoice_incremental_v1(
+  PERFORM public.staff_allocate_statement_line_to_supplier_invoice_incremental_v(
     v_pending_out_id, v_pending_invoice_id, 884.96, 'Regression pending evidence');
 
   SELECT effective_receipt_gbp, evidence_value_gbp, evidence_surplus_gbp,
@@ -457,7 +457,7 @@ BEGIN
   -- £794.97 real supplier evidence produces one £105.03 credit.
   PERFORM public.staff_reconcile_dva_line_to_order(
     v_legacy_in_id, v_legacy_order_id, 900, false, NULL, 'Regression legacy funding');
-  PERFORM public.staff_allocate_statement_line_to_supplier_invoice_incremental_v1(
+  PERFORM public.staff_allocate_statement_line_to_supplier_invoice_incremental_v(
     v_legacy_out_id, v_legacy_invoice_id, 794.97, 'Regression legacy evidence');
 
   IF (SELECT pending_position_count FROM public.order_surplus_evidence_position_v3 WHERE order_id = v_legacy_order_id) <> 0
@@ -490,21 +490,21 @@ BEGIN
   PERFORM public.staff_reconcile_dva_line_to_order(
     v_bundle_in_id, v_bundle_order_id, 890, false, NULL, 'Regression bundle funding');
 
-  v_result := public.staff_allocate_statement_line_to_supplier_invoice_incremental_v1(
+  v_result := public.staff_allocate_statement_line_to_supplier_invoice_incremental_v(
     v_bundle_out_id, v_invoice_a_id, 449.98, 'Regression supplier A');
   v_allocation_a_id := (v_result->>'allocation_id')::uuid;
   IF (v_result->>'statement_remaining_after_gbp')::numeric <> 440.02 THEN
     RAISE EXCEPTION 'REGRESSION supplier A: remaining %', v_result->>'statement_remaining_after_gbp';
   END IF;
 
-  v_result := public.staff_allocate_statement_line_to_supplier_invoice_incremental_v1(
+  v_result := public.staff_allocate_statement_line_to_supplier_invoice_incremental_v(
     v_bundle_out_id, v_invoice_b_id, 249.99, 'Regression supplier B');
   v_allocation_b_id := (v_result->>'allocation_id')::uuid;
   IF (v_result->>'statement_remaining_after_gbp')::numeric <> 190.03 THEN
     RAISE EXCEPTION 'REGRESSION supplier B: remaining %', v_result->>'statement_remaining_after_gbp';
   END IF;
 
-  v_result := public.staff_allocate_statement_line_to_supplier_invoice_incremental_v1(
+  v_result := public.staff_allocate_statement_line_to_supplier_invoice_incremental_v(
     v_bundle_out_id, v_invoice_c_id, 95.00, 'Regression supplier C');
   v_allocation_c_id := (v_result->>'allocation_id')::uuid;
   IF (v_result->>'statement_remaining_after_gbp')::numeric <> 95.03 THEN
@@ -514,7 +514,7 @@ BEGIN
   -- Duplicate invoice use is rejected and leaves one active row.
   v_failed := false;
   BEGIN
-    PERFORM public.staff_allocate_statement_line_to_supplier_invoice_incremental_v1(
+    PERFORM public.staff_allocate_statement_line_to_supplier_invoice_incremental_v(
       v_bundle_out_id, v_invoice_c_id, 0.01, 'Regression duplicate rejection');
   EXCEPTION WHEN OTHERS THEN
     v_failed := true;
@@ -541,7 +541,7 @@ BEGIN
     RAISE EXCEPTION 'REGRESSION supplier reversal: individual leg did not reverse cleanly';
   END IF;
 
-  v_result := public.staff_allocate_statement_line_to_supplier_invoice_incremental_v1(
+  v_result := public.staff_allocate_statement_line_to_supplier_invoice_incremental_v(
     v_bundle_out_id, v_invoice_b_id, 249.99, 'Regression supplier B reapplied');
   IF (v_result->>'statement_remaining_after_gbp')::numeric <> 95.03 THEN
     RAISE EXCEPTION 'REGRESSION supplier B reapply: remaining %', v_result->>'statement_remaining_after_gbp';
@@ -706,6 +706,65 @@ BEGIN
      OR (SELECT COUNT(*) FROM public.dva_statement_line_allocations WHERE id = v_allocation_b_id AND allocation_status = 'reversed' AND reversed_at IS NOT NULL AND reversed_by_staff_id = v_staff_id) <> 1 THEN
     RAISE EXCEPTION 'REGRESSION supplier final: total %, remaining %, status %, FX %',
       v_consumed, v_remaining, v_status, v_amount;
+  END IF;
+
+  -- Rewind the live fixture inside this rollback-only transaction, then prove
+  -- the same A+B+C selection commits through the existing atomic bundle RPC
+  -- and leaves the residual available to the existing FX/card route.
+  FOR v_reconciliation_id IN
+    SELECT a.id
+    FROM public.dva_statement_line_allocations a
+    WHERE a.dva_statement_line_id = v_bundle_out_id
+      AND a.allocation_status = 'confirmed'
+    ORDER BY a.created_at DESC, a.id DESC
+  LOOP
+    PERFORM public.staff_reverse_dva_statement_line_allocation(
+      v_reconciliation_id,
+      'Regression rewind before atomic supplier bundle'
+    );
+  END LOOP;
+
+  IF (SELECT confirmed_unallocated_gbp
+      FROM public.dva_statement_line_allocation_summary_vw
+      WHERE dva_statement_line_id = v_bundle_out_id) <> 890 THEN
+    RAISE EXCEPTION 'REGRESSION atomic supplier rewind did not restore the physical OUT';
+  END IF;
+
+  v_result := public.staff_allocate_statement_line_to_supplier_invoice_bundle(
+    v_bundle_out_id,
+    jsonb_build_array(
+      jsonb_build_object('supplier_invoice_id', v_invoice_a_id, 'allocated_gbp_amount', 449.98),
+      jsonb_build_object('supplier_invoice_id', v_invoice_b_id, 'allocated_gbp_amount', 249.99),
+      jsonb_build_object('supplier_invoice_id', v_invoice_c_id, 'allocated_gbp_amount', 95.00)
+    ),
+    'Regression atomic supplier A+B+C'
+  );
+
+  IF COALESCE((v_result->>'ok')::boolean, false) IS DISTINCT FROM true
+     OR (v_result->>'allocation_count')::integer <> 3
+     OR (v_result->>'allocated_gbp_amount')::numeric <> 794.97
+     OR COALESCE((v_result->>'balanced_yn')::boolean, false) IS DISTINCT FROM false
+     OR (SELECT confirmed_unallocated_gbp
+         FROM public.dva_statement_line_allocation_summary_vw
+         WHERE dva_statement_line_id = v_bundle_out_id) <> 95.03 THEN
+    RAISE EXCEPTION 'REGRESSION atomic supplier A+B+C failed or consumed the residual: %', v_result;
+  END IF;
+
+  v_result := public.staff_allocate_statement_line_to_fx_card_or_fee(
+    v_bundle_out_id,
+    'fx_card_difference',
+    95.03,
+    'Regression atomic supplier A+B+C residual'
+  );
+
+  IF COALESCE((v_result->>'balanced_yn')::boolean, false) IS DISTINCT FROM true
+     OR (SELECT confirmed_allocated_gbp
+         FROM public.dva_statement_line_allocation_summary_vw
+         WHERE dva_statement_line_id = v_bundle_out_id) <> 890
+     OR (SELECT overconsumed_gbp
+         FROM public.statement_line_control_position_v1
+         WHERE statement_line_id = v_bundle_out_id) IS DISTINCT FROM 0::numeric THEN
+    RAISE EXCEPTION 'REGRESSION atomic supplier A+B+C+FX did not balance safely: %', v_result;
   END IF;
 
   RAISE NOTICE 'PASS: real funding, pending-surplus, legacy surplus, reversal, and A+B+C+FX regression completed; transaction will roll back';

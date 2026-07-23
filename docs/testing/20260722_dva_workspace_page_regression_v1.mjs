@@ -1,13 +1,33 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
 
 const pagePath = "app/internal/dva-reconciliation/workspace/page.tsx";
 const actionPath = "app/internal/dva-reconciliation/actions.ts";
+const sequentialActionPath = "app/internal/dva-reconciliation/sequential-allocation/actions.ts";
+const controllerPath = "app/internal/dva-reconciliation/workspace/SafeWorkspaceSelectionController.tsx";
+const atomicMigrationPath = "supabase/migrations/20260723a_supplier_bundle_incremental_atomic_v1.sql";
 const navPath = "app/internal/DvaSupervisorFlowNav.tsx";
 
 const page = readFileSync(pagePath, "utf8");
 const actions = readFileSync(actionPath, "utf8");
+const sequentialActions = readFileSync(sequentialActionPath, "utf8");
+const controller = readFileSync(controllerPath, "utf8");
+const atomicMigration = readFileSync(atomicMigrationPath, "utf8");
 const nav = readFileSync(navPath, "utf8");
+const incrementalRpc = "staff_allocate_statement_line_to_supplier_invoice_incremental_v";
+const impossibleIncrementalRpc = `${incrementalRpc}1`;
+
+function sourceFiles(root) {
+  return readdirSync(root).flatMap((entry) => {
+    const path = join(root, entry);
+    return statSync(path).isDirectory()
+      ? sourceFiles(path)
+      : /\.(?:ts|tsx)$/.test(path)
+        ? [path]
+        : [];
+  });
+}
 
 assert.match(
   page,
@@ -35,7 +55,34 @@ assert.match(page, /num\(selectedLine\?\.exception_or_hold_allocated_gbp\)/, "ex
 
 assert.match(actions, /supplier_invoice_allocated_gbp, retailer_refund_allocated_gbp, exception_or_hold_allocated_gbp/, "server action must read the operational allocation columns");
 assert.match(actions, /confirmedOperationalAllocation <= 0/, "server action must enforce the same operational-allocation guard");
-assert.match(actions, /staff_allocate_statement_line_to_supplier_invoice_incremental_v1/, "supplier workflow must retain the existing incremental RPC route");
+assert.match(actions, new RegExp(incrementalRpc), "single-invoice supplier workflow must call the registered incremental RPC");
+assert.match(sequentialActions, new RegExp(incrementalRpc), "sequential workbench must call the registered incremental RPC");
+assert.doesNotMatch(actions, new RegExp(impossibleIncrementalRpc), "main supplier action must not call the overlength identifier");
+assert.doesNotMatch(sequentialActions, new RegExp(impossibleIncrementalRpc), "sequential workbench must not call the overlength identifier");
+assert.equal(Buffer.byteLength(incrementalRpc, "utf8"), 63, "registered incremental RPC identifier must fit PostgreSQL's limit exactly");
+assert.deepEqual(
+  sourceFiles("app").filter((path) => readFileSync(path, "utf8").includes(impossibleIncrementalRpc)),
+  [],
+  "no frontend source file may call or reference the nonexistent overlength RPC name",
+);
+assert.match(actions, /if \(supplierInvoiceIds\.length === 1\)/, "one selected invoice must use the sequential branch");
+assert.match(actions, /staff_allocate_statement_line_to_supplier_invoice_bundle/, "multiple selected invoices must use the existing atomic bundle RPC");
+assert.match(controller, /targets\.size > 0/, "supplier confirmation must allow one or more selected targets");
+assert.match(controller, /selectedSupplierTargets\.length === targets\.size/, "every selected target must be a supplier invoice");
+assert.match(controller, /supplierAllocations\.length === targets\.size/, "every selected invoice must have a positive capped allocation");
+assert.match(controller, /name="supplier_invoice_ids"/, "the same supplier form must submit every selected invoice");
+assert.equal((controller.match(/Confirm supplier allocation/g) ?? []).length, 1, "controller must keep one governed supplier confirmation button");
+assert.match(controller, /Bank selected: \{statements\.size\} · gross/, "existing bank footer totals must remain present");
+assert.match(controller, /Operational selected: \{targets\.size\} · gross/, "existing operational footer totals must remain present");
+assert.match(controller, /Net position gap:/, "existing net footer total must remain present");
+assert.match(controller, /Absolute\/gross gap:/, "existing gross footer total must remain present");
+assert.match(atomicMigration, new RegExp(incrementalRpc), "atomic bundle must compose the installed incremental allocator in one database call");
+
+const statementPence = 89000;
+const invoicePence = [44998, 18499, 24999];
+const supplierPence = invoicePence.reduce((total, remaining) => total + remaining, 0);
+assert.equal(supplierPence, 88496, "A+B+C atomic supplier allocation must total £884.96");
+assert.equal(statementPence - supplierPence, 504, "A+B+C must leave £5.04 for the existing FX/card path");
 assert.equal(existsSync("app/internal/dva-reconciliation/workspace/actions.ts"), false, "duplicate workspace server action file must not exist");
 
 assert.match(nav, /Importer matching/, "navigation must retain the single importer-matching workbench");
