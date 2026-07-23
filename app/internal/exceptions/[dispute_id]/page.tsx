@@ -303,8 +303,30 @@ const invoice = linkedInvoice ?? invoiceOptions[0] ?? null;
             <h2 className="text-xl font-semibold">Source context</h2>
             <p className="mt-2 text-sm text-slate-600">Parent order and supplier invoice context.</p>
             <div className="mt-4 space-y-2 text-sm">
-              <p><span className="font-semibold">Latest supplier invoice:</span> {invoice?.invoice_ref ?? "—"}</p>
-              {invoice?.invoice_pdf_url ? <a href={invoice.invoice_pdf_url} target="_blank" className="text-sky-700 underline">Open latest supplier invoice PDF</a> : null}
+              <p>
+  <span className="font-semibold">
+    Exception-linked supplier invoice:
+  </span>{" "}
+  {invoice?.invoice_ref ?? "—"}
+</p>
+
+{linkedInvoiceLine?.description ? (
+  <p>
+    <span className="font-semibold">Affected item:</span>{" "}
+    {linkedInvoiceLine.description}
+  </p>
+) : null}
+
+{invoice?.invoice_pdf_url ? (
+  <a
+    href={invoice.invoice_pdf_url}
+    target="_blank"
+    rel="noopener noreferrer"
+    className="text-sky-700 underline"
+  >
+    Open exception-linked supplier invoice PDF
+  </a>
+) : null}
               <p className="text-xs text-slate-500">Supplier invoice records available for this order: {invoiceOptions.length}</p>
             </div>
           </article>
