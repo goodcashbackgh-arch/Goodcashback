@@ -52,6 +52,7 @@ type ReturnTrackingRow = {
 };
 
 type SourceLine = {
+  supplier_invoice_id: string | null;
   line_order: number | string | null;
   line_source: string | null;
   description: string | null;
@@ -62,6 +63,7 @@ type DisputeLine = {
   qty_impact: number | string | null;
   amount_impact_gbp: number | string | null;
   conversation_status: string | null;
+  resolved_at: string | null;
   supplier_invoice_lines: SourceLine | SourceLine[] | null;
 };
 
@@ -195,7 +197,7 @@ export default async function ImporterExceptionDetailPage({
       .maybeSingle(),
     supabase
       .from("dispute_lines")
-      .select("id, qty_impact, amount_impact_gbp, conversation_status, supplier_invoice_lines!inner(id, line_order, line_source, description)")
+      .select("id, qty_impact, amount_impact_gbp, conversation_status, resolved_at, supplier_invoice_lines!inner(id, supplier_invoice_id, line_order, line_source, description)")
       .eq("dispute_id", disputeId)
       .order("created_at", { ascending: true }),
     supabase
@@ -227,7 +229,19 @@ export default async function ImporterExceptionDetailPage({
   const lines = (linesRaw ?? []) as DisputeLine[];
   const messages = (messagesRaw ?? []) as MessageRow[];
   const retailerReplyMessages = messages.filter((message) => message.message_type === "retailer_reply");
-  const invoiceOptions = (supplierInvoicesRaw ?? []) as SupplierInvoiceOption[];
+  const linkedInvoiceIds = new Set(
+  lines
+    .filter((line) => line.resolved_at === null)
+    .map(
+      (line) =>
+        firstSourceLine(line.supplier_invoice_lines)?.supplier_invoice_id
+    )
+    .filter((id): id is string => Boolean(id))
+);
+
+const invoiceOptions = (
+  (supplierInvoicesRaw ?? []) as SupplierInvoiceOption[]
+).filter((invoice) => linkedInvoiceIds.has(invoice.id));
   const courierOptions = (couriersRaw ?? []) as CourierOption[];
   const refundDocumentHistory = (refundEvidenceRowsRaw ?? []) as RefundDocumentHistoryRow[];
 
