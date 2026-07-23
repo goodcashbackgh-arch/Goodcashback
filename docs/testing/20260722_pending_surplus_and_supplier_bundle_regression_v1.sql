@@ -85,6 +85,17 @@ BEGIN
   IF to_regprocedure('public.staff_allocate_statement_line_to_fx_card_or_fee(uuid,character varying,numeric,text)') IS NULL THEN
     RAISE EXCEPTION 'REGRESSION: FX/card residual RPC is missing';
   END IF;
+
+  SELECT lower(pg_get_functiondef(
+    'public.staff_allocate_statement_line_to_fx_card_or_fee(uuid,character varying,numeric,text)'::regprocedure
+  )) INTO v_definition;
+
+  IF position('statement line has no remaining balance' in v_definition) = 0
+     OR position('v_unallocated_before + 0.005' in v_definition) = 0
+     OR position('v_unallocated_after < -0.005' in v_definition) = 0 THEN
+    RAISE EXCEPTION 'REGRESSION: FX/card residual RPC is missing the strict penny-safe remaining guard';
+  END IF;
+
   IF to_regprocedure('public.staff_reverse_dva_statement_line_allocation(uuid,text)') IS NULL THEN
     RAISE EXCEPTION 'REGRESSION: allocation reversal RPC is missing';
   END IF;
@@ -534,25 +545,65 @@ BEGIN
     RAISE EXCEPTION 'REGRESSION supplier B reapply: remaining %', v_result->>'statement_remaining_after_gbp';
   END IF;
 
-  v_result := public.staff_allocate_statement_line_to_fx_card_or_fee(
-    v_bundle_out_id, 'fx_card_difference', 95.03, 'Regression final FX/card residual');
-  IF COALESCE((v_result->>'balanced_yn')::boolean, false) IS DISTINCT FROM true THEN
-    RAISE EXCEPTION 'REGRESSION supplier FX: final residual did not balance line: %', v_result;
+  -- With exactly £95.03 remaining, £95.04 must fail without consuming a penny.
+  v_failed := false;
+  BEGIN
+    PERFORM public.staff_allocate_statement_line_to_fx_card_or_fee(
+      v_bundle_out_id, 'fx_card_difference', 95.04, 'Regression £95.04 rejection at £95.03 remaining');
+  EXCEPTION WHEN OTHERS THEN
+    v_failed := true;
+    IF SQLERRM NOT ILIKE '%over-allocate%' THEN
+      RAISE EXCEPTION 'REGRESSION supplier FX £95.04 guard: unexpected error: %', SQLERRM;
+    END IF;
+  END;
+  IF NOT v_failed
+     OR (SELECT confirmed_unallocated_gbp
+         FROM public.dva_statement_line_allocation_summary_vw
+         WHERE dva_statement_line_id = v_bundle_out_id) <> 95.03
+     OR EXISTS (
+       SELECT 1
+       FROM public.dva_statement_line_allocations
+       WHERE dva_statement_line_id = v_bundle_out_id
+         AND allocation_type IN ('fx_card_difference', 'bank_fee')
+         AND allocation_status = 'confirmed'
+     ) THEN
+    RAISE EXCEPTION 'REGRESSION supplier FX £95.04 guard: over-allocation was accepted or changed the £95.03 remaining balance';
   END IF;
 
-  -- A further penny must be rejected by the real write-time amount guard.
+  -- The exact rounded £95.03 remaining balance must be accepted in full.
+  v_result := public.staff_allocate_statement_line_to_fx_card_or_fee(
+    v_bundle_out_id, 'fx_card_difference', 95.03, 'Regression final FX/card residual');
+  IF (v_result->>'allocated_gbp_amount')::numeric <> 95.03
+     OR (v_result->>'confirmed_unallocated_before_gbp')::numeric <> 95.03
+     OR (v_result->>'confirmed_unallocated_after_gbp')::numeric <> 0
+     OR COALESCE((v_result->>'balanced_yn')::boolean, false) IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'REGRESSION supplier FX £95.03 acceptance: final residual did not balance line: %', v_result;
+  END IF;
+
+  -- At £0.00 remaining, a further real £0.01 write must be rejected.
   v_failed := false;
   BEGIN
     PERFORM public.staff_allocate_statement_line_to_fx_card_or_fee(
       v_bundle_out_id, 'fx_card_difference', 0.01, 'Regression over-allocation rejection');
   EXCEPTION WHEN OTHERS THEN
     v_failed := true;
-    IF SQLERRM NOT ILIKE '%over-allocate%' THEN
+    IF SQLERRM NOT ILIKE '%no remaining balance%' THEN
       RAISE EXCEPTION 'REGRESSION supplier over-allocation: unexpected error: %', SQLERRM;
     END IF;
   END;
   IF NOT v_failed THEN
     RAISE EXCEPTION 'REGRESSION supplier over-allocation: extra £0.01 was accepted';
+  END IF;
+
+  IF (SELECT confirmed_unallocated_gbp
+      FROM public.dva_statement_line_allocation_summary_vw
+      WHERE dva_statement_line_id = v_bundle_out_id) <> 0
+     OR (SELECT COALESCE(SUM(allocated_gbp_amount), 0)
+         FROM public.dva_statement_line_allocations
+         WHERE dva_statement_line_id = v_bundle_out_id
+           AND allocation_type = 'fx_card_difference'
+           AND allocation_status = 'confirmed') <> 95.03 THEN
+    RAISE EXCEPTION 'REGRESSION supplier £0.00 guard: rejected penny changed the balanced line';
   END IF;
 
   SELECT COALESCE(SUM(allocated_gbp_amount), 0) INTO v_amount
@@ -576,6 +627,26 @@ BEGIN
   ) duplicates;
   IF v_count <> 0 THEN
     RAISE EXCEPTION 'REGRESSION supplier final: duplicate active invoice allocations remain';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM public.dva_statement_lines dsl
+    JOIN public.dva_statement_line_allocations a
+      ON a.dva_statement_line_id = dsl.id
+    WHERE dsl.id = v_bundle_out_id
+      AND a.allocation_status = 'confirmed'
+    GROUP BY dsl.amount_gbp_equivalent
+    HAVING ROUND(SUM(a.allocated_gbp_amount)::numeric, 2)
+      > ROUND(dsl.amount_gbp_equivalent::numeric, 2) + 0.005
+  ) THEN
+    RAISE EXCEPTION 'REGRESSION supplier final: confirmed allocation total exceeds the physical statement amount';
+  END IF;
+
+  IF (SELECT overconsumed_gbp
+      FROM public.statement_line_control_position_v1
+      WHERE statement_line_id = v_bundle_out_id) IS DISTINCT FROM 0::numeric THEN
+    RAISE EXCEPTION 'REGRESSION supplier final: statement-line control position is overconsumed';
   END IF;
 
   IF (SELECT COUNT(DISTINCT a.order_id) FROM public.dva_statement_line_allocations a WHERE a.dva_statement_line_id = v_bundle_out_id AND a.allocation_type = 'supplier_invoice' AND a.allocation_status = 'confirmed') <> 1
@@ -609,7 +680,6 @@ BEGIN
     AND allocation_status = 'confirmed';
 
   IF v_consumed <> 890 OR v_remaining <> 0 OR v_status <> 'balanced' OR v_amount <> 95.03
-     OR (SELECT overconsumed_gbp FROM public.statement_line_control_position_v1 WHERE statement_line_id = v_bundle_out_id) <> 0
      OR (SELECT COUNT(*) FROM public.dva_statement_line_allocations WHERE id = v_allocation_b_id AND allocation_status = 'reversed' AND reversed_at IS NOT NULL AND reversed_by_staff_id = v_staff_id) <> 1 THEN
     RAISE EXCEPTION 'REGRESSION supplier final: total %, remaining %, status %, FX %',
       v_consumed, v_remaining, v_status, v_amount;
