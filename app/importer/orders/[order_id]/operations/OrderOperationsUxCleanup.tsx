@@ -130,10 +130,10 @@ export default function OrderOperationsUxCleanup({
     }
 
     if (bundleSummary && !evidenceSection.querySelector("[data-order-invoice-bundle-total='true']")) {
-      const expectedBundleTotal = bundleSummary.acceptedEstimateGbp
-        + bundleSummary.activeDeliveryGbp
-        - bundleSummary.activeDiscountGbp;
-      const variance = expectedBundleTotal - bundleSummary.activeInvoiceTotalGbp;
+      // Each entered supplier invoice total is the full gross invoice amount.
+      // Delivery/discount rows classify amounts already contained in that total;
+      // adding or subtracting them again creates a false variance.
+      const variance = bundleSummary.acceptedEstimateGbp - bundleSummary.activeInvoiceTotalGbp;
       const matched = Math.abs(variance) < 0.01;
       const summary = document.createElement("div");
       summary.setAttribute("data-order-invoice-bundle-total", "true");
@@ -142,15 +142,15 @@ export default function OrderOperationsUxCleanup({
         <div class="flex flex-wrap items-center justify-between gap-3">
           <div>
             <p class="font-semibold">Order invoice bundle total</p>
-            <p class="mt-1 text-xs">The accepted estimate is checked once against the sum of all active supplier invoices, not repeated against every invoice.</p>
+            <p class="mt-1 text-xs">The accepted estimate is checked once against the sum of all active gross supplier invoice totals. Delivery and discount below are classifications already included in those invoice totals.</p>
           </div>
           <span class="rounded-full px-3 py-1 text-xs font-semibold ${matched ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}">${matched ? "Bundle total matched" : "Bundle total variance"}</span>
         </div>
         <div class="mt-3 grid gap-3 md:grid-cols-5">
           <div><span class="text-xs opacity-70">Accepted estimate</span><div class="font-semibold">${gbp(bundleSummary.acceptedEstimateGbp)}</div></div>
-          <div><span class="text-xs opacity-70">Delivery</span><div class="font-semibold">${gbp(bundleSummary.activeDeliveryGbp)}</div></div>
-          <div><span class="text-xs opacity-70">Discount</span><div class="font-semibold">-${gbp(bundleSummary.activeDiscountGbp)}</div></div>
-          <div><span class="text-xs opacity-70">Active invoice total</span><div class="font-semibold">${gbp(bundleSummary.activeInvoiceTotalGbp)}</div></div>
+          <div><span class="text-xs opacity-70">Delivery included in invoices</span><div class="font-semibold">${gbp(bundleSummary.activeDeliveryGbp)}</div></div>
+          <div><span class="text-xs opacity-70">Discount included in invoices</span><div class="font-semibold">-${gbp(bundleSummary.activeDiscountGbp)}</div></div>
+          <div><span class="text-xs opacity-70">Active gross invoice total</span><div class="font-semibold">${gbp(bundleSummary.activeInvoiceTotalGbp)}</div></div>
           <div><span class="text-xs opacity-70">Variance</span><div class="font-semibold">${variance > 0 ? "+" : ""}${gbp(variance)}</div></div>
         </div>
       `;
