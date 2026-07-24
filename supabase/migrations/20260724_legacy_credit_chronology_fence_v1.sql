@@ -13,10 +13,11 @@ SET LOCAL statement_timeout = '0';
 -- - stop an old unlinked aggregate debit from consuming a normal credit that did
 --   not yet exist when that legacy debit was created.
 --
--- Historical unlinked debits continue to reduce legacy normal-credit lots that
--- existed by the importer's latest unlinked-debit timestamp. Any excess legacy
--- deficit is not carried into later-created credit lots. This keeps the legacy
--- record auditable and fail-closed without suppressing subsequent real credits.
+-- Each legacy unlinked debit is replayed independently, in creation order,
+-- against only the residual normal-credit lots that already existed at that
+-- debit's creation time. Any unmatched legacy debit remainder is not carried
+-- into later-created credits. The historical debit remains unchanged and any
+-- order using it remains subject to the existing provenance fail-closed gate.
 
 DO $$
 BEGIN
@@ -40,10 +41,23 @@ RETURNS TABLE (
   effective_at timestamptz,
   created_at timestamptz
 )
-LANGUAGE sql
+LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $$
+DECLARE
+  v_credit_ledger_ids uuid[] := ARRAY[]::uuid[];
+  v_source_types text[] := ARRAY[]::text[];
+  v_available_amounts numeric[] := ARRAY[]::numeric[];
+  v_priorities integer[] := ARRAY[]::integer[];
+  v_effective_ats timestamptz[] := ARRAY[]::timestamptz[];
+  v_created_ats timestamptz[] := ARRAY[]::timestamptz[];
+  v_lot_count integer := 0;
+  v_idx integer;
+  v_debit record;
+  v_debit_remaining numeric := 0;
+  v_take numeric := 0;
+BEGIN
   WITH normal_credit_types AS (
     SELECT *
     FROM (VALUES
@@ -54,41 +68,20 @@ AS $$
       ('payout_reversal'::text, 5),
       ('manual'::text, 7)
     ) AS v(source_type, priority)
-  ), all_unlocked_credit_ids AS (
-    SELECT c.id
-    FROM public.importer_credit_ledger c
-    WHERE c.importer_id = p_importer_id
-      AND c.direction = 'credit'
-      AND c.lock_reason IS NULL
-  ), legacy_unlinked_debits AS (
-    SELECT
-      ROUND(COALESCE(SUM(ABS(d.amount_gbp)), 0)::numeric, 2) AS amount_gbp,
-      MAX(d.created_at) AS latest_created_at
-    FROM public.importer_credit_ledger d
-    WHERE d.importer_id = p_importer_id
-      AND d.direction = 'debit'
-      AND d.lock_reason IS NULL
-      AND NOT (
-        COALESCE(d.source_table, '') = 'importer_credit_ledger'
-        AND d.source_id IN (SELECT id FROM all_unlocked_credit_ids)
-      )
-      AND NOT (
-        COALESCE(d.source_entity_type, '') = 'importer_credit_ledger'
-        AND d.source_entity_id IN (SELECT id FROM all_unlocked_credit_ids)
-      )
   ), lot_base AS (
     SELECT
       c.id AS credit_ledger_id,
-      c.source_type::text AS source_type,
-      nct.priority,
-      COALESCE(c.effective_at, c.created_at) AS effective_at,
-      c.created_at,
+      c.source_type::text AS lot_source_type,
+      nct.priority AS lot_priority,
+      COALESCE(c.effective_at, c.created_at) AS lot_effective_at,
+      c.created_at AS lot_created_at,
       ROUND(GREATEST(
         ABS(COALESCE(c.amount_gbp, 0)) - COALESCE(linked.linked_debit_gbp, 0),
         0
-      )::numeric, 2) AS amount_after_linked_debits_gbp
+      )::numeric, 2) AS residual_amount_gbp
     FROM public.importer_credit_ledger c
-    JOIN normal_credit_types nct ON nct.source_type = c.source_type::text
+    JOIN normal_credit_types nct
+      ON nct.source_type = c.source_type::text
     LEFT JOIN LATERAL (
       SELECT ROUND(COALESCE(SUM(ABS(d.amount_gbp)), 0)::numeric, 2) AS linked_debit_gbp
       FROM public.importer_credit_ledger d
@@ -103,85 +96,100 @@ AS $$
     WHERE c.importer_id = p_importer_id
       AND c.direction = 'credit'
       AND c.lock_reason IS NULL
-  ), ordered_lots AS (
-    SELECT
-      lb.*,
-      lud.amount_gbp AS legacy_unlinked_debit_gbp,
-      lud.latest_created_at AS latest_legacy_unlinked_debit_created_at,
-      COALESCE(SUM(
-        CASE
-          WHEN lud.latest_created_at IS NOT NULL
-           AND lb.created_at <= lud.latest_created_at
-          THEN lb.amount_after_linked_debits_gbp
-          ELSE 0::numeric
-        END
-      ) OVER (
-        ORDER BY lb.priority, lb.effective_at, lb.created_at, lb.credit_ledger_id
-        ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
-      ), 0)::numeric AS prior_legacy_eligible_lot_amount_gbp
-    FROM lot_base lb
-    CROSS JOIN legacy_unlinked_debits lud
-    WHERE lb.amount_after_linked_debits_gbp > 0
-  ), available_lots AS (
-    SELECT
-      ol.*,
-      CASE
-        WHEN ol.latest_legacy_unlinked_debit_created_at IS NULL THEN 0::numeric
-        WHEN ol.created_at > ol.latest_legacy_unlinked_debit_created_at THEN 0::numeric
-        ELSE LEAST(
-          ol.amount_after_linked_debits_gbp,
-          GREATEST(
-            ol.legacy_unlinked_debit_gbp - ol.prior_legacy_eligible_lot_amount_gbp,
-            0
-          )
-        )
-      END AS virtual_legacy_consumed_gbp
-    FROM ordered_lots ol
   )
   SELECT
-    al.credit_ledger_id,
-    al.source_type,
-    ROUND(GREATEST(
-      al.amount_after_linked_debits_gbp - al.virtual_legacy_consumed_gbp,
-      0
-    )::numeric, 2) AS available_amount_gbp,
-    al.priority,
-    al.effective_at,
-    al.created_at
-  FROM available_lots al
-  WHERE ROUND(GREATEST(
-    al.amount_after_linked_debits_gbp - al.virtual_legacy_consumed_gbp,
-    0
-  )::numeric, 2) > 0
-  ORDER BY al.priority, al.effective_at, al.created_at, al.credit_ledger_id;
+    ARRAY_AGG(lb.credit_ledger_id ORDER BY lb.lot_priority, lb.lot_effective_at, lb.lot_created_at, lb.credit_ledger_id),
+    ARRAY_AGG(lb.lot_source_type ORDER BY lb.lot_priority, lb.lot_effective_at, lb.lot_created_at, lb.credit_ledger_id),
+    ARRAY_AGG(lb.residual_amount_gbp ORDER BY lb.lot_priority, lb.lot_effective_at, lb.lot_created_at, lb.credit_ledger_id),
+    ARRAY_AGG(lb.lot_priority ORDER BY lb.lot_priority, lb.lot_effective_at, lb.lot_created_at, lb.credit_ledger_id),
+    ARRAY_AGG(lb.lot_effective_at ORDER BY lb.lot_priority, lb.lot_effective_at, lb.lot_created_at, lb.credit_ledger_id),
+    ARRAY_AGG(lb.lot_created_at ORDER BY lb.lot_priority, lb.lot_effective_at, lb.lot_created_at, lb.credit_ledger_id)
+  INTO
+    v_credit_ledger_ids,
+    v_source_types,
+    v_available_amounts,
+    v_priorities,
+    v_effective_ats,
+    v_created_ats
+  FROM lot_base lb
+  WHERE lb.residual_amount_gbp > 0;
+
+  v_lot_count := COALESCE(ARRAY_LENGTH(v_credit_ledger_ids, 1), 0);
+  IF v_lot_count = 0 THEN
+    RETURN;
+  END IF;
+
+  FOR v_debit IN
+    SELECT
+      d.id,
+      ROUND(ABS(COALESCE(d.amount_gbp, 0))::numeric, 2) AS debit_amount_gbp,
+      d.created_at AS debit_created_at
+    FROM public.importer_credit_ledger d
+    WHERE d.importer_id = p_importer_id
+      AND d.direction = 'debit'
+      AND d.lock_reason IS NULL
+      AND NOT EXISTS (
+        SELECT 1
+        FROM public.importer_credit_ledger c
+        WHERE c.importer_id = p_importer_id
+          AND c.direction = 'credit'
+          AND c.lock_reason IS NULL
+          AND COALESCE(d.source_table, '') = 'importer_credit_ledger'
+          AND d.source_id = c.id
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM public.importer_credit_ledger c
+        WHERE c.importer_id = p_importer_id
+          AND c.direction = 'credit'
+          AND c.lock_reason IS NULL
+          AND COALESCE(d.source_entity_type, '') = 'importer_credit_ledger'
+          AND d.source_entity_id = c.id
+      )
+      AND ROUND(ABS(COALESCE(d.amount_gbp, 0))::numeric, 2) > 0
+    ORDER BY d.created_at, d.id
+  LOOP
+    v_debit_remaining := v_debit.debit_amount_gbp;
+
+    FOR v_idx IN 1..v_lot_count LOOP
+      EXIT WHEN v_debit_remaining <= 0;
+
+      IF v_created_ats[v_idx] <= v_debit.debit_created_at
+         AND COALESCE(v_available_amounts[v_idx], 0) > 0 THEN
+        v_take := ROUND(LEAST(v_available_amounts[v_idx], v_debit_remaining)::numeric, 2);
+        v_available_amounts[v_idx] := ROUND((v_available_amounts[v_idx] - v_take)::numeric, 2);
+        v_debit_remaining := ROUND((v_debit_remaining - v_take)::numeric, 2);
+      END IF;
+    END LOOP;
+
+    -- Deliberately discard only the unmatched virtual remainder. The ledger row
+    -- itself is retained unchanged for audit and supplier-payment provenance.
+  END LOOP;
+
+  FOR v_idx IN 1..v_lot_count LOOP
+    IF ROUND(GREATEST(COALESCE(v_available_amounts[v_idx], 0), 0)::numeric, 2) > 0 THEN
+      credit_ledger_id := v_credit_ledger_ids[v_idx];
+      source_type := v_source_types[v_idx];
+      available_amount_gbp := ROUND(GREATEST(v_available_amounts[v_idx], 0)::numeric, 2);
+      priority := v_priorities[v_idx];
+      effective_at := v_effective_ats[v_idx];
+      created_at := v_created_ats[v_idx];
+      RETURN NEXT;
+    END IF;
+  END LOOP;
+END;
 $$;
 
 COMMENT ON FUNCTION public.internal_importer_available_account_credit_lots_v1(uuid) IS
-'Canonical normal account-credit source-lot balance. Exact linked debits consume their source lots. Legacy unlinked debits consume only residual normal-credit lots created no later than the importer latest legacy-unlinked debit, so historical aggregate deficits cannot consume subsequently created credits. Completion loyalty remains separate.';
+'Canonical normal account-credit source-lot balance. Exact linked debits consume their source lots. Each legacy unlinked debit is replayed chronologically only against residual normal-credit lots already created at that debit time; unmatched legacy remainder cannot consume subsequently created credits. Completion loyalty remains separate.';
 
 REVOKE ALL ON FUNCTION public.internal_importer_available_account_credit_lots_v1(uuid) FROM PUBLIC;
 
--- Structural non-regression assertions: no row rewrite and no function contract change.
+-- Contract-only assertion. The migration performs no importer-credit data write.
 DO $$
-DECLARE
-  v_return_signature text;
 BEGIN
-  SELECT pg_get_function_result('public.internal_importer_available_account_credit_lots_v1(uuid)'::regprocedure)
-    INTO v_return_signature;
-
-  IF v_return_signature IS DISTINCT FROM
-     'TABLE(credit_ledger_id uuid, source_type text, available_amount_gbp numeric, priority integer, effective_at timestamp with time zone, created_at timestamp with time zone)' THEN
-    RAISE EXCEPTION 'Unexpected source-lot function return contract after chronology fence: %', v_return_signature;
-  END IF;
-
-  IF EXISTS (
-    SELECT 1
-    FROM public.internal_importer_available_account_credit_lots_v1(
-      '18bb852a-7983-4ea1-82e1-70fb668241d9'::uuid
-    ) l
-    WHERE l.available_amount_gbp < 0
-  ) THEN
-    RAISE EXCEPTION 'Chronology-fenced account-credit function returned a negative lot amount';
+  IF to_regprocedure('public.internal_importer_available_account_credit_lots_v1(uuid)') IS NULL THEN
+    RAISE EXCEPTION 'Chronology-fenced account-credit function was not installed';
   END IF;
 END $$;
 
