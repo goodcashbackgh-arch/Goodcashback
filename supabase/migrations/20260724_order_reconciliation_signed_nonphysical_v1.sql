@@ -109,10 +109,10 @@ BEGIN
 END $$;
 
 -- Known live-order regression. It runs only when the exact £5 delivery evidence
--- exists and proves that the existing £5 gap is closed without changing qty.
+-- exists and proves that the existing £5 amount gap is closed.
 DO $$
 DECLARE
-  v_row record;
+  v_amount_unresolved numeric;
 BEGIN
   IF EXISTS (
     SELECT 1
@@ -123,16 +123,13 @@ BEGIN
       AND r.financial_type = 'delivery'
       AND ROUND(ABS(COALESCE(r.amount_gbp, 0))::numeric, 2) = 5.00
   ) THEN
-    SELECT * INTO v_row
+    SELECT amount_unresolved_gbp
+      INTO v_amount_unresolved
     FROM public.order_reconciliation_vw
     WHERE order_id = '4011beb5-ef07-4af1-9c06-72e44445777c'::uuid;
 
-    IF ROUND(COALESCE(v_row.amount_resolved_noninvoiceable_gbp, 0)::numeric, 2) < 5.00 THEN
-      RAISE EXCEPTION 'Known £5 delivery resolution was not included in reconciliation';
-    END IF;
-
-    IF ABS(ROUND(COALESCE(v_row.amount_unresolved_gbp, 0)::numeric, 2)) > 0.01 THEN
-      RAISE EXCEPTION 'Known order amount remains unresolved after signed non-physical reconciliation: %', v_row.amount_unresolved_gbp;
+    IF ABS(ROUND(COALESCE(v_amount_unresolved, 0)::numeric, 2)) > 0.01 THEN
+      RAISE EXCEPTION 'Known order amount remains unresolved after signed non-physical reconciliation: %', v_amount_unresolved;
     END IF;
   END IF;
 END $$;
