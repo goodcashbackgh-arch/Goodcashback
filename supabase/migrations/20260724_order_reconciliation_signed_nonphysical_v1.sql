@@ -3,79 +3,31 @@ BEGIN;
 SET LOCAL lock_timeout = '15s';
 SET LOCAL statement_timeout = '0';
 
--- Reconcile explicit non-physical supplier-invoice resolutions without changing
--- source invoice lines, tracking eligibility, disputes, supplier approvals or
--- accounting postings.
+-- Narrow reconciliation patch.
+-- Preserve every existing order_reconciliation_vw calculation and join exactly,
+-- then add each order's active non-physical financial resolution once.
+-- No invoice-line, dispute, approval, tracking, banking, VAT or Sage data is
+-- changed by this migration.
 --
--- Commercial sign is deterministic only for the currently explicit types:
---   delivery / fee  = increase the accounted order value
---   discount        = reduce the accounted order value
+-- Commercial sign is deterministic only for explicit types:
+--   delivery / fee  = increase accounted order value
+--   discount        = reduce accounted order value
 --   zero delivery   = zero
--- Ambiguous rounding / other rows remain in amount_unresolved_gbp rather than
--- being guessed into a sign.
+-- Ambiguous rounding / other rows remain unresolved rather than being guessed.
 
 DO $$
 BEGIN
-  IF to_regclass('public.orders') IS NULL THEN
-    RAISE EXCEPTION 'Missing public.orders';
-  END IF;
-  IF to_regclass('public.supplier_invoices') IS NULL THEN
-    RAISE EXCEPTION 'Missing public.supplier_invoices';
-  END IF;
-  IF to_regclass('public.supplier_invoice_lines') IS NULL THEN
-    RAISE EXCEPTION 'Missing public.supplier_invoice_lines';
-  END IF;
-  IF to_regclass('public.disputes') IS NULL THEN
-    RAISE EXCEPTION 'Missing public.disputes';
-  END IF;
-  IF to_regclass('public.dispute_lines') IS NULL THEN
-    RAISE EXCEPTION 'Missing public.dispute_lines';
-  END IF;
-  IF to_regclass('public.supplier_invoice_line_resolutions') IS NULL THEN
-    RAISE EXCEPTION 'Missing public.supplier_invoice_line_resolutions';
-  END IF;
-  IF to_regclass('public.order_reconciliation_vw') IS NULL THEN
-    RAISE EXCEPTION 'Missing public.order_reconciliation_vw';
-  END IF;
+  IF to_regclass('public.orders') IS NULL THEN RAISE EXCEPTION 'Missing public.orders'; END IF;
+  IF to_regclass('public.supplier_invoices') IS NULL THEN RAISE EXCEPTION 'Missing public.supplier_invoices'; END IF;
+  IF to_regclass('public.supplier_invoice_lines') IS NULL THEN RAISE EXCEPTION 'Missing public.supplier_invoice_lines'; END IF;
+  IF to_regclass('public.disputes') IS NULL THEN RAISE EXCEPTION 'Missing public.disputes'; END IF;
+  IF to_regclass('public.dispute_lines') IS NULL THEN RAISE EXCEPTION 'Missing public.dispute_lines'; END IF;
+  IF to_regclass('public.supplier_invoice_line_resolutions') IS NULL THEN RAISE EXCEPTION 'Missing public.supplier_invoice_line_resolutions'; END IF;
+  IF to_regclass('public.order_reconciliation_vw') IS NULL THEN RAISE EXCEPTION 'Missing public.order_reconciliation_vw'; END IF;
 END $$;
 
 CREATE OR REPLACE VIEW public.order_reconciliation_vw AS
-WITH invoice_progress AS (
-  SELECT
-    si.order_id,
-    COALESCE(SUM(CASE
-      WHEN lower(btrim(COALESCE(sil.eligible_for_invoice_yn::text, ''))) IN ('y','yes','true','1')
-      THEN COALESCE(sil.qty_confirmed, 0)
-      ELSE 0
-    END), 0)::numeric AS qty_progressed_invoiceable,
-    COALESCE(SUM(CASE
-      WHEN lower(btrim(COALESCE(sil.eligible_for_invoice_yn::text, ''))) IN ('y','yes','true','1')
-      THEN COALESCE(sil.amount_confirmed, 0)
-      ELSE 0
-    END), 0)::numeric AS amount_progressed_invoiceable_gbp,
-    BOOL_OR(
-      lower(btrim(COALESCE(sil.eligible_for_invoice_yn::text, ''))) IN ('y','yes','true','1')
-    ) AS invoiceable_subset_released_yn
-  FROM public.supplier_invoices si
-  JOIN public.supplier_invoice_lines sil
-    ON sil.supplier_invoice_id = si.id
-  GROUP BY si.order_id
-), resolved_exceptions AS (
-  SELECT
-    d.order_id,
-    COALESCE(SUM(CASE
-      WHEN dl.line_status = 'resolved' THEN COALESCE(dl.qty_impact, 0)
-      ELSE 0
-    END), 0)::numeric AS qty_resolved_exception,
-    COALESCE(SUM(CASE
-      WHEN dl.line_status = 'resolved' THEN COALESCE(dl.amount_impact_gbp, 0)
-      ELSE 0
-    END), 0)::numeric AS amount_resolved_exception_gbp
-  FROM public.disputes d
-  JOIN public.dispute_lines dl
-    ON dl.dispute_id = d.id
-  GROUP BY d.order_id
-), resolved_nonphysical AS (
+WITH resolved_nonphysical AS (
   SELECT
     r.order_id,
     COALESCE(SUM(
@@ -91,60 +43,55 @@ WITH invoice_progress AS (
   WHERE r.active = true
     AND r.resolution_type = 'non_physical_financial'
   GROUP BY r.order_id
-), reconciled AS (
-  SELECT
-    o.id AS order_id,
-    o.total_qty_declared AS qty_target,
-    COALESCE(ip.qty_progressed_invoiceable, 0)::numeric AS qty_progressed_invoiceable,
-    COALESCE(re.qty_resolved_exception, 0)::numeric AS qty_resolved_noninvoiceable,
-    (
-      COALESCE(o.total_qty_declared, 0)::numeric
-      - COALESCE(ip.qty_progressed_invoiceable, 0)::numeric
-      - COALESCE(re.qty_resolved_exception, 0)::numeric
-    ) AS qty_unresolved,
-    o.order_total_gbp_declared AS amount_target_gbp,
-    COALESCE(ip.amount_progressed_invoiceable_gbp, 0)::numeric AS amount_progressed_invoiceable_gbp,
-    (
-      COALESCE(re.amount_resolved_exception_gbp, 0)::numeric
-      + COALESCE(rn.signed_nonphysical_amount_gbp, 0)::numeric
-    ) AS amount_resolved_noninvoiceable_gbp,
-    (
-      COALESCE(o.order_total_gbp_declared, 0)::numeric
-      - COALESCE(ip.amount_progressed_invoiceable_gbp, 0)::numeric
-      - COALESCE(re.amount_resolved_exception_gbp, 0)::numeric
-      - COALESCE(rn.signed_nonphysical_amount_gbp, 0)::numeric
-    ) AS amount_unresolved_gbp,
-    COALESCE(ip.invoiceable_subset_released_yn, false) AS invoiceable_subset_released_yn
-  FROM public.orders o
-  LEFT JOIN invoice_progress ip
-    ON ip.order_id = o.id
-  LEFT JOIN resolved_exceptions re
-    ON re.order_id = o.id
-  LEFT JOIN resolved_nonphysical rn
-    ON rn.order_id = o.id
 )
 SELECT
-  r.order_id,
-  r.qty_target,
-  r.qty_progressed_invoiceable,
-  r.qty_resolved_noninvoiceable,
-  r.qty_unresolved,
-  r.amount_target_gbp,
-  r.amount_progressed_invoiceable_gbp,
-  r.amount_resolved_noninvoiceable_gbp,
-  r.amount_unresolved_gbp,
-  r.invoiceable_subset_released_yn,
-  (
-    ABS(COALESCE(r.qty_unresolved, 0)) < 0.001
-    AND ABS(COALESCE(r.amount_unresolved_gbp, 0)) <= 0.01
-  ) AS whole_order_cleared_yn,
+  o.id AS order_id,
+  o.total_qty_declared AS qty_target,
+  COALESCE(SUM(CASE WHEN sil.eligible_for_invoice_yn = 'Y' THEN sil.qty_confirmed ELSE 0 END), 0) AS qty_progressed_invoiceable,
+  COALESCE(SUM(CASE WHEN dl.line_status = 'resolved' THEN dl.qty_impact ELSE 0 END), 0) AS qty_resolved_noninvoiceable,
+  o.total_qty_declared
+    - COALESCE(SUM(CASE WHEN sil.eligible_for_invoice_yn = 'Y' THEN sil.qty_confirmed ELSE 0 END), 0)
+    - COALESCE(SUM(CASE WHEN dl.line_status = 'resolved' THEN dl.qty_impact ELSE 0 END), 0)
+    AS qty_unresolved,
+  o.order_total_gbp_declared AS amount_target_gbp,
+  COALESCE(SUM(CASE WHEN sil.eligible_for_invoice_yn = 'Y' THEN sil.amount_confirmed ELSE 0 END), 0) AS amount_progressed_invoiceable_gbp,
+  COALESCE(SUM(CASE WHEN dl.line_status = 'resolved' THEN dl.amount_impact_gbp ELSE 0 END), 0)
+    + COALESCE(MAX(rn.signed_nonphysical_amount_gbp), 0)
+    AS amount_resolved_noninvoiceable_gbp,
+  o.order_total_gbp_declared
+    - COALESCE(SUM(CASE WHEN sil.eligible_for_invoice_yn = 'Y' THEN sil.amount_confirmed ELSE 0 END), 0)
+    - COALESCE(SUM(CASE WHEN dl.line_status = 'resolved' THEN dl.amount_impact_gbp ELSE 0 END), 0)
+    - COALESCE(MAX(rn.signed_nonphysical_amount_gbp), 0)
+    AS amount_unresolved_gbp,
+  CASE WHEN EXISTS (
+    SELECT 1
+    FROM public.supplier_invoice_lines sil2
+    JOIN public.supplier_invoices si2 ON si2.id = sil2.supplier_invoice_id
+    WHERE si2.order_id = o.id
+      AND sil2.eligible_for_invoice_yn = 'Y'
+  ) THEN true ELSE false END AS invoiceable_subset_released_yn,
+  CASE WHEN (
+    o.total_qty_declared
+      - COALESCE(SUM(CASE WHEN sil.eligible_for_invoice_yn = 'Y' THEN sil.qty_confirmed ELSE 0 END), 0)
+      - COALESCE(SUM(CASE WHEN dl.line_status = 'resolved' THEN dl.qty_impact ELSE 0 END), 0) = 0
+    AND o.order_total_gbp_declared
+      - COALESCE(SUM(CASE WHEN sil.eligible_for_invoice_yn = 'Y' THEN sil.amount_confirmed ELSE 0 END), 0)
+      - COALESCE(SUM(CASE WHEN dl.line_status = 'resolved' THEN dl.amount_impact_gbp ELSE 0 END), 0)
+      - COALESCE(MAX(rn.signed_nonphysical_amount_gbp), 0) = 0
+  ) THEN true ELSE false END AS whole_order_cleared_yn,
   now() AS last_refreshed_at
-FROM reconciled r;
+FROM public.orders o
+LEFT JOIN public.supplier_invoices si ON si.order_id = o.id
+LEFT JOIN public.supplier_invoice_lines sil ON sil.supplier_invoice_id = si.id
+LEFT JOIN public.disputes d ON d.order_id = o.id
+LEFT JOIN public.dispute_lines dl ON dl.dispute_id = d.id
+LEFT JOIN resolved_nonphysical rn ON rn.order_id = o.id
+GROUP BY o.id, o.total_qty_declared, o.order_total_gbp_declared;
 
 COMMENT ON VIEW public.order_reconciliation_vw IS
-'Canonical order reconciliation. Progressed physical lines and resolved disputes retain their existing treatment. Active non-physical financial resolutions contribute with explicit commercial sign: delivery/fee positive, discount negative, zero-value delivery zero; ambiguous types remain unresolved rather than guessed.';
+'Baseline order reconciliation preserved, with active non-physical financial resolutions added once per order using explicit commercial sign: delivery/fee positive, discount negative and zero-value delivery zero. Ambiguous types remain unresolved.';
 
--- Preserve the public view contract relied on by existing pages and helpers.
+-- Preserve the exact public view contract used by existing pages and helpers.
 DO $$
 DECLARE
   v_columns text;
@@ -161,8 +108,8 @@ BEGIN
   END IF;
 END $$;
 
--- Live-order regression: only run where the known evidence exists. This proves
--- the £5 delivery resolution closes the exact £5 amount gap without altering qty.
+-- Known live-order regression. It runs only when the exact £5 delivery evidence
+-- exists and proves that the existing £5 gap is closed without changing qty.
 DO $$
 DECLARE
   v_row record;
