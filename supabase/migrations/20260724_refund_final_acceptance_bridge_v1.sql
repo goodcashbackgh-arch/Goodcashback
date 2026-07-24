@@ -154,10 +154,11 @@ BEGIN
       )
       VALUES (
         p_dispute_id,
-        'refund_final_outcome_accepted',
+        'supervisor_note',
         'internal',
-        'system_refund_acceptance_bridge_v1',
+        'manual',
         concat(
+          '[REFUND_FINAL_ACCEPTANCE_BRIDGE_V1]', E'\n',
           'Refund pursuit was already approved at ',
           v_refund_approved_at,
           '. Retailer outcome was then marked accepted by operator ',
@@ -244,10 +245,11 @@ INSERT INTO public.dispute_messages (
 )
 SELECT
   a.id,
-  'refund_final_outcome_accepted',
+  'supervisor_note',
   'internal',
-  'migration_refund_acceptance_bridge_v1',
+  'manual',
   concat(
+    '[REFUND_FINAL_ACCEPTANCE_BRIDGE_V1]', E'\n',
     'Existing refund dispute aligned to awaiting_refund_credit. Refund pursuit was approved at ',
     a.refund_approved_at,
     ' and retailer acceptance or approved-current refund evidence already existed.'
@@ -257,7 +259,7 @@ WHERE NOT EXISTS (
   SELECT 1
   FROM public.dispute_messages dm
   WHERE dm.dispute_id = a.id
-    AND dm.generated_by IN ('system_refund_acceptance_bridge_v1', 'migration_refund_acceptance_bridge_v1')
+    AND dm.body LIKE '[REFUND_FINAL_ACCEPTANCE_BRIDGE_V1]%'
 );
 
 -- Guard the known live dispute when its proven prerequisites exist.
