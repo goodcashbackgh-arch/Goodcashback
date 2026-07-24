@@ -3,13 +3,11 @@ import ConfirmedSurplusCreditPatch from "./ConfirmedSurplusCreditPatch";
 import ExistingExceptionCases from "./ExistingExceptionCases";
 import { createClient } from "@/utils/supabase/server";
 
-type SurplusEvidenceRow = {
-  credit_created_gbp: number | string | null;
-  evidence_surplus_gbp: number | string | null;
-  evidence_status: string | null;
-  evidence_basis: string | null;
-  funding_total_gbp: number | string | null;
-  evidence_value_gbp: number | string | null;
+type SettlementRow = {
+  credit_added_to_account_gbp: number | string | null;
+  other_settlement_adjustment_gbp: number | string | null;
+  potential_additional_credit_gbp: number | string | null;
+  resolution_status: string | null;
 };
 
 function money(value: number | string | null | undefined) {
@@ -18,10 +16,6 @@ function money(value: number | string | null | undefined) {
     currency: "GBP",
     minimumFractionDigits: 2,
   }).format(Number(value ?? 0));
-}
-
-function pretty(value: string | null | undefined) {
-  return value ? value.replaceAll("_", " ") : "—";
 }
 
 export default async function ImporterReconciliationLayout({
@@ -34,30 +28,33 @@ export default async function ImporterReconciliationLayout({
   const { order_id: orderId } = await params;
   const supabase = await createClient();
   const { data } = await supabase
-    .from("order_surplus_evidence_position_v2")
-    .select("credit_created_gbp, evidence_surplus_gbp, evidence_status, evidence_basis, funding_total_gbp, evidence_value_gbp")
-    .eq("order_id", orderId)
+    .rpc("order_settlement_audience_v1", { p_order_id: orderId })
     .maybeSingle();
 
-  const evidence = data as SurplusEvidenceRow | null;
-  const creditCreated = Math.abs(Number(evidence?.credit_created_gbp ?? 0));
-  const surplus = Math.abs(Number(evidence?.evidence_surplus_gbp ?? 0));
-  const explainedSurplus = Math.min(creditCreated, surplus);
-  const showConfirmedCredit = evidence?.evidence_status === "credit_created" && surplus > 0 && explainedSurplus > 0;
+  const settlement = data as SettlementRow | null;
+  const credit = Math.max(Number(settlement?.credit_added_to_account_gbp ?? 0), 0);
+  const otherAdjustment = Math.max(Number(settlement?.other_settlement_adjustment_gbp ?? 0), 0);
+  const pending = Math.max(Number(settlement?.potential_additional_credit_gbp ?? 0), 0);
+  const totalDifference = credit + otherAdjustment + pending;
+  const fullyResolved = settlement?.resolution_status === "fully_resolved" && pending <= 0.01;
+  const overResolved = settlement?.resolution_status === "over_resolved_review";
+  const showSettlement = totalDifference > 0.01;
 
   return (
     <>
       <CompactInvoiceLinesPatch />
-      {showConfirmedCredit ? <ConfirmedSurplusCreditPatch /> : null}
-      {showConfirmedCredit ? (
+      {fullyResolved ? <ConfirmedSurplusCreditPatch /> : null}
+      {showSettlement ? (
         <div className="mx-auto max-w-7xl px-4 pt-4 sm:px-6 sm:pt-6">
-          <section className="rounded-3xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-950 shadow-sm">
-            <p className="font-black">Variance explained by confirmed customer credit</p>
-            <p className="mt-1 leading-6">
-              Funding total {money(evidence?.funding_total_gbp)} less evidence value {money(evidence?.evidence_value_gbp)} created a surplus of {money(surplus)}. {money(explainedSurplus)} of that surplus has been confirmed as customer credit. Evidence basis: {pretty(evidence?.evidence_basis)}.
+          <section className={`rounded-3xl border p-4 text-sm shadow-sm ${overResolved ? "border-rose-200 bg-rose-50 text-rose-950" : fullyResolved ? "border-emerald-200 bg-emerald-50 text-emerald-950" : "border-amber-200 bg-amber-50 text-amber-950"}`}>
+            <p className="font-black">
+              {overResolved ? "Settlement classification needs review" : fullyResolved ? "Settlement difference fully accounted for" : "Settlement difference partially accounted for"}
             </p>
-            <p className="mt-1 text-xs font-semibold text-emerald-800">
-              Keep the invoice-line variance visible for audit, but treat this variance as accounted for only up to the confirmed surplus amount.
+            <p className="mt-1 leading-6">
+              Total difference {money(totalDifference)}. Credit added {money(credit)}. Other settlement adjustment {money(otherAdjustment)}. Pending supervisor review {money(pending)}.
+            </p>
+            <p className="mt-1 text-xs font-semibold opacity-80">
+              No importer action is required. Invoice-line variance remains visible for audit.
             </p>
           </section>
         </div>
