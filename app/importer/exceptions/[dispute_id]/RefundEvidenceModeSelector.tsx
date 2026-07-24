@@ -79,16 +79,21 @@ function modeLabel(value: string | null | undefined) {
 
 function badgeClass(value: string | null | undefined) {
   const status = String(value ?? "");
-  if (["completed", "balanced", "approved_current", "accepted", "released_to_supplier_control", "matched_ready_to_release"].includes(status)) {
+  if (["completed", "balanced", "approved_current", "ref_corrected_approved", "accepted", "released_to_supplier_control", "matched_ready_to_release", "not_required"].includes(status)) {
     return "bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200";
   }
-  if (["needs_supervisor_review", "pending", "pending_review", "pending_ocr", "not_released", "not_required", "needs_operator_review"].includes(status)) {
+  if (["needs_supervisor_review", "pending", "pending_review", "pending_ocr", "not_released", "needs_operator_review"].includes(status)) {
     return "bg-amber-50 text-amber-800 ring-1 ring-amber-200";
   }
   if (["blocked", "failed", "rejected", "variance"].includes(status)) {
     return "bg-rose-50 text-rose-800 ring-1 ring-rose-200";
   }
   return "bg-slate-100 text-slate-700 ring-1 ring-slate-200";
+}
+
+function refundDocumentApproved(row: RefundDocumentHistoryRow) {
+  return ["approved_current", "ref_corrected_approved"].includes(String(row.supplier_approval_status ?? ""))
+    || ["approved_current", "ref_corrected_approved"].includes(String(row.supplier_control_status ?? ""));
 }
 
 function InvoiceSelector({ invoiceOptions }: { invoiceOptions: SupplierInvoiceOption[] }) {
@@ -310,8 +315,9 @@ function RefundDocumentHistory({ rows, disputeId }: { rows: RefundDocumentHistor
           {rows.map((row) => {
             const amount = row.expected_credit_note_total_gbp ?? row.captured_refund_amount_abs_gbp ?? row.expected_exception_amount_abs_gbp ?? 0;
             const resubmissionApproved = hasApprovedResubmission(row);
+            const approvedCurrent = refundDocumentApproved(row);
             return (
-              <article key={row.id} className={`rounded-2xl border p-4 text-sm ${resubmissionApproved ? "border-rose-200 bg-rose-50" : "border-slate-200 bg-slate-50"}`}>
+              <article key={row.id} className={`rounded-2xl border p-4 text-sm ${resubmissionApproved ? "border-rose-200 bg-rose-50" : approvedCurrent ? "border-emerald-200 bg-emerald-50" : "border-slate-200 bg-slate-50"}`}>
                 <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                   <div>
                     <p className="font-semibold text-slate-950">{modeLabel(row.document_mode)} · {gbp(amount)}</p>
@@ -324,12 +330,17 @@ function RefundDocumentHistory({ rows, disputeId }: { rows: RefundDocumentHistor
                     <span className={`rounded-full px-2 py-1 text-xs font-semibold ${badgeClass(row.supplier_approval_status)}`}>Approval {statusLabel(row.supplier_approval_status)}</span>
                   </div>
                 </div>
+                {approvedCurrent ? (
+                  <p className="mt-3 rounded-xl border border-emerald-200 bg-white p-3 text-xs font-semibold text-emerald-900">
+                    Approved current — no further supervisor approval is required.
+                  </p>
+                ) : null}
                 <div className="mt-3 flex flex-wrap gap-3 text-xs">
                   <a href={`/importer/exceptions/${disputeId}/refund-document-review/${row.id}`} className="font-semibold text-sky-700 underline">Review refund document lines</a>
                   {row.credit_note_file_url ? <a href={row.credit_note_file_url} target="_blank" rel="noreferrer" className="font-semibold text-sky-700 underline">Open credit note file</a> : null}
                   {row.refund_proof_file_url ? <a href={row.refund_proof_file_url} target="_blank" rel="noreferrer" className="font-semibold text-sky-700 underline">Open refund proof</a> : null}
                   <span className="text-slate-500">Control: {statusLabel(row.supplier_control_status)}</span>
-                  <span className="text-slate-500">Review: {statusLabel(row.supervisor_review_status)}</span>
+                  <span className={approvedCurrent ? "font-semibold text-emerald-800" : "text-slate-500"}>Review: {approvedCurrent ? "Not required — approved current" : statusLabel(row.supervisor_review_status)}</span>
                   {Math.abs(Number(row.variance_abs_gbp ?? 0)) > 0.01 ? <span className="font-semibold text-amber-700">Variance {gbp(row.variance_abs_gbp)}</span> : null}
                 </div>
                 {resubmissionApproved ? (

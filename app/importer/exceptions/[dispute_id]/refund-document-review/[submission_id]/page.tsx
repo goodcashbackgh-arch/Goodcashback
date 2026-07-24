@@ -126,10 +126,10 @@ function modeLabel(value: string | null | undefined) {
 
 function badgeClass(value: string | null | undefined) {
   const status = String(value ?? "");
-  if (["completed", "balanced", "matched_ready_to_release", "accepted", "confirmed", "operator_confirmed_ready_for_staff_control"].includes(status)) {
+  if (["completed", "balanced", "matched_ready_to_release", "accepted", "confirmed", "operator_confirmed_ready_for_staff_control", "approved_current", "ref_corrected_approved", "not_required"].includes(status)) {
     return "bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200";
   }
-  if (["needs_supervisor_review", "pending", "pending_ocr", "blocked", "not_released", "not_required", "operator_rejection_requested_wrong_upload"].includes(status)) {
+  if (["needs_supervisor_review", "pending", "pending_ocr", "blocked", "not_released", "operator_rejection_requested_wrong_upload"].includes(status)) {
     return "bg-amber-50 text-amber-800 ring-1 ring-amber-200";
   }
   if (["failed", "rejected", "variance"].includes(status)) {
@@ -143,7 +143,13 @@ function firstLine(value: DisputeLine["supplier_invoice_lines"]) {
   return Array.isArray(value) ? value[0] ?? null : value;
 }
 
+function isApprovedCurrent(submission: SubmissionRow) {
+  return ["approved_current", "ref_corrected_approved"].includes(String(submission.supplier_approval_status ?? ""))
+    || ["approved_current", "ref_corrected_approved"].includes(String(submission.supplier_control_status ?? ""));
+}
+
 function operatorDecisionLabel(submission: SubmissionRow) {
+  if (isApprovedCurrent(submission)) return "Approved current — no further approval required";
   if (submission.evidence_control_status === "operator_confirmed_ready_for_staff_control") return "Progressed to staff control queue";
   if (submission.evidence_control_status === "operator_rejection_requested_wrong_upload") return "Rejection/resubmission requested";
   if (submission.match_status === "matched_ready_to_release") return "Ready to progress";
@@ -254,6 +260,7 @@ export default async function OperatorRefundDocumentReviewPage({
   const qtyMatched = Math.abs(qtyVariance) < 0.005 || baselineQty === 0;
   const amountMatched = Math.abs(amountVariance) <= 0.01;
   const lineSetBalanced = amountMatched && (qtyMatched || submission.document_mode !== "credit_note");
+  const approvedCurrent = isApprovedCurrent(submission);
   const editable = canOperatorEdit(submission, lines);
   const operatorDecisionMade = ["operator_confirmed_ready_for_staff_control", "operator_rejection_requested_wrong_upload"].includes(String(submission.evidence_control_status ?? ""));
   const canConfirm = editable && lines.length > 0 && amountMatched;
@@ -272,9 +279,16 @@ export default async function OperatorRefundDocumentReviewPage({
             Exception {disputeId.slice(0, 8)} · Order {order?.order_ref ?? dispute.order_id}
           </h1>
           <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-600">
-            Check the submitted refund document lines. If the upload is correct, progress it to the staff control queue. If it is the wrong upload or cannot be used, request rejection/resubmission.
+            {approvedCurrent
+              ? "This refund document is approved current. The detail below is retained as read-only audit evidence."
+              : "Check the submitted refund document lines. If the upload is correct, progress it to the staff control queue. If it is the wrong upload or cannot be used, request rejection/resubmission."}
           </p>
           <p className="mt-2 text-sm text-slate-600">Signed in as: {operator.full_name}</p>
+          {approvedCurrent ? (
+            <p className="mt-4 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-3 text-sm font-semibold text-emerald-900">
+              Approved current — no further supervisor approval is required.
+            </p>
+          ) : null}
           {qp.success ? <p className="mt-4 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">{qp.success}</p> : null}
           {qp.error ? <p className="mt-4 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-900">{qp.error}</p> : null}
         </section>
@@ -344,13 +358,13 @@ export default async function OperatorRefundDocumentReviewPage({
             <div>
               <p className="text-sm font-medium uppercase tracking-[0.16em] text-slate-500">Line check</p>
               <h2 className="mt-1 text-xl font-semibold">Refund document lines</h2>
-              <p className="mt-2 text-sm text-slate-600">Check OCR/manual lines before deciding. OCR lines are editable but not deletable. Manual correction lines can be added or deleted before the operator decision.</p>
+              <p className="mt-2 text-sm text-slate-600">{approvedCurrent ? "Approved lines are read-only audit evidence." : "Check OCR/manual lines before deciding. OCR lines are editable but not deletable. Manual correction lines can be added or deleted before the operator decision."}</p>
             </div>
             <div className="flex flex-wrap gap-2">
               <span className={`rounded-full px-3 py-1 text-xs font-semibold ${badgeClass(submission.ocr_status)}`}>OCR {statusLabel(submission.ocr_status)}</span>
               <span className={`rounded-full px-3 py-1 text-xs font-semibold ${badgeClass(submission.match_status)}`}>Match {statusLabel(submission.match_status)}</span>
               <span className={`rounded-full px-3 py-1 text-xs font-semibold ${badgeClass(submission.amount_balance_status)}`}>Amount {statusLabel(submission.amount_balance_status)}</span>
-              <span className={`rounded-full px-3 py-1 text-xs font-semibold ${badgeClass(submission.evidence_control_status)}`}>{operatorDecisionLabel(submission)}</span>
+              <span className={`rounded-full px-3 py-1 text-xs font-semibold ${badgeClass(approvedCurrent ? "approved_current" : submission.evidence_control_status)}`}>{operatorDecisionLabel(submission)}</span>
             </div>
           </div>
 
@@ -387,7 +401,7 @@ export default async function OperatorRefundDocumentReviewPage({
                     <button type="submit" disabled={locked} className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">Save line</button>
                   </form>
                   <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-slate-600">
-                    <span>{locked ? "Line locked after decision/staff action" : "Editable before operator decision"}</span>
+                    <span>{approvedCurrent ? "Approved current — read-only" : locked ? "Line locked after decision/staff action" : "Editable before operator decision"}</span>
                     {line.line_source === "manually_added" ? (
                       <form action={deleteManualRefundDocumentLineAction}>
                         <input type="hidden" name="dispute_id" value={disputeId} />
@@ -404,60 +418,70 @@ export default async function OperatorRefundDocumentReviewPage({
           </div>
         </section>
 
-        <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-          <p className="text-sm font-medium uppercase tracking-[0.16em] text-slate-500">Manual line</p>
-          <h2 className="mt-1 text-xl font-semibold">Add manual correction line</h2>
-          <p className="mt-2 text-sm text-slate-600">Use this only when OCR missed a refund line or the retailer provided refund proof/no-document evidence without clean line extraction.</p>
-          <form action={addManualRefundDocumentLineAction} className="mt-4 grid gap-3 md:grid-cols-[1.7fr_1fr_1fr_90px_150px_auto] md:items-end">
-            <input type="hidden" name="dispute_id" value={disputeId} />
-            <input type="hidden" name="refund_evidence_submission_id" value={submissionId} />
-            <label className="block text-sm font-semibold text-slate-700">
-              Description
-              <input name="description" required disabled={!editable} className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm disabled:bg-slate-100" />
-            </label>
-            <label className="block text-sm font-semibold text-slate-700">
-              SKU
-              <input name="retailer_sku" disabled={!editable} className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm disabled:bg-slate-100" />
-            </label>
-            <label className="block text-sm font-semibold text-slate-700">
-              Size
-              <input name="size" disabled={!editable} className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm disabled:bg-slate-100" />
-            </label>
-            <label className="block text-sm font-semibold text-slate-700">
-              Qty
-              <input name="qty" type="number" step="0.01" min="0" defaultValue="1" disabled={!editable} className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm disabled:bg-slate-100" />
-            </label>
-            <label className="block text-sm font-semibold text-slate-700">
-              Amount GBP
-              <input name="amount_gbp" type="number" step="0.01" min="0" required disabled={!editable} className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm disabled:bg-slate-100" />
-            </label>
-            <button type="submit" disabled={!editable} className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">Add line</button>
-          </form>
-        </section>
+        {!approvedCurrent ? (
+          <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+            <p className="text-sm font-medium uppercase tracking-[0.16em] text-slate-500">Manual line</p>
+            <h2 className="mt-1 text-xl font-semibold">Add manual correction line</h2>
+            <p className="mt-2 text-sm text-slate-600">Use this only when OCR missed a refund line or the retailer provided refund proof/no-document evidence without clean line extraction.</p>
+            <form action={addManualRefundDocumentLineAction} className="mt-4 grid gap-3 md:grid-cols-[1.7fr_1fr_1fr_90px_150px_auto] md:items-end">
+              <input type="hidden" name="dispute_id" value={disputeId} />
+              <input type="hidden" name="refund_evidence_submission_id" value={submissionId} />
+              <label className="block text-sm font-semibold text-slate-700">
+                Description
+                <input name="description" required disabled={!editable} className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm disabled:bg-slate-100" />
+              </label>
+              <label className="block text-sm font-semibold text-slate-700">
+                SKU
+                <input name="retailer_sku" disabled={!editable} className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm disabled:bg-slate-100" />
+              </label>
+              <label className="block text-sm font-semibold text-slate-700">
+                Size
+                <input name="size" disabled={!editable} className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm disabled:bg-slate-100" />
+              </label>
+              <label className="block text-sm font-semibold text-slate-700">
+                Qty
+                <input name="qty" type="number" step="0.01" min="0" defaultValue="1" disabled={!editable} className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm disabled:bg-slate-100" />
+              </label>
+              <label className="block text-sm font-semibold text-slate-700">
+                Amount GBP
+                <input name="amount_gbp" type="number" step="0.01" min="0" required disabled={!editable} className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm disabled:bg-slate-100" />
+              </label>
+              <button type="submit" disabled={!editable} className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">Add line</button>
+            </form>
+          </section>
+        ) : null}
 
-        <section className="rounded-3xl border border-sky-200 bg-sky-50 p-5 shadow-sm sm:p-6">
-          <p className="text-sm font-medium uppercase tracking-[0.16em] text-sky-700">Operator decision</p>
-          <h2 className="mt-1 text-xl font-semibold">Progress correct upload or request rejection</h2>
-          <p className="mt-2 text-sm text-slate-700">Choose one path. If the refund document lines are correct, progress it to the staff control queue. If this is the wrong upload, ask staff to reject it or request resubmission.</p>
-          <div className="mt-4 grid gap-3 lg:grid-cols-2">
-            <form action={confirmRefundDocumentLinesAction} className="space-y-3 rounded-2xl border border-sky-200 bg-white p-4">
-              <input type="hidden" name="dispute_id" value={disputeId} />
-              <input type="hidden" name="refund_evidence_submission_id" value={submissionId} />
-              <textarea name="notes" rows={3} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Optional progress notes" />
-              <button type="submit" disabled={!canConfirm || operatorDecisionMade} className="w-full rounded-xl bg-sky-700 px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">
-                {operatorDecisionMade ? "Decision already sent" : "Progress correct upload to staff control"}
-              </button>
-              {!amountMatched ? <p className="text-xs text-amber-800">Cannot progress until refund document value matches the expected value.</p> : null}
-            </form>
-            <form action={requestSupervisorRefundDocumentResubmissionAction} className="space-y-3 rounded-2xl border border-amber-200 bg-white p-4">
-              <input type="hidden" name="dispute_id" value={disputeId} />
-              <input type="hidden" name="refund_evidence_submission_id" value={submissionId} />
-              <textarea name="reason" rows={3} required className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Explain why this is the wrong upload or needs resubmission." />
-              <button type="submit" disabled={!editable || operatorDecisionMade} className="w-full rounded-xl border border-amber-300 bg-amber-50 px-5 py-3 text-sm font-semibold text-amber-900 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400">Request rejection / resubmission</button>
-            </form>
-          </div>
-          {!editable ? <p className="mt-3 rounded-xl border border-amber-200 bg-white p-3 text-sm text-amber-900">This document is locked because an operator decision or staff action already exists.</p> : null}
-        </section>
+        {approvedCurrent ? (
+          <section className="rounded-3xl border border-emerald-200 bg-emerald-50 p-5 shadow-sm sm:p-6">
+            <p className="text-sm font-medium uppercase tracking-[0.16em] text-emerald-700">Completed control</p>
+            <h2 className="mt-1 text-xl font-semibold text-emerald-950">Refund document approved current</h2>
+            <p className="mt-2 text-sm text-emerald-900">No operator decision or further supervisor approval is outstanding. Existing lines and evidence remain visible for audit only.</p>
+          </section>
+        ) : (
+          <section className="rounded-3xl border border-sky-200 bg-sky-50 p-5 shadow-sm sm:p-6">
+            <p className="text-sm font-medium uppercase tracking-[0.16em] text-sky-700">Operator decision</p>
+            <h2 className="mt-1 text-xl font-semibold">Progress correct upload or request rejection</h2>
+            <p className="mt-2 text-sm text-slate-700">Choose one path. If the refund document lines are correct, progress it to the staff control queue. If this is the wrong upload, ask staff to reject it or request resubmission.</p>
+            <div className="mt-4 grid gap-3 lg:grid-cols-2">
+              <form action={confirmRefundDocumentLinesAction} className="space-y-3 rounded-2xl border border-sky-200 bg-white p-4">
+                <input type="hidden" name="dispute_id" value={disputeId} />
+                <input type="hidden" name="refund_evidence_submission_id" value={submissionId} />
+                <textarea name="notes" rows={3} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Optional progress notes" />
+                <button type="submit" disabled={!canConfirm || operatorDecisionMade} className="w-full rounded-xl bg-sky-700 px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">
+                  {operatorDecisionMade ? "Decision already sent" : "Progress correct upload to staff control"}
+                </button>
+                {!amountMatched ? <p className="text-xs text-amber-800">Cannot progress until refund document value matches the expected value.</p> : null}
+              </form>
+              <form action={requestSupervisorRefundDocumentResubmissionAction} className="space-y-3 rounded-2xl border border-amber-200 bg-white p-4">
+                <input type="hidden" name="dispute_id" value={disputeId} />
+                <input type="hidden" name="refund_evidence_submission_id" value={submissionId} />
+                <textarea name="reason" rows={3} required className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="Explain why this is the wrong upload or needs resubmission." />
+                <button type="submit" disabled={!editable || operatorDecisionMade} className="w-full rounded-xl border border-amber-300 bg-amber-50 px-5 py-3 text-sm font-semibold text-amber-900 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400">Request rejection / resubmission</button>
+              </form>
+            </div>
+            {!editable ? <p className="mt-3 rounded-xl border border-amber-200 bg-white p-3 text-sm text-amber-900">This document is locked because an operator decision or staff action already exists.</p> : null}
+          </section>
+        )}
 
         {messages.length > 0 ? (
           <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
