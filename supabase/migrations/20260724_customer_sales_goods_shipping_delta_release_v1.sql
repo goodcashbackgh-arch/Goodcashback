@@ -36,10 +36,24 @@ BEGIN
     RAISE EXCEPTION 'Missing Mini-build 3 draft function';
   END IF;
   IF to_regclass('public.customer_sales_release_lines') IS NULL
+     OR to_regclass('public.customer_sales_release_legacy_issues') IS NULL
      OR to_regclass('public.sales_invoices') IS NULL
+     OR to_regclass('public.orders') IS NULL
+     OR to_regclass('public.staff') IS NULL
+     OR to_regclass('public.supplier_invoices') IS NULL
+     OR to_regclass('public.supplier_invoice_lines') IS NULL
+     OR to_regclass('public.order_tracking_submissions') IS NULL
+     OR to_regclass('public.order_tracking_line_allocations') IS NULL
+     OR to_regclass('public.shipper_shipment_batches') IS NULL
+     OR to_regclass('public.shipper_shipment_batch_packages') IS NULL
+     OR to_regclass('public.shipper_package_receipts') IS NULL
+     OR to_regclass('public.customer_pre_shipment_hold_requests') IS NULL
+     OR to_regclass('public.disputes') IS NULL
+     OR to_regclass('public.dispute_lines') IS NULL
      OR to_regclass('public.shipping_documents') IS NULL
      OR to_regclass('public.shipping_cost_allocations') IS NULL
      OR to_regclass('public.shipping_cost_allocation_lines') IS NULL
+     OR to_regclass('public.sage_posting_snapshots') IS NULL
   THEN
     RAISE EXCEPTION 'Customer-sales delta release prerequisite relation missing';
   END IF;
@@ -488,6 +502,10 @@ $$;
 -- and the currently approved exact shipping delta is £120.00. It voids the
 -- unposted document and reverses its durable membership with audit fields; it
 -- never edits the frozen amount/payload and never recreates a document itself.
+-- A migration has no authenticated staff identity. The mandatory reversal actor
+-- therefore retains the exact original draft creator, while reversal_reason
+-- explicitly identifies this as an automated migration correction rather than a
+-- manual action by that staff member.
 DO $$
 DECLARE
   v_invoice_id uuid;
@@ -502,7 +520,7 @@ BEGIN
   JOIN public.customer_sales_release_lines release_line
     ON release_line.sales_invoice_id = customer_invoice.id
    AND release_line.release_status = 'active'
-  LEFT JOIN public.shipper_shipment_batches shipment_batch
+  JOIN public.shipper_shipment_batches shipment_batch
     ON shipment_batch.id = release_line.source_shipment_batch_id
   WHERE parent_order.order_ref = 'ORD-1784498556959'
     AND customer_invoice.invoice_type = 'main'
@@ -516,7 +534,7 @@ BEGIN
      AND ABS(SUM(release_line.goods_amount_gbp) - 699.97) <= 0.01
      AND ABS(SUM(release_line.shipping_amount_gbp)) <= 0.01
      AND COUNT(DISTINCT shipment_batch.booking_ref) = 2
-     AND BOOL_AND(shipment_batch.booking_ref IN ('J0180726', 'J0210726'))
+     AND COUNT(*) FILTER (WHERE shipment_batch.booking_ref IN ('J0180726', 'J0210726')) = 3
   LIMIT 1;
 
   IF v_invoice_id IS NULL THEN
@@ -590,7 +608,7 @@ BEGIN
   SET release_status = 'reversed',
       reversed_at = now(),
       reversed_by_staff_id = release_line.created_by_staff_id,
-      reversal_reason = 'voided_unposted_draft_after_goods_shipping_delta_route_correction_v1'
+      reversal_reason = 'automated_migration_correction_v1_original_draft_creator_retained_as_mandatory_actor'
   WHERE release_line.sales_invoice_id = v_invoice_id
     AND release_line.release_status = 'active';
 
