@@ -1,5 +1,6 @@
 "use server";
 
+import { randomUUID } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
@@ -221,4 +222,65 @@ export async function confirmSettlementSurplusCreditAction(formData: FormData) {
   revalidatePath("/internal/funding/surplus-evidence");
   revalidatePath("/customer");
   redirectWithSurplusResult({ settlement_success: "Settlement surplus converted to customer credit." });
+}
+
+export async function resolveOrderSettlementAction(formData: FormData) {
+  const { supabase } = await requireFundingStaff("surplus", "settlement_error");
+
+  const orderId = readString(formData, "order_id");
+  const actionKey = readString(formData, "action_key") || randomUUID();
+  const reason = readString(formData, "reason");
+  const notes = readString(formData, "notes") || null;
+  const customerCreditGbp = Number(readString(formData, "customer_credit_gbp") || "0");
+  const fxCardDifferenceGbp = Number(readString(formData, "fx_card_difference_gbp") || "0");
+
+  if (!orderId) {
+    redirectWithSurplusResult({ settlement_error: "Missing order id." });
+  }
+
+  if (!Number.isFinite(customerCreditGbp) || customerCreditGbp < 0 || !Number.isFinite(fxCardDifferenceGbp) || fxCardDifferenceGbp < 0) {
+    redirectWithSurplusResult({ settlement_error: "Credit and FX amounts must be zero or positive." });
+  }
+
+  if (customerCreditGbp + fxCardDifferenceGbp <= 0) {
+    redirectWithSurplusResult({ settlement_error: "Enter a credit amount, an FX amount, or both." });
+  }
+
+  if (reason.length < 8) {
+    redirectWithSurplusResult({ settlement_error: "Select or enter a valid resolution reason." });
+  }
+
+  const { data, error } = await supabase.rpc("staff_resolve_order_settlement_v1", {
+    p_order_id: orderId,
+    p_customer_credit_gbp: customerCreditGbp,
+    p_fx_card_difference_gbp: fxCardDifferenceGbp,
+    p_reason: reason,
+    p_notes: notes,
+    p_action_key: actionKey,
+  });
+
+  if (error) {
+    redirectWithSurplusResult({ settlement_error: error.message });
+  }
+
+  revalidatePath("/internal/funding");
+  revalidatePath("/internal/funding/surplus-evidence");
+  revalidatePath("/customer");
+  revalidatePath(`/customer/orders/${orderId}/operations`);
+  revalidatePath("/importer");
+  revalidatePath(`/importer/reconciliation/${orderId}`);
+
+  const remaining =
+    typeof data === "object" && data !== null && "remaining_unresolved_gbp" in data
+      ? Number((data as { remaining_unresolved_gbp?: unknown }).remaining_unresolved_gbp)
+      : Number.NaN;
+
+  const parts = [
+    customerCreditGbp > 0 ? `£${customerCreditGbp.toFixed(2)} customer credit` : null,
+    fxCardDifferenceGbp > 0 ? `£${fxCardDifferenceGbp.toFixed(2)} FX/card difference` : null,
+  ].filter(Boolean);
+
+  redirectWithSurplusResult({
+    settlement_success: `${parts.join(" and ")} confirmed.${Number.isFinite(remaining) ? ` £${Math.max(remaining, 0).toFixed(2)} remains unresolved.` : ""}`,
+  });
 }
