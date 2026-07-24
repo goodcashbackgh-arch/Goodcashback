@@ -6,6 +6,7 @@
 DO $$
 DECLARE
   v_definition text;
+  v_compact_definition text;
   v_arguments text;
   v_result text;
 BEGIN
@@ -17,6 +18,8 @@ BEGIN
            'public.internal_customer_invoice_release_create_drafts_v1(uuid[])'::regprocedure
          )
     INTO v_definition;
+
+  v_compact_definition := lower(regexp_replace(v_definition, '[[:space:]]+', '', 'g'));
 
   SELECT pg_get_function_arguments(
            'public.internal_customer_invoice_release_create_drafts_v1(uuid[])'::regprocedure
@@ -30,7 +33,16 @@ BEGIN
     RAISE EXCEPTION 'Bulk-draft input contract changed unexpectedly: %', v_arguments;
   END IF;
 
-  IF position('TABLE(shipment_batch_id uuid, order_id uuid, order_ref text, booking_ref text, invoice_type text, result_status text, sales_invoice_id uuid, amount_gbp numeric, message text)' in v_result) = 0 THEN
+  IF position('shipment_batch_id uuid' in v_result) = 0
+     OR position('order_id uuid' in v_result) = 0
+     OR position('order_ref text' in v_result) = 0
+     OR position('booking_ref text' in v_result) = 0
+     OR position('invoice_type text' in v_result) = 0
+     OR position('result_status text' in v_result) = 0
+     OR position('sales_invoice_id uuid' in v_result) = 0
+     OR position('amount_gbp numeric' in v_result) = 0
+     OR position('message text' in v_result) = 0
+  THEN
     RAISE EXCEPTION 'Bulk-draft output contract changed unexpectedly: %', v_result;
   END IF;
 
@@ -43,9 +55,7 @@ BEGIN
     RAISE EXCEPTION 'Required column qualification is missing from the bulk-draft RPC.';
   END IF;
 
-  IF position('SELECT id,amount_gbp,invoice_type::text' in replace(v_definition, ' ', '')) > 0
-     OR position('SELECT id, amount_gbp, invoice_type::text' in v_definition) > 0
-  THEN
+  IF position('selectid,amount_gbp,invoice_type::text' in v_compact_definition) > 0 THEN
     RAISE EXCEPTION 'Unqualified amount_gbp ambiguity remains in the bulk-draft RPC.';
   END IF;
 
