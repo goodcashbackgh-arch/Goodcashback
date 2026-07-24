@@ -213,8 +213,8 @@ BEGIN
   FROM public.order_settlement_resolution_actions a
   WHERE a.order_id = v_order_id;
 
-  IF v_credit_rows_after - v_credit_rows_before <> 4 THEN
-    RAISE EXCEPTION 'Expected four new settlement-credit ledger rows, got %.', v_credit_rows_after - v_credit_rows_before;
+  IF v_credit_rows_after - v_credit_rows_before <> 5 THEN
+    RAISE EXCEPTION 'Expected five new settlement-credit ledger rows, got %.', v_credit_rows_after - v_credit_rows_before;
   END IF;
 
   IF v_action_rows_after - v_action_rows_before <> 8 THEN
