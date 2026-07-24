@@ -68,6 +68,7 @@ type DisputeLine = {
 };
 
 const FINAL_OUTCOME_STATUSES = new Set(["approved_replacement", "replaced", "awaiting_refund_credit", "refunded", "closed"]);
+const TERMINAL_REFUND_STATUSES = new Set(["refunded", "closed"]);
 const RETAILER_MESSAGE_PREVIEW_LENGTH = 280;
 
 function gbp(value: number | string | null | undefined) {
@@ -162,6 +163,15 @@ function firstSourceLine(value: SourceLine | SourceLine[] | null | undefined) {
   return Array.isArray(value) ? value[0] ?? null : value;
 }
 
+function refundEvidenceAmount(row: RefundDocumentHistoryRow) {
+  return row.expected_credit_note_total_gbp ?? row.captured_refund_amount_abs_gbp ?? row.expected_exception_amount_abs_gbp ?? 0;
+}
+
+function refundEvidenceApproved(row: RefundDocumentHistoryRow) {
+  return ["approved_current", "ref_corrected_approved"].includes(String(row.supplier_approval_status ?? ""))
+    || ["approved_current", "ref_corrected_approved"].includes(String(row.supplier_control_status ?? ""));
+}
+
 export default async function ImporterExceptionDetailPage({
   params,
   searchParams,
@@ -230,31 +240,27 @@ export default async function ImporterExceptionDetailPage({
   const messages = (messagesRaw ?? []) as MessageRow[];
   const retailerReplyMessages = messages.filter((message) => message.message_type === "retailer_reply");
   const linkedInvoiceIds = new Set(
-  lines
-    .filter((line) => line.resolved_at === null)
-    .map(
-      (line) =>
-        firstSourceLine(line.supplier_invoice_lines)?.supplier_invoice_id
-    )
-    .filter((id): id is string => Boolean(id))
-);
+    lines
+      .filter((line) => line.resolved_at === null)
+      .map((line) => firstSourceLine(line.supplier_invoice_lines)?.supplier_invoice_id)
+      .filter((id): id is string => Boolean(id)),
+  );
 
-const invoiceOptions = (
-  (supplierInvoicesRaw ?? []) as SupplierInvoiceOption[]
-).filter((invoice) => linkedInvoiceIds.has(invoice.id));
+  const invoiceOptions = ((supplierInvoicesRaw ?? []) as SupplierInvoiceOption[]).filter((invoice) => linkedInvoiceIds.has(invoice.id));
   const courierOptions = (couriersRaw ?? []) as CourierOption[];
   const refundDocumentHistory = (refundEvidenceRowsRaw ?? []) as RefundDocumentHistoryRow[];
 
   const activeStatus = lines.find((line) => line.conversation_status)?.conversation_status ?? "retailer_contacted";
   const retailerOutcome = retailerOutcomeFromStatus(activeStatus);
   const isFinalOutcome = FINAL_OUTCOME_STATUSES.has(dispute.status ?? "");
-  const isTerminalAcceptedState = dispute.status === "replaced" || dispute.status === "awaiting_refund_credit";
+  const isTerminalAcceptedState = dispute.status === "replaced" || dispute.status === "awaiting_refund_credit" || TERMINAL_REFUND_STATUSES.has(dispute.status ?? "");
   const canUploadRefundEvidence = dispute.desired_outcome === "refund" && dispute.status === "awaiting_refund_credit";
+  const isTerminalRefundState = dispute.desired_outcome === "refund" && TERMINAL_REFUND_STATUSES.has(dispute.status ?? "");
   const legacyRefundEvidenceExists = messages.some((message) => ["credit_note_evidence", "refund_evidence"].includes(message.message_type ?? ""));
   const hasRefundEvidence = refundDocumentHistory.length > 0 || legacyRefundEvidenceExists;
 
   const messageReturnHistory = messages.filter((message) =>
-    ["return_collection_evidence", "return_collection_evidence_review"].includes(message.message_type ?? "")
+    ["return_collection_evidence", "return_collection_evidence_review"].includes(message.message_type ?? ""),
   );
   const structuredReturnHistory = ((returnTrackingRowsRaw ?? []) as ReturnTrackingRow[]).map((row) => ({
     id: row.id,
@@ -325,11 +331,11 @@ const invoiceOptions = (
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold">Retailer update</h2>
-          <p className="mt-2 text-sm text-slate-600">Paste the retailer response first. If the retailer accepts the refund/replacement, mark the outcome as accepted so the supervisor can accept the final outcome.</p>
+          <p className="mt-2 text-sm text-slate-600">Paste the retailer response first. If the retailer accepts the refund/replacement, mark the outcome as accepted so the approved workflow can continue.</p>
           {!isTerminalAcceptedState ? <p className="mt-3 text-sm text-slate-700"><span className="font-semibold">Current retailer outcome:</span> {retailerOutcome.replaceAll("_", " ")}</p> : null}
           {isTerminalAcceptedState ? <p className="mt-3 text-sm text-slate-700"><span className="font-semibold">Active terminal state:</span> {finalOutcomeMessage(dispute)}</p> : null}
           {isFinalOutcome ? (
-            <p className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">Retailer update is locked because the supervisor has accepted the final outcome.</p>
+            <p className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">Retailer update is locked because the final outcome has already been accepted or processed.</p>
           ) : (
             <form action={saveRetailerUpdateAction} className="mt-4 space-y-3">
               <input type="hidden" name="dispute_id" value={dispute.id} />
@@ -354,7 +360,7 @@ const invoiceOptions = (
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <h3 className="text-lg font-semibold">Retailer conversation history</h3>
-                <p className="mt-1 text-sm text-slate-600">Saved retailer replies are shown here so the operator can verify the response before supervisor review.</p>
+                <p className="mt-1 text-sm text-slate-600">Saved retailer replies are shown here for audit and verification.</p>
               </div>
               <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">{retailerReplyMessages.length} saved</span>
             </div>
@@ -378,17 +384,18 @@ const invoiceOptions = (
         </section>
 
         {dispute.desired_outcome === "refund" ? (
-          <section className="rounded-3xl border border-amber-200 bg-white p-6 shadow-sm">
+          <section className={`rounded-3xl border bg-white p-6 shadow-sm ${isTerminalRefundState ? "border-emerald-200" : "border-amber-200"}`}>
             <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
               <div>
-                <p className="text-sm font-medium uppercase tracking-[0.2em] text-amber-600">Refund evidence after supervisor acceptance</p>
+                <p className={`text-sm font-medium uppercase tracking-[0.2em] ${isTerminalRefundState ? "text-emerald-700" : "text-amber-600"}`}>Refund evidence after supervisor acceptance</p>
                 <h2 className="mt-2 text-xl font-semibold">Return tracking and refund document evidence</h2>
                 <p className="mt-2 max-w-3xl text-sm text-slate-600">Return/collection evidence is operational. Credit-note/refund/no-document evidence feeds the supplier credit/refund document control lane.</p>
               </div>
-              <span className={`rounded-full px-3 py-1 text-xs font-semibold ${canUploadRefundEvidence ? "bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200" : "bg-amber-50 text-amber-800 ring-1 ring-amber-200"}`}>
-                {canUploadRefundEvidence ? "Evidence upload enabled" : "Waiting for final refund acceptance"}
+              <span className={`rounded-full px-3 py-1 text-xs font-semibold ${canUploadRefundEvidence || isTerminalRefundState ? "bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200" : "bg-amber-50 text-amber-800 ring-1 ring-amber-200"}`}>
+                {canUploadRefundEvidence ? "Evidence upload enabled" : isTerminalRefundState ? "Refund processed — no approval outstanding" : "Waiting for final refund acceptance"}
               </span>
             </div>
+
             {canUploadRefundEvidence ? (
               <RefundEvidenceModeSelector
                 disputeId={dispute.id}
@@ -399,6 +406,63 @@ const invoiceOptions = (
                 returnHistory={returnHistory}
                 refundDocumentHistory={refundDocumentHistory}
               />
+            ) : isTerminalRefundState ? (
+              <div className="mt-5 space-y-4">
+                <p className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-semibold text-emerald-900">
+                  Refund processed. No further supervisor acceptance or evidence upload is required. Existing evidence remains visible below as read-only audit history.
+                </p>
+
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="font-semibold">Refund document history</h3>
+                    <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-700 ring-1 ring-slate-200">{refundDocumentHistory.length} record(s)</span>
+                  </div>
+                  {refundDocumentHistory.length > 0 ? (
+                    <div className="mt-3 space-y-3">
+                      {refundDocumentHistory.map((row) => (
+                        <article key={row.id} className={`rounded-xl border p-3 text-sm ${refundEvidenceApproved(row) ? "border-emerald-200 bg-white" : "border-slate-200 bg-white"}`}>
+                          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                            <div>
+                              <p className="font-semibold">{friendlyStatus(row.document_mode)} · {gbp(refundEvidenceAmount(row))}</p>
+                              <p className="mt-1 text-xs text-slate-600">Ref {row.credit_note_ref ?? "—"} · Date {row.credit_note_date ?? "—"} · Submitted {formatDateTime(row.submitted_at)}</p>
+                            </div>
+                            <span className={`rounded-full px-2 py-1 text-xs font-semibold ${refundEvidenceApproved(row) ? "bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200" : "bg-slate-100 text-slate-700"}`}>
+                              {refundEvidenceApproved(row) ? "Approved current" : friendlyStatus(row.supplier_approval_status)}
+                            </span>
+                          </div>
+                          <div className="mt-3 flex flex-wrap gap-3 text-xs">
+                            <Link href={`/importer/exceptions/${dispute.id}/refund-document-review/${row.id}`} className="font-semibold text-sky-700 underline">View refund document lines</Link>
+                            {row.credit_note_file_url ? <a href={row.credit_note_file_url} target="_blank" rel="noreferrer" className="font-semibold text-sky-700 underline">Open credit note file</a> : null}
+                            {row.refund_proof_file_url ? <a href={row.refund_proof_file_url} target="_blank" rel="noreferrer" className="font-semibold text-sky-700 underline">Open refund proof</a> : null}
+                            <span className="text-slate-500">Supervisor review: {refundEvidenceApproved(row) ? "Not required" : friendlyStatus(row.supervisor_review_status)}</span>
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="mt-3 text-sm text-slate-600">No structured refund document record is available.</p>
+                  )}
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="font-semibold">Return / collection history</h3>
+                    <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-700 ring-1 ring-slate-200">{returnHistory.length} record(s)</span>
+                  </div>
+                  {returnHistory.length > 0 ? (
+                    <div className="mt-3 space-y-2">
+                      {returnHistory.map((row) => (
+                        <details key={row.id} className="rounded-xl border border-slate-200 bg-white p-3 text-sm">
+                          <summary className="cursor-pointer font-semibold">{friendlyStatus(row.message_type)} · {formatDateTime(row.created_at)}</summary>
+                          <p className="mt-2 whitespace-pre-wrap text-slate-700">{row.body ?? "No details saved."}</p>
+                        </details>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="mt-3 text-sm text-slate-600">No return/collection evidence was submitted.</p>
+                  )}
+                </div>
+              </div>
             ) : (
               <p className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">Supervisor must accept the final refund outcome before return tracking or refund document evidence can be submitted here.</p>
             )}
