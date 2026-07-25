@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const cyclePath = "supabase/migrations/20260725zz_mini4_fixed_deadline_review_cycle_v1.sql";
-const aclPath = "supabase/migrations/20260725zz1_mini4_private_helper_acl_v1.sql";
+const aclPath = "supabase/migrations/20260725zza_mini4_private_helper_acl_v1.sql";
 const holdPath = "supabase/migrations/20260725zzz_mini4_exact_hold_membership_bridge_v1.sql";
 const hardeningPath = "supabase/migrations/20260725zzzz_mini4_review_cycle_integrity_hardening_v1.sql";
 const alignmentPath = "supabase/migrations/20260725zzzzz_mini4_legacy_deadline_alignment_v1.sql";
