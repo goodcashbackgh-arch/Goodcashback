@@ -12,6 +12,7 @@ const readiness = read("app/internal/invoice-review/readiness.ts");
 const cleanup = read("app/importer/orders/[order_id]/operations/OrderOperationsUxCleanup.tsx");
 const limitMigration = read("supabase/migrations/20260725_order_bundle_limit_supervisor_flag_v1.sql");
 const grossupMigration = read("supabase/migrations/20260725_mindee_adjustment_grossup_guard_v1.sql");
+const grossupSuppressionMigration = read("supabase/migrations/20260725b_mindee_grossup_flag_suppression_alignment_v1.sql");
 const reset = read("docs/testing/20260725_reset_adjustment_invoices_to_uploaded_ocr_v1.sql");
 const reviewPage = read("app/internal/invoice-review/page.tsx");
 
@@ -41,13 +42,19 @@ assert(route.includes('explainedSignedTotal'), "Signed OCR header reconciliation
 assert(route.includes('unclearMessages.join(" ")'), "OCR unclear flags are not consolidated to one open type.");
 assert(route.includes('adjustmentMessages.join(" ")'), "Delivery/discount flags are not consolidated to one open type.");
 
-// The established database line-save implementation remains authoritative, but
-// the legacy 20% heuristic cannot reinterpret an adjustment-bearing invoice.
+// The established database line-save implementation remains authoritative. The
+// legacy 20% heuristic is disabled only for adjustment-bearing invoices, while
+// its existing false-mismatch suppression remains effective for ordinary invoices
+// under both old and new parser wording.
 assert(grossupMigration.includes('CREATE OR REPLACE FUNCTION public.staff_save_mindee_invoice_ocr_result'), "Canonical Mindee save function is not preserved.");
 assert(grossupMigration.includes('v_has_active_adjustment'), "Adjustment-bearing OCR save guard is missing.");
 assert(grossupMigration.includes('IF NOT v_has_active_adjustment'), "VAT gross-up is not disabled for active adjustment invoices.");
 assert(grossupMigration.includes('v_raw_line_total * 1.20'), "Existing no-adjustment VAT gross-up behaviour was not preserved.");
+assert(grossupSuppressionMigration.includes("v_auto_gross_up_yn"), "Gross-up suppression is not tied to the established heuristic result.");
+assert(grossupSuppressionMigration.includes("ocr lines plus declared delivery/discount explain"), "New OCR mismatch wording is not aligned with established gross-up suppression.");
+assert(grossupSuppressionMigration.includes("Expected established gross-up flag-suppression clause was not found"), "Gross-up suppression alignment is not fail-closed.");
 assert(!grossupMigration.match(/UPDATE\s+public\.(orders|order_value_adjustments|supplier_invoice_financial_summary)/i), "OCR storage guard rewrites protected financial source rows.");
+assert(!grossupSuppressionMigration.match(/UPDATE\s+public\.(orders|supplier_invoices|order_value_adjustments|supplier_invoice_financial_summary)/i), "Gross-up suppression alignment rewrites protected source rows.");
 
 // Preserve both canonical and established legacy invoice-line representations.
 assert(readiness.includes('invoiceLineTotal + deliveryGbp - discountGbp'), "Canonical goods + delivery - discount readiness equation is missing.");
@@ -90,5 +97,5 @@ assert(!reset.match(/DELETE\s+FROM\s+public\.(supplier_invoices|supplier_invoice
 
 console.log(JSON.stringify({
   regression_result: "PASS",
-  details: "Current-job OCR re-run, labelled signed adjustments, adjustment-safe OCR storage, legacy-safe approval readiness, pre-upload limit warning, preserved-view supervisor routing and fail-closed adjustment-invoice reset are present without replacing financial or downstream routes.",
+  details: "Current-job OCR re-run, labelled signed adjustments, adjustment-safe OCR storage, preserved ordinary-invoice gross-up, legacy-safe approval readiness, pre-upload limit warning, preserved-view supervisor routing and fail-closed adjustment-invoice reset are present without replacing financial or downstream routes.",
 }, null, 2));
