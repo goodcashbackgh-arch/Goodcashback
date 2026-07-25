@@ -19,6 +19,12 @@ BEGIN
      OR to_regclass('public.mindee_api_calls') IS NULL
      OR to_regclass('public.order_tracking_line_allocations') IS NULL
      OR to_regclass('public.dva_statement_line_allocations') IS NULL
+     OR to_regclass('public.customer_order_review_links') IS NULL
+     OR to_regclass('public.customer_pre_shipment_hold_requests') IS NULL
+     OR to_regclass('public.dispute_lines') IS NULL
+     OR to_regclass('public.disputes') IS NULL
+     OR to_regclass('public.sales_invoices') IS NULL
+     OR to_regclass('public.dispute_refund_evidence_submissions') IS NULL
      OR to_regclass('public.sage_posting_snapshots') IS NULL
      OR to_regclass('public.sage_postings') IS NULL
      OR to_regclass('public.supplier_invoice_line_resolutions') IS NULL
@@ -90,9 +96,11 @@ BEGIN
     JOIN reset_target_invoices t ON t.supplier_invoice_id = si.id
     WHERE COALESCE(si.review_status, 'pending_review') <> 'pending_review'
        OR COALESCE(si.blocked_from_sage_yn, true) = false
+       OR COALESCE(si.is_current_for_order, false) = true
+       OR si.reviewed_by_staff_id IS NOT NULL
        OR si.reviewed_at IS NOT NULL
   ) THEN
-    RAISE EXCEPTION 'Reset blocked: a target invoice has been approved or manually header-reviewed.';
+    RAISE EXCEPTION 'Reset blocked: a target invoice has been approved, made current, or manually header-reviewed.';
   END IF;
 
   IF EXISTS (
@@ -141,8 +149,8 @@ BEGIN
     FROM public.dva_statement_line_allocations a
     JOIN reset_target_invoices t ON t.supplier_invoice_id = a.supplier_invoice_id
     WHERE a.allocation_type::text = 'supplier_invoice'
-      AND a.allocation_status::text IN ('confirmed','held')
-  ) THEN v_blocker := 'supplier-payment allocation';
+      AND a.allocation_status::text <> 'reversed'
+  ) THEN v_blocker := 'supplier-payment allocation or draft allocation work';
   ELSIF EXISTS (
     SELECT 1
     FROM public.customer_order_review_links l
@@ -156,6 +164,31 @@ BEGIN
     JOIN reset_target_invoices t ON t.order_id = h.order_id
     WHERE h.resolved_at IS NULL
       AND h.status IN ('requested','supervisor_approved','converted_to_exception')
+      AND (
+        h.requested_scope = 'order'
+        OR (
+          h.requested_scope = 'line'
+          AND EXISTS (
+            SELECT 1
+            FROM public.supplier_invoice_lines sil
+            JOIN reset_target_invoices scoped ON scoped.supplier_invoice_id = sil.supplier_invoice_id
+            WHERE sil.id = h.supplier_invoice_line_id
+              AND scoped.order_id = h.order_id
+          )
+        )
+        OR (
+          h.requested_scope = 'tracking'
+          AND EXISTS (
+            SELECT 1
+            FROM public.order_tracking_line_allocations otla
+            JOIN public.supplier_invoice_lines sil ON sil.id = otla.supplier_invoice_line_id
+            JOIN reset_target_invoices scoped ON scoped.supplier_invoice_id = sil.supplier_invoice_id
+            WHERE otla.tracking_submission_id = h.tracking_submission_id
+              AND scoped.order_id = h.order_id
+              AND COALESCE(otla.qty_allocated, 0) > 0
+          )
+        )
+      )
   ) THEN v_blocker := 'active customer hold';
   ELSIF EXISTS (
     SELECT 1
@@ -194,7 +227,7 @@ BEGIN
   END IF;
 
   IF v_blocker IS NOT NULL THEN
-    RAISE EXCEPTION 'Reset blocked: target adjustment invoice has downstream use (%). No rows were changed.', v_blocker;
+    RAISE EXCEPTION 'Reset blocked: target adjustment invoice has downstream or in-progress use (%). No rows were changed.', v_blocker;
   END IF;
 
   UPDATE public.supplier_invoice_review_flags f
@@ -261,6 +294,10 @@ BEGIN
        OR si.invoice_ref IS DISTINCT FROM t.invoice_ref
        OR si.mindee_ocr_status <> 'not_started'
        OR si.ocr_raw_json IS NOT NULL
+       OR si.ocr_extracted_at IS NOT NULL
+       OR si.ocr_invoice_total_gbp IS NOT NULL
+       OR si.mindee_job_id IS NOT NULL
+       OR si.mindee_inference_id IS NOT NULL
        OR EXISTS (
          SELECT 1
          FROM public.supplier_invoice_lines sil
@@ -292,7 +329,8 @@ SELECT
   fs.invoice_total_gbp AS entered_total_retained,
   COALESCE(SUM(CASE WHEN ova.adjustment_type = 'retailer_delivery' THEN ova.amount_gbp ELSE 0 END), 0) AS delivery_retained_gbp,
   COALESCE(SUM(CASE WHEN ova.adjustment_type = 'retailer_discount' THEN ova.amount_gbp ELSE 0 END), 0) AS discount_retained_gbp,
-  COUNT(sil.id) FILTER (WHERE sil.line_source = 'ocr_extracted') AS remaining_ocr_line_count
+  COUNT(sil.id) FILTER (WHERE sil.line_source = 'ocr_extracted') AS remaining_ocr_line_count,
+  COUNT(mac.id) AS retained_mindee_audit_call_count
 FROM reset_target_invoices t
 JOIN public.supplier_invoices si ON si.id = t.supplier_invoice_id
 JOIN public.supplier_invoice_financial_summary fs ON fs.supplier_invoice_id = si.id
@@ -300,6 +338,7 @@ LEFT JOIN public.order_value_adjustments ova
   ON ova.supplier_invoice_id = si.id
  AND ova.approval_status <> 'rejected'
 LEFT JOIN public.supplier_invoice_lines sil ON sil.supplier_invoice_id = si.id
+LEFT JOIN public.mindee_api_calls mac ON mac.supplier_invoice_id = si.id
 GROUP BY t.invoice_ref, si.review_status, si.mindee_ocr_status, si.invoice_pdf_url, fs.invoice_total_gbp
 ORDER BY t.invoice_ref;
 
