@@ -1,15 +1,17 @@
 BEGIN TRANSACTION READ ONLY;
 
+SET LOCAL lock_timeout = '15s';
 SET LOCAL statement_timeout = '0';
 
 DO $regression$
 DECLARE
   v_definition text;
+  v_result text;
   v_count integer;
   v_amount numeric;
 BEGIN
   -- -------------------------------------------------------------------------
-  -- 1. Required additive objects and preserved function signatures.
+  -- 1. Additive objects and preserved public route signatures.
   -- -------------------------------------------------------------------------
   IF to_regclass('public.customer_review_cycle_memberships') IS NULL
      OR to_regclass('public.customer_review_cycle_legacy_issues') IS NULL
@@ -32,84 +34,133 @@ BEGIN
     RAISE EXCEPTION 'FAIL: a preserved route signature is missing.';
   END IF;
 
-  IF pg_get_function_result(
-       'public.customer_active_order_review_link_v1(uuid)'::regprocedure
-     ) <> 'TABLE(order_id uuid, customer_review_path text)'
+  SELECT pg_get_function_result(
+    'public.customer_active_order_review_link_v1(uuid)'::regprocedure
+  ) INTO v_result;
+  IF position('order_id uuid' IN v_result) = 0
+     OR position('customer_review_path text' IN v_result) = 0
   THEN
-    RAISE EXCEPTION 'FAIL: customer active-link return shape changed.';
+    RAISE EXCEPTION 'FAIL: customer active-link return shape changed: %.', v_result;
   END IF;
 
-  IF pg_get_function_result(
-       'public.customer_hold_refund_target_lines_v1(uuid)'::regprocedure
-     ) <> 'TABLE(supplier_invoice_line_id uuid, qty_impact numeric, amount_impact_gbp numeric, source_line_qty numeric)'
+  SELECT pg_get_function_result(
+    'public.customer_hold_refund_target_lines_v1(uuid)'::regprocedure
+  ) INTO v_result;
+  IF position('supplier_invoice_line_id uuid' IN v_result) = 0
+     OR position('qty_impact numeric' IN v_result) = 0
+     OR position('amount_impact_gbp numeric' IN v_result) = 0
+     OR position('source_line_qty numeric' IN v_result) = 0
   THEN
-    RAISE EXCEPTION 'FAIL: refund-target resolver return shape changed.';
+    RAISE EXCEPTION 'FAIL: refund-target resolver return shape changed: %.', v_result;
   END IF;
 
   -- -------------------------------------------------------------------------
-  -- 2. Fixed lifecycle and immutable provenance definitions.
+  -- 2. Fixed lifecycle, immutable exact provenance and private helper ACLs.
   -- -------------------------------------------------------------------------
   SELECT lower(pg_get_functiondef(
     'public.customer_active_order_review_link_v1(uuid)'::regprocedure
   )) INTO v_definition;
-
   IF position('internal_materialize_customer_review_cycles_v1' IN v_definition) = 0
      OR position('set expires_at = v_deadline' IN v_definition) > 0
      OR position('from public.sales_invoices' IN v_definition) > 0
   THEN
     RAISE EXCEPTION
-      'FAIL: active-link route is not using the fixed-cycle materialiser or retained the old order-wide invoice block.';
+      'FAIL: active-link route retained deadline mutation or the order-wide invoice block.';
   END IF;
 
   SELECT lower(pg_get_functiondef(
     'public.internal_create_customer_order_review_link_v1(uuid)'::regprocedure
   )) INTO v_definition;
-
   IF position('internal_materialize_customer_review_cycles_v1' IN v_definition) = 0
      OR position('insert into public.customer_order_review_links' IN v_definition) > 0
   THEN
     RAISE EXCEPTION
-      'FAIL: staff link route can still create a parallel or untimed link directly.';
+      'FAIL: staff link route can create a parallel or untimed link directly.';
   END IF;
 
   SELECT lower(pg_get_functiondef(
     'public.internal_materialize_customer_review_cycles_v1(uuid,uuid)'::regprocedure
   )) INTO v_definition;
-
   IF position('v_anchor_receipt + interval ''24 hours''' IN v_definition) = 0
+     OR position('open-cycle join is governed only by the already stored deadline' IN v_definition) = 0
      OR position('candidate.receipt_recorded_at < v_deadline' IN v_definition) = 0
      OR position('set expires_at = v_deadline' IN v_definition) > 0
   THEN
-    RAISE EXCEPTION 'FAIL: fixed first-receipt deadline lifecycle is not installed.';
+    RAISE EXCEPTION 'FAIL: fixed first-receipt/open-cycle lifecycle is not installed.';
+  END IF;
+
+  SELECT lower(pg_get_functiondef(
+    'public.customer_review_cycle_component_guard_v1()'::regprocedure
+  )) INTO v_definition;
+  IF position('exact allocation and quantity' IN v_definition) = 0
+     OR position('v_existing_review_qty' IN v_definition) = 0
+     OR position('new.membership_fingerprint' IN v_definition) = 0
+  THEN
+    RAISE EXCEPTION 'FAIL: review membership value/fingerprint guard is incomplete.';
+  END IF;
+
+  SELECT lower(pg_get_functiondef(
+    'public.customer_hold_review_membership_sync_v1()'::regprocedure
+  )) INTO v_definition;
+  IF position('tg_op = ''insert''' IN v_definition) = 0
+     OR position('has no frozen review membership' IN v_definition) = 0
+     OR position('cannot move outside its frozen review membership' IN v_definition) = 0
+  THEN
+    RAISE EXCEPTION 'FAIL: hold provenance is not frozen at insertion.';
   END IF;
 
   SELECT lower(pg_get_functiondef(
     'public.customer_review_ready_line_ids_v1(uuid)'::regprocedure
   )) INTO v_definition;
-
   IF position('customer_review_cycle_memberships' IN v_definition) = 0
      OR position('latest_receipt.recorded_at + interval ''24 hours''' IN v_definition) = 0
      OR position('shipper_shipment_batch_packages' IN v_definition) = 0
   THEN
     RAISE EXCEPTION
-      'FAIL: immutable timed membership or exact legacy compatibility filter is missing.';
+      'FAIL: immutable timed membership or exact untimed compatibility filter is missing.';
   END IF;
 
   SELECT lower(pg_get_functiondef(
     'public.customer_tracking_review_deadline_v1(uuid,uuid,timestamptz)'::regprocedure
   )) INTO v_definition;
-
   IF position('customer_review_cycle_memberships' IN v_definition) = 0
      OR position('customer_order_review_links' IN v_definition) = 0
+     OR position('p_receipt_recorded_at < link_row.expires_at' IN v_definition) = 0
   THEN
-    RAISE EXCEPTION
-      'FAIL: shipper deadline does not consume stored cycle deadlines.';
+    RAISE EXCEPTION 'FAIL: shipper deadline does not use the applicable stored cycle deadline.';
+  END IF;
+
+  IF has_function_privilege(
+       'authenticated',
+       'public.customer_review_cycle_candidates_v1(uuid)',
+       'EXECUTE'
+     )
+     OR has_function_privilege(
+       'authenticated',
+       'public.customer_tracking_review_deadline_v1(uuid,uuid,timestamptz)',
+       'EXECUTE'
+     )
+  THEN
+    RAISE EXCEPTION 'FAIL: private Mini 4 helper execution leaked to authenticated.';
+  END IF;
+
+  IF NOT has_function_privilege(
+       'service_role',
+       'public.customer_review_cycle_candidates_v1(uuid)',
+       'EXECUTE'
+     )
+     OR NOT has_function_privilege(
+       'service_role',
+       'public.customer_tracking_review_deadline_v1(uuid,uuid,timestamptz)',
+       'EXECUTE'
+     )
+  THEN
+    RAISE EXCEPTION 'FAIL: service_role cannot execute the private Mini 4 helpers.';
   END IF;
 
   SELECT lower(pg_get_functiondef(
     'public.shipper_shipment_batch_candidates_v1()'::regprocedure
   )) INTO v_definition;
-
   IF position('customer_tracking_review_deadline_v1' IN v_definition) = 0
   THEN
     RAISE EXCEPTION 'FAIL: shipper candidate list bypasses the stored deadline.';
@@ -118,16 +169,15 @@ BEGIN
   SELECT lower(pg_get_functiondef(
     'public.shipper_create_shipment_batch_v1(uuid,uuid[],text,timestamptz,timestamptz,integer,text,text,text)'::regprocedure
   )) INTO v_definition;
-
   IF position('customer_tracking_review_deadline_v1' IN v_definition) = 0
+     OR position('customer_line_has_active_hold_conflict_v1' IN v_definition) = 0
   THEN
-    RAISE EXCEPTION 'FAIL: direct shipment creation bypasses the stored deadline.';
+    RAISE EXCEPTION 'FAIL: direct shipment creation bypasses its deadline or hold gate.';
   END IF;
 
   SELECT lower(pg_get_functiondef(
     'public.customer_hold_refund_target_lines_v1(uuid)'::regprocedure
   )) INTO v_definition;
-
   IF position('customer_hold_review_memberships' IN v_definition) = 0
      OR position('legacy implementation retained for untimed links only' IN v_definition) = 0
   THEN
@@ -138,17 +188,15 @@ BEGIN
   SELECT lower(pg_get_functiondef(
     'public.customer_hold_create_refund_exception_v2()'::regprocedure
   )) INTO v_definition;
-
   IF position('customer_hold_refund_target_lines_v1' IN v_definition) = 0
      OR position('customer_hold_review_memberships' IN v_definition) > 0
   THEN
     RAISE EXCEPTION
-      'FAIL: existing refund conversion was replaced instead of retaining its canonical resolver boundary.';
+      'FAIL: existing refund conversion was replaced instead of retaining its resolver boundary.';
   END IF;
 
   -- -------------------------------------------------------------------------
-  -- 3. Required triggers remain enabled. Existing conversion/validation guards
-  --    are preserved and Mini 4 guards are additive.
+  -- 3. Existing hold triggers and additive Mini 4 integrity triggers.
   -- -------------------------------------------------------------------------
   SELECT COUNT(*)::integer INTO v_count
   FROM pg_trigger trigger_row
@@ -163,7 +211,6 @@ BEGIN
     )
     AND NOT trigger_row.tgisinternal
     AND trigger_row.tgenabled = 'O';
-
   IF v_count <> 5 THEN
     RAISE EXCEPTION 'FAIL: required customer-hold triggers are missing or disabled.';
   END IF;
@@ -178,6 +225,7 @@ BEGIN
           'public.customer_review_cycle_memberships'::regclass
         AND trigger_row.tgname IN (
           'trg_customer_review_cycle_00_cumulative_qty_guard_v1',
+          'trg_customer_review_cycle_01_component_guard_v1',
           'trg_customer_review_cycle_membership_immutable_v1'
         )
       )
@@ -196,8 +244,7 @@ BEGIN
         )
       )
     );
-
-  IF v_count <> 5 THEN
+  IF v_count <> 6 THEN
     RAISE EXCEPTION 'FAIL: Mini 4 integrity triggers are incomplete.';
   END IF;
 
@@ -214,7 +261,6 @@ BEGIN
   SELECT lower(pg_get_functiondef(
     'public.internal_create_cash_control_batch_v1(text[],text)'::regprocedure
   )) INTO v_definition;
-
   IF position('customer_review_cycle_memberships' IN v_definition) > 0
      OR position('customer_hold_review_memberships' IN v_definition) > 0
   THEN
@@ -224,7 +270,6 @@ BEGIN
   SELECT lower(pg_get_functiondef(
     'public.internal_resolved_customer_sales_sage_payload_v1(uuid)'::regprocedure
   )) INTO v_definition;
-
   IF position('customer_review_cycle_memberships' IN v_definition) > 0
      OR position('customer_hold_review_memberships' IN v_definition) > 0
   THEN
@@ -261,7 +306,6 @@ BEGIN
   FROM public.customer_sales_release_lines release_line
   WHERE release_line.order_id = '4011beb5-ef07-4af1-9c06-72e44445777c'::uuid
     AND release_line.release_status = 'active';
-
   IF v_count <> 3 OR v_amount <> 819.97 THEN
     RAISE EXCEPTION
       'FAIL: protected customer release baseline changed: rows %, amount £%.',
@@ -311,18 +355,17 @@ BEGIN
 
   IF NOT EXISTS (
     SELECT 1
-    FROM public.disputes dispute
-    WHERE dispute.id = '904d1bd3-86e9-47ad-bbf9-96859d900d22'::uuid
-      AND dispute.order_id = '4011beb5-ef07-4af1-9c06-72e44445777c'::uuid
-      AND dispute.desired_outcome = 'refund'
-      AND dispute.status = 'refunded'
-      AND dispute.amount_impact_gbp = 179.99
-      AND dispute.resolved_at IS NOT NULL
+    FROM public.disputes dispute_row
+    WHERE dispute_row.id = '904d1bd3-86e9-47ad-bbf9-96859d900d22'::uuid
+      AND dispute_row.order_id = '4011beb5-ef07-4af1-9c06-72e44445777c'::uuid
+      AND dispute_row.desired_outcome = 'refund'
+      AND dispute_row.status = 'refunded'
+      AND dispute_row.amount_impact_gbp = 179.99
+      AND dispute_row.resolved_at IS NOT NULL
   ) THEN
     RAISE EXCEPTION 'FAIL: protected £179.99 completed refund changed.';
   END IF;
 
-  -- Mini 4 must not reopen or manufacture activity for this completed order.
   IF EXISTS (
     SELECT 1
     FROM public.customer_review_cycle_memberships membership
@@ -351,6 +394,6 @@ $regression$;
 
 SELECT
   'PASS'::text AS regression_result,
-  'Fixed review deadlines, immutable memberships, exact hold provenance, preserved shipment/refund boundaries and the protected £819.97/£179.99 target baseline are consistent.'::text AS details;
+  'Fixed review deadlines, immutable membership, frozen hold provenance, preserved shipment/refund boundaries and the protected £819.97/£179.99 target baseline are consistent.'::text AS details;
 
 ROLLBACK;
