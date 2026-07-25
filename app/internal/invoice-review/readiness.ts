@@ -8,7 +8,9 @@ const SERIOUS_OPEN_FLAG_TYPES = new Set([
   "wrong_invoice",
   "ocr_unclear",
   "invoice_total_mismatch",
+  "delivery_discount_query",
   "manual_line_needed",
+  "order_bundle_limit_breach",
 ]);
 
 function asNumber(value: unknown) {
@@ -61,17 +63,23 @@ export async function assertInvoiceReadyForCurrentApproval(
     return "Cannot approve current invoice yet. Serious invoice review flags remain open or under review.";
   }
 
-  const { data: pendingAdjustments, error: adjustmentError } = await supabase
+  const { data: adjustmentRows, error: adjustmentError } = await supabase
     .from("order_value_adjustments")
-    .select("id")
+    .select("id, adjustment_type, amount_gbp, approval_status")
     .eq("supplier_invoice_id", supplierInvoiceId)
-    .eq("approval_status", "pending_supervisor")
-    .limit(1);
+    .neq("approval_status", "rejected");
 
   if (adjustmentError) return adjustmentError.message;
-  if ((pendingAdjustments ?? []).length > 0) {
+  if ((adjustmentRows ?? []).some((row: any) => row.approval_status === "pending_supervisor")) {
     return "Cannot approve current invoice yet. Pending delivery/discount adjustments must be approved or rejected first.";
   }
+
+  const deliveryGbp = (adjustmentRows ?? [])
+    .filter((row: any) => row.adjustment_type === "retailer_delivery")
+    .reduce((sum: number, row: any) => sum + asNumber(row.amount_gbp), 0);
+  const discountGbp = (adjustmentRows ?? [])
+    .filter((row: any) => row.adjustment_type === "retailer_discount")
+    .reduce((sum: number, row: any) => sum + asNumber(row.amount_gbp), 0);
 
   const { data: lines, error: linesError } = await supabase
     .from("supplier_invoice_lines")
@@ -104,8 +112,20 @@ export async function assertInvoiceReadyForCurrentApproval(
     0,
   );
 
-  if (Math.abs(invoiceLineTotal - invoiceTotal) >= 0.01) {
-    return `Cannot approve current invoice yet. Invoice line total ${invoiceLineTotal.toFixed(2)} does not match invoice total ${invoiceTotal.toFixed(2)}.`;
+  // Preserve every established representation while moving new OCR runs to the
+  // documented canonical equation: goods + delivery - discount = gross invoice.
+  // 1) raw lines already equal gross (legacy/all-inclusive);
+  // 2) adjustments sit outside goods lines (canonical);
+  // 3) legacy OCR retained delivery but filtered the negative discount row.
+  const supportedTotals = [
+    invoiceLineTotal,
+    invoiceLineTotal + deliveryGbp - discountGbp,
+    invoiceLineTotal - discountGbp,
+  ];
+  const lineTotalReconciled = supportedTotals.some((candidate) => Math.abs(candidate - invoiceTotal) < 0.01);
+
+  if (!lineTotalReconciled) {
+    return `Cannot approve current invoice yet. Goods lines ${invoiceLineTotal.toFixed(2)}, delivery ${deliveryGbp.toFixed(2)} and discount ${discountGbp.toFixed(2)} do not reconcile to invoice total ${invoiceTotal.toFixed(2)}.`;
   }
 
   const unsettledLineIds = (lines ?? [])

@@ -6,6 +6,8 @@ const MINDEE_V2_API_BASE = "https://api-v2.mindee.net/v2";
 
 type ParsedLine = { retailer_sku: string | null; description: string; qty: number; amount_inc_vat_gbp: number };
 type ReviewFlag = { flag_type: "invoice_total_mismatch" | "ocr_unclear" | "wrong_invoice" | "delivery_discount_query" | "manual_line_needed" | "other"; message: string };
+type AdjustmentFacts = { deliveryGbp: number; discountGbp: number };
+type RawLine = { order: number; description: string; qty: number; amount: number; retailerSku: string | null };
 
 function redirectTo(request: Request, params: Record<string, string>) {
   const url = new URL("/internal/invoice-review", new URL(request.url).origin);
@@ -110,31 +112,38 @@ function extractPagesConsumed(raw: unknown) {
   }
   return null;
 }
-function rawV2InvoiceLineAmount(line: unknown, qtyFallback = 1) {
-  if (!line || typeof line !== "object") return null;
-  const outer = line as Record<string, unknown>;
-  const row = outer.fields && typeof outer.fields === "object" ? outer.fields as Record<string, unknown> : outer;
-  const qty = Math.max(0, Math.round(numberValue(row.quantity) ?? numberValue(row.qty) ?? qtyFallback));
-  const explicitLineAmount = numberValue(row.total_amount) ?? numberValue(row.total_price) ?? numberValue(row.amount) ?? numberValue(row.line_total);
-  const unitPrice = numberValue(row.unit_price) ?? numberValue(row.price) ?? numberValue(row.unit_amount);
-  return explicitLineAmount ?? (unitPrice !== null ? Math.round(unitPrice * Math.max(qty, 1) * 100) / 100 : null);
-}
-function normalizeV2InvoiceLine(line: unknown, lineOrder: number, singleLineHeaderTotal: number | null): ParsedLine | null {
+function rawV2InvoiceLine(line: unknown, lineOrder: number, singleLineHeaderTotal: number | null): RawLine | null {
   if (!line || typeof line !== "object") return null;
   const outer = line as Record<string, unknown>;
   const row = outer.fields && typeof outer.fields === "object" ? outer.fields as Record<string, unknown> : outer;
   const description = stringValue(row.description) ?? stringValue(row.name) ?? stringValue(row.label) ?? stringValue(row.product_name) ?? stringValue(row.product_code) ?? `OCR line ${lineOrder}`;
   const qty = Math.max(0, Math.round(numberValue(row.quantity) ?? numberValue(row.qty) ?? 1));
-  const rawAmount = rawV2InvoiceLineAmount(line, qty);
+  const explicitLineAmount = numberValue(row.total_amount) ?? numberValue(row.total_price) ?? numberValue(row.amount) ?? numberValue(row.line_total);
   const unitPrice = numberValue(row.unit_price) ?? numberValue(row.price) ?? numberValue(row.unit_amount);
   const unitGross = unitPrice !== null ? Math.round(unitPrice * Math.max(qty, 1) * 100) / 100 : null;
-  const singleDiscountedLineGross = singleLineHeaderTotal !== null && (unitGross === null || singleLineHeaderTotal <= unitGross) ? singleLineHeaderTotal : null;
-  const amount = rawAmount ?? singleDiscountedLineGross ?? unitGross;
-  const sku = stringValue(row.product_code) ?? stringValue(row.sku) ?? stringValue(row.reference);
-  if (!description || amount === null || amount < 0) return null;
-  return { retailer_sku: sku, description, qty, amount_inc_vat_gbp: amount };
+  const singleLineGross = singleLineHeaderTotal !== null && explicitLineAmount === null && (unitGross === null || singleLineHeaderTotal <= unitGross)
+    ? singleLineHeaderTotal
+    : null;
+  const amount = explicitLineAmount ?? singleLineGross ?? unitGross;
+  if (!description || amount === null) return null;
+  return {
+    order: lineOrder,
+    description,
+    qty,
+    amount,
+    retailerSku: stringValue(row.product_code) ?? stringValue(row.sku) ?? stringValue(row.reference),
+  };
 }
-function parseMindeeV2InvoiceResult(raw: unknown) {
+function normalizedDescription(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+function isDeliveryDescription(value: string) {
+  return /(^| )(delivery|shipping|postage|freight|carriage)( |$)/.test(normalizedDescription(value));
+}
+function isDiscountDescription(value: string) {
+  return /(^| )(discount|promotion|promotional|promo|voucher|coupon|saving|savings)( |$)/.test(normalizedDescription(value));
+}
+function parseMindeeV2InvoiceResult(raw: unknown, adjustments: AdjustmentFacts) {
   const fields = firstRecordCandidate(raw, [["inference", "result", "fields"], ["inference", "result", "prediction"], ["inference", "result"], ["result", "fields"], ["result"], ["document", "inference", "prediction"]]);
   const ocrInvoiceRef = firstStringFrom(fields, ["invoice_number", "invoice_ref", "invoice_id", "reference", "document_number"]);
   const ocrRetailerName = firstStringFrom(fields, ["supplier_name", "supplier", "vendor_name", "seller_name", "company_name"]);
@@ -142,14 +151,41 @@ function parseMindeeV2InvoiceResult(raw: unknown) {
   const ocrInvoiceTotal = firstNumberFrom(fields, ["total_amount", "total", "total_incl", "total_inc_vat", "amount_due", "grand_total"]);
   const lineItems = firstArrayCandidate(raw, [["inference", "result", "fields", "line_items", "items"], ["inference", "result", "fields", "items", "items"], ["inference", "result", "fields", "invoice_lines", "items"], ["inference", "result", "fields", "line_items"], ["inference", "result", "fields", "items"], ["inference", "result", "fields", "invoice_lines"], ["inference", "result", "prediction", "line_items"], ["result", "fields", "line_items"], ["document", "inference", "prediction", "line_items"]]);
   const singleLineHeaderTotal = lineItems.length === 1 ? ocrInvoiceTotal : null;
-  const lines = lineItems.map((line, index) => normalizeV2InvoiceLine(line, index + 1, singleLineHeaderTotal)).filter((line): line is ParsedLine => Boolean(line));
-  const signedLineAmounts = lineItems.map((line) => rawV2InvoiceLineAmount(line)).filter((amount): amount is number => amount !== null);
+  const rawLines = lineItems.map((line, index) => rawV2InvoiceLine(line, index + 1, singleLineHeaderTotal)).filter((line): line is RawLine => Boolean(line));
+  const negativeCandidates = rawLines.filter((line) => line.amount < 0);
+  const discountCandidates = negativeCandidates.filter((line) => isDiscountDescription(line.description));
+  const unclassifiedNegativeCandidates = negativeCandidates.filter((line) => !isDiscountDescription(line.description));
+  const discountExtractedGbp = Math.round(Math.abs(discountCandidates.reduce((sum, line) => sum + line.amount, 0)) * 100) / 100;
+  const unclassifiedNegativeGbp = Math.round(Math.abs(unclassifiedNegativeCandidates.reduce((sum, line) => sum + line.amount, 0)) * 100) / 100;
+  const deliveryCandidates = rawLines.filter((line) => line.amount > 0 && isDeliveryDescription(line.description));
+  const deliveryExtractedGbp = Math.round(deliveryCandidates.reduce((sum, line) => sum + line.amount, 0) * 100) / 100;
+  const discountPresent = adjustments.discountGbp > 0 && Math.abs(discountExtractedGbp - adjustments.discountGbp) <= 0.01;
+  const deliveryPresent = adjustments.deliveryGbp > 0 && deliveryExtractedGbp > 0 && Math.abs(deliveryExtractedGbp - adjustments.deliveryGbp) <= 0.01;
+  const deliveryOrders = deliveryPresent ? new Set(deliveryCandidates.map((line) => line.order)) : new Set<number>();
+  const lines: ParsedLine[] = rawLines
+    .filter((line) => line.amount >= 0 && !deliveryOrders.has(line.order))
+    .map((line) => ({ retailer_sku: line.retailerSku, description: line.description, qty: line.qty, amount_inc_vat_gbp: line.amount }));
   const flags: ReviewFlag[] = [];
-  const lineTotal = Math.round(signedLineAmounts.reduce((sum, amount) => sum + amount, 0) * 100) / 100;
-  if (!ocrInvoiceRef) flags.push({ flag_type: "ocr_unclear", message: "Mindee OCR did not extract an invoice reference." });
-  if (ocrInvoiceTotal === null) flags.push({ flag_type: "ocr_unclear", message: "Mindee OCR did not extract an invoice total." });
-  if (lines.length === 0) flags.push({ flag_type: "manual_line_needed", message: "Mindee OCR did not extract usable invoice lines." });
-  if (ocrInvoiceTotal !== null && signedLineAmounts.length > 0 && Math.abs(lineTotal - ocrInvoiceTotal) > 0.01) flags.push({ flag_type: "invoice_total_mismatch", message: `Mindee OCR signed line total ${lineTotal.toFixed(2)} does not match OCR header total ${ocrInvoiceTotal.toFixed(2)}.` });
+  const unclearMessages: string[] = [];
+  const adjustmentMessages: string[] = [];
+  const rawSignedTotal = Math.round(rawLines.reduce((sum, line) => sum + line.amount, 0) * 100) / 100;
+  const explainedSignedTotal = Math.round((rawSignedTotal
+    + (adjustments.deliveryGbp - (deliveryPresent ? deliveryExtractedGbp : 0))
+    - (adjustments.discountGbp - (discountPresent ? discountExtractedGbp : 0))) * 100) / 100;
+
+  if (!ocrInvoiceRef) unclearMessages.push("Mindee OCR did not extract an invoice reference.");
+  if (ocrInvoiceTotal === null) unclearMessages.push("Mindee OCR did not extract an invoice total.");
+  if (unclearMessages.length > 0) flags.push({ flag_type: "ocr_unclear", message: unclearMessages.join(" ") });
+  if (lines.length === 0) flags.push({ flag_type: "manual_line_needed", message: "Mindee OCR did not extract usable goods lines." });
+  if (unclassifiedNegativeGbp > 0) adjustmentMessages.push(`OCR contains unclassified negative line(s) totalling ${unclassifiedNegativeGbp.toFixed(2)}. Supervisor must confirm whether they are discounts or another adjustment.`);
+  if (adjustments.discountGbp > 0 && discountExtractedGbp > 0 && !discountPresent) adjustmentMessages.push(`OCR discount-labelled lines total ${discountExtractedGbp.toFixed(2)} but the uploaded discount classification is ${adjustments.discountGbp.toFixed(2)}.`);
+  if (adjustments.deliveryGbp > 0 && deliveryExtractedGbp > 0 && !deliveryPresent) adjustmentMessages.push(`OCR delivery-labelled lines total ${deliveryExtractedGbp.toFixed(2)} but the uploaded delivery classification is ${adjustments.deliveryGbp.toFixed(2)}.`);
+  if (adjustments.discountGbp === 0 && discountExtractedGbp > 0) adjustmentMessages.push(`OCR extracted a discount of ${discountExtractedGbp.toFixed(2)}, but no discount was declared during upload.`);
+  if (adjustments.deliveryGbp === 0 && deliveryExtractedGbp > 0) adjustmentMessages.push(`OCR extracted delivery-labelled lines of ${deliveryExtractedGbp.toFixed(2)}, but no delivery was declared during upload.`);
+  if (adjustmentMessages.length > 0) flags.push({ flag_type: "delivery_discount_query", message: adjustmentMessages.join(" ") });
+  if (ocrInvoiceTotal !== null && rawLines.length > 0 && Math.abs(explainedSignedTotal - ocrInvoiceTotal) > 0.01) {
+    flags.push({ flag_type: "invoice_total_mismatch", message: `OCR lines plus declared delivery/discount explain ${explainedSignedTotal.toFixed(2)}, not OCR header total ${ocrInvoiceTotal.toFixed(2)}.` });
+  }
   return { ocrInvoiceRef, ocrRetailerName, ocrInvoiceDate, ocrInvoiceTotal, lines, flags };
 }
 function hasInferencePayload(raw: unknown) {
@@ -171,6 +207,21 @@ export async function POST(request: Request) {
   const { data: invoice, error: invoiceError } = await supabase.from("supplier_invoices").select("id, order_id, mindee_job_id, mindee_model_id").eq("id", supplierInvoiceId).maybeSingle();
   if (invoiceError || !invoice) return redirectTo(request, { error: invoiceError?.message ?? "Supplier invoice not found." });
 
+  const { data: adjustmentRows, error: adjustmentError } = await supabase
+    .from("order_value_adjustments")
+    .select("adjustment_type, amount_gbp, approval_status")
+    .eq("supplier_invoice_id", supplierInvoiceId)
+    .neq("approval_status", "rejected");
+  if (adjustmentError) return redirectTo(request, { error: adjustmentError.message });
+  const adjustments = (adjustmentRows ?? []).reduce<AdjustmentFacts>((totals, row) => {
+    const amount = Number(row.amount_gbp ?? 0);
+    if (row.adjustment_type === "retailer_delivery") totals.deliveryGbp += amount;
+    if (row.adjustment_type === "retailer_discount") totals.discountGbp += amount;
+    return totals;
+  }, { deliveryGbp: 0, discountGbp: 0 });
+  adjustments.deliveryGbp = Math.round(adjustments.deliveryGbp * 100) / 100;
+  adjustments.discountGbp = Math.round(adjustments.discountGbp * 100) / 100;
+
   const modelId = String(invoice.mindee_model_id || DEFAULT_MINDEE_INVOICE_MODEL_ID);
   const jobId = typeof invoice.mindee_job_id === "string" ? invoice.mindee_job_id : "";
   if (!jobId) return redirectTo(request, { error: "Mindee job id is missing. Do not re-send OCR; inspect the invoice record first." });
@@ -179,7 +230,7 @@ export async function POST(request: Request) {
   let httpStatus = 200;
   let resolvedInferenceId: string | null = null;
 
-  const { data: cached } = await supabase.from("mindee_api_calls").select("response_json, http_status, mindee_job_id, mindee_inference_id").eq("supplier_invoice_id", supplierInvoiceId).eq("action_type", "get_job").eq("success_yn", true).order("request_started_at", { ascending: false }).limit(3);
+  const { data: cached } = await supabase.from("mindee_api_calls").select("response_json, http_status, mindee_job_id, mindee_inference_id").eq("supplier_invoice_id", supplierInvoiceId).eq("mindee_job_id", jobId).eq("action_type", "get_job").eq("success_yn", true).order("request_started_at", { ascending: false }).limit(3);
   for (const row of cached ?? []) {
     if (hasInferencePayload(row.response_json)) {
       raw = row.response_json;
@@ -205,9 +256,9 @@ export async function POST(request: Request) {
 
   if (!raw || !hasInferencePayload(raw)) return redirectTo(request, { success: `Mindee job ${jobId} has no completed inference payload yet. Wait briefly, then fetch again. No new OCR page was used.` });
 
-  const parsed = parseMindeeV2InvoiceResult(raw);
+  const parsed = parseMindeeV2InvoiceResult(raw, adjustments);
   const { data: saveData, error: saveError } = await supabase.rpc("staff_save_mindee_invoice_ocr_result", { p_supplier_invoice_id: supplierInvoiceId, p_model_id: modelId, p_http_status: httpStatus, p_mindee_job_id: jobId || extractMindeeJobId(raw), p_mindee_inference_id: resolvedInferenceId || extractMindeeInferenceId(raw), p_raw_json: raw, p_ocr_invoice_ref: parsed.ocrInvoiceRef, p_ocr_retailer_name: parsed.ocrRetailerName, p_ocr_invoice_date: parsed.ocrInvoiceDate, p_ocr_invoice_total_gbp: parsed.ocrInvoiceTotal, p_pages_consumed: extractPagesConsumed(raw), p_lines: parsed.lines, p_flags: parsed.flags });
   if (saveError) return redirectTo(request, { error: saveError.message });
   const resultRow = Array.isArray(saveData) ? saveData[0] : null;
-  return redirectTo(request, { success: `Mindee OCR result saved from job response. Inserted ${resultRow?.inserted_line_count ?? parsed.lines.length} OCR line(s), raised ${resultRow?.inserted_flag_count ?? parsed.flags.length} flag(s).` });
+  return redirectTo(request, { success: `Mindee OCR result saved from current job. Inserted ${resultRow?.inserted_line_count ?? parsed.lines.length} goods line(s), raised ${resultRow?.inserted_flag_count ?? parsed.flags.length} flag(s).` });
 }
