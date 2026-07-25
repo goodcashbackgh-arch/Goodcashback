@@ -1,4 +1,5 @@
 name: Finalize Mini 4
+# Triggered only after all 19 reviewed archive segments are present.
 
 on:
   push:
