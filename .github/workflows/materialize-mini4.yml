@@ -1,4 +1,4 @@
-name: Materialize Mini 4
+name: Finalize Mini 4
 
 on:
   push:
@@ -6,53 +6,65 @@ on:
       - agent/multi-supplier-mini-build-4-v1
     paths:
       - .github/workflows/materialize-mini4.yml
-  pull_request:
-    branches:
-      - main
-    paths:
-      - .github/workflows/materialize-mini4.yml
 
 permissions:
   contents: write
-  pull-requests: read
 
 jobs:
-  verify-chunk:
+  verify-part:
     name: Verify ${{ matrix.file }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
-          - file: chunk-00.txt
-            sha256: c9b8ad57d0d4ef033fce0c2112f0556cdb2894ef2e2b26c9112f92690edf9ba1
-          - file: chunk-01.txt
-            sha256: d356537ac17b2ca92df4c0b5c6d6fa4bf797bf6e3e0ae218886c1c24e740d3f8
-          - file: chunk-02.txt
-            sha256: 1f101af353c1b2a4e8d2573e0136ed1b5f21277af4c522decce65b8222e01cf9
-          - file: chunk-03.txt
-            sha256: 853acab7be93c97fcd5740abf9bec9e4f144801fa0d53c7e56c0383594445e86
-          - file: chunk-04a.txt
-            sha256: 195c0c0c8520856ff3dad73a2b7b7dad6c0ebc1249e718e9524f49a4bdcaaac1
-          - file: chunk-04b1a.txt
-            sha256: 0203e833cc9a2098b9c978ecaa5ecb5b5e498eaa09f3cbc2416d7c82cf56bea9
-          - file: chunk-04b1b.txt
-            sha256: a2a0f9fe483bb5c0a514b3a5ca6a57b496c3516b631c1377d1de3849ca9cf030
-          - file: chunk-04b2.txt
-            sha256: 360d8ca52803e1082e064628b04f337fa086364f096ab02f2e95120d830d3db4
-          - file: chunk-05a.txt
-            sha256: 0a4c70aa3cb43a7839c77cab887f445847d544a4bef28b3784bcb026dde69270
-          - file: chunk-05b.txt
-            sha256: f1f7484887e7f071a8f01b0153bf36872efbd8311408f157eac88ba002906d32
+          - file: part-000.txt
+            sha256: 6010fe064282b24a58e17eb2d35d3b1d541e9199e5d38377bfe721e971393862
+          - file: part-001.txt
+            sha256: 395d5280a3383e5e1dff74ad2f23f714d6464959b84f3b91b347eda2e9b81306
+          - file: part-002.txt
+            sha256: c5a2a99eb31b256ae1c8e4e9af940b572925d11c88fbf3c97613343a7afa3705
+          - file: part-003.txt
+            sha256: 408e80e7374e50ac5a332209f49f7009ca7e7b556e4cc331704e0f2a02567885
+          - file: part-004.txt
+            sha256: b6646cf4f5a234be5f472fcee3d1ef0becf44bdd5cdd42234b2feb6c76598c5e
+          - file: part-005.txt
+            sha256: aa9ff619ff29759164fc21b4e3e358ad0160eedeca08cfa7f9806e7e5ebeaf28
+          - file: part-006.txt
+            sha256: 28b4d3fdb66f387c72386b84dd517ea4aed014e8d6a3a447c8462520a70b5e5a
+          - file: part-007.txt
+            sha256: 20b313a7c77594f2e90625f63f099bfc60298e7e90414e8cbd561a9a8e66684a
+          - file: part-008.txt
+            sha256: 5251a45e90b3e027131fd6e88e556b0e6fe9557c02f381a5c92d09919bce74a4
+          - file: part-009.txt
+            sha256: ad44fa7a9253bb7372fbaa3c1ec974ed90c344a51f0e2f8a3a8c9a796be156fd
+          - file: part-010.txt
+            sha256: 28657ef011d9b99a4100453a8062f28022d06a71450ca5957904e89a206ccbbe
+          - file: part-011.txt
+            sha256: 3071a83f040a2ccb66b00a7208f96f9a1622c571ea979cb7136e50f1187e5451
+          - file: part-012.txt
+            sha256: 7a59d444715ba8af69cb80741d22827e21bcca48ed9d788f1b2892af2552fbe4
+          - file: part-013.txt
+            sha256: 3278c33fb9879f7029c166655c10f7823d65e11a6699a321550c9bf881a802a6
+          - file: part-014.txt
+            sha256: f911cef0ae082d77f9923bca860800c8de0c7165b951ccc33a84a0c186fbf865
+          - file: part-015.txt
+            sha256: b69f2df542d26e6055c38f407cf8656c08e19a0308a2c8e1d4fd37addd90b5ba
+          - file: part-016.txt
+            sha256: 4601d304d72833a8ac01b1520243dad72290161bc4751ea2a52a584663017eb3
+          - file: part-017.txt
+            sha256: 95dc1e7120fdc27d09654d09c601c4db44eec14d7906d61c2a9c3af374606263
+          - file: part-018.txt
+            sha256: b187e14dfc55483848a71b51d70e2da4872381b08064ac2a26d9c71420471e7a
     steps:
       - uses: actions/checkout@v4
         with:
           ref: agent/multi-supplier-mini-build-4-v1
-      - name: Verify exact bytes
-        run: echo '${{ matrix.sha256 }}  .mini4-materialize/${{ matrix.file }}' | sha256sum -c -
+      - name: Verify exact segment bytes
+        run: echo '${{ matrix.sha256 }}  .mini4-finalize/${{ matrix.file }}' | sha256sum -c -
 
-  materialize:
-    needs: verify-chunk
+  finalize:
+    needs: verify-part
     runs-on: ubuntu-latest
     steps:
       - name: Check out isolated Mini 4 branch
@@ -61,54 +73,43 @@ jobs:
           ref: agent/multi-supplier-mini-build-4-v1
           fetch-depth: 0
 
-      - name: Assemble and verify exact archive
+      - name: Assemble and verify reviewed archive
         shell: bash
         run: |
           set -euo pipefail
-          cat \
-            .mini4-materialize/chunk-00.txt \
-            .mini4-materialize/chunk-01.txt \
-            .mini4-materialize/chunk-02.txt \
-            .mini4-materialize/chunk-03.txt \
-            .mini4-materialize/chunk-04a.txt \
-            .mini4-materialize/chunk-04b1a.txt \
-            .mini4-materialize/chunk-04b1b.txt \
-            .mini4-materialize/chunk-04b2.txt \
-            .mini4-materialize/chunk-05a.txt \
-            .mini4-materialize/chunk-05b.txt \
-            > /tmp/mini4.base64
-          echo 'dafca2403a92e627cc58b727a8a251dc9f697597d75cbaa3144562e1a0638b1c  /tmp/mini4.base64' | sha256sum -c -
+          cat .mini4-finalize/part-*.txt > /tmp/mini4.base64
+          echo 'cf2fa9ec061da185f4c29c51325e992b8daa1d442a209c50bc6e135506c07261  /tmp/mini4.base64' | sha256sum -c -
           base64 --decode /tmp/mini4.base64 > /tmp/mini4.tar.gz
-          echo 'f31cee388a52671d205e552cd95cf1c1d0fcecf5556fdcde273140340e2c3c23  /tmp/mini4.tar.gz' | sha256sum -c -
+          echo 'fc5124f8378e4d998eec8d620529eb86f8e540fe237bfff3d144c8096057ea60  /tmp/mini4.tar.gz' | sha256sum -c -
           gzip -t /tmp/mini4.tar.gz
+          tar -xzf /tmp/mini4.tar.gz
 
-      - name: Extract and verify final implementation files
+      - name: Verify exact final files
         shell: bash
         run: |
           set -euo pipefail
-          tar -xzf /tmp/mini4.tar.gz
-          sha256sum -c .mini4-materialize/SHA256SUMS
+          cat > /tmp/final-sha256 <<'EOF'
+          d8bea0f6aa8dadfa32aad1707f3ba79bc4319275a92132375d31e34c2865b3a0  supabase/migrations/20260725a_customer_review_cycle_membership_v1.sql
+          a895daefd8955d52a5171d452bb5f6ec280255b8515b7ccaa7ff9160efb596a2  supabase/migrations/20260725b_customer_hold_review_membership_bridge_v1.sql
+          a7a19d0fa3d515d304931f4c131ad9d5737976cb1e33c81d448b811105c4e716  docs/testing/20260725_multi_supplier_mini_build_4_regression_v1.sql
+          dd49daf29566656099dab5e6ceee23d8eace4771dc75d3a853b743906d7599b6  docs/testing/20260725_customer_credit_sage_route_regression_v1.mjs
+          d24b00a83a2239eea47922a155e235e95bff0860eb4f58d648089f1bde2cd615  src/lib/sage/posting.ts
+          EOF
+          sha256sum -c /tmp/final-sha256
 
-      - name: Run bounded customer-credit Sage route regression
+      - name: Run customer-credit Sage route regression
         run: node docs/testing/20260725_customer_credit_sage_route_regression_v1.mjs
 
       - name: Check patch formatting
         run: git diff --check
 
-      - name: Commit clean Mini 4 implementation
+      - name: Commit reviewed Mini 4 implementation and remove staging
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf .mini4-materialize .github/workflows/materialize-mini4.yml
+          rm -rf .mini4-finalize .github/workflows/materialize-mini4.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A \
-            .mini4-materialize \
-            .github/workflows/materialize-mini4.yml \
-            supabase/migrations/20260725a_customer_review_cycle_membership_v1.sql \
-            supabase/migrations/20260725b_customer_hold_review_membership_bridge_v1.sql \
-            docs/testing/20260725_multi_supplier_mini_build_4_regression_v1.sql \
-            docs/testing/20260725_customer_credit_sage_route_regression_v1.mjs \
-            src/lib/sage/posting.ts
-          git commit -m "Implement immutable customer review Mini 4"
+          git add -A
+          git commit -m "Finalize reviewed immutable customer review Mini 4"
           git push origin HEAD:agent/multi-supplier-mini-build-4-v1
