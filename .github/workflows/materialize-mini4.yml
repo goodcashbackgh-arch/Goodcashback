@@ -27,7 +27,7 @@ jobs:
           ref: agent/multi-supplier-mini-build-4-v1
           fetch-depth: 0
 
-      - name: Verify and reconstruct validated implementation files
+      - name: Verify exact payload chunks
         shell: bash
         run: |
           set -euo pipefail
@@ -45,6 +45,10 @@ jobs:
           EOF
           sha256sum -c /tmp/chunk-sha256
 
+      - name: Assemble and verify exact archive
+        shell: bash
+        run: |
+          set -euo pipefail
           cat \
             .mini4-materialize/chunk-00.txt \
             .mini4-materialize/chunk-01.txt \
@@ -57,11 +61,15 @@ jobs:
             .mini4-materialize/chunk-05a.txt \
             .mini4-materialize/chunk-05b.txt \
             > /tmp/mini4.base64
-
           echo 'dafca2403a92e627cc58b727a8a251dc9f697597d75cbaa3144562e1a0638b1c  /tmp/mini4.base64' | sha256sum -c -
           base64 --decode /tmp/mini4.base64 > /tmp/mini4.tar.gz
           echo 'f31cee388a52671d205e552cd95cf1c1d0fcecf5556fdcde273140340e2c3c23  /tmp/mini4.tar.gz' | sha256sum -c -
           gzip -t /tmp/mini4.tar.gz
+
+      - name: Extract and verify final implementation files
+        shell: bash
+        run: |
+          set -euo pipefail
           tar -xzf /tmp/mini4.tar.gz
           sha256sum -c .mini4-materialize/SHA256SUMS
 
