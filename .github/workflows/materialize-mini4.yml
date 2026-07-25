@@ -21,33 +21,6 @@ jobs:
           ref: agent/multi-supplier-mini-build-4-v1
           fetch-depth: 0
 
-      - name: Verify all reviewed segments
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat > /tmp/parts.sha256 <<'EOF'
-          6010fe064282b24a58e17eb2d35d3b1d541e9199e5d38377bfe721e971393862  .mini4-finalize/part-000.txt
-          395d5280a3383e5e1dff74ad2f23f714d6464959b84f3b91b347eda2e9b81306  .mini4-finalize/part-001.txt
-          c5a2a99eb31b256ae1c8e4e9af940b572925d11c88fbf3c97613343a7afa3705  .mini4-finalize/part-002.txt
-          408e80e7374e50ac5a332209f49f7009ca7e7b556e4cc331704e0f2a02567885  .mini4-finalize/part-003.txt
-          b6646cf4f5a234be5f472fcee3d1ef0becf44bdd5cdd42234b2feb6c76598c5e  .mini4-finalize/part-004.txt
-          aa9ff619ff29759164fc21b4e3e358ad0160eedeca08cfa7f9806e7e5ebeaf28  .mini4-finalize/part-005.txt
-          28b4d3fdb66f387c72386b84dd517ea4aed014e8d6a3a447c8462520a70b5e5a  .mini4-finalize/part-006.txt
-          20b313a7c77594f2e90625f63f099bfc60298e7e90414e8cbd561a9a8e66684a  .mini4-finalize/part-007.txt
-          5251a45e90b3e027131fd6e88e556b0e6fe9557c02f381a5c92d09919bce74a4  .mini4-finalize/part-008.txt
-          ad44fa7a9253bb7372fbaa3c1ec974ed90c344a51f0e2f8a3a8c9a796be156fd  .mini4-finalize/part-009.txt
-          28657ef011d9b99a4100453a8062f28022d06a71450ca5957904e89a206ccbbe  .mini4-finalize/part-010.txt
-          3071a83f040a2ccb66b00a7208f96f9a1622c571ea979cb7136e50f1187e5451  .mini4-finalize/part-011.txt
-          7a59d444715ba8af69cb80741d22827e21bcca48ed9d788f1b2892af2552fbe4  .mini4-finalize/part-012.txt
-          3278c33fb9879f7029c166655c10f7823d65e11a6699a321550c9bf881a802a6  .mini4-finalize/part-013.txt
-          f911cef0ae082d77f9923bca860800c8de0c7165b951ccc33a84a0c186fbf865  .mini4-finalize/part-014.txt
-          b69f2df542d26e6055c38f407cf8656c08e19a0308a2c8e1d4fd37addd90b5ba  .mini4-finalize/part-015.txt
-          4601d304d72833a8ac01b1520243dad72290161bc4751ea2a52a584663017eb3  .mini4-finalize/part-016.txt
-          95dc1e7120fdc27d09654d09c601c4db44eec14d7906d61c2a9c3af374606263  .mini4-finalize/part-017.txt
-          b187e14dfc55483848a71b51d70e2da4872381b08064ac2a26d9c71420471e7a  .mini4-finalize/part-018.txt
-          EOF
-          sha256sum -c /tmp/parts.sha256
-
       - name: Assemble and verify reviewed archive
         shell: bash
         run: |
