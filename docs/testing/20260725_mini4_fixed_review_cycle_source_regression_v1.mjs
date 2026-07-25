@@ -7,6 +7,7 @@ const holdPath = "supabase/migrations/20260725zzz_mini4_exact_hold_membership_br
 const hardeningPath = "supabase/migrations/20260725zzzz_mini4_review_cycle_integrity_hardening_v1.sql";
 const alignmentPath = "supabase/migrations/20260725zzzzz_mini4_legacy_deadline_alignment_v1.sql";
 const finalPath = "supabase/migrations/20260725zzzzzz_mini4_final_scope_alignment_v1.sql";
+const payloadPath = "supabase/migrations/20260725zzzzzz_mini4_review_payload_compat_v1.sql";
 
 const cycle = readFileSync(cyclePath, "utf8");
 const acl = readFileSync(aclPath, "utf8");
@@ -14,6 +15,7 @@ const hold = readFileSync(holdPath, "utf8");
 const hardening = readFileSync(hardeningPath, "utf8");
 const alignment = readFileSync(alignmentPath, "utf8");
 const finalAlignment = readFileSync(finalPath, "utf8");
+const payload = readFileSync(payloadPath, "utf8");
 const executableCycle = cycle.replace(/'(?:''|[^'])*'/g, "''");
 
 assert.match(cycle, /CREATE TABLE public\.customer_review_cycle_memberships/);
@@ -73,7 +75,13 @@ assert.match(finalAlignment, /IF TG_OP = 'INSERT'/);
 assert.match(finalAlignment, /Timed hold % has no frozen review membership/);
 assert.match(finalAlignment, /Customer hold target cannot move outside its frozen review membership/);
 
-for (const source of [cycle, acl, hold, hardening, alignment, finalAlignment]) {
+assert.match(payload, /'qty', supplier_line\.qty/);
+assert.match(payload, /'amount_inc_vat_gbp', supplier_line\.amount_inc_vat_gbp/);
+assert.doesNotMatch(payload, /'qty', membership\.review_qty/);
+assert.doesNotMatch(payload, /'amount_inc_vat_gbp', membership\.(goods_amount_gbp|delivery_share_gbp|discount_share_gbp)/);
+assert.match(payload, /Customer review payload compatibility proof failed/);
+
+for (const source of [cycle, acl, hold, hardening, alignment, finalAlignment, payload]) {
   assert.doesNotMatch(source, /CREATE OR REPLACE FUNCTION public\.internal_resolved_customer_sales_sage_payload_v1/);
   assert.doesNotMatch(source, /CREATE OR REPLACE FUNCTION public\.internal_supplier_goods_ap/);
   assert.doesNotMatch(source, /CREATE OR REPLACE FUNCTION public\.internal_create_cash_control_batch_v1/);
@@ -83,4 +91,4 @@ for (const source of [cycle, acl, hold, hardening, alignment, finalAlignment]) {
   assert.doesNotMatch(source, /src\/lib\/sage\/posting/);
 }
 
-console.log("PASS: Mini 4 is limited to fixed review cycles, exact hold provenance, integrity guards, legacy deadline alignment and existing shipment deadline consumers");
+console.log("PASS: Mini 4 is limited to fixed review cycles, exact hold provenance, integrity guards, legacy deadline alignment, unchanged review payload values and existing shipment deadline consumers");
