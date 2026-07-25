@@ -1,34 +1,37 @@
 BEGIN;
 
--- Narrow retailer-refund-IN workbench patch.
--- Preserves the complete existing cash workbench resolver as a base function and
--- overrides only confirmed retailer_refund_received rows when their exact
--- approved-current supplier-credit settlement has posted to Sage.
--- No treasury, reconciliation, allocation, freeze, batch or Sage write logic changes.
-
 SET LOCAL lock_timeout = '15s';
 SET LOCAL statement_timeout = '0';
 
-DO $$
-BEGIN
-  IF to_regprocedure('public.internal_cash_posting_workbench_rows_v1(text,text,text,text,integer,integer)') IS NULL THEN
-    RAISE EXCEPTION 'Missing internal_cash_posting_workbench_rows_v1';
-  END IF;
-  IF to_regclass('public.dispute_refund_evidence_submissions') IS NULL THEN
-    RAISE EXCEPTION 'Missing dispute_refund_evidence_submissions';
-  END IF;
-  IF to_regclass('public.sage_posting_snapshots') IS NULL THEN
-    RAISE EXCEPTION 'Missing sage_posting_snapshots';
-  END IF;
-END $$;
+-- Narrow read-model correction only.
+-- The canonical settlement gate already proves that a retailer-refund allocation
+-- has approved-current evidence and an active posted Sage supplier-credit
+-- settlement. Reuse that exact gate instead of maintaining a second version.
+-- Treasury, reconciliation, allocations, snapshot construction, freezing,
+-- batching and Sage posting remain unchanged.
 
-DO $$
+DO $guard$
 BEGIN
+  IF to_regprocedure('public.internal_cash_posting_workbench_rows_v1(text,text,text,text,integer,integer)') IS NULL
+     AND to_regprocedure('public.internal_cash_posting_workbench_rows_pre_refund_readiness_v1(text,text,text,text,integer,integer)') IS NULL THEN
+    RAISE EXCEPTION 'Missing public.internal_cash_posting_workbench_rows_v1';
+  END IF;
+
+  IF to_regprocedure('public.internal_retailer_refund_has_posted_settlement_v1(uuid)') IS NULL THEN
+    RAISE EXCEPTION 'Missing canonical retailer-refund settlement gate';
+  END IF;
+
   IF to_regprocedure('public.internal_cash_posting_workbench_rows_pre_refund_readiness_v1(text,text,text,text,integer,integer)') IS NULL THEN
     ALTER FUNCTION public.internal_cash_posting_workbench_rows_v1(text,text,text,text,integer,integer)
       RENAME TO internal_cash_posting_workbench_rows_pre_refund_readiness_v1;
   END IF;
-END $$;
+END
+$guard$;
+
+REVOKE ALL ON FUNCTION public.internal_cash_posting_workbench_rows_pre_refund_readiness_v1(text,text,text,text,integer,integer) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.internal_cash_posting_workbench_rows_pre_refund_readiness_v1(text,text,text,text,integer,integer) FROM anon;
+REVOKE ALL ON FUNCTION public.internal_cash_posting_workbench_rows_pre_refund_readiness_v1(text,text,text,text,integer,integer) FROM authenticated;
+REVOKE ALL ON FUNCTION public.internal_cash_posting_workbench_rows_pre_refund_readiness_v1(text,text,text,text,integer,integer) FROM service_role;
 
 CREATE OR REPLACE FUNCTION public.internal_cash_posting_workbench_rows_v1(
   p_direction text DEFAULT 'all',
@@ -110,63 +113,39 @@ AS $function$
       b.sage_contact_id,
       b.sage_contact_name,
       b.sage_bank_account_id,
+      b.target_sage_object_id,
       CASE
-        WHEN b.category = 'retailer_refund_received' AND rr.ready THEN rr.sage_invoice_id
-        ELSE b.target_sage_object_id
-      END::text AS target_sage_object_id,
-      CASE
-        WHEN b.category = 'retailer_refund_received' AND rr.ready THEN 'ready_to_freeze'
+        WHEN b.category = 'retailer_refund_received'
+         AND b.direction = 'in'
+         AND public.internal_retailer_refund_has_posted_settlement_v1(b.source_id)
+          THEN 'ready_to_freeze'
         ELSE b.posting_status
       END::text AS posting_status,
       CASE
-        WHEN b.category = 'retailer_refund_received' AND rr.ready THEN NULL::text
+        WHEN b.category = 'retailer_refund_received'
+         AND b.direction = 'in'
+         AND public.internal_retailer_refund_has_posted_settlement_v1(b.source_id)
+          THEN NULL::text
         ELSE b.blocker
       END::text AS blocker,
       CASE
-        WHEN b.category = 'retailer_refund_received' AND rr.ready THEN true
+        WHEN b.category = 'retailer_refund_received'
+         AND b.direction = 'in'
+         AND public.internal_retailer_refund_has_posted_settlement_v1(b.source_id)
+          THEN true
         ELSE b.selectable
       END AS selectable,
       CASE
-        WHEN b.category = 'retailer_refund_received' AND rr.ready THEN
-          COALESCE(b.detail_json, '{}'::jsonb) || jsonb_build_object(
-            'endpoint', 'POST /contact_payments',
-            'transaction_type_id', 'VENDOR_REFUND',
-            'is_refund', true,
-            'payment_type', 'receipt',
-            'document_mode', rr.document_mode,
-            'refund_evidence_submission_id', rr.evidence_submission_id,
-            'supplier_credit_settlement_sage_id', rr.sage_invoice_id,
-            'supplier_credit_note_sage_id', rr.sage_invoice_id,
-            'target_sage_object_id', rr.sage_invoice_id,
-            'supplier_credit_snapshot_id', rr.sage_snapshot_id
+        WHEN b.category = 'retailer_refund_received'
+         AND b.direction = 'in'
+         AND public.internal_retailer_refund_has_posted_settlement_v1(b.source_id)
+          THEN COALESCE(b.detail_json, '{}'::jsonb) || jsonb_build_object(
+            'settlement_gate', 'internal_retailer_refund_has_posted_settlement_v1',
+            'settlement_gate_passed', true
           )
         ELSE b.detail_json
       END AS detail_json
     FROM base_rows b
-    LEFT JOIN LATERAL (
-      SELECT
-        true AS ready,
-        e.id AS evidence_submission_id,
-        e.document_mode::text AS document_mode,
-        s.id AS sage_snapshot_id,
-        s.sage_invoice_id::text AS sage_invoice_id
-      FROM public.dispute_refund_evidence_submissions e
-      JOIN public.sage_posting_snapshots s
-        ON s.source_id = e.id
-       AND s.document_lane = 'supplier_credit_note'
-       AND s.sage_posting_status = 'posted'
-       AND NULLIF(trim(COALESCE(s.sage_invoice_id, '')), '') IS NOT NULL
-      WHERE b.category = 'retailer_refund_received'
-        AND e.dispute_id = b.matched_target_id
-        AND e.supplier_approval_status = 'approved_current'
-        AND e.supplier_control_status = 'approved_current'
-        AND b.direction = 'in'
-        AND b.amount_gbp > 0
-        AND NULLIF(trim(COALESCE(b.sage_contact_id, '')), '') IS NOT NULL
-        AND NULLIF(trim(COALESCE(b.sage_bank_account_id, '')), '') IS NOT NULL
-      ORDER BY s.sage_posted_at DESC NULLS LAST, s.created_at DESC
-      LIMIT 1
-    ) rr ON true
   ), filtered AS (
     SELECT r.*
     FROM resolved r
@@ -213,10 +192,15 @@ AS $function$
 $function$;
 
 REVOKE ALL ON FUNCTION public.internal_cash_posting_workbench_rows_v1(text,text,text,text,integer,integer) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.internal_cash_posting_workbench_rows_v1(text,text,text,text,integer,integer) FROM anon;
 GRANT EXECUTE ON FUNCTION public.internal_cash_posting_workbench_rows_v1(text,text,text,text,integer,integer) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.internal_cash_posting_workbench_rows_v1(text,text,text,text,integer,integer) TO service_role;
+
+COMMENT ON FUNCTION public.internal_cash_posting_workbench_rows_pre_refund_readiness_v1(text,text,text,text,integer,integer) IS
+'Private exact cash-posting workbench implementation preserved before retailer-refund readiness alignment.';
 
 COMMENT ON FUNCTION public.internal_cash_posting_workbench_rows_v1(text,text,text,text,integer,integer) IS
-'Reuses the complete prior cash workbench resolver and narrowly releases retailer-refund IN rows only after an exact approved-current supplier-credit settlement has posted to Sage.';
+'Canonical cash-posting workbench. Preserves every prior row and changes only retailer-refund IN readiness when the existing canonical posted-settlement gate passes.';
 
 NOTIFY pgrst, 'reload schema';
 
