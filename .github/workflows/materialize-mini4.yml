@@ -1,0 +1,52 @@
+name: Materialize Mini 4
+
+on:
+  push:
+    branches:
+      - agent/multi-supplier-mini-build-4-v1
+    paths:
+      - .github/workflows/materialize-mini4.yml
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out isolated Mini 4 branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/multi-supplier-mini-build-4-v1
+          fetch-depth: 0
+
+      - name: Reconstruct validated implementation files
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .mini4-materialize/chunk-*.txt | tr -d '\n' | base64 --decode > /tmp/mini4.tar.gz
+          tar -xzf /tmp/mini4.tar.gz
+          sha256sum -c .mini4-materialize/SHA256SUMS
+
+      - name: Run bounded customer-credit Sage route regression
+        run: node docs/testing/20260725_customer_credit_sage_route_regression_v1.mjs
+
+      - name: Check patch formatting
+        run: git diff --check
+
+      - name: Commit Mini 4 implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .mini4-materialize
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            supabase/migrations/20260725a_customer_review_cycle_membership_v1.sql \
+            supabase/migrations/20260725b_customer_hold_review_membership_bridge_v1.sql \
+            docs/testing/20260725_multi_supplier_mini_build_4_regression_v1.sql \
+            docs/testing/20260725_customer_credit_sage_route_regression_v1.mjs \
+            src/lib/sage/posting.ts \
+            .mini4-materialize
+          git commit -m "Implement immutable customer review Mini 4"
+          git push origin HEAD:agent/multi-supplier-mini-build-4-v1
