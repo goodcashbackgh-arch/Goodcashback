@@ -20,6 +20,9 @@ type BatchRow = {
   idempotency_key: string | null;
   posting_status: string;
   sage_object_type: string | null;
+  sage_object_id: string | null;
+  sage_reference: string | null;
+  response_payload_json: Row | null;
   request_payload_json: Row;
   payload_validation_status: string;
   source_table: string | null;
@@ -32,6 +35,14 @@ type BatchRow = {
   amount_gbp: string | number | null;
   currency_code: string | null;
   attempt_count: number | null;
+};
+
+type CustomerDocumentConfig = {
+  isCreditNote: boolean;
+  endpointPath: string;
+  sageObjectType: "sales_invoice" | "sales_credit_note";
+  payloadRoot: "sales_invoice" | "sales_credit_note";
+  lineKey: "invoice_lines" | "credit_note_lines";
 };
 
 function asObject(value: unknown): Row {
@@ -83,12 +94,45 @@ function bodyHash(value: unknown) {
   return crypto.createHash("sha256").update(JSON.stringify(value ?? {})).digest("hex");
 }
 
-function sageObjectId(raw: unknown) {
-  return firstText(raw, [["id"], ["sales_invoice", "id"], ["$items", 0, "id"], ["data", "id"]]);
+function customerDocumentConfig(row: BatchRow): CustomerDocumentConfig {
+  const isCreditNote = text(row.document_type) === "customer_credit_note";
+  return isCreditNote
+    ? {
+        isCreditNote: true,
+        endpointPath: "/sales_credit_notes",
+        sageObjectType: "sales_credit_note",
+        payloadRoot: "sales_credit_note",
+        lineKey: "credit_note_lines",
+      }
+    : {
+        isCreditNote: false,
+        endpointPath: "/sales_invoices",
+        sageObjectType: "sales_invoice",
+        payloadRoot: "sales_invoice",
+        lineKey: "invoice_lines",
+      };
 }
 
-function sageReference(raw: unknown) {
-  return firstText(raw, [["reference"], ["displayed_as"], ["sales_invoice", "reference"], ["sales_invoice", "displayed_as"]]);
+function sageObjectId(raw: unknown, config: CustomerDocumentConfig) {
+  return firstText(raw, [
+    ["id"],
+    [config.payloadRoot, "id"],
+    ["sales_invoice", "id"],
+    ["sales_credit_note", "id"],
+    ["$items", 0, "id"],
+    ["data", "id"],
+  ]);
+}
+
+function sageReference(raw: unknown, config: CustomerDocumentConfig) {
+  return firstText(raw, [
+    ["reference"],
+    ["displayed_as"],
+    [config.payloadRoot, "reference"],
+    [config.payloadRoot, "displayed_as"],
+    ["sales_invoice", "reference"],
+    ["sales_credit_note", "reference"],
+  ]);
 }
 
 function errorMessage(raw: unknown) {
@@ -132,33 +176,66 @@ function customerSalesEuGoodsServicesTypeId(line: Row, payload: Row) {
     || "GOODS";
 }
 
-function extractSalesInvoicePayload(row: BatchRow) {
+function extractCustomerDocumentPayload(
+  row: BatchRow,
+  config: CustomerDocumentConfig,
+) {
   const payload = asObject(row.request_payload_json);
   const header = asObject(payload.sage_header);
-  const contactId = firstText(payload, [["sage_header", "contact_id"], ["sage_header", "sage_contact_id"], ["customer_target", "sage_contact_id"]]);
-  const date = firstText(payload, [["sage_header", "date"], ["sage_header", "invoice_date"], ["payment_date_resolution", "invoice_date"]]);
-  const reference = text(header.reference) || text(row.reference_text) || text(row.order_ref) || row.id;
+  const contactId = firstText(payload, [
+    ["sage_header", "contact_id"],
+    ["sage_header", "sage_contact_id"],
+    ["customer_target", "sage_contact_id"],
+  ]);
+  const date = firstText(payload, [
+    ["sage_header", "date"],
+    ["sage_header", "invoice_date"],
+    ["payment_date_resolution", "invoice_date"],
+  ]);
+  const reference = text(header.reference)
+    || text(row.reference_text)
+    || text(row.order_ref)
+    || row.id;
   const notes = text(header.notes) || text(row.order_ref);
   const currencyCode = text(header.currency_code) || text(row.currency_code) || "GBP";
   const resolvedLines = asArray(payload.resolved_lines).map(asObject);
 
   if (!contactId) throw new Error("Customer Sage contact id missing from frozen payload.");
-  if (!date) throw new Error("Sales invoice date missing from frozen payload.");
-  if (resolvedLines.length === 0) throw new Error("Sales invoice has no resolved lines.");
+  if (!date) throw new Error(`${config.isCreditNote ? "Sales credit note" : "Sales invoice"} date missing from frozen payload.`);
+  if (resolvedLines.length === 0) {
+    throw new Error(`${config.isCreditNote ? "Sales credit note" : "Sales invoice"} has no resolved lines.`);
+  }
 
-  const invoiceLines = resolvedLines.map((line, index) => {
-    const description = firstText(line, [["description"], ["posting_description"], ["source_description"]]);
-    const ledgerAccountId = firstText(line, [["sage_ledger_account_id"], ["resolved_ledger_account_id"]]);
-    const taxRateId = firstText(line, [["sage_tax_rate_id"], ["resolved_tax_rate_id"]]);
+  const documentLines = resolvedLines.map((line, index) => {
+    const description = firstText(line, [
+      ["description"],
+      ["posting_description"],
+      ["source_description"],
+    ]);
+    const ledgerAccountId = firstText(line, [
+      ["sage_ledger_account_id"],
+      ["resolved_ledger_account_id"],
+    ]);
+    const taxRateId = firstText(line, [
+      ["sage_tax_rate_id"],
+      ["resolved_tax_rate_id"],
+    ]);
     const quantity = num(line.quantity || line.qty || 1) || 1;
-    const amount = num(line.unit_price_gbp || line.total_line_amount_gbp || line.gross_amount_gbp || line.amount_gbp || row.amount_gbp);
+    const amount = num(
+      line.unit_price_gbp
+      || line.total_line_amount_gbp
+      || line.gross_amount_gbp
+      || line.amount_gbp
+      || row.amount_gbp,
+    );
     const euGoodsServicesTypeId = customerSalesEuGoodsServicesTypeId(line, payload);
+    const label = config.isCreditNote ? "Sales credit note" : "Sales invoice";
 
-    if (!description) throw new Error(`Sales invoice line ${index + 1} missing description.`);
-    if (!ledgerAccountId) throw new Error(`Sales invoice line ${index + 1} missing ledger account id.`);
-    if (!taxRateId) throw new Error(`Sales invoice line ${index + 1} missing tax rate id.`);
-    if (!amount) throw new Error(`Sales invoice line ${index + 1} missing amount.`);
-    if (!euGoodsServicesTypeId) throw new Error(`Sales invoice line ${index + 1} missing EU goods/services type id.`);
+    if (!description) throw new Error(`${label} line ${index + 1} missing description.`);
+    if (!ledgerAccountId) throw new Error(`${label} line ${index + 1} missing ledger account id.`);
+    if (!taxRateId) throw new Error(`${label} line ${index + 1} missing tax rate id.`);
+    if (!amount) throw new Error(`${label} line ${index + 1} missing amount.`);
+    if (!euGoodsServicesTypeId) throw new Error(`${label} line ${index + 1} missing EU goods/services type id.`);
 
     return {
       description,
@@ -170,6 +247,19 @@ function extractSalesInvoicePayload(row: BatchRow) {
     };
   });
 
+  if (config.isCreditNote) {
+    return {
+      sales_credit_note: {
+        contact_id: contactId,
+        date,
+        reference,
+        notes,
+        currency_id: currencyCode,
+        credit_note_lines: documentLines,
+      },
+    };
+  }
+
   return {
     sales_invoice: {
       contact_id: contactId,
@@ -178,7 +268,7 @@ function extractSalesInvoicePayload(row: BatchRow) {
       reference,
       notes,
       currency_code: currencyCode,
-      invoice_lines: invoiceLines,
+      invoice_lines: documentLines,
     },
   };
 }
@@ -202,7 +292,9 @@ async function activeSageContext(origin: string) {
     .eq("id", token.connection_id)
     .maybeSingle();
   if (connectionError) throw new Error(connectionError.message);
-  if (!connection || connection.status !== "connected") throw new Error("Sage connection is not connected.");
+  if (!connection || connection.status !== "connected") {
+    throw new Error("Sage connection is not connected.");
+  }
 
   let accessToken = decryptSecret(text(token.access_token_encrypted));
   let tokenId = text(token.id);
@@ -234,19 +326,23 @@ async function activeSageContext(origin: string) {
     }).eq("id", token.id);
 
     const expiresAt = tokenExpiresAt(refreshed.raw.expires_in);
-    const { data: inserted, error: insertError } = await supabaseAdmin.from("sage_oauth_tokens").insert({
-      connection_id: token.connection_id,
-      sage_business_row_id: token.sage_business_row_id,
-      access_token_encrypted: encryptSecret(refreshed.raw.access_token),
-      refresh_token_encrypted: encryptSecret(refreshed.raw.refresh_token),
-      token_type: refreshed.raw.token_type || "Bearer",
-      expires_at: expiresAt,
-      scopes: scopesFromToken(refreshed.raw, config.scopes),
-      status: "active",
-      encryption_key_ref: "SAGE_TOKEN_ENCRYPTION_KEY:v1",
-      issued_at: new Date().toISOString(),
-      last_refresh_at: new Date().toISOString(),
-    }).select("id, sage_business_row_id").single();
+    const { data: inserted, error: insertError } = await supabaseAdmin
+      .from("sage_oauth_tokens")
+      .insert({
+        connection_id: token.connection_id,
+        sage_business_row_id: token.sage_business_row_id,
+        access_token_encrypted: encryptSecret(refreshed.raw.access_token),
+        refresh_token_encrypted: encryptSecret(refreshed.raw.refresh_token),
+        token_type: refreshed.raw.token_type || "Bearer",
+        expires_at: expiresAt,
+        scopes: scopesFromToken(refreshed.raw, config.scopes),
+        status: "active",
+        encryption_key_ref: "SAGE_TOKEN_ENCRYPTION_KEY:v1",
+        issued_at: new Date().toISOString(),
+        last_refresh_at: new Date().toISOString(),
+      })
+      .select("id, sage_business_row_id")
+      .single();
     if (insertError) throw new Error(insertError.message);
 
     accessToken = refreshed.raw.access_token;
@@ -265,7 +361,9 @@ async function activeSageContext(origin: string) {
   const { data: businesses, error: businessError } = await businessQuery;
   if (businessError) throw new Error(businessError.message);
   const business = (businesses?.[0] ?? null) as Row | null;
-  if (!business?.sage_business_id) throw new Error("No active Sage business selected for posting.");
+  if (!business?.sage_business_id) {
+    throw new Error("No active Sage business selected for posting.");
+  }
 
   return {
     config,
@@ -276,6 +374,8 @@ async function activeSageContext(origin: string) {
     accessToken,
   };
 }
+
+type SageContext = Awaited<ReturnType<typeof activeSageContext>>;
 
 function retryableStatus(status: number) {
   return status === 408 || status === 429 || status >= 500;
@@ -288,19 +388,172 @@ async function updateBatchCounts(batchId: string) {
     .eq("batch_id", batchId);
   const allRows = (rows ?? []) as Row[];
   const success = allRows.filter((row) => row.posting_status === "posted").length;
-  const failed = allRows.filter((row) => ["failed_retryable", "failed_terminal"].includes(text(row.posting_status))).length;
+  const failed = allRows.filter((row) =>
+    ["failed_retryable", "failed_terminal"].includes(text(row.posting_status))
+  ).length;
   const active = allRows.filter((row) => text(row.posting_status) !== "excluded");
-  const status = failed > 0 && success > 0 ? "partial_success" : failed > 0 ? "failed" : success === active.length && active.length > 0 ? "posted" : "draft";
+  const status = failed > 0 && success > 0
+    ? "partial_success"
+    : failed > 0
+      ? "failed"
+      : success === active.length && active.length > 0
+        ? "posted"
+        : "draft";
+
   await supabaseAdmin.from("sage_posting_batches").update({
     status,
-    batch_status: status === "posted" ? "posted" : status === "partial_success" ? "partially_posted" : "frozen_pending_posting",
+    batch_status: status === "posted"
+      ? "posted"
+      : status === "partial_success"
+        ? "partially_posted"
+        : "frozen_pending_posting",
     row_count: active.length,
     total_amount_gbp: active.reduce((sum, row) => sum + num(row.amount_gbp), 0),
     success_count: success,
     failed_count: failed,
     blocked_count: allRows.filter((row) => text(row.posting_status) === "excluded").length,
-    posting_completed_at: status === "posted" || status === "failed" || status === "partial_success" ? new Date().toISOString() : null,
+    posting_completed_at: ["posted", "failed", "partial_success"].includes(status)
+      ? new Date().toISOString()
+      : null,
   }).eq("id", batchId);
+}
+
+async function callSage(params: {
+  context: SageContext;
+  batchId: string;
+  row: BatchRow;
+  staffId: string;
+  endpointPath: string;
+  idempotencyKey: string | null;
+  requestBody?: Row;
+  sageObjectType: string;
+  requireObjectId: boolean;
+  documentConfig: CustomerDocumentConfig;
+  referenceHint?: string;
+}) {
+  const payloadForLog = params.requestBody ?? {};
+  const { data: requestLog } = await supabaseAdmin
+    .from("sage_api_request_log")
+    .insert({
+      connection_id: params.context.connectionId,
+      sage_business_row_id: params.context.sageBusinessRowId,
+      posting_batch_id: params.batchId,
+      posting_batch_row_id: params.row.id,
+      connection_event_type: "posting_batch",
+      request_kind: "posting",
+      http_method: "POST",
+      endpoint_path: params.endpointPath,
+      idempotency_key: params.idempotencyKey,
+      request_payload_redacted: payloadForLog,
+      request_headers_redacted: {
+        accept: "application/json",
+        content_type: "application/json",
+        x_business: params.context.sageBusinessId,
+      },
+      request_payload_hash: bodyHash(payloadForLog),
+      created_by_staff_id: params.staffId,
+    })
+    .select("id")
+    .single();
+
+  let raw: unknown = {};
+  let response: Response | null = null;
+  const fetchStarted = Date.now();
+
+  try {
+    response = await fetch(
+      `${params.context.config.apiBaseUrl.replace(/\/$/, "")}${params.endpointPath}`,
+      {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${params.context.accessToken}`,
+          "X-Business": params.context.sageBusinessId,
+        },
+        body: params.requestBody === undefined
+          ? undefined
+          : JSON.stringify(params.requestBody),
+        cache: "no-store",
+      },
+    );
+    raw = await response.json().catch(async () => ({
+      non_json_body: await response!.text().catch(() => null),
+    }));
+  } catch (error) {
+    raw = {
+      error: error instanceof Error ? error.message : "Network error calling Sage.",
+    };
+  }
+
+  const durationMs = Date.now() - fetchStarted;
+  const responseOk = Boolean(response?.ok);
+  const objectId = params.requireObjectId
+    ? sageObjectId(raw, params.documentConfig)
+    : "";
+  const responseReference = sageReference(raw, params.documentConfig)
+    || text(params.referenceHint);
+  const successful = responseOk && (!params.requireObjectId || Boolean(objectId));
+
+  if (requestLog?.id) {
+    await supabaseAdmin.from("sage_api_response_log").insert({
+      request_log_id: requestLog.id,
+      connection_id: params.context.connectionId,
+      sage_business_row_id: params.context.sageBusinessRowId,
+      http_status: response?.status ?? null,
+      success_yn: successful,
+      sage_object_type: params.sageObjectType,
+      sage_object_id: objectId || params.row.sage_object_id || null,
+      sage_reference: responseReference || null,
+      response_payload_redacted: raw as Row,
+      error_code: successful
+        ? null
+        : response
+          ? `sage_http_${response.status}`
+          : "sage_network_error",
+      error_message: successful ? null : errorMessage(raw),
+      duration_ms: durationMs,
+    });
+  }
+
+  return {
+    response,
+    raw,
+    successful,
+    objectId,
+    reference: responseReference,
+    status: response?.status ?? 0,
+  };
+}
+
+async function markPostingFailure(params: {
+  row: BatchRow;
+  status: number;
+  raw: unknown;
+  objectType?: string;
+  objectId?: string;
+  reference?: string;
+  responsePayload?: Row;
+}) {
+  const postingStatus = retryableStatus(params.status)
+    ? "failed_retryable"
+    : "failed_terminal";
+  const message = errorMessage(params.raw);
+
+  await supabaseAdmin.from("sage_posting_batch_rows").update({
+    posting_status: postingStatus,
+    sage_object_type: params.objectType ?? params.row.sage_object_type,
+    sage_object_id: params.objectId || params.row.sage_object_id,
+    sage_reference: params.reference || params.row.sage_reference,
+    response_payload_json: params.responsePayload ?? params.raw as Row,
+    error_code: params.status ? `sage_http_${params.status}` : "sage_network_error",
+    error_message: message,
+  }).eq("id", params.row.id);
+
+  await supabaseAdmin.from("sage_posting_snapshots").update({
+    sage_posting_status: "posting_failed",
+    last_posting_error: message,
+  }).eq("id", params.row.snapshot_id);
 }
 
 export async function postCustomerSalesBatchToSage(params: {
@@ -309,7 +562,9 @@ export async function postCustomerSalesBatchToSage(params: {
   origin: string;
 }) {
   if (process.env.SAGE_LIVE_POSTING_ENABLED !== "true") {
-    throw new Error("Live Sage posting is disabled. Set SAGE_LIVE_POSTING_ENABLED=true only after customer-sales dry-run is approved.");
+    throw new Error(
+      "Live Sage posting is disabled. Set SAGE_LIVE_POSTING_ENABLED=true only after customer-sales dry-run is approved.",
+    );
   }
 
   const { data: batch, error: batchError } = await supabaseAdmin
@@ -319,7 +574,9 @@ export async function postCustomerSalesBatchToSage(params: {
     .maybeSingle();
   if (batchError) throw new Error(batchError.message);
   if (!batch) throw new Error("Posting batch not found.");
-  if (!["draft", "validated", "failed"].includes(text(batch.status))) throw new Error(`Batch status ${batch.status} is not postable.`);
+  if (!["draft", "validated", "failed"].includes(text(batch.status))) {
+    throw new Error(`Batch status ${batch.status} is not postable.`);
+  }
 
   const { data: rowsRaw, error: rowsError } = await supabaseAdmin
     .from("sage_posting_batch_rows")
@@ -329,8 +586,12 @@ export async function postCustomerSalesBatchToSage(params: {
   if (rowsError) throw new Error(rowsError.message);
   const rows = (rowsRaw ?? []) as BatchRow[];
   if (rows.length === 0) throw new Error("No postable rows found in this batch.");
-  if (rows.some((row) => row.document_lane !== "customer_sales")) throw new Error("Customer-sales posting only supports a customer_sales-only batch.");
-  if (rows.some((row) => row.payload_validation_status !== "dry_run_validated")) throw new Error("Every customer sales row must be dry-run validated before posting.");
+  if (rows.some((row) => row.document_lane !== "customer_sales")) {
+    throw new Error("Customer-sales posting only supports a customer_sales-only batch.");
+  }
+  if (rows.some((row) => row.payload_validation_status !== "dry_run_validated")) {
+    throw new Error("Every customer sales row must be dry-run validated before posting.");
+  }
 
   const context = await activeSageContext(params.origin);
   await supabaseAdmin.from("sage_posting_batches").update({
@@ -344,7 +605,7 @@ export async function postCustomerSalesBatchToSage(params: {
   for (const row of rows) {
     const attemptCount = (row.attempt_count ?? 0) + 1;
     const startedAt = new Date().toISOString();
-    const endpointPath = "/sales_invoices";
+    const documentConfig = customerDocumentConfig(row);
 
     await supabaseAdmin.from("sage_posting_batch_rows").update({
       posting_status: "posting",
@@ -362,10 +623,12 @@ export async function postCustomerSalesBatchToSage(params: {
 
     let requestBody: Row;
     try {
-      requestBody = extractSalesInvoicePayload(row);
+      requestBody = extractCustomerDocumentPayload(row, documentConfig);
     } catch (error) {
       failed += 1;
-      const message = error instanceof Error ? error.message : "Could not build customer sales Sage payload.";
+      const message = error instanceof Error
+        ? error.message
+        : "Could not build customer sales Sage payload.";
       await supabaseAdmin.from("sage_posting_batch_rows").update({
         posting_status: "failed_terminal",
         payload_validation_status: "dry_run_failed",
@@ -379,105 +642,111 @@ export async function postCustomerSalesBatchToSage(params: {
       continue;
     }
 
-    const { data: requestLog } = await supabaseAdmin.from("sage_api_request_log").insert({
-      connection_id: context.connectionId,
-      sage_business_row_id: context.sageBusinessRowId,
-      posting_batch_id: params.batchId,
-      posting_batch_row_id: row.id,
-      connection_event_type: "posting_batch",
-      request_kind: "posting",
-      http_method: "POST",
-      endpoint_path: endpointPath,
-      idempotency_key: row.idempotency_key,
-      request_payload_redacted: requestBody,
-      request_headers_redacted: { accept: "application/json", content_type: "application/json", x_business: context.sageBusinessId },
-      request_payload_hash: bodyHash(requestBody),
-      created_by_staff_id: params.staffId,
-    }).select("id").single();
+    let objectId = documentConfig.isCreditNote ? text(row.sage_object_id) : "";
+    let createRaw: unknown = row.response_payload_json ?? {};
+    let reference = text(row.sage_reference)
+      || text(asObject(requestBody[documentConfig.payloadRoot]).reference);
 
-    let raw: unknown = {};
-    let response: Response | null = null;
-    const fetchStarted = Date.now();
-    try {
-      response = await fetch(`${context.config.apiBaseUrl.replace(/\/$/, "")}${endpointPath}`, {
-        method: "POST",
-        headers: {
-          Accept: "application/json",
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${context.accessToken}`,
-          "X-Business": context.sageBusinessId,
-        },
-        body: JSON.stringify(requestBody),
-        cache: "no-store",
+    if (!objectId) {
+      const createResult = await callSage({
+        context,
+        batchId: params.batchId,
+        row,
+        staffId: params.staffId,
+        endpointPath: documentConfig.endpointPath,
+        idempotencyKey: row.idempotency_key,
+        requestBody,
+        sageObjectType: documentConfig.sageObjectType,
+        requireObjectId: true,
+        documentConfig,
+        referenceHint: reference,
       });
-      raw = await response.json().catch(async () => ({ non_json_body: await response!.text().catch(() => null) }));
-    } catch (error) {
-      raw = { error: error instanceof Error ? error.message : "Network error calling Sage." };
+
+      createRaw = createResult.raw;
+      objectId = createResult.objectId;
+      reference = createResult.successful
+        ? createResult.reference || reference
+        : reference;
+
+      if (!createResult.successful || !objectId) {
+        failed += 1;
+        await markPostingFailure({
+          row,
+          status: createResult.status,
+          raw: createResult.raw,
+          objectType: documentConfig.sageObjectType,
+          reference,
+          responsePayload: createResult.raw as Row,
+        });
+        continue;
+      }
     }
 
-    const durationMs = Date.now() - fetchStarted;
-    const success = Boolean(response?.ok);
-    const objectId = success ? sageObjectId(raw) : "";
-    const reference = success ? sageReference(raw) || text(requestBody.sales_invoice?.reference) : "";
+    let finalRaw: unknown = createRaw;
 
-    if (requestLog?.id) {
-      await supabaseAdmin.from("sage_api_response_log").insert({
-        request_log_id: requestLog.id,
-        connection_id: context.connectionId,
-        sage_business_row_id: context.sageBusinessRowId,
-        http_status: response?.status ?? null,
-        success_yn: success && Boolean(objectId),
-        sage_object_type: "sales_invoice",
-        sage_object_id: objectId || null,
-        sage_reference: reference || null,
-        response_payload_redacted: raw as Row,
-        error_code: success && objectId ? null : (response ? `sage_http_${response.status}` : "sage_network_error"),
-        error_message: success && objectId ? null : errorMessage(raw),
-        duration_ms: durationMs,
+    if (documentConfig.isCreditNote) {
+      const releaseEndpoint = `/sales_credit_notes/${encodeURIComponent(objectId)}/release`;
+      const releaseResult = await callSage({
+        context,
+        batchId: params.batchId,
+        row,
+        staffId: params.staffId,
+        endpointPath: releaseEndpoint,
+        idempotencyKey: row.idempotency_key
+          ? `${row.idempotency_key}:release`
+          : null,
+        sageObjectType: documentConfig.sageObjectType,
+        requireObjectId: false,
+        documentConfig,
+        referenceHint: reference,
       });
+      finalRaw = {
+        create: createRaw,
+        release: releaseResult.raw,
+      };
+
+      if (!releaseResult.successful) {
+        failed += 1;
+        await markPostingFailure({
+          row,
+          status: releaseResult.status,
+          raw: releaseResult.raw,
+          objectType: documentConfig.sageObjectType,
+          objectId,
+          reference,
+          responsePayload: finalRaw as Row,
+        });
+        continue;
+      }
     }
 
-    if (success && objectId) {
-      posted += 1;
-      const postedAt = new Date().toISOString();
-      await supabaseAdmin.from("sage_posting_batch_rows").update({
-        posting_status: "posted",
-        sage_object_type: "sales_invoice",
-        sage_object_id: objectId,
-        sage_reference: reference || text(requestBody.sales_invoice?.reference),
-        response_payload_json: raw as Row,
-        posted_at: postedAt,
-        error_code: null,
-        error_message: null,
-      }).eq("id", row.id);
-      await supabaseAdmin.from("sage_posting_snapshots").update({
-        sage_posting_status: "posted",
+    posted += 1;
+    const postedAt = new Date().toISOString();
+
+    await supabaseAdmin.from("sage_posting_batch_rows").update({
+      posting_status: "posted",
+      sage_object_type: documentConfig.sageObjectType,
+      sage_object_id: objectId,
+      sage_reference: reference,
+      response_payload_json: finalRaw as Row,
+      posted_at: postedAt,
+      error_code: null,
+      error_message: null,
+    }).eq("id", row.id);
+
+    await supabaseAdmin.from("sage_posting_snapshots").update({
+      sage_posting_status: "posted",
+      sage_invoice_id: objectId,
+      sage_posted_at: postedAt,
+      last_posting_error: null,
+    }).eq("id", row.snapshot_id);
+
+    if (row.source_table === "sales_invoices" && row.source_id) {
+      await supabaseAdmin.from("sales_invoices").update({
+        sage_status: "posted",
         sage_invoice_id: objectId,
         sage_posted_at: postedAt,
-        last_posting_error: null,
-      }).eq("id", row.snapshot_id);
-      if (row.source_table === "sales_invoices" && row.source_id) {
-        await supabaseAdmin.from("sales_invoices").update({
-          sage_status: "posted",
-          sage_invoice_id: objectId,
-          sage_posted_at: postedAt,
-        }).eq("id", row.source_id);
-      }
-    } else {
-      failed += 1;
-      const status = response?.status ?? 0;
-      const postingStatus = retryableStatus(status) ? "failed_retryable" : "failed_terminal";
-      const message = errorMessage(raw);
-      await supabaseAdmin.from("sage_posting_batch_rows").update({
-        posting_status: postingStatus,
-        response_payload_json: raw as Row,
-        error_code: response ? `sage_http_${response.status}` : "sage_network_error",
-        error_message: message,
-      }).eq("id", row.id);
-      await supabaseAdmin.from("sage_posting_snapshots").update({
-        sage_posting_status: "posting_failed",
-        last_posting_error: message,
-      }).eq("id", row.snapshot_id);
+      }).eq("id", row.source_id);
     }
   }
 
