@@ -58,8 +58,27 @@ The document sign is a source fact. It must not be converted to an absolute valu
    - refund/replacement exception selection;
    - tracking or package allocation;
    - shipment batching.
-6. Ordinary positive unresolved rows retain the existing selection, bulk and exception behaviour. Description heuristics must not change their lane automatically.
-7. The existing `operator_resolve_supplier_invoice_line_non_physical(...)` RPC remains the canonical Park action.
+6. The importer page may recognise a delivery or discount row for lane exclusion and signed allowance only where:
+   - its description matches the same established delivery/discount vocabulary used by the canonical Mindee parser; and
+   - the extracted delivery or discount total agrees with the non-rejected `order_value_adjustments` amount for that supplier invoice within £0.01.
+7. A description match without amount agreement must not alter the physical lane or remaining-value allowance.
+8. For proven unresolved financial rows on the selected invoice, the physical-goods allowance is:
+
+```text
+physical remaining value
+= order remaining net value
+- sum of proven unresolved signed financial rows
+```
+
+For `NIN-240726-A` this restores the goods allowance to:
+
+```text
+£449.98 - (-£50.01) = £499.99
+```
+
+9. A proven positive delivery row and a source-negative row remain outside physical progression and refund/replacement selection.
+10. Ordinary positive unresolved goods retain the existing selection, Select all, Clear selection, single progression and exception behaviour.
+11. The existing `operator_resolve_supplier_invoice_line_non_physical(...)` RPC remains the canonical Park action.
 
 ## Supervisor accounting boundary
 
@@ -121,9 +140,11 @@ The release must prove:
 2. Repeated save/fetch does not duplicate it.
 3. Blank classification fails; explicit `discount` succeeds.
 4. The signed row cannot enter single or bulk physical progression, exception selection, tracking or shipment.
-5. Supervisor V2 bulk coding saves signed net, VAT and gross.
-6. Accounting totals reconcile to the invoice header.
-7. Approval remains blocked until complete and then uses the existing current-state route.
-8. The supplier AP/Sage payload contains the signed row exactly once.
-9. An unaffected invoice receives the exact preserved supplier AP helper output.
-10. The importer reconciliation page retains the exact prior layout, wording, styling, selection and bulk-control behaviour except for the narrow signed-row controls stated above.
+5. Proven delivery/discount rows alter the physical allowance only on exact declared-adjustment agreement.
+6. The original Select all, Clear selection and selected-progression controls remain available for ordinary goods.
+7. Supervisor V2 bulk coding saves signed net, VAT and gross.
+8. Accounting totals reconcile to the invoice header.
+9. Approval remains blocked until complete and then uses the existing current-state route.
+10. The supplier AP/Sage payload contains the signed row exactly once.
+11. An unaffected invoice receives the exact preserved supplier AP helper output.
+12. The importer reconciliation page retains the exact prior layout, wording and styling except for the narrow signed-row and proven-adjustment controls stated above.
