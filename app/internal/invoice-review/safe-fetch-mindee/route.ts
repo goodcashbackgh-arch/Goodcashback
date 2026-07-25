@@ -110,17 +110,26 @@ function extractPagesConsumed(raw: unknown) {
   }
   return null;
 }
+function rawV2InvoiceLineAmount(line: unknown, qtyFallback = 1) {
+  if (!line || typeof line !== "object") return null;
+  const outer = line as Record<string, unknown>;
+  const row = outer.fields && typeof outer.fields === "object" ? outer.fields as Record<string, unknown> : outer;
+  const qty = Math.max(0, Math.round(numberValue(row.quantity) ?? numberValue(row.qty) ?? qtyFallback));
+  const explicitLineAmount = numberValue(row.total_amount) ?? numberValue(row.total_price) ?? numberValue(row.amount) ?? numberValue(row.line_total);
+  const unitPrice = numberValue(row.unit_price) ?? numberValue(row.price) ?? numberValue(row.unit_amount);
+  return explicitLineAmount ?? (unitPrice !== null ? Math.round(unitPrice * Math.max(qty, 1) * 100) / 100 : null);
+}
 function normalizeV2InvoiceLine(line: unknown, lineOrder: number, singleLineHeaderTotal: number | null): ParsedLine | null {
   if (!line || typeof line !== "object") return null;
   const outer = line as Record<string, unknown>;
   const row = outer.fields && typeof outer.fields === "object" ? outer.fields as Record<string, unknown> : outer;
   const description = stringValue(row.description) ?? stringValue(row.name) ?? stringValue(row.label) ?? stringValue(row.product_name) ?? stringValue(row.product_code) ?? `OCR line ${lineOrder}`;
   const qty = Math.max(0, Math.round(numberValue(row.quantity) ?? numberValue(row.qty) ?? 1));
-  const explicitLineAmount = numberValue(row.total_amount) ?? numberValue(row.total_price) ?? numberValue(row.amount) ?? numberValue(row.line_total);
+  const rawAmount = rawV2InvoiceLineAmount(line, qty);
   const unitPrice = numberValue(row.unit_price) ?? numberValue(row.price) ?? numberValue(row.unit_amount);
   const unitGross = unitPrice !== null ? Math.round(unitPrice * Math.max(qty, 1) * 100) / 100 : null;
   const singleDiscountedLineGross = singleLineHeaderTotal !== null && (unitGross === null || singleLineHeaderTotal <= unitGross) ? singleLineHeaderTotal : null;
-  const amount = explicitLineAmount ?? singleDiscountedLineGross ?? unitGross;
+  const amount = rawAmount ?? singleDiscountedLineGross ?? unitGross;
   const sku = stringValue(row.product_code) ?? stringValue(row.sku) ?? stringValue(row.reference);
   if (!description || amount === null || amount < 0) return null;
   return { retailer_sku: sku, description, qty, amount_inc_vat_gbp: amount };
@@ -134,12 +143,13 @@ function parseMindeeV2InvoiceResult(raw: unknown) {
   const lineItems = firstArrayCandidate(raw, [["inference", "result", "fields", "line_items", "items"], ["inference", "result", "fields", "items", "items"], ["inference", "result", "fields", "invoice_lines", "items"], ["inference", "result", "fields", "line_items"], ["inference", "result", "fields", "items"], ["inference", "result", "fields", "invoice_lines"], ["inference", "result", "prediction", "line_items"], ["result", "fields", "line_items"], ["document", "inference", "prediction", "line_items"]]);
   const singleLineHeaderTotal = lineItems.length === 1 ? ocrInvoiceTotal : null;
   const lines = lineItems.map((line, index) => normalizeV2InvoiceLine(line, index + 1, singleLineHeaderTotal)).filter((line): line is ParsedLine => Boolean(line));
+  const signedLineAmounts = lineItems.map((line) => rawV2InvoiceLineAmount(line)).filter((amount): amount is number => amount !== null);
   const flags: ReviewFlag[] = [];
-  const lineTotal = Math.round(lines.reduce((sum, line) => sum + Number(line.amount_inc_vat_gbp ?? 0), 0) * 100) / 100;
+  const lineTotal = Math.round(signedLineAmounts.reduce((sum, amount) => sum + amount, 0) * 100) / 100;
   if (!ocrInvoiceRef) flags.push({ flag_type: "ocr_unclear", message: "Mindee OCR did not extract an invoice reference." });
   if (ocrInvoiceTotal === null) flags.push({ flag_type: "ocr_unclear", message: "Mindee OCR did not extract an invoice total." });
   if (lines.length === 0) flags.push({ flag_type: "manual_line_needed", message: "Mindee OCR did not extract usable invoice lines." });
-  if (ocrInvoiceTotal !== null && lines.length > 0 && Math.abs(lineTotal - ocrInvoiceTotal) > 0.01) flags.push({ flag_type: "invoice_total_mismatch", message: `Mindee OCR line total ${lineTotal.toFixed(2)} does not match OCR header total ${ocrInvoiceTotal.toFixed(2)}.` });
+  if (ocrInvoiceTotal !== null && signedLineAmounts.length > 0 && Math.abs(lineTotal - ocrInvoiceTotal) > 0.01) flags.push({ flag_type: "invoice_total_mismatch", message: `Mindee OCR signed line total ${lineTotal.toFixed(2)} does not match OCR header total ${ocrInvoiceTotal.toFixed(2)}.` });
   return { ocrInvoiceRef, ocrRetailerName, ocrInvoiceDate, ocrInvoiceTotal, lines, flags };
 }
 function hasInferencePayload(raw: unknown) {
