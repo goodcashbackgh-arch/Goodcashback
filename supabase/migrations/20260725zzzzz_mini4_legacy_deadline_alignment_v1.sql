@@ -10,6 +10,7 @@ DO $prerequisites$
 BEGIN
   IF to_regclass('public.customer_review_cycle_memberships') IS NULL
      OR to_regclass('public.customer_review_cycle_legacy_issues') IS NULL
+     OR to_regclass('public.order_tracking_line_allocations') IS NULL
      OR to_regprocedure(
        'public.customer_tracking_review_deadline_v1(uuid,uuid,timestamptz)'
      ) IS NULL
@@ -29,11 +30,13 @@ DECLARE
   v_allocated_qty numeric;
   v_existing_review_qty numeric;
 BEGIN
+  -- The exclusive allocation-row lock serialises every membership insertion for
+  -- the same exact allocation, including direct service-role writes.
   SELECT allocation.qty_allocated
   INTO v_allocated_qty
   FROM public.order_tracking_line_allocations allocation
   WHERE allocation.id = NEW.tracking_line_allocation_id
-  FOR SHARE;
+  FOR UPDATE;
 
   SELECT COALESCE(SUM(membership.review_qty), 0)
   INTO v_existing_review_qty
@@ -116,6 +119,7 @@ AS $$
       FROM public.customer_order_review_links link_row
       WHERE link_row.order_id = p_order_id
         AND link_row.expires_at IS NOT NULL
+        AND p_receipt_recorded_at < link_row.expires_at
         AND NOT EXISTS (
           SELECT 1
           FROM public.customer_review_cycle_memberships membership
@@ -134,6 +138,8 @@ GRANT EXECUTE ON FUNCTION
   TO authenticated, service_role;
 
 DO $proof$
+DECLARE
+  v_definition text;
 BEGIN
   IF NOT EXISTS (
     SELECT 1
@@ -157,6 +163,20 @@ BEGIN
       AND trigger_row.tgenabled = 'O'
   ) THEN
     RAISE EXCEPTION 'Legacy review-expiry resolver was not installed.';
+  END IF;
+
+  SELECT pg_get_functiondef(
+    'public.customer_review_cycle_cumulative_qty_guard_v1()'::regprocedure
+  ) INTO v_definition;
+  IF position('FOR UPDATE' IN v_definition) = 0 THEN
+    RAISE EXCEPTION 'Cumulative review-quantity guard does not serialise inserts.';
+  END IF;
+
+  SELECT pg_get_functiondef(
+    'public.customer_tracking_review_deadline_v1(uuid,uuid,timestamptz)'::regprocedure
+  ) INTO v_definition;
+  IF position('p_receipt_recorded_at < link_row.expires_at' IN v_definition) = 0 THEN
+    RAISE EXCEPTION 'Legacy deadline fallback can admit a later unrelated receipt.';
   END IF;
 END
 $proof$;
