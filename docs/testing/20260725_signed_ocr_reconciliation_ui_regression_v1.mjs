@@ -22,20 +22,28 @@ const addendum = readFileSync(addendumPath, "utf8");
 // Internal source regression. This is not a Supabase SQL Editor script and is
 // not a manual operator release step. It is retained under docs/testing as
 // repository evidence for CI/developer execution only.
-assert.match(page, /BulkLineSelectionControls selectableCount=\{selectable\.length\}/, "restored bulk selection controls must remain wired to the original selectable set");
-assert.match(page, /Number\(l\.amount_inc_vat_gbp\)>=0&&Number\(l\.qty\)<=remainingQty/, "only source-negative rows may be excluded from the original physical selectable calculation");
+assert.match(page, /BulkLineSelectionControls selectableCount=\{selectable\.length\}/, "restored bulk selection controls must remain wired to the selectable set");
+assert.match(page, /from\("order_value_adjustments"\).*select\("supplier_invoice_id, adjustment_type, amount_gbp, approval_status"\).*neq\("approval_status","rejected"\)/s, "the page must reuse accepted declared adjustment facts");
+assert.match(page, /const isDeliveryDescription = .*delivery\|shipping\|postage\|freight\|carriage/s, "the page must reuse the established delivery description vocabulary");
+assert.match(page, /const isDiscountDescription = .*discount\|promotion\|promotional\|promo\|voucher\|coupon\|saving\|savings/s, "the page must reuse the established discount description vocabulary");
+assert.match(page, /const deliveryMatched=declaredDelivery>0&&extractedDelivery>0&&Math\.abs\(extractedDelivery-declaredDelivery\)<=0\.01;/, "delivery rows must be treated as proven financial rows only on exact declared-amount agreement");
+assert.match(page, /const discountMatched=declaredDiscount>0&&extractedDiscount>0&&Math\.abs\(extractedDiscount-declaredDiscount\)<=0\.01;/, "discount rows must be treated as proven financial rows only on exact declared-amount agreement");
+assert.match(page, /const nonPhysicalLineIds=new Set\(lines\.filter\(l=>Number\(l\.amount_inc_vat_gbp\)<0\)\.map\(l=>l\.id\)\);/, "every source-negative row must remain outside physical progression");
+assert.match(page, /for\(const lineId of matchedDeliveryIds\) nonPhysicalLineIds\.add\(lineId\);/, "matched positive delivery rows must remain outside physical progression");
 assert.match(page, /const unresolved=lines\.filter\(l=>!progressed\(l\)&&!disputes\.has\(l\.id\)&&!resolutions\.has\(l\.id\)\);/, "the original unresolved state model must remain unchanged");
-assert.match(page, /const exceptionEligible=unresolved\.filter\(l=>Number\(l\.amount_inc_vat_gbp\)>=0\);/, "source-negative rows must stay out of refund\/replacement exception selection");
+assert.match(page, /const unresolvedMatchedFinancialOffset=round2\(unresolved\.filter\(l=>matchedDeliveryIds\.has\(l\.id\)\|\|matchedDiscountIds\.has\(l\.id\)\)\.reduce/, "only proven unresolved signed financial rows may adjust the physical allowance");
+assert.match(page, /const physicalRemainingValue=Math\.max\(0,round2\(remainingValue-unresolvedMatchedFinancialOffset\)\);/, "physical allowance must use the signed invoice equation");
+assert.match(page, /const selectable=unresolved\.filter\(l=>!nonPhysicalLineIds\.has\(l\.id\).*Number\(l\.amount_inc_vat_gbp\)<=physicalRemainingValue\+0\.01\);/, "ordinary goods selection must be restored while financial rows remain excluded");
+assert.match(page, /const exceptionEligible=unresolved\.filter\(l=>!nonPhysicalLineIds\.has\(l\.id\)\);/, "proven financial rows must stay out of refund\/replacement exception selection");
 
 assert.match(page, /<select name="financial_type" defaultValue="" required/, "Park classification must begin blank and require an explicit choice");
 assert.match(page, /<option value="">Select type<\/option>/, "the blank governed classification option must be present");
-assert.doesNotMatch(page, /suggestedFinancialType|obviousNonPhysical|normalisedDescription|isDiscountDescription|isDeliveryDescription|isFeeDescription/, "the restored page must not guess a financial type from description text");
-assert.doesNotMatch(page, /Non-physical classification required|OCR financial row:/, "the PR 175 blue classification panel and replacement wording must remain removed");
+assert.doesNotMatch(page, /suggestedFinancialType|defaultValue=\{.*discount|Non-physical classification required|OCR financial row:/, "the restored page must not preselect or present a replacement classification panel");
 
-assert.match(page, /signedRow=Number\(line\.amount_inc_vat_gbp\)<0/, "the page must identify signed source rows using amount sign only");
-assert.match(page, /name="amount_inc_vat_gbp" type="number" min=\{signedRow\?undefined:0\}/, "the immutable OCR amount field must display a negative source value without an invalid HTML minimum");
-assert.equal((page.match(/readOnly=\{locked\|\|signedRow\}/g) ?? []).length, 3, "signed rows must keep quantity, amount and size immutable");
-assert.match(page, /\{!locked&&!signedRow\?<button form=\{`edit-\$\{line\.id\}`\}/, "signed rows must not expose the generic Save action");
+assert.match(page, /financialRow=nonPhysicalLineIds\.has\(line\.id\)/, "the page must lock proven financial source rows without changing ordinary goods cards");
+assert.match(page, /name="amount_inc_vat_gbp" type="number" min=\{Number\(line\.amount_inc_vat_gbp\)<0\?undefined:0\}/, "the immutable amount field must display a negative source value without an invalid HTML minimum");
+assert.equal((page.match(/readOnly=\{locked\|\|financialRow\}/g) ?? []).length, 3, "financial rows must keep quantity, amount and size immutable");
+assert.match(page, /\{!locked&&!financialRow\?<button form=\{`edit-\$\{line\.id\}`\}/, "financial rows must not expose the generic Save action");
 
 assert.match(bulkControls, /Select all unresolved progressable lines/, "Select all wording must remain unchanged");
 assert.match(bulkControls, /Clear selection/, "Clear selection wording must remain unchanged");
@@ -64,9 +72,15 @@ assert.match(addendum, /£499\.99 goods\s*- £50\.01 discount\s*= £449\.98 supp
 assert.match(addendum, /must not silently classify or preselect a financial type/, "the governing addendum must lock explicit classification");
 assert.match(addendum, /appear in `resolved_lines` exactly once/, "the governing addendum must lock one-time Sage payload inclusion");
 
-const goodsPence = 49999;
-const discountPence = -5001;
-const invoicePence = 44998;
-assert.equal(goodsPence + discountPence, invoicePence, "NIN-240726-A signed lines must total £449.98");
+const invoiceAGoodsPence = 49999;
+const invoiceADiscountPence = -5001;
+const invoiceAGrossPence = 44998;
+assert.equal(invoiceAGoodsPence + invoiceADiscountPence, invoiceAGrossPence, "NIN-240726-A signed lines must total £449.98");
 
-console.log("PASS: signed OCR reconciliation UI restored with narrow classification-only controls");
+const invoiceBGoodsPence = 17999 + 6999;
+const invoiceBDeliveryPence = 1001;
+const invoiceBDiscountPence = -1000;
+const invoiceBGrossPence = 24999;
+assert.equal(invoiceBGoodsPence + invoiceBDeliveryPence + invoiceBDiscountPence, invoiceBGrossPence, "NIN-240726-B signed delivery and discount must total £249.99");
+
+console.log("PASS: signed OCR reconciliation keeps original controls and uses proven signed adjustment facts");
