@@ -23,6 +23,7 @@ BEGIN
      OR to_regclass('public.supplier_invoice_line_resolutions') IS NULL
      OR to_regclass('public.supplier_invoice_line_accounting_codes') IS NULL
      OR to_regclass('public.supplier_invoice_accounting_coding_totals_vw') IS NULL
+     OR to_regclass('public.dispute_lines') IS NULL
      OR to_regclass('public.order_tracking_line_allocations') IS NULL
      OR to_regclass('public.shipper_shipment_batch_line_memberships') IS NULL
      OR to_regclass('public.sage_posting_snapshots') IS NULL THEN
@@ -31,8 +32,20 @@ BEGIN
 
   IF to_regprocedure('public.internal_supplier_goods_ap_ready_rows_v1()') IS NULL
      OR to_regprocedure('public.internal_supplier_goods_ap_ready_rows_pre_signed_nonphysical_v1()') IS NULL
-     OR to_regprocedure('public.internal_supplier_goods_ap_ready_rows_signed_nonphysical_all_v1()') IS NULL THEN
-    RAISE EXCEPTION 'Supplier AP preserved/enriched/canonical helper chain is incomplete.';
+     OR to_regprocedure('public.internal_supplier_goods_ap_ready_rows_signed_nonphysical_all_v1()') IS NULL
+     OR to_regprocedure('public.enforce_supplier_invoice_line_accounting_code_amount_sign_v1()') IS NULL THEN
+    RAISE EXCEPTION 'Supplier AP helper chain or signed accounting protection is incomplete.';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_trigger t
+    WHERE t.tgrelid = 'public.supplier_invoice_line_accounting_codes'::regclass
+      AND t.tgname = 'trg_supplier_invoice_line_accounting_code_amount_sign_v1'
+      AND NOT t.tgisinternal
+      AND t.tgenabled = 'O'
+  ) THEN
+    RAISE EXCEPTION 'Signed supplier accounting amount trigger is not enabled.';
   END IF;
 
   SELECT pg_get_functiondef('public.internal_supplier_goods_ap_ready_rows_v1()'::regprocedure)
@@ -65,6 +78,8 @@ DECLARE
   v_coded_gross numeric;
   v_nominal_code text;
   v_sage_ledger_account_id text;
+  v_accepted_net numeric;
+  v_accepted_vat numeric;
   v_accepted_gross numeric;
   v_total_coded_gross numeric;
   v_all_coded boolean;
@@ -108,7 +123,8 @@ BEGIN
     COUNT(*) FILTER (WHERE sil.amount_inc_vat_gbp < 0)::integer,
     round(COALESCE(SUM(sil.amount_inc_vat_gbp) FILTER (WHERE sil.amount_inc_vat_gbp < 0), 0)::numeric, 2),
     round(COALESCE(SUM(sil.amount_inc_vat_gbp), 0)::numeric, 2),
-    MIN(sil.id) FILTER (WHERE sil.amount_inc_vat_gbp < 0)
+    (array_agg(sil.id ORDER BY sil.line_order, sil.id)
+      FILTER (WHERE sil.amount_inc_vat_gbp < 0))[1]
   INTO
     v_negative_count,
     v_negative_total,
@@ -212,6 +228,8 @@ BEGIN
   END IF;
 
   SELECT
+    CASE WHEN t.accepted_invoice_net_gbp IS NULL THEN NULL ELSE round(t.accepted_invoice_net_gbp::numeric, 2) END,
+    CASE WHEN t.accepted_invoice_vat_gbp IS NULL THEN NULL ELSE round(t.accepted_invoice_vat_gbp::numeric, 2) END,
     round(t.accepted_invoice_gross_gbp::numeric, 2),
     round(t.total_coded_gross_gbp::numeric, 2),
     COALESCE(t.all_progressed_lines_coded_yn, false),
@@ -219,6 +237,8 @@ BEGIN
     COALESCE(t.net_reconciled_to_invoice_yn, false),
     COALESCE(t.vat_reconciled_to_invoice_yn, false)
   INTO
+    v_accepted_net,
+    v_accepted_vat,
     v_accepted_gross,
     v_total_coded_gross,
     v_all_coded,
@@ -232,15 +252,15 @@ BEGIN
      OR v_total_coded_gross IS DISTINCT FROM 449.98::numeric
      OR NOT v_all_coded
      OR NOT v_gross_reconciled
-     OR NOT v_net_reconciled
-     OR NOT v_vat_reconciled THEN
+     OR (v_accepted_net IS NOT NULL AND NOT v_net_reconciled)
+     OR (v_accepted_vat IS NOT NULL AND NOT v_vat_reconciled) THEN
     RAISE EXCEPTION
-      'A accounting totals are not fully reconciled: accepted gross %, coded gross %, all coded %, gross %, net %, VAT %.',
-      v_accepted_gross, v_total_coded_gross, v_all_coded,
-      v_gross_reconciled, v_net_reconciled, v_vat_reconciled;
+      'A accounting totals are not fully reconciled: accepted net/VAT/gross %/%/%, coded gross %, all coded %, gross %, net %, VAT %.',
+      v_accepted_net, v_accepted_vat, v_accepted_gross, v_total_coded_gross,
+      v_all_coded, v_gross_reconciled, v_net_reconciled, v_vat_reconciled;
   END IF;
 
-  IF v_review_status NOT IN ('approved_current', 'ref_corrected_approved') OR v_blocked THEN
+  IF COALESCE(v_review_status, '') NOT IN ('approved_current', 'ref_corrected_approved') OR v_blocked THEN
     RAISE EXCEPTION
       'A must complete the existing approval/current route before freeze; status %, blocked_from_sage %.',
       v_review_status, v_blocked;
