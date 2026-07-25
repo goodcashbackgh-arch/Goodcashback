@@ -17,8 +17,42 @@ permissions:
   pull-requests: read
 
 jobs:
+  verify-chunk:
+    name: Verify ${{ matrix.file }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - file: chunk-00.txt
+            sha256: c9b8ad57d0d4ef033fce0c2112f0556cdb2894ef2e2b26c9112f92690edf9ba1
+          - file: chunk-01.txt
+            sha256: d356537ac17b2ca92df4c0b5c6d6fa4bf797bf6e3e0ae218886c1c24e740d3f8
+          - file: chunk-02.txt
+            sha256: 1f101af353c1b2a4e8d2573e0136ed1b5f21277af4c522decce65b8222e01cf9
+          - file: chunk-03.txt
+            sha256: 853acab7be93c97fcd5740abf9bec9e4f144801fa0d53c7e56c0383594445e86
+          - file: chunk-04a.txt
+            sha256: 195c0c0c8520856ff3dad73a2b7b7dad6c0ebc1249e718e9524f49a4bdcaaac1
+          - file: chunk-04b1a.txt
+            sha256: 0203e833cc9a2098b9c978ecaa5ecb5b5e498eaa09f3cbc2416d7c82cf56bea9
+          - file: chunk-04b1b.txt
+            sha256: a2a0f9fe483bb5c0a514b3a5ca6a57b496c3516b631c1377d1de3849ca9cf030
+          - file: chunk-04b2.txt
+            sha256: 360d8ca52803e1082e064628b04f337fa086364f096ab02f2e95120d830d3db4
+          - file: chunk-05a.txt
+            sha256: 0a4c70aa3cb43a7839c77cab887f445847d544a4bef28b3784bcb026dde69270
+          - file: chunk-05b.txt
+            sha256: f1f7484887e7f071a8f01b0153bf36872efbd8311408f157eac88ba002906d32
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/multi-supplier-mini-build-4-v1
+      - name: Verify exact bytes
+        run: echo '${{ matrix.sha256 }}  .mini4-materialize/${{ matrix.file }}' | sha256sum -c -
+
   materialize:
-    if: github.repository == 'goodcashbackgh-arch/Goodcashback'
+    needs: verify-chunk
     runs-on: ubuntu-latest
     steps:
       - name: Check out isolated Mini 4 branch
@@ -26,24 +60,6 @@ jobs:
         with:
           ref: agent/multi-supplier-mini-build-4-v1
           fetch-depth: 0
-
-      - name: Verify exact payload chunks
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat > /tmp/chunk-sha256 <<'EOF'
-          c9b8ad57d0d4ef033fce0c2112f0556cdb2894ef2e2b26c9112f92690edf9ba1  .mini4-materialize/chunk-00.txt
-          d356537ac17b2ca92df4c0b5c6d6fa4bf797bf6e3e0ae218886c1c24e740d3f8  .mini4-materialize/chunk-01.txt
-          1f101af353c1b2a4e8d2573e0136ed1b5f21277af4c522decce65b8222e01cf9  .mini4-materialize/chunk-02.txt
-          853acab7be93c97fcd5740abf9bec9e4f144801fa0d53c7e56c0383594445e86  .mini4-materialize/chunk-03.txt
-          195c0c0c8520856ff3dad73a2b7b7dad6c0ebc1249e718e9524f49a4bdcaaac1  .mini4-materialize/chunk-04a.txt
-          0203e833cc9a2098b9c978ecaa5ecb5b5e498eaa09f3cbc2416d7c82cf56bea9  .mini4-materialize/chunk-04b1a.txt
-          a2a0f9fe483bb5c0a514b3a5ca6a57b496c3516b631c1377d1de3849ca9cf030  .mini4-materialize/chunk-04b1b.txt
-          360d8ca52803e1082e064628b04f337fa086364f096ab02f2e95120d830d3db4  .mini4-materialize/chunk-04b2.txt
-          0a4c70aa3cb43a7839c77cab887f445847d544a4bef28b3784bcb026dde69270  .mini4-materialize/chunk-05a.txt
-          f1f7484887e7f071a8f01b0153bf36872efbd8311408f157eac88ba002906d32  .mini4-materialize/chunk-05b.txt
-          EOF
-          sha256sum -c /tmp/chunk-sha256
 
       - name: Assemble and verify exact archive
         shell: bash
