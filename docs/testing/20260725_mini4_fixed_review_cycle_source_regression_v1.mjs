@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const cyclePath = "supabase/migrations/20260725zz_mini4_fixed_deadline_review_cycle_v1.sql";
+const aclPath = "supabase/migrations/20260725zz1_mini4_private_helper_acl_v1.sql";
 const holdPath = "supabase/migrations/20260725zzz_mini4_exact_hold_membership_bridge_v1.sql";
 const hardeningPath = "supabase/migrations/20260725zzzz_mini4_review_cycle_integrity_hardening_v1.sql";
 const alignmentPath = "supabase/migrations/20260725zzzzz_mini4_legacy_deadline_alignment_v1.sql";
 const finalPath = "supabase/migrations/20260725zzzzzz_mini4_final_scope_alignment_v1.sql";
 
 const cycle = readFileSync(cyclePath, "utf8");
+const acl = readFileSync(aclPath, "utf8");
 const hold = readFileSync(holdPath, "utf8");
 const hardening = readFileSync(hardeningPath, "utf8");
 const alignment = readFileSync(alignmentPath, "utf8");
@@ -27,6 +29,10 @@ assert.match(cycle, /customer_tracking_review_deadline_v1/);
 assert.match(cycle, /shipper_shipment_batch_candidates_v1/);
 assert.match(cycle, /shipper_create_shipment_batch_v1/);
 assert.match(cycle, /link_row\.expires_at IS NULL/);
+
+assert.match(acl, /FROM PUBLIC, anon, authenticated/);
+assert.match(acl, /TO service_role/);
+assert.match(acl, /Mini 4 private helper execution leaked to authenticated/);
 
 assert.match(hold, /CREATE TABLE public\.customer_hold_review_memberships/);
 assert.match(hold, /CREATE TRIGGER trg_customer_hold_00_review_membership_sync_v1/);
@@ -67,7 +73,7 @@ assert.match(finalAlignment, /IF TG_OP = 'INSERT'/);
 assert.match(finalAlignment, /Timed hold % has no frozen review membership/);
 assert.match(finalAlignment, /Customer hold target cannot move outside its frozen review membership/);
 
-for (const source of [cycle, hold, hardening, alignment, finalAlignment]) {
+for (const source of [cycle, acl, hold, hardening, alignment, finalAlignment]) {
   assert.doesNotMatch(source, /CREATE OR REPLACE FUNCTION public\.internal_resolved_customer_sales_sage_payload_v1/);
   assert.doesNotMatch(source, /CREATE OR REPLACE FUNCTION public\.internal_supplier_goods_ap/);
   assert.doesNotMatch(source, /CREATE OR REPLACE FUNCTION public\.internal_create_cash_control_batch_v1/);
