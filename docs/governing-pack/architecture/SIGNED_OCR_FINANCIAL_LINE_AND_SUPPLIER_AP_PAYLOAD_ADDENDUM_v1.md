@@ -80,6 +80,48 @@ For `NIN-240726-A` this restores the goods allowance to:
 10. Ordinary positive unresolved goods retain the existing selection, Select all, Clear selection, single progression and exception behaviour.
 11. The existing `operator_resolve_supplier_invoice_line_non_physical(...)` RPC remains the canonical Park action.
 
+## Progression enforcement parity
+
+1. Importer selection eligibility and the server-side progression guard must use the same order-wide calculation and the same £0.01 tolerance.
+2. Accounted quantity includes only progressed physical rows and physical rows linked to an open exception. Non-physical financial rows must never increase accounted quantity.
+3. Accounted value includes:
+   - progressed physical rows;
+   - physical rows linked to an open exception; and
+   - rows with an active non-physical financial resolution.
+4. A still-unresolved delivery or discount row may contribute a signed allowance only where:
+   - it belongs to the same supplier invoice as the physical row being assessed;
+   - delivery is source-positive and discount is source-negative;
+   - its description matches the established delivery/discount vocabulary; and
+   - the aggregate extracted total for that type agrees with the active, non-rejected `order_value_adjustments` total for that supplier invoice within £0.01.
+5. Unknown financial types, description-only matches, amount mismatches and cross-invoice offsets must fail closed and must not create progression capacity.
+6. Single-line and bulk progression must apply the same calculation.
+7. No invoice reference, line id or amount may be hard-coded into the production progression rule.
+8. This parity correction must not replace or alter the existing progression RPCs, Park RPC, stored source rows, resolutions, exceptions or downstream adjustment-consumption route.
+
+For the current proved order, the required progression equation is:
+
+```text
+£434.98 already accounted
++ £499.99 selected physical goods
+- £50.01 proved same-invoice discount
+= £884.96 order baseline
+```
+
+## Settlement-banner presentation gate
+
+1. `order_settlement_audience_v1(...)` and all underlying settlement records and equations remain authoritative and unchanged.
+2. The importer reconciliation settlement banner is presentation-only and must not render merely because a positive settlement amount exists.
+3. The banner must be hidden where either:
+   - `resolution_status = 'not_ready_no_final_sale'`; or
+   - an open supplier-invoice cycle exists.
+4. An open supplier-invoice cycle exists where any non-retired supplier invoice for the order:
+   - is not in `approved_current` or `ref_corrected_approved`; or
+   - remains `blocked_from_sage_yn = true`.
+5. Retired statuses are `rejected_resubmit_required`, `superseded` and `duplicate_blocked`.
+6. Both conditions are required because the no-final-sale status protects the initial cycle, while the live-invoice gate protects later supplementary cycles after an earlier customer sale already exists.
+7. Hiding the banner must not alter funding, customer credit, settlement classifications, supplier invoices, approvals, Sage readiness or any accounting record.
+8. Once settlement is ready and no open supplier-invoice cycle remains, the existing banner amount, wording, colours and resolved/over-resolved presentation remain unchanged.
+
 ## Supervisor accounting boundary
 
 1. `staff_bulk_save_supplier_invoice_line_accounting_codes_v2(uuid,jsonb)` is the canonical supervisor Save all route for this workflow.
@@ -148,3 +190,13 @@ The release must prove:
 10. The supplier AP/Sage payload contains the signed row exactly once.
 11. An unaffected invoice receives the exact preserved supplier AP helper output.
 12. The importer reconciliation page retains the exact prior layout, wording and styling except for the narrow signed-row and proven-adjustment controls stated above.
+13. Single and bulk progression use identical order-wide accounted quantity and value inputs.
+14. Delivery-only, discount-only and combined delivery/discount invoices apply their signed same-invoice allowance correctly.
+15. Multiple delivery rows and multiple discount rows are aggregated by supplier invoice and adjustment type.
+16. Active Parked financial resolutions contribute signed value but never physical quantity.
+17. Mismatched totals, unknown fees, description-only matches and cross-invoice financial rows do not create progression capacity.
+18. `NIN-240726-A` progresses at exactly £884.96 without changing any source or adjustment amount.
+19. A positive settlement amount with `resolution_status = 'not_ready_no_final_sale'` does not render the banner.
+20. A later open supplier-invoice cycle suppresses the banner even where an earlier final sale exists.
+21. The banner returns unchanged when settlement is ready and every live supplier invoice is approved current and no longer Sage-blocked.
+22. The progression and banner patches do not alter any database function, table row, funding, banking, Sage, VAT, shipment, approval or settlement calculation.
