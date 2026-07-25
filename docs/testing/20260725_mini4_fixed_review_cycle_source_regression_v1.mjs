@@ -47,11 +47,12 @@ assert.match(hardening, /package_row\.active = true/);
 
 assert.match(alignment, /trg_customer_review_cycle_00_cumulative_qty_guard_v1/);
 assert.match(alignment, /FOR UPDATE/);
+assert.match(alignment, /v_existing_review_qty \+ NEW\.review_qty > v_allocated_qty/);
 assert.match(alignment, /trg_customer_review_resolve_expired_legacy_issue_v1/);
-assert.match(alignment, /customer_tracking_review_deadline_v1/);
 assert.match(alignment, /customer_review_cycle_legacy_issues/);
 assert.match(alignment, /pre_mini4_timed_membership_unproven/);
 assert.match(alignment, /p_receipt_recorded_at < link_row\.expires_at/);
+assert.match(alignment, /p_receipt_recorded_at \+ interval '24 hours'/);
 
 for (const source of [cycle, hold, hardening, alignment]) {
   assert.doesNotMatch(source, /CREATE OR REPLACE FUNCTION public\.internal_resolved_customer_sales_sage_payload_v1/);
@@ -63,4 +64,4 @@ for (const source of [cycle, hold, hardening, alignment]) {
   assert.doesNotMatch(source, /src\/lib\/sage\/posting/);
 }
 
-console.log("PASS: Mini 4 is limited to fixed review cycles, exact hold provenance, integrity guards, legacy compatibility and existing shipment deadline consumers");
+console.log("PASS: Mini 4 is limited to fixed review cycles, exact hold provenance, integrity guards, legacy deadline alignment and existing shipment deadline consumers");
