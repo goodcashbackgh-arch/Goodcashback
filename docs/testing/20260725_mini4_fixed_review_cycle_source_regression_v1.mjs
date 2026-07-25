@@ -5,11 +5,13 @@ const cyclePath = "supabase/migrations/20260725zz_mini4_fixed_deadline_review_cy
 const holdPath = "supabase/migrations/20260725zzz_mini4_exact_hold_membership_bridge_v1.sql";
 const hardeningPath = "supabase/migrations/20260725zzzz_mini4_review_cycle_integrity_hardening_v1.sql";
 const alignmentPath = "supabase/migrations/20260725zzzzz_mini4_legacy_deadline_alignment_v1.sql";
+const finalPath = "supabase/migrations/20260725zzzzzz_mini4_final_scope_alignment_v1.sql";
 
 const cycle = readFileSync(cyclePath, "utf8");
 const hold = readFileSync(holdPath, "utf8");
 const hardening = readFileSync(hardeningPath, "utf8");
 const alignment = readFileSync(alignmentPath, "utf8");
+const finalAlignment = readFileSync(finalPath, "utf8");
 const executableCycle = cycle.replace(/'(?:''|[^'])*'/g, "''");
 
 assert.match(cycle, /CREATE TABLE public\.customer_review_cycle_memberships/);
@@ -54,7 +56,18 @@ assert.match(alignment, /pre_mini4_timed_membership_unproven/);
 assert.match(alignment, /p_receipt_recorded_at < link_row\.expires_at/);
 assert.match(alignment, /p_receipt_recorded_at \+ interval '24 hours'/);
 
-for (const source of [cycle, hold, hardening, alignment]) {
+assert.match(finalAlignment, /FROM PUBLIC, anon, authenticated/);
+assert.match(finalAlignment, /TO service_role/);
+assert.match(finalAlignment, /CREATE TRIGGER trg_customer_review_cycle_01_component_guard_v1/);
+assert.match(finalAlignment, /Customer review membership value components do not match the exact allocation and quantity/);
+assert.match(finalAlignment, /ROUND\(v_existing_review_qty, 3\)/);
+assert.match(finalAlignment, /Open-cycle join is governed only by the already stored deadline/);
+assert.match(finalAlignment, /WHERE candidate\.receipt_recorded_at < v_deadline\s+ON CONFLICT DO NOTHING/s);
+assert.match(finalAlignment, /IF TG_OP = 'INSERT'/);
+assert.match(finalAlignment, /Timed hold % has no frozen review membership/);
+assert.match(finalAlignment, /Customer hold target cannot move outside its frozen review membership/);
+
+for (const source of [cycle, hold, hardening, alignment, finalAlignment]) {
   assert.doesNotMatch(source, /CREATE OR REPLACE FUNCTION public\.internal_resolved_customer_sales_sage_payload_v1/);
   assert.doesNotMatch(source, /CREATE OR REPLACE FUNCTION public\.internal_supplier_goods_ap/);
   assert.doesNotMatch(source, /CREATE OR REPLACE FUNCTION public\.internal_create_cash_control_batch_v1/);
