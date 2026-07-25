@@ -46,10 +46,12 @@ assert.match(hardening, /shipper_shipment_batch_packages/);
 assert.match(hardening, /package_row\.active = true/);
 
 assert.match(alignment, /trg_customer_review_cycle_00_cumulative_qty_guard_v1/);
+assert.match(alignment, /FOR UPDATE/);
 assert.match(alignment, /trg_customer_review_resolve_expired_legacy_issue_v1/);
 assert.match(alignment, /customer_tracking_review_deadline_v1/);
 assert.match(alignment, /customer_review_cycle_legacy_issues/);
 assert.match(alignment, /pre_mini4_timed_membership_unproven/);
+assert.match(alignment, /p_receipt_recorded_at < link_row\.expires_at/);
 
 for (const source of [cycle, hold, hardening, alignment]) {
   assert.doesNotMatch(source, /CREATE OR REPLACE FUNCTION public\.internal_resolved_customer_sales_sage_payload_v1/);
