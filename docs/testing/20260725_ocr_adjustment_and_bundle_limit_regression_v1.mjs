@@ -61,10 +61,13 @@ assert(cleanup.includes("Upload is not blocked"), "Warning does not preserve the
 assert(!cleanup.includes("disabled = true"), "Warning unexpectedly disables the existing upload control.");
 
 // Supervisor alert extends the existing flag table and is created only from the
-// existing operator-entered financial-summary seam.
+// existing operator-entered financial-summary seam. Schema and historic data
+// changes are deliberately fail-closed/narrow.
 assert(limitMigration.includes("order_bundle_limit_breach"), "New bundle-limit flag type is missing.");
+assert(limitMigration.includes("Expected exactly one supplier-invoice flag_type check"), "Flag-type schema change is not fail-closed.");
 assert(limitMigration.includes("AFTER INSERT ON public.supplier_invoice_financial_summary"), "Bundle check is not attached to the established invoice-total insert seam.");
 assert(limitMigration.includes("public.supplier_invoice_review_flags"), "Bundle breach does not use the existing supervisor review lane.");
+assert(limitMigration.includes("abf15b7b-771f-482f-9751-2af0ee0bcbb1"), "One-time breach backfill is not restricted to the current test order.");
 assert(!limitMigration.match(/UPDATE\s+public\.(orders|supplier_invoices|order_value_adjustments|supplier_invoice_financial_summary)/i), "Bundle-limit migration rewrites financial source rows.");
 assert(!limitMigration.match(/\b(bank|treasury|funding|shipment|sage_postings)\b\s+SET/i), "Bundle-limit migration mutates a protected downstream lane.");
 
@@ -83,5 +86,5 @@ assert(!reset.match(/DELETE\s+FROM\s+public\.(supplier_invoices|supplier_invoice
 
 console.log(JSON.stringify({
   regression_result: "PASS",
-  details: "Current-job OCR re-run, labelled signed adjustments, adjustment-safe OCR storage, legacy-safe approval readiness, pre-upload limit warning, existing supervisor flagging and fail-closed adjustment-invoice reset are present without replacing financial or downstream routes.",
+  details: "Current-job OCR re-run, labelled signed adjustments, adjustment-safe OCR storage, legacy-safe approval readiness, pre-upload limit warning, narrowly scoped existing supervisor flagging and fail-closed adjustment-invoice reset are present without replacing financial or downstream routes.",
 }, null, 2));
