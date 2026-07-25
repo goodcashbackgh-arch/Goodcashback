@@ -27,11 +27,41 @@ jobs:
           ref: agent/multi-supplier-mini-build-4-v1
           fetch-depth: 0
 
-      - name: Reconstruct validated implementation files
+      - name: Verify and reconstruct validated implementation files
         shell: bash
         run: |
           set -euo pipefail
-          cat .mini4-materialize/chunk-*.txt | tr -d '\n' | base64 --decode > /tmp/mini4.tar.gz
+          cat > /tmp/chunk-sha256 <<'EOF'
+          c9b8ad57d0d4ef033fce0c2112f0556cdb2894ef2e2b26c9112f92690edf9ba1  .mini4-materialize/chunk-00.txt
+          d356537ac17b2ca92df4c0b5c6d6fa4bf797bf6e3e0ae218886c1c24e740d3f8  .mini4-materialize/chunk-01.txt
+          1f101af353c1b2a4e8d2573e0136ed1b5f21277af4c522decce65b8222e01cf9  .mini4-materialize/chunk-02.txt
+          853acab7be93c97fcd5740abf9bec9e4f144801fa0d53c7e56c0383594445e86  .mini4-materialize/chunk-03.txt
+          195c0c0c8520856ff3dad73a2b7b7dad6c0ebc1249e718e9524f49a4bdcaaac1  .mini4-materialize/chunk-04a.txt
+          0203e833cc9a2098b9c978ecaa5ecb5b5e498eaa09f3cbc2416d7c82cf56bea9  .mini4-materialize/chunk-04b1a.txt
+          a2a0f9fe483bb5c0a514b3a5ca6a57b496c3516b631c1377d1de3849ca9cf030  .mini4-materialize/chunk-04b1b.txt
+          360d8ca52803e1082e064628b04f337fa086364f096ab02f2e95120d830d3db4  .mini4-materialize/chunk-04b2.txt
+          0a4c70aa3cb43a7839c77cab887f445847d544a4bef28b3784bcb026dde69270  .mini4-materialize/chunk-05a.txt
+          f1f7484887e7f071a8f01b0153bf36872efbd8311408f157eac88ba002906d32  .mini4-materialize/chunk-05b.txt
+          EOF
+          sha256sum -c /tmp/chunk-sha256
+
+          cat \
+            .mini4-materialize/chunk-00.txt \
+            .mini4-materialize/chunk-01.txt \
+            .mini4-materialize/chunk-02.txt \
+            .mini4-materialize/chunk-03.txt \
+            .mini4-materialize/chunk-04a.txt \
+            .mini4-materialize/chunk-04b1a.txt \
+            .mini4-materialize/chunk-04b1b.txt \
+            .mini4-materialize/chunk-04b2.txt \
+            .mini4-materialize/chunk-05a.txt \
+            .mini4-materialize/chunk-05b.txt \
+            > /tmp/mini4.base64
+
+          echo 'dafca2403a92e627cc58b727a8a251dc9f697597d75cbaa3144562e1a0638b1c  /tmp/mini4.base64' | sha256sum -c -
+          base64 --decode /tmp/mini4.base64 > /tmp/mini4.tar.gz
+          echo 'f31cee388a52671d205e552cd95cf1c1d0fcecf5556fdcde273140340e2c3c23  /tmp/mini4.tar.gz' | sha256sum -c -
+          gzip -t /tmp/mini4.tar.gz
           tar -xzf /tmp/mini4.tar.gz
           sha256sum -c .mini4-materialize/SHA256SUMS
 
@@ -41,19 +71,20 @@ jobs:
       - name: Check patch formatting
         run: git diff --check
 
-      - name: Commit Mini 4 implementation
+      - name: Commit clean Mini 4 implementation
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf .mini4-materialize
+          rm -rf .mini4-materialize .github/workflows/materialize-mini4.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add \
+          git add -A \
+            .mini4-materialize \
+            .github/workflows/materialize-mini4.yml \
             supabase/migrations/20260725a_customer_review_cycle_membership_v1.sql \
             supabase/migrations/20260725b_customer_hold_review_membership_bridge_v1.sql \
             docs/testing/20260725_multi_supplier_mini_build_4_regression_v1.sql \
             docs/testing/20260725_customer_credit_sage_route_regression_v1.mjs \
-            src/lib/sage/posting.ts \
-            .mini4-materialize
+            src/lib/sage/posting.ts
           git commit -m "Implement immutable customer review Mini 4"
           git push origin HEAD:agent/multi-supplier-mini-build-4-v1
