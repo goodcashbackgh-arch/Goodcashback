@@ -93,66 +93,76 @@ adjustments AS (
   JOIN active_invoices ai
     ON ai.id = ova.supplier_invoice_id
   WHERE ai.invoice_ref = 'NIN-240726-A'
+),
+combined AS (
+  SELECT
+    1 AS sort_order,
+    'SUMMARY'::text AS row_type,
+    NULL::integer AS line_order,
+    NULL::text AS description,
+    jsonb_build_object(
+      'declared_qty', p.declared_qty,
+      'accounted_qty', p.accounted_qty,
+      'remaining_qty', p.remaining_qty,
+      'declared_value_gbp', p.declared_value,
+      'accounted_value_gbp', p.accounted_value,
+      'remaining_value_gbp', p.remaining_value,
+      'target_signed_line_total_gbp', COALESCE((SELECT SUM(t.amount_inc_vat_gbp) FROM target_lines t), 0),
+      'target_positive_line_total_gbp', COALESCE((SELECT SUM(t.amount_inc_vat_gbp) FROM target_lines t WHERE t.amount_inc_vat_gbp >= 0), 0),
+      'target_negative_line_total_gbp', COALESCE((SELECT SUM(t.amount_inc_vat_gbp) FROM target_lines t WHERE t.amount_inc_vat_gbp < 0), 0)
+    ) AS details
+  FROM position p
+
+  UNION ALL
+
+  SELECT
+    2 AS sort_order,
+    'LINE'::text AS row_type,
+    t.line_order,
+    t.description,
+    jsonb_build_object(
+      'line_id', t.id,
+      'qty', t.qty,
+      'amount_inc_vat_gbp', t.amount_inc_vat_gbp,
+      'progressed', t.progressed,
+      'has_open_dispute', t.has_open_dispute,
+      'has_active_resolution', t.has_active_resolution,
+      'unresolved', NOT t.progressed AND NOT t.has_open_dispute AND NOT t.has_active_resolution,
+      'nonnegative_gate', t.amount_inc_vat_gbp >= 0,
+      'qty_gate', t.qty <= p.remaining_qty,
+      'value_gate', t.amount_inc_vat_gbp <= p.remaining_value + 0.01,
+      'current_page_selectable',
+        NOT t.progressed
+        AND NOT t.has_open_dispute
+        AND NOT t.has_active_resolution
+        AND t.amount_inc_vat_gbp >= 0
+        AND t.qty <= p.remaining_qty
+        AND t.amount_inc_vat_gbp <= p.remaining_value + 0.01
+    ) AS details
+  FROM target_lines t
+  CROSS JOIN position p
+
+  UNION ALL
+
+  SELECT
+    3 AS sort_order,
+    'ADJUSTMENT'::text AS row_type,
+    NULL::integer AS line_order,
+    a.adjustment_type AS description,
+    jsonb_build_object(
+      'adjustment_id', a.id,
+      'amount_gbp', a.amount_gbp,
+      'approval_status', a.approval_status
+    ) AS details
+  FROM adjustments a
 )
 SELECT
-  'SUMMARY'::text AS row_type,
-  NULL::integer AS line_order,
-  NULL::text AS description,
-  jsonb_build_object(
-    'declared_qty', p.declared_qty,
-    'accounted_qty', p.accounted_qty,
-    'remaining_qty', p.remaining_qty,
-    'declared_value_gbp', p.declared_value,
-    'accounted_value_gbp', p.accounted_value,
-    'remaining_value_gbp', p.remaining_value,
-    'target_signed_line_total_gbp', COALESCE((SELECT SUM(t.amount_inc_vat_gbp) FROM target_lines t), 0),
-    'target_positive_line_total_gbp', COALESCE((SELECT SUM(t.amount_inc_vat_gbp) FROM target_lines t WHERE t.amount_inc_vat_gbp >= 0), 0),
-    'target_negative_line_total_gbp', COALESCE((SELECT SUM(t.amount_inc_vat_gbp) FROM target_lines t WHERE t.amount_inc_vat_gbp < 0), 0)
-  ) AS details
-FROM position p
-
-UNION ALL
-
-SELECT
-  'LINE'::text AS row_type,
-  t.line_order,
-  t.description,
-  jsonb_build_object(
-    'line_id', t.id,
-    'qty', t.qty,
-    'amount_inc_vat_gbp', t.amount_inc_vat_gbp,
-    'progressed', t.progressed,
-    'has_open_dispute', t.has_open_dispute,
-    'has_active_resolution', t.has_active_resolution,
-    'unresolved', NOT t.progressed AND NOT t.has_open_dispute AND NOT t.has_active_resolution,
-    'nonnegative_gate', t.amount_inc_vat_gbp >= 0,
-    'qty_gate', t.qty <= p.remaining_qty,
-    'value_gate', t.amount_inc_vat_gbp <= p.remaining_value + 0.01,
-    'current_page_selectable',
-      NOT t.progressed
-      AND NOT t.has_open_dispute
-      AND NOT t.has_active_resolution
-      AND t.amount_inc_vat_gbp >= 0
-      AND t.qty <= p.remaining_qty
-      AND t.amount_inc_vat_gbp <= p.remaining_value + 0.01
-  ) AS details
-FROM target_lines t
-CROSS JOIN position p
-
-UNION ALL
-
-SELECT
-  'ADJUSTMENT'::text AS row_type,
-  NULL::integer AS line_order,
-  a.adjustment_type AS description,
-  jsonb_build_object(
-    'adjustment_id', a.id,
-    'amount_gbp', a.amount_gbp,
-    'approval_status', a.approval_status
-  ) AS details
-FROM adjustments a
-
+  row_type,
+  line_order,
+  description,
+  details
+FROM combined
 ORDER BY
-  CASE row_type WHEN 'SUMMARY' THEN 1 WHEN 'LINE' THEN 2 ELSE 3 END,
+  sort_order,
   line_order NULLS LAST,
   description NULLS LAST;
