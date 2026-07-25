@@ -7,6 +7,12 @@ SET LOCAL statement_timeout = '0';
 -- The retained Mindee result is parsed into the same JSON shape received by the
 -- permanent materialiser. No direct line INSERT, classification, accounting,
 -- approval, progression, shipment, freeze or posting action occurs here.
+--
+-- B already has its two ordinary goods rows progressed. That is compatible with
+-- this repair because the materialiser adds only the two missing non-physical
+-- financial rows and verifies all retained OCR line identities. Protected later
+-- work (coding, resolutions, disputes, tracking, shipment or Sage snapshots)
+-- remains a hard blocker.
 
 DO $repair_b$
 DECLARE
@@ -75,6 +81,10 @@ BEGIN
       v_header_total, v_entered_total, v_raw_json IS NOT NULL;
   END IF;
 
+  -- Existing progression of B's two ordinary goods rows is intentionally
+  -- permitted. The permanent materialiser verifies those retained OCR identities
+  -- and inserts only the absent financial rows. Any later protected work still
+  -- makes a historical source repair unsafe.
   IF EXISTS (
     SELECT 1
     FROM public.supplier_invoice_lines sil
@@ -85,12 +95,6 @@ BEGIN
     SELECT 1
     FROM public.supplier_invoice_line_resolutions r
     WHERE r.supplier_invoice_id = v_invoice_id
-  ) OR EXISTS (
-    SELECT 1
-    FROM public.supplier_invoice_lines sil
-    WHERE sil.supplier_invoice_id = v_invoice_id
-      AND lower(btrim(COALESCE(sil.eligible_for_invoice_yn, 'n')))
-          IN ('y', 'yes', 'true', '1')
   ) OR EXISTS (
     SELECT 1
     FROM public.dispute_lines dl
@@ -117,7 +121,7 @@ BEGIN
       AND COALESCE(s.active, true) = true
       AND COALESCE(s.sage_posting_status, 'not_posted') <> 'superseded'
   ) THEN
-    RAISE EXCEPTION 'Controlled B repair refused because downstream work already exists.';
+    RAISE EXCEPTION 'Controlled B repair refused because protected downstream work already exists.';
   END IF;
 
   WITH payload AS (
