@@ -3,10 +3,11 @@ BEGIN;
 SET LOCAL lock_timeout = '15s';
 SET LOCAL statement_timeout = '0';
 
--- Sage contact_payment.reference is already governed elsewhere in this repo at 32 characters.
--- Keep the existing GCB-REF- format, but source the readable part from the approved-current
--- refund evidence (normally credit_note_ref) instead of the dispute UUID.
--- Only retailer-refund IN freeze payloads and unposted frozen retailer-refund rows are touched.
+-- Sage contact_payment.reference has an established 32-character limit in this repo.
+-- Keep the existing GCB-REF- format, but source the readable component from the
+-- already-frozen, posted supplier-credit payload that created the allocated Sage
+-- purchase credit note. This reuses the same reference already visible on that credit.
+-- Only retailer-refund IN freeze payloads and active unposted frozen rows are touched.
 
 DO $$
 BEGIN
@@ -15,6 +16,9 @@ BEGIN
   END IF;
   IF to_regclass('public.dispute_refund_evidence_submissions') IS NULL THEN
     RAISE EXCEPTION 'Missing dispute_refund_evidence_submissions';
+  END IF;
+  IF to_regclass('public.sage_posting_snapshots') IS NULL THEN
+    RAISE EXCEPTION 'Missing sage_posting_snapshots';
   END IF;
   IF to_regclass('public.cash_posting_snapshots') IS NULL THEN
     RAISE EXCEPTION 'Missing cash_posting_snapshots';
@@ -46,7 +50,9 @@ AS $$
       AND adv.allocation_type = 'retailer_refund'
     LIMIT 1
   ), approved_evidence AS (
-    SELECT NULLIF(trim(COALESCE(s.credit_note_ref::text, '')), '') AS credit_note_ref
+    SELECT
+      s.id AS refund_evidence_submission_id,
+      NULLIF(trim(COALESCE(s.credit_note_ref::text, '')), '') AS credit_note_ref
     FROM allocation a
     JOIN public.dispute_refund_evidence_submissions s
       ON s.dispute_id = a.dispute_id
@@ -54,8 +60,25 @@ AS $$
       AND s.supplier_control_status = 'approved_current'
     ORDER BY s.supplier_approved_at DESC NULLS LAST, s.created_at DESC
     LIMIT 1
+  ), posted_credit_payload AS (
+    SELECT NULLIF(trim(COALESCE(
+      sps.resolved_payload #>> '{sage_header,reference}',
+      sps.resolved_payload ->> 'credit_note_ref',
+      sps.resolved_payload #>> '{source_payload,sage_header,reference}',
+      sps.resolved_payload #>> '{source_payload,credit_note_ref}',
+      ''
+    )), '') AS payload_reference
+    FROM approved_evidence ae
+    JOIN public.sage_posting_snapshots sps
+      ON sps.source_id = ae.refund_evidence_submission_id
+    WHERE sps.document_lane = 'supplier_credit_note'
+      AND sps.sage_posting_status = 'posted'
+      AND NULLIF(trim(COALESCE(sps.sage_invoice_id, '')), '') IS NOT NULL
+    ORDER BY sps.sage_posted_at DESC NULLS LAST, sps.created_at DESC
+    LIMIT 1
   )
   SELECT COALESCE(
+    (SELECT payload_reference FROM posted_credit_payload),
     (SELECT credit_note_ref FROM approved_evidence),
     (SELECT supplier_invoice_ref FROM allocation),
     (SELECT order_ref FROM allocation),
