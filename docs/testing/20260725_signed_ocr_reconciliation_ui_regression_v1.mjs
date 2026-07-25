@@ -19,6 +19,9 @@ const signedOcrMigration = readFileSync(signedOcrMigrationPath, "utf8");
 const signedSageScope = readFileSync(signedSageScopePath, "utf8");
 const addendum = readFileSync(addendumPath, "utf8");
 
+// Internal source regression. This is not a Supabase SQL Editor script and is
+// not a manual operator release step. It is retained under docs/testing as
+// repository evidence for CI/developer execution only.
 assert.match(page, /BulkLineSelectionControls selectableCount=\{selectable\.length\}/, "restored bulk selection controls must remain wired to the original selectable set");
 assert.match(page, /Number\(l\.amount_inc_vat_gbp\)>=0&&Number\(l\.qty\)<=remainingQty/, "only source-negative rows may be excluded from the original physical selectable calculation");
 assert.match(page, /const unresolved=lines\.filter\(l=>!progressed\(l\)&&!disputes\.has\(l\.id\)&&!resolutions\.has\(l\.id\)\);/, "the original unresolved state model must remain unchanged");
