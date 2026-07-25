@@ -46,6 +46,21 @@ function setLabelValue(container: Element, label: string, value: string) {
   if (valueNode) valueNode.textContent = value;
 }
 
+function closestSupportedInvoiceTotal(invoice: InvoiceTotalPresentation) {
+  const canonical = invoice.lineTotalGbp + invoice.deliveryAdjustmentGbp - invoice.discountAdjustmentGbp;
+  if (invoice.enteredTotalGbp === null) return canonical;
+  const candidates = [
+    invoice.lineTotalGbp,
+    canonical,
+    invoice.lineTotalGbp - invoice.discountAdjustmentGbp,
+  ];
+  return candidates.reduce((best, candidate) => (
+    Math.abs(candidate - Number(invoice.enteredTotalGbp)) < Math.abs(best - Number(invoice.enteredTotalGbp))
+      ? candidate
+      : best
+  ), candidates[0]);
+}
+
 export default function OrderOperationsUxCleanup({
   orderId,
   fallbackRetailerName = "",
@@ -53,6 +68,48 @@ export default function OrderOperationsUxCleanup({
   bundleSummary = null,
 }: Props) {
   useEffect(() => {
+    const listenerCleanups: Array<() => void> = [];
+    const uploadWarningSelector = "[data-order-bundle-upload-warning='true']";
+
+    if (bundleSummary) {
+      const invoiceTotalInputs = Array.from(document.querySelectorAll<HTMLInputElement>("form input[name='invoice_total_gbp']"));
+      for (const input of invoiceTotalInputs) {
+        const form = input.closest("form");
+        if (!form) continue;
+
+        let warning = form.querySelector<HTMLElement>(uploadWarningSelector);
+        if (!warning) {
+          warning = document.createElement("div");
+          warning.setAttribute("data-order-bundle-upload-warning", "true");
+          const submitButton = form.querySelector("button[type='submit'], button:not([type])");
+          if (submitButton) submitButton.insertAdjacentElement("beforebegin", warning);
+          else form.appendChild(warning);
+        }
+
+        const renderWarning = () => {
+          const candidate = Number(input.value || 0);
+          const safeCandidate = Number.isFinite(candidate) && candidate > 0 ? candidate : 0;
+          const remainingBeforeUpload = bundleSummary.acceptedEstimateGbp - bundleSummary.activeInvoiceTotalGbp;
+          const projectedTotal = bundleSummary.activeInvoiceTotalGbp + safeCandidate;
+          const breach = projectedTotal - bundleSummary.acceptedEstimateGbp;
+
+          warning!.className = `md:col-span-3 rounded-xl border p-3 text-xs ${breach > 0.01 ? "border-amber-300 bg-amber-50 text-amber-950" : "border-sky-200 bg-sky-50 text-sky-950"}`;
+          warning!.innerHTML = safeCandidate <= 0
+            ? `<span class="font-semibold">Remaining accepted estimate before this upload: ${gbp(remainingBeforeUpload)}</span><br />Enter the full gross supplier invoice total. Delivery and discount are classifications already included in that total.`
+            : breach > 0.01
+              ? `<span class="font-semibold">Warning: this invoice would exceed the accepted estimate by ${gbp(breach)}.</span><br />Projected active gross invoices: ${gbp(projectedTotal)} against ${gbp(bundleSummary.acceptedEstimateGbp)}. Upload is not blocked, but the new invoice will be flagged in the existing supervisor review queue.`
+              : `<span class="font-semibold">Within accepted estimate.</span><br />Projected active gross invoices: ${gbp(projectedTotal)}. Remaining after upload: ${gbp(bundleSummary.acceptedEstimateGbp - projectedTotal)}.`;
+        };
+
+        input.addEventListener("input", renderWarning);
+        renderWarning();
+        listenerCleanups.push(() => input.removeEventListener("input", renderWarning));
+      }
+    } else {
+      document.querySelectorAll(uploadWarningSelector).forEach((node) => node.remove());
+    }
+
+    const cleanupListeners = () => listenerCleanups.forEach((cleanup) => cleanup());
     const fundingHeading = findHeading("Funding");
     const fundingSection = fundingHeading?.closest("section");
     const fundingPre = fundingSection?.querySelector("pre");
@@ -88,7 +145,7 @@ export default function OrderOperationsUxCleanup({
 
     const evidenceHeading = findHeading("Order evidence");
     const evidenceSection = evidenceHeading?.closest("section");
-    if (!evidenceHeading || !evidenceSection) return;
+    if (!evidenceHeading || !evidenceSection) return cleanupListeners;
 
     for (const invoice of invoiceTotals) {
       const referenceNode = Array.from(evidenceSection.querySelectorAll("span")).find(
@@ -104,7 +161,7 @@ export default function OrderOperationsUxCleanup({
         matchLink.setAttribute("href", `/importer/reconciliation/${orderId}?supplier_invoice_id=${encodeURIComponent(invoice.invoiceId)}`);
       }
 
-      const expectedInvoiceTotal = invoice.lineTotalGbp;
+      const expectedInvoiceTotal = closestSupportedInvoiceTotal(invoice);
       const enteredVariance = invoice.enteredTotalGbp === null ? null : expectedInvoiceTotal - invoice.enteredTotalGbp;
       const ocrVariance = invoice.enteredTotalGbp === null || invoice.ocrTotalGbp === null
         ? null
@@ -134,7 +191,7 @@ export default function OrderOperationsUxCleanup({
 
     if (!bundleSummary) {
       existingBundleSummaries.forEach((summary) => summary.remove());
-      return;
+      return cleanupListeners;
     }
 
     // Each entered supplier invoice total is the full gross invoice amount.
@@ -171,6 +228,8 @@ export default function OrderOperationsUxCleanup({
     if (summary.parentElement !== evidenceSection || summary.previousElementSibling !== evidenceHeading) {
       evidenceHeading.insertAdjacentElement("afterend", summary);
     }
+
+    return cleanupListeners;
   }, [bundleSummary, fallbackRetailerName, invoiceTotals, orderId]);
 
   return null;
