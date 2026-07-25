@@ -57,18 +57,30 @@ function normalisedDescription(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
+function isDiscountDescription(value: string) {
+  return /(^| )(discount|promotion|promotional|promo|voucher|coupon|saving|savings)( |$)/.test(normalisedDescription(value));
+}
+
+function isDeliveryDescription(value: string) {
+  return /(^| )(delivery|shipping|postage|freight|carriage)( |$)/.test(normalisedDescription(value));
+}
+
+function isFeeDescription(value: string) {
+  return /(^| )(fee|charge|surcharge)( |$)/.test(normalisedDescription(value));
+}
+
 function suggestedFinancialType(line: Line) {
-  const description = normalisedDescription(line.description);
-  if (/(^| )(discount|promotion|promotional|promo|voucher|coupon|saving|savings)( |$)/.test(description)) return "discount";
-  if (/(^| )(delivery|shipping|postage|freight|carriage)( |$)/.test(description)) return "delivery";
-  if (/(^| )(fee|charge|surcharge)( |$)/.test(description)) return "fee";
-  if (Number(line.amount_inc_vat_gbp) < 0) return "other_non_physical";
-  return "delivery";
+  if (isDiscountDescription(line.description)) return "discount";
+  if (isDeliveryDescription(line.description)) return "delivery";
+  if (isFeeDescription(line.description)) return "fee";
+  return "other_non_physical";
 }
 
 function obviousNonPhysical(line: Line) {
-  const suggestion = suggestedFinancialType(line);
-  return Number(line.amount_inc_vat_gbp) < 0 || ["discount", "delivery", "fee"].includes(suggestion) && normalisedDescription(line.description) !== "";
+  return Number(line.amount_inc_vat_gbp) < 0
+    || isDiscountDescription(line.description)
+    || isDeliveryDescription(line.description)
+    || isFeeDescription(line.description);
 }
 
 function resolvedSignedAmount(line: Line, resolution: Resolution | undefined) {
