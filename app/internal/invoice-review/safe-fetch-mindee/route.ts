@@ -134,9 +134,14 @@ function rawV2InvoiceLine(line: unknown, lineOrder: number, singleLineHeaderTota
     retailerSku: stringValue(row.product_code) ?? stringValue(row.sku) ?? stringValue(row.reference),
   };
 }
+function normalizedDescription(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
 function isDeliveryDescription(value: string) {
-  const normalized = value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-  return /(^| )(delivery|shipping|postage|freight|carriage)( |$)/.test(normalized);
+  return /(^| )(delivery|shipping|postage|freight|carriage)( |$)/.test(normalizedDescription(value));
+}
+function isDiscountDescription(value: string) {
+  return /(^| )(discount|promotion|promotional|promo|voucher|coupon|saving|savings)( |$)/.test(normalizedDescription(value));
 }
 function parseMindeeV2InvoiceResult(raw: unknown, adjustments: AdjustmentFacts) {
   const fields = firstRecordCandidate(raw, [["inference", "result", "fields"], ["inference", "result", "prediction"], ["inference", "result"], ["result", "fields"], ["result"], ["document", "inference", "prediction"]]);
@@ -147,7 +152,11 @@ function parseMindeeV2InvoiceResult(raw: unknown, adjustments: AdjustmentFacts) 
   const lineItems = firstArrayCandidate(raw, [["inference", "result", "fields", "line_items", "items"], ["inference", "result", "fields", "items", "items"], ["inference", "result", "fields", "invoice_lines", "items"], ["inference", "result", "fields", "line_items"], ["inference", "result", "fields", "items"], ["inference", "result", "fields", "invoice_lines"], ["inference", "result", "prediction", "line_items"], ["result", "fields", "line_items"], ["document", "inference", "prediction", "line_items"]]);
   const singleLineHeaderTotal = lineItems.length === 1 ? ocrInvoiceTotal : null;
   const rawLines = lineItems.map((line, index) => rawV2InvoiceLine(line, index + 1, singleLineHeaderTotal)).filter((line): line is RawLine => Boolean(line));
-  const discountExtractedGbp = Math.round(Math.abs(rawLines.filter((line) => line.amount < 0).reduce((sum, line) => sum + line.amount, 0)) * 100) / 100;
+  const negativeCandidates = rawLines.filter((line) => line.amount < 0);
+  const discountCandidates = negativeCandidates.filter((line) => isDiscountDescription(line.description));
+  const unclassifiedNegativeCandidates = negativeCandidates.filter((line) => !isDiscountDescription(line.description));
+  const discountExtractedGbp = Math.round(Math.abs(discountCandidates.reduce((sum, line) => sum + line.amount, 0)) * 100) / 100;
+  const unclassifiedNegativeGbp = Math.round(Math.abs(unclassifiedNegativeCandidates.reduce((sum, line) => sum + line.amount, 0)) * 100) / 100;
   const deliveryCandidates = rawLines.filter((line) => line.amount > 0 && isDeliveryDescription(line.description));
   const deliveryExtractedGbp = Math.round(deliveryCandidates.reduce((sum, line) => sum + line.amount, 0) * 100) / 100;
   const discountPresent = adjustments.discountGbp > 0 && Math.abs(discountExtractedGbp - adjustments.discountGbp) <= 0.01;
@@ -168,7 +177,8 @@ function parseMindeeV2InvoiceResult(raw: unknown, adjustments: AdjustmentFacts) 
   if (ocrInvoiceTotal === null) unclearMessages.push("Mindee OCR did not extract an invoice total.");
   if (unclearMessages.length > 0) flags.push({ flag_type: "ocr_unclear", message: unclearMessages.join(" ") });
   if (lines.length === 0) flags.push({ flag_type: "manual_line_needed", message: "Mindee OCR did not extract usable goods lines." });
-  if (adjustments.discountGbp > 0 && discountExtractedGbp > 0 && !discountPresent) adjustmentMessages.push(`OCR discount lines total ${discountExtractedGbp.toFixed(2)} but the uploaded discount classification is ${adjustments.discountGbp.toFixed(2)}.`);
+  if (unclassifiedNegativeGbp > 0) adjustmentMessages.push(`OCR contains unclassified negative line(s) totalling ${unclassifiedNegativeGbp.toFixed(2)}. Supervisor must confirm whether they are discounts or another adjustment.`);
+  if (adjustments.discountGbp > 0 && discountExtractedGbp > 0 && !discountPresent) adjustmentMessages.push(`OCR discount-labelled lines total ${discountExtractedGbp.toFixed(2)} but the uploaded discount classification is ${adjustments.discountGbp.toFixed(2)}.`);
   if (adjustments.deliveryGbp > 0 && deliveryExtractedGbp > 0 && !deliveryPresent) adjustmentMessages.push(`OCR delivery-labelled lines total ${deliveryExtractedGbp.toFixed(2)} but the uploaded delivery classification is ${adjustments.deliveryGbp.toFixed(2)}.`);
   if (adjustments.discountGbp === 0 && discountExtractedGbp > 0) adjustmentMessages.push(`OCR extracted a discount of ${discountExtractedGbp.toFixed(2)}, but no discount was declared during upload.`);
   if (adjustments.deliveryGbp === 0 && deliveryExtractedGbp > 0) adjustmentMessages.push(`OCR extracted delivery-labelled lines of ${deliveryExtractedGbp.toFixed(2)}, but no delivery was declared during upload.`);
