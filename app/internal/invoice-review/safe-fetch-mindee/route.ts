@@ -14,33 +14,40 @@ function redirectTo(request: Request, params: Record<string, string>) {
   Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, value));
   return NextResponse.redirect(url, { status: 303 });
 }
+
 function fieldValue(field: unknown) {
   if (!field || typeof field !== "object") return null;
   const value = (field as { value?: unknown }).value;
   return value === undefined || value === null || value === "" ? null : value;
 }
+
 function plainOrFieldValue(value: unknown) {
   const nested = fieldValue(value);
   if (nested !== null) return nested;
   return value === undefined || value === null || value === "" ? null : value;
 }
+
 function stringValue(value: unknown) {
   const resolved = plainOrFieldValue(value);
   return resolved === null ? null : String(resolved).trim() || null;
 }
+
 function numberValue(value: unknown) {
   const resolved = plainOrFieldValue(value);
   if (resolved === null) return null;
   const n = Number(resolved);
   return Number.isFinite(n) ? Math.round(n * 100) / 100 : null;
 }
+
 function dateValue(value: unknown) {
   const resolved = stringValue(value);
   return resolved && /^\d{4}-\d{2}-\d{2}$/.test(resolved) ? resolved : null;
 }
+
 function recordValue(value: unknown) {
   return value === undefined || value === null || value === "" ? null : String(value).trim() || null;
 }
+
 function getByPath(root: unknown, path: string[]) {
   let current = root;
   for (const key of path) {
@@ -49,6 +56,7 @@ function getByPath(root: unknown, path: string[]) {
   }
   return current ?? null;
 }
+
 function firstRecordCandidate(root: unknown, paths: string[][]) {
   for (const path of paths) {
     const candidate = getByPath(root, path);
@@ -56,6 +64,7 @@ function firstRecordCandidate(root: unknown, paths: string[][]) {
   }
   return {} as Record<string, unknown>;
 }
+
 function firstArrayCandidate(root: unknown, paths: string[][]) {
   for (const path of paths) {
     const candidate = getByPath(root, path);
@@ -63,6 +72,7 @@ function firstArrayCandidate(root: unknown, paths: string[][]) {
   }
   return [] as unknown[];
 }
+
 function firstStringFrom(record: Record<string, unknown>, keys: string[]) {
   for (const key of keys) {
     const value = stringValue(record[key]);
@@ -70,6 +80,7 @@ function firstStringFrom(record: Record<string, unknown>, keys: string[]) {
   }
   return null;
 }
+
 function firstNumberFrom(record: Record<string, unknown>, keys: string[]) {
   for (const key of keys) {
     const value = numberValue(record[key]);
@@ -77,6 +88,7 @@ function firstNumberFrom(record: Record<string, unknown>, keys: string[]) {
   }
   return null;
 }
+
 function firstDateFrom(record: Record<string, unknown>, keys: string[]) {
   for (const key of keys) {
     const value = dateValue(record[key]);
@@ -84,6 +96,7 @@ function firstDateFrom(record: Record<string, unknown>, keys: string[]) {
   }
   return null;
 }
+
 function parseMindeeDetail(raw: unknown) {
   if (!raw || typeof raw !== "object") return "";
   const obj = raw as Record<string, unknown>;
@@ -91,6 +104,7 @@ function parseMindeeDetail(raw: unknown) {
   if (detail === undefined || detail === null) return "";
   return typeof detail === "string" ? detail.slice(0, 700) : JSON.stringify(detail).slice(0, 700);
 }
+
 function extractMindeeJobId(raw: unknown) {
   if (!raw || typeof raw !== "object") return null;
   const obj = raw as Record<string, unknown>;
@@ -99,12 +113,14 @@ function extractMindeeJobId(raw: unknown) {
   const inferenceJob = inference?.job && typeof inference.job === "object" ? inference.job as Record<string, unknown> : null;
   return recordValue(job?.id ?? inferenceJob?.id ?? obj.job_id);
 }
+
 function extractMindeeInferenceId(raw: unknown) {
   if (!raw || typeof raw !== "object") return null;
   const obj = raw as Record<string, unknown>;
   const inference = obj.inference && typeof obj.inference === "object" ? obj.inference as Record<string, unknown> : null;
   return recordValue(inference?.id ?? obj.inference_id);
 }
+
 function extractPagesConsumed(raw: unknown) {
   for (const path of [["inference", "file", "page_count"], ["inference", "file", "pages"], ["file", "page_count"], ["file", "pages"], ["document", "n_pages"]]) {
     const n = numberValue(getByPath(raw, path));
@@ -112,6 +128,7 @@ function extractPagesConsumed(raw: unknown) {
   }
   return null;
 }
+
 function rawV2InvoiceLine(line: unknown, lineOrder: number, singleLineHeaderTotal: number | null): RawLine | null {
   if (!line || typeof line !== "object") return null;
   const outer = line as Record<string, unknown>;
@@ -134,15 +151,19 @@ function rawV2InvoiceLine(line: unknown, lineOrder: number, singleLineHeaderTota
     retailerSku: stringValue(row.product_code) ?? stringValue(row.sku) ?? stringValue(row.reference),
   };
 }
+
 function normalizedDescription(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
+
 function isDeliveryDescription(value: string) {
   return /(^| )(delivery|shipping|postage|freight|carriage)( |$)/.test(normalizedDescription(value));
 }
+
 function isDiscountDescription(value: string) {
   return /(^| )(discount|promotion|promotional|promo|voucher|coupon|saving|savings)( |$)/.test(normalizedDescription(value));
 }
+
 function parseMindeeV2InvoiceResult(raw: unknown, adjustments: AdjustmentFacts) {
   const fields = firstRecordCandidate(raw, [["inference", "result", "fields"], ["inference", "result", "prediction"], ["inference", "result"], ["result", "fields"], ["result"], ["document", "inference", "prediction"]]);
   const ocrInvoiceRef = firstStringFrom(fields, ["invoice_number", "invoice_ref", "invoice_id", "reference", "document_number"]);
@@ -161,10 +182,18 @@ function parseMindeeV2InvoiceResult(raw: unknown, adjustments: AdjustmentFacts) 
   const deliveryExtractedGbp = Math.round(deliveryCandidates.reduce((sum, line) => sum + line.amount, 0) * 100) / 100;
   const discountPresent = adjustments.discountGbp > 0 && Math.abs(discountExtractedGbp - adjustments.discountGbp) <= 0.01;
   const deliveryPresent = adjustments.deliveryGbp > 0 && deliveryExtractedGbp > 0 && Math.abs(deliveryExtractedGbp - adjustments.deliveryGbp) <= 0.01;
-  const deliveryOrders = deliveryPresent ? new Set(deliveryCandidates.map((line) => line.order)) : new Set<number>();
-  const lines: ParsedLine[] = rawLines
-    .filter((line) => line.amount >= 0 && !deliveryOrders.has(line.order))
-    .map((line) => ({ retailer_sku: line.retailerSku, description: line.description, qty: line.qty, amount_inc_vat_gbp: line.amount }));
+
+  // Preserve every source row with its document sign. Physical/non-physical status
+  // is an explicit reconciliation decision; OCR extraction must not silently hide
+  // delivery, discount or other signed financial rows.
+  const lines: ParsedLine[] = rawLines.map((line) => ({
+    retailer_sku: line.retailerSku,
+    description: line.description,
+    qty: line.qty,
+    amount_inc_vat_gbp: line.amount,
+  }));
+  const physicalGoodsLineCount = rawLines.filter((line) => line.amount > 0 && !isDeliveryDescription(line.description)).length;
+
   const flags: ReviewFlag[] = [];
   const unclearMessages: string[] = [];
   const adjustmentMessages: string[] = [];
@@ -176,7 +205,7 @@ function parseMindeeV2InvoiceResult(raw: unknown, adjustments: AdjustmentFacts) 
   if (!ocrInvoiceRef) unclearMessages.push("Mindee OCR did not extract an invoice reference.");
   if (ocrInvoiceTotal === null) unclearMessages.push("Mindee OCR did not extract an invoice total.");
   if (unclearMessages.length > 0) flags.push({ flag_type: "ocr_unclear", message: unclearMessages.join(" ") });
-  if (lines.length === 0) flags.push({ flag_type: "manual_line_needed", message: "Mindee OCR did not extract usable goods lines." });
+  if (physicalGoodsLineCount === 0) flags.push({ flag_type: "manual_line_needed", message: "Mindee OCR did not extract usable physical goods lines." });
   if (unclassifiedNegativeGbp > 0) adjustmentMessages.push(`OCR contains unclassified negative line(s) totalling ${unclassifiedNegativeGbp.toFixed(2)}. Supervisor must confirm whether they are discounts or another adjustment.`);
   if (adjustments.discountGbp > 0 && discountExtractedGbp > 0 && !discountPresent) adjustmentMessages.push(`OCR discount-labelled lines total ${discountExtractedGbp.toFixed(2)} but the uploaded discount classification is ${adjustments.discountGbp.toFixed(2)}.`);
   if (adjustments.deliveryGbp > 0 && deliveryExtractedGbp > 0 && !deliveryPresent) adjustmentMessages.push(`OCR delivery-labelled lines total ${deliveryExtractedGbp.toFixed(2)} but the uploaded delivery classification is ${adjustments.deliveryGbp.toFixed(2)}.`);
@@ -188,6 +217,7 @@ function parseMindeeV2InvoiceResult(raw: unknown, adjustments: AdjustmentFacts) 
   }
   return { ocrInvoiceRef, ocrRetailerName, ocrInvoiceDate, ocrInvoiceTotal, lines, flags };
 }
+
 function hasInferencePayload(raw: unknown) {
   return Boolean(getByPath(raw, ["inference", "result"]));
 }
@@ -260,5 +290,5 @@ export async function POST(request: Request) {
   const { data: saveData, error: saveError } = await supabase.rpc("staff_save_mindee_invoice_ocr_result", { p_supplier_invoice_id: supplierInvoiceId, p_model_id: modelId, p_http_status: httpStatus, p_mindee_job_id: jobId || extractMindeeJobId(raw), p_mindee_inference_id: resolvedInferenceId || extractMindeeInferenceId(raw), p_raw_json: raw, p_ocr_invoice_ref: parsed.ocrInvoiceRef, p_ocr_retailer_name: parsed.ocrRetailerName, p_ocr_invoice_date: parsed.ocrInvoiceDate, p_ocr_invoice_total_gbp: parsed.ocrInvoiceTotal, p_pages_consumed: extractPagesConsumed(raw), p_lines: parsed.lines, p_flags: parsed.flags });
   if (saveError) return redirectTo(request, { error: saveError.message });
   const resultRow = Array.isArray(saveData) ? saveData[0] : null;
-  return redirectTo(request, { success: `Mindee OCR result saved from current job. Inserted ${resultRow?.inserted_line_count ?? parsed.lines.length} goods line(s), raised ${resultRow?.inserted_flag_count ?? parsed.flags.length} flag(s).` });
+  return redirectTo(request, { success: `Mindee OCR result saved from current job. Inserted ${resultRow?.inserted_line_count ?? parsed.lines.length} invoice line(s), raised ${resultRow?.inserted_flag_count ?? parsed.flags.length} flag(s).` });
 }
