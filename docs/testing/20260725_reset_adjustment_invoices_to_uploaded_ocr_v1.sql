@@ -327,19 +327,31 @@ SELECT
   si.mindee_ocr_status,
   (si.invoice_pdf_url IS NOT NULL) AS uploaded_file_retained,
   fs.invoice_total_gbp AS entered_total_retained,
-  COALESCE(SUM(CASE WHEN ova.adjustment_type = 'retailer_delivery' THEN ova.amount_gbp ELSE 0 END), 0) AS delivery_retained_gbp,
-  COALESCE(SUM(CASE WHEN ova.adjustment_type = 'retailer_discount' THEN ova.amount_gbp ELSE 0 END), 0) AS discount_retained_gbp,
-  COUNT(sil.id) FILTER (WHERE sil.line_source = 'ocr_extracted') AS remaining_ocr_line_count,
-  COUNT(mac.id) AS retained_mindee_audit_call_count
+  COALESCE(adj.delivery_retained_gbp, 0) AS delivery_retained_gbp,
+  COALESCE(adj.discount_retained_gbp, 0) AS discount_retained_gbp,
+  COALESCE(lines.remaining_ocr_line_count, 0) AS remaining_ocr_line_count,
+  COALESCE(audit.retained_mindee_audit_call_count, 0) AS retained_mindee_audit_call_count
 FROM reset_target_invoices t
 JOIN public.supplier_invoices si ON si.id = t.supplier_invoice_id
 JOIN public.supplier_invoice_financial_summary fs ON fs.supplier_invoice_id = si.id
-LEFT JOIN public.order_value_adjustments ova
-  ON ova.supplier_invoice_id = si.id
- AND ova.approval_status <> 'rejected'
-LEFT JOIN public.supplier_invoice_lines sil ON sil.supplier_invoice_id = si.id
-LEFT JOIN public.mindee_api_calls mac ON mac.supplier_invoice_id = si.id
-GROUP BY t.invoice_ref, si.review_status, si.mindee_ocr_status, si.invoice_pdf_url, fs.invoice_total_gbp
+LEFT JOIN LATERAL (
+  SELECT
+    COALESCE(SUM(CASE WHEN ova.adjustment_type = 'retailer_delivery' THEN ova.amount_gbp ELSE 0 END), 0) AS delivery_retained_gbp,
+    COALESCE(SUM(CASE WHEN ova.adjustment_type = 'retailer_discount' THEN ova.amount_gbp ELSE 0 END), 0) AS discount_retained_gbp
+  FROM public.order_value_adjustments ova
+  WHERE ova.supplier_invoice_id = si.id
+    AND ova.approval_status <> 'rejected'
+) adj ON true
+LEFT JOIN LATERAL (
+  SELECT COUNT(*) FILTER (WHERE sil.line_source = 'ocr_extracted')::integer AS remaining_ocr_line_count
+  FROM public.supplier_invoice_lines sil
+  WHERE sil.supplier_invoice_id = si.id
+) lines ON true
+LEFT JOIN LATERAL (
+  SELECT COUNT(*)::integer AS retained_mindee_audit_call_count
+  FROM public.mindee_api_calls mac
+  WHERE mac.supplier_invoice_id = si.id
+) audit ON true
 ORDER BY t.invoice_ref;
 
 COMMIT;
