@@ -15,7 +15,6 @@ WITH target_order AS (
     si.reviewed_at,
     si.review_notes,
     si.uploaded_at,
-    si.created_at,
     si.blocked_from_sage_yn,
     si.is_current_for_order,
     si.superseded_by_supplier_invoice_id
@@ -39,7 +38,8 @@ SELECT
       AND sibling.retailer_id = i.retailer_id
       AND lower(regexp_replace(btrim(sibling.invoice_ref), '[^a-zA-Z0-9]+', '', 'g')) =
           lower(regexp_replace(btrim(i.invoice_ref), '[^a-zA-Z0-9]+', '', 'g'))
-      AND COALESCE(sibling.uploaded_at, sibling.created_at) > i.reviewed_at
+      AND i.reviewed_at IS NOT NULL
+      AND sibling.uploaded_at > i.reviewed_at
   ) AS later_same_reference_family_count,
   (
     SELECT count(*)
@@ -86,7 +86,7 @@ SELECT
         'type', a.adjustment_type,
         'status', a.approval_status,
         'amount_gbp', a.amount_gbp
-      ) ORDER BY a.created_at
+      ) ORDER BY a.id
     )
     FROM public.order_value_adjustments a
     WHERE a.supplier_invoice_id = i.supplier_invoice_id
@@ -136,4 +136,4 @@ SELECT
       AND p.source_id = i.supplier_invoice_id
   ) AS sage_artifact_count
 FROM invoice_state i
-ORDER BY COALESCE(i.uploaded_at, i.created_at), i.invoice_ref;
+ORDER BY i.uploaded_at NULLS LAST, i.invoice_ref;
