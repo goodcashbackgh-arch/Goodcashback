@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 import { rejectSupplierInvoiceRequireResubmissionAction, runMindeeOcrForSupplierInvoiceAction, saveSupplierInvoiceHeaderReviewAction } from "./actions";
+import { excludeSupplierInvoiceNoResubmissionAction } from "./rejection-actions";
 import { assertInvoiceReadyForCurrentApproval } from "./readiness";
 
 const MINDEE_RESULT_FETCH_RELEASE_MARKER = "mindee-result-fetch-v3-safe-job-only";
@@ -321,7 +322,7 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
                       {match?.pending_adjustment_yn ? <p className="mt-4 rounded-2xl border border-amber-300/40 bg-amber-300/10 p-3 text-sm text-amber-100">Delivery/discount approval is pending. This blocks supplier approval/accounting readiness, not operator line reconciliation.</p> : null}
                     </div>
 
-                    <div className="grid gap-4 lg:grid-cols-2">
+                    <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
                       <form action={saveSupplierInvoiceHeaderReviewAction} className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
                         <input type="hidden" name="supplier_invoice_id" value={invoice.id} />
                         <h3 className="text-lg font-semibold text-slate-950">Save header correction</h3>
@@ -337,10 +338,18 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
 
                       <form action={rejectSupplierInvoiceRequireResubmissionAction} className="rounded-3xl border border-rose-200 bg-rose-50 p-5">
                         <input type="hidden" name="supplier_invoice_id" value={invoice.id} />
-                        <h3 className="text-lg font-semibold text-rose-950">Reject / require resubmission</h3>
-                        <p className="mt-1 text-sm text-rose-700">Use this when the uploaded document cannot safely support the invoice record.</p>
-                        <input name="review_notes" className="mt-4 w-full rounded-2xl border border-rose-200 bg-white p-3 text-sm outline-none transition focus:border-rose-300" placeholder="Reason for resubmission" />
-                        <button className="mt-4 rounded-full border border-rose-200 bg-white px-5 py-3 text-sm font-semibold text-rose-700 transition hover:bg-rose-100">Reject</button>
+                        <h3 className="text-lg font-semibold text-rose-950">Reject and request corrected invoice</h3>
+                        <p className="mt-1 text-sm text-rose-700">Use this when the uploaded document must be replaced with corrected invoice evidence.</p>
+                        <input name="review_notes" required className="mt-4 w-full rounded-2xl border border-rose-200 bg-white p-3 text-sm outline-none transition focus:border-rose-300" placeholder="Reason corrected invoice is required" />
+                        <button className="mt-4 rounded-full border border-rose-200 bg-white px-5 py-3 text-sm font-semibold text-rose-700 transition hover:bg-rose-100">Reject and request corrected invoice</button>
+                      </form>
+
+                      <form action={excludeSupplierInvoiceNoResubmissionAction} className="rounded-3xl border border-amber-200 bg-amber-50 p-5">
+                        <input type="hidden" name="supplier_invoice_id" value={invoice.id} />
+                        <h3 className="text-lg font-semibold text-amber-950">Exclude invoice — no corrected invoice required</h3>
+                        <p className="mt-1 text-sm text-amber-700">Use this when the invoice must be removed from the order and the importer must not upload a replacement.</p>
+                        <input name="review_notes" required className="mt-4 w-full rounded-2xl border border-amber-200 bg-white p-3 text-sm outline-none transition focus:border-amber-300" placeholder="Reason invoice is excluded from the order" />
+                        <button className="mt-4 rounded-full border border-amber-200 bg-white px-5 py-3 text-sm font-semibold text-amber-700 transition hover:bg-amber-100">Exclude invoice — no corrected invoice required</button>
                       </form>
                     </div>
                   </div>
