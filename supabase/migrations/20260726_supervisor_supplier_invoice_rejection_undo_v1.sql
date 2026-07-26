@@ -194,7 +194,7 @@ BEGIN
          AND sibling.retailer_id = v_invoice_before.retailer_id
          AND lower(regexp_replace(btrim(sibling.invoice_ref), '[^a-zA-Z0-9]+', '', 'g')) =
              lower(regexp_replace(btrim(v_invoice_before.invoice_ref), '[^a-zA-Z0-9]+', '', 'g'))
-         AND COALESCE(sibling.uploaded_at, sibling.created_at) > v_snapshot.rejected_at
+         AND sibling.uploaded_at > v_snapshot.rejected_at
      ) THEN
     RAISE EXCEPTION 'Undo blocked: replacement or resubmitted evidence already exists.';
   END IF;
