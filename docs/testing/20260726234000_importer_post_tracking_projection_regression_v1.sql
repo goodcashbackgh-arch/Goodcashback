@@ -1,13 +1,8 @@
--- READ ONLY regression proof for:
+-- READ-ONLY platform regression gate for:
 -- supabase/migrations/20260726234000_importer_post_tracking_projection_final_v1.sql
 --
--- Expected target after tracking exists but allocation remains open:
---   reconciliation_state = complete
---   tracking_state = allocation_incomplete
---   importer_status_label = Tracking submitted
---   importer_next_action = Assign tracking
---
--- This script performs no durable writes and rolls back its auth context.
+-- This test validates every row returned by order_audience_status_v1(NULL).
+-- It contains no order-specific branch and performs no durable writes.
 
 BEGIN TRANSACTION READ ONLY;
 
@@ -22,8 +17,12 @@ BEGIN
     RAISE EXCEPTION 'Missing public.order_audience_status_v1(uuid)';
   END IF;
 
-  IF to_regprocedure('public.internal_platform_order_status_v1()') IS NULL THEN
-    RAISE EXCEPTION 'Missing public.internal_platform_order_status_v1()';
+  IF to_regprocedure('public.order_audience_status_pre_supplier_rejection_final_v1(uuid)') IS NULL THEN
+    RAISE EXCEPTION 'Missing public.order_audience_status_pre_supplier_rejection_final_v1(uuid)';
+  END IF;
+
+  IF to_regclass('public.order_evidence_queries') IS NULL THEN
+    RAISE EXCEPTION 'Missing public.order_evidence_queries';
   END IF;
 
   SELECT s.auth_user_id
@@ -52,65 +51,13 @@ BEGIN
   );
 END $$;
 
--- Result 1: target facts and pass/fail assertions.
-WITH target AS (
-  SELECT *
-  FROM public.order_audience_status_v1('abf15b7b-771f-482f-9751-2af0ee0bcbb1'::uuid)
-), rejection_scope AS (
-  SELECT
-    COUNT(*) FILTER (
-      WHERE COALESCE(si.is_current_for_order, true) = true
-        AND si.review_status = 'rejected_resubmit_required'
-        AND COALESCE(si.rejection_requires_resubmission_yn, true) = true
-    )::integer AS genuine_resubmission_required_count
-  FROM public.supplier_invoices si
-  WHERE si.order_id = 'abf15b7b-771f-482f-9751-2af0ee0bcbb1'::uuid
-)
-SELECT
-  t.order_id,
-  t.order_ref,
-  t.canonical_balance_due_gbp,
-  t.internal_current_stage,
-  t.supplier_state,
-  t.reconciliation_state,
-  t.tracking_state,
-  t.shipment_state,
-  r.genuine_resubmission_required_count,
-  t.importer_status_label,
-  t.importer_next_action,
-  (t.importer_status_label <> 'Evidence attention') AS evidence_status_cleared_yn,
-  (t.importer_next_action <> 'Resolve evidence issue') AS evidence_action_cleared_yn,
-  CASE
-    WHEN COALESCE(t.canonical_balance_due_gbp, 0) > 0.01 THEN
-      t.importer_status_label IS NOT NULL
-    WHEN COALESCE(t.internal_current_stage, '') = 'exception_or_hold_open' THEN
-      t.importer_status_label IS NOT NULL
-    WHEN r.genuine_resubmission_required_count > 0 THEN
-      t.importer_status_label IN ('Evidence attention', 'Supplier evidence rejected')
-    WHEN t.reconciliation_state = 'incomplete' THEN
-      t.importer_status_label = 'Invoice reconciliation open'
-      AND t.importer_next_action = 'Continue invoice reconciliation'
-    WHEN t.reconciliation_state = 'complete' AND t.tracking_state = 'missing' THEN
-      t.importer_status_label = 'Invoice reconciled; tracking open'
-      AND t.importer_next_action = 'Add tracking'
-    WHEN t.reconciliation_state = 'complete' AND t.tracking_state = 'allocation_incomplete' THEN
-      t.importer_status_label = 'Tracking submitted'
-      AND t.importer_next_action = 'Assign tracking'
-    WHEN t.reconciliation_state = 'complete' AND t.tracking_state = 'submitted' AND t.pod_delivery_state = 'accepted_current' THEN
-      t.importer_status_label = 'Order complete'
-      AND t.importer_next_action = 'Order complete'
-    WHEN t.reconciliation_state = 'complete' AND t.tracking_state = 'submitted' THEN
-      t.importer_status_label = 'No importer action required'
-      AND t.importer_next_action = 'No importer action required'
-    ELSE true
-  END AS target_projection_pass_yn
-FROM target t
-CROSS JOIN rejection_scope r;
-
--- Result 2: all active orders that violate the governed importer projection.
-WITH audience AS (
+-- Diagnostic result: normal expected result is zero rows.
+WITH current_rows AS (
   SELECT *
   FROM public.order_audience_status_v1(NULL)
+), predecessor_rows AS (
+  SELECT *
+  FROM public.order_audience_status_pre_supplier_rejection_final_v1(NULL)
 ), rejection_scope AS (
   SELECT
     si.order_id,
@@ -121,33 +68,65 @@ WITH audience AS (
     )::integer AS genuine_resubmission_required_count
   FROM public.supplier_invoices si
   GROUP BY si.order_id
-), evaluated AS (
+), query_scope AS (
   SELECT
-    a.*,
+    q.order_id,
+    COUNT(*) FILTER (WHERE q.status = 'open')::integer AS open_query_count
+  FROM public.order_evidence_queries q
+  GROUP BY q.order_id
+), expected AS (
+  SELECT
+    c.*,
+    p.importer_status_label AS predecessor_importer_status_label,
+    p.importer_next_action AS predecessor_importer_next_action,
     COALESCE(r.genuine_resubmission_required_count, 0) AS genuine_resubmission_required_count,
+    COALESCE(q.open_query_count, 0) AS open_query_count,
     CASE
-      WHEN COALESCE(a.canonical_balance_due_gbp, 0) > 0.01 THEN true
-      WHEN COALESCE(a.internal_current_stage, '') = 'exception_or_hold_open' THEN true
-      WHEN COALESCE(r.genuine_resubmission_required_count, 0) > 0 THEN true
-      WHEN a.reconciliation_state = 'incomplete' THEN
-        a.importer_status_label = 'Invoice reconciliation open'
-        AND a.importer_next_action = 'Continue invoice reconciliation'
-      WHEN a.reconciliation_state = 'complete' AND a.tracking_state = 'missing' THEN
-        a.importer_status_label = 'Invoice reconciled; tracking open'
-        AND a.importer_next_action = 'Add tracking'
-      WHEN a.reconciliation_state = 'complete' AND a.tracking_state = 'allocation_incomplete' THEN
-        a.importer_status_label = 'Tracking submitted'
-        AND a.importer_next_action = 'Assign tracking'
-      WHEN a.reconciliation_state = 'complete' AND a.tracking_state = 'submitted' AND a.pod_delivery_state = 'accepted_current' THEN
-        a.importer_status_label = 'Order complete'
-        AND a.importer_next_action = 'Order complete'
-      WHEN a.reconciliation_state = 'complete' AND a.tracking_state = 'submitted' THEN
-        a.importer_status_label = 'No importer action required'
-        AND a.importer_next_action = 'No importer action required'
-      ELSE true
-    END AS projection_pass_yn
-  FROM audience a
-  LEFT JOIN rejection_scope r ON r.order_id = a.order_id
+      WHEN COALESCE(c.canonical_balance_due_gbp, 0) > 0.01
+        THEN p.importer_status_label
+      WHEN COALESCE(c.internal_current_stage, '') = 'exception_or_hold_open'
+        THEN p.importer_status_label
+      WHEN COALESCE(r.genuine_resubmission_required_count, 0) > 0
+        THEN p.importer_status_label
+      WHEN COALESCE(q.open_query_count, 0) > 0
+        THEN 'Evidence query open'
+      WHEN c.reconciliation_state = 'incomplete'
+        THEN 'Invoice reconciliation open'
+      WHEN c.reconciliation_state = 'complete' AND c.tracking_state = 'missing'
+        THEN 'Invoice reconciled; tracking open'
+      WHEN c.reconciliation_state = 'complete' AND c.tracking_state = 'allocation_incomplete'
+        THEN 'Tracking submitted'
+      WHEN c.reconciliation_state = 'complete' AND c.tracking_state = 'submitted' AND c.pod_delivery_state = 'accepted_current'
+        THEN 'Order complete'
+      WHEN c.reconciliation_state = 'complete' AND c.tracking_state = 'submitted'
+        THEN 'No importer action required'
+      ELSE p.importer_status_label
+    END::text AS expected_importer_status_label,
+    CASE
+      WHEN COALESCE(c.canonical_balance_due_gbp, 0) > 0.01
+        THEN p.importer_next_action
+      WHEN COALESCE(c.internal_current_stage, '') = 'exception_or_hold_open'
+        THEN p.importer_next_action
+      WHEN COALESCE(r.genuine_resubmission_required_count, 0) > 0
+        THEN p.importer_next_action
+      WHEN COALESCE(q.open_query_count, 0) > 0
+        THEN 'Answer query'
+      WHEN c.reconciliation_state = 'incomplete'
+        THEN 'Continue invoice reconciliation'
+      WHEN c.reconciliation_state = 'complete' AND c.tracking_state = 'missing'
+        THEN 'Add tracking'
+      WHEN c.reconciliation_state = 'complete' AND c.tracking_state = 'allocation_incomplete'
+        THEN 'Assign tracking'
+      WHEN c.reconciliation_state = 'complete' AND c.tracking_state = 'submitted' AND c.pod_delivery_state = 'accepted_current'
+        THEN 'Order complete'
+      WHEN c.reconciliation_state = 'complete' AND c.tracking_state = 'submitted'
+        THEN 'No importer action required'
+      ELSE p.importer_next_action
+    END::text AS expected_importer_next_action
+  FROM current_rows c
+  JOIN predecessor_rows p ON p.order_id = c.order_id
+  LEFT JOIN rejection_scope r ON r.order_id = c.order_id
+  LEFT JOIN query_scope q ON q.order_id = c.order_id
 )
 SELECT
   e.order_id,
@@ -159,38 +138,129 @@ SELECT
   e.tracking_state,
   e.pod_delivery_state,
   e.genuine_resubmission_required_count,
+  e.open_query_count,
   e.importer_status_label,
-  e.importer_next_action
-FROM evaluated e
-WHERE NOT e.projection_pass_yn
+  e.expected_importer_status_label,
+  e.importer_next_action,
+  e.expected_importer_next_action,
+  e.importer_complete_yn,
+  e.expected_importer_next_action IN ('No importer action required', 'Order complete') AS expected_importer_complete_yn
+FROM expected e
+WHERE e.importer_status_label IS DISTINCT FROM e.expected_importer_status_label
+   OR e.importer_next_action IS DISTINCT FROM e.expected_importer_next_action
+   OR e.importer_complete_yn IS DISTINCT FROM (e.expected_importer_next_action IN ('No importer action required', 'Order complete'))
 ORDER BY e.order_ref;
 
--- Result 3: customer and shipper pass-through comparison against the preserved
--- audience-safe predecessor. Normal expected result: zero rows.
-WITH current_rows AS (
-  SELECT *
-  FROM public.order_audience_status_v1(NULL)
-), predecessor_rows AS (
-  SELECT *
-  FROM public.order_audience_status_pre_supplier_rejection_final_v1(NULL)
-)
+DO $$
+DECLARE
+  v_row_count_drift integer;
+  v_projection_drift integer;
+  v_audience_passthrough_drift integer;
+BEGIN
+  SELECT ABS(
+    (SELECT COUNT(*) FROM public.order_audience_status_v1(NULL))
+    -
+    (SELECT COUNT(*) FROM public.order_audience_status_pre_supplier_rejection_final_v1(NULL))
+  )::integer
+  INTO v_row_count_drift;
+
+  IF v_row_count_drift <> 0 THEN
+    RAISE EXCEPTION 'Importer projection changed the audience row count';
+  END IF;
+
+  WITH current_rows AS (
+    SELECT *
+    FROM public.order_audience_status_v1(NULL)
+  ), predecessor_rows AS (
+    SELECT *
+    FROM public.order_audience_status_pre_supplier_rejection_final_v1(NULL)
+  ), rejection_scope AS (
+    SELECT
+      si.order_id,
+      COUNT(*) FILTER (
+        WHERE COALESCE(si.is_current_for_order, true) = true
+          AND si.review_status = 'rejected_resubmit_required'
+          AND COALESCE(si.rejection_requires_resubmission_yn, true) = true
+      )::integer AS genuine_resubmission_required_count
+    FROM public.supplier_invoices si
+    GROUP BY si.order_id
+  ), query_scope AS (
+    SELECT
+      q.order_id,
+      COUNT(*) FILTER (WHERE q.status = 'open')::integer AS open_query_count
+    FROM public.order_evidence_queries q
+    GROUP BY q.order_id
+  ), expected AS (
+    SELECT
+      c.*,
+      CASE
+        WHEN COALESCE(c.canonical_balance_due_gbp, 0) > 0.01 THEN p.importer_status_label
+        WHEN COALESCE(c.internal_current_stage, '') = 'exception_or_hold_open' THEN p.importer_status_label
+        WHEN COALESCE(r.genuine_resubmission_required_count, 0) > 0 THEN p.importer_status_label
+        WHEN COALESCE(q.open_query_count, 0) > 0 THEN 'Evidence query open'
+        WHEN c.reconciliation_state = 'incomplete' THEN 'Invoice reconciliation open'
+        WHEN c.reconciliation_state = 'complete' AND c.tracking_state = 'missing' THEN 'Invoice reconciled; tracking open'
+        WHEN c.reconciliation_state = 'complete' AND c.tracking_state = 'allocation_incomplete' THEN 'Tracking submitted'
+        WHEN c.reconciliation_state = 'complete' AND c.tracking_state = 'submitted' AND c.pod_delivery_state = 'accepted_current' THEN 'Order complete'
+        WHEN c.reconciliation_state = 'complete' AND c.tracking_state = 'submitted' THEN 'No importer action required'
+        ELSE p.importer_status_label
+      END::text AS expected_status,
+      CASE
+        WHEN COALESCE(c.canonical_balance_due_gbp, 0) > 0.01 THEN p.importer_next_action
+        WHEN COALESCE(c.internal_current_stage, '') = 'exception_or_hold_open' THEN p.importer_next_action
+        WHEN COALESCE(r.genuine_resubmission_required_count, 0) > 0 THEN p.importer_next_action
+        WHEN COALESCE(q.open_query_count, 0) > 0 THEN 'Answer query'
+        WHEN c.reconciliation_state = 'incomplete' THEN 'Continue invoice reconciliation'
+        WHEN c.reconciliation_state = 'complete' AND c.tracking_state = 'missing' THEN 'Add tracking'
+        WHEN c.reconciliation_state = 'complete' AND c.tracking_state = 'allocation_incomplete' THEN 'Assign tracking'
+        WHEN c.reconciliation_state = 'complete' AND c.tracking_state = 'submitted' AND c.pod_delivery_state = 'accepted_current' THEN 'Order complete'
+        WHEN c.reconciliation_state = 'complete' AND c.tracking_state = 'submitted' THEN 'No importer action required'
+        ELSE p.importer_next_action
+      END::text AS expected_action
+    FROM current_rows c
+    JOIN predecessor_rows p ON p.order_id = c.order_id
+    LEFT JOIN rejection_scope r ON r.order_id = c.order_id
+    LEFT JOIN query_scope q ON q.order_id = c.order_id
+  )
+  SELECT COUNT(*)::integer
+  INTO v_projection_drift
+  FROM expected e
+  WHERE e.importer_status_label IS DISTINCT FROM e.expected_status
+     OR e.importer_next_action IS DISTINCT FROM e.expected_action
+     OR e.importer_complete_yn IS DISTINCT FROM (e.expected_action IN ('No importer action required', 'Order complete'));
+
+  IF v_projection_drift <> 0 THEN
+    RAISE EXCEPTION 'Importer projection drift detected for % active order(s)', v_projection_drift;
+  END IF;
+
+  WITH current_rows AS (
+    SELECT *
+    FROM public.order_audience_status_v1(NULL)
+  ), predecessor_rows AS (
+    SELECT *
+    FROM public.order_audience_status_pre_supplier_rejection_final_v1(NULL)
+  )
+  SELECT COUNT(*)::integer
+  INTO v_audience_passthrough_drift
+  FROM current_rows c
+  JOIN predecessor_rows p ON p.order_id = c.order_id
+  WHERE c.customer_status_label IS DISTINCT FROM p.customer_status_label
+     OR c.customer_next_action IS DISTINCT FROM p.customer_next_action
+     OR c.shipper_status_label IS DISTINCT FROM p.shipper_status_label
+     OR c.shipper_next_action IS DISTINCT FROM p.shipper_next_action;
+
+  IF v_audience_passthrough_drift <> 0 THEN
+    RAISE EXCEPTION 'Customer/shipper pass-through drift detected for % active order(s)', v_audience_passthrough_drift;
+  END IF;
+END $$;
+
 SELECT
-  c.order_id,
-  c.order_ref,
-  p.customer_status_label AS predecessor_customer_status_label,
-  c.customer_status_label AS current_customer_status_label,
-  p.customer_next_action AS predecessor_customer_next_action,
-  c.customer_next_action AS current_customer_next_action,
-  p.shipper_status_label AS predecessor_shipper_status_label,
-  c.shipper_status_label AS current_shipper_status_label,
-  p.shipper_next_action AS predecessor_shipper_next_action,
-  c.shipper_next_action AS current_shipper_next_action
-FROM current_rows c
-JOIN predecessor_rows p ON p.order_id = c.order_id
-WHERE c.customer_status_label IS DISTINCT FROM p.customer_status_label
-   OR c.customer_next_action IS DISTINCT FROM p.customer_next_action
-   OR c.shipper_status_label IS DISTINCT FROM p.shipper_status_label
-   OR c.shipper_next_action IS DISTINCT FROM p.shipper_next_action
-ORDER BY c.order_ref;
+  COUNT(*)::integer AS active_order_count,
+  COUNT(*) FILTER (WHERE importer_next_action = 'Answer query')::integer AS open_query_action_count,
+  COUNT(*) FILTER (WHERE importer_next_action = 'Continue invoice reconciliation')::integer AS reconciliation_action_count,
+  COUNT(*) FILTER (WHERE importer_next_action = 'Add tracking')::integer AS add_tracking_action_count,
+  COUNT(*) FILTER (WHERE importer_next_action = 'Assign tracking')::integer AS assign_tracking_action_count,
+  COUNT(*) FILTER (WHERE importer_next_action IN ('No importer action required', 'Order complete'))::integer AS importer_complete_count
+FROM public.order_audience_status_v1(NULL);
 
 ROLLBACK;
