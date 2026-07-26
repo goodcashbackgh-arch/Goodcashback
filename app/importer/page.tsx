@@ -59,11 +59,11 @@ function isNoImporterAction(action: string) {
   return action === "No importer action required" || action === "Order complete";
 }
 
-function statusClass(action: string, status: string, balanceDueGbp = 0, canonicalMissing = false) {
+function statusClass(rawAction: string, displayStatus: string, balanceDueGbp = 0, canonicalMissing = false) {
   if (canonicalMissing) return "border-slate-200 bg-slate-50 text-slate-600";
-  if (action === "Resolve evidence issue") return "border-rose-200 bg-rose-50 text-rose-800";
-  if (action === "Answer query" || balanceDueGbp > 0.01) return "border-amber-200 bg-amber-50 text-amber-800";
-  if (isNoImporterAction(action) || status.toLowerCase().includes("complete")) return "border-emerald-200 bg-emerald-50 text-emerald-800";
+  if (rawAction === "Resolve evidence issue") return "border-rose-200 bg-rose-50 text-rose-800";
+  if (rawAction === "Answer query" || balanceDueGbp > 0.01) return "border-amber-200 bg-amber-50 text-amber-800";
+  if (isNoImporterAction(rawAction) || displayStatus.toLowerCase().includes("complete")) return "border-emerald-200 bg-emerald-50 text-emerald-800";
   return "border-slate-200 bg-slate-50 text-slate-700";
 }
 
@@ -110,13 +110,17 @@ export default async function ImporterPage() {
     const finalSaleValueGbp = Number(audienceStatus?.final_sale_value_gbp ?? acceptedEstimateGbp);
     const finalBalanceDueGbp = canonicalMissing ? 0 : Number(audienceStatus?.canonical_balance_due_gbp ?? 0);
     const pendingCreditGbp = canonicalMissing ? 0 : Number(audienceStatus?.potential_credit_pending_review_gbp ?? 0);
-    const canonicalStatus = canonicalMissing ? "Status unavailable" : cleanUiText(audienceStatus!.importer_status_label!);
-    const canonicalAction = canonicalMissing ? "Open order for details" : cleanUiText(audienceStatus!.importer_next_action!);
+    const rawCanonicalStatus = canonicalMissing ? "Status unavailable" : audienceStatus!.importer_status_label!;
+    const rawCanonicalAction = canonicalMissing ? "Open order for details" : audienceStatus!.importer_next_action!;
     return {
       order,
       hasInvoice,
       hasTracking,
-      status: { status: canonicalStatus, action: canonicalAction },
+      status: {
+        status: cleanUiText(rawCanonicalStatus),
+        action: cleanUiText(rawCanonicalAction),
+        rawAction: rawCanonicalAction,
+      },
       acceptedEstimateGbp,
       finalSaleValueGbp,
       finalSaleConfirmed: audienceStatus?.customer_sales_state === "posted",
@@ -126,7 +130,7 @@ export default async function ImporterPage() {
     };
   });
 
-  const needsActionCount = rows.filter((row) => !row.canonicalMissing && !isNoImporterAction(row.status.action)).length;
+  const needsActionCount = rows.filter((row) => !row.canonicalMissing && !isNoImporterAction(row.status.rawAction)).length;
   const invoiceOrderCount = rows.filter((row) => row.hasInvoice).length;
 
   return (
@@ -161,12 +165,12 @@ export default async function ImporterPage() {
         <div className="mt-4 grid gap-3">
           {rows.map((row) => {
             const operationsHref = `/importer/orders/${row.order.id}/operations`;
-            const action = row.status.action;
+            const rawAction = row.status.rawAction;
             return (
-              <article key={row.order.id} className={`rounded-2xl border p-4 shadow-sm ${action === "Resolve evidence issue" ? "border-rose-200 bg-rose-50" : row.finalBalanceDueGbp > 0.01 || action === "Answer query" ? "border-amber-200 bg-amber-50" : "border-slate-200 bg-white"}`}>
+              <article key={row.order.id} className={`rounded-2xl border p-4 shadow-sm ${rawAction === "Resolve evidence issue" ? "border-rose-200 bg-rose-50" : row.finalBalanceDueGbp > 0.01 || rawAction === "Answer query" ? "border-amber-200 bg-amber-50" : "border-slate-200 bg-white"}`}>
                 <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                   <div><div className="text-xs font-semibold uppercase tracking-wide text-slate-500">{row.order.retailers?.name ?? "Retailer not set"}</div><h3 className="mt-1 text-base font-semibold text-slate-950">{row.order.order_ref ?? row.order.id}</h3><p className="mt-1 break-all text-xs text-slate-500">Payment reference: {row.order.payment_auth_id ?? "Not assigned"}</p></div>
-                  <span className={`w-fit rounded-full border px-3 py-1 text-xs font-semibold ${statusClass(action, row.status.status, row.finalBalanceDueGbp, row.canonicalMissing)}`}>{row.status.status}</span>
+                  <span className={`w-fit rounded-full border px-3 py-1 text-xs font-semibold ${statusClass(rawAction, row.status.status, row.finalBalanceDueGbp, row.canonicalMissing)}`}>{row.status.status}</span>
                 </div>
                 {row.canonicalMissing ? <p className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">Order status is unavailable for this order, so no remaining balance is shown here.</p> : null}
                 <div className="mt-4 grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
@@ -176,16 +180,16 @@ export default async function ImporterPage() {
                   <div className="rounded-xl bg-white/70 p-3 ring-1 ring-slate-100"><div className="text-xs text-slate-500">Tracking</div><div className="font-semibold text-slate-950">{row.hasTracking ? "Submitted" : "Missing"}</div></div>
                   <div className="rounded-xl bg-white/70 p-3 ring-1 ring-slate-100"><div className="text-xs text-slate-500">Order evidence</div><div className="font-semibold text-slate-950">{row.hasInvoice ? "Uploaded" : "Missing"}</div></div>
                 </div>
-                <div className="mt-4 rounded-xl border border-slate-200 bg-white/80 p-3 text-sm"><div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Next action</div><div className={action === "Resolve evidence issue" ? "mt-1 font-semibold text-rose-700" : row.finalBalanceDueGbp > 0.01 || action === "Answer query" ? "mt-1 font-semibold text-amber-800" : "mt-1 font-semibold text-slate-900"}>{action}</div><div className="mt-1 text-xs text-slate-500">{row.order.funded_at ? "Initial payment received" : "Open"} · Raw: {friendlyStatus(row.order.status)}</div></div>
+                <div className="mt-4 rounded-xl border border-slate-200 bg-white/80 p-3 text-sm"><div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Next action</div><div className={rawAction === "Resolve evidence issue" ? "mt-1 font-semibold text-rose-700" : row.finalBalanceDueGbp > 0.01 || rawAction === "Answer query" ? "mt-1 font-semibold text-amber-800" : "mt-1 font-semibold text-slate-900"}>{row.status.action}</div><div className="mt-1 text-xs text-slate-500">{row.order.funded_at ? "Initial payment received" : "Open"} · Raw: {friendlyStatus(row.order.status)}</div></div>
                 <div className="mt-4 flex flex-wrap gap-2">
                   <Link className={secondaryActionClass} href={operationsHref}>Open order</Link>
-                  {action === "Resolve evidence issue" ? <Link className={warningActionClass} href={`${operationsHref}#invoice`}>Resolve evidence issue</Link> : null}
-                  {action === "Answer query" ? <Link href="/importer/evidence-queries" className={warningActionClass}>Answer query</Link> : null}
-                  {action === "Continue invoice reconciliation" ? <Link className={secondaryActionClass} href={`/importer/reconciliation/${row.order.id}`}>Continue invoice reconciliation</Link> : null}
-                  {action === "Add tracking" ? <Link className={secondaryActionClass} href={`${operationsHref}#tracking`}>Add tracking</Link> : null}
-                  {action === "Assign tracking" ? <Link className={successActionClass} href={`/importer/delivery-allocation/${row.order.id}`}>Assign tracking</Link> : null}
-                  {action === "Resolve exception or hold" ? <Link className={warningActionClass} href="/importer/exceptions">Resolve exception or hold</Link> : null}
-                  {action === "Collect final balance" ? <Link className={warningActionClass} href={operationsHref}>Collect final balance</Link> : null}
+                  {rawAction === "Resolve evidence issue" ? <Link className={warningActionClass} href={`${operationsHref}#invoice`}>{row.status.action}</Link> : null}
+                  {rawAction === "Answer query" ? <Link href="/importer/evidence-queries" className={warningActionClass}>{row.status.action}</Link> : null}
+                  {rawAction === "Continue invoice reconciliation" ? <Link className={secondaryActionClass} href={`/importer/reconciliation/${row.order.id}`}>{row.status.action}</Link> : null}
+                  {rawAction === "Add tracking" ? <Link className={secondaryActionClass} href={`${operationsHref}#tracking`}>{row.status.action}</Link> : null}
+                  {rawAction === "Assign tracking" ? <Link className={successActionClass} href={`/importer/delivery-allocation/${row.order.id}`}>{row.status.action}</Link> : null}
+                  {rawAction === "Resolve exception or hold" ? <Link className={warningActionClass} href="/importer/exceptions">{row.status.action}</Link> : null}
+                  {rawAction === "Collect final balance" ? <Link className={warningActionClass} href={operationsHref}>{row.status.action}</Link> : null}
                 </div>
               </article>
             );
