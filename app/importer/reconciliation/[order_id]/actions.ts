@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 
 const PROGRESSION_BASELINE_EXCEEDED_ERROR = "Cannot progress selected lines because they exceed the original order baseline. Move excess or mismatched items into the exception path.";
+const NON_PHYSICAL_PROGRESSION_ERROR = "Delivery and discount rows must be Parked rather than progressed.";
 const MANUAL_ADD_BASELINE_EXCEEDED_ERROR = "Cannot add manual line because it exceeds the original order baseline.";
 const MANUAL_EDIT_BASELINE_EXCEEDED_ERROR = "Cannot update line because it exceeds the original order baseline.";
 const CURRENCY_TOLERANCE_GBP = 0.01;
@@ -27,8 +28,15 @@ function isLiveInvoiceLine(line: unknown) {
   return !status || !RETIRED_INVOICE_REVIEW_STATUSES.has(status);
 }
 
+const round2 = (value: number) => Math.round(value * 100) / 100;
+const normalizedDescription = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+const isDeliveryDescription = (value: string) => /(^| )(delivery|shipping|postage|freight|carriage)( |$)/.test(normalizedDescription(value));
+const isDiscountDescription = (value: string) => /(^| )(discount|promotion|promotional|promo|voucher|coupon|saving|savings)( |$)/.test(normalizedDescription(value));
+
 type ProgressionLine = {
   id: string;
+  supplier_invoice_id: string;
+  description: string;
   qty: number | null;
   amount_inc_vat_gbp: number | null;
   qty_confirmed: number | null;
@@ -36,9 +44,16 @@ type ProgressionLine = {
   eligible_for_invoice_yn: string | null;
 };
 
+type ProgressionAdjustment = {
+  supplier_invoice_id: string;
+  adjustment_type: string;
+  amount_gbp: number | null;
+  approval_status: string | null;
+};
+
 function lineProgressionValues(line: ProgressionLine) {
-  const qty = Number(line.qty_confirmed ?? line.qty ?? 0);
-  const amount = Number(line.amount_confirmed ?? line.amount_inc_vat_gbp ?? 0);
+  const qty = Number(line.qty ?? 0);
+  const amount = Number(line.amount_inc_vat_gbp ?? 0);
   return {
     qty: Number.isFinite(qty) ? qty : 0,
     amount: Number.isFinite(amount) ? amount : 0,
@@ -64,7 +79,7 @@ async function enforceProgressionWithinBaseline(params: {
 
   const { data: allLines, error: linesError } = await supabase
     .from("supplier_invoice_lines")
-    .select("id, qty, amount_inc_vat_gbp, qty_confirmed, amount_confirmed, eligible_for_invoice_yn, supplier_invoices!inner(order_id, review_status)")
+    .select("id, supplier_invoice_id, description, qty, amount_inc_vat_gbp, qty_confirmed, amount_confirmed, eligible_for_invoice_yn, supplier_invoices!inner(order_id, review_status)")
     .eq("supplier_invoices.order_id", orderId);
 
   if (linesError) {
@@ -79,39 +94,157 @@ async function enforceProgressionWithinBaseline(params: {
     return { ok: false as const, error: "One or more selected lines could not be found for this active invoice." };
   }
 
-  const selectedLineIds = new Set(selectedLines.map((line) => line.id));
+  const liveLineIds = lines.map((line) => line.id);
+  const liveInvoiceIds = [...new Set(lines.map((line) => line.supplier_invoice_id))];
 
-  const currentProgressed = lines
-    .filter((line) => isProgressedFlag(line.eligible_for_invoice_yn) && !selectedLineIds.has(line.id))
-    .reduce(
-      (totals, line) => {
-        const values = lineProgressionValues(line);
-        return {
-          qty: totals.qty + values.qty,
-          amount: totals.amount + values.amount,
-        };
-      },
-      { qty: 0, amount: 0 }
-    );
+  const { data: resolutionRows, error: resolutionError } = liveLineIds.length
+    ? await supabase
+        .from("supplier_invoice_line_resolutions")
+        .select("supplier_invoice_line_id")
+        .in("supplier_invoice_line_id", liveLineIds)
+        .eq("active", true)
+    : { data: [], error: null };
 
-  const selectedUnresolvedTotals = selectedLines
-    .filter((line) => !isProgressedFlag(line.eligible_for_invoice_yn))
-    .reduce(
-      (totals, line) => {
-        const values = lineProgressionValues(line);
-        return {
-          qty: totals.qty + values.qty,
-          amount: totals.amount + values.amount,
-        };
-      },
-      { qty: 0, amount: 0 }
+  if (resolutionError) {
+    return { ok: false as const, error: resolutionError.message };
+  }
+
+  const { data: disputeRows, error: disputeError } = liveLineIds.length
+    ? await supabase
+        .from("dispute_lines")
+        .select("supplier_invoice_line_id, disputes!inner(resolved_at)")
+        .in("supplier_invoice_line_id", liveLineIds)
+        .is("resolved_at", null)
+    : { data: [], error: null };
+
+  if (disputeError) {
+    return { ok: false as const, error: disputeError.message };
+  }
+
+  const { data: adjustmentRows, error: adjustmentError } = liveInvoiceIds.length
+    ? await supabase
+        .from("order_value_adjustments")
+        .select("supplier_invoice_id, adjustment_type, amount_gbp, approval_status")
+        .in("supplier_invoice_id", liveInvoiceIds)
+        .or("approval_status.is.null,approval_status.neq.rejected")
+    : { data: [], error: null };
+
+  if (adjustmentError) {
+    return { ok: false as const, error: adjustmentError.message };
+  }
+
+  const resolutionLineIds = new Set((resolutionRows ?? []).map((row) => String(row.supplier_invoice_line_id)));
+  const disputeLineIds = new Set<string>();
+  for (const row of disputeRows ?? []) {
+    const nested = (row as { disputes?: unknown }).disputes;
+    const dispute = Array.isArray(nested) ? nested[0] : nested;
+    if (dispute && typeof dispute === "object" && !(dispute as { resolved_at?: unknown }).resolved_at) {
+      disputeLineIds.add(String(row.supplier_invoice_line_id));
+    }
+  }
+
+  const isAccounted = (line: ProgressionLine) =>
+    isProgressedFlag(line.eligible_for_invoice_yn) || disputeLineIds.has(line.id) || resolutionLineIds.has(line.id);
+
+  const accounted = lines.reduce(
+    (totals, line) => {
+      const values = lineProgressionValues(line);
+      const progressed = isProgressedFlag(line.eligible_for_invoice_yn);
+      const disputed = disputeLineIds.has(line.id);
+      const resolved = resolutionLineIds.has(line.id);
+      return {
+        qty: totals.qty + (progressed || disputed ? values.qty : 0),
+        amount: totals.amount + (progressed || disputed || resolved ? values.amount : 0),
+      };
+    },
+    { qty: 0, amount: 0 }
+  );
+
+  const targetInvoiceIds = new Set(selectedLines.map((line) => line.supplier_invoice_id));
+  const matchedFinancialLineIds = new Set<string>();
+  let unresolvedMatchedFinancialOffset = 0;
+
+  for (const invoiceId of targetInvoiceIds) {
+    const invoiceLines = lines.filter((line) => line.supplier_invoice_id === invoiceId);
+    const invoiceAdjustments = ((adjustmentRows ?? []) as ProgressionAdjustment[]).filter(
+      (adjustment) => adjustment.supplier_invoice_id === invoiceId
     );
+    const declaredDelivery = round2(
+      invoiceAdjustments
+        .filter((adjustment) => adjustment.adjustment_type === "retailer_delivery")
+        .reduce((sum, adjustment) => sum + Number(adjustment.amount_gbp ?? 0), 0)
+    );
+    const declaredDiscount = round2(
+      invoiceAdjustments
+        .filter((adjustment) => adjustment.adjustment_type === "retailer_discount")
+        .reduce((sum, adjustment) => sum + Number(adjustment.amount_gbp ?? 0), 0)
+    );
+    const deliveryCandidates = invoiceLines.filter(
+      (line) => Number(line.amount_inc_vat_gbp ?? 0) > 0 && isDeliveryDescription(line.description ?? "")
+    );
+    const discountCandidates = invoiceLines.filter(
+      (line) => Number(line.amount_inc_vat_gbp ?? 0) < 0 && isDiscountDescription(line.description ?? "")
+    );
+    const extractedDelivery = round2(
+      deliveryCandidates.reduce((sum, line) => sum + Number(line.amount_inc_vat_gbp ?? 0), 0)
+    );
+    const extractedDiscount = round2(
+      Math.abs(discountCandidates.reduce((sum, line) => sum + Number(line.amount_inc_vat_gbp ?? 0), 0))
+    );
+    const deliveryMatched =
+      declaredDelivery > 0 &&
+      extractedDelivery > 0 &&
+      Math.abs(extractedDelivery - declaredDelivery) <= CURRENCY_TOLERANCE_GBP;
+    const discountMatched =
+      declaredDiscount > 0 &&
+      extractedDiscount > 0 &&
+      Math.abs(extractedDiscount - declaredDiscount) <= CURRENCY_TOLERANCE_GBP;
+    const matchedLines = [
+      ...(deliveryMatched ? deliveryCandidates : []),
+      ...(discountMatched ? discountCandidates : []),
+    ];
+
+    for (const line of matchedLines) {
+      matchedFinancialLineIds.add(line.id);
+      if (!isAccounted(line)) {
+        unresolvedMatchedFinancialOffset += Number(line.amount_inc_vat_gbp ?? 0);
+      }
+    }
+  }
+
+  if (selectedLines.some((line) => disputeLineIds.has(line.id))) {
+    return { ok: false as const, error: "Exception-linked lines cannot be progressed." };
+  }
+
+  if (
+    selectedLines.some(
+      (line) =>
+        resolutionLineIds.has(line.id) ||
+        Number(line.amount_inc_vat_gbp ?? 0) < 0 ||
+        matchedFinancialLineIds.has(line.id)
+    )
+  ) {
+    return { ok: false as const, error: NON_PHYSICAL_PROGRESSION_ERROR };
+  }
+
+  const selectedUnresolvedTotals = selectedLines.filter((line) => !isAccounted(line)).reduce(
+    (totals, line) => {
+      const values = lineProgressionValues(line);
+      return {
+        qty: totals.qty + values.qty,
+        amount: totals.amount + values.amount,
+      };
+    },
+    { qty: 0, amount: 0 }
+  );
 
   const baselineQty = Number(order.total_qty_declared ?? 0);
   const baselineAmount = Number(order.order_total_gbp_declared ?? 0);
+  const projectedQty = accounted.qty + selectedUnresolvedTotals.qty;
+  const projectedAmount = round2(accounted.amount + selectedUnresolvedTotals.amount + unresolvedMatchedFinancialOffset);
 
-  const exceedsQty = currentProgressed.qty + selectedUnresolvedTotals.qty > baselineQty;
-  const exceedsAmount = currentProgressed.amount + selectedUnresolvedTotals.amount > baselineAmount + CURRENCY_TOLERANCE_GBP;
+  const exceedsQty = projectedQty > baselineQty;
+  const exceedsAmount = projectedAmount > baselineAmount + CURRENCY_TOLERANCE_GBP;
 
   if (exceedsQty || exceedsAmount) {
     return { ok: false as const, error: PROGRESSION_BASELINE_EXCEEDED_ERROR };
