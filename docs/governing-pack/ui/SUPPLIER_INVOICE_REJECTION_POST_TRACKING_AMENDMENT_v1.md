@@ -2,7 +2,7 @@
 
 Status: locked platform-wide amendment.
 
-This amendment extends and, where necessary, supersedes the post-tracking boundary in:
+This amendment extends and, where necessary, supersedes:
 
 - `SUPPLIER_INVOICE_REJECTION_AND_AUDIENCE_STATUS_ADDENDUM_v1.md`
 - `CANONICAL_AUDIENCE_STATUS_CONTRACT_v1.md`
@@ -13,6 +13,7 @@ This amendment extends and, where necessary, supersedes the post-tracking bounda
 The repair is a platform state-machine correction for every active order returned by:
 
 ```text
+internal_platform_order_status_v1()
 order_audience_status_v1(p_order_id uuid default null)
 ```
 
@@ -20,9 +21,60 @@ No migration branch, function branch or UI branch may identify a specific order 
 
 Known production orders are acceptance fixtures only. They prove the general rule but do not define it.
 
-## 2. Proven regression class
+## 2. Canonical active supplier invariant
 
-The regression occurs when:
+The active-invoice predicate remains:
+
+```sql
+COALESCE(si.is_current_for_order, true) = true
+AND COALESCE(si.review_status, '') NOT IN ('superseded', 'duplicate_blocked')
+AND NOT (
+  si.review_status = 'rejected_resubmit_required'
+  AND si.rejection_requires_resubmission_yn = false
+)
+```
+
+Canonical supplier state must be derived in this order:
+
+```text
+no active invoices
+-> missing
+
+one or more genuine current resubmission-required rejections
+-> rejected_resubmit_required
+
+every active invoice explicitly approved and not blocked
+-> approved_current
+
+all other active mixtures or unknown states
+-> review_needed
+```
+
+A single approved invoice must not hide a genuine current rejection.
+
+A mixed set of approved and pending/review invoices must not be classified as approved.
+
+Only a current invoice satisfying all of the following is a replacement-evidence blocker:
+
+```sql
+COALESCE(si.is_current_for_order, true) = true
+AND si.review_status = 'rejected_resubmit_required'
+AND COALESCE(si.rejection_requires_resubmission_yn, true) = true
+```
+
+Active-line reconciliation remains:
+
+```text
+zero active lines -> not_started
+zero unresolved active lines -> complete
+otherwise -> incomplete
+```
+
+Retired no-resubmission evidence and its lines remain audit-only.
+
+## 3. Proven post-tracking regression class
+
+The importer regression occurs when:
 
 ```text
 active supplier-line reconciliation is complete
@@ -40,15 +92,7 @@ Resolve evidence issue
 
 Internal accounting, approval or control review is not automatically importer-owned evidence work.
 
-Only a current invoice satisfying all of the following is a replacement-evidence blocker:
-
-```sql
-COALESCE(si.is_current_for_order, true) = true
-AND si.review_status = 'rejected_resubmit_required'
-AND COALESCE(si.rejection_requires_resubmission_yn, true) = true
-```
-
-## 3. Separate evidence-query lane
+## 4. Separate evidence-query lane
 
 `order_evidence_queries` is a controlled clarification lane. It does not mutate operational order state, but an open query is importer-owned work.
 
@@ -62,7 +106,7 @@ creates an importer action.
 
 An answered query remains pending staff review but does not require another importer answer unless reopened.
 
-Required projection for an open query:
+Required projection:
 
 ```text
 importer_status_label = Evidence query open
@@ -77,7 +121,7 @@ exception or hold
 current replacement-evidence requirement
 ```
 
-## 4. Canonical importer precedence
+## 5. Canonical importer precedence
 
 Required platform-wide precedence:
 
@@ -96,6 +140,10 @@ Required platform-wide precedence:
 Required projections:
 
 ```text
+genuine current resubmission-required rejection
+-> Evidence attention
+-> Resolve evidence issue
+
 open evidence query
 -> Evidence query open
 -> Answer query
@@ -127,7 +175,7 @@ pod_delivery_state = accepted_current
 -> Order complete
 ```
 
-## 5. Meaning of tracking states
+## 6. Meaning of tracking states
 
 Canonical tracking states remain distinct:
 
@@ -143,7 +191,15 @@ submitted
 
 `submitted` means canonical tracking and allocation coverage is complete. The importer must not be sent back to evidence solely because internal supplier review remains open.
 
-## 6. Importer completion invariant
+Where a stale supplier-derived internal stage is being repaired and tracking is allocation-incomplete, the corrected internal stage is:
+
+```text
+tracking_allocation_incomplete
+```
+
+Higher-priority internal stages remain untouched.
+
+## 7. Importer completion invariant
 
 `importer_complete_yn` is an audience fact and must agree with the final projected importer action.
 
@@ -169,7 +225,7 @@ Resolve exception or hold
 
 An internal incomplete stage may coexist with `importer_complete_yn = true` when the remaining work is not importer-owned.
 
-## 7. UI action-source rule
+## 8. UI action-source rule
 
 `app/importer/page.tsx` must use raw canonical `importer_next_action` for routing and button eligibility.
 
@@ -201,20 +257,15 @@ raw orders.status
 
 Dashboard action counts must count canonical importer actions, not overlapping local heuristics.
 
-The dashboard's evidence-present metric must use the same active-invoice exclusion principle as the canonical status spine:
+The dashboard evidence-present metric must use the active-invoice predicate and exclude retired audit-only evidence.
+
+## 9. Scope boundary
+
+This amendment changes only read-model and UI sourcing:
 
 ```text
-exclude is_current_for_order = false
-exclude superseded
-exclude duplicate_blocked
-exclude rejected_resubmit_required where rejection_requires_resubmission_yn = false
-```
-
-## 8. Scope boundary
-
-This amendment changes:
-
-```text
+canonical supplier_state precedence for active invoice mixtures
+supplier-derived stale-stage repair for tracking allocation
 importer audience status
 importer audience next action
 importer_complete_yn
@@ -223,28 +274,26 @@ importer dashboard action count
 importer dashboard active-evidence display
 ```
 
-It does not change:
+It does not mutate or change:
 
 ```text
-supplier_state
-reconciliation_state
-tracking_state
-internal current stage
-customer status or action
-shipper status or action
-funding or balances
-supplier invoice approval
-query records or query lifecycle
+invoice review rows
+invoice approval decisions
+reconciliation records
 tracking records
 tracking allocations
+query records or query lifecycle
 shipment records
+funding or balances
+customer status or action
+shipper status or action
 Sage, VAT or accounting rules
 audit banner wording
 ```
 
 No operational data is mutated by this repair.
 
-## 9. Implementation
+## 10. Implementation
 
 Governing implementation files:
 
@@ -254,40 +303,53 @@ app/importer/page.tsx
 docs/testing/20260726234000_importer_post_tracking_projection_regression_v1.sql
 ```
 
-The migration replaces `order_audience_status_v1(uuid)` in place. It continues to consume the existing audience-safe predecessor:
+The migration replaces both functions in place:
+
+```text
+internal_platform_order_status_v1()
+order_audience_status_v1(uuid)
+```
+
+It continues to consume the existing safe predecessors:
 
 ```sql
+public.internal_platform_order_status_pre_supplier_rejection_final_v1()
 public.order_audience_status_pre_supplier_rejection_final_v1(p_order_id)
 ```
 
-It must not add another permanent wrapper layer and must not call the staff-only internal status function directly.
+It must not add another permanent wrapper layer.
+
+The audience function must not call the staff-only internal function directly; it continues through the deployed audience-safe predecessor.
 
 Customer and shipper columns pass through unchanged.
 
-## 10. Platform release gate
+## 11. Platform release gate
 
-The regression proof must evaluate every row returned by:
+The regression proof must evaluate every active order returned by:
 
 ```sql
+public.internal_platform_order_status_v1()
 public.order_audience_status_v1(NULL)
 ```
 
 It must fail the release when any of the following occurs:
 
 ```text
-audience row count changes
-status differs from governed precedence
-action differs from governed precedence
+supplier_state differs from the active-invoice invariant
+reconciliation_state differs from active-line truth
+audience row identity changes
+importer status differs from governed precedence
+importer action differs from governed precedence
 importer_complete_yn disagrees with the projected action
-customer status or action changes
-shipper status or action changes
+customer completion/status/action changes
+shipper completion/status/action changes
 ```
 
 The proof must not require a specific order UUID to pass.
 
 Known production fixtures may be inspected separately after the all-orders gate succeeds.
 
-## 11. Acceptance fixture
+## 12. Acceptance fixture
 
 The order below remains a regression example only:
 
@@ -316,12 +378,13 @@ importer_status_label <> Evidence attention
 importer_next_action <> Resolve evidence issue
 ```
 
-## 12. Prohibited fixes
+## 13. Prohibited fixes
 
 Do not:
 
 - hard-code an order UUID or order reference in migration logic;
-- change `supplier_state` to approved merely to clear importer wording;
+- let an approved invoice hide a genuine current rejection;
+- classify a mixed active invoice set as approved;
 - mutate or delete retired rejection evidence;
 - hide a genuine current resubmission-required rejection;
 - hide an open evidence query behind tracking status;
