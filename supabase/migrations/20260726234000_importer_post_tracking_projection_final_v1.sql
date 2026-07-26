@@ -3,13 +3,16 @@ BEGIN;
 SET LOCAL lock_timeout = '15s';
 SET LOCAL statement_timeout = '0';
 
--- Completes the canonical importer projection after active supplier-line
--- reconciliation. Internal supplier review remains visible to staff, but it is
--- not presented as an importer evidence defect unless current replacement
--- evidence is genuinely required.
+-- Platform-wide canonical importer projection.
 --
--- Read-model only. No order, invoice, line, tracking, allocation, shipment,
--- funding, settlement, Sage, VAT, customer or shipper data is mutated.
+-- Importer-facing status follows actual importer-owned work across every active
+-- order. Internal supplier review remains visible to staff, but it is not
+-- presented as an importer evidence defect unless current replacement evidence
+-- is genuinely required. Open evidence queries remain a separate importer action
+-- lane and outrank reconciliation/tracking progression.
+--
+-- Read-model only. No order, invoice, line, query, tracking, allocation,
+-- shipment, funding, settlement, Sage, VAT, customer or shipper data is mutated.
 
 DO $$
 BEGIN
@@ -94,6 +97,13 @@ BEGIN
     FROM public.supplier_invoices si
     JOIN base b ON b.order_id = si.order_id
     GROUP BY si.order_id
+  ), query_scope AS (
+    SELECT
+      q.order_id,
+      COUNT(*) FILTER (WHERE q.status = 'open')::integer AS open_query_count
+    FROM public.order_evidence_queries q
+    JOIN base b ON b.order_id = q.order_id
+    GROUP BY q.order_id
   )
   SELECT
     b.order_id,
@@ -142,6 +152,8 @@ BEGIN
         THEN b.importer_status_label
       WHEN COALESCE(rs.genuine_resubmission_required_count, 0) > 0
         THEN b.importer_status_label
+      WHEN COALESCE(qs.open_query_count, 0) > 0
+        THEN 'Evidence query open'
       WHEN b.reconciliation_state = 'incomplete'
         THEN 'Invoice reconciliation open'
       WHEN b.reconciliation_state = 'complete'
@@ -166,6 +178,8 @@ BEGIN
         THEN b.importer_next_action
       WHEN COALESCE(rs.genuine_resubmission_required_count, 0) > 0
         THEN b.importer_next_action
+      WHEN COALESCE(qs.open_query_count, 0) > 0
+        THEN 'Answer query'
       WHEN b.reconciliation_state = 'incomplete'
         THEN 'Continue invoice reconciliation'
       WHEN b.reconciliation_state = 'complete'
@@ -187,6 +201,7 @@ BEGIN
     b.shipper_next_action
   FROM base b
   LEFT JOIN rejection_scope rs ON rs.order_id = b.order_id
+  LEFT JOIN query_scope qs ON qs.order_id = b.order_id
   ORDER BY b.order_ref;
 END;
 $$;
@@ -195,7 +210,7 @@ REVOKE ALL ON FUNCTION public.order_audience_status_v1(uuid) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.order_audience_status_v1(uuid) TO authenticated;
 
 COMMENT ON FUNCTION public.order_audience_status_v1(uuid) IS
-'Canonical audience status. Importer progression follows active reconciliation and tracking allocation; internal supplier review is not an importer evidence defect without a genuine current resubmission requirement.';
+'Platform-wide canonical audience status. Importer action precedence covers balances, exceptions/holds, genuine replacement evidence, open evidence queries, active reconciliation and tracking allocation. Customer and shipper projections pass through unchanged.';
 
 NOTIFY pgrst, 'reload schema';
 
