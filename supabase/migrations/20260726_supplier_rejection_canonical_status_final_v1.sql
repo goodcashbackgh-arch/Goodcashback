@@ -6,8 +6,8 @@ SET LOCAL statement_timeout = '0';
 -- Final canonical repair governed by:
 -- docs/governing-pack/ui/SUPPLIER_INVOICE_REJECTION_AND_AUDIENCE_STATUS_ADDENDUM_v1.md
 --
--- This migration is read-model only. It does not mutate orders, invoices, lines,
--- funding, Sage, VAT, shipment, balance, settlement or approval data.
+-- Read-model only. No order, invoice, funding, Sage, VAT, shipment,
+-- settlement, balance, approval or payment-presentation data is mutated.
 
 DO $$
 BEGIN
@@ -87,21 +87,19 @@ BEGIN
       )::integer AS active_invoice_count,
       COUNT(*) FILTER (
         WHERE COALESCE(si.is_current_for_order, true) = true
-          AND si.review_status = 'rejected_resubmit_required'
-          AND COALESCE(si.rejection_requires_resubmission_yn, true) = true
-      )::integer AS genuine_rejected_count,
-      COUNT(*) FILTER (
-        WHERE COALESCE(si.is_current_for_order, true) = true
           AND COALESCE(si.review_status, '') NOT IN ('superseded', 'duplicate_blocked')
           AND NOT (
             si.review_status = 'rejected_resubmit_required'
             AND si.rejection_requires_resubmission_yn = false
           )
-          AND (
-            si.review_status IN ('pending_review', 'needs_action')
-            OR COALESCE(si.blocked_from_sage_yn, false) = true
-          )
-      )::integer AS active_review_count
+          AND si.review_status IN ('approved_current', 'ref_corrected_approved')
+          AND COALESCE(si.blocked_from_sage_yn, false) = false
+      )::integer AS approved_invoice_count,
+      COUNT(*) FILTER (
+        WHERE COALESCE(si.is_current_for_order, true) = true
+          AND si.review_status = 'rejected_resubmit_required'
+          AND COALESCE(si.rejection_requires_resubmission_yn, true) = true
+      )::integer AS genuine_rejected_count
     FROM public.supplier_invoices si
     GROUP BY si.order_id
   ), active_line_counts AS (
@@ -142,11 +140,11 @@ BEGIN
       CASE
         WHEN COALESCE(aic.active_invoice_count, 0) = 0 THEN 'missing'
         WHEN COALESCE(aic.genuine_rejected_count, 0) > 0 THEN 'rejected_resubmit_required'
-        WHEN COALESCE(aic.active_review_count, 0) > 0 THEN 'review_needed'
-        ELSE 'approved'
+        WHEN COALESCE(aic.approved_invoice_count, 0) = COALESCE(aic.active_invoice_count, 0) THEN 'approved_current'
+        ELSE 'review_needed'
       END::text AS corrected_supplier_state,
       CASE
-        WHEN COALESCE(aic.active_invoice_count, 0) = 0 THEN 'not_started'
+        WHEN COALESCE(alc.active_line_count, 0) = 0 THEN 'not_started'
         WHEN COALESCE(alc.unresolved_active_line_count, 0) = 0 THEN 'complete'
         ELSE 'incomplete'
       END::text AS corrected_reconciliation_state
@@ -157,12 +155,16 @@ BEGIN
     SELECT
       c.*,
       CASE
-        WHEN c.current_stage IN ('supplier_evidence_rejected', 'supplier_evidence_review_needed', 'supplier_reconciliation_incomplete') THEN
+        WHEN c.current_stage IN (
+          'supplier_evidence_rejected',
+          'supplier_evidence_review_needed',
+          'supplier_reconciliation_incomplete'
+        ) THEN
           CASE
             WHEN c.corrected_supplier_state = 'rejected_resubmit_required' THEN 'supplier_evidence_rejected'
             WHEN c.corrected_reconciliation_state = 'incomplete' THEN 'supplier_reconciliation_incomplete'
             WHEN c.corrected_supplier_state = 'review_needed' THEN 'supplier_evidence_review_needed'
-            WHEN c.tracking_state = 'missing' THEN 'tracking_missing'
+            WHEN c.corrected_reconciliation_state = 'complete' AND c.tracking_state = 'missing' THEN 'tracking_missing'
             ELSE c.current_stage
           END
         ELSE c.current_stage
@@ -246,7 +248,9 @@ $$;
 REVOKE ALL ON FUNCTION public.internal_platform_order_status_v1() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.internal_platform_order_status_v1() TO authenticated;
 
--- Replace the temporary importer symptom overlay with a canonical-state consumer.
+-- Keep the existing audience-safe chain intact. This outer wrapper consumes the
+-- corrected states already returned through the operator-safe proxy and changes
+-- importer projection only. It never calls the staff-only spine directly.
 CREATE OR REPLACE FUNCTION public.order_audience_status_v1(
   p_order_id uuid DEFAULT NULL
 )
@@ -308,9 +312,6 @@ BEGIN
   WITH base AS (
     SELECT *
     FROM public.order_audience_status_pre_importer_excluded_rejection_fix_v1(p_order_id)
-  ), canonical AS (
-    SELECT s.*
-    FROM public.internal_platform_order_status_v1() s
   ), rejection_scope AS (
     SELECT
       si.order_id,
@@ -346,9 +347,9 @@ BEGIN
     b.gate_total,
     b.funding_state,
     b.dva_state,
-    c.supplier_state,
-    c.reconciliation_state,
-    c.tracking_state,
+    b.supplier_state,
+    b.reconciliation_state,
+    b.tracking_state,
     b.shipment_state,
     b.export_evidence_state,
     b.pod_delivery_state,
@@ -363,33 +364,24 @@ BEGIN
     b.customer_status_label,
     b.customer_next_action,
     CASE
-      WHEN COALESCE(b.canonical_balance_due_gbp, 0) <= 0.01
-        AND COALESCE(b.internal_current_stage, '') <> 'exception_or_hold_open'
-        AND COALESCE(rs.genuine_resubmission_required_count, 0) = 0
-        AND c.reconciliation_state = 'complete'
-        AND c.tracking_state = 'missing'
-      THEN 'Invoice reconciled; tracking open'
-      WHEN c.reconciliation_state = 'incomplete'
-        AND COALESCE(rs.genuine_resubmission_required_count, 0) = 0
-      THEN 'Invoice reconciliation open'
+      WHEN COALESCE(b.canonical_balance_due_gbp, 0) > 0.01 THEN b.importer_status_label
+      WHEN COALESCE(b.internal_current_stage, '') = 'exception_or_hold_open' THEN b.importer_status_label
+      WHEN COALESCE(rs.genuine_resubmission_required_count, 0) > 0 THEN b.importer_status_label
+      WHEN b.reconciliation_state = 'incomplete' THEN 'Invoice reconciliation open'
+      WHEN b.reconciliation_state = 'complete' AND b.tracking_state = 'missing' THEN 'Invoice reconciled; tracking open'
       ELSE b.importer_status_label
     END::text,
     CASE
-      WHEN COALESCE(b.canonical_balance_due_gbp, 0) <= 0.01
-        AND COALESCE(b.internal_current_stage, '') <> 'exception_or_hold_open'
-        AND COALESCE(rs.genuine_resubmission_required_count, 0) = 0
-        AND c.reconciliation_state = 'complete'
-        AND c.tracking_state = 'missing'
-      THEN 'Add tracking'
-      WHEN c.reconciliation_state = 'incomplete'
-        AND COALESCE(rs.genuine_resubmission_required_count, 0) = 0
-      THEN 'Continue invoice reconciliation'
+      WHEN COALESCE(b.canonical_balance_due_gbp, 0) > 0.01 THEN b.importer_next_action
+      WHEN COALESCE(b.internal_current_stage, '') = 'exception_or_hold_open' THEN b.importer_next_action
+      WHEN COALESCE(rs.genuine_resubmission_required_count, 0) > 0 THEN b.importer_next_action
+      WHEN b.reconciliation_state = 'incomplete' THEN 'Continue invoice reconciliation'
+      WHEN b.reconciliation_state = 'complete' AND b.tracking_state = 'missing' THEN 'Add tracking'
       ELSE b.importer_next_action
     END::text,
     b.shipper_status_label,
     b.shipper_next_action
   FROM base b
-  JOIN canonical c ON c.order_id = b.order_id
   LEFT JOIN rejection_scope rs ON rs.order_id = b.order_id
   ORDER BY b.order_ref;
 END;
@@ -399,10 +391,10 @@ REVOKE ALL ON FUNCTION public.order_audience_status_v1(uuid) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.order_audience_status_v1(uuid) TO authenticated;
 
 COMMENT ON FUNCTION public.internal_platform_order_status_v1() IS
-'Canonical platform status with active supplier-invoice classification and active-line reconciliation. Retired no-resubmission evidence is audit-only.';
+'Canonical platform status using active supplier invoices and active-line reconciliation. Retired no-resubmission evidence remains audit-only.';
 
 COMMENT ON FUNCTION public.order_audience_status_v1(uuid) IS
-'Canonical audience status consuming corrected supplier and reconciliation states. Importer tracking action is shown after completed active reconciliation; other audiences pass through unchanged.';
+'Audience-safe canonical status with importer tracking projection after completed active reconciliation. Customer and shipper outputs pass through unchanged.';
 
 NOTIFY pgrst, 'reload schema';
 
