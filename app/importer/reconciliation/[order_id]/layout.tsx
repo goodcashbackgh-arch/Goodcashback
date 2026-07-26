@@ -10,6 +10,14 @@ type SettlementRow = {
   resolution_status: string | null;
 };
 
+type InvoiceStateRow = {
+  review_status: string | null;
+  blocked_from_sage_yn: boolean | null;
+};
+
+const RETIRED_INVOICE_REVIEW_STATUSES = new Set(["rejected_resubmit_required", "superseded", "duplicate_blocked"]);
+const APPROVED_INVOICE_REVIEW_STATUSES = new Set(["approved_current", "ref_corrected_approved"]);
+
 function money(value: number | string | null | undefined) {
   return new Intl.NumberFormat("en-GB", {
     style: "currency",
@@ -27,9 +35,10 @@ export default async function ImporterReconciliationLayout({
 }) {
   const { order_id: orderId } = await params;
   const supabase = await createClient();
-  const { data } = await supabase
-    .rpc("order_settlement_audience_v1", { p_order_id: orderId })
-    .maybeSingle();
+  const [{ data }, { data: invoiceRows, error: invoiceStateError }] = await Promise.all([
+    supabase.rpc("order_settlement_audience_v1", { p_order_id: orderId }).maybeSingle(),
+    supabase.from("supplier_invoices").select("review_status, blocked_from_sage_yn").eq("order_id", orderId),
+  ]);
 
   const settlement = data as SettlementRow | null;
   const credit = Math.max(Number(settlement?.credit_added_to_account_gbp ?? 0), 0);
@@ -38,7 +47,17 @@ export default async function ImporterReconciliationLayout({
   const totalDifference = credit + otherAdjustment + pending;
   const fullyResolved = settlement?.resolution_status === "fully_resolved" && pending <= 0.01;
   const overResolved = settlement?.resolution_status === "over_resolved_review";
-  const showSettlement = totalDifference > 0.01;
+  const openSupplierInvoiceCycle = invoiceStateError
+    ? true
+    : ((invoiceRows ?? []) as InvoiceStateRow[]).some((invoice) => {
+        const status = invoice.review_status ?? "";
+        if (RETIRED_INVOICE_REVIEW_STATUSES.has(status)) return false;
+        return !APPROVED_INVOICE_REVIEW_STATUSES.has(status) || invoice.blocked_from_sage_yn !== false;
+      });
+  const showSettlement =
+    totalDifference > 0.01 &&
+    settlement?.resolution_status !== "not_ready_no_final_sale" &&
+    !openSupplierInvoiceCycle;
 
   return (
     <>
