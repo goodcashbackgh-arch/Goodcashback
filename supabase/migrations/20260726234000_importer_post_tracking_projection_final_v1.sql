@@ -23,6 +23,10 @@ BEGIN
   IF to_regprocedure('public.order_audience_status_pre_supplier_rejection_final_v1(uuid)') IS NULL THEN
     RAISE EXCEPTION 'Missing public.order_audience_status_pre_supplier_rejection_final_v1(uuid) prerequisite';
   END IF;
+
+  IF to_regclass('public.order_evidence_queries') IS NULL THEN
+    RAISE EXCEPTION 'Missing public.order_evidence_queries prerequisite';
+  END IF;
 END $$;
 
 CREATE OR REPLACE FUNCTION public.order_audience_status_v1(
@@ -104,105 +108,113 @@ BEGIN
     FROM public.order_evidence_queries q
     JOIN base b ON b.order_id = q.order_id
     GROUP BY q.order_id
+  ), projected AS (
+    SELECT
+      b.*,
+      COALESCE(rs.genuine_resubmission_required_count, 0) AS genuine_resubmission_required_count,
+      COALESCE(qs.open_query_count, 0) AS open_query_count,
+      CASE
+        WHEN COALESCE(b.canonical_balance_due_gbp, 0) > 0.01
+          THEN b.importer_status_label
+        WHEN COALESCE(b.internal_current_stage, '') = 'exception_or_hold_open'
+          THEN b.importer_status_label
+        WHEN COALESCE(rs.genuine_resubmission_required_count, 0) > 0
+          THEN b.importer_status_label
+        WHEN COALESCE(qs.open_query_count, 0) > 0
+          THEN 'Evidence query open'
+        WHEN b.reconciliation_state = 'incomplete'
+          THEN 'Invoice reconciliation open'
+        WHEN b.reconciliation_state = 'complete'
+          AND b.tracking_state = 'missing'
+          THEN 'Invoice reconciled; tracking open'
+        WHEN b.reconciliation_state = 'complete'
+          AND b.tracking_state = 'allocation_incomplete'
+          THEN 'Tracking submitted'
+        WHEN b.reconciliation_state = 'complete'
+          AND b.tracking_state = 'submitted'
+          AND b.pod_delivery_state = 'accepted_current'
+          THEN 'Order complete'
+        WHEN b.reconciliation_state = 'complete'
+          AND b.tracking_state = 'submitted'
+          THEN 'No importer action required'
+        ELSE b.importer_status_label
+      END::text AS projected_importer_status_label,
+      CASE
+        WHEN COALESCE(b.canonical_balance_due_gbp, 0) > 0.01
+          THEN b.importer_next_action
+        WHEN COALESCE(b.internal_current_stage, '') = 'exception_or_hold_open'
+          THEN b.importer_next_action
+        WHEN COALESCE(rs.genuine_resubmission_required_count, 0) > 0
+          THEN b.importer_next_action
+        WHEN COALESCE(qs.open_query_count, 0) > 0
+          THEN 'Answer query'
+        WHEN b.reconciliation_state = 'incomplete'
+          THEN 'Continue invoice reconciliation'
+        WHEN b.reconciliation_state = 'complete'
+          AND b.tracking_state = 'missing'
+          THEN 'Add tracking'
+        WHEN b.reconciliation_state = 'complete'
+          AND b.tracking_state = 'allocation_incomplete'
+          THEN 'Assign tracking'
+        WHEN b.reconciliation_state = 'complete'
+          AND b.tracking_state = 'submitted'
+          AND b.pod_delivery_state = 'accepted_current'
+          THEN 'Order complete'
+        WHEN b.reconciliation_state = 'complete'
+          AND b.tracking_state = 'submitted'
+          THEN 'No importer action required'
+        ELSE b.importer_next_action
+      END::text AS projected_importer_next_action
+    FROM base b
+    LEFT JOIN rejection_scope rs ON rs.order_id = b.order_id
+    LEFT JOIN query_scope qs ON qs.order_id = b.order_id
   )
   SELECT
-    b.order_id,
-    b.order_ref,
-    b.raw_order_status,
-    b.lifecycle_status,
-    b.importer_id,
-    b.importer_name,
-    b.retailer_id,
-    b.retailer_name,
-    b.accepted_estimate_gbp,
-    b.final_sale_value_gbp,
-    b.canonical_amount_received_gbp,
-    b.canonical_balance_due_gbp,
-    b.potential_credit_pending_review_gbp,
-    b.internal_current_stage,
-    b.internal_current_stage_label,
-    b.internal_next_owner,
-    b.internal_next_action,
-    b.internal_next_href,
-    b.internal_status_tone,
-    b.gate_complete_count,
-    b.gate_total,
-    b.funding_state,
-    b.dva_state,
-    b.supplier_state,
-    b.reconciliation_state,
-    b.tracking_state,
-    b.shipment_state,
-    b.export_evidence_state,
-    b.pod_delivery_state,
-    b.customer_sales_state,
-    b.shipper_ap_state,
-    b.accounting_sage_state,
-    b.vat_compliance_state,
-    b.internal_complete_yn,
-    b.customer_complete_yn,
-    b.importer_complete_yn,
-    b.shipper_complete_yn,
-    b.customer_status_label,
-    b.customer_next_action,
-    CASE
-      WHEN COALESCE(b.canonical_balance_due_gbp, 0) > 0.01
-        THEN b.importer_status_label
-      WHEN COALESCE(b.internal_current_stage, '') = 'exception_or_hold_open'
-        THEN b.importer_status_label
-      WHEN COALESCE(rs.genuine_resubmission_required_count, 0) > 0
-        THEN b.importer_status_label
-      WHEN COALESCE(qs.open_query_count, 0) > 0
-        THEN 'Evidence query open'
-      WHEN b.reconciliation_state = 'incomplete'
-        THEN 'Invoice reconciliation open'
-      WHEN b.reconciliation_state = 'complete'
-        AND b.tracking_state = 'missing'
-        THEN 'Invoice reconciled; tracking open'
-      WHEN b.reconciliation_state = 'complete'
-        AND b.tracking_state = 'allocation_incomplete'
-        THEN 'Tracking submitted'
-      WHEN b.reconciliation_state = 'complete'
-        AND b.tracking_state = 'submitted'
-        AND b.pod_delivery_state = 'accepted_current'
-        THEN 'Order complete'
-      WHEN b.reconciliation_state = 'complete'
-        AND b.tracking_state = 'submitted'
-        THEN 'No importer action required'
-      ELSE b.importer_status_label
-    END::text AS importer_status_label,
-    CASE
-      WHEN COALESCE(b.canonical_balance_due_gbp, 0) > 0.01
-        THEN b.importer_next_action
-      WHEN COALESCE(b.internal_current_stage, '') = 'exception_or_hold_open'
-        THEN b.importer_next_action
-      WHEN COALESCE(rs.genuine_resubmission_required_count, 0) > 0
-        THEN b.importer_next_action
-      WHEN COALESCE(qs.open_query_count, 0) > 0
-        THEN 'Answer query'
-      WHEN b.reconciliation_state = 'incomplete'
-        THEN 'Continue invoice reconciliation'
-      WHEN b.reconciliation_state = 'complete'
-        AND b.tracking_state = 'missing'
-        THEN 'Add tracking'
-      WHEN b.reconciliation_state = 'complete'
-        AND b.tracking_state = 'allocation_incomplete'
-        THEN 'Assign tracking'
-      WHEN b.reconciliation_state = 'complete'
-        AND b.tracking_state = 'submitted'
-        AND b.pod_delivery_state = 'accepted_current'
-        THEN 'Order complete'
-      WHEN b.reconciliation_state = 'complete'
-        AND b.tracking_state = 'submitted'
-        THEN 'No importer action required'
-      ELSE b.importer_next_action
-    END::text AS importer_next_action,
-    b.shipper_status_label,
-    b.shipper_next_action
-  FROM base b
-  LEFT JOIN rejection_scope rs ON rs.order_id = b.order_id
-  LEFT JOIN query_scope qs ON qs.order_id = b.order_id
-  ORDER BY b.order_ref;
+    p.order_id,
+    p.order_ref,
+    p.raw_order_status,
+    p.lifecycle_status,
+    p.importer_id,
+    p.importer_name,
+    p.retailer_id,
+    p.retailer_name,
+    p.accepted_estimate_gbp,
+    p.final_sale_value_gbp,
+    p.canonical_amount_received_gbp,
+    p.canonical_balance_due_gbp,
+    p.potential_credit_pending_review_gbp,
+    p.internal_current_stage,
+    p.internal_current_stage_label,
+    p.internal_next_owner,
+    p.internal_next_action,
+    p.internal_next_href,
+    p.internal_status_tone,
+    p.gate_complete_count,
+    p.gate_total,
+    p.funding_state,
+    p.dva_state,
+    p.supplier_state,
+    p.reconciliation_state,
+    p.tracking_state,
+    p.shipment_state,
+    p.export_evidence_state,
+    p.pod_delivery_state,
+    p.customer_sales_state,
+    p.shipper_ap_state,
+    p.accounting_sage_state,
+    p.vat_compliance_state,
+    p.internal_complete_yn,
+    p.customer_complete_yn,
+    p.projected_importer_next_action IN ('No importer action required', 'Order complete') AS importer_complete_yn,
+    p.shipper_complete_yn,
+    p.customer_status_label,
+    p.customer_next_action,
+    p.projected_importer_status_label,
+    p.projected_importer_next_action,
+    p.shipper_status_label,
+    p.shipper_next_action
+  FROM projected p
+  ORDER BY p.order_ref;
 END;
 $$;
 
@@ -210,7 +222,7 @@ REVOKE ALL ON FUNCTION public.order_audience_status_v1(uuid) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.order_audience_status_v1(uuid) TO authenticated;
 
 COMMENT ON FUNCTION public.order_audience_status_v1(uuid) IS
-'Platform-wide canonical audience status. Importer action precedence covers balances, exceptions/holds, genuine replacement evidence, open evidence queries, active reconciliation and tracking allocation. Customer and shipper projections pass through unchanged.';
+'Platform-wide canonical audience status. Importer action precedence covers balances, exceptions/holds, genuine replacement evidence, open evidence queries, active reconciliation and tracking allocation. Importer completion is derived from the projected importer action. Customer and shipper projections pass through unchanged.';
 
 NOTIFY pgrst, 'reload schema';
 
