@@ -118,7 +118,8 @@ Out of scope:
 customer status or actions
 shipper status or actions
 supervisor workflow or actions
-funding calculations or payment allocation
+funding status, calculations or payment allocation
+initial-payment badge wording
 exceeded-order-amount calculations
 order balance calculations
 shipment or package allocation
@@ -129,9 +130,10 @@ Sage posting rules
 VAT or compliance rules
 invoice approval rules
 accounting coding rules
+audit banner wording
 ```
 
-No unrelated workflow, audience or financial calculation may be changed.
+No unrelated workflow, audience, financial calculation or payment presentation may be changed.
 
 ## 4. Authoritative rejection classification
 
@@ -316,7 +318,7 @@ This is not contradictory.
 
 The supplier evidence can be reconciled while funding and internal accounting controls remain incomplete.
 
-No funding, payment, accounting, Sage, settlement or approval state is made complete by this addendum.
+No funding, payment, accounting, Sage, settlement or approval state is made complete or reworded by this addendum.
 
 ## 9. Importer audience projection
 
@@ -367,7 +369,7 @@ After the canonical SQL repair:
 - no page may infer reconciled status from `orders.status = partially_progressed`;
 - no page may override canonical reconciliation using a local line count that differs from the canonical active-invoice predicate.
 
-The following importer surfaces must agree:
+The following importer status surfaces must agree:
 
 ```text
 importer dashboard status
@@ -377,32 +379,9 @@ order operations summary status
 order operations next action
 ```
 
-## 11. Initial-payment badge separation
+This requirement does not include the Initial payment card or any funding badge. Those remain governed by the existing funding presentation contract and are unchanged by this fix.
 
-The Initial payment card must describe funding only.
-
-It must not translate:
-
-```text
-order_funding_position_vw.status = partially_progressed
-```
-
-into an order-evidence status such as:
-
-```text
-Evidence matched; tracking open
-```
-
-The payment badge must use a funding-specific label derived from funding truth, for example:
-
-```text
-Initial payment incomplete
-Initial payment received
-```
-
-This is a display separation only. It does not alter funding calculations or funding state.
-
-## 12. Audit banner
+## 11. Audit banner
 
 The informational banner:
 
@@ -412,7 +391,7 @@ Rejected evidence kept for audit
 
 may remain on the importer operations page when a retired rejected invoice exists alongside current evidence.
 
-It is informational only.
+It is informational only and its wording is unchanged by this addendum.
 
 It must not control:
 
@@ -423,7 +402,7 @@ importer_status_label
 importer_next_action
 ```
 
-## 13. Temporary overlay disposition
+## 12. Temporary overlay disposition
 
 The migration:
 
@@ -448,7 +427,7 @@ After the canonical repair is deployed and verified, the audience wrapper may ei
 - be replaced by the final canonical implementation; or
 - remain only as a pass-through wrapper with no independent stale-state inference.
 
-## 14. Required implementation points
+## 13. Required implementation points
 
 The final implementation must correct the deployed canonical function chain as applicable:
 
@@ -464,13 +443,14 @@ The exact wrapper layer may vary according to the deployed function chain, but t
 
 No data mutation is required for the affected order or supplier invoices.
 
-## 15. Prohibited fixes
+## 14. Prohibited fixes
 
 Do not:
 
 - alter rejected or excluded invoice rows merely to make UI text correct;
 - alter the exceeded-order-amount calculation;
-- alter funding, balance, settlement, Sage or VAT calculations;
+- alter funding, payment, balance, settlement, Sage or VAT calculations;
+- alter Initial payment badge wording or funding presentation;
 - approve supplier invoices before accounting controls pass;
 - set `blocked_from_sage_yn = false` prematurely;
 - hard-code an order or invoice UUID;
@@ -479,9 +459,10 @@ Do not:
 - patch only React wording while canonical SQL remains wrong;
 - retain a dashboard-only raw-status override after canonical repair;
 - count lines from retired invoices in active reconciliation;
+- change the audit banner wording as part of this fix;
 - change customer, shipper or supervisor outputs as part of this fix.
 
-## 16. Acceptance scenario
+## 15. Acceptance scenario
 
 Order:
 
@@ -543,7 +524,9 @@ current_stage = funding_incomplete
 next_action = Match/apply initial funding
 ```
 
-## 17. Regression requirements
+Existing funding and payment presentation remains unchanged.
+
+## 16. Regression requirements
 
 At minimum, tests must cover:
 
@@ -555,13 +538,14 @@ At minimum, tests must cover:
 6. Mixed rejected invoices with different resubmission classifications.
 7. Legacy null resubmission classification treated conservatively.
 8. Canonical internal status and canonical audience status agreement.
-9. Importer dashboard and Operations page agreement.
+9. Importer dashboard and Operations page status agreement.
 10. Removal of raw-order-status UI compensation.
-11. Funding badge remaining funding-specific.
-12. Customer, shipper and supervisor outputs unchanged.
-13. Exceeded-order-amount, funding and balance calculations unchanged.
+11. Initial payment badge and funding presentation unchanged.
+12. Audit banner wording unchanged.
+13. Customer, shipper and supervisor outputs unchanged.
+14. Exceeded-order-amount, funding and balance calculations unchanged.
 
-## 18. Release rule
+## 17. Release rule
 
 A release is blocked if any retired no-resubmission invoice causes:
 
@@ -582,6 +566,6 @@ Invoice reconciled; tracking open
 Add tracking
 ```
 
-A release is blocked if importer pages disagree with each other or require a raw-order-status override to appear correct.
+A release is blocked if importer status surfaces disagree with each other or require a raw-order-status override to appear correct.
 
-A release is blocked if this patch changes customer, shipper, supervisor, funding, exceeded-order-amount, balance, settlement, Sage, VAT or accounting approval behaviour.
+A release is blocked if this patch changes the Initial payment badge, funding presentation, audit banner wording, customer, shipper, supervisor, exceeded-order-amount, funding, balance, settlement, Sage, VAT or accounting approval behaviour.
