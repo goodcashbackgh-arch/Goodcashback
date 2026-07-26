@@ -99,7 +99,19 @@ BEGIN
         WHERE COALESCE(si.is_current_for_order, true) = true
           AND si.review_status = 'rejected_resubmit_required'
           AND COALESCE(si.rejection_requires_resubmission_yn, true) = true
-      )::integer AS genuine_rejected_count
+      )::integer AS genuine_rejected_count,
+      COUNT(*) FILTER (
+        WHERE COALESCE(si.is_current_for_order, true) = true
+          AND COALESCE(si.review_status, '') NOT IN ('superseded', 'duplicate_blocked')
+          AND NOT (
+            si.review_status = 'rejected_resubmit_required'
+            AND si.rejection_requires_resubmission_yn = false
+          )
+          AND (
+            si.review_status IN ('pending_review', 'needs_action')
+            OR COALESCE(si.blocked_from_sage_yn, false) = true
+          )
+      )::integer AS review_invoice_count
     FROM public.supplier_invoices si
     GROUP BY si.order_id
   ), active_line_counts AS (
@@ -107,7 +119,7 @@ BEGIN
       si.order_id,
       COUNT(sil.id)::integer AS active_line_count,
       COUNT(sil.id) FILTER (
-        WHERE lower(COALESCE(sil.eligible_for_invoice_yn::text, '')) NOT IN ('y','yes','true','1')
+        WHERE lower(COALESCE(sil.eligible_for_invoice_yn::text, '')) NOT IN ('y', 'yes', 'true', '1')
           AND NOT EXISTS (
             SELECT 1
             FROM public.supplier_invoice_line_resolutions r
@@ -139,9 +151,10 @@ BEGIN
       b.*,
       CASE
         WHEN COALESCE(aic.active_invoice_count, 0) = 0 THEN 'missing'
+        WHEN COALESCE(aic.approved_invoice_count, 0) > 0 THEN 'approved_current'
         WHEN COALESCE(aic.genuine_rejected_count, 0) > 0 THEN 'rejected_resubmit_required'
-        WHEN COALESCE(aic.approved_invoice_count, 0) = COALESCE(aic.active_invoice_count, 0) THEN 'approved_current'
-        ELSE 'review_needed'
+        WHEN COALESCE(aic.review_invoice_count, 0) > 0 THEN 'review_needed'
+        ELSE 'in_progress'
       END::text AS corrected_supplier_state,
       CASE
         WHEN COALESCE(alc.active_line_count, 0) = 0 THEN 'not_started'
@@ -162,8 +175,8 @@ BEGIN
         ) THEN
           CASE
             WHEN c.corrected_supplier_state = 'rejected_resubmit_required' THEN 'supplier_evidence_rejected'
-            WHEN c.corrected_reconciliation_state = 'incomplete' THEN 'supplier_reconciliation_incomplete'
             WHEN c.corrected_supplier_state = 'review_needed' THEN 'supplier_evidence_review_needed'
+            WHEN c.corrected_reconciliation_state = 'incomplete' THEN 'supplier_reconciliation_incomplete'
             WHEN c.corrected_reconciliation_state = 'complete' AND c.tracking_state = 'missing' THEN 'tracking_missing'
             ELSE c.current_stage
           END
@@ -241,16 +254,27 @@ BEGIN
       ELSE s.status_priority
     END::integer
   FROM staged s
-  ORDER BY 32 ASC, s.created_at DESC;
+  ORDER BY 33 ASC, s.created_at DESC;
 END;
 $$;
 
 REVOKE ALL ON FUNCTION public.internal_platform_order_status_v1() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.internal_platform_order_status_v1() TO authenticated;
 
--- Keep the existing audience-safe chain intact. This outer wrapper consumes the
--- corrected states already returned through the operator-safe proxy and changes
--- importer projection only. It never calls the staff-only spine directly.
+DO $$
+BEGIN
+  IF to_regprocedure('public.order_audience_status_pre_supplier_rejection_final_v1(uuid)') IS NULL THEN
+    IF to_regprocedure('public.order_audience_status_v1(uuid)') IS NULL THEN
+      RAISE EXCEPTION 'Missing public.order_audience_status_v1(uuid) prerequisite';
+    END IF;
+
+    ALTER FUNCTION public.order_audience_status_v1(uuid)
+      RENAME TO order_audience_status_pre_supplier_rejection_final_v1;
+  END IF;
+END $$;
+
+-- Preserve the deployed operator-safe audience chain. The renamed predecessor
+-- continues to proxy the staff-only canonical spine under SECURITY DEFINER.
 CREATE OR REPLACE FUNCTION public.order_audience_status_v1(
   p_order_id uuid DEFAULT NULL
 )
@@ -311,7 +335,7 @@ BEGIN
   RETURN QUERY
   WITH base AS (
     SELECT *
-    FROM public.order_audience_status_pre_importer_excluded_rejection_fix_v1(p_order_id)
+    FROM public.order_audience_status_pre_supplier_rejection_final_v1(p_order_id)
   ), rejection_scope AS (
     SELECT
       si.order_id,
@@ -321,6 +345,7 @@ BEGIN
           AND COALESCE(si.rejection_requires_resubmission_yn, true) = true
       )::integer AS genuine_resubmission_required_count
     FROM public.supplier_invoices si
+    JOIN base b ON b.order_id = si.order_id
     GROUP BY si.order_id
   )
   SELECT
