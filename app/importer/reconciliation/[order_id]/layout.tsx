@@ -10,6 +10,21 @@ type SettlementRow = {
   resolution_status: string | null;
 };
 
+type SupplierInvoiceState = {
+  review_status: string | null;
+  blocked_from_sage_yn: boolean | null;
+};
+
+const retiredSupplierInvoiceStatuses = new Set([
+  "rejected_resubmit_required",
+  "superseded",
+  "duplicate_blocked",
+]);
+const approvedSupplierInvoiceStatuses = new Set([
+  "approved_current",
+  "ref_corrected_approved",
+]);
+
 function money(value: number | string | null | undefined) {
   return new Intl.NumberFormat("en-GB", {
     style: "currency",
@@ -30,6 +45,18 @@ export default async function ImporterReconciliationLayout({
   const { data } = await supabase
     .rpc("order_settlement_audience_v1", { p_order_id: orderId })
     .maybeSingle();
+  const { data: supplierInvoiceStates, error: supplierInvoiceStateError } = await supabase
+    .from("supplier_invoices")
+    .select("review_status, blocked_from_sage_yn")
+    .eq("order_id", orderId);
+
+  const supplierInvoiceCycleOpen = supplierInvoiceStateError
+    ? true
+    : ((supplierInvoiceStates ?? []) as SupplierInvoiceState[]).some((invoice) => {
+        const reviewStatus = invoice.review_status ?? "pending_review";
+        return !retiredSupplierInvoiceStatuses.has(reviewStatus)
+          && (!approvedSupplierInvoiceStatuses.has(reviewStatus) || invoice.blocked_from_sage_yn === true);
+      });
 
   const settlement = data as SettlementRow | null;
   const credit = Math.max(Number(settlement?.credit_added_to_account_gbp ?? 0), 0);
@@ -38,7 +65,9 @@ export default async function ImporterReconciliationLayout({
   const totalDifference = credit + otherAdjustment + pending;
   const fullyResolved = settlement?.resolution_status === "fully_resolved" && pending <= 0.01;
   const overResolved = settlement?.resolution_status === "over_resolved_review";
-  const showSettlement = totalDifference > 0.01;
+  const showSettlement = totalDifference > 0.01
+    && !supplierInvoiceCycleOpen
+    && settlement?.resolution_status !== "not_ready_no_final_sale";
 
   return (
     <>
