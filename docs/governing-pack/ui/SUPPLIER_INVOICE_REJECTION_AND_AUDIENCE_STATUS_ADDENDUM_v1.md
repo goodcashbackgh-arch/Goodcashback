@@ -1,27 +1,115 @@
 # Supplier Invoice Rejection and Importer Status Addendum v1
 
-Status: locked implementation addendum.
+Status: locked final implementation addendum.
 
-Purpose: correct a narrow importer-facing status regression introduced by the exceeded-order-amount and supplier-invoice rejection feature.
-
-The regression occurs when an invoice is rejected and excluded from the order with no replacement evidence required, but the canonical importer status still treats that retired invoice as an active resubmission blocker.
+Purpose: define the permanent canonical read-model repair for the importer-facing status regression introduced by the exceeded-order-amount and supplier-invoice rejection feature.
 
 This addendum extends:
 
 - `CANONICAL_AUDIENCE_STATUS_CONTRACT_v1.md`
 - `PLATFORM_OPERATIONAL_STATUS_ENGINE_CONTRACT_v1.md`
 
-## 1. Scope
+## 1. Final governing decision
 
-This addendum changes only the canonical supplier-status inputs and importer-facing audience projection required to remove the false evidence warning.
+The permanent fix is not a page-level wording patch and not an importer-only masking overlay.
+
+The final implementation must repair the canonical supplier status and reconciliation states first, then allow the canonical importer audience projection to consume those corrected states.
+
+The required source-of-truth chain is:
+
+```text
+supplier invoice classification
+    -> active supplier invoice aggregation
+    -> active supplier-line reconciliation
+    -> internal_platform_order_status_v1()
+    -> order_audience_status_v1()
+    -> importer dashboard and order operations UI
+```
+
+Both importer pages must display the same canonical audience result without local stale-status overrides.
+
+## 2. Proven production defect
+
+Production diagnostic for:
+
+```text
+order_ref = ORD-1784976429191
+order_id = abf15b7b-771f-482f-9751-2af0ee0bcbb1
+```
+
+proved:
+
+```text
+all_invoice_count = 4
+active_invoice_count = 3
+excluded_no_resubmission_count = 1
+genuine_resubmission_required_count = 0
+```
+
+The retired invoice is:
+
+```text
+invoice_ref = NIN-240726-D
+review_status = rejected_resubmit_required
+rejection_requires_resubmission_yn = false
+is_current_for_order = false
+blocked_from_sage_yn = true
+```
+
+The three active invoices are current and pending internal review.
+
+The same diagnostic proved:
+
+```text
+active_line_count = 7
+progressed_physical_line_count = 4
+resolved_non_physical_line_count = 3
+open_dispute_line_count = 0
+genuinely_unresolved_line_count = 0
+```
+
+Despite that, the canonical read model returned:
+
+```text
+supplier_state = rejected_resubmit_required
+reconciliation_state = incomplete
+tracking_state = missing
+```
+
+and the canonical importer audience result returned:
+
+```text
+Invoice reconciliation open
+Continue invoice reconciliation
+```
+
+The correct canonical states for the proven supplier evidence position are:
+
+```text
+supplier_state = review_needed
+reconciliation_state = complete
+tracking_state = missing
+```
+
+The correct importer result is:
+
+```text
+Invoice reconciled; tracking open
+Add tracking
+```
+
+## 3. Scope
 
 In scope:
 
 ```text
-supplier invoice active-status aggregation
-supplier-line reconciliation scope
-importer status label
-importer next action
+canonical active supplier-invoice aggregation
+canonical active supplier-line reconciliation
+canonical supplier_state
+canonical reconciliation_state
+importer audience precedence
+removal of importer page-level stale-status compensation
+alignment of importer status displays to one canonical source
 ```
 
 Out of scope:
@@ -43,44 +131,11 @@ invoice approval rules
 accounting coding rules
 ```
 
-No unrelated audience, workflow or calculation may be changed as part of this fix.
+No unrelated workflow, audience or financial calculation may be changed.
 
-## 2. Regression cause
+## 4. Authoritative rejection classification
 
-The exceeded-order-amount and rejection feature introduced a valid second rejection outcome:
-
-```text
-Exclude / No resubmission required
-```
-
-That outcome records:
-
-```text
-review_status = rejected_resubmit_required
-rejection_requires_resubmission_yn = false
-is_current_for_order = false
-```
-
-The row remains available for audit history, but it is retired from the active order evidence set.
-
-The regression occurs because the canonical supplier aggregation still counts the generic rejection status without also checking whether resubmission is actually required and whether the invoice remains current for the order.
-
-Broken behaviour:
-
-```text
-retired no-resubmission invoice
-    -> supplier_state = rejected_resubmit_required
-    -> importer_status_label = Evidence attention
-    -> importer_next_action = Upload corrected order evidence
-```
-
-That importer message is false because the rejection decision explicitly says that no replacement evidence is required.
-
-## 3. Authoritative rejection classification
-
-The two rejection outcomes must remain distinct.
-
-### 3.1 Corrected evidence required
+### 4.1 Genuine corrected evidence required
 
 ```text
 review_status = rejected_resubmit_required
@@ -90,15 +145,16 @@ is_current_for_order = true
 
 Null is treated conservatively as requiring resubmission for legacy rows.
 
-This state may drive:
+This state may contribute to:
 
 ```text
+rejected_invoice_count
 supplier_state = rejected_resubmit_required
 importer_status_label = Evidence attention
 importer_next_action = Upload corrected order evidence
 ```
 
-### 3.2 Excluded with no resubmission required
+### 4.2 Excluded with no resubmission required
 
 ```text
 review_status = rejected_resubmit_required
@@ -106,7 +162,7 @@ rejection_requires_resubmission_yn = false
 is_current_for_order = false
 ```
 
-This invoice is retained for audit history but retired from the active order evidence set.
+This invoice remains available for audit history but is retired from the active order evidence set.
 
 It must not contribute to:
 
@@ -115,37 +171,44 @@ supplier_invoice_count
 approved_invoice_count
 rejected_invoice_count
 review_invoice_count
-active supplier-line reconciliation totals
+active supplier-line totals
+active unresolved-line totals
 supplier_state = rejected_resubmit_required
 importer evidence warnings
 corrected-evidence actions
 ```
 
-`blocked_from_sage_yn = true` on a retired invoice does not make it an active importer evidence blocker.
+`blocked_from_sage_yn = true` on a retired invoice does not make it an active supplier or importer blocker.
 
-## 4. Canonical active-invoice predicate
+## 5. Canonical active-invoice predicate
 
-The same active-invoice predicate must be applied consistently to supplier counts and supplier-line reconciliation.
+The same predicate must govern supplier counts and supplier-line reconciliation:
 
 ```sql
 COALESCE(si.is_current_for_order, true) = true
-AND COALESCE(si.review_status, '') <> 'superseded'
+AND COALESCE(si.review_status, '') NOT IN (
+  'superseded',
+  'duplicate_blocked'
+)
 AND NOT (
   si.review_status = 'rejected_resubmit_required'
   AND si.rejection_requires_resubmission_yn = false
 )
 ```
 
-A retired invoice must not re-enter the active status set merely because its historical `review_status` remains `rejected_resubmit_required` or because it remains blocked from accounting posting.
+A historical invoice must not re-enter active status because its stored review status remains rejection-shaped or because it remains blocked from accounting posting.
 
-## 5. Canonical supplier aggregation
+## 6. Canonical supplier aggregation
 
-### 5.1 Active supplier invoice count
+### 6.1 Active supplier invoice count
 
 ```sql
 COUNT(*) FILTER (
   WHERE COALESCE(si.is_current_for_order, true) = true
-    AND COALESCE(si.review_status, '') <> 'superseded'
+    AND COALESCE(si.review_status, '') NOT IN (
+      'superseded',
+      'duplicate_blocked'
+    )
     AND NOT (
       si.review_status = 'rejected_resubmit_required'
       AND si.rejection_requires_resubmission_yn = false
@@ -153,170 +216,272 @@ COUNT(*) FILTER (
 ) AS supplier_invoice_count
 ```
 
-### 5.2 Genuine resubmission-required rejection count
+### 6.2 Genuine resubmission-required count
 
 ```sql
 COUNT(*) FILTER (
   WHERE COALESCE(si.is_current_for_order, true) = true
-    AND COALESCE(si.review_status, '') <> 'superseded'
     AND si.review_status = 'rejected_resubmit_required'
     AND COALESCE(si.rejection_requires_resubmission_yn, true) = true
 ) AS rejected_invoice_count
 ```
 
-### 5.3 Active review count
+### 6.3 Active review count
 
 ```sql
 COUNT(*) FILTER (
   WHERE COALESCE(si.is_current_for_order, true) = true
-    AND COALESCE(si.review_status, '') <> 'superseded'
+    AND COALESCE(si.review_status, '') NOT IN (
+      'superseded',
+      'duplicate_blocked'
+    )
     AND NOT (
       si.review_status = 'rejected_resubmit_required'
       AND si.rejection_requires_resubmission_yn = false
     )
     AND (
-      si.review_status IN ('pending_review', 'needs_action', 'duplicate_blocked')
+      si.review_status IN ('pending_review', 'needs_action')
       OR COALESCE(si.blocked_from_sage_yn, false) = true
     )
 ) AS review_invoice_count
 ```
 
-No implementation may count an excluded-no-resubmission invoice merely because its generic rejection status remains rejection-shaped.
+The order-level supplier state must then be derived from these corrected active counts.
 
-## 6. Active supplier-line reconciliation scope
-
-Supplier-line reconciliation must use active invoice evidence only.
-
-Lines belonging to an invoice must be excluded when any of the following is true:
+For the acceptance fixture:
 
 ```text
-is_current_for_order = false
-review_status = rejected_resubmit_required and rejection_requires_resubmission_yn = false
-review_status = duplicate_blocked
-review_status = superseded
+supplier_invoice_count = 3
+rejected_invoice_count = 0
+review_invoice_count = 3
+supplier_state = review_needed
 ```
 
-An active supplier line is reconciled when it is either:
+## 7. Canonical supplier-line reconciliation
 
-- progressed as an eligible physical line;
-- covered by an active non-physical financial resolution; or
-- linked to an unresolved controlled exception.
+Supplier-line reconciliation must use lines belonging only to active invoices under section 5.
 
-A line is not open merely because final accounting coding or supervisor approval is pending.
-
-## 7. Importer-only audience correction
-
-This fix changes importer presentation only.
-
-Pending accounting coding or final internal approval must remain visible to internal staff, but must not be translated into an importer evidence defect when supplier-line reconciliation is complete.
-
-The importer audience wrapper must evaluate completed reconciliation plus missing tracking before the broad `supplier_state = review_needed` presentation rule.
-
-Required precedence within importer presentation:
+An active line is reconciled when one of the following is true:
 
 ```text
-1. genuine remaining importer-owned balance action
-2. reconciliation complete and tracking missing
-3. supplier evidence missing
-4. corrected supplier evidence genuinely required
-5. other importer-owned evidence review action
+eligible physical line progressed
+active non_physical_financial resolution exists
+active controlled dispute/exception link exists
+```
+
+The unresolved-line predicate is therefore conceptually:
+
+```sql
+physical progression is false
+AND active non-physical financial resolution does not exist
+AND active controlled dispute/exception does not exist
+```
+
+A line is not unresolved merely because:
+
+```text
+supplier invoice review is pending
+accounting coding is incomplete
+blocked_from_sage_yn = true
+final supervisor approval is pending
+```
+
+For the acceptance fixture:
+
+```text
+active_line_count = 7
+progressed_physical_line_count = 4
+resolved_non_physical_line_count = 3
+genuinely_unresolved_line_count = 0
+reconciliation_state = complete
+```
+
+## 8. Canonical internal status
+
+The canonical internal function must expose the corrected supplier and reconciliation states while preserving unrelated internal truth.
+
+Required result for the acceptance fixture:
+
+```text
+supplier_state = review_needed
+reconciliation_state = complete
+tracking_state = missing
+funding_state = incomplete
+current_stage = funding_incomplete
+current_stage_label = Initial payment incomplete
+next_action = Match/apply initial funding
+```
+
+This is not contradictory.
+
+The supplier evidence can be reconciled while funding and internal accounting controls remain incomplete.
+
+No funding, payment, accounting, Sage, settlement or approval state is made complete by this addendum.
+
+## 9. Importer audience projection
+
+The importer audience projection must use corrected canonical states.
+
+Required importer precedence:
+
+```text
+1. genuine importer-owned balance action
+2. exception or hold requiring importer action
+3. genuine corrected supplier evidence required
+4. active supplier reconciliation incomplete
+5. active supplier reconciliation complete and tracking missing
 6. remaining canonical importer rules
 ```
 
 Where:
 
 ```text
+genuine resubmission-required count = 0
 reconciliation_state = complete
 tracking_state = missing
-no genuine importer-owned evidence defect exists
+no higher-priority importer-owned action exists
 ```
 
-The importer-facing result must be exactly:
+return exactly:
 
 ```text
 importer_status_label = Invoice reconciled; tracking open
 importer_next_action = Add tracking
 ```
 
-This applies even when:
+An internal:
 
 ```text
 supplier_state = review_needed
 ```
 
-provided the remaining review need is internal accounting coding or final approval rather than an importer-owned evidence defect.
+must not be translated into an importer evidence defect when the remaining review is internal accounting or approval work.
 
-This branch must not activate while:
+## 10. UI source-of-truth alignment
 
-```text
-reconciliation_state = incomplete
-```
+After the canonical SQL repair:
 
-An unfinished order must continue to follow the ordinary canonical importer workflow.
+- `app/importer/page.tsx` must display `order_audience_status_v1()` directly;
+- `app/importer/orders/[order_id]/operations/page.tsx` must display the same canonical importer label and action;
+- the dashboard local stale-reconciliation override based on raw order status must be removed;
+- no page may infer reconciled status from `orders.status = partially_progressed`;
+- no page may override canonical reconciliation using a local line count that differs from the canonical active-invoice predicate.
 
-## 8. Internal truth remains unchanged
-
-This addendum does not mark accounting coding, approval, funding or settlement complete.
-
-Internal controls must continue to show the true state, including as applicable:
+The following importer surfaces must agree:
 
 ```text
-pending_review
-blocked_from_sage_yn = true
-accounting coding required
-final supervisor approval required
-funding incomplete
-reconciliation incomplete
+importer dashboard status
+importer dashboard next action
+order operations header status
+order operations summary status
+order operations next action
 ```
 
-The importer-facing tracking action is an audience projection only. It is not an accounting approval and does not change any internal gate.
+## 11. Initial-payment badge separation
 
-## 9. No changes for other parties
+The Initial payment card must describe funding only.
 
-No customer, shipper or supervisor status rule is modified by this addendum.
+It must not translate:
 
-In particular:
+```text
+order_funding_position_vw.status = partially_progressed
+```
 
-- customer labels and actions remain unchanged;
-- shipper labels and actions remain unchanged;
-- supervisor workflow and actions remain unchanged;
-- absence of a shipment package on an unfinished order is not treated as a defect by this addendum;
-- this addendum does not define the importer status after tracking is no longer missing.
+into an order-evidence status such as:
 
-Any later change for those states requires separate evidence and a separate governing decision.
+```text
+Evidence matched; tracking open
+```
 
-## 10. Required implementation points
+The payment badge must use a funding-specific label derived from funding truth, for example:
 
-The permanent implementation must correct the canonical read-model chain only where needed to produce the importer result:
+```text
+Initial payment incomplete
+Initial payment received
+```
+
+This is a display separation only. It does not alter funding calculations or funding state.
+
+## 12. Audit banner
+
+The informational banner:
+
+```text
+Rejected evidence kept for audit
+```
+
+may remain on the importer operations page when a retired rejected invoice exists alongside current evidence.
+
+It is informational only.
+
+It must not control:
+
+```text
+supplier_state
+reconciliation_state
+importer_status_label
+importer_next_action
+```
+
+## 13. Temporary overlay disposition
+
+The migration:
+
+```text
+20260726_importer_excluded_supplier_rejection_status_overlay_v1.sql
+```
+
+is a temporary importer presentation overlay.
+
+It must not be treated as the final source of truth because it does not repair:
+
+```text
+canonical supplier_state
+canonical reconciliation_state
+internal progress gates
+```
+
+The final canonical migration must supersede its symptom-masking behaviour.
+
+After the canonical repair is deployed and verified, the audience wrapper may either:
+
+- be replaced by the final canonical implementation; or
+- remain only as a pass-through wrapper with no independent stale-state inference.
+
+## 14. Required implementation points
+
+The final implementation must correct the deployed canonical function chain as applicable:
 
 ```text
 internal_platform_order_status_v1_before_shipper_ap_blocker()
 internal_platform_order_status_v1()
+internal_platform_order_progress_v1()
 order_audience_status_pre_canonical_settlement_v1()
 order_audience_status_v1()
 ```
 
-A wrapper may delegate to corrected lower-level functions, but the final canonical importer output must obey this addendum.
+The exact wrapper layer may vary according to the deployed function chain, but the resulting canonical states and audience output must satisfy this addendum.
 
-No page-level wording patch may substitute for correcting the canonical status functions.
+No data mutation is required for the affected order or supplier invoices.
 
-## 11. Prohibited fixes
+## 15. Prohibited fixes
 
 Do not:
 
-- change rejected or excluded invoice rows merely to make the importer card look correct;
+- alter rejected or excluded invoice rows merely to make UI text correct;
 - alter the exceeded-order-amount calculation;
-- alter order balance or funding calculations;
-- set `blocked_from_sage_yn = false` before accounting and approval gates pass;
-- approve supplier invoices before accounting coding is complete;
-- hard-code a specific order or invoice reference;
-- hide a genuine resubmission-required rejection;
-- treat every `pending_review` invoice as an importer evidence defect;
-- patch only importer page wording while leaving canonical status functions wrong;
-- allow a retired invoice to contribute supplier lines, totals or review blockers;
+- alter funding, balance, settlement, Sage or VAT calculations;
+- approve supplier invoices before accounting controls pass;
+- set `blocked_from_sage_yn = false` prematurely;
+- hard-code an order or invoice UUID;
+- hide a genuine current resubmission-required rejection;
+- treat every pending internal review as an importer evidence defect;
+- patch only React wording while canonical SQL remains wrong;
+- retain a dashboard-only raw-status override after canonical repair;
+- count lines from retired invoices in active reconciliation;
 - change customer, shipper or supervisor outputs as part of this fix.
 
-## 12. Acceptance scenario
+## 16. Acceptance scenario
 
 Order:
 
@@ -325,7 +490,7 @@ order_ref = ORD-1784976429191
 order_id = abf15b7b-771f-482f-9751-2af0ee0bcbb1
 ```
 
-Active evidence:
+Active invoices:
 
 ```text
 NIN-240726-A = pending_review, current
@@ -333,7 +498,7 @@ NIN-240726-B = pending_review, current
 NIN-240726-C = pending_review, current
 ```
 
-Retired evidence:
+Retired invoice:
 
 ```text
 NIN-240726-D
@@ -342,18 +507,24 @@ rejection_requires_resubmission_yn = false
 is_current_for_order = false
 ```
 
-When the acceptance fixture has completed active supplier-line reconciliation and tracking remains missing, the required canonical result is:
+Active line position:
+
+```text
+active_line_count = 7
+progressed_physical_line_count = 4
+resolved_non_physical_line_count = 3
+genuinely_unresolved_line_count = 0
+```
+
+Required canonical result:
 
 ```text
 supplier_invoice_count = 3
-approved_invoice_count = 0
 rejected_invoice_count = 0
 review_invoice_count = 3
 excluded_no_resubmission_count = 1
 supplier_state = review_needed
 reconciliation_state = complete
-total_active_line_count = 7
-unresolved_active_line_count = 0
 tracking_state = missing
 ```
 
@@ -364,38 +535,53 @@ Invoice reconciled; tracking open
 Add tracking
 ```
 
-Internal accounting review remains pending and unchanged.
+Required internal result remains independently truthful:
 
-The live order may still show `reconciliation_state = incomplete` before all active lines are reconciled. In that unfinished state, the tracking-open importer branch must not activate.
+```text
+funding_state = incomplete
+current_stage = funding_incomplete
+next_action = Match/apply initial funding
+```
 
-## 13. Regression cases
+## 17. Regression requirements
 
-At minimum, acceptance tests must cover:
+At minimum, tests must cover:
 
-1. Excluded-no-resubmission invoice plus active pending-review invoices.
-2. Genuine current rejected invoice requiring corrected evidence.
-3. Reconciled active invoices awaiting accounting coding with tracking missing.
-4. Incomplete supplier-line reconciliation.
-5. Missing supplier evidence.
+1. Retired no-resubmission rejection plus active pending-review invoices.
+2. Genuine current rejection requiring replacement evidence.
+3. Physical lines plus active non-physical financial resolutions.
+4. A genuinely unresolved active line.
+5. Lines belonging to retired invoices.
 6. Mixed rejected invoices with different resubmission classifications.
-7. Legacy rejected row with null classification, treated conservatively as resubmission required.
-8. Verification that customer, shipper and supervisor outputs are unchanged by this patch.
-9. Verification that exceeded-order-amount and balance calculations are unchanged.
+7. Legacy null resubmission classification treated conservatively.
+8. Canonical internal status and canonical audience status agreement.
+9. Importer dashboard and Operations page agreement.
+10. Removal of raw-order-status UI compensation.
+11. Funding badge remaining funding-specific.
+12. Customer, shipper and supervisor outputs unchanged.
+13. Exceeded-order-amount, funding and balance calculations unchanged.
 
-## 14. Release rule
+## 18. Release rule
 
-A release is blocked if an invoice explicitly excluded with no resubmission required causes either:
+A release is blocked if any retired no-resubmission invoice causes:
 
 ```text
 supplier_state = rejected_resubmit_required
 ```
 
-or:
+A release is blocked if active supplier lines are fully reconciled but canonical status returns:
 
 ```text
-Upload corrected order evidence
+reconciliation_state = incomplete
 ```
 
-A release is also blocked if completed active supplier reconciliation plus missing tracking is shown to the importer as an evidence problem solely because internal accounting review remains pending.
+A release is blocked if the canonical importer result for completed reconciliation plus missing tracking is not:
 
-A release is blocked if this patch changes customer, shipper or supervisor status behaviour, exceeded-order-amount calculations, funding, balance, settlement, Sage, VAT or accounting approval rules.
+```text
+Invoice reconciled; tracking open
+Add tracking
+```
+
+A release is blocked if importer pages disagree with each other or require a raw-order-status override to appear correct.
+
+A release is blocked if this patch changes customer, shipper, supervisor, funding, exceeded-order-amount, balance, settlement, Sage, VAT or accounting approval behaviour.
