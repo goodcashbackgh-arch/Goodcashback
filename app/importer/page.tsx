@@ -16,7 +16,7 @@ type OrderRow = {
 };
 
 type RefRow = { order_id: string };
-type InvoiceRow = { order_id: string; review_status: string | null };
+type InvoiceRow = { order_id: string; review_status: string | null; rejection_requires_resubmission_yn: boolean | null };
 type AudienceStatusRow = {
   order_id: string;
   accepted_estimate_gbp: number | string | null;
@@ -54,7 +54,7 @@ function isProgressed(value: string | null | undefined) {
 }
 
 function needsInvoiceResubmission(invoices: InvoiceRow[]) {
-  const hasRejected = invoices.some((invoice) => invoice.review_status === "rejected_resubmit_required");
+  const hasRejected = invoices.some((invoice) => invoice.review_status === "rejected_resubmit_required" && invoice.rejection_requires_resubmission_yn !== false);
   const hasLiveInvoice = invoices.some((invoice) => !retiredInvoiceStatuses.has(invoice.review_status ?? "pending_review"));
   return hasRejected && !hasLiveInvoice;
 }
@@ -79,7 +79,7 @@ export default async function ImporterPage() {
     supabase.from("orders").select("id, order_ref, status, payment_auth_id, total_qty_declared, order_total_gbp_declared, funded_at, created_at, retailers(name)").order("created_at", { ascending: false }),
     supabase.from("order_screenshots").select("order_id"),
     supabase.from("order_tracking_submissions").select("order_id, superseded_at").is("superseded_at", null),
-    supabase.from("supplier_invoices").select("order_id, review_status"),
+    supabase.from("supplier_invoices").select("order_id, review_status, rejection_requires_resubmission_yn"),
   ]);
   if (ordersError) throw ordersError;
 
