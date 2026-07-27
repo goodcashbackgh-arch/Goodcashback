@@ -157,9 +157,17 @@ The permanent fix is a resolver correction. It must not rewrite historical busin
 
 Any repair to an already confirmed, frozen or posted row is a separate bounded change and is outside this addendum.
 
+## Regression Execution Contract
+
+The regression file must run directly in Supabase SQL Editor inside one explicit transaction and finish with `ROLLBACK`.
+
+It may use narrowly bounded test mutations or copied fixture rows only when required to prove a negative condition that is not present in live data. Every such fixture must be contained in a PL/pgSQL exception subtransaction or the outer transaction so it is automatically rolled back. The regression must never commit, post, freeze, allocate through an authenticated RPC, or leave persistent business rows.
+
+Where a safe behavioural fixture cannot be created without invoking unrelated triggers or workflows, the regression may use an exact deployed-definition assertion for that control, but it must state that limitation in the SQL notice.
+
 ## Regression Gate
 
-Before merge, read-only regression SQL must prove:
+Before merge, regression SQL must prove:
 
 1. the defective cash-backed combination resolves correctly;
 2. a direct-cash-only working flow is unchanged;
@@ -186,6 +194,6 @@ The implementation is limited to:
 
 1. this addendum;
 2. one deterministic Supabase migration replacing only `public.internal_supplier_payment_bundle_source_v1(uuid, numeric)`; and
-3. one Supabase-runnable read-only regression SQL file.
+3. one Supabase-runnable regression SQL file that follows the rollback-only execution contract above.
 
 No additional file or database-object change is permitted unless new evidence proves the shared resolver is not the active execution layer. If that occurs, implementation must stop and this addendum must be revised before further work.
