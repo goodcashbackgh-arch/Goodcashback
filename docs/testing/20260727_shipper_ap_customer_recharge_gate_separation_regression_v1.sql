@@ -1,47 +1,17 @@
--- Governing contract:
--- docs/governing-pack/backend/SHIPPER_AP_AND_CUSTOMER_SHIPPING_RECHARGE_GATE_SEPARATION_ADDENDUM_v1.md
---
--- Non-vacuous regression. It dynamically selects an existing working apportioned
--- shipper-AP source, temporarily deactivates its approved allocation inside one
--- transaction, proves the additive queue/freeze/revalidation/idempotency route,
--- rolls the complete proof back, and then verifies exact protected-table
--- fingerprints after rollback. No production identifier is embedded and no Sage
--- adapter is called.
-
-DROP TABLE IF EXISTS pg_temp.shipper_ap_gate_baseline;
-
-CREATE TEMP TABLE pg_temp.shipper_ap_gate_baseline (
-  sales_invoices_fp text NOT NULL,
-  release_lines_fp text NOT NULL,
-  allocations_fp text NOT NULL,
-  allocation_lines_fp text NOT NULL,
-  review_links_fp text NOT NULL,
-  memberships_fp text NOT NULL,
-  legacy_issues_fp text NOT NULL,
-  shipment_batches_fp text NOT NULL,
-  posting_snapshots_fp text NOT NULL,
-  posting_batches_fp text NOT NULL,
-  posting_batch_rows_fp text NOT NULL
-) ON COMMIT PRESERVE ROWS;
-
-INSERT INTO pg_temp.shipper_ap_gate_baseline
-SELECT
-  (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.sales_invoices t),
-  (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.customer_sales_release_lines t),
-  (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.shipping_cost_allocations t),
-  (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.shipping_cost_allocation_lines t),
-  (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.customer_order_review_links t),
-  (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.customer_review_cycle_memberships t),
-  (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.customer_review_cycle_legacy_issues t),
-  (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.shipper_shipment_batches t),
-  (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.sage_posting_snapshots t),
-  (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.sage_posting_batches t),
-  (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.sage_posting_batch_rows t);
-
-BEGIN;
+BEGIN ISOLATION LEVEL REPEATABLE READ;
 
 SET LOCAL lock_timeout = '15s';
 SET LOCAL statement_timeout = '0';
+
+-- Governing contract:
+-- docs/governing-pack/backend/SHIPPER_AP_AND_CUSTOMER_SHIPPING_RECHARGE_GATE_SEPARATION_ADDENDUM_v1.md
+--
+-- Non-vacuous rollback-safe regression. It dynamically selects one existing
+-- working approved-apportionment shipper-AP source, removes its approved
+-- allocation only inside a savepoint, proves additive admission, full-amount
+-- freeze, row persistence, revalidation, idempotency and terminal-posted
+-- suppression, then rolls the savepoint back and proves exact table fingerprints.
+-- No production identifier is embedded. No Sage adapter is called.
 
 DO $prerequisites$
 DECLARE
@@ -87,6 +57,20 @@ BEGIN
   END IF;
 END
 $prerequisites$;
+
+CREATE TEMP TABLE protected_baseline ON COMMIT DROP AS
+SELECT
+  (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.sales_invoices t) AS sales_invoices_fp,
+  (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.customer_sales_release_lines t) AS release_lines_fp,
+  (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.shipping_cost_allocations t) AS allocations_fp,
+  (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.shipping_cost_allocation_lines t) AS allocation_lines_fp,
+  (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.customer_order_review_links t) AS review_links_fp,
+  (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.customer_review_cycle_memberships t) AS memberships_fp,
+  (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.customer_review_cycle_legacy_issues t) AS legacy_issues_fp,
+  (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.shipper_shipment_batches t) AS shipment_batches_fp,
+  (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.sage_posting_snapshots t) AS posting_snapshots_fp,
+  (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.sage_posting_batches t) AS posting_batches_fp,
+  (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.sage_posting_batch_rows t) AS posting_batch_rows_fp;
 
 CREATE TEMP TABLE preserved_queue ON COMMIT DROP AS
 SELECT *
@@ -180,8 +164,7 @@ BEGIN
     RAISE EXCEPTION 'FAIL: private preserved queue is executable by an application role';
   END IF;
 
-  SELECT COUNT(*)
-  INTO v_difference
+  SELECT COUNT(*) INTO v_difference
   FROM (
     SELECT * FROM preserved_queue
     EXCEPT ALL
@@ -192,8 +175,7 @@ BEGIN
     RAISE EXCEPTION 'FAIL: % preserved canonical row(s) are missing or changed', v_difference;
   END IF;
 
-  SELECT COUNT(*)
-  INTO v_difference
+  SELECT COUNT(*) INTO v_difference
   FROM (
     SELECT * FROM canonical_queue_before WHERE document_lane IS DISTINCT FROM 'shipper_ap'
     EXCEPT ALL
@@ -204,8 +186,7 @@ BEGIN
     RAISE EXCEPTION 'FAIL: % non-shipper-AP row(s) were added or changed', v_difference;
   END IF;
 
-  SELECT COUNT(*)
-  INTO v_difference
+  SELECT COUNT(*) INTO v_difference
   FROM (
     SELECT document_lane, source_table, source_id
     FROM canonical_queue_before
@@ -216,14 +197,46 @@ BEGIN
   IF v_difference <> 0 THEN
     RAISE EXCEPTION 'FAIL: duplicate canonical lane/source identities exist';
   END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM canonical_queue_before queue_row
+    WHERE queue_row.document_lane = 'shipper_ap'
+      AND queue_row.source_table = 'shipping_documents'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM preserved_queue old_row
+        WHERE old_row.document_lane = queue_row.document_lane
+          AND old_row.source_table = queue_row.source_table
+          AND old_row.source_id = queue_row.source_id
+      )
+      AND (
+        EXISTS (
+          SELECT 1
+          FROM public.sage_posting_snapshots snapshot_row
+          WHERE snapshot_row.source_table = queue_row.source_table
+            AND snapshot_row.source_id = queue_row.source_id
+            AND snapshot_row.document_lane = queue_row.document_lane
+            AND snapshot_row.active = true
+            AND snapshot_row.sage_posting_status = 'posted'
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM public.sage_posting_batch_rows batch_row
+          WHERE batch_row.source_table = queue_row.source_table
+            AND batch_row.source_id = queue_row.source_id
+            AND batch_row.document_lane = queue_row.document_lane
+            AND batch_row.posting_status = 'posted'
+        )
+      )
+  ) THEN
+    RAISE EXCEPTION 'FAIL: terminally posted additive shipper-AP source appears as live ready';
+  END IF;
 END
 $catalogue_and_preservation$;
 
--- Select one existing, working, approved-apportionment shipper-AP source that can
--- be frozen safely inside this rollback transaction. This proves the additive
--- route without relying on a coincidental live unapportioned record.
 CREATE TEMP TABLE controlled_fixture ON COMMIT DROP AS
-SELECT DISTINCT ON (queue_row.source_id)
+SELECT
   queue_row.source_id AS shipping_document_id,
   queue_row.shipment_batch_id,
   queue_row.amount_gbp,
@@ -279,7 +292,8 @@ WHERE queue_row.document_lane = 'shipper_ap'
       AND snapshot_row.document_lane = 'shipper_ap'
       AND snapshot_row.active = true
   )
-ORDER BY queue_row.source_id;
+ORDER BY queue_row.source_id
+LIMIT 1;
 
 DO $fixture_guard$
 BEGIN
@@ -289,8 +303,8 @@ BEGIN
 END
 $fixture_guard$;
 
--- Temporarily remove approved customer apportionment truth. The transaction
--- rollback restores every allocation row exactly.
+SAVEPOINT proof_mutations;
+
 UPDATE public.shipping_cost_allocations allocation_row
 SET active = false
 FROM controlled_fixture fixture
@@ -301,8 +315,7 @@ WHERE allocation_row.shipping_document_id = fixture.shipping_document_id
 CREATE TEMP TABLE additive_queue ON COMMIT DROP AS
 SELECT queue_row.*
 FROM public.internal_ready_for_sage_queue_v2() queue_row
-JOIN controlled_fixture fixture
-  ON fixture.shipping_document_id = queue_row.source_id
+JOIN controlled_fixture fixture ON fixture.shipping_document_id = queue_row.source_id
 WHERE queue_row.document_lane = 'shipper_ap'
   AND queue_row.source_table = 'shipping_documents';
 
@@ -333,7 +346,7 @@ BEGIN
   IF v_row.amount_gbp IS DISTINCT FROM v_fixture.amount_gbp
      OR v_row.readiness_status IS DISTINCT FROM 'ready_for_ap_purchase_invoice_draft'
      OR v_row.blocker IS NOT NULL THEN
-    RAISE EXCEPTION 'FAIL: additive row amount or readiness differs from the established shipper-AP row';
+    RAISE EXCEPTION 'FAIL: additive row amount or readiness differs from established shipper-AP semantics';
   END IF;
 
   SELECT string_agg(DISTINCT order_row.order_ref::text, ', ' ORDER BY order_row.order_ref::text)
@@ -461,25 +474,16 @@ CROSS JOIN LATERAL public.internal_freeze_shipper_ap_sage_batch_v1(
   'rollback regression repeat: idempotency proof'
 ) freeze_row;
 
-DO $idempotency_and_scope_proof$
+DO $idempotency_proof$
 DECLARE
   v_first first_freeze%ROWTYPE;
   v_second second_freeze%ROWTYPE;
   v_fixture controlled_fixture%ROWTYPE;
   v_active_snapshot_count bigint;
-  v_baseline pg_temp.shipper_ap_gate_baseline%ROWTYPE;
-  v_sales_fp text;
-  v_release_fp text;
-  v_allocation_lines_fp text;
-  v_review_links_fp text;
-  v_memberships_fp text;
-  v_legacy_issues_fp text;
-  v_shipment_batches_fp text;
 BEGIN
   SELECT * INTO v_first FROM first_freeze;
   SELECT * INTO v_second FROM second_freeze;
   SELECT * INTO v_fixture FROM controlled_fixture;
-  SELECT * INTO v_baseline FROM pg_temp.shipper_ap_gate_baseline;
 
   IF v_second.freeze_status IS DISTINCT FROM 'frozen'
      OR v_second.snapshot_id IS DISTINCT FROM v_first.snapshot_id
@@ -487,8 +491,7 @@ BEGIN
     RAISE EXCEPTION 'FAIL: repeated freeze did not follow existing snapshot idempotency';
   END IF;
 
-  SELECT COUNT(*)
-  INTO v_active_snapshot_count
+  SELECT COUNT(*) INTO v_active_snapshot_count
   FROM public.sage_posting_snapshots snapshot_row
   WHERE snapshot_row.source_table = 'shipping_documents'
     AND snapshot_row.source_id = v_fixture.shipping_document_id
@@ -499,37 +502,78 @@ BEGIN
   IF v_active_snapshot_count <> 1 THEN
     RAISE EXCEPTION 'FAIL: repeated freeze created more than one active shipper-AP liability snapshot';
   END IF;
+END
+$idempotency_proof$;
 
-  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO v_sales_fp FROM public.sales_invoices t;
-  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO v_release_fp FROM public.customer_sales_release_lines t;
-  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO v_allocation_lines_fp FROM public.shipping_cost_allocation_lines t;
-  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO v_review_links_fp FROM public.customer_order_review_links t;
-  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO v_memberships_fp FROM public.customer_review_cycle_memberships t;
-  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO v_legacy_issues_fp FROM public.customer_review_cycle_legacy_issues t;
-  SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) INTO v_shipment_batches_fp FROM public.shipper_shipment_batches t;
+-- Prove terminal posting suppression without calling Sage. This status mutation is
+-- confined to the savepoint and is rolled back below.
+UPDATE public.sage_posting_snapshots snapshot_row
+SET sage_posting_status = 'posted'
+FROM first_freeze freeze_row
+WHERE snapshot_row.id = freeze_row.snapshot_id;
 
-  IF v_sales_fp IS DISTINCT FROM v_baseline.sales_invoices_fp
-     OR v_release_fp IS DISTINCT FROM v_baseline.release_lines_fp
-     OR v_allocation_lines_fp IS DISTINCT FROM v_baseline.allocation_lines_fp
-     OR v_review_links_fp IS DISTINCT FROM v_baseline.review_links_fp
-     OR v_memberships_fp IS DISTINCT FROM v_baseline.memberships_fp
-     OR v_legacy_issues_fp IS DISTINCT FROM v_baseline.legacy_issues_fp
-     OR v_shipment_batches_fp IS DISTINCT FROM v_baseline.shipment_batches_fp THEN
+DO $terminal_posted_suppression$
+DECLARE
+  v_fixture controlled_fixture%ROWTYPE;
+BEGIN
+  SELECT * INTO v_fixture FROM controlled_fixture;
+
+  IF EXISTS (
+    SELECT 1
+    FROM public.internal_ready_for_sage_queue_v2() queue_row
+    WHERE queue_row.document_lane = 'shipper_ap'
+      AND queue_row.source_table = 'shipping_documents'
+      AND queue_row.source_id = v_fixture.shipping_document_id
+  ) THEN
+    RAISE EXCEPTION 'FAIL: terminally posted additive source reappeared as live-ready shipper AP';
+  END IF;
+END
+$terminal_posted_suppression$;
+
+-- Before undoing proof mutations, verify customer, allocation-line, review and
+-- shipment data remained unchanged. The allocation header and accounting tables
+-- are intentionally changed only inside the savepoint and are checked after undo.
+DO $protected_scope_before_undo$
+DECLARE
+  v_before protected_baseline%ROWTYPE;
+  v_after protected_baseline%ROWTYPE;
+BEGIN
+  SELECT * INTO v_before FROM protected_baseline;
+
+  SELECT
+    (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.sales_invoices t),
+    (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.customer_sales_release_lines t),
+    NULL::text,
+    (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.shipping_cost_allocation_lines t),
+    (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.customer_order_review_links t),
+    (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.customer_review_cycle_memberships t),
+    (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.customer_review_cycle_legacy_issues t),
+    (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.shipper_shipment_batches t),
+    NULL::text,
+    NULL::text,
+    NULL::text
+  INTO v_after;
+
+  IF v_after.sales_invoices_fp IS DISTINCT FROM v_before.sales_invoices_fp
+     OR v_after.release_lines_fp IS DISTINCT FROM v_before.release_lines_fp
+     OR v_after.allocation_lines_fp IS DISTINCT FROM v_before.allocation_lines_fp
+     OR v_after.review_links_fp IS DISTINCT FROM v_before.review_links_fp
+     OR v_after.memberships_fp IS DISTINCT FROM v_before.memberships_fp
+     OR v_after.legacy_issues_fp IS DISTINCT FROM v_before.legacy_issues_fp
+     OR v_after.shipment_batches_fp IS DISTINCT FROM v_before.shipment_batches_fp THEN
     RAISE EXCEPTION 'FAIL: proof changed protected customer, allocation-line, review or shipment data';
   END IF;
 END
-$idempotency_and_scope_proof$;
+$protected_scope_before_undo$;
 
-ROLLBACK;
+ROLLBACK TO SAVEPOINT proof_mutations;
 
--- This block runs after rollback. It proves that the temporary allocation change,
--- posting snapshots and posting batches were all restored exactly.
-DO $post_rollback_proof$
+DO $post_savepoint_rollback_proof$
 DECLARE
-  v_before pg_temp.shipper_ap_gate_baseline%ROWTYPE;
-  v_after pg_temp.shipper_ap_gate_baseline%ROWTYPE;
+  v_before protected_baseline%ROWTYPE;
+  v_after protected_baseline%ROWTYPE;
 BEGIN
-  SELECT * INTO v_before FROM pg_temp.shipper_ap_gate_baseline;
+  SELECT * INTO v_before FROM protected_baseline;
 
   SELECT
     (SELECT md5(COALESCE(string_agg(to_jsonb(t)::text, '|' ORDER BY t.id), '')) FROM public.sales_invoices t),
@@ -546,14 +590,14 @@ BEGIN
   INTO v_after;
 
   IF to_jsonb(v_after) IS DISTINCT FROM to_jsonb(v_before) THEN
-    RAISE EXCEPTION 'FAIL: rollback did not restore protected source, allocation or accounting tables exactly';
+    RAISE EXCEPTION 'FAIL: savepoint rollback did not restore protected source, allocation or accounting tables exactly';
   END IF;
 END
-$post_rollback_proof$;
+$post_savepoint_rollback_proof$;
 
 SELECT jsonb_build_object(
   'regression_result', 'PASS',
-  'proof', 'controlled approved allocation was removed transactionally; additive queue admission, full-amount freeze, post-freeze persistence, revalidation, idempotency and customer-recharge protection passed; rollback restored all protected fingerprints exactly'
+  'proof', 'approved allocation removed only inside savepoint; additive admission, full-amount freeze, frozen-row persistence, revalidation, idempotency, terminal-posted suppression and customer-recharge protection passed; savepoint rollback restored every protected fingerprint exactly'
 ) AS regression_result;
 
-DROP TABLE pg_temp.shipper_ap_gate_baseline;
+ROLLBACK;
