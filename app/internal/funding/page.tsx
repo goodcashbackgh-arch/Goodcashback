@@ -622,8 +622,22 @@ export default async function InternalFundingPage({
     (!importerFilter || candidate.importerId === importerFilter) &&
     containsSearch([candidate.orderRef, candidate.paymentAuthId, candidate.importerId, candidate.status], searchFilter);
 
+  const unmatchedInboundMatchesFilter = (candidate: FundingCandidate) =>
+    (!importerFilter || candidate.importerId === importerFilter) &&
+    containsSearch([
+      candidate.orderRef,
+      candidate.dvaStatementLineId,
+      candidate.referenceRaw,
+      candidate.retailerNameRef,
+      candidate.importerName,
+      ...(openOrdersByImporter.get(candidate.importerId) ?? []).flatMap((order) => [
+        order.orderRef,
+        order.paymentAuthId,
+      ]),
+    ], searchFilter);
+
   const visibleReadyFunding = readyFundingCandidates.filter(fundingMatchesFilter);
-  const visibleUnmatchedInbound = unmatchedInboundCandidates.filter(fundingMatchesFilter);
+  const visibleUnmatchedInbound = unmatchedInboundCandidates.filter(unmatchedInboundMatchesFilter);
   const visibleReadyCredit = readyCreditCandidates.filter(creditMatchesFilter);
   const showReady = queueFilter === "all" || queueFilter === "ready";
   const showUnmatched = queueFilter === "all" || queueFilter === "unmatched";
