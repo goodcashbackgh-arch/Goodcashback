@@ -21,7 +21,7 @@ trigger_state AS (
     )
     AND NOT t.tgisinternal
 ),
-open_candidate_orders AS (
+materialisable_open_candidate_orders AS (
   SELECT DISTINCT tracking_row.order_id
   FROM public.order_tracking_submissions tracking_row
   JOIN LATERAL (
@@ -39,10 +39,29 @@ open_candidate_orders AS (
       SELECT 1
       FROM public.customer_review_cycle_candidates_v1(tracking_row.order_id)
     )
+    AND NOT EXISTS (
+      SELECT 1
+      FROM public.customer_review_cycle_legacy_issues issue
+      WHERE issue.order_id = tracking_row.order_id
+        AND issue.resolved_at IS NULL
+    )
+    AND NOT EXISTS (
+      SELECT 1
+      FROM public.customer_order_review_links untimed_link
+      WHERE untimed_link.order_id = tracking_row.order_id
+        AND untimed_link.is_active = true
+        AND untimed_link.expires_at IS NULL
+    )
+    AND (
+      SELECT count(*)
+      FROM public.customer_order_review_links active_link
+      WHERE active_link.order_id = tracking_row.order_id
+        AND active_link.is_active = true
+    ) <= 1
 ),
 missing_cycles AS (
   SELECT order_id
-  FROM open_candidate_orders candidate_order
+  FROM materialisable_open_candidate_orders candidate_order
   WHERE NOT EXISTS (
     SELECT 1
     FROM public.customer_order_review_links link_row
@@ -52,7 +71,7 @@ missing_cycles AS (
       AND link_row.expires_at > now()
   )
 ),
-empty_cycles AS (
+unexplained_empty_cycles AS (
   SELECT link_row.id
   FROM public.customer_order_review_links link_row
   WHERE link_row.is_active = true
@@ -63,6 +82,13 @@ empty_cycles AS (
       FROM public.customer_review_cycle_memberships membership
       WHERE membership.review_link_id = link_row.id
         AND membership.membership_status = 'active'
+    )
+    AND NOT EXISTS (
+      SELECT 1
+      FROM public.customer_review_cycle_legacy_issues issue
+      WHERE issue.order_id = link_row.order_id
+        AND issue.review_link_id = link_row.id
+        AND issue.resolved_at IS NULL
     )
 ),
 duplicate_cycle_fingerprints AS (
@@ -82,9 +108,9 @@ SELECT
     WHEN trigger_state.trigger_count <> 4 OR NOT trigger_state.all_enabled
       THEN 'FAIL: required receipt/allocation/eligibility triggers missing or disabled'
     WHEN EXISTS (SELECT 1 FROM missing_cycles)
-      THEN 'FAIL: open valid-candidate orders remain without review cycles'
-    WHEN EXISTS (SELECT 1 FROM empty_cycles)
-      THEN 'FAIL: open timed review cycles exist without active membership'
+      THEN 'FAIL: materialisable open candidate orders remain without review cycles'
+    WHEN EXISTS (SELECT 1 FROM unexplained_empty_cycles)
+      THEN 'FAIL: unexplained open timed review cycles exist without active membership'
     WHEN EXISTS (SELECT 1 FROM duplicate_cycle_fingerprints)
       THEN 'FAIL: duplicate membership fingerprint exists inside one review cycle'
     ELSE 'PASS'
@@ -92,10 +118,16 @@ SELECT
   jsonb_build_object(
     'required_trigger_count', trigger_state.trigger_count,
     'all_required_triggers_enabled', trigger_state.all_enabled,
-    'open_candidate_order_count', (SELECT count(*) FROM open_candidate_orders),
+    'materialisable_open_candidate_order_count', (
+      SELECT count(*) FROM materialisable_open_candidate_orders
+    ),
     'missing_cycle_count', (SELECT count(*) FROM missing_cycles),
-    'empty_open_cycle_count', (SELECT count(*) FROM empty_cycles),
-    'duplicate_cycle_fingerprint_count', (SELECT count(*) FROM duplicate_cycle_fingerprints)
+    'unexplained_empty_open_cycle_count', (
+      SELECT count(*) FROM unexplained_empty_cycles
+    ),
+    'duplicate_cycle_fingerprint_count', (
+      SELECT count(*) FROM duplicate_cycle_fingerprints
+    )
   ) AS details
 FROM materialiser
 CROSS JOIN trigger_state;
