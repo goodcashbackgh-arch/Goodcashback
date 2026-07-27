@@ -22,6 +22,7 @@ DECLARE
   v_security_definer boolean;
   v_search_path text[];
   v_acl_mismatch bigint;
+  v_default_acl_mismatch bigint;
 BEGIN
   IF to_regprocedure('public.internal_ready_for_sage_queue_v2()') IS NULL THEN
     RAISE EXCEPTION 'Missing canonical queue: public.internal_ready_for_sage_queue_v2()';
@@ -106,9 +107,9 @@ BEGIN
       ('postgres', 'authenticated', 'EXECUTE', false),
       ('postgres', 'service_role', 'EXECUTE', false)
   ), differences AS (
-    (SELECT * FROM actual EXCEPT SELECT * FROM expected)
+    (SELECT * FROM actual EXCEPT ALL SELECT * FROM expected)
     UNION ALL
-    (SELECT * FROM expected EXCEPT SELECT * FROM actual)
+    (SELECT * FROM expected EXCEPT ALL SELECT * FROM actual)
   )
   SELECT COUNT(*) INTO v_acl_mismatch FROM differences;
 
@@ -118,6 +119,36 @@ BEGIN
      OR NOT has_function_privilege('service_role', 'public.internal_ready_for_sage_queue_v2()', 'EXECUTE')
      OR NOT has_function_privilege('postgres', 'public.internal_ready_for_sage_queue_v2()', 'EXECUTE') THEN
     RAISE EXCEPTION 'Canonical queue ACL differs from governed live evidence';
+  END IF;
+
+  WITH actual AS (
+    SELECT
+      pg_get_userbyid(a.grantor)::text AS grantor_name,
+      CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee)::text END AS grantee_name,
+      a.privilege_type::text AS privilege_type,
+      a.is_grantable
+    FROM pg_default_acl d
+    JOIN pg_roles owner_role ON owner_role.oid = d.defaclrole
+    JOIN pg_namespace n ON n.oid = d.defaclnamespace
+    CROSS JOIN LATERAL aclexplode(d.defaclacl) a
+    WHERE d.defaclobjtype = 'f'
+      AND owner_role.rolname = 'postgres'
+      AND n.nspname = 'public'
+  ), expected(grantor_name, grantee_name, privilege_type, is_grantable) AS (
+    VALUES
+      ('postgres', 'postgres', 'EXECUTE', false),
+      ('postgres', 'anon', 'EXECUTE', false),
+      ('postgres', 'authenticated', 'EXECUTE', false),
+      ('postgres', 'service_role', 'EXECUTE', false)
+  ), differences AS (
+    (SELECT * FROM actual EXCEPT ALL SELECT * FROM expected)
+    UNION ALL
+    (SELECT * FROM expected EXCEPT ALL SELECT * FROM actual)
+  )
+  SELECT COUNT(*) INTO v_default_acl_mismatch FROM differences;
+
+  IF v_default_acl_mismatch <> 0 THEN
+    RAISE EXCEPTION 'Public-schema default function ACL differs from governed live evidence';
   END IF;
 END
 $guard$;
@@ -253,7 +284,6 @@ AS $function$
         WHERE snapshot_row.source_table = 'shipping_documents'
           AND snapshot_row.source_id = document_row.id
           AND snapshot_row.document_lane = 'shipper_ap'
-          AND snapshot_row.active = true
           AND snapshot_row.sage_posting_status = 'posted'
       )
       AND NOT EXISTS (
@@ -291,7 +321,48 @@ DO $verify$
 DECLARE
   v_acl_mismatch bigint;
   v_definition text;
+  v_result_shape text;
+  v_owner text;
+  v_language text;
+  v_volatility "char";
+  v_parallel "char";
+  v_security_definer boolean;
+  v_search_path text[];
 BEGIN
+  SELECT
+    pg_get_function_result(p.oid),
+    pg_get_userbyid(p.proowner),
+    l.lanname,
+    p.provolatile,
+    p.proparallel,
+    p.prosecdef,
+    p.proconfig
+  INTO
+    v_result_shape,
+    v_owner,
+    v_language,
+    v_volatility,
+    v_parallel,
+    v_security_definer,
+    v_search_path
+  FROM pg_proc p
+  JOIN pg_namespace n ON n.oid = p.pronamespace
+  JOIN pg_language l ON l.oid = p.prolang
+  WHERE n.nspname = 'public'
+    AND p.proname = 'internal_ready_for_sage_queue_v2'
+    AND p.pronargs = 0;
+
+  IF v_result_shape IS DISTINCT FROM
+       'TABLE(queue_row_id text, document_lane text, document_type text, source_table text, source_id uuid, order_id uuid, order_ref text, shipment_batch_id uuid, booking_ref text, counterparty_name text, amount_gbp numeric, currency_code text, invoice_type text, sage_status text, sage_invoice_id text, sage_posted_at timestamp with time zone, readiness_status text, blocker text, reference_text text, notes_text text, detail_href text, source_payload jsonb)'
+     OR v_owner IS DISTINCT FROM 'postgres'
+     OR v_language IS DISTINCT FROM 'sql'
+     OR v_volatility IS DISTINCT FROM 'v'
+     OR v_parallel IS DISTINCT FROM 'u'
+     OR v_security_definer IS DISTINCT FROM true
+     OR v_search_path IS DISTINCT FROM ARRAY['search_path=public, pg_temp']::text[] THEN
+    RAISE EXCEPTION 'Replacement canonical queue catalogue properties do not match governed live state';
+  END IF;
+
   WITH actual AS (
     SELECT
       pg_get_userbyid(a.grantor)::text AS grantor_name,
@@ -310,9 +381,9 @@ BEGIN
       ('postgres', 'authenticated', 'EXECUTE', false),
       ('postgres', 'service_role', 'EXECUTE', false)
   ), differences AS (
-    (SELECT * FROM actual EXCEPT SELECT * FROM expected)
+    (SELECT * FROM actual EXCEPT ALL SELECT * FROM expected)
     UNION ALL
-    (SELECT * FROM expected EXCEPT SELECT * FROM actual)
+    (SELECT * FROM expected EXCEPT ALL SELECT * FROM actual)
   )
   SELECT COUNT(*) INTO v_acl_mismatch FROM differences;
 
