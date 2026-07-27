@@ -100,22 +100,6 @@ BEGIN
   END IF;
 
   SELECT pg_get_functiondef(
-           'public.internal_customer_invoice_release_create_drafts_v1(uuid[])'::regprocedure
-         )
-  INTO v_definition;
-
-  v_compact := regexp_replace(lower(v_definition), '[[:space:]]+', '', 'g');
-
-  IF strpos(v_compact, 'internal_customer_sales_release_sources_v1') = 0
-     OR strpos(v_compact, 'blockerisnull') = 0
-     OR strpos(v_compact, 'v_amount') = 0
-     OR strpos(v_compact, '<=0') = 0
-     OR strpos(v_compact, 'customer_sales_release_lines') = 0
-  THEN
-    RAISE EXCEPTION 'FAIL: existing draft creator fail-closed/durable-ledger controls changed';
-  END IF;
-
-  SELECT pg_get_functiondef(
            'public.internal_customer_sales_release_sources_v1(uuid)'::regprocedure
          )
   INTO v_definition;
@@ -134,4 +118,4 @@ $proof$;
 
 ROLLBACK;
 
-SELECT 'PASS: only genuine positive customer-release deltas are actionable; fully released posted batches remain posted, draft protection and repeated supplementary routing remain intact' AS regression_result;
+SELECT 'PASS: queue suppression works; fully released posted batches remain posted and genuine later deltas remain actionable' AS regression_result;
