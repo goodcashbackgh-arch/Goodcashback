@@ -281,7 +281,22 @@ BEGIN
     RAISE EXCEPTION 'FAIL E: adding/joining a second source changed the fixed deadline';
   END IF;
 
-  -- B: use the installed active -> expired transition, then close the link without touching expires_at.
+  -- C: create the exact line hold while review is still active.
+  INSERT INTO public.customer_pre_shipment_hold_requests (
+    id, order_id, review_link_id, tracking_submission_id, supplier_invoice_line_id,
+    requested_scope, reason, status
+  ) VALUES (
+    v_hold_id, v_order_id, v_link_id, v_tracking_id, v_line_id,
+    'line', 'REG-CANON-REVIEW active hold', 'requested'
+  );
+
+  SELECT state.active_review_yn INTO STRICT v_active
+  FROM public.shipper_tracking_review_state_v1(v_order_id, v_tracking_id) state;
+  IF NOT v_active THEN
+    RAISE EXCEPTION 'FAIL C: creating a hold changed the still-active canonical review state';
+  END IF;
+
+  -- Close the review through the installed transition without touching expires_at.
   UPDATE public.customer_review_cycle_memberships
   SET membership_status = 'expired', status_updated_at = clock_timestamp()
   WHERE review_link_id = v_link_id AND membership_status = 'active';
@@ -293,14 +308,40 @@ BEGIN
   FROM public.shipper_dashboard_tracking_review_states_v1() state
   WHERE state.order_id = v_order_id AND state.tracking_submission_id = v_tracking_id;
   IF v_active OR v_bulk_active THEN
-    RAISE EXCEPTION 'FAIL B: closed review remains canonically active';
+    RAISE EXCEPTION 'FAIL C: closed review remains canonically active while the hold is open';
   END IF;
 
   SELECT count(*) INTO v_candidate_count
   FROM public.shipper_shipment_batch_candidates_v1() candidate
   WHERE candidate.tracking_submission_id = v_tracking_id;
-  IF v_candidate_count <> 1 THEN
-    RAISE EXCEPTION 'FAIL B: package did not enter candidates immediately after review closure';
+  IF v_candidate_count <> 0 THEN
+    RAISE EXCEPTION 'FAIL C: active hold did not remain authoritative after review closure';
+  END IF;
+
+  BEGIN
+    PERFORM public.shipper_create_shipment_batch_v1(
+      v_source_order.importer_id, ARRAY[v_tracking_id], 'REG-CANON-REVIEW-HOLD'
+    );
+    RAISE EXCEPTION 'FAIL C: direct creation accepted an actively held package';
+  EXCEPTION WHEN OTHERS THEN
+    GET STACKED DIAGNOSTICS v_error = MESSAGE_TEXT;
+    IF v_error LIKE '%customer review%' OR v_error NOT LIKE '%no shipment-eligible lines%' THEN
+      RAISE EXCEPTION 'FAIL C: unexpected post-review hold rejection: %', v_error;
+    END IF;
+  END;
+
+  UPDATE public.customer_pre_shipment_hold_requests
+  SET status = 'resolved', resolved_at = clock_timestamp(), updated_at = clock_timestamp()
+  WHERE id = v_hold_id;
+
+  -- B: once review is closed and the separate hold is resolved, the package is eligible.
+  SELECT state.active_review_yn INTO STRICT v_active
+  FROM public.shipper_tracking_review_state_v1(v_order_id, v_tracking_id) state;
+  SELECT count(*) INTO v_candidate_count
+  FROM public.shipper_shipment_batch_candidates_v1() candidate
+  WHERE candidate.tracking_submission_id = v_tracking_id;
+  IF v_active OR v_candidate_count <> 1 THEN
+    RAISE EXCEPTION 'FAIL B: package did not become eligible after review closure and hold resolution';
   END IF;
 
   BEGIN
@@ -314,40 +355,6 @@ BEGIN
       RAISE EXCEPTION 'FAIL B: closed review direct creation rejected: %', v_error;
     END IF;
   END;
-
-  -- C: an exact active line hold remains authoritative and is not misreported as review.
-  INSERT INTO public.customer_pre_shipment_hold_requests (
-    id, order_id, review_link_id, tracking_submission_id, supplier_invoice_line_id,
-    requested_scope, reason, status
-  ) VALUES (
-    v_hold_id, v_order_id, v_link_id, v_tracking_id, v_line_id,
-    'line', 'REG-CANON-REVIEW active hold', 'requested'
-  );
-
-  SELECT state.active_review_yn INTO STRICT v_active
-  FROM public.shipper_tracking_review_state_v1(v_order_id, v_tracking_id) state;
-  SELECT count(*) INTO v_candidate_count
-  FROM public.shipper_shipment_batch_candidates_v1() candidate
-  WHERE candidate.tracking_submission_id = v_tracking_id;
-  IF v_active OR v_candidate_count <> 0 THEN
-    RAISE EXCEPTION 'FAIL C: hold changed review state or failed to exclude the package';
-  END IF;
-
-  BEGIN
-    PERFORM public.shipper_create_shipment_batch_v1(
-      v_source_order.importer_id, ARRAY[v_tracking_id], 'REG-CANON-REVIEW-HOLD'
-    );
-    RAISE EXCEPTION 'FAIL C: direct creation accepted an actively held package';
-  EXCEPTION WHEN OTHERS THEN
-    GET STACKED DIAGNOSTICS v_error = MESSAGE_TEXT;
-    IF v_error LIKE '%customer review%' OR v_error NOT LIKE '%no shipment-eligible lines%' THEN
-      RAISE EXCEPTION 'FAIL C: unexpected hold rejection: %', v_error;
-    END IF;
-  END;
-
-  UPDATE public.customer_pre_shipment_hold_requests
-  SET status = 'resolved', resolved_at = clock_timestamp(), updated_at = clock_timestamp()
-  WHERE id = v_hold_id;
 
   -- D: create once, then prove active shipment membership independently remains authoritative.
   v_batch_id := public.shipper_create_shipment_batch_v1(
