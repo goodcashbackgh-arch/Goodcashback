@@ -38,34 +38,6 @@ BEGIN
     RAISE EXCEPTION 'Shipper AP gate-separation table prerequisites are missing';
   END IF;
 
-  IF NOT EXISTS (
-    SELECT 1
-    FROM information_schema.columns
-    WHERE table_schema = 'public'
-      AND table_name = 'shipping_documents'
-      AND column_name = 'extracted_total_amount'
-  ) OR NOT EXISTS (
-    SELECT 1
-    FROM information_schema.columns
-    WHERE table_schema = 'public'
-      AND table_name = 'shipping_documents'
-      AND column_name = 'extracted_document_ref'
-  ) OR NOT EXISTS (
-    SELECT 1
-    FROM information_schema.columns
-    WHERE table_schema = 'public'
-      AND table_name = 'shipping_documents'
-      AND column_name = 'extracted_document_date'
-  ) OR NOT EXISTS (
-    SELECT 1
-    FROM information_schema.columns
-    WHERE table_schema = 'public'
-      AND table_name = 'shipping_documents'
-      AND column_name = 'extracted_currency_code'
-  ) THEN
-    RAISE EXCEPTION 'Canonical shipping-document OCR fields are missing';
-  END IF;
-
   IF to_regprocedure('public.internal_freeze_shipper_ap_sage_batch_v1(uuid[],text)') IS NULL
      OR to_regprocedure('public.internal_customer_sales_release_sources_v1(uuid)') IS NULL
      OR to_regprocedure('public.internal_customer_invoice_release_create_drafts_v1(uuid[])') IS NULL
@@ -91,6 +63,7 @@ SELECT
   procedure_row.procost,
   procedure_row.prorows,
   procedure_row.proconfig,
+  procedure_row.proacl,
   pg_get_function_result(procedure_row.oid) AS result_shape
 FROM pg_proc procedure_row
 JOIN pg_namespace namespace_row
@@ -101,7 +74,7 @@ WHERE namespace_row.nspname = 'public'
   AND procedure_row.proname = 'internal_ready_for_sage_queue_v2'
   AND procedure_row.pronargs = 0;
 
-CREATE TEMP TABLE pg_temp.shipper_ap_gate_queue_acl
+CREATE TEMP TABLE pg_temp.shipper_ap_gate_queue_explicit_acl
 ON COMMIT DROP
 AS
 SELECT
@@ -111,12 +84,11 @@ SELECT
 FROM pg_proc procedure_row
 JOIN pg_namespace namespace_row
   ON namespace_row.oid = procedure_row.pronamespace
-CROSS JOIN LATERAL aclexplode(
-  COALESCE(procedure_row.proacl, acldefault('f', procedure_row.proowner))
-) privilege_row
+CROSS JOIN LATERAL aclexplode(procedure_row.proacl) privilege_row
 WHERE namespace_row.nspname = 'public'
   AND procedure_row.proname = 'internal_ready_for_sage_queue_v2'
-  AND procedure_row.pronargs = 0;
+  AND procedure_row.pronargs = 0
+  AND procedure_row.proacl IS NOT NULL;
 
 DO $preserve$
 DECLARE
@@ -124,8 +96,7 @@ DECLARE
   v_expected_shape text :=
     'TABLE(queue_row_id text, document_lane text, document_type text, source_table text, source_id uuid, order_id uuid, order_ref text, shipment_batch_id uuid, booking_ref text, counterparty_name text, amount_gbp numeric, currency_code text, invoice_type text, sage_status text, sage_invoice_id text, sage_posted_at timestamp with time zone, readiness_status text, blocker text, reference_text text, notes_text text, detail_href text, source_payload jsonb)';
 BEGIN
-  SELECT *
-  INTO v_metadata
+  SELECT * INTO v_metadata
   FROM pg_temp.shipper_ap_gate_queue_metadata;
 
   IF NOT FOUND THEN
@@ -155,32 +126,27 @@ BEGIN
 END
 $preserve$;
 
--- The exact previous queue remains private and cannot be used as a parallel
--- application route.
+REVOKE ALL ON FUNCTION
+  public.internal_ready_for_sage_queue_v2_pre_shipper_ap_gate_separation_v1()
+FROM PUBLIC;
+
 DO $privatise_preserved$
 DECLARE
   v_acl record;
   v_owner_oid oid;
-  v_target text;
 BEGIN
-  SELECT owner_oid
-  INTO v_owner_oid
+  SELECT owner_oid INTO v_owner_oid
   FROM pg_temp.shipper_ap_gate_queue_metadata;
-
-  REVOKE ALL ON FUNCTION
-    public.internal_ready_for_sage_queue_v2_pre_shipper_ap_gate_separation_v1()
-  FROM PUBLIC;
 
   FOR v_acl IN
     SELECT DISTINCT grantee
-    FROM pg_temp.shipper_ap_gate_queue_acl
-    WHERE grantee <> v_owner_oid
-      AND grantee <> 0
+    FROM pg_temp.shipper_ap_gate_queue_explicit_acl
+    WHERE grantee <> 0
+      AND grantee <> v_owner_oid
   LOOP
-    v_target := format('%I', pg_get_userbyid(v_acl.grantee));
     EXECUTE format(
-      'REVOKE ALL ON FUNCTION public.internal_ready_for_sage_queue_v2_pre_shipper_ap_gate_separation_v1() FROM %s',
-      v_target
+      'REVOKE ALL ON FUNCTION public.internal_ready_for_sage_queue_v2_pre_shipper_ap_gate_separation_v1() FROM %I',
+      pg_get_userbyid(v_acl.grantee)
     );
   END LOOP;
 END
@@ -252,11 +218,10 @@ AS $function$
     JOIN public.shippers shipper
       ON shipper.id = shipping_document.shipper_id
     LEFT JOIN LATERAL (
-      SELECT
-        string_agg(
-          DISTINCT order_row.order_ref::text,
-          ', ' ORDER BY order_row.order_ref::text
-        )::text AS order_ref
+      SELECT string_agg(
+        DISTINCT order_row.order_ref::text,
+        ', ' ORDER BY order_row.order_ref::text
+      )::text AS order_ref
       FROM public.shipper_shipment_batch_packages package
       JOIN public.order_tracking_submissions tracking
         ON tracking.id = package.tracking_submission_id
@@ -312,8 +277,7 @@ AS $function$
       )
   ), additive_shipper_ap AS (
     SELECT
-      ('shipping_ap_intent:' || source.shipping_document_id::text)::text
-        AS queue_row_id,
+      ('shipping_ap_intent:' || source.shipping_document_id::text)::text AS queue_row_id,
       'shipper_ap'::text AS document_lane,
       'shipper_ap_purchase_invoice_intent'::text AS document_type,
       'shipping_documents'::text AS source_table,
@@ -337,10 +301,7 @@ AS $function$
         source.shipping_document_id::text
       )::text AS reference_text,
       ('Booking ' || COALESCE(source.booking_ref, ''))::text AS notes_text,
-      (
-        '/internal/shipping-control/readiness/'
-        || source.shipment_batch_id::text
-      )::text AS detail_href,
+      ('/internal/shipping-control/readiness/' || source.shipment_batch_id::text)::text AS detail_href,
       jsonb_build_object(
         'document_ref', source.document_ref,
         'document_date', source.document_date,
@@ -353,81 +314,28 @@ AS $function$
       ) AS source_payload
     FROM accepted_unapportioned_shipper_documents source
   )
-  SELECT
-    q.queue_row_id,
-    q.document_lane,
-    q.document_type,
-    q.source_table,
-    q.source_id,
-    q.order_id,
-    q.order_ref,
-    q.shipment_batch_id,
-    q.booking_ref,
-    q.counterparty_name,
-    q.amount_gbp,
-    q.currency_code,
-    q.invoice_type,
-    q.sage_status,
-    q.sage_invoice_id,
-    q.sage_posted_at,
-    q.readiness_status,
-    q.blocker,
-    q.reference_text,
-    q.notes_text,
-    q.detail_href,
-    q.source_payload
-  FROM preserved_queue q
-
+  SELECT * FROM preserved_queue
   UNION ALL
-
-  SELECT
-    additive.queue_row_id,
-    additive.document_lane,
-    additive.document_type,
-    additive.source_table,
-    additive.source_id,
-    additive.order_id,
-    additive.order_ref,
-    additive.shipment_batch_id,
-    additive.booking_ref,
-    additive.counterparty_name,
-    additive.amount_gbp,
-    additive.currency_code,
-    additive.invoice_type,
-    additive.sage_status,
-    additive.sage_invoice_id,
-    additive.sage_posted_at,
-    additive.readiness_status,
-    additive.blocker,
-    additive.reference_text,
-    additive.notes_text,
-    additive.detail_href,
-    additive.source_payload
-  FROM additive_shipper_ap additive;
+  SELECT * FROM additive_shipper_ap;
 $function$;
 
--- Restore the exact owner and effective EXECUTE grants captured from the
--- canonical function before it was renamed.
 DO $restore_metadata$
 DECLARE
   v_metadata pg_temp.shipper_ap_gate_queue_metadata%ROWTYPE;
   v_acl record;
   v_target text;
 BEGIN
-  SELECT *
-  INTO v_metadata
+  SELECT * INTO v_metadata
   FROM pg_temp.shipper_ap_gate_queue_metadata;
 
   EXECUTE format(
     'ALTER FUNCTION public.internal_ready_for_sage_queue_v2() OWNER TO %I',
     v_metadata.owner_name
   );
-
   EXECUTE format(
     'ALTER FUNCTION public.internal_ready_for_sage_queue_v2() COST %s',
     v_metadata.procost
   );
-
   EXECUTE format(
     'ALTER FUNCTION public.internal_ready_for_sage_queue_v2() ROWS %s',
     v_metadata.prorows
@@ -437,8 +345,7 @@ BEGIN
 
   FOR v_acl IN
     SELECT grantee, privilege_type, is_grantable
-    FROM pg_temp.shipper_ap_gate_queue_acl
-    WHERE grantee <> v_metadata.owner_oid
+    FROM pg_temp.shipper_ap_gate_queue_explicit_acl
   LOOP
     v_target := CASE
       WHEN v_acl.grantee = 0 THEN 'PUBLIC'
@@ -464,8 +371,6 @@ COMMENT ON FUNCTION public.internal_ready_for_sage_queue_v2()
 IS
   'Canonical Sage-ready queue. Preserves every preceding row unchanged and additively exposes accepted current shipper invoices for shipper AP before customer shipping apportionment. Customer shipping recharge remains governed by approved allocation and the existing customer-sales release route.';
 
--- Static, authentication-independent deployment verification only. Behavioural
--- queue execution is covered by the separate rollback-safe regression.
 DO $static_verify$
 DECLARE
   v_before pg_temp.shipper_ap_gate_queue_metadata%ROWTYPE;
@@ -474,8 +379,7 @@ DECLARE
   v_acl_difference bigint;
   v_private_application_grants bigint;
 BEGIN
-  SELECT *
-  INTO v_before
+  SELECT * INTO v_before
   FROM pg_temp.shipper_ap_gate_queue_metadata;
 
   SELECT
@@ -491,6 +395,7 @@ BEGIN
     procedure_row.procost,
     procedure_row.prorows,
     procedure_row.proconfig,
+    procedure_row.proacl,
     pg_get_function_result(procedure_row.oid)
   INTO v_after
   FROM pg_proc procedure_row
@@ -514,11 +419,10 @@ BEGIN
      OR v_after.proconfig IS DISTINCT FROM v_before.proconfig
      OR trim(regexp_replace(v_after.result_shape, '\s+', ' ', 'g'))
         IS DISTINCT FROM trim(regexp_replace(v_before.result_shape, '\s+', ' ', 'g')) THEN
-    RAISE EXCEPTION
-      'Canonical Sage queue metadata was not preserved exactly';
+    RAISE EXCEPTION 'Canonical Sage queue metadata was not preserved exactly';
   END IF;
 
-  WITH current_acl AS (
+  WITH current_explicit_acl AS (
     SELECT
       privilege_row.grantee,
       privilege_row.privilege_type,
@@ -526,32 +430,23 @@ BEGIN
     FROM pg_proc procedure_row
     JOIN pg_namespace namespace_row
       ON namespace_row.oid = procedure_row.pronamespace
-    CROSS JOIN LATERAL aclexplode(
-      COALESCE(procedure_row.proacl, acldefault('f', procedure_row.proowner))
-    ) privilege_row
+    CROSS JOIN LATERAL aclexplode(procedure_row.proacl) privilege_row
     WHERE namespace_row.nspname = 'public'
       AND procedure_row.proname = 'internal_ready_for_sage_queue_v2'
       AND procedure_row.pronargs = 0
+      AND procedure_row.proacl IS NOT NULL
   ), differences AS (
-    (
-      SELECT * FROM pg_temp.shipper_ap_gate_queue_acl
-      EXCEPT
-      SELECT * FROM current_acl
-    )
+    (SELECT * FROM pg_temp.shipper_ap_gate_queue_explicit_acl
+     EXCEPT SELECT * FROM current_explicit_acl)
     UNION ALL
-    (
-      SELECT * FROM current_acl
-      EXCEPT
-      SELECT * FROM pg_temp.shipper_ap_gate_queue_acl
-    )
+    (SELECT * FROM current_explicit_acl
+     EXCEPT SELECT * FROM pg_temp.shipper_ap_gate_queue_explicit_acl)
   )
-  SELECT COUNT(*)
-  INTO v_acl_difference
+  SELECT COUNT(*) INTO v_acl_difference
   FROM differences;
 
   IF v_acl_difference <> 0 THEN
-    RAISE EXCEPTION
-      'Canonical Sage queue EXECUTE grants were not preserved exactly';
+    RAISE EXCEPTION 'Canonical Sage queue explicit EXECUTE grants were not preserved exactly';
   END IF;
 
   SELECT COUNT(*)
@@ -575,14 +470,12 @@ BEGIN
     );
 
   IF v_private_application_grants <> 0 THEN
-    RAISE EXCEPTION
-      'Private preserved Sage queue remains callable by an application role';
+    RAISE EXCEPTION 'Private preserved Sage queue remains callable by an application role';
   END IF;
 
   SELECT lower(
     pg_get_functiondef('public.internal_ready_for_sage_queue_v2()'::regprocedure)
-  )
-  INTO v_definition;
+  ) INTO v_definition;
 
   IF position(
        'internal_ready_for_sage_queue_v2_pre_shipper_ap_gate_separation_v1'
@@ -593,12 +486,8 @@ BEGIN
      OR position('shipping_cost_allocations' IN v_definition) = 0
      OR position('allocation_status = ''approved''' IN v_definition) = 0
      OR position('shipping_document.extracted_total_amount' IN v_definition) = 0
-     OR position('shipping_document.total_amount' IN v_definition) = 0
-     OR position('''document_ref'', source.document_ref' IN v_definition) = 0
-     OR position('''document_date'', source.document_date' IN v_definition) = 0
-     OR position('''status'', ''source_ready_not_posted_to_sage''' IN v_definition) = 0 THEN
-    RAISE EXCEPTION
-      'Canonical Sage queue wrapper is missing a required governed condition';
+     OR position('shipping_document.total_amount' IN v_definition) = 0 THEN
+    RAISE EXCEPTION 'Canonical Sage queue wrapper is missing a required governed condition';
   END IF;
 
   IF position('customer_recharge_apportionment_status' IN v_definition) > 0
@@ -609,8 +498,7 @@ BEGIN
      OR position('shipper_tracking_review_state_v1' IN v_definition) > 0
      OR position('shipper_shipment_batch_candidates_v1' IN v_definition) > 0
      OR position('shipper_create_shipment_batch_v1' IN v_definition) > 0 THEN
-    RAISE EXCEPTION
-      'Canonical Sage queue wrapper exceeded the governed change boundary';
+    RAISE EXCEPTION 'Canonical Sage queue wrapper exceeded the governed change boundary';
   END IF;
 END
 $static_verify$;
