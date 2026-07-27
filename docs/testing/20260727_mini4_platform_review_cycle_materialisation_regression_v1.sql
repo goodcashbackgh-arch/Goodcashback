@@ -1,0 +1,122 @@
+-- Read-only production regression for the Mini 4 platform materialisation repair.
+
+WITH materialiser AS (
+  SELECT pg_get_functiondef(
+    'public.internal_materialize_customer_review_cycles_v1(uuid,uuid)'::regprocedure
+  ) AS definition
+),
+trigger_state AS (
+  SELECT
+    bool_and(t.tgenabled <> 'D') AS all_enabled,
+    count(*)::integer AS trigger_count
+  FROM pg_trigger t
+  JOIN pg_class c ON c.oid = t.tgrelid
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  WHERE n.nspname = 'public'
+    AND t.tgname IN (
+      'trg_customer_review_receipt_materialize_v1',
+      'trg_customer_review_allocation_materialize_v1',
+      'trg_customer_review_supplier_line_materialize_v1',
+      'trg_customer_review_supplier_invoice_materialize_v1'
+    )
+    AND NOT t.tgisinternal
+),
+materialisable_open_candidate_orders AS (
+  SELECT DISTINCT candidate.order_id
+  FROM public.orders order_row
+  CROSS JOIN LATERAL
+    public.customer_review_cycle_candidates_v1(order_row.id) candidate
+  WHERE candidate.receipt_recorded_at <= now()
+    AND candidate.receipt_recorded_at + interval '24 hours' > now()
+    AND NOT EXISTS (
+      SELECT 1
+      FROM public.customer_review_cycle_legacy_issues issue
+      WHERE issue.order_id = candidate.order_id
+        AND issue.resolved_at IS NULL
+    )
+    AND NOT EXISTS (
+      SELECT 1
+      FROM public.customer_order_review_links untimed_link
+      WHERE untimed_link.order_id = candidate.order_id
+        AND untimed_link.is_active = true
+        AND untimed_link.expires_at IS NULL
+    )
+    AND (
+      SELECT count(*)
+      FROM public.customer_order_review_links active_link
+      WHERE active_link.order_id = candidate.order_id
+        AND active_link.is_active = true
+    ) <= 1
+),
+missing_cycles AS (
+  SELECT order_id
+  FROM materialisable_open_candidate_orders candidate_order
+  WHERE NOT EXISTS (
+    SELECT 1
+    FROM public.customer_order_review_links link_row
+    WHERE link_row.order_id = candidate_order.order_id
+      AND link_row.is_active = true
+      AND link_row.expires_at IS NOT NULL
+      AND link_row.expires_at > now()
+  )
+),
+unexplained_empty_cycles AS (
+  SELECT link_row.id
+  FROM public.customer_order_review_links link_row
+  WHERE link_row.is_active = true
+    AND link_row.expires_at IS NOT NULL
+    AND link_row.expires_at > now()
+    AND NOT EXISTS (
+      SELECT 1
+      FROM public.customer_review_cycle_memberships membership
+      WHERE membership.review_link_id = link_row.id
+        AND membership.membership_status = 'active'
+    )
+    AND NOT EXISTS (
+      SELECT 1
+      FROM public.customer_review_cycle_legacy_issues issue
+      WHERE issue.order_id = link_row.order_id
+        AND issue.review_link_id = link_row.id
+        AND issue.resolved_at IS NULL
+    )
+),
+duplicate_cycle_fingerprints AS (
+  SELECT membership.review_link_id, membership.membership_fingerprint
+  FROM public.customer_review_cycle_memberships membership
+  GROUP BY membership.review_link_id, membership.membership_fingerprint
+  HAVING count(*) > 1
+)
+SELECT
+  CASE
+    WHEN position(
+      'md5(v_link_id::text || ''|'' || candidate.source_fingerprint)'
+      IN materialiser.definition
+    ) = 0 THEN 'FAIL: cycle-scoped fingerprint missing'
+    WHEN materialiser.definition ~ E'(^|\\n)[[:space:]]*candidate\\.source_fingerprint,'
+      THEN 'FAIL: raw candidate fingerprint write remains'
+    WHEN trigger_state.trigger_count <> 4 OR NOT trigger_state.all_enabled
+      THEN 'FAIL: required receipt/allocation/eligibility triggers missing or disabled'
+    WHEN EXISTS (SELECT 1 FROM missing_cycles)
+      THEN 'FAIL: materialisable open candidate orders remain without review cycles'
+    WHEN EXISTS (SELECT 1 FROM unexplained_empty_cycles)
+      THEN 'FAIL: unexplained open timed review cycles exist without active membership'
+    WHEN EXISTS (SELECT 1 FROM duplicate_cycle_fingerprints)
+      THEN 'FAIL: duplicate membership fingerprint exists inside one review cycle'
+    ELSE 'PASS'
+  END AS regression_result,
+  jsonb_build_object(
+    'required_trigger_count', trigger_state.trigger_count,
+    'all_required_triggers_enabled', trigger_state.all_enabled,
+    'materialisable_open_candidate_order_count', (
+      SELECT count(*) FROM materialisable_open_candidate_orders
+    ),
+    'missing_cycle_count', (SELECT count(*) FROM missing_cycles),
+    'unexplained_empty_open_cycle_count', (
+      SELECT count(*) FROM unexplained_empty_cycles
+    ),
+    'duplicate_cycle_fingerprint_count', (
+      SELECT count(*) FROM duplicate_cycle_fingerprints
+    )
+  ) AS details
+FROM materialiser
+CROSS JOIN trigger_state;
