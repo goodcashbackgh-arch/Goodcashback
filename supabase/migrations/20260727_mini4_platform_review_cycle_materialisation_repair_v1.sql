@@ -3,147 +3,292 @@ BEGIN;
 SET LOCAL lock_timeout = '15s';
 SET LOCAL statement_timeout = '0';
 
--- Surgical correction of the deployed Mini 4 materialiser.
---
--- Proven defects:
--- 1. membership_fingerprint was candidate-scoped rather than cycle-scoped;
--- 2. the new-cycle path inserted a timed link before re-reading candidates.
---    customer_review_cycle_candidates_v1 deliberately suppresses candidates
---    behind a timed link with no proven membership, so the materialiser blocked
---    its own insert, deleted the link and returned zero.
---
--- The corrected path creates the new link with expires_at NULL inside the same
--- transaction, inserts immutable memberships, then publishes the already-fixed
--- deadline only after at least one membership exists. No other transaction can
--- observe the temporary untimed state.
-DO $patch$
+CREATE OR REPLACE FUNCTION public.internal_materialize_customer_review_cycles_v1(
+  p_order_id uuid,
+  p_created_by_staff_id uuid DEFAULT NULL::uuid
+)
+RETURNS integer
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path TO public, pg_temp
+AS $function$
 DECLARE
-  v_proc regprocedure :=
-    'public.internal_materialize_customer_review_cycles_v1(uuid,uuid)'::regprocedure;
-  v_definition text;
-  v_patched text;
-  v_raw_fingerprint_count integer;
-  v_timed_insert_count integer;
-  v_publish_marker_count integer;
-  v_success_block text;
-  v_replacement_block text;
+  v_active_total_count integer;
+  v_active_timed_count integer;
+  v_active_untimed_count integer;
+  v_link_id uuid;
+  v_deadline timestamptz;
+  v_anchor_receipt timestamptz;
+  v_inserted integer := 0;
+  v_total_inserted integer := 0;
 BEGIN
-  SELECT pg_get_functiondef(v_proc)
-    INTO v_definition;
-
-  IF position(
-       'md5(v_link_id::text || ''|'' || candidate.source_fingerprint)'
-       IN v_definition
-     ) > 0
-     AND position(
-       'SET expires_at = v_deadline'
-       IN v_definition
-     ) > 0
-     AND position(
-       E'VALUES (\n    p_order_id,\n    true,\n    NULL,\n    p_created_by_staff_id'
-       IN replace(v_definition, chr(13), '')
-     ) > 0 THEN
-    RETURN;
-  END IF;
-
-  SELECT count(*)::integer
-    INTO v_raw_fingerprint_count
-  FROM regexp_matches(
-    v_definition,
-    E'(^|\\n)[[:space:]]*candidate\\.source_fingerprint,',
-    'g'
+  PERFORM pg_advisory_xact_lock(
+    hashtext('customer_review_cycle|' || p_order_id::text)
   );
 
-  IF v_raw_fingerprint_count <> 2 THEN
-    RAISE EXCEPTION
-      'Expected exactly two raw candidate fingerprint writes, found %; no replacement applied.',
-      v_raw_fingerprint_count;
+  PERFORM 1
+  FROM public.orders
+  WHERE id = p_order_id
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RETURN 0;
   END IF;
 
-  SELECT count(*)::integer
-    INTO v_timed_insert_count
-  FROM regexp_matches(
-    replace(v_definition, chr(13), ''),
-    E'VALUES \\(\\n[[:space:]]*p_order_id,\\n[[:space:]]*true,\\n[[:space:]]*v_deadline,\\n[[:space:]]*p_created_by_staff_id\\n[[:space:]]*\\)',
-    'g'
-  );
+  UPDATE public.customer_order_review_links link_row
+  SET is_active = false
+  WHERE link_row.order_id = p_order_id
+    AND link_row.is_active = true
+    AND link_row.expires_at IS NOT NULL
+    AND link_row.expires_at <= now();
 
-  IF v_timed_insert_count <> 1 THEN
-    RAISE EXCEPTION
-      'Expected exactly one new-cycle timed-link insert, found %; no replacement applied.',
-      v_timed_insert_count;
+  UPDATE public.customer_review_cycle_memberships membership
+  SET membership_status = 'expired',
+      status_updated_at = COALESCE(membership.status_updated_at, now())
+  FROM public.customer_order_review_links link_row
+  WHERE link_row.id = membership.review_link_id
+    AND link_row.order_id = p_order_id
+    AND link_row.expires_at IS NOT NULL
+    AND link_row.expires_at <= now()
+    AND membership.membership_status = 'active';
+
+  SELECT COUNT(*)::integer
+  INTO v_active_total_count
+  FROM public.customer_order_review_links link_row
+  WHERE link_row.order_id = p_order_id
+    AND link_row.is_active = true;
+
+  IF v_active_total_count > 1 THEN
+    INSERT INTO public.customer_review_cycle_legacy_issues (
+      order_id,
+      issue_code,
+      issue_detail
+    ) VALUES (
+      p_order_id,
+      'multiple_active_review_links',
+      'More than one active review link exists. No membership is guessed and review-cycle materialisation fails closed.'
+    )
+    ON CONFLICT (order_id, issue_code) DO NOTHING;
+
+    RETURN 0;
   END IF;
 
-  SELECT count(*)::integer
-    INTO v_publish_marker_count
-  FROM regexp_matches(
-    replace(v_definition, chr(13), ''),
-    E'IF v_total_inserted = 0 THEN[\\s\\S]*?END IF;\\n\\n[[:space:]]*RETURN v_total_inserted;',
-    'g'
-  );
+  SELECT COUNT(*)::integer
+  INTO v_active_untimed_count
+  FROM public.customer_order_review_links link_row
+  WHERE link_row.order_id = p_order_id
+    AND link_row.is_active = true
+    AND link_row.expires_at IS NULL;
 
-  IF v_publish_marker_count <> 1 THEN
-    RAISE EXCEPTION
-      'Expected exactly one new-cycle success return block, found %; no replacement applied.',
-      v_publish_marker_count;
+  IF v_active_untimed_count > 1 THEN
+    INSERT INTO public.customer_review_cycle_legacy_issues (
+      order_id,
+      issue_code,
+      issue_detail
+    ) VALUES (
+      p_order_id,
+      'multiple_active_untimed_review_links',
+      'More than one active untimed legacy review link exists. Compatibility is preserved and new timed-cycle creation fails closed.'
+    )
+    ON CONFLICT (order_id, issue_code) DO NOTHING;
+
+    RETURN 0;
   END IF;
 
-  v_patched := regexp_replace(
-    replace(v_definition, chr(13), ''),
-    E'(^|\\n)([[:space:]]*)candidate\\.source_fingerprint,',
-    E'\\1\\2md5(v_link_id::text || ''|'' || candidate.source_fingerprint),',
-    'g'
-  );
-
-  v_patched := regexp_replace(
-    v_patched,
-    E'(VALUES \\(\\n[[:space:]]*p_order_id,\\n[[:space:]]*true,\\n)[[:space:]]*v_deadline,(\\n[[:space:]]*p_created_by_staff_id\\n[[:space:]]*\\))',
-    E'\\1    NULL,\\2'
-  );
-
-  v_success_block :=
-      '  IF v_total_inserted = 0 THEN' || chr(10)
-    || '    DELETE FROM public.customer_order_review_links' || chr(10)
-    || '    WHERE id = v_link_id;' || chr(10)
-    || '    RETURN 0;' || chr(10)
-    || '  END IF;' || chr(10) || chr(10)
-    || '  RETURN v_total_inserted;';
-
-  v_replacement_block :=
-      '  IF v_total_inserted = 0 THEN' || chr(10)
-    || '    DELETE FROM public.customer_order_review_links' || chr(10)
-    || '    WHERE id = v_link_id;' || chr(10)
-    || '    RETURN 0;' || chr(10)
-    || '  END IF;' || chr(10) || chr(10)
-    || '  UPDATE public.customer_order_review_links' || chr(10)
-    || '  SET expires_at = v_deadline' || chr(10)
-    || '  WHERE id = v_link_id;' || chr(10) || chr(10)
-    || '  RETURN v_total_inserted;';
-
-  IF position(v_success_block IN v_patched) = 0 THEN
-    RAISE EXCEPTION
-      'Expected exact new-cycle success block was not found; no replacement applied.';
+  IF v_active_untimed_count = 1 THEN
+    RETURN 0;
   END IF;
 
-  v_patched := replace(v_patched, v_success_block, v_replacement_block);
-
-  IF position(
-       'md5(v_link_id::text || ''|'' || candidate.source_fingerprint)'
-       IN v_patched
-     ) = 0
-     OR position('SET expires_at = v_deadline' IN v_patched) = 0
-     OR position(
-       E'VALUES (\n    p_order_id,\n    true,\n    NULL,\n    p_created_by_staff_id'
-       IN v_patched
-     ) = 0
-     OR position(E'\\n' IN v_patched) > 0 THEN
-    RAISE EXCEPTION
-      'Mini 4 materialiser patch did not produce valid cycle-scoped and self-suppression-safe SQL.';
+  IF EXISTS (
+    SELECT 1
+    FROM public.customer_review_cycle_legacy_issues issue
+    WHERE issue.order_id = p_order_id
+      AND issue.resolved_at IS NULL
+  ) THEN
+    RETURN 0;
   END IF;
 
-  EXECUTE v_patched;
-END
-$patch$;
+  SELECT COUNT(*)::integer
+  INTO v_active_timed_count
+  FROM public.customer_order_review_links link_row
+  WHERE link_row.order_id = p_order_id
+    AND link_row.is_active = true
+    AND link_row.expires_at IS NOT NULL
+    AND link_row.expires_at > now();
+
+  IF v_active_timed_count > 1 THEN
+    INSERT INTO public.customer_review_cycle_legacy_issues (
+      order_id,
+      issue_code,
+      issue_detail
+    ) VALUES (
+      p_order_id,
+      'multiple_active_timed_review_links',
+      'More than one active timed review link exists. No membership is guessed and cycle materialisation fails closed.'
+    )
+    ON CONFLICT (order_id, issue_code) DO NOTHING;
+
+    RETURN 0;
+  END IF;
+
+  SELECT
+    link_row.id,
+    link_row.expires_at
+  INTO
+    v_link_id,
+    v_deadline
+  FROM public.customer_order_review_links link_row
+  WHERE link_row.order_id = p_order_id
+    AND link_row.is_active = true
+    AND link_row.expires_at IS NOT NULL
+    AND link_row.expires_at > now()
+  ORDER BY link_row.created_at, link_row.id
+  LIMIT 1
+  FOR UPDATE;
+
+  IF v_link_id IS NOT NULL THEN
+    IF NOT EXISTS (
+      SELECT 1
+      FROM public.customer_review_cycle_memberships membership
+      WHERE membership.review_link_id = v_link_id
+    ) THEN
+      INSERT INTO public.customer_review_cycle_legacy_issues (
+        order_id,
+        review_link_id,
+        issue_code,
+        issue_detail
+      ) VALUES (
+        p_order_id,
+        v_link_id,
+        'pre_mini4_timed_membership_unproven',
+        'The existing timed link and stored deadline were preserved, but exact historical membership cannot be proven without guessing.'
+      )
+      ON CONFLICT (order_id, issue_code) DO NOTHING;
+
+      RETURN 0;
+    END IF;
+
+    INSERT INTO public.customer_review_cycle_memberships (
+      review_link_id,
+      order_id,
+      supplier_invoice_id,
+      supplier_invoice_line_id,
+      tracking_submission_id,
+      tracking_line_allocation_id,
+      review_qty,
+      goods_amount_gbp,
+      delivery_share_gbp,
+      discount_share_gbp,
+      receipt_recorded_at,
+      membership_status,
+      membership_fingerprint,
+      legacy_backfill_yn,
+      created_by_staff_id
+    )
+    SELECT
+      v_link_id,
+      candidate.order_id,
+      candidate.supplier_invoice_id,
+      candidate.supplier_invoice_line_id,
+      candidate.tracking_submission_id,
+      candidate.tracking_line_allocation_id,
+      candidate.review_qty,
+      candidate.goods_amount_gbp,
+      candidate.delivery_share_gbp,
+      candidate.discount_share_gbp,
+      candidate.receipt_recorded_at,
+      'active',
+      md5(v_link_id::text || '|' || candidate.source_fingerprint),
+      false,
+      p_created_by_staff_id
+    FROM public.customer_review_cycle_candidates_v1(p_order_id) candidate
+    WHERE candidate.receipt_recorded_at < v_deadline
+      AND candidate.receipt_recorded_at + interval '24 hours' > now()
+    ON CONFLICT DO NOTHING;
+
+    GET DIAGNOSTICS v_inserted = ROW_COUNT;
+    RETURN v_inserted;
+  END IF;
+
+  SELECT MIN(candidate.receipt_recorded_at)
+  INTO v_anchor_receipt
+  FROM public.customer_review_cycle_candidates_v1(p_order_id) candidate
+  WHERE candidate.receipt_recorded_at <= now()
+    AND candidate.receipt_recorded_at + interval '24 hours' > now();
+
+  IF v_anchor_receipt IS NULL THEN
+    RETURN 0;
+  END IF;
+
+  v_deadline := v_anchor_receipt + interval '24 hours';
+
+  INSERT INTO public.customer_order_review_links (
+    order_id,
+    is_active,
+    expires_at,
+    created_by_staff_id
+  ) VALUES (
+    p_order_id,
+    true,
+    NULL,
+    p_created_by_staff_id
+  )
+  RETURNING id INTO v_link_id;
+
+  INSERT INTO public.customer_review_cycle_memberships (
+    review_link_id,
+    order_id,
+    supplier_invoice_id,
+    supplier_invoice_line_id,
+    tracking_submission_id,
+    tracking_line_allocation_id,
+    review_qty,
+    goods_amount_gbp,
+    delivery_share_gbp,
+    discount_share_gbp,
+    receipt_recorded_at,
+    membership_status,
+    membership_fingerprint,
+    legacy_backfill_yn,
+    created_by_staff_id
+  )
+  SELECT
+    v_link_id,
+    candidate.order_id,
+    candidate.supplier_invoice_id,
+    candidate.supplier_invoice_line_id,
+    candidate.tracking_submission_id,
+    candidate.tracking_line_allocation_id,
+    candidate.review_qty,
+    candidate.goods_amount_gbp,
+    candidate.delivery_share_gbp,
+    candidate.discount_share_gbp,
+    candidate.receipt_recorded_at,
+    'active',
+    md5(v_link_id::text || '|' || candidate.source_fingerprint),
+    false,
+    p_created_by_staff_id
+  FROM public.customer_review_cycle_candidates_v1(p_order_id) candidate
+  WHERE candidate.receipt_recorded_at < v_deadline
+    AND candidate.receipt_recorded_at + interval '24 hours' > now()
+  ON CONFLICT DO NOTHING;
+
+  GET DIAGNOSTICS v_total_inserted = ROW_COUNT;
+
+  IF v_total_inserted = 0 THEN
+    DELETE FROM public.customer_order_review_links
+    WHERE id = v_link_id;
+
+    RETURN 0;
+  END IF;
+
+  UPDATE public.customer_order_review_links
+  SET expires_at = v_deadline
+  WHERE id = v_link_id;
+
+  RETURN v_total_inserted;
+END;
+$function$;
 
 REVOKE ALL ON FUNCTION
   public.internal_materialize_customer_review_cycles_v1(uuid, uuid)
@@ -158,7 +303,7 @@ RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public, pg_temp
-AS $$
+AS $function$
 DECLARE
   v_order_id uuid;
 BEGIN
@@ -173,6 +318,7 @@ BEGIN
     LOOP
       PERFORM public.internal_materialize_customer_review_cycles_v1(v_order_id, NULL);
     END LOOP;
+
     RETURN NEW;
 
   ELSIF TG_TABLE_NAME = 'supplier_invoices' THEN
@@ -185,15 +331,17 @@ BEGIN
 
   RETURN NEW;
 END;
-$$;
+$function$;
 
 REVOKE ALL ON FUNCTION public.customer_review_candidate_change_materialize_v1()
 FROM PUBLIC, anon, authenticated;
+
 GRANT EXECUTE ON FUNCTION public.customer_review_candidate_change_materialize_v1()
 TO service_role;
 
 DROP TRIGGER IF EXISTS trg_customer_review_allocation_materialize_v1
   ON public.order_tracking_line_allocations;
+
 CREATE TRIGGER trg_customer_review_allocation_materialize_v1
 AFTER INSERT OR UPDATE OF
   order_id,
@@ -213,6 +361,7 @@ EXECUTE FUNCTION public.customer_review_candidate_change_materialize_v1();
 
 DROP TRIGGER IF EXISTS trg_customer_review_supplier_line_materialize_v1
   ON public.supplier_invoice_lines;
+
 CREATE TRIGGER trg_customer_review_supplier_line_materialize_v1
 AFTER UPDATE OF eligible_for_invoice_yn
 ON public.supplier_invoice_lines
@@ -224,6 +373,7 @@ EXECUTE FUNCTION public.customer_review_candidate_change_materialize_v1();
 
 DROP TRIGGER IF EXISTS trg_customer_review_supplier_invoice_materialize_v1
   ON public.supplier_invoices;
+
 CREATE TRIGGER trg_customer_review_supplier_invoice_materialize_v1
 AFTER UPDATE OF review_status
 ON public.supplier_invoices
@@ -258,7 +408,7 @@ BEGIN
           AND link_row.expires_at IS NULL
       )
       AND (
-        SELECT count(*)
+        SELECT COUNT(*)
         FROM public.customer_order_review_links link_row
         WHERE link_row.order_id = candidate.order_id
           AND link_row.is_active = true
@@ -266,7 +416,7 @@ BEGIN
   LOOP
     PERFORM public.internal_materialize_customer_review_cycles_v1(v_order_id, NULL);
   END LOOP;
-END
+END;
 $recover$;
 
 DO $verify$
@@ -274,8 +424,8 @@ DECLARE
   v_missing_cycle_count integer;
   v_unexplained_empty_cycle_count integer;
 BEGIN
-  SELECT count(*)::integer
-    INTO v_missing_cycle_count
+  SELECT COUNT(*)::integer
+  INTO v_missing_cycle_count
   FROM (
     SELECT DISTINCT candidate.order_id
     FROM public.orders order_row
@@ -297,7 +447,7 @@ BEGIN
           AND untimed_link.expires_at IS NULL
       )
       AND (
-        SELECT count(*)
+        SELECT COUNT(*)
         FROM public.customer_order_review_links active_link
         WHERE active_link.order_id = candidate.order_id
           AND active_link.is_active = true
@@ -312,8 +462,8 @@ BEGIN
       )
   ) missing_cycle;
 
-  SELECT count(*)::integer
-    INTO v_unexplained_empty_cycle_count
+  SELECT COUNT(*)::integer
+  INTO v_unexplained_empty_cycle_count
   FROM public.customer_order_review_links link_row
   WHERE link_row.is_active = true
     AND link_row.expires_at IS NOT NULL
@@ -338,7 +488,7 @@ BEGIN
       v_missing_cycle_count,
       v_unexplained_empty_cycle_count;
   END IF;
-END
+END;
 $verify$;
 
 COMMIT;
