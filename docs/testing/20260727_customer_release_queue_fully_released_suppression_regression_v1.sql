@@ -27,6 +27,7 @@ DO $proof$
 DECLARE
   v_bad integer;
   v_definition text;
+  v_compact text;
 BEGIN
   SELECT COUNT(*)
   INTO v_bad
@@ -103,11 +104,13 @@ BEGIN
          )
   INTO v_definition;
 
-  IF strpos(v_definition, 'internal_customer_sales_release_sources_v1') = 0
-     OR strpos(v_definition, 'WHERE s.blocker IS NULL') = 0
-     OR strpos(v_definition, 'COALESCE(v_amount,0)<=0') = 0
-     OR strpos(v_definition, 'pg_advisory_xact_lock') = 0
-     OR strpos(v_definition, 'customer_sales_release_lines') = 0
+  v_compact := regexp_replace(lower(v_definition), '[[:space:]]+', '', 'g');
+
+  IF strpos(v_compact, 'internal_customer_sales_release_sources_v1') = 0
+     OR strpos(v_compact, 's.blockerisnull') = 0
+     OR strpos(v_compact, 'coalesce(v_amount,0)<=0') = 0
+     OR strpos(v_compact, 'pg_advisory_xact_lock') = 0
+     OR strpos(v_compact, 'customer_sales_release_lines') = 0
   THEN
     RAISE EXCEPTION 'FAIL: existing draft creator fail-closed/durable-ledger controls changed';
   END IF;
@@ -117,10 +120,12 @@ BEGIN
          )
   INTO v_definition;
 
-  IF strpos(v_definition, 'used_goods AS') = 0
-     OR strpos(v_definition, 'used_shipping AS') = 0
-     OR strpos(v_definition, 'source_fully_released') = 0
-     OR strpos(v_definition, 'supplementary') = 0
+  v_compact := regexp_replace(lower(v_definition), '[[:space:]]+', '', 'g');
+
+  IF strpos(v_compact, 'used_goodsas') = 0
+     OR strpos(v_compact, 'used_shippingas') = 0
+     OR strpos(v_compact, 'source_fully_released') = 0
+     OR strpos(v_compact, 'supplementary') = 0
   THEN
     RAISE EXCEPTION 'FAIL: protected multi-invoice delta resolver changed or regressed';
   END IF;
