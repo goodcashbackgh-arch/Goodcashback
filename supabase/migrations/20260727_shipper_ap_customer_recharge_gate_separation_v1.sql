@@ -8,8 +8,9 @@ SET LOCAL statement_timeout = '0';
 --
 -- One production-object correction only: preserve the exact canonical queue and
 -- add accepted/current shipper invoices excluded solely because customer shipping
--- apportionment is outstanding. Customer recharge, UI/actions, freeze payload,
--- revalidation, Mini-build 4 and Sage posting remain unchanged.
+-- apportionment is outstanding. Frozen/not-posted rows remain resolvable for
+-- revalidation; terminally posted sources are not re-admitted. Customer recharge,
+-- UI/actions, freeze payload, revalidation, Mini-build 4 and Sage posting remain unchanged.
 
 DO $guard$
 DECLARE
@@ -43,7 +44,9 @@ BEGIN
      OR to_regclass('public.shipper_shipment_batches') IS NULL
      OR to_regclass('public.shippers') IS NULL
      OR to_regclass('public.shipping_cost_allocations') IS NULL
-     OR to_regclass('public.orders') IS NULL THEN
+     OR to_regclass('public.orders') IS NULL
+     OR to_regclass('public.sage_posting_snapshots') IS NULL
+     OR to_regclass('public.sage_posting_batch_rows') IS NULL THEN
     RAISE EXCEPTION 'Required governed relation is missing';
   END IF;
 
@@ -244,6 +247,23 @@ AS $function$
           AND existing_row.source_table = 'shipping_documents'
           AND existing_row.source_id = document_row.id
       )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM public.sage_posting_snapshots snapshot_row
+        WHERE snapshot_row.source_table = 'shipping_documents'
+          AND snapshot_row.source_id = document_row.id
+          AND snapshot_row.document_lane = 'shipper_ap'
+          AND snapshot_row.active = true
+          AND snapshot_row.sage_posting_status = 'posted'
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM public.sage_posting_batch_rows batch_row_posted
+        WHERE batch_row_posted.source_table = 'shipping_documents'
+          AND batch_row_posted.source_id = document_row.id
+          AND batch_row_posted.document_lane = 'shipper_ap'
+          AND batch_row_posted.posting_status = 'posted'
+      )
   )
   SELECT p.* FROM preserved_queue p
   UNION ALL
@@ -265,7 +285,7 @@ COMMENT ON FUNCTION public.internal_ready_for_sage_queue_v2_pre_shipper_ap_gate_
 IS 'Private exact canonical Sage-ready queue immediately before shipper AP/customer recharge gate separation. Application roles cannot execute it.';
 
 COMMENT ON FUNCTION public.internal_ready_for_sage_queue_v2()
-IS 'Canonical Sage-ready queue. Preserves all preceding rows exactly and additively admits accepted current unapportioned shipper invoices to the existing shipper-AP route. Customer shipping recharge remains governed by approved apportionment.';
+IS 'Canonical Sage-ready queue. Preserves all preceding rows exactly and additively admits accepted current unapportioned, not-posted shipper invoices to the existing shipper-AP route. Customer shipping recharge remains governed by approved apportionment.';
 
 DO $verify$
 DECLARE
@@ -316,8 +336,8 @@ BEGIN
   IF position('shipper_shipment_batch_effective_lines_v1' IN v_definition) = 0
      OR position('internal_ready_for_sage_queue_v2_pre_shipper_ap_gate_separation_v1' IN v_definition) = 0
      OR position('allocation_status = ''approved''' IN v_definition) = 0
-     OR position('sage_posting_snapshots' IN v_definition) > 0
-     OR position('sage_posting_batch_rows' IN v_definition) > 0
+     OR position('sage_posting_status = ''posted''' IN v_definition) = 0
+     OR position('posting_status = ''posted''' IN v_definition) = 0
      OR position('customer_recharge_apportionment_status' IN v_definition) > 0 THEN
     RAISE EXCEPTION 'Replacement canonical queue does not match governed composition boundary';
   END IF;
