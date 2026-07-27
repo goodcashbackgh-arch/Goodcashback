@@ -153,47 +153,37 @@ WHEN (
 )
 EXECUTE FUNCTION public.customer_review_candidate_change_materialize_v1();
 
--- Recover only orders that the existing materialiser is permitted to create or
--- join now. Legacy fail-closed states remain untouched and auditable.
+-- Recover only orders with at least one candidate whose own receipt window is
+-- currently open. This prevents an open receipt on package A being combined
+-- with candidates belonging only to an expired package B on the same order.
 DO $recover$
 DECLARE
   v_order_id uuid;
 BEGIN
   FOR v_order_id IN
-    SELECT DISTINCT tracking_row.order_id
-    FROM public.order_tracking_submissions tracking_row
-    JOIN LATERAL (
-      SELECT receipt.receipt_status, receipt.recorded_at
-      FROM public.shipper_package_receipts receipt
-      WHERE receipt.tracking_submission_id = tracking_row.id
-      ORDER BY receipt.created_at DESC, receipt.id DESC
-      LIMIT 1
-    ) latest_receipt ON true
-    WHERE tracking_row.superseded_at IS NULL
-      AND latest_receipt.receipt_status = 'received_clean'
-      AND latest_receipt.recorded_at <= now()
-      AND latest_receipt.recorded_at + interval '24 hours' > now()
-      AND EXISTS (
-        SELECT 1
-        FROM public.customer_review_cycle_candidates_v1(tracking_row.order_id)
-      )
+    SELECT DISTINCT candidate.order_id
+    FROM public.orders order_row
+    CROSS JOIN LATERAL
+      public.customer_review_cycle_candidates_v1(order_row.id) candidate
+    WHERE candidate.receipt_recorded_at <= now()
+      AND candidate.receipt_recorded_at + interval '24 hours' > now()
       AND NOT EXISTS (
         SELECT 1
         FROM public.customer_review_cycle_legacy_issues issue
-        WHERE issue.order_id = tracking_row.order_id
+        WHERE issue.order_id = candidate.order_id
           AND issue.resolved_at IS NULL
       )
       AND NOT EXISTS (
         SELECT 1
         FROM public.customer_order_review_links link_row
-        WHERE link_row.order_id = tracking_row.order_id
+        WHERE link_row.order_id = candidate.order_id
           AND link_row.is_active = true
           AND link_row.expires_at IS NULL
       )
       AND (
         SELECT count(*)
         FROM public.customer_order_review_links link_row
-        WHERE link_row.order_id = tracking_row.order_id
+        WHERE link_row.order_id = candidate.order_id
           AND link_row.is_active = true
       ) <= 1
   LOOP
@@ -202,8 +192,8 @@ BEGIN
 END
 $recover$;
 
--- Platform invariants apply to materialisable orders. Explicit legacy
--- fail-closed states are not silently rewritten and do not make deployment fail.
+-- Platform invariants apply only to orders with a candidate whose own receipt
+-- window is open. Explicit legacy fail-closed states remain untouched.
 DO $verify$
 DECLARE
   v_missing_cycle_count integer;
@@ -212,46 +202,35 @@ BEGIN
   SELECT count(*)::integer
     INTO v_missing_cycle_count
   FROM (
-    SELECT DISTINCT tracking_row.order_id
-    FROM public.order_tracking_submissions tracking_row
-    JOIN LATERAL (
-      SELECT receipt.receipt_status, receipt.recorded_at
-      FROM public.shipper_package_receipts receipt
-      WHERE receipt.tracking_submission_id = tracking_row.id
-      ORDER BY receipt.created_at DESC, receipt.id DESC
-      LIMIT 1
-    ) latest_receipt ON true
-    WHERE tracking_row.superseded_at IS NULL
-      AND latest_receipt.receipt_status = 'received_clean'
-      AND latest_receipt.recorded_at <= now()
-      AND latest_receipt.recorded_at + interval '24 hours' > now()
-      AND EXISTS (
-        SELECT 1
-        FROM public.customer_review_cycle_candidates_v1(tracking_row.order_id)
-      )
+    SELECT DISTINCT candidate.order_id
+    FROM public.orders order_row
+    CROSS JOIN LATERAL
+      public.customer_review_cycle_candidates_v1(order_row.id) candidate
+    WHERE candidate.receipt_recorded_at <= now()
+      AND candidate.receipt_recorded_at + interval '24 hours' > now()
       AND NOT EXISTS (
         SELECT 1
         FROM public.customer_review_cycle_legacy_issues issue
-        WHERE issue.order_id = tracking_row.order_id
+        WHERE issue.order_id = candidate.order_id
           AND issue.resolved_at IS NULL
       )
       AND NOT EXISTS (
         SELECT 1
         FROM public.customer_order_review_links untimed_link
-        WHERE untimed_link.order_id = tracking_row.order_id
+        WHERE untimed_link.order_id = candidate.order_id
           AND untimed_link.is_active = true
           AND untimed_link.expires_at IS NULL
       )
       AND (
         SELECT count(*)
         FROM public.customer_order_review_links active_link
-        WHERE active_link.order_id = tracking_row.order_id
+        WHERE active_link.order_id = candidate.order_id
           AND active_link.is_active = true
       ) <= 1
       AND NOT EXISTS (
         SELECT 1
         FROM public.customer_order_review_links link_row
-        WHERE link_row.order_id = tracking_row.order_id
+        WHERE link_row.order_id = candidate.order_id
           AND link_row.is_active = true
           AND link_row.expires_at IS NOT NULL
           AND link_row.expires_at > now()
