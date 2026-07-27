@@ -6,10 +6,10 @@ SET LOCAL statement_timeout = '0';
 -- Governing contract:
 -- docs/governing-pack/backend/SHIPPER_AP_AND_CUSTOMER_SHIPPING_RECHARGE_GATE_SEPARATION_ADDENDUM_v1.md
 --
--- Corrects only canonical shipper-AP queue admission. Existing queue rows are
--- preserved exactly. Customer shipping recharge remains behind approved
--- apportionment. UI/actions, freeze payload construction, revalidation, Mini-build
--- 4 and Sage posting are unchanged.
+-- One production-object correction only: preserve the exact canonical queue and
+-- add accepted/current shipper invoices excluded solely because customer shipping
+-- apportionment is outstanding. Customer recharge, UI/actions, freeze payload,
+-- revalidation, Mini-build 4 and Sage posting remain unchanged.
 
 DO $guard$
 DECLARE
@@ -87,9 +87,9 @@ BEGIN
 
   WITH actual AS (
     SELECT
-      pg_get_userbyid(a.grantor) AS grantor_name,
-      CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END AS grantee_name,
-      a.privilege_type,
+      pg_get_userbyid(a.grantor)::text AS grantor_name,
+      CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee)::text END AS grantee_name,
+      a.privilege_type::text AS privilege_type,
       a.is_grantable
     FROM pg_proc p
     JOIN pg_namespace n ON n.oid = p.pronamespace
@@ -99,15 +99,15 @@ BEGIN
       AND p.pronargs = 0
   ), expected(grantor_name, grantee_name, privilege_type, is_grantable) AS (
     VALUES
-      ('postgres'::name, 'postgres'::name, 'EXECUTE'::text, false),
-      ('postgres'::name, 'authenticated'::name, 'EXECUTE'::text, false),
-      ('postgres'::name, 'service_role'::name, 'EXECUTE'::text, false)
-  ), diff AS (
+      ('postgres', 'postgres', 'EXECUTE', false),
+      ('postgres', 'authenticated', 'EXECUTE', false),
+      ('postgres', 'service_role', 'EXECUTE', false)
+  ), differences AS (
     (SELECT * FROM actual EXCEPT SELECT * FROM expected)
     UNION ALL
     (SELECT * FROM expected EXCEPT SELECT * FROM actual)
   )
-  SELECT COUNT(*) INTO v_acl_mismatch FROM diff;
+  SELECT COUNT(*) INTO v_acl_mismatch FROM differences;
 
   IF v_acl_mismatch <> 0
      OR has_function_privilege('anon', 'public.internal_ready_for_sage_queue_v2()', 'EXECUTE')
@@ -122,18 +122,10 @@ $guard$;
 ALTER FUNCTION public.internal_ready_for_sage_queue_v2()
   RENAME TO internal_ready_for_sage_queue_v2_pre_shipper_ap_gate_separation_v1;
 
-REVOKE ALL ON FUNCTION
-  public.internal_ready_for_sage_queue_v2_pre_shipper_ap_gate_separation_v1()
-FROM PUBLIC;
-REVOKE ALL ON FUNCTION
-  public.internal_ready_for_sage_queue_v2_pre_shipper_ap_gate_separation_v1()
-FROM anon;
-REVOKE ALL ON FUNCTION
-  public.internal_ready_for_sage_queue_v2_pre_shipper_ap_gate_separation_v1()
-FROM authenticated;
-REVOKE ALL ON FUNCTION
-  public.internal_ready_for_sage_queue_v2_pre_shipper_ap_gate_separation_v1()
-FROM service_role;
+REVOKE ALL ON FUNCTION public.internal_ready_for_sage_queue_v2_pre_shipper_ap_gate_separation_v1() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.internal_ready_for_sage_queue_v2_pre_shipper_ap_gate_separation_v1() FROM anon;
+REVOKE ALL ON FUNCTION public.internal_ready_for_sage_queue_v2_pre_shipper_ap_gate_separation_v1() FROM authenticated;
+REVOKE ALL ON FUNCTION public.internal_ready_for_sage_queue_v2_pre_shipper_ap_gate_separation_v1() FROM service_role;
 
 CREATE FUNCTION public.internal_ready_for_sage_queue_v2()
 RETURNS TABLE (
@@ -206,16 +198,10 @@ AS $function$
           NULLIF(document_row.extracted_document_ref::text, ''),
           NULLIF(document_row.document_ref::text, '')
         ),
-        'document_date', COALESCE(
-          document_row.extracted_document_date,
-          document_row.document_date
-        ),
+        'document_date', COALESCE(document_row.extracted_document_date, document_row.document_date),
         'booking_ref', batch_row.booking_ref::text,
         'shipper_name', shipper_row.name::text,
-        'document_total', COALESCE(
-          document_row.extracted_total_amount,
-          document_row.total_amount
-        ),
+        'document_total', COALESCE(document_row.extracted_total_amount, document_row.total_amount),
         'currency', COALESCE(
           NULLIF(document_row.extracted_currency_code::text, ''),
           NULLIF(document_row.currency_code::text, ''),
@@ -236,8 +222,7 @@ AS $function$
         ', ' ORDER BY order_row.order_ref::text
       )::text AS order_ref
       FROM public.shipper_shipment_batch_effective_lines_v1(document_row.shipment_batch_id) effective_line
-      JOIN public.orders order_row
-        ON order_row.id = effective_line.order_id
+      JOIN public.orders order_row ON order_row.id = effective_line.order_id
     ) effective_orders ON true
     WHERE document_row.active = true
       AND document_row.superseded_at IS NULL
@@ -267,8 +252,8 @@ $function$;
 
 ALTER FUNCTION public.internal_ready_for_sage_queue_v2() OWNER TO postgres;
 
--- Default function privileges grant anon/authenticated/service_role. Neutralise
--- them first, then restore the exact verified canonical caller set.
+-- The verified public-schema default ACL grants anon/authenticated/service_role.
+-- Neutralise it, then restore the exact canonical caller set.
 REVOKE ALL ON FUNCTION public.internal_ready_for_sage_queue_v2() FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.internal_ready_for_sage_queue_v2() FROM anon;
 REVOKE ALL ON FUNCTION public.internal_ready_for_sage_queue_v2() FROM authenticated;
@@ -276,26 +261,22 @@ REVOKE ALL ON FUNCTION public.internal_ready_for_sage_queue_v2() FROM service_ro
 GRANT EXECUTE ON FUNCTION public.internal_ready_for_sage_queue_v2() TO authenticated;
 GRANT EXECUTE ON FUNCTION public.internal_ready_for_sage_queue_v2() TO service_role;
 
-COMMENT ON FUNCTION
-  public.internal_ready_for_sage_queue_v2_pre_shipper_ap_gate_separation_v1()
-IS
-  'Private exact canonical Sage-ready queue immediately before shipper AP/customer recharge gate separation. Application roles cannot execute it.';
+COMMENT ON FUNCTION public.internal_ready_for_sage_queue_v2_pre_shipper_ap_gate_separation_v1()
+IS 'Private exact canonical Sage-ready queue immediately before shipper AP/customer recharge gate separation. Application roles cannot execute it.';
 
 COMMENT ON FUNCTION public.internal_ready_for_sage_queue_v2()
-IS
-  'Canonical Sage-ready queue. Preserves all preceding rows exactly and additively admits accepted current unapportioned shipper invoices to the existing shipper-AP route. Customer shipping recharge remains governed by approved apportionment.';
+IS 'Canonical Sage-ready queue. Preserves all preceding rows exactly and additively admits accepted current unapportioned shipper invoices to the existing shipper-AP route. Customer shipping recharge remains governed by approved apportionment.';
 
 DO $verify$
 DECLARE
   v_acl_mismatch bigint;
-  v_private_app_execute bigint;
   v_definition text;
 BEGIN
   WITH actual AS (
     SELECT
-      pg_get_userbyid(a.grantor) AS grantor_name,
-      CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END AS grantee_name,
-      a.privilege_type,
+      pg_get_userbyid(a.grantor)::text AS grantor_name,
+      CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee)::text END AS grantee_name,
+      a.privilege_type::text AS privilege_type,
       a.is_grantable
     FROM pg_proc p
     JOIN pg_namespace n ON n.oid = p.pronamespace
@@ -305,15 +286,15 @@ BEGIN
       AND p.pronargs = 0
   ), expected(grantor_name, grantee_name, privilege_type, is_grantable) AS (
     VALUES
-      ('postgres'::name, 'postgres'::name, 'EXECUTE'::text, false),
-      ('postgres'::name, 'authenticated'::name, 'EXECUTE'::text, false),
-      ('postgres'::name, 'service_role'::name, 'EXECUTE'::text, false)
-  ), diff AS (
+      ('postgres', 'postgres', 'EXECUTE', false),
+      ('postgres', 'authenticated', 'EXECUTE', false),
+      ('postgres', 'service_role', 'EXECUTE', false)
+  ), differences AS (
     (SELECT * FROM actual EXCEPT SELECT * FROM expected)
     UNION ALL
     (SELECT * FROM expected EXCEPT SELECT * FROM actual)
   )
-  SELECT COUNT(*) INTO v_acl_mismatch FROM diff;
+  SELECT COUNT(*) INTO v_acl_mismatch FROM differences;
 
   IF v_acl_mismatch <> 0
      OR has_function_privilege('anon', 'public.internal_ready_for_sage_queue_v2()', 'EXECUTE')
@@ -323,16 +304,9 @@ BEGIN
     RAISE EXCEPTION 'Replacement canonical queue ACL does not match governed live state';
   END IF;
 
-  SELECT COUNT(*)
-  INTO v_private_app_execute
-  FROM (VALUES ('PUBLIC'), ('anon'), ('authenticated'), ('service_role')) role_name(name)
-  WHERE has_function_privilege(
-    role_name.name,
-    'public.internal_ready_for_sage_queue_v2_pre_shipper_ap_gate_separation_v1()',
-    'EXECUTE'
-  );
-
-  IF v_private_app_execute <> 0 THEN
+  IF has_function_privilege('anon', 'public.internal_ready_for_sage_queue_v2_pre_shipper_ap_gate_separation_v1()', 'EXECUTE')
+     OR has_function_privilege('authenticated', 'public.internal_ready_for_sage_queue_v2_pre_shipper_ap_gate_separation_v1()', 'EXECUTE')
+     OR has_function_privilege('service_role', 'public.internal_ready_for_sage_queue_v2_pre_shipper_ap_gate_separation_v1()', 'EXECUTE') THEN
     RAISE EXCEPTION 'Private preserved queue remains executable by an application role';
   END IF;
 
