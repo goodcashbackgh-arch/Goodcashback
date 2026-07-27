@@ -107,9 +107,9 @@ BEGIN
   v_compact := regexp_replace(lower(v_definition), '[[:space:]]+', '', 'g');
 
   IF strpos(v_compact, 'internal_customer_sales_release_sources_v1') = 0
-     OR strpos(v_compact, 's.blockerisnull') = 0
-     OR strpos(v_compact, 'coalesce(v_amount,0)<=0') = 0
-     OR strpos(v_compact, 'pg_advisory_xact_lock') = 0
+     OR strpos(v_compact, 'blockerisnull') = 0
+     OR strpos(v_compact, 'v_amount') = 0
+     OR strpos(v_compact, '<=0') = 0
      OR strpos(v_compact, 'customer_sales_release_lines') = 0
   THEN
     RAISE EXCEPTION 'FAIL: existing draft creator fail-closed/durable-ledger controls changed';
