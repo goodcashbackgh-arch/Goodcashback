@@ -85,6 +85,7 @@ JOIN pg_namespace namespace ON namespace.oid = procedure.pronamespace
 WHERE namespace.nspname = 'public'
   AND procedure.proname IN (
     'shipper_tracking_review_state_v1',
+    'shipper_dashboard_tracking_review_states_v1',
     'customer_tracking_review_deadline_v1',
     'shipper_shipment_batch_candidates_v1',
     'shipper_create_shipment_batch_v1',

@@ -41,6 +41,14 @@ function trackingIdFromRow(row: HTMLTableRowElement) {
   }
 }
 
+function failClosedActions() {
+  document
+    .querySelectorAll<HTMLAnchorElement>('table tbody a[href^="/shipper/shipments/new"]')
+    .forEach((link) => {
+      link.hidden = true;
+    });
+}
+
 function replaceAction(
   row: HTMLTableRowElement,
   trackingId: string,
@@ -98,32 +106,26 @@ export default function ShipperDashboardShipmentGate() {
     const supabase = createClient();
 
     async function loadAndApply() {
-      const [{ data: candidateData }, { data: dashboardData }] = await Promise.all([
+      const [candidateResult, dashboardResult, reviewStateResult] = await Promise.all([
         supabase.rpc("shipper_shipment_batch_candidates_v1"),
         supabase.rpc("shipper_package_receipt_dashboard_v1"),
+        supabase.rpc("shipper_dashboard_tracking_review_states_v1"),
       ]);
 
       if (cancelled) return;
 
-      const candidates = (candidateData ?? []) as ShipmentCandidateRow[];
-      const dashboardRows = (dashboardData ?? []) as ReceiptDashboardRow[];
-      const reviewStateResults = await Promise.all(
-        dashboardRows
-          .filter((row) => Boolean(row.order_id && row.tracking_submission_id))
-          .map(async (row) => {
-            const { data } = await supabase.rpc("shipper_tracking_review_state_v1", {
-              p_order_id: row.order_id,
-              p_tracking_submission_id: row.tracking_submission_id,
-            });
-            return [row.tracking_submission_id, (data?.[0] ?? null) as TrackingReviewState | null] as const;
-          })
-      );
-      if (cancelled) return;
+      if (reviewStateResult.error) {
+        console.error("Unable to load canonical shipper review state", reviewStateResult.error);
+        failClosedActions();
+        return;
+      }
 
-      const reviewStateByTrackingId = new Map<string, TrackingReviewState>();
-      reviewStateResults.forEach(([trackingId, reviewState]) => {
-        if (trackingId && reviewState) reviewStateByTrackingId.set(trackingId, reviewState);
-      });
+      const candidates = (candidateResult.data ?? []) as ShipmentCandidateRow[];
+      const dashboardRows = (dashboardResult.data ?? []) as ReceiptDashboardRow[];
+      const reviewStates = (reviewStateResult.data ?? []) as (TrackingReviewState & { tracking_submission_id: string })[];
+      const reviewStateByTrackingId = new Map(
+        reviewStates.map((reviewState) => [reviewState.tracking_submission_id, reviewState])
+      );
       const candidateIds = new Set(
         candidates
           .map((row) => row.tracking_submission_id)

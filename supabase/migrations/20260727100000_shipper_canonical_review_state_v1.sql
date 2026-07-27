@@ -77,6 +77,62 @@ $$;
 REVOKE ALL ON FUNCTION public.shipper_tracking_review_state_v1(uuid,uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.shipper_tracking_review_state_v1(uuid,uuid) TO authenticated;
 
+CREATE OR REPLACE FUNCTION public.shipper_dashboard_tracking_review_states_v1()
+RETURNS TABLE (
+  order_id uuid,
+  tracking_submission_id uuid,
+  active_review_yn boolean,
+  review_link_id uuid,
+  review_expires_at timestamptz
+)
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_auth_uid uuid := auth.uid();
+  v_shipper_id uuid;
+BEGIN
+  IF v_auth_uid IS NULL THEN
+    RAISE EXCEPTION 'Unauthenticated user: shipper dashboard tracking review states require auth.uid()';
+  END IF;
+
+  SELECT shipper_user.shipper_id
+  INTO v_shipper_id
+  FROM public.shipper_users shipper_user
+  WHERE shipper_user.auth_user_id = v_auth_uid
+    AND shipper_user.active = true
+  ORDER BY shipper_user.created_at DESC
+  LIMIT 1;
+
+  IF v_shipper_id IS NULL THEN
+    RAISE EXCEPTION 'Active shipper user account not found.';
+  END IF;
+
+  RETURN QUERY
+  SELECT
+    order_row.id,
+    tracking.id,
+    review_state.active_review_yn,
+    review_state.review_link_id,
+    review_state.review_expires_at
+  FROM public.orders order_row
+  JOIN public.order_tracking_submissions tracking
+    ON tracking.order_id = order_row.id
+   AND tracking.superseded_at IS NULL
+  CROSS JOIN LATERAL public.shipper_tracking_review_state_v1(
+    order_row.id,
+    tracking.id
+  ) review_state
+  WHERE order_row.shipper_id = v_shipper_id
+  ORDER BY order_row.created_at DESC, tracking.submitted_at DESC, tracking.id;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.shipper_dashboard_tracking_review_states_v1() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.shipper_dashboard_tracking_review_states_v1() TO authenticated;
+
 CREATE OR REPLACE FUNCTION public.shipper_shipment_batch_candidates_v1()
 RETURNS TABLE (
   shipper_user_id uuid,
