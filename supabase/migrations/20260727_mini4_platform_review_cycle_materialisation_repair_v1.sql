@@ -31,7 +31,6 @@ BEGIN
       'md5(v_link_id::text || ''|'' || candidate.source_fingerprint)'
       IN v_definition
     ) > 0 THEN
-      -- Already repaired: keep the migration idempotent.
       RETURN;
     END IF;
 
@@ -84,27 +83,27 @@ DECLARE
   v_order_id uuid;
 BEGIN
   IF TG_TABLE_NAME = 'order_tracking_line_allocations' THEN
-    v_order_id := COALESCE(NEW.order_id, OLD.order_id);
+    v_order_id := NEW.order_id;
 
   ELSIF TG_TABLE_NAME = 'supplier_invoice_lines' THEN
     FOR v_order_id IN
       SELECT DISTINCT allocation.order_id
       FROM public.order_tracking_line_allocations allocation
-      WHERE allocation.supplier_invoice_line_id = COALESCE(NEW.id, OLD.id)
+      WHERE allocation.supplier_invoice_line_id = NEW.id
     LOOP
       PERFORM public.internal_materialize_customer_review_cycles_v1(v_order_id, NULL);
     END LOOP;
-    RETURN COALESCE(NEW, OLD);
+    RETURN NEW;
 
   ELSIF TG_TABLE_NAME = 'supplier_invoices' THEN
-    v_order_id := COALESCE(NEW.order_id, OLD.order_id);
+    v_order_id := NEW.order_id;
   END IF;
 
   IF v_order_id IS NOT NULL THEN
     PERFORM public.internal_materialize_customer_review_cycles_v1(v_order_id, NULL);
   END IF;
 
-  RETURN COALESCE(NEW, OLD);
+  RETURN NEW;
 END;
 $$;
 
@@ -154,8 +153,8 @@ WHEN (
 )
 EXECUTE FUNCTION public.customer_review_candidate_change_materialize_v1();
 
--- Recover every currently-open platform order that has valid review candidates.
--- Expired receipts are deliberately excluded; no historical cycle is rebuilt.
+-- Recover only orders that the existing materialiser is permitted to create or
+-- join now. Legacy fail-closed states remain untouched and auditable.
 DO $recover$
 DECLARE
   v_order_id uuid;
@@ -178,18 +177,37 @@ BEGIN
         SELECT 1
         FROM public.customer_review_cycle_candidates_v1(tracking_row.order_id)
       )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM public.customer_review_cycle_legacy_issues issue
+        WHERE issue.order_id = tracking_row.order_id
+          AND issue.resolved_at IS NULL
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM public.customer_order_review_links link_row
+        WHERE link_row.order_id = tracking_row.order_id
+          AND link_row.is_active = true
+          AND link_row.expires_at IS NULL
+      )
+      AND (
+        SELECT count(*)
+        FROM public.customer_order_review_links link_row
+        WHERE link_row.order_id = tracking_row.order_id
+          AND link_row.is_active = true
+      ) <= 1
   LOOP
     PERFORM public.internal_materialize_customer_review_cycles_v1(v_order_id, NULL);
   END LOOP;
 END
 $recover$;
 
--- Platform invariants: no open valid-candidate order may remain without a timed
--- cycle, and every open timed cycle must have active immutable membership.
+-- Platform invariants apply to materialisable orders. Explicit legacy
+-- fail-closed states are not silently rewritten and do not make deployment fail.
 DO $verify$
 DECLARE
   v_missing_cycle_count integer;
-  v_empty_cycle_count integer;
+  v_unexplained_empty_cycle_count integer;
 BEGIN
   SELECT count(*)::integer
     INTO v_missing_cycle_count
@@ -213,6 +231,25 @@ BEGIN
       )
       AND NOT EXISTS (
         SELECT 1
+        FROM public.customer_review_cycle_legacy_issues issue
+        WHERE issue.order_id = tracking_row.order_id
+          AND issue.resolved_at IS NULL
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM public.customer_order_review_links untimed_link
+        WHERE untimed_link.order_id = tracking_row.order_id
+          AND untimed_link.is_active = true
+          AND untimed_link.expires_at IS NULL
+      )
+      AND (
+        SELECT count(*)
+        FROM public.customer_order_review_links active_link
+        WHERE active_link.order_id = tracking_row.order_id
+          AND active_link.is_active = true
+      ) <= 1
+      AND NOT EXISTS (
+        SELECT 1
         FROM public.customer_order_review_links link_row
         WHERE link_row.order_id = tracking_row.order_id
           AND link_row.is_active = true
@@ -222,7 +259,7 @@ BEGIN
   ) missing_cycle;
 
   SELECT count(*)::integer
-    INTO v_empty_cycle_count
+    INTO v_unexplained_empty_cycle_count
   FROM public.customer_order_review_links link_row
   WHERE link_row.is_active = true
     AND link_row.expires_at IS NOT NULL
@@ -232,13 +269,20 @@ BEGIN
       FROM public.customer_review_cycle_memberships membership
       WHERE membership.review_link_id = link_row.id
         AND membership.membership_status = 'active'
+    )
+    AND NOT EXISTS (
+      SELECT 1
+      FROM public.customer_review_cycle_legacy_issues issue
+      WHERE issue.order_id = link_row.order_id
+        AND issue.review_link_id = link_row.id
+        AND issue.resolved_at IS NULL
     );
 
-  IF v_missing_cycle_count <> 0 OR v_empty_cycle_count <> 0 THEN
+  IF v_missing_cycle_count <> 0 OR v_unexplained_empty_cycle_count <> 0 THEN
     RAISE EXCEPTION
-      'Mini 4 platform verification failed: missing cycles %, empty open cycles %.',
+      'Mini 4 platform verification failed: materialisable missing cycles %, unexplained empty open cycles %.',
       v_missing_cycle_count,
-      v_empty_cycle_count;
+      v_unexplained_empty_cycle_count;
   END IF;
 END
 $verify$;
