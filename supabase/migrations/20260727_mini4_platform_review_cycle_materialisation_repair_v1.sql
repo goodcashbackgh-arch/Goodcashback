@@ -25,6 +25,8 @@ DECLARE
   v_raw_fingerprint_count integer;
   v_timed_insert_count integer;
   v_publish_marker_count integer;
+  v_success_block text;
+  v_replacement_block text;
 BEGIN
   SELECT pg_get_functiondef(v_proc)
     INTO v_definition;
@@ -99,11 +101,31 @@ BEGIN
     E'\\1    NULL,\\2'
   );
 
-  v_patched := regexp_replace(
-    v_patched,
-    E'(IF v_total_inserted = 0 THEN[\\s\\S]*?END IF;\\n\\n)([[:space:]]*)RETURN v_total_inserted;',
-    E'\\1\\2UPDATE public.customer_order_review_links\\n\\2SET expires_at = v_deadline\\n\\2WHERE id = v_link_id;\\n\\n\\2RETURN v_total_inserted;'
-  );
+  v_success_block :=
+      '  IF v_total_inserted = 0 THEN' || chr(10)
+    || '    DELETE FROM public.customer_order_review_links' || chr(10)
+    || '    WHERE id = v_link_id;' || chr(10)
+    || '    RETURN 0;' || chr(10)
+    || '  END IF;' || chr(10) || chr(10)
+    || '  RETURN v_total_inserted;';
+
+  v_replacement_block :=
+      '  IF v_total_inserted = 0 THEN' || chr(10)
+    || '    DELETE FROM public.customer_order_review_links' || chr(10)
+    || '    WHERE id = v_link_id;' || chr(10)
+    || '    RETURN 0;' || chr(10)
+    || '  END IF;' || chr(10) || chr(10)
+    || '  UPDATE public.customer_order_review_links' || chr(10)
+    || '  SET expires_at = v_deadline' || chr(10)
+    || '  WHERE id = v_link_id;' || chr(10) || chr(10)
+    || '  RETURN v_total_inserted;';
+
+  IF position(v_success_block IN v_patched) = 0 THEN
+    RAISE EXCEPTION
+      'Expected exact new-cycle success block was not found; no replacement applied.';
+  END IF;
+
+  v_patched := replace(v_patched, v_success_block, v_replacement_block);
 
   IF position(
        'md5(v_link_id::text || ''|'' || candidate.source_fingerprint)'
@@ -113,9 +135,10 @@ BEGIN
      OR position(
        E'VALUES (\n    p_order_id,\n    true,\n    NULL,\n    p_created_by_staff_id'
        IN v_patched
-     ) = 0 THEN
+     ) = 0
+     OR position(E'\\n' IN v_patched) > 0 THEN
     RAISE EXCEPTION
-      'Mini 4 materialiser patch did not produce the required cycle-scoped and self-suppression-safe definition.';
+      'Mini 4 materialiser patch did not produce valid cycle-scoped and self-suppression-safe SQL.';
   END IF;
 
   EXECUTE v_patched;
@@ -130,8 +153,6 @@ GRANT EXECUTE ON FUNCTION
   public.internal_materialize_customer_review_cycles_v1(uuid, uuid)
 TO service_role;
 
--- Re-run the same idempotent materialiser whenever facts that can make an
--- already-received package reviewable are created or changed after receipt.
 CREATE OR REPLACE FUNCTION public.customer_review_candidate_change_materialize_v1()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -212,8 +233,6 @@ WHEN (
 )
 EXECUTE FUNCTION public.customer_review_candidate_change_materialize_v1();
 
--- Recover only orders with at least one candidate whose own receipt window is
--- currently open. Expired cycles are never reconstructed.
 DO $recover$
 DECLARE
   v_order_id uuid;
