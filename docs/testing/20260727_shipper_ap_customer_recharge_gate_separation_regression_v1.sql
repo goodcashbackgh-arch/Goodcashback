@@ -6,7 +6,9 @@ SET LOCAL statement_timeout = '0';
 -- Governing contract:
 -- docs/governing-pack/backend/SHIPPER_AP_AND_CUSTOMER_SHIPPING_RECHARGE_GATE_SEPARATION_ADDENDUM_v1.md
 --
--- Rollback-safe regression. No Sage API call and no permanent mutation.
+-- Rollback-safe regression. It makes no Sage API call and performs no permanent
+-- mutation. A temporary active-staff JWT context is used only because the
+-- canonical queue is intentionally staff-authenticated.
 
 DO $prerequisites$
 DECLARE
@@ -59,9 +61,13 @@ BEGIN
 END
 $prerequisites$;
 
-CREATE TEMP TABLE protected_counts_before
-ON COMMIT DROP
-AS
+CREATE TEMP TABLE queue_read_one ON COMMIT DROP AS
+SELECT * FROM public.internal_ready_for_sage_queue_v2();
+
+CREATE TEMP TABLE queue_read_two ON COMMIT DROP AS
+SELECT * FROM public.internal_ready_for_sage_queue_v2();
+
+CREATE TEMP TABLE protected_counts_before ON COMMIT DROP AS
 SELECT
   (SELECT COUNT(*) FROM public.sales_invoices) AS sales_invoice_count,
   (SELECT COUNT(*) FROM public.customer_sales_release_lines) AS release_line_count,
@@ -143,32 +149,58 @@ BEGIN
 END
 $structure_and_scope$;
 
-DO $preserved_queue$
+DO $repeatable_and_preserved_queue$
 DECLARE
-  v_missing bigint;
+  v_difference bigint;
   v_duplicates bigint;
+  v_unexpected_non_shipper bigint;
 BEGIN
   SELECT COUNT(*)
-  INTO v_missing
+  INTO v_difference
+  FROM (
+    (SELECT * FROM queue_read_one EXCEPT ALL SELECT * FROM queue_read_two)
+    UNION ALL
+    (SELECT * FROM queue_read_two EXCEPT ALL SELECT * FROM queue_read_one)
+  ) differences;
+
+  IF v_difference <> 0 THEN
+    RAISE EXCEPTION 'FAIL: repeated canonical queue reads are not stable';
+  END IF;
+
+  SELECT COUNT(*)
+  INTO v_difference
   FROM (
     SELECT *
     FROM public.internal_ready_for_sage_queue_v2_pre_shipper_ap_gate_separation_v1()
-
     EXCEPT ALL
+    SELECT * FROM queue_read_one
+  ) missing_preserved_rows;
 
+  IF v_difference <> 0 THEN
+    RAISE EXCEPTION 'FAIL: canonical queue lost % preserved row(s)', v_difference;
+  END IF;
+
+  SELECT COUNT(*)
+  INTO v_unexpected_non_shipper
+  FROM (
     SELECT *
-    FROM public.internal_ready_for_sage_queue_v2()
-  ) missing_rows;
+    FROM queue_read_one
+    WHERE document_lane IS DISTINCT FROM 'shipper_ap'
+    EXCEPT ALL
+    SELECT *
+    FROM public.internal_ready_for_sage_queue_v2_pre_shipper_ap_gate_separation_v1()
+    WHERE document_lane IS DISTINCT FROM 'shipper_ap'
+  ) unexpected_rows;
 
-  IF v_missing <> 0 THEN
-    RAISE EXCEPTION 'FAIL: canonical queue lost % preserved row(s)', v_missing;
+  IF v_unexpected_non_shipper <> 0 THEN
+    RAISE EXCEPTION 'FAIL: correction added or changed % non-shipper-AP row(s)', v_unexpected_non_shipper;
   END IF;
 
   SELECT COUNT(*)
   INTO v_duplicates
   FROM (
     SELECT document_lane, source_table, source_id
-    FROM public.internal_ready_for_sage_queue_v2()
+    FROM queue_read_one
     GROUP BY document_lane, source_table, source_id
     HAVING COUNT(*) > 1
   ) duplicate_rows;
@@ -177,7 +209,7 @@ BEGIN
     RAISE EXCEPTION 'FAIL: duplicate canonical lane/source identities found: %', v_duplicates;
   END IF;
 END
-$preserved_queue$;
+$repeatable_and_preserved_queue$;
 
 DO $working_apportioned_flow$
 DECLARE
@@ -209,12 +241,20 @@ BEGIN
       AND preserved.source_table = 'shipping_documents'
       AND preserved.source_id = v_source_id;
 
-    SELECT COUNT(*), MAX(to_jsonb(current_row))
-    INTO v_count, v_after
-    FROM public.internal_ready_for_sage_queue_v2() current_row
+    SELECT COUNT(*)
+    INTO v_count
+    FROM queue_read_one current_row
     WHERE current_row.document_lane = 'shipper_ap'
       AND current_row.source_table = 'shipping_documents'
       AND current_row.source_id = v_source_id;
+
+    SELECT to_jsonb(current_row)
+    INTO v_after
+    FROM queue_read_one current_row
+    WHERE current_row.document_lane = 'shipper_ap'
+      AND current_row.source_table = 'shipping_documents'
+      AND current_row.source_id = v_source_id
+    LIMIT 1;
 
     IF v_count <> 1 OR v_after IS DISTINCT FROM v_before THEN
       RAISE EXCEPTION 'FAIL: existing approved-apportionment shipper-AP row changed or duplicated';
@@ -280,9 +320,9 @@ BEGIN
         AND COALESCE(posting_batch.status, '') <> 'cancelled'
         AND COALESCE(posting_batch.batch_status, '') <> 'superseded'
     )
-    AND (
-      SELECT COUNT(*)
-      FROM public.internal_ready_for_sage_queue_v2() queue_row
+    AND NOT EXISTS (
+      SELECT 1
+      FROM queue_read_one queue_row
       WHERE queue_row.document_lane = 'shipper_ap'
         AND queue_row.source_table = 'shipping_documents'
         AND queue_row.source_id = shipping_document.id
@@ -297,7 +337,7 @@ BEGIN
           NULLIF(shipping_document.currency_code::text, ''),
           'GBP'
         )
-    ) <> 1;
+    );
 
   IF v_missing <> 0 THEN
     RAISE EXCEPTION 'FAIL: qualifying unapportioned shipper invoices missing or incorrect: %', v_missing;
@@ -305,7 +345,7 @@ BEGIN
 
   SELECT COUNT(*)
   INTO v_invalid
-  FROM public.internal_ready_for_sage_queue_v2() queue_row
+  FROM queue_read_one queue_row
   JOIN public.shipping_documents shipping_document
     ON shipping_document.id = queue_row.source_id
   WHERE queue_row.document_lane = 'shipper_ap'
@@ -349,7 +389,7 @@ BEGIN
 
   SELECT COUNT(*)
   INTO v_unexpected_payload
-  FROM public.internal_ready_for_sage_queue_v2() queue_row
+  FROM queue_read_one queue_row
   WHERE queue_row.document_lane = 'shipper_ap'
     AND queue_row.source_table = 'shipping_documents'
     AND NOT EXISTS (
@@ -360,8 +400,16 @@ BEGIN
         AND old_row.source_id = queue_row.source_id
     )
     AND (
-      queue_row.source_payload ? 'customer_recharge_apportionment_status'
-      OR queue_row.source_payload ? 'shipping_document_date'
+      NOT queue_row.source_payload ?& ARRAY[
+        'document_ref',
+        'document_date',
+        'booking_ref',
+        'shipper_name',
+        'document_total',
+        'currency',
+        'route',
+        'status'
+      ]::text[]
       OR queue_row.source_payload - ARRAY[
         'document_ref',
         'document_date',
@@ -380,7 +428,7 @@ BEGIN
 END
 $unapportioned_population$;
 
-DO $customer_and_mini4_boundaries$
+DO $customer_freeze_and_mini4_boundaries$
 DECLARE
   v_release_definition text;
   v_draft_definition text;
@@ -388,18 +436,15 @@ DECLARE
 BEGIN
   SELECT lower(
     pg_get_functiondef('public.internal_customer_sales_release_sources_v1(uuid)'::regprocedure)
-  )
-  INTO v_release_definition;
+  ) INTO v_release_definition;
 
   SELECT lower(
     pg_get_functiondef('public.internal_customer_invoice_release_create_drafts_v1(uuid[])'::regprocedure)
-  )
-  INTO v_draft_definition;
+  ) INTO v_draft_definition;
 
   SELECT lower(
     pg_get_functiondef('public.internal_freeze_shipper_ap_sage_batch_v1(uuid[],text)'::regprocedure)
-  )
-  INTO v_freeze_definition;
+  ) INTO v_freeze_definition;
 
   IF position('shipping_cost_allocations' IN v_release_definition) = 0
      OR position('shipping_cost_allocation_lines' IN v_release_definition) = 0
@@ -411,12 +456,15 @@ BEGIN
     RAISE EXCEPTION 'FAIL: customer draft route no longer consumes canonical release sources';
   END IF;
 
-  IF position('shipping_cost_allocation_lines' IN v_freeze_definition) > 0
-     OR position('''unit_price_gbp'', lr.amount_gbp' IN v_freeze_definition) = 0 THEN
-    RAISE EXCEPTION 'FAIL: shipper-AP freeze no longer uses the full queue/document amount independently';
+  IF position('internal_ready_for_sage_queue_v2' IN v_freeze_definition) = 0
+     OR position('shipping_cost_allocation_lines' IN v_freeze_definition) > 0
+     OR position('''unit_price_gbp'', lr.amount_gbp' IN v_freeze_definition) = 0
+     OR position('idempotency_key' IN v_freeze_definition) = 0
+     OR position('on conflict' IN v_freeze_definition) = 0 THEN
+    RAISE EXCEPTION 'FAIL: shipper-AP freeze, amount or idempotency route changed';
   END IF;
 END
-$customer_and_mini4_boundaries$;
+$customer_freeze_and_mini4_boundaries$;
 
 DO $protected_counts$
 DECLARE
@@ -451,10 +499,10 @@ $protected_counts$;
 SELECT jsonb_build_object(
   'regression_result', 'PASS',
   'details',
-    'Canonical queue rows remain exact; qualifying accepted unapportioned shipper invoices are exposed once at the canonical full document amount; established source-payload vocabulary is retained; customer shipping remains behind approved apportionment; Mini-build 4 and protected tables remain unchanged.',
+    'Canonical queue rows remain exact and repeatable; qualifying accepted unapportioned shipper invoices are exposed once at the canonical full document amount; established payload vocabulary is retained; customer shipping remains behind approved apportionment; the existing freeze/idempotency route and Mini-build 4 boundaries remain unchanged.',
   'qualifying_unapportioned_live_count', (
     SELECT COUNT(*)
-    FROM public.internal_ready_for_sage_queue_v2() queue_row
+    FROM queue_read_one queue_row
     WHERE queue_row.document_lane = 'shipper_ap'
       AND queue_row.source_table = 'shipping_documents'
       AND NOT EXISTS (
