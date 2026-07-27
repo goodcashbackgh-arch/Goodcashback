@@ -82,10 +82,10 @@ BEGIN
     WHERE shipping_control.shipment_batch_id IS NOT NULL
       AND COALESCE(shipping_control.allocation_status_summary, '') = 'contents_allocated'
       AND COALESCE(shipping_control.receipt_status_summary, '') = 'received_clean'
-  ) batch_row
+  ) AS batch_row
   CROSS JOIN LATERAL public.internal_shipping_customer_invoice_readiness_preview_v1(
     batch_row.shipment_batch_id
-  ) preview_row
+  ) AS preview_row
   WHERE preview_row.blocker IS NOT NULL
     AND (
       ROUND(COALESCE(preview_row.qty_allocated, 0), 3) <> 0
