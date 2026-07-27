@@ -40,6 +40,7 @@ DECLARE
   v_bulk_deadline timestamptz;
   v_candidate_count integer;
   v_batch_id uuid;
+  v_order_status text;
   v_error text;
   v_controlled_count integer;
   v_controlled_active_count integer;
@@ -123,6 +124,9 @@ BEGIN
       'order_ref', 'REG-CANON-REVIEW-' || replace(v_order_id::text, '-', ''),
       'payment_auth_id', NULL,
       'parent_order_id', NULL,
+      'status', 'evidence_collecting',
+      'content_locked_at', NULL,
+      'tracking_locked_at', NULL,
       'created_at', clock_timestamp(),
       'updated_at', clock_timestamp(),
       'completed_at', NULL
@@ -157,6 +161,15 @@ BEGIN
       'uploaded_at', clock_timestamp()
     )
   )).*;
+
+  SELECT fixture_order.status::text INTO STRICT v_order_status
+  FROM public.orders fixture_order
+  WHERE fixture_order.id = v_order_id;
+  IF v_order_status <> 'reconciling' THEN
+    RAISE EXCEPTION
+      'FAIL: supplier-invoice trigger did not advance fixture order from evidence_collecting to reconciling (status: %)',
+      v_order_status;
+  END IF;
 
   INSERT INTO public.supplier_invoice_lines
   SELECT (jsonb_populate_record(
