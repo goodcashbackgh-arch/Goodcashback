@@ -9,13 +9,17 @@ type ShipmentCandidateRow = {
 };
 
 type ReceiptDashboardRow = {
+  order_id: string;
   tracking_submission_id: string | null;
   latest_receipt_status: string | null;
-  latest_receipt_recorded_at: string | null;
   in_active_shipment_yn: boolean | null;
 };
 
-const REVIEW_WINDOW_MS = 24 * 60 * 60 * 1000;
+type TrackingReviewState = {
+  active_review_yn: boolean;
+  review_link_id: string | null;
+  review_expires_at: string | null;
+};
 
 function remainingLabel(milliseconds: number) {
   const totalMinutes = Math.max(0, Math.ceil(milliseconds / 60000));
@@ -37,14 +41,24 @@ function trackingIdFromRow(row: HTMLTableRowElement) {
   }
 }
 
+function failClosedActions() {
+  document
+    .querySelectorAll<HTMLAnchorElement>('table tbody a[href^="/shipper/shipments/new"]')
+    .forEach((link) => {
+      link.hidden = true;
+    });
+}
+
 function replaceAction(
   row: HTMLTableRowElement,
   trackingId: string,
   candidateIds: Set<string>,
   dashboardByTrackingId: Map<string, ReceiptDashboardRow>,
+  reviewStateByTrackingId: Map<string, TrackingReviewState>,
   now: number
 ) {
   const dashboardRow = dashboardByTrackingId.get(trackingId);
+  const reviewState = reviewStateByTrackingId.get(trackingId);
   if (!dashboardRow || dashboardRow.latest_receipt_status !== "received_clean" || dashboardRow.in_active_shipment_yn) return;
 
   const existingAddLink = row.querySelector<HTMLAnchorElement>('a[href^="/shipper/shipments/new"]');
@@ -60,22 +74,21 @@ function replaceAction(
 
   if (existingAddLink) existingAddLink.hidden = true;
 
-  const recordedAtMs = dashboardRow.latest_receipt_recorded_at
-    ? Date.parse(dashboardRow.latest_receipt_recorded_at)
+  const deadlineMs = reviewState?.review_expires_at
+    ? Date.parse(reviewState.review_expires_at)
     : Number.NaN;
-  const deadlineMs = recordedAtMs + REVIEW_WINDOW_MS;
-  const insideReviewWindow = Number.isFinite(deadlineMs) && now < deadlineMs;
+  const activeReview = reviewState?.active_review_yn === true && Number.isFinite(deadlineMs) && now < deadlineMs;
 
   const gate = existingGate ?? document.createElement("span");
   gate.dataset.shipmentReviewGate = "true";
-  gate.className = insideReviewWindow
+  gate.className = activeReview
     ? "rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900"
     : "rounded-xl border border-slate-300 bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-700";
-  gate.textContent = insideReviewWindow
+  gate.textContent = activeReview
     ? `Customer review · ${remainingLabel(deadlineMs - now)}`
     : "Shipment blocked";
-  gate.title = insideReviewWindow
-    ? "This package becomes eligible after the 24-hour customer review window, provided no hold is active."
+  gate.title = activeReview
+    ? "This package becomes eligible after the active customer review closes, provided no other shipment blocker applies."
     : "The review window has ended, but another existing shipment control is still blocking this package.";
 
   if (!existingGate) actionContainer.appendChild(gate);
@@ -93,15 +106,26 @@ export default function ShipperDashboardShipmentGate() {
     const supabase = createClient();
 
     async function loadAndApply() {
-      const [{ data: candidateData }, { data: dashboardData }] = await Promise.all([
+      const [candidateResult, dashboardResult, reviewStateResult] = await Promise.all([
         supabase.rpc("shipper_shipment_batch_candidates_v1"),
         supabase.rpc("shipper_package_receipt_dashboard_v1"),
+        supabase.rpc("shipper_dashboard_tracking_review_states_v1"),
       ]);
 
       if (cancelled) return;
 
-      const candidates = (candidateData ?? []) as ShipmentCandidateRow[];
-      const dashboardRows = (dashboardData ?? []) as ReceiptDashboardRow[];
+      if (reviewStateResult.error) {
+        console.error("Unable to load canonical shipper review state", reviewStateResult.error);
+        failClosedActions();
+        return;
+      }
+
+      const candidates = (candidateResult.data ?? []) as ShipmentCandidateRow[];
+      const dashboardRows = (dashboardResult.data ?? []) as ReceiptDashboardRow[];
+      const reviewStates = (reviewStateResult.data ?? []) as (TrackingReviewState & { tracking_submission_id: string })[];
+      const reviewStateByTrackingId = new Map(
+        reviewStates.map((reviewState) => [reviewState.tracking_submission_id, reviewState])
+      );
       const candidateIds = new Set(
         candidates
           .map((row) => row.tracking_submission_id)
@@ -116,7 +140,7 @@ export default function ShipperDashboardShipmentGate() {
       const now = Date.now();
       document.querySelectorAll<HTMLTableRowElement>("table tbody tr").forEach((row) => {
         const trackingId = trackingIdFromRow(row);
-        if (trackingId) replaceAction(row, trackingId, candidateIds, dashboardByTrackingId, now);
+        if (trackingId) replaceAction(row, trackingId, candidateIds, dashboardByTrackingId, reviewStateByTrackingId, now);
       });
 
       document.querySelectorAll<HTMLElement>("p").forEach((label) => {
@@ -125,9 +149,9 @@ export default function ShipperDashboardShipmentGate() {
         if (count) count.textContent = String(candidateIds.size);
       });
 
-      const nextDeadline = dashboardRows
-        .filter((row) => row.latest_receipt_status === "received_clean" && !row.in_active_shipment_yn && row.tracking_submission_id && !candidateIds.has(row.tracking_submission_id))
-        .map((row) => Date.parse(String(row.latest_receipt_recorded_at)) + REVIEW_WINDOW_MS)
+      const nextDeadline = Array.from(reviewStateByTrackingId.values())
+        .filter((reviewState) => reviewState.active_review_yn && reviewState.review_expires_at)
+        .map((reviewState) => Date.parse(String(reviewState.review_expires_at)))
         .filter((deadline) => Number.isFinite(deadline) && deadline > now)
         .sort((a, b) => a - b)[0];
 
