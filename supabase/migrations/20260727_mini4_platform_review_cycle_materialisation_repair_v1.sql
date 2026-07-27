@@ -210,11 +210,24 @@ BEGIN
     RETURN v_inserted;
   END IF;
 
-  SELECT MIN(candidate.receipt_recorded_at)
-  INTO v_anchor_receipt
+  CREATE TEMP TABLE IF NOT EXISTS customer_review_cycle_candidate_buffer_v1
+  ON COMMIT DROP
+  AS
+  SELECT candidate.*
+  FROM public.customer_review_cycle_candidates_v1(p_order_id) candidate
+  WHERE false;
+
+  TRUNCATE TABLE pg_temp.customer_review_cycle_candidate_buffer_v1;
+
+  INSERT INTO pg_temp.customer_review_cycle_candidate_buffer_v1
+  SELECT candidate.*
   FROM public.customer_review_cycle_candidates_v1(p_order_id) candidate
   WHERE candidate.receipt_recorded_at <= now()
     AND candidate.receipt_recorded_at + interval '24 hours' > now();
+
+  SELECT MIN(candidate.receipt_recorded_at)
+  INTO v_anchor_receipt
+  FROM pg_temp.customer_review_cycle_candidate_buffer_v1 candidate;
 
   IF v_anchor_receipt IS NULL THEN
     RETURN 0;
@@ -230,7 +243,7 @@ BEGIN
   ) VALUES (
     p_order_id,
     true,
-    NULL,
+    v_deadline,
     p_created_by_staff_id
   )
   RETURNING id INTO v_link_id;
@@ -268,9 +281,8 @@ BEGIN
     md5(v_link_id::text || '|' || candidate.source_fingerprint),
     false,
     p_created_by_staff_id
-  FROM public.customer_review_cycle_candidates_v1(p_order_id) candidate
+  FROM pg_temp.customer_review_cycle_candidate_buffer_v1 candidate
   WHERE candidate.receipt_recorded_at < v_deadline
-    AND candidate.receipt_recorded_at + interval '24 hours' > now()
   ON CONFLICT DO NOTHING;
 
   GET DIAGNOSTICS v_total_inserted = ROW_COUNT;
@@ -281,10 +293,6 @@ BEGIN
 
     RETURN 0;
   END IF;
-
-  UPDATE public.customer_order_review_links
-  SET expires_at = v_deadline
-  WHERE id = v_link_id;
 
   RETURN v_total_inserted;
 END;
