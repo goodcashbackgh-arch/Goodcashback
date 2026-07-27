@@ -9,6 +9,7 @@ SET LOCAL statement_timeout = '0';
 DO $preflight$
 DECLARE
   v_creator_definition text;
+  v_creator_compact text;
 BEGIN
   IF to_regprocedure('public.internal_customer_sales_release_sources_v1(uuid)') IS NULL
      OR to_regprocedure('public.internal_shipping_customer_invoice_readiness_preview_v1(uuid)') IS NULL
@@ -23,9 +24,11 @@ BEGIN
          )
   INTO v_creator_definition;
 
-  IF strpos(v_creator_definition, 'internal_customer_sales_release_sources_v1') = 0
-     OR strpos(v_creator_definition, 'WHERE s.blocker IS NULL') = 0
-     OR strpos(v_creator_definition, 'COALESCE(v_amount,0)<=0') = 0
+  v_creator_compact := regexp_replace(lower(v_creator_definition), '[[:space:]]+', '', 'g');
+
+  IF strpos(v_creator_compact, 'internal_customer_sales_release_sources_v1') = 0
+     OR strpos(v_creator_compact, 's.blockerisnull') = 0
+     OR strpos(v_creator_compact, 'coalesce(v_amount,0)<=0') = 0
   THEN
     RAISE EXCEPTION 'Existing draft creator is not already fail-closed against stale or fully released source';
   END IF;
@@ -350,6 +353,7 @@ DECLARE
   v_preview_definition text;
   v_queue_definition text;
   v_creator_definition text;
+  v_creator_compact text;
 BEGIN
   SELECT pg_get_functiondef(
            'public.internal_shipping_customer_invoice_readiness_preview_v1(uuid)'::regprocedure
@@ -366,6 +370,8 @@ BEGIN
          )
   INTO v_creator_definition;
 
+  v_creator_compact := regexp_replace(lower(v_creator_definition), '[[:space:]]+', '', 'g');
+
   IF strpos(v_preview_definition, 'genuinely_ready') = 0
      OR strpos(v_preview_definition, 'non_positive_customer_release_delta') = 0
      OR strpos(v_preview_definition, 'ready_charge') = 0
@@ -380,9 +386,9 @@ BEGIN
     RAISE EXCEPTION 'Release queue positive-delta/posted suppression was not installed';
   END IF;
 
-  IF strpos(v_creator_definition, 'internal_customer_sales_release_sources_v1') = 0
-     OR strpos(v_creator_definition, 'WHERE s.blocker IS NULL') = 0
-     OR strpos(v_creator_definition, 'COALESCE(v_amount,0)<=0') = 0
+  IF strpos(v_creator_compact, 'internal_customer_sales_release_sources_v1') = 0
+     OR strpos(v_creator_compact, 's.blockerisnull') = 0
+     OR strpos(v_creator_compact, 'coalesce(v_amount,0)<=0') = 0
   THEN
     RAISE EXCEPTION 'Existing draft creator fail-closed protection changed unexpectedly';
   END IF;
