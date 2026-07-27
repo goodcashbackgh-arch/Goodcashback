@@ -4,6 +4,40 @@ BEGIN;
 
 SET LOCAL statement_timeout = '0';
 
+DO $$
+BEGIN
+  IF to_regprocedure('public.customer_review_cycle_component_guard_v1()') IS NULL THEN
+    RAISE EXCEPTION 'FAIL preflight: customer_review_cycle_component_guard_v1() is missing';
+  END IF;
+  IF to_regprocedure('public.internal_materialize_customer_review_cycles_v1(uuid,uuid)') IS NULL THEN
+    RAISE EXCEPTION 'FAIL preflight: internal_materialize_customer_review_cycles_v1(uuid,uuid) is missing';
+  END IF;
+  IF to_regprocedure('public.customer_review_cycle_candidates_v1(uuid)') IS NULL THEN
+    RAISE EXCEPTION 'FAIL preflight: customer_review_cycle_candidates_v1(uuid) is missing';
+  END IF;
+  IF to_regprocedure('public.customer_active_order_review_link_v1(uuid)') IS NULL
+     OR to_regprocedure('public.customer_review_ready_line_ids_v1(uuid)') IS NULL THEN
+    RAISE EXCEPTION 'FAIL preflight: installed customer review readers are missing';
+  END IF;
+  IF to_regprocedure('public.shipper_record_package_receipt_v1(uuid,text,text,text)') IS NULL THEN
+    RAISE EXCEPTION 'FAIL preflight: supported shipper receipt route is missing';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_trigger trigger_row
+    JOIN pg_class relation ON relation.oid = trigger_row.tgrelid
+    JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+    JOIN pg_proc trigger_function ON trigger_function.oid = trigger_row.tgfoid
+    WHERE namespace.nspname = 'public'
+      AND relation.relname = 'customer_review_cycle_memberships'
+      AND trigger_function.proname = 'customer_review_cycle_component_guard_v1'
+      AND trigger_row.tgenabled <> 'D'
+      AND NOT trigger_row.tgisinternal
+  ) THEN
+    RAISE EXCEPTION 'FAIL preflight: enabled membership component guard trigger is missing';
+  END IF;
+END $$;
+
 CREATE TEMP TABLE canonical_review_controlled_snapshot AS
 SELECT jsonb_build_object(
   'orders', COALESCE((SELECT jsonb_agg(to_jsonb(row_value) ORDER BY row_value.id) FROM public.orders row_value WHERE row_value.order_ref = 'ORD-1784976429191'), '[]'::jsonb),
@@ -23,18 +57,19 @@ DECLARE
   v_invoice_id uuid := gen_random_uuid();
   v_line_id uuid := gen_random_uuid();
   v_allocation_id uuid := gen_random_uuid();
-  v_link_id uuid := gen_random_uuid();
-  v_membership_id uuid := gen_random_uuid();
+  v_link_id uuid;
+  v_membership_id uuid;
   v_hold_id uuid := gen_random_uuid();
-  v_deadline timestamptz := clock_timestamp() + interval '6 hours';
+  v_deadline timestamptz;
   v_deadline_after timestamptz;
   v_shipper_user public.shipper_users%ROWTYPE;
   v_source_order public.orders%ROWTYPE;
+  v_source_tracking_id uuid;
+  v_source_allocation_id uuid;
   v_source_tracking public.order_tracking_submissions%ROWTYPE;
   v_source_invoice public.supplier_invoices%ROWTYPE;
   v_source_line public.supplier_invoice_lines%ROWTYPE;
   v_source_allocation public.order_tracking_line_allocations%ROWTYPE;
-  v_source_membership public.customer_review_cycle_memberships%ROWTYPE;
   v_active boolean;
   v_bulk_active boolean;
   v_bulk_deadline timestamptz;
@@ -54,6 +89,10 @@ BEGIN
     ON source_allocation.order_id = source_order.id
    AND source_allocation.tracking_submission_id = source_tracking.id
    AND source_allocation.qty_allocated > 0
+  JOIN public.customer_review_cycle_memberships source_membership
+    ON source_membership.order_id = source_order.id
+   AND source_membership.tracking_submission_id = source_tracking.id
+   AND source_membership.tracking_line_allocation_id = source_allocation.id
   WHERE shipper_user.active = true
     AND source_tracking.superseded_at IS NULL
   ORDER BY shipper_user.created_at
@@ -73,29 +112,40 @@ BEGIN
    AND source_allocation.qty_allocated > 0
   JOIN public.supplier_invoice_lines source_line ON source_line.id = source_allocation.supplier_invoice_line_id
   JOIN public.supplier_invoices source_invoice ON source_invoice.id = source_line.supplier_invoice_id
+  JOIN public.customer_review_cycle_memberships source_membership
+    ON source_membership.order_id = source_order.id
+   AND source_membership.tracking_submission_id = source_tracking.id
+   AND source_membership.tracking_line_allocation_id = source_allocation.id
+   AND source_membership.supplier_invoice_line_id = source_line.id
+   AND source_membership.supplier_invoice_id = source_invoice.id
   WHERE source_order.shipper_id = v_shipper_user.shipper_id
     AND source_tracking.superseded_at IS NULL
   ORDER BY source_order.created_at
   LIMIT 1;
 
+  SELECT
+    source_membership.tracking_submission_id,
+    source_membership.tracking_line_allocation_id
+  INTO STRICT
+    v_source_tracking_id,
+    v_source_allocation_id
+  FROM public.customer_review_cycle_memberships source_membership
+  WHERE source_membership.order_id = v_source_order.id
+  ORDER BY source_membership.created_at, source_membership.id
+  LIMIT 1;
+
   SELECT source_tracking.* INTO STRICT v_source_tracking
   FROM public.order_tracking_submissions source_tracking
-  JOIN public.order_tracking_line_allocations source_allocation
-    ON source_allocation.tracking_submission_id = source_tracking.id
-   AND source_allocation.order_id = v_source_order.id
-   AND source_allocation.qty_allocated > 0
-  WHERE source_tracking.order_id = v_source_order.id
-    AND source_tracking.superseded_at IS NULL
-  ORDER BY source_tracking.submitted_at
-  LIMIT 1;
+  WHERE source_tracking.id = v_source_tracking_id
+    AND source_tracking.order_id = v_source_order.id
+    AND source_tracking.superseded_at IS NULL;
 
   SELECT source_allocation.* INTO STRICT v_source_allocation
   FROM public.order_tracking_line_allocations source_allocation
-  WHERE source_allocation.order_id = v_source_order.id
+  WHERE source_allocation.id = v_source_allocation_id
+    AND source_allocation.order_id = v_source_order.id
     AND source_allocation.tracking_submission_id = v_source_tracking.id
-    AND source_allocation.qty_allocated > 0
-  ORDER BY source_allocation.created_at
-  LIMIT 1;
+    AND source_allocation.qty_allocated > 0;
 
   SELECT source_line.* INTO STRICT v_source_line
   FROM public.supplier_invoice_lines source_line
@@ -104,15 +154,6 @@ BEGIN
   SELECT source_invoice.* INTO STRICT v_source_invoice
   FROM public.supplier_invoices source_invoice
   WHERE source_invoice.id = v_source_line.supplier_invoice_id;
-
-  SELECT membership.* INTO v_source_membership
-  FROM public.customer_review_cycle_memberships membership
-  ORDER BY membership.created_at
-  LIMIT 1;
-
-  IF v_source_membership.id IS NULL THEN
-    RAISE EXCEPTION 'FAIL: no membership row exists to provide the installed schema shape';
-  END IF;
 
   PERFORM set_config('request.jwt.claim.sub', v_shipper_user.auth_user_id::text, true);
 
@@ -177,10 +218,6 @@ BEGIN
     to_jsonb(v_source_line) || jsonb_build_object(
       'id', v_line_id,
       'supplier_invoice_id', v_invoice_id,
-      'line_order', 900001,
-      'description', 'REG-CANON-REVIEW fixture line',
-      'qty', 1,
-      'qty_confirmed', 1,
       'created_at', clock_timestamp(),
       'updated_at', clock_timestamp()
     )
@@ -208,48 +245,38 @@ BEGIN
       'order_id', v_order_id,
       'supplier_invoice_line_id', v_line_id,
       'tracking_submission_id', v_tracking_id,
-      'qty_allocated', 1,
-      'base_value_gbp', 1,
-      'adjusted_net_value_gbp', 1,
       'created_at', clock_timestamp(),
       'updated_at', clock_timestamp()
     )
   )).*;
 
-  INSERT INTO public.customer_order_review_links (id, order_id, is_active, expires_at)
-  VALUES (v_link_id, v_order_id, true, v_deadline);
-
-  INSERT INTO public.customer_review_cycle_memberships
-  SELECT (jsonb_populate_record(
-    NULL::public.customer_review_cycle_memberships,
-    to_jsonb(v_source_membership) || jsonb_build_object(
-      'id', v_membership_id,
-      'review_link_id', v_link_id,
-      'order_id', v_order_id,
-      'supplier_invoice_id', v_invoice_id,
-      'supplier_invoice_line_id', v_line_id,
-      'tracking_submission_id', v_tracking_id,
-      'tracking_line_allocation_id', v_allocation_id,
-      'review_qty', 1,
-      'goods_amount_gbp', 1,
-      'delivery_share_gbp', 0,
-      'discount_share_gbp', 0,
-      'receipt_recorded_at', clock_timestamp(),
-      'membership_status', 'active',
-      'membership_fingerprint', md5('REG-CANON-REVIEW-' || v_membership_id::text),
-      'legacy_backfill_yn', false,
-      'created_at', clock_timestamp(),
-      'status_updated_at', NULL
-    )
-  )).*;
-
-  INSERT INTO public.shipper_package_receipts (
-    tracking_submission_id, order_id, shipper_id, shipper_user_id,
-    receipt_status, condition_note, recorded_at, created_at
-  ) VALUES (
-    v_tracking_id, v_order_id, v_shipper_user.shipper_id, v_shipper_user.id,
-    'received_clean', 'REG-CANON-REVIEW fixture', clock_timestamp(), clock_timestamp()
+  PERFORM public.shipper_record_package_receipt_v1(
+    v_tracking_id,
+    'received_clean',
+    'REG-CANON-REVIEW fixture',
+    NULL
   );
+
+  PERFORM public.internal_materialize_customer_review_cycles_v1(v_order_id, NULL);
+
+  SELECT review_link.id, review_link.expires_at
+  INTO STRICT v_link_id, v_deadline
+  FROM public.customer_order_review_links review_link
+  WHERE review_link.order_id = v_order_id
+    AND review_link.is_active = true
+    AND review_link.expires_at IS NOT NULL
+    AND review_link.expires_at > now();
+
+  SELECT membership.id
+  INTO STRICT v_membership_id
+  FROM public.customer_review_cycle_memberships membership
+  WHERE membership.review_link_id = v_link_id
+    AND membership.order_id = v_order_id
+    AND membership.supplier_invoice_id = v_invoice_id
+    AND membership.supplier_invoice_line_id = v_line_id
+    AND membership.tracking_submission_id = v_tracking_id
+    AND membership.tracking_line_allocation_id = v_allocation_id
+    AND membership.membership_status = 'active';
 
   -- A: active exact timed review is identical across single and bulk readers.
   SELECT state.active_review_yn INTO STRICT v_active
@@ -282,34 +309,13 @@ BEGIN
     END IF;
   END;
 
-  -- E: a second exact source cannot move the fixed link deadline.
-  BEGIN
-    INSERT INTO public.customer_review_cycle_memberships
-    SELECT (jsonb_populate_record(
-      NULL::public.customer_review_cycle_memberships,
-      to_jsonb(v_source_membership) || jsonb_build_object(
-        'id', gen_random_uuid(),
-        'review_link_id', v_link_id,
-        'order_id', v_order_id,
-        'supplier_invoice_id', v_invoice_id,
-        'supplier_invoice_line_id', v_line_id,
-        'tracking_submission_id', v_tracking_id,
-        'tracking_line_allocation_id', v_allocation_id,
-        'membership_status', 'active',
-        'membership_fingerprint', md5('REG-CANON-REVIEW-SECOND-' || v_link_id::text),
-        'legacy_backfill_yn', false,
-        'created_at', clock_timestamp(),
-        'status_updated_at', NULL
-      )
-    )).*;
-  EXCEPTION WHEN unique_violation THEN
-    NULL; -- Installed identity constraints may correctly collapse the same exact source.
-  END;
+  -- E: re-running the production materialiser cannot move the fixed deadline.
+  PERFORM public.internal_materialize_customer_review_cycles_v1(v_order_id, NULL);
 
   SELECT expires_at INTO v_deadline_after
   FROM public.customer_order_review_links WHERE id = v_link_id;
   IF v_deadline_after IS DISTINCT FROM v_deadline THEN
-    RAISE EXCEPTION 'FAIL E: adding/joining a second source changed the fixed deadline';
+    RAISE EXCEPTION 'FAIL E: production rematerialisation changed the fixed deadline';
   END IF;
 
   -- C: create the exact line hold while review is still active.
