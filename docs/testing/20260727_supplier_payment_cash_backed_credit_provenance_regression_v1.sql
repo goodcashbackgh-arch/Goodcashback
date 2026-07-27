@@ -1,6 +1,6 @@
 -- Supabase SQL Editor regression SQL.
--- Rollback-only: all fixture mutations are contained in subtransactions and the
--- outer transaction ends with ROLLBACK. No authenticated allocator RPC is called.
+-- Rollback-only: fixture mutations are subtransaction-scoped and the outer
+-- transaction always ends with ROLLBACK. No authenticated allocator RPC runs.
 
 BEGIN;
 SET LOCAL lock_timeout = '15s';
@@ -14,6 +14,7 @@ DECLARE
   v_incremental_definition text;
 
   v_target_order_id uuid;
+  v_target_importer_id uuid;
   v_target_result record;
   v_repeat_result record;
 
@@ -22,8 +23,6 @@ DECLARE
   v_settlement_credit_id uuid;
   v_settlement_action_id uuid;
 
-  v_overfunding_event_id uuid;
-  v_overfunding_debit_id uuid;
   v_overfunding_credit_id uuid;
   v_pending_surplus_id uuid;
   v_source_statement_line_id uuid;
@@ -75,10 +74,7 @@ BEGIN
   END IF;
 
   IF strpos(v_resolver_definition, 'ORD-1784976429191') > 0
-     OR strpos(
-          v_resolver_definition,
-          'abf15b7b-771f-482f-9751-2af0ee0bcbb1'
-        ) > 0
+     OR strpos(v_resolver_definition, 'abf15b7b-771f-482f-9751-2af0ee0bcbb1') > 0
   THEN
     RAISE EXCEPTION
       'REGRESSION: proof-record identifier is embedded in the permanent resolver.';
@@ -125,14 +121,13 @@ BEGIN
   SELECT COUNT(*) INTO v_allocation_count_before
   FROM public.dva_statement_line_allocations;
 
-  SELECT o.id
-  INTO v_target_order_id
+  SELECT o.id, o.importer_id
+  INTO v_target_order_id, v_target_importer_id
   FROM public.orders o
   WHERE o.order_ref = 'ORD-1784976429191';
 
   IF v_target_order_id IS NULL THEN
-    RAISE EXCEPTION
-      'REGRESSION: required defective-flow proof order is not present.';
+    RAISE EXCEPTION 'REGRESSION: required defective-flow proof order is missing.';
   END IF;
 
   SELECT
@@ -163,14 +158,10 @@ BEGIN
   LIMIT 1;
 
   SELECT
-    ofe.id,
-    debit.id,
     credit.id,
     surplus.id,
     surplus.dva_statement_line_id
   INTO
-    v_overfunding_event_id,
-    v_overfunding_debit_id,
     v_overfunding_credit_id,
     v_pending_surplus_id,
     v_source_statement_line_id
@@ -237,7 +228,7 @@ BEGIN
     RAISE EXCEPTION 'REGRESSION: resolver is not deterministic.';
   END IF;
 
-  -- Reversed settlement must fail closed. Changes roll back with ZX001.
+  -- Reversed settlement must fail closed.
   BEGIN
     UPDATE public.order_settlement_resolution_actions
     SET reversed_at = now()
@@ -365,13 +356,11 @@ BEGIN
     NULL;
   END;
 
-  -- Importer mismatch must fail closed using another existing importer id.
+  -- Importer mismatch must fail closed when a second importer exists.
   SELECT o.importer_id
   INTO v_other_importer_id
   FROM public.orders o
-  WHERE o.importer_id IS DISTINCT FROM (
-    SELECT importer_id FROM public.orders WHERE id = v_target_order_id
-  )
+  WHERE o.importer_id IS DISTINCT FROM v_target_importer_id
   LIMIT 1;
 
   IF v_other_importer_id IS NOT NULL THEN
@@ -410,7 +399,7 @@ BEGIN
       'LIMITATION: importer mismatch fixture skipped because no second importer exists.';
   END IF;
 
-  -- Unsupported applied-credit type must fail closed when a valid existing type exists.
+  -- Unsupported applied-credit type must fail closed when assignable.
   SELECT l.source_type::text
   INTO v_unsupported_type
   FROM public.importer_credit_ledger l
@@ -457,12 +446,11 @@ BEGIN
   ELSE
     IF strpos(v_resolver_definition, 'unsupported_applied_credit_source_type') = 0
     THEN
-      RAISE EXCEPTION
-        'REGRESSION: unsupported credit blocker is missing.';
+      RAISE EXCEPTION 'REGRESSION: unsupported credit blocker is missing.';
     END IF;
 
     RAISE NOTICE
-      'LIMITATION: unsupported-type behaviour definition-verified because no existing assignable unsupported source_type was found.';
+      'LIMITATION: unsupported-type behaviour definition-verified because no assignable unsupported source_type exists.';
   END IF;
 
   -- Conflicting statement mapping must fail closed.
@@ -563,7 +551,7 @@ BEGIN
     NULL;
   END;
 
-  -- Direct-cash working baseline, excluding every applied-credit order.
+  -- Direct-cash working baseline excludes every applied-credit order.
   WITH candidates AS (
     SELECT
       o.id AS order_id,
@@ -610,8 +598,7 @@ BEGIN
   LIMIT 1;
 
   IF v_direct_order_id IS NULL THEN
-    RAISE EXCEPTION
-      'REGRESSION: no qualifying direct-cash comparison order exists.';
+    RAISE EXCEPTION 'REGRESSION: no qualifying direct-cash comparison order exists.';
   END IF;
 
   SELECT *
@@ -634,13 +621,9 @@ BEGIN
     RAISE EXCEPTION 'REGRESSION: direct-cash baseline changed.';
   END IF;
 
-  -- Existing confirmed cash allocation deduction and reversed exclusion.
-  SELECT
-    a.id,
-    a.allocated_gbp_amount
-  INTO
-    v_confirmed_cash_allocation_id,
-    v_confirmed_cash_allocation_gbp
+  -- Confirmed allocation deduction and reversed allocation exclusion.
+  SELECT a.id, a.allocated_gbp_amount
+  INTO v_confirmed_cash_allocation_id, v_confirmed_cash_allocation_gbp
   FROM public.dva_statement_line_allocations a
   JOIN public.supplier_invoices si
     ON si.id = a.supplier_invoice_id
@@ -692,7 +675,10 @@ BEGIN
       'LIMITATION: confirmed/reversed allocation behaviour definition-verified because the selected direct-cash order has no confirmed cash allocation.';
   END IF;
 
-  -- Released-loyalty baseline excludes any positive non-loyalty applied credit.
+  -- Released-loyalty baseline:
+  -- 1. match importer must equal order importer;
+  -- 2. no positive non-loyalty applied credit may exist;
+  -- 3. exactly one wallet may have a positive remaining balance.
   WITH loyalty_applied AS (
     SELECT DISTINCT ON (ofe.id)
       ofe.order_id,
@@ -700,6 +686,8 @@ BEGIN
       ROUND(ABS(COALESCE(ofe.amount_gbp, 0))::numeric, 2) AS amount_gbp,
       resolver.resolved_wallet_code::text AS wallet_code
     FROM public.order_funding_events ofe
+    JOIN public.orders o
+      ON o.id = ofe.order_id
     JOIN public.importer_credit_ledger debit
       ON debit.id = ofe.source_entity_id
     JOIN public.main_bank_completion_loyalty_funding_matches lm
@@ -709,6 +697,7 @@ BEGIN
           THEN debit.source_entity_id
         ELSE NULL::uuid
       END
+     AND lm.importer_id = o.importer_id
      AND lm.match_status = 'released_available_dashboard_credit'
      AND COALESCE(lm.transfer_pair_status, '') = 'paired_released'
      AND lm.destination_in_statement_line_id IS NOT NULL
@@ -751,7 +740,7 @@ BEGIN
     FROM loyalty_applied la
     GROUP BY la.order_id, la.wallet_code
   ),
-  candidates AS (
+  wallet_remaining AS (
     SELECT
       wt.order_id,
       wt.wallet_code,
@@ -767,12 +756,26 @@ BEGIN
             AND a.source_wallet_code = wt.wallet_code
         ), 0),
         0
-      )::numeric, 2) AS loyalty_remaining_gbp,
+      )::numeric, 2) AS loyalty_remaining_gbp
+    FROM wallet_totals wt
+  ),
+  unique_wallet_orders AS (
+    SELECT wr.order_id
+    FROM wallet_remaining wr
+    WHERE wr.loyalty_remaining_gbp > 0
+    GROUP BY wr.order_id
+    HAVING COUNT(*) = 1
+  ),
+  candidates AS (
+    SELECT
+      wr.order_id,
+      wr.wallet_code,
+      wr.loyalty_remaining_gbp,
       ROUND(GREATEST(
         COALESCE((
           SELECT SUM(ABS(e.amount_gbp))
           FROM public.order_funding_events e
-          WHERE e.order_id = wt.order_id
+          WHERE e.order_id = wr.order_id
             AND e.event_type = 'funding_contribution'
         ), 0)
         - COALESCE((
@@ -780,7 +783,7 @@ BEGIN
           FROM public.dva_statement_line_allocations a
           JOIN public.supplier_invoices si
             ON si.id = a.supplier_invoice_id
-          WHERE si.order_id = wt.order_id
+          WHERE si.order_id = wr.order_id
             AND a.allocation_type = 'supplier_invoice'
             AND a.allocation_status = 'confirmed'
             AND a.source_bank_account_mapping_code =
@@ -788,7 +791,10 @@ BEGIN
         ), 0),
         0
       )::numeric, 2) AS cash_remaining_gbp
-    FROM wallet_totals wt
+    FROM wallet_remaining wr
+    JOIN unique_wallet_orders uwo
+      ON uwo.order_id = wr.order_id
+    WHERE wr.loyalty_remaining_gbp > 0
   )
   SELECT
     c.order_id,
@@ -802,14 +808,13 @@ BEGIN
   JOIN LATERAL
     public.internal_supplier_payment_readiness_v1(c.order_id) readiness
     ON readiness.supplier_payment_ready_yn IS TRUE
-  WHERE c.loyalty_remaining_gbp > 0
-    AND c.cash_remaining_gbp + 0.01 < c.loyalty_remaining_gbp
+  WHERE c.cash_remaining_gbp + 0.01 < c.loyalty_remaining_gbp
   ORDER BY c.order_id
   LIMIT 1;
 
   IF v_loyalty_order_id IS NULL THEN
     RAISE EXCEPTION
-      'REGRESSION: no qualifying released-loyalty comparison order exists.';
+      'REGRESSION: no qualifying single-wallet released-loyalty comparison order exists.';
   END IF;
 
   SELECT *
@@ -867,8 +872,8 @@ BEGIN
   RAISE NOTICE 'PASS: reversed settlement and overfunding block.';
   RAISE NOTICE 'PASS: amount, lot-link, importer, unsupported-type and mapping faults fail closed where fixtures were available.';
   RAISE NOTICE 'PASS: duplicate receipt evidence does not increase funding.';
-  RAISE NOTICE 'PASS: direct-cash and released-loyalty baselines remain unchanged.';
-  RAISE NOTICE 'PASS: allocation deduction, deterministic execution, contract and caller boundaries are preserved.';
+  RAISE NOTICE 'PASS: direct-cash and single-wallet released-loyalty baselines remain unchanged.';
+  RAISE NOTICE 'PASS: allocation deduction, determinism, contract and caller boundaries are preserved.';
 END;
 $regression$;
 
