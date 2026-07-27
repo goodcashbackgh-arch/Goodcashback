@@ -64,10 +64,10 @@ replace only the current **Operator reconciliation** link for each invoice card.
 ### Required label
 
 ```text
-Open supervisor actions
+Open reconciliation
 ```
 
-The label must describe the destination accurately and must not imply that staff are entering the operator account or operator permission path.
+The label is frozen by the existing supervisor reconciliation contract and must not be changed by this routing-only patch.
 
 ## Mandatory fail-closed behaviour
 
@@ -115,7 +115,7 @@ The patch must not alter:
 
 ## Acceptance criteria
 
-1. From `/internal/invoice-review`, clicking **Open supervisor actions** on an invoice card opens:
+1. From `/internal/invoice-review`, clicking **Open reconciliation** on an invoice card opens:
 
 ```text
 /internal/reconciliation/<that card's order_id>/invoice-bundle/<that card's invoice.id>

@@ -235,7 +235,7 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
                     </div>
                     <div className="flex flex-wrap gap-2">
                       <Link href={`/internal/evidence/${invoice.order_id}`} className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50">Staff detail</Link>
-                      <Link href={`/internal/reconciliation/${invoice.order_id}/invoice-bundle/${invoice.id}`} className="rounded-full border border-sky-200 bg-sky-50 px-4 py-2 text-sm font-semibold text-sky-700 transition hover:bg-sky-100">Open supervisor actions</Link>
+                      <Link href={`/internal/reconciliation/${invoice.order_id}/invoice-bundle/${invoice.id}`} className="rounded-full border border-sky-200 bg-sky-50 px-4 py-2 text-sm font-semibold text-sky-700 transition hover:bg-sky-100">Open reconciliation</Link>
                       <a href={invoice.invoice_pdf_url} target="_blank" rel="noreferrer" className="rounded-full bg-slate-950 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800">Open invoice</a>
                     </div>
                   </div>
