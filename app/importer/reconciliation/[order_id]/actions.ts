@@ -152,7 +152,6 @@ async function enforceProgressionWithinBaseline(params: {
     return { ok: false as const, error: "One or more selected lines could not be found for this active invoice." };
   }
 
-  const selectedLineIds = new Set(selectedLines.map((line) => line.id));
   const liveLineIds = lines.map((line) => line.id);
   const invoiceIds = [...new Set(lines.map((line) => line.supplier_invoice_id))];
 
@@ -181,7 +180,7 @@ async function enforceProgressionWithinBaseline(params: {
   }
 
   const alreadyAccounted = lines
-    .filter((line) => accountedLineIds.has(line.id) && !selectedLineIds.has(line.id))
+    .filter((line) => accountedLineIds.has(line.id))
     .reduce(
       (totals, line) => {
         const values = lineProgressionValues(line);

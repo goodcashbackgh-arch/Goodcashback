@@ -30,6 +30,9 @@ contains(page, /line\.qty_confirmed \?\? line\.qty/, "Page quantity fallback doe
 contains(page, /line\.amount_confirmed \?\? line\.amount_inc_vat_gbp/, "Page amount fallback does not match the server.");
 contains(actions, /alreadyAccounted\.amount \+ selectedUnresolvedTotals\.amount \+ unresolvedFinancialOffset > baselineAmount \+ CURRENCY_TOLERANCE_GBP/, "Authoritative projected-value limit changed.");
 contains(actions, /alreadyAccounted\.qty \+ selectedUnresolvedTotals\.qty > baselineQty/, "Authoritative projected-quantity limit changed.");
+contains(actions, /const alreadyAccounted = lines\s*\.filter\(\(line\) => accountedLineIds\.has\(line\.id\)\)/, "Already-accounted selected lines can disappear from the projection.");
+contains(actions, /const selectedUnresolvedTotals = selectedLines\s*\.filter\(\(line\) => !accountedLineIds\.has\(line\.id\)\)/, "Selected physical proposal is not restricted to unaccounted lines.");
+assert.doesNotMatch(actions, /accountedLineIds\.has\(line\.id\) && !selectedLineIds\.has\(line\.id\)/, "Stale selections still remove already-accounted lines.");
 
 const helperStart = actions.indexOf("function normalisedDescription");
 const helperEnd = actions.indexOf("function lineProgressionValues");
@@ -84,6 +87,14 @@ assert.equal(unmatchedOffset, 0, "Description-only adjustment created capacity."
 assert(previousValue + 249.99 + unmatchedOffset > 701.83 + 0.01, "Unproved value excess was not blocked.");
 assert(previousValue + 250.01 + goodsFirstOffset > 701.83 + 0.01, "Genuine value excess was not blocked.");
 assert(3 + 2 > 4, "Genuine quantity excess was not blocked.");
+const staleReplaySelectedQty = [
+  { qty: 1, accounted: true },
+  { qty: 1, accounted: false },
+  { qty: 1, accounted: false },
+];
+const staleReplayProjectedQty = 3 + staleReplaySelectedQty.filter((line) => !line.accounted).reduce((sum, line) => sum + line.qty, 0);
+assert.equal(staleReplayProjectedQty, 5, "A stale/replayed accounted selection disappeared or was counted twice.");
+assert(staleReplayProjectedQty > 4, "A stale/replayed selection manufactured quantity capacity.");
 assert.doesNotMatch(actions + page, /ORD-|invoice-current|invoice-other|701\.83|469\.97|249\.99/, "Test identifiers or controlled values were hard-coded in production.");
 
 console.log("Importer reconciliation signed-baseline projection regression passed.");
