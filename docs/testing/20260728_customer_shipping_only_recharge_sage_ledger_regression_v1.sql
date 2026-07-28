@@ -1,9 +1,4 @@
-/*
-  Read-only regression for
-  CUSTOMER_SHIPPING_ONLY_RECHARGE_SAGE_LEDGER_ADDENDUM_v1
-
-  No auth.uid(). No writes.
-*/
+/* Read-only regression for CUSTOMER_SHIPPING_ONLY_RECHARGE_SAGE_LEDGER_ADDENDUM_v1 */
 
 DO $$
 DECLARE
@@ -13,7 +8,6 @@ DECLARE
   v_shipping_ledger_name text;
   v_export_ledger_id text;
 BEGIN
-  -- 1. Production mapping must be aligned to the existing active carriage-on-sales mapping.
   SELECT m.sage_external_id, m.sage_display_name
   INTO v_shipping_ledger_id, v_shipping_ledger_name
   FROM public.sage_mapping_settings m
@@ -43,7 +37,6 @@ BEGIN
     RAISE EXCEPTION 'FAIL: existing export sale mapping not preserved';
   END IF;
 
-  -- 2. Canonical/preserved resolver pair must exist.
   IF to_regprocedure('public.internal_resolved_customer_sales_sage_payload_v1(uuid)') IS NULL
      OR to_regprocedure('public.internal_customer_sales_sage_payload_pre_shipping_recharge_v1(uuid)') IS NULL THEN
     RAISE EXCEPTION 'FAIL: canonical/preserved resolver pair missing';
@@ -57,7 +50,6 @@ BEGIN
     AND p.proname = 'internal_resolved_customer_sales_sage_payload_v1'
     AND pg_get_function_identity_arguments(p.oid) = 'p_sales_invoice_id uuid';
 
-  -- 3. Exact branch must exist, and no new line semantic vocabulary is allowed.
   IF v_def NOT ILIKE '%CUSTOMER_SHIPPING_RECHARGE_INCOME_LEDGER%'
      OR v_def NOT ILIKE '%goods_amount_gbp%'
      OR v_def NOT ILIKE '%shipping_amount_gbp%'
@@ -76,7 +68,6 @@ BEGIN
     RAISE EXCEPTION 'FAIL: out-of-scope line role/presentation vocabulary introduced';
   END IF;
 
-  -- 4. No unknown public resolver dependant is permitted.
   SELECT string_agg(p.oid::regprocedure::text, ', ' ORDER BY p.oid::regprocedure::text)
   INTO v_unexpected
   FROM pg_proc p
@@ -87,28 +78,26 @@ BEGIN
       'internal_resolved_customer_sales_sage_payload_v1',
       'internal_customer_sales_sage_payload_pre_shipping_recharge_v1',
       'internal_ready_for_sage_queue_v2',
+      'internal_ready_for_sage_queue_v2_pre_supplier_lane_restore_v1',
       'internal_freeze_customer_sales_sage_batch_v1',
       'internal_revalidate_sage_posting_snapshots_v1'
     )
-    AND p.prosrc LIKE '%internal_resolved_customer_sales_sage_payload_v1%';
+    AND p.prosrc ~ '(^|[^A-Za-z0-9_])(?:public[.])?internal_resolved_customer_sales_sage_payload_v1[[:space:]]*[(]';
 
   IF v_unexpected IS NOT NULL THEN
-    RAISE EXCEPTION 'FAIL: unexpected resolver dependant(s) present: %', v_unexpected;
+    RAISE EXCEPTION 'FAIL: unexpected resolver caller(s) present: %', v_unexpected;
   END IF;
 
-  -- 5. Historical £24 shipping-only durable release proof must remain unchanged.
   IF NOT EXISTS (
     SELECT 1
     FROM public.sales_invoices si
     JOIN LATERAL (
-      SELECT
-        ROUND(COALESCE(SUM(l.goods_amount_gbp),0),2) AS goods_gbp,
-        ROUND(COALESCE(SUM(l.shipping_amount_gbp),0),2) AS shipping_gbp,
-        ROUND(COALESCE(SUM(l.customer_charge_amount_gbp),0),2) AS charge_gbp,
-        COUNT(*)::integer AS line_count
+      SELECT ROUND(COALESCE(SUM(l.goods_amount_gbp),0),2) AS goods_gbp,
+             ROUND(COALESCE(SUM(l.shipping_amount_gbp),0),2) AS shipping_gbp,
+             ROUND(COALESCE(SUM(l.customer_charge_amount_gbp),0),2) AS charge_gbp,
+             COUNT(*)::integer AS line_count
       FROM public.customer_sales_release_lines l
-      WHERE l.sales_invoice_id = si.id
-        AND l.release_status = 'active'
+      WHERE l.sales_invoice_id = si.id AND l.release_status = 'active'
     ) x ON true
     WHERE si.id = '0c583ba5-5fc7-4183-961c-57b6975c4556'::uuid
       AND si.sage_status = 'posted'
@@ -120,7 +109,6 @@ BEGIN
     RAISE EXCEPTION 'FAIL: historical shipping-only durable release proof changed';
   END IF;
 
-  -- 6. Historical frozen snapshot must remain exactly the already-posted snapshot.
   IF NOT EXISTS (
     SELECT 1
     FROM public.sage_posting_snapshots s
@@ -136,24 +124,17 @@ BEGIN
     RAISE EXCEPTION 'FAIL: historical posted Sage snapshot changed';
   END IF;
 
-  -- 7. Real historical shipping-only lines prove the classification boundary.
   IF EXISTS (
-    SELECT 1
-    FROM public.customer_sales_release_lines l
+    SELECT 1 FROM public.customer_sales_release_lines l
     WHERE l.sales_invoice_id = '0c583ba5-5fc7-4183-961c-57b6975c4556'::uuid
       AND l.release_status = 'active'
-      AND NOT (
-        COALESCE(l.goods_amount_gbp,0) = 0
-        AND COALESCE(l.shipping_amount_gbp,0) > 0
-      )
+      AND NOT (COALESCE(l.goods_amount_gbp,0) = 0 AND COALESCE(l.shipping_amount_gbp,0) > 0)
   ) THEN
     RAISE EXCEPTION 'FAIL: proven £24 document contains a line outside the shipping-only classification';
   END IF;
 
-  -- 8. The £364.99 goods supplementary must remain outside the shipping-only rule.
   IF NOT EXISTS (
-    SELECT 1
-    FROM public.customer_sales_release_lines l
+    SELECT 1 FROM public.customer_sales_release_lines l
     WHERE l.sales_invoice_id = '685912ce-0718-4250-97d4-d87d56a8db2f'::uuid
       AND l.release_status = 'active'
       AND COALESCE(l.goods_amount_gbp,0) > 0
@@ -162,8 +143,7 @@ BEGIN
   END IF;
 
   IF EXISTS (
-    SELECT 1
-    FROM public.customer_sales_release_lines l
+    SELECT 1 FROM public.customer_sales_release_lines l
     WHERE l.sales_invoice_id = '685912ce-0718-4250-97d4-d87d56a8db2f'::uuid
       AND l.release_status = 'active'
       AND COALESCE(l.goods_amount_gbp,0) = 0
@@ -172,8 +152,6 @@ BEGIN
     RAISE EXCEPTION 'FAIL: goods-only comparison document would be misclassified as shipping-only';
   END IF;
 
-  -- 9. Apply the authorised three-field presentation/account transformation to
-  -- the real frozen £24 lines in-memory and prove every other JSON field is identical.
   IF EXISTS (
     WITH source_lines AS (
       SELECT line.value AS before_line
@@ -181,13 +159,12 @@ BEGIN
       CROSS JOIN LATERAL jsonb_array_elements(s.resolved_payload -> 'resolved_lines') line(value)
       WHERE s.id = 'c82c2918-e163-41a8-9a6a-f8a0753e320a'::uuid
     ), transformed AS (
-      SELECT
-        before_line,
-        before_line || jsonb_build_object(
-          'description', 'Shipping charge — ' || COALESCE(NULLIF(before_line ->> 'description',''), 'Export sale'),
-          'sage_ledger_account_id', v_shipping_ledger_id,
-          'sage_ledger_account_display', v_shipping_ledger_name
-        ) AS after_line
+      SELECT before_line,
+             before_line || jsonb_build_object(
+               'description', 'Shipping charge — ' || COALESCE(NULLIF(before_line ->> 'description',''), 'Export sale'),
+               'sage_ledger_account_id', v_shipping_ledger_id,
+               'sage_ledger_account_display', v_shipping_ledger_name
+             ) AS after_line
       FROM source_lines
       WHERE COALESCE(NULLIF(before_line ->> 'goods_amount_gbp','')::numeric,0) = 0
         AND COALESCE(NULLIF(before_line ->> 'shipping_amount_gbp','')::numeric,0) > 0
@@ -204,7 +181,6 @@ BEGIN
     RAISE EXCEPTION 'FAIL: authorised shipping-only transformation changes fields outside description/Sage ledger account';
   END IF;
 
-  -- 10. Existing frozen tax/source/value facts are still present on every £24 line.
   IF EXISTS (
     SELECT 1
     FROM public.sage_posting_snapshots s
@@ -224,5 +200,5 @@ END $$;
 
 SELECT jsonb_build_object(
   'regression_result','PASS',
-  'proof','production carriage mapping aligned; resolver changes only description and Sage ledger account for goods=0/shipping>0 lines; no new line-role vocabulary; dependency surface allowlisted; export mapping preserved; historical release and frozen Sage facts unchanged'
+  'proof','production carriage mapping aligned; resolver changes only description and Sage ledger account for goods=0/shipping>0 lines; no new line-role vocabulary; actual dependency callers allowlisted; export mapping preserved; historical release and frozen Sage facts unchanged'
 ) AS regression_result;
