@@ -140,23 +140,8 @@ BEGIN
     q.accounting_sage_state,
     q.vat_compliance_state,
     q.internal_complete_yn,
-    CASE
-      WHEN q.pending_receipt_covers_final_sale
-        THEN (q.pod_delivery_state = 'accepted_current')
-      ELSE q.customer_complete_yn
-    END AS customer_complete_yn,
-    CASE
-      WHEN q.pending_receipt_covers_final_sale
-        THEN COALESCE(q.internal_current_stage, '') NOT IN (
-          'exception_or_hold_open',
-          'funding_incomplete',
-          'supplier_evidence_rejected',
-          'supplier_evidence_review_needed',
-          'supplier_reconciliation_incomplete',
-          'tracking_missing'
-        )
-      ELSE q.importer_complete_yn
-    END AS importer_complete_yn,
+    q.customer_complete_yn,
+    q.importer_complete_yn,
     q.shipper_complete_yn,
     CASE
       WHEN NOT q.pending_receipt_covers_final_sale THEN q.customer_status_label
@@ -203,7 +188,7 @@ REVOKE ALL ON FUNCTION public.order_audience_status_v1(uuid) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.order_audience_status_v1(uuid) TO authenticated;
 
 COMMENT ON FUNCTION public.order_audience_status_v1(uuid) IS
-'Current audience-safe status plus canonical pending-receipt coverage overlay. When an attributed pending receipt already covers the final sale, collectible balance is zero and customer/importer balance-collection messaging is suppressed without allocating the residual or changing shipper output.';
+'Current audience-safe status plus canonical pending-receipt coverage overlay. When an attributed pending receipt already covers the final sale, collectible balance is zero and customer/importer balance-collection messaging is suppressed without allocating the residual, changing completion facts, or changing shipper output.';
 
 NOTIFY pgrst, 'reload schema';
 
