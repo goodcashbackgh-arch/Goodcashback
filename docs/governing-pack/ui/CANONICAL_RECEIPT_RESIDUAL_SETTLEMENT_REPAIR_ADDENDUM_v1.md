@@ -2,7 +2,7 @@
 
 **Status:** LOCKED  
 **Target:** Platform-wide behaviour for the proven settlement state represented by `ORD-1784976429191`. No order-specific code.  
-**Purpose:** Restore the existing receipt-residual settlement workflow and prevent a false final-balance collection target. No new settlement architecture.
+**Purpose:** Restore the existing receipt-residual settlement workflow and prevent false final-balance collection targets and audience instructions wherever the canonical pending-aware receipt already covers the final sale. No new settlement architecture.
 
 ## 1. Proven baseline — must not be reinterpreted
 
@@ -28,7 +28,7 @@ The existing £80.03 applied account credit has already funded this order and **
 
 ## 2. Proven defect
 
-There are exactly **two affected interfaces**.
+There are exactly **three affected presentation/action surfaces**.
 
 ### A. Settlement Resolution
 
@@ -60,6 +60,22 @@ That older read model sees **£884.96 received against £928.96 final sale** and
 
 It does not account for the existing £81.20 pending original-receipt residual even though the canonical pending-aware settlement models already prove that receipt covers the £44.
 
+### C. Customer/importer audience status
+
+The customer order view and importer dashboard/order views consume the shared:
+
+`order_audience_status_v1(uuid)`
+
+The existing canonical audience overlay corrects the potential credit but passes the older balance-due projection and its dependent audience labels/actions through unchanged.
+
+This produces the contradictory state now proven in preview:
+
+- potential credit pending review: **£37.20** — correct;
+- remaining order balance: **£44.00** — false;
+- customer/importer instruction to pay or collect the £44 — false.
+
+The audience layer must therefore use the same canonical pending-aware receipt coverage test before presenting a collectible final balance or a balance-collection instruction.
+
 ## 3. Required fix — exact scope
 
 ### Change 1 — restore the existing receipt-residual action
@@ -89,6 +105,27 @@ there must be **no £44 final-balance collection card**.
 
 Do not create a new settlement calculation. Reuse the canonical existing settlement evidence/read state.
 
+### Change 3 — correct the shared audience projection platform-wide
+
+Update the shared audience read model, not individual customer/importer pages.
+
+For any order where the existing canonical settlement position proves all of the following:
+
+- a pending/original receipt residual exists;
+- at least one final sale document exists; and
+- `order_attributed_receipt_gbp >= final_order_value_gbp` within normal currency rounding tolerance,
+
+`order_audience_status_v1(uuid)` must:
+
+- expose **£0.00 collectible final balance**;
+- preserve `canonical_amount_received_gbp` as the amount already applied to the order — do not pretend the pending residual has already been allocated;
+- preserve the existing canonical potential-credit projection;
+- stop customer/importer labels and next actions from saying a final balance must be paid or collected;
+- fall through to the existing non-balance audience state implied by the already-existing shipment, delivery, exception, supplier, reconciliation and tracking facts;
+- leave shipper output unchanged.
+
+This must be implemented as one additive wrapper/overlay around the current audience function so current supplier-rejection and tracking-status corrections remain intact. Do **not** patch the customer/importer pages separately and do **not** edit an already-applied historical migration in place.
+
 ## 4. Required platform presentation
 
 ### Before supervisor confirms the residual
@@ -103,6 +140,15 @@ It must no longer leave the supervisor with only an unactionable `classify origi
 
 DVA/card Matching Workbench must show **no £44 final-balance payment target** for this state.
 
+Customer/importer audience surfaces must show:
+
+- final order value **£928.96**;
+- collectible/remaining order balance **£0.00**;
+- potential credit pending review **£37.20**;
+- no `Pay final balance`, `Collect final balance`, `Collect remaining order balance`, or equivalent balance-due status for that order.
+
+The pending residual is still pending classification at this point. The audience fix must not convert it into applied funding or confirmed credit.
+
 ### After supervisor confirms
 
 The existing database route must produce:
@@ -112,6 +158,7 @@ The existing database route must produce:
 - remaining unresolved settlement: **£0.00**
 - final customer balance due: **£0.00**
 - no DVA final-balance collection target for the order
+- no customer/importer final-balance collection status/action.
 
 ## 5. Explicitly untouched
 
@@ -134,7 +181,9 @@ This patch must **not** modify:
 - settlement-resolution arithmetic in `order_settlement_resolution_position_v1`
 - the accounting logic inside `staff_confirm_surplus_from_evidence_min_v1`
 - the accounting logic inside `staff_resolve_order_settlement_v1`
-- styling, navigation or unrelated workbench behaviour
+- individual customer/importer page calculations, styling or navigation
+- unrelated workbench behaviour
+- shipper audience output.
 
 No new financial ledger type, new settlement route, new accounting concept or order-specific exception is permitted.
 
@@ -147,14 +196,18 @@ Implementation is not complete unless regression proves:
 3. The pending row transitions correctly to `credit_confirmed`.
 4. The same action is idempotent under the existing RPC behaviour.
 5. No £44 final-balance workbench target is generated while the pending-aware receipt already covers the final sale.
-6. A genuine final-balance shortfall **still produces a final-balance workbench target**.
-7. Orders without a pending receipt residual remain unchanged.
-8. Existing confirmed final-balance payments remain unchanged.
-9. Existing £80.03 applied credit is neither recreated nor reclassified.
-10. Protected funding, supplier allocation, customer sales, Sage and VAT fingerprints remain unchanged.
+6. The shared audience status reports **£0.00 collectible balance** and no pay/collect-final-balance instruction for the same pending-aware covered state.
+7. Before confirmation, the same audience status still reports **£37.20 potential credit pending review** and does not treat it as confirmed/applied credit.
+8. A genuine final-balance shortfall **still produces a final-balance workbench target and customer/importer balance-due action**.
+9. Orders without a pending receipt residual remain unchanged.
+10. Existing confirmed final-balance payments remain unchanged.
+11. Existing £80.03 applied credit is neither recreated nor reclassified.
+12. Existing supplier-rejection, reconciliation and tracking audience corrections remain unchanged.
+13. Shipper audience output remains unchanged.
+14. Protected funding, supplier allocation, customer sales, Sage and VAT fingerprints remain unchanged.
 
 ## Locked implementation rule
 
-> **Restore access to the existing pending-surplus confirmation route and make the workbench respect the existing canonical pending-aware settlement position. Nothing else.**
+> **Restore the existing pending-surplus confirmation action, suppress false workbench collection targets, and make the single shared audience projection respect the same canonical pending-aware receipt coverage. Nothing else.**
 
-Any implementation requiring broader accounting, funding, customer-page, Sage, supplier, shipment or ledger changes is **outside this addendum and must stop for review before proceeding**.
+Any implementation requiring broader accounting, funding, individual customer/importer page, Sage, supplier, shipment, ledger or shipper-audience changes is **outside this addendum and must stop for review before proceeding**.
