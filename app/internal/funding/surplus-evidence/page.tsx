@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
-import { resolveOrderSettlementAction } from "../actions";
+import { confirmSettlementSurplusCreditAction, resolveOrderSettlementAction } from "../actions";
 
 type Row = Record<string, string | number | boolean | null>;
 type StaffRow = { role_type: string | null };
@@ -47,12 +47,46 @@ export default async function SurplusEvidencePage({ searchParams }: { searchPara
   const staff = staffData as StaffRow | null;
   if (staffError || !staff || !["admin", "supervisor"].includes(String(staff.role_type))) redirect("/internal");
 
-  const { data, error } = await supabase.rpc("internal_order_settlement_resolution_v1", { p_order_id: null });
+  const [settlementResult, pendingEvidenceResult] = await Promise.all([
+    supabase.rpc("internal_order_settlement_resolution_v1", { p_order_id: null }),
+    supabase
+      .from("order_surplus_evidence_position_v3")
+      .select("order_id,order_ref,payment_auth_id,effective_receipt_gbp,evidence_value_gbp,evidence_surplus_gbp,evidence_status,evidence_basis,pending_surplus_gbp,pending_position_count,pending_credit_confirmed_count,open_dispute_count,active_hold_count"),
+  ]);
+
+  const { data, error } = settlementResult;
   const allRows = (data ?? []) as Row[];
   const rows = allRows.filter((row) => num(row.final_sale_document_count) > 0 && (num(row.gross_positive_difference_gbp) > 0.01 || num(row.total_classified_gbp) > 0.01));
 
-  const ready = rows.filter((row) => ["ready_for_resolution", "partially_resolved"].includes(String(row.resolution_status)) && num(row.remaining_unresolved_gbp) > 0.01 && row.operational_blocked_yn !== true && (row.credit_action_allowed_yn === true || row.fx_action_allowed_yn === true));
-  const blocked = rows.filter((row) => num(row.remaining_unresolved_gbp) > 0.01 && !ready.some((readyRow) => readyRow.order_id === row.order_id) && String(row.resolution_status) !== "over_resolved_review");
+  const pendingEvidenceRows = pendingEvidenceResult.error ? [] : ((pendingEvidenceResult.data ?? []) as Row[]);
+  const pendingEvidenceByOrder = new Map(pendingEvidenceRows.map((row) => [String(row.order_id), row]));
+  const pendingResidualReady = rows.filter((row) => {
+    if (num(row.pending_evidence_count) <= 0) return false;
+    const evidence = pendingEvidenceByOrder.get(String(row.order_id));
+    return Boolean(
+      evidence &&
+      num(evidence.pending_position_count) > 0 &&
+      num(evidence.evidence_surplus_gbp) > 0.01 &&
+      num(evidence.open_dispute_count) === 0 &&
+      num(evidence.active_hold_count) === 0 &&
+      ["ready_posted_invoice_surplus", "ready_draft_invoice_surplus", "ready_strong_in_out_surplus"].includes(String(evidence.evidence_status)),
+    );
+  });
+  const pendingReadyIds = new Set(pendingResidualReady.map((row) => String(row.order_id)));
+
+  const ready = rows.filter((row) =>
+    num(row.pending_evidence_count) <= 0 &&
+    ["ready_for_resolution", "partially_resolved"].includes(String(row.resolution_status)) &&
+    num(row.remaining_unresolved_gbp) > 0.01 &&
+    row.operational_blocked_yn !== true &&
+    (row.credit_action_allowed_yn === true || row.fx_action_allowed_yn === true),
+  );
+  const blocked = rows.filter((row) =>
+    num(row.remaining_unresolved_gbp) > 0.01 &&
+    !pendingReadyIds.has(String(row.order_id)) &&
+    !ready.some((readyRow) => readyRow.order_id === row.order_id) &&
+    String(row.resolution_status) !== "over_resolved_review",
+  );
   const overResolved = rows.filter((row) => String(row.resolution_status) === "over_resolved_review");
   const resolved = rows.filter((row) => ["fully_resolved", "no_positive_difference"].includes(String(row.resolution_status)));
 
@@ -69,6 +103,7 @@ export default async function SurplusEvidencePage({ searchParams }: { searchPara
         {params.settlement_success ? <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-semibold text-emerald-900">{params.settlement_success}</div> : null}
         {params.settlement_error ? <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm font-semibold text-red-900">{params.settlement_error}</div> : null}
         {error ? <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-900">{error.message}</div> : null}
+        {pendingEvidenceResult.error ? <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-900">Pending receipt evidence unavailable: {pendingEvidenceResult.error.message}</div> : null}
 
         <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <div className="rounded-2xl border border-cyan-200 bg-cyan-50 p-4"><p className="text-xs font-black uppercase text-cyan-700">Ready / partial</p><p className="mt-1 text-3xl font-black">{ready.length}</p></div>
@@ -76,6 +111,44 @@ export default async function SurplusEvidencePage({ searchParams }: { searchPara
           <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4"><p className="text-xs font-black uppercase text-amber-700">Blocked</p><p className="mt-1 text-3xl font-black">{blocked.length}</p></div>
           <div className="rounded-2xl border border-slate-200 bg-white p-4"><p className="text-xs font-black uppercase text-slate-500">Resolved</p><p className="mt-1 text-3xl font-black">{resolved.length}</p></div>
         </section>
+
+        {pendingResidualReady.length > 0 ? (
+          <section className="space-y-3 rounded-3xl border border-cyan-200 bg-white p-5 shadow-sm">
+            <div><h2 className="text-xl font-black">Original receipt residual ready to confirm</h2><p className="mt-1 text-sm text-slate-600">Confirm the existing pending receipt residual only after the established evidence model proves the customer credit amount.</p></div>
+            {pendingResidualReady.map((row) => {
+              const evidence = pendingEvidenceByOrder.get(String(row.order_id));
+              if (!evidence) return null;
+              const credit = num(evidence.evidence_surplus_gbp);
+              return (
+                <details key={String(row.order_id)} className="rounded-2xl border border-cyan-200 bg-cyan-50 shadow-sm" open>
+                  <summary className="cursor-pointer list-none p-4">
+                    <div className="grid gap-3 md:grid-cols-[1.25fr_0.75fr_0.75fr_0.75fr_auto] md:items-center">
+                      <div><h3 className="text-lg font-black">{row.order_ref ?? row.order_id}</h3><p className="text-xs text-slate-600">Auth: {row.payment_auth_id ?? "—"}</p></div>
+                      <div><p className="text-xs font-black uppercase text-slate-500">Receipt</p><p className="font-black">{gbp(evidence.effective_receipt_gbp)}</p></div>
+                      <div><p className="text-xs font-black uppercase text-slate-500">Final value</p><p className="font-black">{gbp(evidence.evidence_value_gbp)}</p></div>
+                      <div><p className="text-xs font-black uppercase text-slate-500">Credit</p><p className="font-black text-cyan-800">{gbp(credit)}</p></div>
+                      <span className="rounded-full bg-cyan-100 px-3 py-1 text-xs font-black text-cyan-800 ring-1 ring-cyan-200">receipt residual</span>
+                    </div>
+                  </summary>
+                  <div className="border-t border-cyan-100 p-4">
+                    <div className="grid gap-2 sm:grid-cols-3">
+                      <div className="rounded-xl bg-white p-3"><p className="text-xs font-black uppercase text-slate-500">Pending receipt residual</p><p className="font-black">{gbp(evidence.pending_surplus_gbp)}</p></div>
+                      <div className="rounded-xl bg-white p-3"><p className="text-xs font-black uppercase text-slate-500">Evidence basis</p><p className="font-black">{label(evidence.evidence_basis)}</p></div>
+                      <div className="rounded-xl bg-white p-3"><p className="text-xs font-black uppercase text-slate-500">Customer credit proven</p><p className="font-black text-cyan-800">{gbp(credit)}</p></div>
+                    </div>
+                    <form action={confirmSettlementSurplusCreditAction} className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                      <input type="hidden" name="order_id" value={String(row.order_id)} />
+                      <input type="hidden" name="reason" value="supervisor_confirmed_credit" />
+                      <input type="hidden" name="notes" value={`Pending receipt residual confirmed from ${label(evidence.evidence_basis)} evidence. Effective receipt ${gbp(evidence.effective_receipt_gbp)} less final evidence value ${gbp(evidence.evidence_value_gbp)} leaves ${gbp(credit)} customer credit.`} />
+                      <p className="text-xs font-semibold text-slate-600">The existing evidence RPC will create the proven {gbp(credit)} credit and close the pending receipt classification.</p>
+                      <button className="rounded-xl bg-cyan-700 px-4 py-2 text-sm font-black text-white">Confirm customer credit</button>
+                    </form>
+                  </div>
+                </details>
+              );
+            })}
+          </section>
+        ) : null}
 
         <section className="space-y-3 rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
           <div className="flex flex-wrap items-start justify-between gap-3">
