@@ -269,8 +269,8 @@ export default async function DvaMatchingWorkspacePage({
     num(selectedLine?.retailer_refund_allocated_gbp) +
     num(selectedLine?.exception_or_hold_allocated_gbp);
   const selectedStatementRemaining = Math.max(0, selectedStatementAmount - selectedStatementAllocated);
-  const selectedMerchantTokens = merchantTokens(selectedLine?.reference_raw, selectedLine?.retailer_name_ref);
-  const rightRetailer = activeManualRightRetailer.trim();
+  const selectedMerchantTokens = merchantTokens(selectedLine?.retailer_name_ref, selectedLine?.reference_raw);
+  const rightRetailer = activeManualRightRetailer || leftRetailer;
 
   const [settlementV2Result, canonicalSettlementResult] = await Promise.all([
     supabase.rpc("internal_order_final_sale_settlement_v2", { p_order_id: null }),
