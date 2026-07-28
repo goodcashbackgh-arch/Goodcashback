@@ -12,15 +12,16 @@ SET LOCAL statement_timeout = '0';
 --   * create one production semantic mapping for customer shipping recharge;
 --   * preserve the current canonical customer-sales Sage resolver;
 --   * for durable lines where goods = 0 and shipping > 0 only:
---       - resolve to Carriage on Sales via the new production mapping;
+--       - resolve the Sage ledger account to Carriage on Sales via the mapping;
 --       - present description as "Shipping charge — {item}";
---   * preserve all other customer-sales behaviour unchanged.
+--   * preserve every other existing line field and customer-sales behaviour.
 -- =============================================================================
 
 DO $$
 DECLARE
   v_result text;
   v_def text;
+  v_unexpected text;
 BEGIN
   IF to_regclass('public.sage_mapping_settings') IS NULL
      OR to_regclass('public.customer_sales_release_lines') IS NULL
@@ -54,6 +55,27 @@ BEGIN
 
   IF to_regprocedure('public.internal_customer_sales_sage_payload_pre_shipping_recharge_v1(uuid)') IS NOT NULL THEN
     RAISE EXCEPTION 'Preserved pre-shipping-recharge resolver already exists; refusing ambiguous reapplication';
+  END IF;
+
+  -- Scope guard: only these already-known functions may directly call the
+  -- canonical resolver. Any additional caller means the dependency surface has
+  -- changed and this migration must stop rather than rewrite an unknown function.
+  SELECT string_agg(p.oid::regprocedure::text, ', ' ORDER BY p.oid::regprocedure::text)
+  INTO v_unexpected
+  FROM pg_proc p
+  JOIN pg_namespace n ON n.oid = p.pronamespace
+  WHERE n.nspname = 'public'
+    AND p.prokind = 'f'
+    AND p.proname NOT IN (
+      'internal_resolved_customer_sales_sage_payload_v1',
+      'internal_ready_for_sage_queue_v2',
+      'internal_freeze_customer_sales_sage_batch_v1',
+      'internal_revalidate_sage_posting_snapshots_v1'
+    )
+    AND p.prosrc LIKE '%internal_resolved_customer_sales_sage_payload_v1%';
+
+  IF v_unexpected IS NOT NULL THEN
+    RAISE EXCEPTION 'Unexpected customer-sales Sage resolver dependant(s): %. Stop before patching.', v_unexpected;
   END IF;
 END $$;
 
@@ -225,9 +247,6 @@ BEGIN
                    AND COALESCE(NULLIF(line.value ->> 'shipping_amount_gbp', '')::numeric, 0) > 0
                   THEN line.value || jsonb_build_object(
                     'description', 'Shipping charge — ' || COALESCE(NULLIF(line.value ->> 'description', ''), 'Export sale'),
-                    'ledger_account_role', 'customer_shipping_recharge_income',
-                    'customer_gl_role', 'customer_shipping_recharge_income',
-                    'presentation', 'standalone_customer_shipping_recharge_from_durable_release_membership',
                     'sage_ledger_account_id', carriage_mapping.ledger_id,
                     'sage_ledger_account_display', carriage_mapping.ledger_name
                   )
@@ -327,7 +346,8 @@ GRANT EXECUTE ON FUNCTION public.internal_resolved_customer_sales_sage_payload_v
 GRANT EXECUTE ON FUNCTION public.internal_resolved_customer_sales_sage_payload_v1(uuid) TO service_role;
 
 -- PostgreSQL dependencies remain attached to the renamed preserved function OID.
--- Recreate existing textual dependants so they bind back to the canonical resolver.
+-- Recreate only the explicit, previously-known direct dependants so they bind
+-- back to the canonical resolver. Unknown callers were blocked before rename.
 DO $$
 DECLARE
   v_oid oid;
@@ -339,11 +359,13 @@ BEGIN
     JOIN pg_namespace n ON n.oid = p.pronamespace
     WHERE n.nspname = 'public'
       AND p.prokind = 'f'
-      AND p.proname NOT IN (
-        'internal_resolved_customer_sales_sage_payload_v1',
-        'internal_customer_sales_sage_payload_pre_shipping_recharge_v1'
+      AND p.proname IN (
+        'internal_ready_for_sage_queue_v2',
+        'internal_freeze_customer_sales_sage_batch_v1',
+        'internal_revalidate_sage_posting_snapshots_v1'
       )
       AND p.prosrc LIKE '%internal_resolved_customer_sales_sage_payload_v1%'
+    ORDER BY p.proname, p.oid
   LOOP
     SELECT pg_get_functiondef(v_oid) INTO v_definition;
     EXECUTE v_definition;
