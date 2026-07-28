@@ -14,15 +14,19 @@ BEGIN
   JOIN public.sage_mapping_settings s
     ON s.mapping_code = 'VAT_BOX6_CARRIAGE_ON_SALES_LEDGER'
    AND s.is_active = true
+   AND NULLIF(BTRIM(COALESCE(s.sage_external_id, '')), '') IS NOT NULL
+   AND NULLIF(BTRIM(COALESCE(s.sage_display_name, '')), '') IS NOT NULL
   WHERE m.mapping_code = 'CUSTOMER_SHIPPING_RECHARGE_INCOME_LEDGER'
     AND m.is_active = true
     AND NULLIF(BTRIM(COALESCE(m.sage_external_id, '')), '') IS NOT NULL
+    AND NULLIF(BTRIM(COALESCE(m.sage_display_name, '')), '') IS NOT NULL
     AND m.sage_external_id = s.sage_external_id
     AND m.sage_display_name IS NOT DISTINCT FROM s.sage_display_name
   LIMIT 1;
 
-  IF v_shipping_ledger_id IS NULL THEN
-    RAISE EXCEPTION 'FAIL: production shipping recharge mapping is not aligned to active carriage on sales mapping';
+  IF v_shipping_ledger_id IS NULL
+     OR NULLIF(BTRIM(COALESCE(v_shipping_ledger_name, '')), '') IS NULL THEN
+    RAISE EXCEPTION 'FAIL: production shipping recharge mapping is not fully aligned to active carriage on sales mapping';
   END IF;
 
   SELECT sage_external_id
@@ -57,8 +61,9 @@ BEGIN
      OR v_def NOT ILIKE '%missing_customer_shipping_recharge_income_ledger%'
      OR v_def NOT ILIKE '%sage_ledger_account_id%'
      OR v_def NOT ILIKE '%sage_ledger_account_display%'
+     OR v_def NOT ILIKE '%NULLIF(BTRIM(COALESCE(sm.sage_display_name, '''')), '''') IS NOT NULL%'
   THEN
-    RAISE EXCEPTION 'FAIL: scoped shipping-only resolver branch missing';
+    RAISE EXCEPTION 'FAIL: scoped shipping-only resolver branch or full mapping validity guard missing';
   END IF;
 
   IF v_def ILIKE '%''ledger_account_role'', ''customer_shipping_recharge_income''%'
@@ -176,9 +181,10 @@ BEGIN
           (after_line - ARRAY['description','sage_ledger_account_id','sage_ledger_account_display']::text[])
        OR after_line ->> 'sage_ledger_account_id' IS DISTINCT FROM v_shipping_ledger_id
        OR after_line ->> 'sage_ledger_account_display' IS DISTINCT FROM v_shipping_ledger_name
+       OR NULLIF(BTRIM(COALESCE(after_line ->> 'sage_ledger_account_display', '')), '') IS NULL
        OR after_line ->> 'description' NOT LIKE 'Shipping charge — %'
   ) THEN
-    RAISE EXCEPTION 'FAIL: authorised shipping-only transformation changes fields outside description/Sage ledger account';
+    RAISE EXCEPTION 'FAIL: authorised shipping-only transformation changes fields outside description/Sage ledger account or yields blank display';
   END IF;
 
   IF EXISTS (
@@ -200,5 +206,5 @@ END $$;
 
 SELECT jsonb_build_object(
   'regression_result','PASS',
-  'proof','production carriage mapping aligned; resolver changes only description and Sage ledger account for goods=0/shipping>0 lines; no new line-role vocabulary; actual dependency callers allowlisted; export mapping preserved; historical release and frozen Sage facts unchanged'
+  'proof','production carriage mapping id/display both valid and aligned; resolver changes only description and Sage ledger account for goods=0/shipping>0 lines; no new line-role vocabulary; actual dependency callers allowlisted; export mapping preserved; historical release and frozen Sage facts unchanged'
 ) AS regression_result;
