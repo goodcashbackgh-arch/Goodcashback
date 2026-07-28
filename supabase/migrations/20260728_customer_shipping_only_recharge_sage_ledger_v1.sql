@@ -57,9 +57,9 @@ BEGIN
     RAISE EXCEPTION 'Preserved pre-shipping-recharge resolver already exists; refusing ambiguous reapplication';
   END IF;
 
-  -- Scope guard: only these already-known functions may directly call the
-  -- canonical resolver. Any additional caller means the dependency surface has
-  -- changed and this migration must stop rather than rewrite an unknown function.
+  -- Scope guard: detect actual function invocations, not bare occurrences of the
+  -- resolver name in preserved-function source text. Only established active
+  -- resolver callers are allowed. Any additional actual caller stops the patch.
   SELECT string_agg(p.oid::regprocedure::text, ', ' ORDER BY p.oid::regprocedure::text)
   INTO v_unexpected
   FROM pg_proc p
@@ -69,13 +69,14 @@ BEGIN
     AND p.proname NOT IN (
       'internal_resolved_customer_sales_sage_payload_v1',
       'internal_ready_for_sage_queue_v2',
+      'internal_ready_for_sage_queue_v2_pre_supplier_lane_restore_v1',
       'internal_freeze_customer_sales_sage_batch_v1',
       'internal_revalidate_sage_posting_snapshots_v1'
     )
-    AND p.prosrc LIKE '%internal_resolved_customer_sales_sage_payload_v1%';
+    AND p.prosrc ~ '(^|[^A-Za-z0-9_])(?:public[.])?internal_resolved_customer_sales_sage_payload_v1[[:space:]]*[(]';
 
   IF v_unexpected IS NOT NULL THEN
-    RAISE EXCEPTION 'Unexpected customer-sales Sage resolver dependant(s): %. Stop before patching.', v_unexpected;
+    RAISE EXCEPTION 'Unexpected customer-sales Sage resolver caller(s): %. Stop before patching.', v_unexpected;
   END IF;
 END $$;
 
@@ -346,8 +347,9 @@ GRANT EXECUTE ON FUNCTION public.internal_resolved_customer_sales_sage_payload_v
 GRANT EXECUTE ON FUNCTION public.internal_resolved_customer_sales_sage_payload_v1(uuid) TO service_role;
 
 -- PostgreSQL dependencies remain attached to the renamed preserved function OID.
--- Recreate only the explicit, previously-known direct dependants so they bind
--- back to the canonical resolver. Unknown callers were blocked before rename.
+-- Recreate only established active callers that actually invoke the canonical
+-- resolver so they bind back to the new canonical function. Unknown actual
+-- callers were blocked before the rename.
 DO $$
 DECLARE
   v_oid oid;
@@ -361,10 +363,11 @@ BEGIN
       AND p.prokind = 'f'
       AND p.proname IN (
         'internal_ready_for_sage_queue_v2',
+        'internal_ready_for_sage_queue_v2_pre_supplier_lane_restore_v1',
         'internal_freeze_customer_sales_sage_batch_v1',
         'internal_revalidate_sage_posting_snapshots_v1'
       )
-      AND p.prosrc LIKE '%internal_resolved_customer_sales_sage_payload_v1%'
+      AND p.prosrc ~ '(^|[^A-Za-z0-9_])(?:public[.])?internal_resolved_customer_sales_sage_payload_v1[[:space:]]*[(]'
     ORDER BY p.proname, p.oid
   LOOP
     SELECT pg_get_functiondef(v_oid) INTO v_definition;
