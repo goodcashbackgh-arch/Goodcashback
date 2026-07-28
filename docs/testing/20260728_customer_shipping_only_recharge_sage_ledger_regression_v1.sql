@@ -69,8 +69,9 @@ BEGIN
     RAISE EXCEPTION 'FAIL: scoped shipping-only resolver branch missing';
   END IF;
 
-  IF v_def ILIKE '%customer_shipping_recharge_income%'
-     OR v_def ILIKE '%standalone_customer_shipping_recharge_from_durable_release_membership%'
+  IF v_def ILIKE '%''ledger_account_role'', ''customer_shipping_recharge_income''%'
+     OR v_def ILIKE '%''customer_gl_role'', ''customer_shipping_recharge_income''%'
+     OR v_def ILIKE '%''presentation'', ''standalone_customer_shipping_recharge_from_durable_release_membership''%'
   THEN
     RAISE EXCEPTION 'FAIL: out-of-scope line role/presentation vocabulary introduced';
   END IF;
