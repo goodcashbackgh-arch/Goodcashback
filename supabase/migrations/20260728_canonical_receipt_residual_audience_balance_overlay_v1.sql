@@ -7,8 +7,10 @@ SET LOCAL statement_timeout = '0';
 --
 -- Preserve the current audience projection (including supplier-rejection and
 -- tracking corrections) and change only the audience-facing final-balance
--- amount/status/action when the existing canonical settlement position proves
--- that an already-attributed pending receipt residual covers the final sale.
+-- amount/status/action when BOTH:
+--   1. the current audience projection is reporting a positive final balance; and
+--   2. the existing canonical settlement position proves that an already-attributed
+--      pending receipt residual covers the final sale.
 --
 -- This does not allocate the pending residual, alter funding, create credit,
 -- change settlement arithmetic, or modify customer/importer page code.
@@ -94,10 +96,11 @@ BEGIN
     SELECT
       b.*,
       (
-        COALESCE(s.pending_receipt_residual_gbp, 0) > 0.01
+        COALESCE(b.canonical_balance_due_gbp, 0) > 0.01
+        AND COALESCE(s.pending_receipt_residual_gbp, 0) > 0.01
         AND COALESCE(s.final_sale_document_count, 0) > 0
         AND COALESCE(s.order_attributed_receipt_gbp, 0) + 0.005 >= COALESCE(s.final_order_value_gbp, 0)
-      ) AS pending_receipt_covers_final_sale
+      ) AS false_positive_final_balance
     FROM base b
     LEFT JOIN public.order_settlement_resolution_position_v1 s
       ON s.order_id = b.order_id
@@ -115,7 +118,7 @@ BEGIN
     q.final_sale_value_gbp,
     q.canonical_amount_received_gbp,
     CASE
-      WHEN q.pending_receipt_covers_final_sale THEN 0::numeric
+      WHEN q.false_positive_final_balance THEN 0::numeric
       ELSE q.canonical_balance_due_gbp
     END AS canonical_balance_due_gbp,
     q.potential_credit_pending_review_gbp,
@@ -144,7 +147,7 @@ BEGIN
     q.importer_complete_yn,
     q.shipper_complete_yn,
     CASE
-      WHEN NOT q.pending_receipt_covers_final_sale THEN q.customer_status_label
+      WHEN NOT q.false_positive_final_balance THEN q.customer_status_label
       WHEN q.pod_delivery_state = 'accepted_current' THEN 'Completed'
       WHEN q.export_evidence_state = 'accepted_current' THEN 'Shipment delivered'
       WHEN q.shipment_state = 'allocated' THEN 'Shipment arranged'
@@ -152,14 +155,14 @@ BEGIN
       ELSE 'In progress'
     END::text AS customer_status_label,
     CASE
-      WHEN NOT q.pending_receipt_covers_final_sale THEN q.customer_next_action
+      WHEN NOT q.false_positive_final_balance THEN q.customer_next_action
       WHEN q.pod_delivery_state = 'accepted_current' THEN 'Order complete'
       WHEN q.export_evidence_state = 'accepted_current' THEN 'Delivery confirmation received'
       WHEN q.shipment_state = 'allocated' THEN 'Waiting for delivery confirmation'
       ELSE 'No action needed right now'
     END::text AS customer_next_action,
     CASE
-      WHEN NOT q.pending_receipt_covers_final_sale THEN q.importer_status_label
+      WHEN NOT q.false_positive_final_balance THEN q.importer_status_label
       WHEN COALESCE(q.internal_current_stage, '') = 'exception_or_hold_open' THEN q.importer_status_label
       WHEN q.supplier_state IN ('rejected_resubmit_required', 'review_needed') THEN q.importer_status_label
       WHEN q.reconciliation_state = 'incomplete' THEN 'Invoice reconciliation open'
@@ -169,7 +172,7 @@ BEGIN
       ELSE 'No importer action required'
     END::text AS importer_status_label,
     CASE
-      WHEN NOT q.pending_receipt_covers_final_sale THEN q.importer_next_action
+      WHEN NOT q.false_positive_final_balance THEN q.importer_next_action
       WHEN COALESCE(q.internal_current_stage, '') = 'exception_or_hold_open' THEN q.importer_next_action
       WHEN q.supplier_state IN ('rejected_resubmit_required', 'review_needed') THEN q.importer_next_action
       WHEN q.reconciliation_state = 'incomplete' THEN 'Continue invoice reconciliation'
@@ -188,7 +191,7 @@ REVOKE ALL ON FUNCTION public.order_audience_status_v1(uuid) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.order_audience_status_v1(uuid) TO authenticated;
 
 COMMENT ON FUNCTION public.order_audience_status_v1(uuid) IS
-'Current audience-safe status plus canonical pending-receipt coverage overlay. When an attributed pending receipt already covers the final sale, collectible balance is zero and customer/importer balance-collection messaging is suppressed without allocating the residual, changing completion facts, or changing shipper output.';
+'Current audience-safe status plus a narrow false-positive final-balance overlay. Only when the existing audience projection shows a positive balance and the canonical pending receipt already covers the final sale is collectible balance set to zero and customer/importer balance-collection messaging suppressed. Applied amount, pending credit, completion facts and shipper output remain unchanged.';
 
 NOTIFY pgrst, 'reload schema';
 
