@@ -101,8 +101,8 @@ AND shipping_amount_gbp > 0
 
 that exact resolved line must:
 
-- use `CUSTOMER_SHIPPING_RECHARGE_INCOME_LEDGER`;
-- resolve to the mapped Carriage on Sales account;
+- resolve `sage_ledger_account_id` and `sage_ledger_account_display` through `CUSTOMER_SHIPPING_RECHARGE_INCOME_LEDGER`;
+- retain every existing semantic/presentation field unless explicitly named by this addendum;
 - retain all durable source IDs and release values unchanged;
 - retain the existing tax resolution unchanged;
 - present the line description as:
@@ -111,11 +111,13 @@ that exact resolved line must:
 Shipping charge — {existing source item description}
 ```
 
+No new `ledger_account_role`, `customer_gl_role`, `presentation`, line kind or other semantic vocabulary is authorised by this correction.
+
 ### 5.2 Every other customer-sales line
 
 Every other line must remain exactly on the existing resolver behaviour, including the existing `EXPORT_SALE_INCOME_LEDGER` resolution.
 
-Mixed documents are allowed to contain lines with different ledger accounts only where individual durable lines satisfy the exact rule above.
+Mixed documents are allowed to contain lines with different Sage ledger account IDs only where individual durable lines satisfy the exact rule above. No other line semantics are to change.
 
 ---
 
@@ -166,7 +168,7 @@ This build must make **no changes** to:
 - order statuses or audience statuses;
 - historical repair/backfill.
 
-Do not add a second release resolver, second posting route, new queue, new invoice type, new status, or record-specific exception.
+Do not add a second release resolver, second posting route, new queue, new invoice type, new status, new line semantic vocabulary, or record-specific exception.
 
 ---
 
@@ -177,8 +179,19 @@ The authorised build is limited to:
 1. one additive Supabase migration;
 2. one new production mapping row in `sage_mapping_settings`, sourced from the existing active carriage-on-sales mapping;
 3. one preservation/wrapper correction to the canonical `internal_resolved_customer_sales_sage_payload_v1(uuid)` route;
-4. rebinding existing dependent functions to the canonical resolver where required by PostgreSQL function dependency behaviour;
-5. one regression SQL file covering the exact scope above.
+4. rebinding only the already-known direct dependants of the canonical resolver where PostgreSQL rename dependency behaviour requires it;
+5. an explicit migration guard that stops if any unexpected public function dependant is discovered instead of recreating it;
+6. one regression SQL file covering the exact scope above.
+
+The known direct dependant allowlist for this migration is limited to:
+
+```text
+internal_ready_for_sage_queue_v2
+internal_freeze_customer_sales_sage_batch_v1
+internal_revalidate_sage_posting_snapshots_v1
+```
+
+A known dependant may be absent in a particular schema version; absence does not authorise any substitute. Any additional dependant is a stop condition.
 
 No application/UI file change is authorised.
 
@@ -192,6 +205,7 @@ Stop implementation rather than expanding scope if any of the following is found
 - the existing active carriage-on-sales mapping cannot be resolved;
 - durable resolved lines do not expose `goods_amount_gbp` and `shipping_amount_gbp`;
 - the Sage posting route does not consume line-level `sage_ledger_account_id` from the resolved payload;
+- any public function outside the explicit dependant allowlist refers directly to the canonical resolver;
 - implementing the correction would require modifying release membership, invoice amounts, VAT rules, Sage adapter code or UI.
 
 Any such condition requires a new diagnostic and explicit approval before further work.
@@ -202,13 +216,15 @@ Any such condition requires a new diagnostic and explicit approval before furthe
 
 The build passes only if all of the following are proven:
 
-1. shipping-only customer lines resolve to the production carriage-on-sales mapping;
+1. shipping-only customer lines are assigned the production carriage-on-sales Sage ledger mapping;
 2. those lines present as `Shipping charge — {item}`;
-3. their goods/shipping/customer-charge amounts remain byte-for-byte economically unchanged;
-4. their durable source IDs remain unchanged;
-5. goods-only lines remain on the existing export-sales ledger;
-6. mixed goods/shipping lines that include positive goods remain on the existing export-sales ledger;
-7. tax resolution is unchanged;
-8. posted historical snapshots remain untouched;
-9. missing shipping-recharge mapping blocks rather than falling back;
-10. no object outside this addendum's approved implementation shape is changed.
+3. no existing line semantic/presentation field is changed other than the description and Sage ledger account ID/display explicitly authorised above;
+4. their goods/shipping/customer-charge amounts remain economically unchanged;
+5. their durable source IDs remain unchanged;
+6. goods-only lines remain on the existing export-sales ledger;
+7. lines with positive goods remain on the existing export-sales ledger even where shipping is also positive;
+8. tax resolution is unchanged;
+9. posted historical snapshots remain untouched;
+10. missing shipping-recharge mapping blocks rather than falling back;
+11. dependency rebinding is restricted to the explicit allowlist and stops on unknown dependants;
+12. no object outside this addendum's approved implementation shape is changed.
