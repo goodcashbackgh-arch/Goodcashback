@@ -269,11 +269,18 @@ export default async function DvaMatchingWorkspacePage({
     num(selectedLine?.retailer_refund_allocated_gbp) +
     num(selectedLine?.exception_or_hold_allocated_gbp);
   const selectedStatementRemaining = Math.max(0, selectedStatementAmount - selectedStatementAllocated);
-  const selectedMerchantTokens = merchantTokens(selectedLine?.retailer_name_ref, selectedLine?.reference_raw);
-  const rightRetailer = activeManualRightRetailer || leftRetailer;
+  const selectedMerchantTokens = merchantTokens(selectedLine?.reference_raw, selectedLine?.retailer_name_ref);
+  const rightRetailer = activeManualRightRetailer.trim();
 
-  const settlementV2Result = await supabase.rpc("internal_order_final_sale_settlement_v2", { p_order_id: null });
+  const [settlementV2Result, canonicalSettlementResult] = await Promise.all([
+    supabase.rpc("internal_order_final_sale_settlement_v2", { p_order_id: null }),
+    supabase.rpc("internal_order_settlement_resolution_v1", { p_order_id: null }),
+  ]);
   const settlementRows = ((settlementV2Result.data ?? []) as unknown as Row[]).filter((row) => !selectedImporterId || text(row.importer_id) === selectedImporterId);
+  const canonicalSettlementRows = canonicalSettlementResult.error
+    ? []
+    : ((canonicalSettlementResult.data ?? []) as unknown as Row[]).filter((row) => !selectedImporterId || text(row.importer_id) === selectedImporterId);
+  const canonicalSettlementByOrder = new Map(canonicalSettlementRows.map((row) => [text(row.order_id), row]));
 
   const invoiceRows: OperationalRow[] = supplierCandidates.map((candidate) => {
     const order = orders.find((row) => text(row.id) === text(candidate.order_id));
@@ -316,7 +323,16 @@ export default async function DvaMatchingWorkspacePage({
   });
 
   const finalBalanceRows: OperationalRow[] = settlementRows
-    .filter((row) => num(row.final_balance_due_gbp) > 0.01 && bool(row.final_sale_value_exists))
+    .filter((row) => {
+      if (num(row.final_balance_due_gbp) <= 0.01 || !bool(row.final_sale_value_exists)) return false;
+      const canonical = canonicalSettlementByOrder.get(text(row.order_id));
+      if (!canonical) return true;
+      const pendingReceiptCoversFinalSale =
+        num(canonical.pending_receipt_residual_gbp) > 0.01 &&
+        num(canonical.final_sale_document_count) > 0 &&
+        num(canonical.order_attributed_receipt_gbp) + 0.005 >= num(canonical.final_order_value_gbp);
+      return !pendingReceiptCoversFinalSale;
+    })
     .map((row) => ({
       kind: "final_balance",
       id: `final-balance-${text(row.order_id)}`,
