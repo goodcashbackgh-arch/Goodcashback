@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import crypto from "node:crypto";
 import vm from "node:vm";
 
 const actionsPath = "app/importer/reconciliation/[order_id]/actions.ts";
@@ -33,6 +34,16 @@ contains(actions, /alreadyAccounted\.qty \+ selectedUnresolvedTotals\.qty > base
 contains(actions, /const alreadyAccounted = lines\s*\.filter\(\(line\) => accountedLineIds\.has\(line\.id\)\)/, "Already-accounted selected lines can disappear from the projection.");
 contains(actions, /const selectedUnresolvedTotals = selectedLines\s*\.filter\(\(line\) => !accountedLineIds\.has\(line\.id\)\)/, "Selected physical proposal is not restricted to unaccounted lines.");
 assert.doesNotMatch(actions, /accountedLineIds\.has\(line\.id\) && !selectedLineIds\.has\(line\.id\)/, "Stale selections still remove already-accounted lines.");
+contains(actions, /const accountedLineIds = new Set\(lines\.filter\(\(line\) => isProgressedFlag\(line\.eligible_for_invoice_yn\) \|\| resolutions\.has\(line\.id\)\)/, "Server baseline does not contain exactly progressed and Parked lines.");
+assert.doesNotMatch(actions, /const accountedLineIds =[^;]*disputeLineIds/s, "Open disputes entered the server accounted baseline.");
+contains(actions, /resolvedLineIds: new Set\(resolutions\.keys\(\)\),\s*disputeLineIds,/, "Dispute membership is not supplied separately to the provisional offset.");
+contains(actions, /!resolvedLineIds\.has\(line\.id\) && !disputeLineIds\.has\(line\.id\)/, "Exception-linked financial rows can enter the provisional offset.");
+
+const exceptionGuardStart = actions.indexOf("async function enforceLinesNotLinkedToOpenException");
+const exceptionGuardEnd = actions.indexOf("\nfunction readString(", exceptionGuardStart);
+assert(exceptionGuardStart >= 0 && exceptionGuardEnd > exceptionGuardStart, "Existing exception progression guard is missing.");
+const exceptionGuardHash = crypto.createHash("sha256").update(actions.slice(exceptionGuardStart, exceptionGuardEnd)).digest("hex");
+assert.equal(exceptionGuardHash, "cfe9ce8bb84e62bc0db8e1441ccff889e221dbbffc408048d90ca95089122d1f", "Existing exception progression guard changed.");
 
 const helperStart = actions.indexOf("function normalisedDescription");
 const helperEnd = actions.indexOf("function lineProgressionValues");
@@ -59,6 +70,8 @@ const previousResolutions = [
 ];
 const parkedValue = previousFinancialLines.reduce((sum, line, index) => sum + resolvedFinancialAmount(line, previousResolutions[index]), 0);
 assert.equal(parkedValue, -3.58, "Existing Parked financial signs are incorrect.");
+assert.equal(resolvedFinancialAmount({ amount_inc_vat_gbp: 11.42 }, { financial_type: "fee" }), 11.42, "Parked fee sign is incorrect.");
+assert.equal(resolvedFinancialAmount({ amount_inc_vat_gbp: 11.42 }, { financial_type: "zero_value_delivery" }), 0, "Parked zero-value delivery is not zero.");
 
 const currentInvoiceId = "invoice-current";
 const unresolvedLines = [
@@ -72,18 +85,20 @@ const adjustments = [
   { supplier_invoice_id: currentInvoiceId, adjustment_type: "retailer_delivery", amount_gbp: 7.95, approval_status: "auto_approved" },
   { supplier_invoice_id: "invoice-other", adjustment_type: "retailer_discount", amount_gbp: 100, approval_status: "auto_approved" },
 ];
-const goodsFirstOffset = provedUnresolvedFinancialOffset({ lines: unresolvedLines, accountedLineIds: new Set(), resolvedLineIds: new Set(), selectedInvoiceIds: new Set([currentInvoiceId]), adjustments });
+const goodsFirstOffset = provedUnresolvedFinancialOffset({ lines: unresolvedLines, accountedLineIds: new Set(), resolvedLineIds: new Set(), disputeLineIds: new Set(), selectedInvoiceIds: new Set([currentInvoiceId]), adjustments });
 const previousValue = previousGoods.reduce((sum, amount) => sum + amount, 0) + parkedValue;
 assert.equal(money(previousValue + 249.99 + goodsFirstOffset), 701.83, "Goods-first projection does not equal £701.83.");
 assert.equal(3 + 1, 4, "Goods-first quantity does not equal four.");
 
 const currentParkedValue = resolvedFinancialAmount(unresolvedLines[1], { financial_type: "discount" }) + resolvedFinancialAmount(unresolvedLines[2], { financial_type: "delivery" });
-const parkFirstOffset = provedUnresolvedFinancialOffset({ lines: unresolvedLines, accountedLineIds: new Set(["discount", "delivery"]), resolvedLineIds: new Set(["discount", "delivery"]), selectedInvoiceIds: new Set([currentInvoiceId]), adjustments });
+const parkFirstOffset = provedUnresolvedFinancialOffset({ lines: unresolvedLines, accountedLineIds: new Set(["discount", "delivery"]), resolvedLineIds: new Set(["discount", "delivery"]), disputeLineIds: new Set(), selectedInvoiceIds: new Set([currentInvoiceId]), adjustments });
 assert.equal(parkFirstOffset, 0, "Parked rows were double-counted as unresolved.");
 assert.equal(money(previousValue + currentParkedValue + 249.99 + parkFirstOffset), 701.83, "Park-first projection does not equal £701.83.");
 
-const unmatchedOffset = provedUnresolvedFinancialOffset({ lines: unresolvedLines, accountedLineIds: new Set(), resolvedLineIds: new Set(), selectedInvoiceIds: new Set([currentInvoiceId]), adjustments: [] });
+const unmatchedOffset = provedUnresolvedFinancialOffset({ lines: unresolvedLines, accountedLineIds: new Set(), resolvedLineIds: new Set(), disputeLineIds: new Set(), selectedInvoiceIds: new Set([currentInvoiceId]), adjustments: [] });
 assert.equal(unmatchedOffset, 0, "Description-only adjustment created capacity.");
+const disputedOffset = provedUnresolvedFinancialOffset({ lines: unresolvedLines, accountedLineIds: new Set(), resolvedLineIds: new Set(), disputeLineIds: new Set(["discount", "delivery"]), selectedInvoiceIds: new Set([currentInvoiceId]), adjustments });
+assert.equal(disputedOffset, 0, "Exception-linked financial rows created provisional capacity.");
 assert(previousValue + 249.99 + unmatchedOffset > 701.83 + 0.01, "Unproved value excess was not blocked.");
 assert(previousValue + 250.01 + goodsFirstOffset > 701.83 + 0.01, "Genuine value excess was not blocked.");
 assert(3 + 2 > 4, "Genuine quantity excess was not blocked.");

@@ -82,14 +82,15 @@ function provedUnresolvedFinancialOffset(params: {
   lines: ProgressionLine[];
   accountedLineIds: Set<string>;
   resolvedLineIds: Set<string>;
+  disputeLineIds: Set<string>;
   selectedInvoiceIds: Set<string>;
   adjustments: OrderValueAdjustment[];
 }) {
-  const { lines, accountedLineIds, resolvedLineIds, selectedInvoiceIds, adjustments } = params;
+  const { lines, accountedLineIds, resolvedLineIds, disputeLineIds, selectedInvoiceIds, adjustments } = params;
   let offset = 0;
 
   for (const supplierInvoiceId of selectedInvoiceIds) {
-    const invoiceLines = lines.filter((line) => line.supplier_invoice_id === supplierInvoiceId && !accountedLineIds.has(line.id) && !resolvedLineIds.has(line.id));
+    const invoiceLines = lines.filter((line) => line.supplier_invoice_id === supplierInvoiceId && !accountedLineIds.has(line.id) && !resolvedLineIds.has(line.id) && !disputeLineIds.has(line.id));
     const invoiceAdjustments = adjustments.filter((adjustment) => adjustment.supplier_invoice_id === supplierInvoiceId && adjustment.approval_status !== "rejected");
 
     for (const kind of ["discount", "delivery"] as const) {
@@ -173,7 +174,7 @@ async function enforceProgressionWithinBaseline(params: {
 
   const resolutions = new Map(((resolutionRows ?? []) as ProgressionResolution[]).map((resolution) => [resolution.supplier_invoice_line_id, resolution]));
   const disputeLineIds = new Set((disputeRows ?? []).map((row) => row.supplier_invoice_line_id));
-  const accountedLineIds = new Set(lines.filter((line) => isProgressedFlag(line.eligible_for_invoice_yn) || disputeLineIds.has(line.id) || resolutions.has(line.id)).map((line) => line.id));
+  const accountedLineIds = new Set(lines.filter((line) => isProgressedFlag(line.eligible_for_invoice_yn) || resolutions.has(line.id)).map((line) => line.id));
 
   if (selectedLines.some((line) => unresolvedFinancialKind(line) !== null || resolutions.has(line.id))) {
     return { ok: false as const, error: "Non-physical financial lines cannot be progressed as physical goods." };
@@ -212,6 +213,7 @@ async function enforceProgressionWithinBaseline(params: {
     lines,
     accountedLineIds,
     resolvedLineIds: new Set(resolutions.keys()),
+    disputeLineIds,
     selectedInvoiceIds: new Set(selectedLines.map((line) => line.supplier_invoice_id)),
     adjustments: (adjustmentRows ?? []) as OrderValueAdjustment[],
   });
