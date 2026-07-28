@@ -182,16 +182,19 @@ BEGIN
         WHERE sm.mapping_code = 'CUSTOMER_SHIPPING_RECHARGE_INCOME_LEDGER'
           AND sm.is_active = true
           AND NULLIF(BTRIM(COALESCE(sm.sage_external_id, '')), '') IS NOT NULL
+          AND NULLIF(BTRIM(COALESCE(sm.sage_display_name, '')), '') IS NOT NULL
       )::text AS ledger_id,
       MAX(sm.sage_display_name) FILTER (
         WHERE sm.mapping_code = 'CUSTOMER_SHIPPING_RECHARGE_INCOME_LEDGER'
           AND sm.is_active = true
           AND NULLIF(BTRIM(COALESCE(sm.sage_external_id, '')), '') IS NOT NULL
+          AND NULLIF(BTRIM(COALESCE(sm.sage_display_name, '')), '') IS NOT NULL
       )::text AS ledger_name,
       MAX(sm.configured_at) FILTER (
         WHERE sm.mapping_code = 'CUSTOMER_SHIPPING_RECHARGE_INCOME_LEDGER'
           AND sm.is_active = true
           AND NULLIF(BTRIM(COALESCE(sm.sage_external_id, '')), '') IS NOT NULL
+          AND NULLIF(BTRIM(COALESCE(sm.sage_display_name, '')), '') IS NOT NULL
       )::timestamptz AS configured_at
     FROM public.sage_mapping_settings sm
   ), base AS (
