@@ -179,19 +179,24 @@ The authorised build is limited to:
 1. one additive Supabase migration;
 2. one new production mapping row in `sage_mapping_settings`, sourced from the existing active carriage-on-sales mapping;
 3. one preservation/wrapper correction to the canonical `internal_resolved_customer_sales_sage_payload_v1(uuid)` route;
-4. rebinding only the already-known direct dependants of the canonical resolver where PostgreSQL rename dependency behaviour requires it;
-5. an explicit migration guard that stops if any unexpected public function dependant is discovered instead of recreating it;
+4. rebinding only the already-known active resolver callers where PostgreSQL rename dependency behaviour requires it;
+5. an explicit migration guard that stops if any unexpected public function **invocation** of the canonical resolver is discovered instead of recreating it;
 6. one regression SQL file covering the exact scope above.
 
-The known direct dependant allowlist for this migration is limited to:
+The known active resolver-caller allowlist for this migration is limited to:
 
 ```text
 internal_ready_for_sage_queue_v2
+internal_ready_for_sage_queue_v2_pre_supplier_lane_restore_v1
 internal_freeze_customer_sales_sage_batch_v1
 internal_revalidate_sage_posting_snapshots_v1
 ```
 
-A known dependant may be absent in a particular schema version; absence does not authorise any substitute. Any additional dependant is a stop condition.
+The queue has existed in both canonical and preserved-wrapper forms. `internal_ready_for_sage_queue_v2_pre_supplier_lane_restore_v1()` is an established private preserved implementation created by the supplier-lane restoration wrapper; it remains on the active canonical queue path and is therefore an authorised caller, not a new route.
+
+Dependency detection must look for a function invocation of `internal_resolved_customer_sales_sage_payload_v1(...)`, not a bare text occurrence of the function name. Historical preserved functions may legitimately contain the resolver name as metadata/source text without calling it; such text must not be treated as a dependency.
+
+A known caller may be absent in a particular schema version; absence does not authorise any substitute. Any additional actual caller is a stop condition.
 
 No application/UI file change is authorised.
 
@@ -205,7 +210,7 @@ Stop implementation rather than expanding scope if any of the following is found
 - the existing active carriage-on-sales mapping cannot be resolved;
 - durable resolved lines do not expose `goods_amount_gbp` and `shipping_amount_gbp`;
 - the Sage posting route does not consume line-level `sage_ledger_account_id` from the resolved payload;
-- any public function outside the explicit dependant allowlist refers directly to the canonical resolver;
+- any public function outside the explicit caller allowlist actually invokes the canonical resolver;
 - implementing the correction would require modifying release membership, invoice amounts, VAT rules, Sage adapter code or UI.
 
 Any such condition requires a new diagnostic and explicit approval before further work.
@@ -226,5 +231,5 @@ The build passes only if all of the following are proven:
 8. tax resolution is unchanged;
 9. posted historical snapshots remain untouched;
 10. missing shipping-recharge mapping blocks rather than falling back;
-11. dependency rebinding is restricted to the explicit allowlist and stops on unknown dependants;
+11. dependency rebinding is restricted to the explicit caller allowlist and stops on unknown actual callers;
 12. no object outside this addendum's approved implementation shape is changed.
