@@ -89,9 +89,6 @@ export default async function SurplusEvidencePage({ searchParams }: { searchPara
   );
   const overResolved = rows.filter((row) => String(row.resolution_status) === "over_resolved_review");
   const resolved = rows.filter((row) => ["fully_resolved", "no_positive_difference"].includes(String(row.resolution_status)));
-  const readyCount = pendingResidualReady.length + ready.length;
-  const readyValue = pendingResidualReady.reduce((sum, row) => sum + num(pendingEvidenceByOrder.get(String(row.order_id))?.evidence_surplus_gbp), 0)
-    + ready.reduce((sum, row) => sum + num(row.remaining_unresolved_gbp), 0);
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-6 text-slate-950 sm:px-6 sm:py-8">
@@ -109,8 +106,8 @@ export default async function SurplusEvidencePage({ searchParams }: { searchPara
         {pendingEvidenceResult.error ? <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-900">Pending receipt evidence unavailable: {pendingEvidenceResult.error.message}</div> : null}
 
         <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <div className="rounded-2xl border border-cyan-200 bg-cyan-50 p-4"><p className="text-xs font-black uppercase text-cyan-700">Ready / partial</p><p className="mt-1 text-3xl font-black">{readyCount}</p></div>
-          <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4"><p className="text-xs font-black uppercase text-emerald-700">Remaining value</p><p className="mt-1 text-3xl font-black">{gbp(readyValue)}</p></div>
+          <div className="rounded-2xl border border-cyan-200 bg-cyan-50 p-4"><p className="text-xs font-black uppercase text-cyan-700">Ready / partial</p><p className="mt-1 text-3xl font-black">{ready.length}</p></div>
+          <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4"><p className="text-xs font-black uppercase text-emerald-700">Remaining value</p><p className="mt-1 text-3xl font-black">{gbp(ready.reduce((sum, row) => sum + num(row.remaining_unresolved_gbp), 0))}</p></div>
           <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4"><p className="text-xs font-black uppercase text-amber-700">Blocked</p><p className="mt-1 text-3xl font-black">{blocked.length}</p></div>
           <div className="rounded-2xl border border-slate-200 bg-white p-4"><p className="text-xs font-black uppercase text-slate-500">Resolved</p><p className="mt-1 text-3xl font-black">{resolved.length}</p></div>
         </section>
@@ -159,7 +156,7 @@ export default async function SurplusEvidencePage({ searchParams }: { searchPara
             <Link href="/internal/funding" className="rounded-xl border border-slate-200 px-3 py-2 text-sm font-bold text-slate-700">Funding overview</Link>
           </div>
 
-          {ready.length === 0 ? <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">No later settlement rows are ready.</div> : null}
+          {ready.length === 0 ? <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">No settlement rows are ready.</div> : null}
 
           {ready.map((row) => {
             const remaining = num(row.remaining_unresolved_gbp);
