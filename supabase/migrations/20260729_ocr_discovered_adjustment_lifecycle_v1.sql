@@ -52,6 +52,12 @@ BEGIN
     RETURN;
   END IF;
 
+  -- Serialise same-invoice/type materialisation so retries/concurrent resolver
+  -- calls cannot create duplicate commercial facts without changing schema.
+  PERFORM pg_advisory_xact_lock(
+    hashtext('ocr_financial_adjustment:' || p_supplier_invoice_id::text || ':' || p_financial_type)
+  );
+
   SELECT si.order_id, o.shipper_id, si.review_status::text
     INTO v_order_id, v_shipper_id, v_invoice_status
   FROM public.supplier_invoices si
@@ -121,9 +127,9 @@ BEGIN
     WHEN 'discount' THEN 'retailer_discount'
   END;
 
-  -- Reuse an already-live matching fact. If a same-type live fact exists with a
-  -- different amount, fail closed into the existing correction route rather
-  -- than creating a competing commercial fact.
+  -- Reuse any already-live same-type fact. If its amount conflicts with the
+  -- classified total, the review flag deliberately remains open for the
+  -- existing correction route rather than creating a competing adjustment.
   IF EXISTS (
     SELECT 1
     FROM public.order_value_adjustments a
@@ -259,7 +265,7 @@ BEGIN
   END IF;
 
   -- A rejected adjustment is not accepted evidence. If it is the only fact for
-  -- a classified type, the totals below will fail to agree and the flag stays.
+  -- a classified type, the totals below fail to agree and the flag stays open.
   SELECT
     round(COALESCE(sum(CASE WHEN r.financial_type = 'delivery' THEN abs(r.amount_gbp) ELSE 0 END), 0)::numeric, 2),
     round(COALESCE(sum(CASE WHEN r.financial_type = 'discount' THEN abs(r.amount_gbp) ELSE 0 END), 0)::numeric, 2)
@@ -276,13 +282,22 @@ BEGIN
 
   SELECT
     round(COALESCE(sum(CASE WHEN a.adjustment_type = 'retailer_delivery' THEN a.amount_gbp ELSE 0 END), 0)::numeric, 2),
-    round(COALESCE(sum(CASE WHEN a.adjustment_type = 'retailer_discount' THEN a.amount_gbp ELSE 0 END), 0)::numeric, 2),
-    max(a.approved_by_staff_id) FILTER (WHERE a.approval_status = 'approved')
-  INTO v_accepted_delivery, v_accepted_discount, v_resolved_by_staff_id
+    round(COALESCE(sum(CASE WHEN a.adjustment_type = 'retailer_discount' THEN a.amount_gbp ELSE 0 END), 0)::numeric, 2)
+  INTO v_accepted_delivery, v_accepted_discount
   FROM public.order_value_adjustments a
   WHERE a.supplier_invoice_id = p_supplier_invoice_id
     AND a.adjustment_type IN ('retailer_delivery', 'retailer_discount')
     AND a.approval_status IN ('approved', 'auto_approved');
+
+  SELECT a.approved_by_staff_id
+    INTO v_resolved_by_staff_id
+  FROM public.order_value_adjustments a
+  WHERE a.supplier_invoice_id = p_supplier_invoice_id
+    AND a.adjustment_type IN ('retailer_delivery', 'retailer_discount')
+    AND a.approval_status = 'approved'
+    AND a.approved_by_staff_id IS NOT NULL
+  ORDER BY a.approved_at DESC NULLS LAST, a.updated_at DESC, a.id DESC
+  LIMIT 1;
 
   IF abs(v_resolved_delivery - v_accepted_delivery) > 0.01
      OR abs(v_resolved_discount - v_accepted_discount) > 0.01 THEN
@@ -372,15 +387,11 @@ LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path TO 'public', 'pg_temp'
 AS $$
-DECLARE
-  v_supplier_invoice_id uuid;
 BEGIN
-  v_supplier_invoice_id := COALESCE(NEW.supplier_invoice_id, OLD.supplier_invoice_id);
-
-  IF v_supplier_invoice_id IS NOT NULL
-     AND COALESCE(NEW.adjustment_type, OLD.adjustment_type) IN ('retailer_delivery', 'retailer_discount') THEN
+  IF NEW.supplier_invoice_id IS NOT NULL
+     AND NEW.adjustment_type IN ('retailer_delivery', 'retailer_discount') THEN
     PERFORM public.internal_resolve_delivery_discount_query_if_satisfied_v1(
-      v_supplier_invoice_id
+      NEW.supplier_invoice_id
     );
   END IF;
 
