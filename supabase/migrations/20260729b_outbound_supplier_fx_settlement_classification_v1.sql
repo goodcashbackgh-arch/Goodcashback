@@ -134,7 +134,7 @@ BEGIN
      OR position('supplier_alloc.allocation_type = ''supplier_invoice''::text' IN v_definition) = 0
      OR position('supplier_alloc.allocation_status = ''confirmed''::text' IN v_definition) = 0
      OR position('supplier_orders' IN v_definition) = 0
-     OR position('count(*) from supplier_orders' IN v_definition) = 0
+     OR position('select distinct coalesce(si.order_id, supplier_alloc.order_id)' IN v_definition) = 0
      OR position('dsl.direction = ''out''::text' IN v_definition) = 0
      OR position('statement_account_context' IN v_definition) = 0
      OR position('b.inbound_fx_receipt_residual_gbp' IN v_definition) = 0
