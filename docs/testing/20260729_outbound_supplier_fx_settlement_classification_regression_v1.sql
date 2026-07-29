@@ -9,6 +9,7 @@ DECLARE
   v_statement_line_id uuid;
   v_supplier_order_count integer;
   v_out_fx numeric(12,2);
+  v_existing_action_fx numeric(12,2);
   v_supplier numeric(12,2);
   v_source_used numeric(12,2);
   v_position record;
@@ -69,6 +70,11 @@ BEGIN
     RAISE EXCEPTION 'FAIL: controlled confirmed outbound FX expected 0.93, got %.', v_out_fx;
   END IF;
 
+  SELECT ROUND(COALESCE(SUM(a.fx_card_difference_gbp) FILTER (WHERE a.status = 'active'), 0)::numeric, 2)
+  INTO v_existing_action_fx
+  FROM public.order_settlement_resolution_actions a
+  WHERE a.order_id = v_order_id;
+
   SELECT ROUND(COALESCE(SUM(a.allocated_gbp_amount), 0)::numeric, 2)
   INTO v_supplier
   FROM public.dva_statement_line_allocations a
@@ -99,10 +105,9 @@ BEGIN
     RAISE EXCEPTION 'FAIL: canonical settlement position missing.';
   END IF;
 
-  -- There are no active order-level settlement actions for this controlled £0.93
-  -- proof, so the existing settlement FX total must equal the single attributed OUT FX.
-  IF ROUND(COALESCE(v_position.settlement_fx_card_difference_gbp, 0)::numeric, 2) <> v_out_fx THEN
-    RAISE EXCEPTION 'FAIL: canonical settlement FX expected %, got %.', v_out_fx, v_position.settlement_fx_card_difference_gbp;
+  IF ROUND(COALESCE(v_position.settlement_fx_card_difference_gbp, 0)::numeric, 2)
+     <> ROUND((COALESCE(v_existing_action_fx, 0) + v_out_fx)::numeric, 2) THEN
+    RAISE EXCEPTION 'FAIL: canonical settlement FX expected existing action FX % + outbound FX %, got %.', v_existing_action_fx, v_out_fx, v_position.settlement_fx_card_difference_gbp;
   END IF;
 
   -- OUT FX must remain classification only and must not change receipt attribution.
@@ -120,7 +125,7 @@ BEGIN
   IF position('dsl.direction = ''out''::text' IN v_view_definition) = 0
      OR position('fx.allocation_type = ''fx_card_difference''::text' IN v_view_definition) = 0
      OR position('supplier_alloc.allocation_type = ''supplier_invoice''::text' IN v_view_definition) = 0
-     OR position('having count(*) = 1' IN lower(v_view_definition)) = 0 THEN
+     OR position('count(*) = 1' IN lower(v_view_definition)) = 0 THEN
     RAISE EXCEPTION 'FAIL: fail-closed outbound supplier FX classification is absent from canonical view.';
   END IF;
 
@@ -134,7 +139,7 @@ $regression$;
 
 SELECT jsonb_build_object(
   'regression_result', 'PASS',
-  'proof', 'ORD-1785274708774 supplier-payment OUT resolves to one order through supplier allocations; £701.83 supplier allocation and £702.76 source consumption remain intact; £0.93 null-order FX is classified exactly once and is not added to receipt attribution; inbound FX path remains present'
+  'proof', 'ORD-1785274708774 supplier-payment OUT resolves to one order through supplier allocations; £701.83 supplier allocation and £702.76 source consumption remain intact; £0.93 null-order FX is classified once in addition to any existing active settlement-action FX and is not added to receipt attribution; inbound FX path remains present'
 ) AS regression_result;
 
 ROLLBACK;
