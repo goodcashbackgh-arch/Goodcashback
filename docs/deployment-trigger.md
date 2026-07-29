@@ -11,3 +11,5 @@ Third trigger: deploy Mindee V2 result polling/save SQL references, fetch/save a
 Fourth trigger: force production deployment to pick up Mindee result-fetch UI after Vercel did not trigger from the previous connector commit.
 
 Fifth trigger: force production deployment to pick up Tailwind CSS for top-level app routes and invoice review UI styling.
+
+Sixth trigger: force production deployment to pick up merged PR #197 stale statement Mindee job recovery.
