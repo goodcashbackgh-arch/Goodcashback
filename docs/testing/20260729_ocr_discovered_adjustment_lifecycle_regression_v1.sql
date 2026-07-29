@@ -7,7 +7,7 @@
    Controlled invoice:
      NK-INV-310726-73
 
-   This regression is read-only except for a rollback-only approval simulation.
+   Read only except for rollback-only adjustment status simulations.
    No authenticated RPC calls are used.
    ============================================================================= */
 
@@ -20,6 +20,7 @@ DECLARE
   v_trigger_count integer;
   v_operator_def text;
   v_staff_def text;
+  v_materializer_def text;
 BEGIN
   SELECT si.id
     INTO v_invoice_id
@@ -57,12 +58,24 @@ BEGIN
     INTO v_operator_def;
   SELECT pg_get_functiondef('public.staff_resolve_supplier_invoice_line_non_physical(uuid,uuid,text,text)'::regprocedure)
     INTO v_staff_def;
+  SELECT pg_get_functiondef('public.internal_materialize_ocr_financial_adjustment_v1(uuid,text)'::regprocedure)
+    INTO v_materializer_def;
 
   IF v_operator_def ILIKE '%order_value_adjustments%'
      OR v_operator_def ILIKE '%internal_materialize_ocr_financial_adjustment_v1%'
      OR v_staff_def ILIKE '%order_value_adjustments%'
      OR v_staff_def ILIKE '%internal_materialize_ocr_financial_adjustment_v1%' THEN
     RAISE EXCEPTION 'FAIL: existing non-physical resolver RPC bodies were modified instead of preserved';
+  END IF;
+
+  IF v_materializer_def NOT ILIKE '%delivery_auto_approve_limit_gbp%'
+     OR v_materializer_def NOT ILIKE '%10.00%'
+     OR v_materializer_def NOT ILIKE '%pending_supervisor%'
+     OR v_materializer_def NOT ILIKE '%auto_approved%'
+     OR v_materializer_def NOT ILIKE '%retailer_discount%'
+     OR v_materializer_def NOT ILIKE '%invoice_adjustment_basis%'
+     OR v_materializer_def NOT ILIKE '%basis_status = ''locked''%' THEN
+    RAISE EXCEPTION 'FAIL: materialisation policy / locked-basis fail-closed guard missing';
   END IF;
 
   IF NOT EXISTS (
@@ -77,12 +90,21 @@ BEGIN
     RAISE EXCEPTION 'FAIL: controlled active £11.42 delivery resolution missing';
   END IF;
 
-  SELECT count(*)::integer, min(a.id)
-    INTO v_adjustment_count, v_adjustment_id
+  SELECT count(*)::integer
+    INTO v_adjustment_count
   FROM public.order_value_adjustments a
   WHERE a.supplier_invoice_id = v_invoice_id
     AND a.adjustment_type = 'retailer_delivery'
     AND a.approval_status <> 'rejected';
+
+  SELECT a.id
+    INTO v_adjustment_id
+  FROM public.order_value_adjustments a
+  WHERE a.supplier_invoice_id = v_invoice_id
+    AND a.adjustment_type = 'retailer_delivery'
+    AND a.approval_status <> 'rejected'
+  ORDER BY a.created_at DESC, a.id DESC
+  LIMIT 1;
 
   IF v_adjustment_count <> 1 THEN
     RAISE EXCEPTION 'FAIL: controlled invoice expected exactly one live retailer_delivery adjustment, found %', v_adjustment_count;
@@ -110,18 +132,6 @@ BEGIN
     RAISE EXCEPTION 'FAIL: delivery_discount_query must remain open before supervisor approval';
   END IF;
 
-  IF NOT EXISTS (
-    SELECT 1
-    FROM pg_get_functiondef('public.internal_materialize_ocr_financial_adjustment_v1(uuid,text)'::regprocedure) AS d(definition)
-    WHERE definition ILIKE '%delivery_auto_approve_limit_gbp%'
-      AND definition ILIKE '%10.00%'
-      AND definition ILIKE '%pending_supervisor%'
-      AND definition ILIKE '%auto_approved%'
-      AND definition ILIKE '%retailer_discount%'
-  ) THEN
-    RAISE EXCEPTION 'FAIL: existing delivery threshold / discount approval policy is not preserved in materialisation helper';
-  END IF;
-
   IF EXISTS (
     SELECT 1
     FROM public.order_value_adjustments a
@@ -133,11 +143,49 @@ BEGIN
   END IF;
 END $$;
 
--- Rollback-only proof that the existing adjustment approval state change causes
--- the exact review flag to resolve, without approving the supplier invoice or
--- touching downstream artefacts.
+-- Rejection simulation: rejection must not clear the review query.
 BEGIN;
+DO $$
+DECLARE
+  v_invoice_id uuid;
+  v_adjustment_id uuid;
+BEGIN
+  SELECT si.id INTO v_invoice_id
+  FROM public.supplier_invoices si
+  WHERE si.invoice_ref = 'NK-INV-310726-73'
+  LIMIT 1;
 
+  SELECT a.id INTO v_adjustment_id
+  FROM public.order_value_adjustments a
+  WHERE a.supplier_invoice_id = v_invoice_id
+    AND a.adjustment_type = 'retailer_delivery'
+    AND a.approval_status = 'pending_supervisor'
+    AND abs(a.amount_gbp - 11.42) <= 0.01
+  ORDER BY a.created_at DESC, a.id DESC
+  LIMIT 1;
+
+  UPDATE public.order_value_adjustments a
+  SET approval_status = 'rejected',
+      approved_by_staff_id = NULL,
+      approved_at = NULL,
+      updated_at = now()
+  WHERE a.id = v_adjustment_id;
+
+  IF NOT EXISTS (
+    SELECT 1
+    FROM public.supplier_invoice_review_flags f
+    WHERE f.supplier_invoice_id = v_invoice_id
+      AND f.flag_type = 'delivery_discount_query'
+      AND f.status IN ('open', 'under_review')
+  ) THEN
+    RAISE EXCEPTION 'FAIL: rejected adjustment incorrectly resolved delivery_discount_query';
+  END IF;
+END $$;
+ROLLBACK;
+
+-- Approval simulation: matching accepted adjustment must clear only the query;
+-- supplier invoice and line resolution fingerprints remain unchanged.
+BEGIN;
 DO $$
 DECLARE
   v_invoice_id uuid;
@@ -227,10 +275,9 @@ BEGIN
     RAISE EXCEPTION 'FAIL: adjustment approval lifecycle changed the existing line resolution';
   END IF;
 END $$;
-
 ROLLBACK;
 
 SELECT jsonb_build_object(
   'regression_result', 'PASS',
-  'proof', 'controlled £11.42 OCR delivery materialises exactly one pending supervisor adjustment; review flag stays open before approval; rollback-only matching approval resolves only the delivery/discount query; existing non-physical resolver RPC bodies remain untouched'
+  'proof', '£11.42 OCR delivery materialises exactly one pending-supervisor adjustment; pending/rejected states retain the review query; matching rollback-only approval resolves only that query; resolver RPC bodies and supplier invoice/line-resolution state remain untouched; locked adjustment basis is fail-closed'
 ) AS regression_result;
