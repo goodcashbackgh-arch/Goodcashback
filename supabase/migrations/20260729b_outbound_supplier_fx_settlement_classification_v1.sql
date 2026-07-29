@@ -44,7 +44,7 @@ settlement_actions AS (
          JOIN dva_statement_lines dsl ON dsl.id = fx.dva_statement_line_id
          JOIN dva_statements ds ON ds.id = dsl.dva_statement_id
          JOIN LATERAL (
-           SELECT min(z.order_id) AS order_id
+           SELECT (array_agg(z.order_id))[1] AS order_id
              FROM (
                SELECT DISTINCT COALESCE(si.order_id, supplier_alloc.order_id) AS order_id
                  FROM dva_statement_line_allocations supplier_alloc
@@ -115,7 +115,7 @@ BEGIN
      OR position('fx.allocation_status = ''confirmed''::text' IN v_definition) = 0
      OR position('supplier_alloc.allocation_type = ''supplier_invoice''::text' IN v_definition) = 0
      OR position('supplier_alloc.allocation_status = ''confirmed''::text' IN v_definition) = 0
-     OR position('having count(*) = 1' IN lower(v_definition)) = 0
+     OR position('count(*) = 1' IN lower(v_definition)) = 0
      OR position('dsl.direction = ''out''::text' IN v_definition) = 0
      OR position('statement_account_context' IN v_definition) = 0
      OR position('b.inbound_fx_receipt_residual_gbp' IN v_definition) = 0
