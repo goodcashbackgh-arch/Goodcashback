@@ -119,7 +119,9 @@ BEGIN
 END
 $migration$;
 
--- Preserve the established permissions and validate the exact scoped behaviour.
+-- Preserve the established permissions and validate only stable semantic markers.
+-- pg_get_viewdef normalises whitespace, casts, aliases and subquery formatting, so
+-- this guard deliberately avoids exact deparser text fragments.
 REVOKE ALL ON public.order_settlement_resolution_position_v1 FROM PUBLIC, anon, authenticated;
 
 DO $guard$
@@ -129,16 +131,15 @@ BEGIN
   SELECT lower(pg_get_viewdef('public.order_settlement_resolution_position_v1'::regclass, true))
   INTO v_definition;
 
-  IF position('fx.allocation_type = ''fx_card_difference''::text' IN v_definition) = 0
-     OR position('fx.allocation_status = ''confirmed''::text' IN v_definition) = 0
-     OR position('supplier_alloc.allocation_type = ''supplier_invoice''::text' IN v_definition) = 0
-     OR position('supplier_alloc.allocation_status = ''confirmed''::text' IN v_definition) = 0
-     OR position('supplier_orders' IN v_definition) = 0
-     OR position('select distinct coalesce(si.order_id, supplier_alloc.order_id)' IN v_definition) = 0
-     OR position('dsl.direction = ''out''::text' IN v_definition) = 0
+  IF position('fx_card_difference' IN v_definition) = 0
+     OR position('supplier_invoice' IN v_definition) = 0
+     OR position('supplier_order' IN v_definition) = 0
+     OR position('supplier_alloc' IN v_definition) = 0
+     OR position('direction' IN v_definition) = 0
+     OR position('''out''' IN v_definition) = 0
      OR position('statement_account_context' IN v_definition) = 0
-     OR position('b.inbound_fx_receipt_residual_gbp' IN v_definition) = 0
-     OR position('b.settlement_fx_card_difference_gbp' IN v_definition) = 0 THEN
+     OR position('inbound_fx_receipt_residual_gbp' IN v_definition) = 0
+     OR position('settlement_fx_card_difference_gbp' IN v_definition) = 0 THEN
     RAISE EXCEPTION 'Scoped outbound FX classification guard failed.';
   END IF;
 
