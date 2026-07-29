@@ -11,17 +11,14 @@ SET LOCAL statement_timeout = '0';
 DO $migration$
 DECLARE
   v_definition text;
+  v_definition_lower text;
   v_patched text;
-  v_old text := $old$
-settlement_actions AS (
-   SELECT a.order_id,
-      round(COALESCE(sum(a.fx_card_difference_gbp) FILTER (WHERE (a.status = 'active'::text)), (0)::numeric), 2) AS settlement_fx_card_difference_gbp,
-      (count(*) FILTER (WHERE (a.status = 'active'::text)))::integer AS active_resolution_action_count,
-      (count(*) FILTER (WHERE (a.status = 'reversed'::text)))::integer AS reversed_resolution_action_count
-     FROM order_settlement_resolution_actions a
-    GROUP BY a.order_id
-), blockers AS (
-$old$;
+  v_start_anchor text := 'settlement_actions as (';
+  v_end_anchor text := '), blockers as (';
+  v_start integer;
+  v_end integer;
+  v_start_count integer;
+  v_end_count integer;
   v_new text := $new$
 settlement_actions AS (
    SELECT x.order_id,
@@ -58,6 +55,7 @@ settlement_actions AS (
          ) supplier_order ON supplier_order.order_id IS NOT NULL
         WHERE fx.allocation_type = 'fx_card_difference'::text
           AND fx.allocation_status = 'confirmed'::text
+          AND (fx.order_id IS NULL OR fx.order_id = supplier_order.order_id)
           AND dsl.direction = 'out'::text
           AND COALESCE(ds.statement_account_context, 'importer_dva_card_account'::text) = 'importer_dva_card_account'::text
         GROUP BY supplier_order.order_id
@@ -80,18 +78,37 @@ BEGIN
 
   SELECT pg_get_viewdef('public.order_settlement_resolution_position_v1'::regclass, true)
   INTO v_definition;
+  v_definition_lower := lower(v_definition);
 
-  IF position('supplier_order.order_id' IN v_definition) > 0
-     AND position('fx.allocation_type = ''fx_card_difference''::text' IN v_definition) > 0
-     AND position('dsl.direction = ''out''::text' IN v_definition) > 0 THEN
+  IF position('supplier_order.order_id' IN v_definition_lower) > 0
+     AND position('fx.allocation_type = ''fx_card_difference''::text' IN v_definition_lower) > 0
+     AND position('dsl.direction = ''out''::text' IN v_definition_lower) > 0 THEN
     RAISE EXCEPTION 'Outbound supplier FX settlement classification appears already installed. Stop before patching.';
   END IF;
 
-  IF position(v_old IN v_definition) = 0 THEN
-    RAISE EXCEPTION 'Canonical settlement view has drifted from the locked settlement-actions anchor. Stop before patching.';
+  v_start_count := (
+    length(v_definition_lower) - length(replace(v_definition_lower, v_start_anchor, ''))
+  ) / length(v_start_anchor);
+  v_end_count := (
+    length(v_definition_lower) - length(replace(v_definition_lower, v_end_anchor, ''))
+  ) / length(v_end_anchor);
+
+  IF v_start_count <> 1 OR v_end_count <> 1 THEN
+    RAISE EXCEPTION 'Canonical settlement view CTE boundaries are not uniquely identifiable. settlement_actions %, blockers %. Stop before patching.', v_start_count, v_end_count;
   END IF;
 
-  v_patched := replace(v_definition, v_old, v_new);
+  v_start := position(v_start_anchor IN v_definition_lower);
+  v_end := position(v_end_anchor IN v_definition_lower);
+
+  IF v_start <= 0 OR v_end <= v_start THEN
+    RAISE EXCEPTION 'Canonical settlement view CTE order has drifted. Stop before patching.';
+  END IF;
+
+  -- Replace only the settlement_actions CTE. Matching is based on the stable CTE
+  -- boundaries, not pg_get_viewdef whitespace/indent formatting.
+  v_patched := substring(v_definition FROM 1 FOR v_start - 1)
+    || v_new
+    || substring(v_definition FROM v_end + length(v_end_anchor));
 
   IF v_patched = v_definition THEN
     RAISE EXCEPTION 'Canonical settlement view was not changed. Stop before patching.';
@@ -108,15 +125,16 @@ DO $guard$
 DECLARE
   v_definition text;
 BEGIN
-  SELECT pg_get_viewdef('public.order_settlement_resolution_position_v1'::regclass, true)
+  SELECT lower(pg_get_viewdef('public.order_settlement_resolution_position_v1'::regclass, true))
   INTO v_definition;
 
   IF position('fx.allocation_type = ''fx_card_difference''::text' IN v_definition) = 0
      OR position('fx.allocation_status = ''confirmed''::text' IN v_definition) = 0
      OR position('supplier_alloc.allocation_type = ''supplier_invoice''::text' IN v_definition) = 0
      OR position('supplier_alloc.allocation_status = ''confirmed''::text' IN v_definition) = 0
-     OR position('count(*) = 1' IN lower(v_definition)) = 0
+     OR position('count(*) = 1' IN v_definition) = 0
      OR position('dsl.direction = ''out''::text' IN v_definition) = 0
+     OR position('fx.order_id is null or fx.order_id = supplier_order.order_id' IN v_definition) = 0
      OR position('statement_account_context' IN v_definition) = 0
      OR position('b.inbound_fx_receipt_residual_gbp' IN v_definition) = 0
      OR position('b.settlement_fx_card_difference_gbp' IN v_definition) = 0 THEN
