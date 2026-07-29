@@ -119,13 +119,14 @@ BEGIN
     RAISE EXCEPTION 'FAIL: outbound FX leaked into order-attributed receipt.';
   END IF;
 
-  SELECT pg_get_viewdef('public.order_settlement_resolution_position_v1'::regclass, true)
+  SELECT lower(pg_get_viewdef('public.order_settlement_resolution_position_v1'::regclass, true))
   INTO v_view_definition;
 
   IF position('dsl.direction = ''out''::text' IN v_view_definition) = 0
      OR position('fx.allocation_type = ''fx_card_difference''::text' IN v_view_definition) = 0
      OR position('supplier_alloc.allocation_type = ''supplier_invoice''::text' IN v_view_definition) = 0
-     OR position('count(*) = 1' IN lower(v_view_definition)) = 0 THEN
+     OR position('supplier_orders' IN v_view_definition) = 0
+     OR position('select distinct coalesce(si.order_id, supplier_alloc.order_id)' IN v_view_definition) = 0 THEN
     RAISE EXCEPTION 'FAIL: fail-closed outbound supplier FX classification is absent from canonical view.';
   END IF;
 
