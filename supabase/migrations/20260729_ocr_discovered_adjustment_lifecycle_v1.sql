@@ -23,11 +23,11 @@ BEGIN
   IF to_regclass('public.order_adjustment_policy') IS NULL THEN
     RAISE EXCEPTION 'Prerequisite missing: public.order_adjustment_policy';
   END IF;
+  IF to_regclass('public.invoice_adjustment_basis') IS NULL THEN
+    RAISE EXCEPTION 'Prerequisite missing: public.invoice_adjustment_basis';
+  END IF;
 END $$;
 
--- Materialise only the missing commercial adjustment fact for an invoice that
--- already has an explicit active delivery/discount non-physical resolution and
--- an open delivery_discount_query. Existing adjustment policy remains authority.
 CREATE OR REPLACE FUNCTION public.internal_materialize_ocr_financial_adjustment_v1(
   p_supplier_invoice_id uuid,
   p_financial_type text
@@ -52,8 +52,6 @@ BEGIN
     RETURN;
   END IF;
 
-  -- Serialise same-invoice/type materialisation so retries/concurrent resolver
-  -- calls cannot create duplicate commercial facts without changing schema.
   PERFORM pg_advisory_xact_lock(
     hashtext('ocr_financial_adjustment:' || p_supplier_invoice_id::text || ':' || p_financial_type)
   );
@@ -78,9 +76,20 @@ BEGIN
     RETURN;
   END IF;
 
+  -- Never introduce a new commercial adjustment after the allocation basis has
+  -- been frozen. This defect fix must not rewrite downstream allocation history.
+  IF EXISTS (
+    SELECT 1
+    FROM public.invoice_adjustment_basis b
+    WHERE b.supplier_invoice_id = p_supplier_invoice_id
+      AND b.basis_status = 'locked'
+  ) THEN
+    RETURN;
+  END IF;
+
   -- Do not materialise a partial type total while another obvious OCR line of
   -- the same financial type is still unclassified. Description is only a
-  -- fail-closed completeness gate; it never creates the adjustment by itself.
+  -- fail-closed completeness gate; it never creates an adjustment by itself.
   IF EXISTS (
     SELECT 1
     FROM public.supplier_invoice_lines sil
@@ -88,14 +97,9 @@ BEGIN
       AND sil.line_source = 'ocr_extracted'
       AND abs(COALESCE(sil.amount_inc_vat_gbp, 0)) > 0.01
       AND (
-        (
-          p_financial_type = 'delivery'
-          AND lower(COALESCE(sil.description, '')) ~ '(delivery|shipping|postage|freight|carriage)'
-        )
-        OR (
-          p_financial_type = 'discount'
-          AND lower(COALESCE(sil.description, '')) ~ '(discount|promotion|promotional|promo|voucher|coupon|saving|savings)'
-        )
+        (p_financial_type = 'delivery' AND lower(COALESCE(sil.description, '')) ~ '(delivery|shipping|postage|freight|carriage)')
+        OR
+        (p_financial_type = 'discount' AND lower(COALESCE(sil.description, '')) ~ '(discount|promotion|promotional|promo|voucher|coupon|saving|savings)')
       )
       AND NOT EXISTS (
         SELECT 1
@@ -127,9 +131,8 @@ BEGIN
     WHEN 'discount' THEN 'retailer_discount'
   END;
 
-  -- Reuse any already-live same-type fact. If its amount conflicts with the
-  -- classified total, the review flag deliberately remains open for the
-  -- existing correction route rather than creating a competing adjustment.
+  -- Any existing non-rejected same-type row remains the sole commercial fact.
+  -- Matching rows are reused; conflicting rows fail closed into correction.
   IF EXISTS (
     SELECT 1
     FROM public.order_value_adjustments a
@@ -185,10 +188,7 @@ BEGIN
     ) INTO v_delivery_limit;
 
     v_requires_supervisor := v_total > v_delivery_limit;
-    v_approval_status := CASE
-      WHEN v_requires_supervisor THEN 'pending_supervisor'
-      ELSE 'auto_approved'
-    END;
+    v_approval_status := CASE WHEN v_requires_supervisor THEN 'pending_supervisor' ELSE 'auto_approved' END;
   ELSE
     v_requires_supervisor := true;
     v_approval_status := 'pending_supervisor';
@@ -226,9 +226,6 @@ BEGIN
 END;
 $$;
 
--- Close only the specific delivery_discount_query, and only when the invoice's
--- accepted adjustment totals agree with its active classified OCR financial
--- totals and no obvious OCR delivery/discount row remains unclassified.
 CREATE OR REPLACE FUNCTION public.internal_resolve_delivery_discount_query_if_satisfied_v1(
   p_supplier_invoice_id uuid
 )
@@ -264,8 +261,6 @@ BEGIN
     RETURN;
   END IF;
 
-  -- A rejected adjustment is not accepted evidence. If it is the only fact for
-  -- a classified type, the totals below fail to agree and the flag stays open.
   SELECT
     round(COALESCE(sum(CASE WHEN r.financial_type = 'delivery' THEN abs(r.amount_gbp) ELSE 0 END), 0)::numeric, 2),
     round(COALESCE(sum(CASE WHEN r.financial_type = 'discount' THEN abs(r.amount_gbp) ELSE 0 END), 0)::numeric, 2)
@@ -322,14 +317,9 @@ BEGIN
           AND r.active = true
           AND r.resolution_type = 'non_physical_financial'
           AND (
-            (
-              lower(COALESCE(sil.description, '')) ~ '(delivery|shipping|postage|freight|carriage)'
-              AND r.financial_type = 'delivery'
-            )
-            OR (
-              lower(COALESCE(sil.description, '')) ~ '(discount|promotion|promotional|promo|voucher|coupon|saving|savings)'
-              AND r.financial_type = 'discount'
-            )
+            (lower(COALESCE(sil.description, '')) ~ '(delivery|shipping|postage|freight|carriage)' AND r.financial_type = 'delivery')
+            OR
+            (lower(COALESCE(sil.description, '')) ~ '(discount|promotion|promotional|promo|voucher|coupon|saving|savings)' AND r.financial_type = 'discount')
           )
       )
   ) THEN
@@ -359,22 +349,14 @@ BEGIN
   IF NEW.active = true
      AND NEW.resolution_type = 'non_physical_financial'
      AND NEW.financial_type IN ('delivery', 'discount') THEN
-    PERFORM public.internal_materialize_ocr_financial_adjustment_v1(
-      NEW.supplier_invoice_id,
-      NEW.financial_type::text
-    );
-    PERFORM public.internal_resolve_delivery_discount_query_if_satisfied_v1(
-      NEW.supplier_invoice_id
-    );
+    PERFORM public.internal_materialize_ocr_financial_adjustment_v1(NEW.supplier_invoice_id, NEW.financial_type::text);
+    PERFORM public.internal_resolve_delivery_discount_query_if_satisfied_v1(NEW.supplier_invoice_id);
   END IF;
-
   RETURN NEW;
 END;
 $$;
 
-DROP TRIGGER IF EXISTS trg_sync_ocr_financial_resolution_adjustment_v1
-  ON public.supplier_invoice_line_resolutions;
-
+DROP TRIGGER IF EXISTS trg_sync_ocr_financial_resolution_adjustment_v1 ON public.supplier_invoice_line_resolutions;
 CREATE TRIGGER trg_sync_ocr_financial_resolution_adjustment_v1
 AFTER INSERT OR UPDATE OF active, resolution_type, financial_type, amount_gbp, supplier_invoice_line_id
 ON public.supplier_invoice_line_resolutions
@@ -390,35 +372,27 @@ AS $$
 BEGIN
   IF NEW.supplier_invoice_id IS NOT NULL
      AND NEW.adjustment_type IN ('retailer_delivery', 'retailer_discount') THEN
-    PERFORM public.internal_resolve_delivery_discount_query_if_satisfied_v1(
-      NEW.supplier_invoice_id
-    );
+    PERFORM public.internal_resolve_delivery_discount_query_if_satisfied_v1(NEW.supplier_invoice_id);
   END IF;
-
   RETURN NEW;
 END;
 $$;
 
-DROP TRIGGER IF EXISTS trg_recheck_delivery_discount_query_after_adjustment_v1
-  ON public.order_value_adjustments;
-
+DROP TRIGGER IF EXISTS trg_recheck_delivery_discount_query_after_adjustment_v1 ON public.order_value_adjustments;
 CREATE TRIGGER trg_recheck_delivery_discount_query_after_adjustment_v1
 AFTER INSERT OR UPDATE OF approval_status, amount_gbp, adjustment_type, supplier_invoice_id
 ON public.order_value_adjustments
 FOR EACH ROW
 EXECUTE FUNCTION public.trg_recheck_delivery_discount_query_after_adjustment_v1();
 
--- Guarded historical repair: only pending-review invoices with an open query,
--- an active delivery/discount non-physical resolution, and no live adjustment of
--- that mapped type are considered. The helper applies all remaining gates.
+-- Guarded historical repair. The helper rechecks every gate, including the
+-- locked-basis stop, before writing anything.
 DO $$
 DECLARE
   v_row record;
 BEGIN
   FOR v_row IN
-    SELECT DISTINCT
-      r.supplier_invoice_id,
-      r.financial_type::text AS financial_type
+    SELECT DISTINCT r.supplier_invoice_id, r.financial_type::text AS financial_type
     FROM public.supplier_invoice_line_resolutions r
     JOIN public.supplier_invoices si ON si.id = r.supplier_invoice_id
     WHERE r.active = true
@@ -442,14 +416,15 @@ BEGIN
           END
           AND a.approval_status <> 'rejected'
       )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM public.invoice_adjustment_basis b
+        WHERE b.supplier_invoice_id = r.supplier_invoice_id
+          AND b.basis_status = 'locked'
+      )
   LOOP
-    PERFORM public.internal_materialize_ocr_financial_adjustment_v1(
-      v_row.supplier_invoice_id,
-      v_row.financial_type
-    );
-    PERFORM public.internal_resolve_delivery_discount_query_if_satisfied_v1(
-      v_row.supplier_invoice_id
-    );
+    PERFORM public.internal_materialize_ocr_financial_adjustment_v1(v_row.supplier_invoice_id, v_row.financial_type);
+    PERFORM public.internal_resolve_delivery_discount_query_if_satisfied_v1(v_row.supplier_invoice_id);
   END LOOP;
 END $$;
 
