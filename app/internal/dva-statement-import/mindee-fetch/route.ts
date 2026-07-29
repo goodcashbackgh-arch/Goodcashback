@@ -48,6 +48,14 @@ function parseMindeeDetail(raw: unknown) {
   return typeof detail === "string" ? detail.slice(0, 700) : JSON.stringify(detail).slice(0, 700);
 }
 
+function isDefinitiveMissingJob(httpStatus: number, detail: string, jobId: string) {
+  const normal = detail.toLowerCase();
+  return httpStatus === 404
+    && normal.includes("job")
+    && normal.includes("not found")
+    && normal.includes(jobId.toLowerCase());
+}
+
 function extractMindeeInferenceId(raw: unknown) {
   if (!raw || typeof raw !== "object") return null;
   const obj = raw as Record<string, unknown>;
@@ -140,9 +148,21 @@ export async function POST(request: Request) {
   });
 
   const raw = await jobResponse.json().catch(() => null);
+  const detail = parseMindeeDetail(raw);
   const status = jobResponse.ok ? toDbOcrStatus(extractJobStatus(raw)) : "failed";
   const inferenceId = extractMindeeInferenceId(raw);
   const hasPayload = hasInferencePayload(raw);
+
+  if (isDefinitiveMissingJob(jobResponse.status, detail, jobId)) {
+    await supabase.rpc("staff_recover_dva_statement_import_missing_mindee_job_v1", {
+      p_import_batch_id: importBatchId,
+      p_expected_mindee_job_id: jobId,
+      p_http_status: jobResponse.status,
+      p_error_message: detail,
+    });
+
+    return redirectToImport(request, { import_error: `Mindee statement job fetch failed (${jobResponse.status}). ${detail || "No detail returned."}` });
+  }
 
   const { error: saveError } = await supabase.rpc("staff_save_dva_statement_import_mindee_result", {
     p_import_batch_id: importBatchId,
@@ -151,13 +171,13 @@ export async function POST(request: Request) {
     p_raw_json: hasPayload ? raw : null,
     p_pages_consumed: extractPagesConsumed(raw),
     p_http_status: jobResponse.status,
-    p_error_message: jobResponse.ok ? null : parseMindeeDetail(raw) || "Mindee statement job fetch failed.",
+    p_error_message: jobResponse.ok ? null : detail || "Mindee statement job fetch failed.",
   });
 
   if (saveError) return redirectToImport(request, { import_error: saveError.message });
 
   if (!jobResponse.ok) {
-    return redirectToImport(request, { import_error: `Mindee statement job fetch failed (${jobResponse.status}). ${parseMindeeDetail(raw) || "No detail returned."}` });
+    return redirectToImport(request, { import_error: `Mindee statement job fetch failed (${jobResponse.status}). ${detail || "No detail returned."}` });
   }
 
   if (!hasPayload) {
