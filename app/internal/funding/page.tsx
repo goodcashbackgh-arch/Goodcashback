@@ -515,6 +515,7 @@ export default async function InternalFundingPage({
       const gap = inferred.orderId ? gapByOrder.get(inferred.orderId) : undefined;
       const alreadyReconciled = Boolean(asString(row.reconciliation_id)) || ["reconciled", "confirmed"].includes(asString(row.match_status));
       const resolvedGap = typeof gap === "number" ? gap : null;
+      const direction = asString(row.direction).toLowerCase();
       const reviewReason = fundingReviewReason({
         orderId: inferred.orderId,
         amountGbp,
@@ -530,14 +531,14 @@ export default async function InternalFundingPage({
         statementDate: asString(row.statement_date),
         referenceRaw: asString(row.reference_raw),
         retailerNameRef: asString(row.retailer_name_ref),
-        direction: asString(row.direction).toLowerCase(),
+        direction,
         orderId: inferred.orderId,
         orderRef: inferred.orderRef,
         matchSuggestionId: inferred.matchSuggestionId,
         amountGbp,
         gap: resolvedGap,
         alreadyReconciled,
-        canReconcile: Boolean(dvaStatementLineId && inferred.orderId && amountGbp > 0 && resolvedGap !== null && resolvedGap > 0 && !alreadyReconciled && inferred.score >= 80),
+        canReconcile: Boolean(direction === "in" && dvaStatementLineId && inferred.orderId && amountGbp > 0 && resolvedGap !== null && resolvedGap > 0 && !alreadyReconciled && inferred.score >= 80),
         reviewReason,
         matchSource: inferred.source,
         matchScore: inferred.score,
