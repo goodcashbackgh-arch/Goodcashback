@@ -4,7 +4,7 @@ Status: scoped implementation addendum for one importer audience-status defect o
 
 ## 1. Purpose
 
-Correct one status/action inconsistency after supplier evidence is approved and supplier reconciliation is complete.
+Correct one status/action inconsistency after supplier evidence is approved, supplier reconciliation is complete, and tracking has already been submitted but still requires importer assignment.
 
 Observed controlled case:
 
@@ -30,10 +30,41 @@ The governing rule remains:
 
 - the canonical operational status spine remains authoritative;
 - importer/operator status must reflect what the importer/operator can or must do next;
-- audience wrappers may format/derive importer-facing action from canonical operational facts;
+- audience wrappers may derive importer-facing action from canonical operational facts;
 - audience wrappers must not mutate order, funding, tracking, shipping, accounting, VAT, credit, AP or other operational records.
 
-## 3. Exact defect
+## 3. Existing flow that must remain unchanged
+
+This patch must not alter the existing supplier-evidence and tracking precedence already implemented by the canonical status chain.
+
+The existing flow remains exactly:
+
+```text
+Supplier invoices/evidence absent
+  -> importer status: Order evidence missing
+  -> importer action: Upload order evidence
+
+Supplier invoices/evidence present and reconciliation complete, but tracking absent
+  -> importer status: Invoice reconciled; tracking open
+  -> importer action: Add tracking
+```
+
+Tracking already existing must not bypass a missing supplier-evidence stage.
+
+The canonical stage precedence remains:
+
+```text
+funding
+  -> supplier evidence
+  -> supplier reconciliation
+  -> tracking
+  -> shipment/package allocation
+  -> downstream stages
+```
+
+No wording, branch, precedence rule or behaviour in either of the two existing states above may be changed by this patch.
+
+## 4. Exact defect
 
 For the controlled state:
 
@@ -55,14 +86,11 @@ but the importer-facing next action is allowed to fall through to an earlier sup
 
 The missing projection is the importer-owned tracking assignment step.
 
-## 4. Required seamless behaviour
+## 5. Required seamless behaviour
 
-The importer audience-status projection must represent the existing operational sequence as follows:
+Only the missing state between `Add tracking` and the downstream shipment stage is added to the importer audience projection:
 
 ```text
-No submitted tracking
-  -> importer action: Add tracking
-
 Submitted tracking exists
 AND supplier reconciliation is complete
 AND at least one live/progressed physical supplier line remains unallocated to tracking
@@ -78,7 +106,9 @@ AND no live/progressed physical supplier line remains unallocated to tracking
 
 `Assign tracking` must be derived from existing tracking-allocation facts. No new lifecycle state is introduced.
 
-## 5. Source-of-truth requirement
+This patch does not redefine the existing `Add tracking` state or the existing missing-evidence state.
+
+## 6. Source-of-truth requirement
 
 The patch must use existing canonical/live facts only.
 
@@ -93,9 +123,9 @@ The implementation must not infer assignment completion merely from the existenc
 
 The implementation must not infer assignment need from UI state, button visibility, route presence, copied text, or page-local calculations.
 
-## 6. Permitted implementation scope
+## 7. Permitted implementation scope
 
-Production implementation is limited to the smallest canonical audience-status projection required to make the importer next action agree with the already-existing tracking/allocation facts.
+Production implementation is limited to the smallest canonical importer audience-status projection required to make the importer next action agree with the already-existing tracking/allocation facts.
 
 Permitted:
 
@@ -105,7 +135,7 @@ Permitted:
 
 No application/page change is required or permitted for this patch.
 
-## 7. Explicitly out of scope
+## 8. Explicitly out of scope
 
 Do not change any of the following:
 
@@ -115,6 +145,9 @@ Do not change any of the following:
 - shipper page components;
 - buttons, button behaviour, button visibility or button text;
 - headings, labels, helper text, warnings, badges or general wording outside the single canonical `importer_next_action` projection required by this defect;
+- existing `Order evidence missing` / `Upload order evidence` behaviour;
+- existing `Invoice reconciled; tracking open` / `Add tracking` behaviour;
+- existing status precedence between funding, supplier evidence, reconciliation, tracking and shipment;
 - routes or navigation;
 - tracking submission creation or editing;
 - tracking assignment write actions;
@@ -139,7 +172,7 @@ Do not change any of the following:
 - historical operational data mutation;
 - any unrelated status wording or status branch.
 
-## 8. No upstream/downstream behavioural change
+## 9. No upstream/downstream behavioural change
 
 The patch must be projection-only.
 
@@ -165,10 +198,12 @@ When tracking already exists and an importer tracking-assignment action is genui
 the importer audience wrapper returns Assign tracking instead of retaining an earlier stale action.
 ```
 
-## 9. Fail-closed rules
+## 10. Fail-closed rules
 
 The patch must not return `Assign tracking` where any of the following is true:
 
+- supplier evidence is missing;
+- supplier evidence genuinely requires review or resubmission;
 - supplier reconciliation is still incomplete;
 - no active submitted tracking exists;
 - there are no progressed/live physical lines requiring tracking assignment;
@@ -177,7 +212,7 @@ The patch must not return `Assign tracking` where any of the following is true:
 
 Existing precedence must be preserved.
 
-## 10. Regression requirements
+## 11. Regression requirements
 
 The implementation regression must prove at minimum:
 
@@ -188,21 +223,24 @@ The implementation regression must prove at minimum:
 5. Importer status remains `Tracking submitted`.
 6. Importer next action becomes `Assign tracking`.
 7. A rollback-only simulated complete tracking allocation removes the `Assign tracking` condition and permits the existing downstream canonical projection to take over.
-8. A rollback-only missing-tracking case remains `Add tracking`, not `Assign tracking`.
-9. A rollback-only unresolved supplier/evidence case preserves the existing higher-priority evidence/reconciliation action.
-10. Supplier invoice rows are unchanged.
-11. Supplier line rows are unchanged.
-12. Tracking submission rows are unchanged.
-13. Tracking allocation rows are unchanged outside rollback-only test manipulation.
-14. Shipment, export, POD, sales, funding, settlement, shipper AP, accounting and VAT facts are unchanged.
-15. No application/UI file is modified.
+8. A rollback-only missing-tracking case remains exactly `Invoice reconciled; tracking open` / `Add tracking`.
+9. A rollback-only missing-supplier-evidence case remains exactly `Order evidence missing` / `Upload order evidence`, even if tracking exists.
+10. A rollback-only genuine supplier review/rejection case preserves the existing higher-priority evidence action.
+11. Supplier invoice rows are unchanged.
+12. Supplier line rows are unchanged.
+13. Tracking submission rows are unchanged.
+14. Tracking allocation rows are unchanged outside rollback-only test manipulation.
+15. Shipment, export, POD, sales, funding, settlement, shipper AP, accounting and VAT facts are unchanged.
+16. No application/UI file is modified.
+17. No existing status wording or branch outside the missing `Assign tracking` projection is modified.
 
-## 11. Release gate
+## 12. Release gate
 
 Do not merge unless:
 
 - the production diff is confined to the canonical importer audience-status projection required by this addendum plus regression proof;
 - no UI/application file changes are present;
+- no existing missing-evidence or missing-tracking branch is changed;
 - no unrelated status branch is changed;
 - regression passes;
 - status drift audit remains clean for unaffected orders.
