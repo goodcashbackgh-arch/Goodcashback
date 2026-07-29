@@ -42,18 +42,19 @@ settlement_actions AS (
          JOIN dva_statement_lines dsl ON dsl.id = fx.dva_statement_line_id
          JOIN dva_statements ds ON ds.id = dsl.dva_statement_id
          JOIN LATERAL (
-           SELECT (array_agg(z.order_id))[1] AS order_id
-             FROM (
-               SELECT DISTINCT COALESCE(si.order_id, supplier_alloc.order_id) AS order_id
-                 FROM dva_statement_line_allocations supplier_alloc
-                 LEFT JOIN supplier_invoices si ON si.id = supplier_alloc.supplier_invoice_id
-                WHERE supplier_alloc.dva_statement_line_id = fx.dva_statement_line_id
-                  AND supplier_alloc.allocation_status = 'confirmed'::text
-                  AND supplier_alloc.allocation_type = 'supplier_invoice'::text
-                  AND COALESCE(si.order_id, supplier_alloc.order_id) IS NOT NULL
-             ) z
-            HAVING count(*) = 1
-         ) supplier_order ON supplier_order.order_id IS NOT NULL
+           WITH supplier_orders AS (
+             SELECT DISTINCT COALESCE(si.order_id, supplier_alloc.order_id) AS order_id
+               FROM dva_statement_line_allocations supplier_alloc
+               LEFT JOIN supplier_invoices si ON si.id = supplier_alloc.supplier_invoice_id
+              WHERE supplier_alloc.dva_statement_line_id = fx.dva_statement_line_id
+                AND supplier_alloc.allocation_status = 'confirmed'::text
+                AND supplier_alloc.allocation_type = 'supplier_invoice'::text
+                AND COALESCE(si.order_id, supplier_alloc.order_id) IS NOT NULL
+           )
+           SELECT so.order_id
+             FROM supplier_orders so
+            WHERE (SELECT count(*) FROM supplier_orders) = 1
+         ) supplier_order ON true
         WHERE fx.allocation_type = 'fx_card_difference'::text
           AND fx.allocation_status = 'confirmed'::text
           AND dsl.direction = 'out'::text
@@ -132,7 +133,8 @@ BEGIN
      OR position('fx.allocation_status = ''confirmed''::text' IN v_definition) = 0
      OR position('supplier_alloc.allocation_type = ''supplier_invoice''::text' IN v_definition) = 0
      OR position('supplier_alloc.allocation_status = ''confirmed''::text' IN v_definition) = 0
-     OR position('count(*) = 1' IN v_definition) = 0
+     OR position('supplier_orders' IN v_definition) = 0
+     OR position('count(*) from supplier_orders' IN v_definition) = 0
      OR position('dsl.direction = ''out''::text' IN v_definition) = 0
      OR position('statement_account_context' IN v_definition) = 0
      OR position('b.inbound_fx_receipt_residual_gbp' IN v_definition) = 0
