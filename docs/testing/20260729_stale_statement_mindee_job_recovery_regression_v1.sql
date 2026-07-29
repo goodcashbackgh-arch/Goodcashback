@@ -17,8 +17,8 @@ BEGIN
     RAISE EXCEPTION 'FAIL: stale statement Mindee recovery function is missing or signature changed';
   END IF;
 
-  IF position('p_http_status <> 404' in v_def) = 0 THEN
-    RAISE EXCEPTION 'FAIL: recovery is not hard-gated to HTTP 404';
+  IF position('p_http_status is distinct from 404' in lower(v_def)) = 0 THEN
+    RAISE EXCEPTION 'FAIL: recovery is not fail-closed to exactly HTTP 404';
   END IF;
 
   IF position('position(''job'' in lower(v_error_message)) = 0' in v_def) = 0
@@ -64,5 +64,5 @@ $$;
 
 SELECT jsonb_build_object(
   'regression_result', 'PASS',
-  'proof', 'recovery is limited to definitive HTTP 404 expected-job-not-found, is concurrency guarded, rejects committed/voided or staged batches, restores only the existing uploaded/not_started OCR state, performs no deletes, and does not reach statement lines, import links, allocations or Sage'
+  'proof', 'recovery is fail-closed to exactly HTTP 404 expected-job-not-found, is concurrency guarded, rejects committed/voided or staged batches, restores only the existing uploaded/not_started OCR state, performs no deletes, and does not reach statement lines, import links, allocations or Sage'
 ) AS regression_result;
