@@ -10,16 +10,19 @@ DECLARE
   v_oid oid;
   v_definition text;
   v_patched text;
+  v_count integer;
 
-  v_old_select text := $old$
-      map.source_wallet_code AS mapped_wallet_code,
-      map.source_bank_account_mapping_code AS mapped_bank_code
-    FROM source_lots sl
-$old$;
+  v_select_pattern text :=
+    'map\.source_bank_account_mapping_code AS mapped_bank_code[[:space:]]+FROM source_lots sl';
+
+  v_join_pattern text :=
+    '\) map ON true[[:space:]]+WHERE sl\.source_type = ''overfunding''';
+
+  v_old_amount_proof text :=
+    'AND ABS(r.pending_surplus_gbp - r.credit_amount_gbp) <= 0.01';
 
   v_new_select text := $new$
-      map.source_wallet_code AS mapped_wallet_code,
-      map.source_bank_account_mapping_code AS mapped_bank_code,
+map.source_bank_account_mapping_code AS mapped_bank_code,
       settlement.resolution_status AS settlement_resolution_status,
       settlement.remaining_unresolved_gbp AS settlement_remaining_unresolved_gbp,
       settlement.over_resolved_gbp AS settlement_over_resolved_gbp,
@@ -29,24 +32,15 @@ $old$;
     FROM source_lots sl
 $new$;
 
-  v_old_join text := $old$
-    ) map ON true
-    WHERE sl.source_type = 'overfunding'
-$old$;
-
   v_new_join text := $new$
-    ) map ON true
+) map ON true
     LEFT JOIN public.order_settlement_resolution_position_v1 settlement
       ON settlement.order_id = sl.source_order_id
     WHERE sl.source_type = 'overfunding'
 $new$;
 
-  v_old_amount_proof text := $old$
-        AND ABS(r.pending_surplus_gbp - r.credit_amount_gbp) <= 0.01
-$old$;
-
   v_new_amount_proof text := $new$
-        AND (
+AND (
           -- Existing ordinary/full-overfunding proof remains unchanged.
           ABS(r.pending_surplus_gbp - r.credit_amount_gbp) <= 0.01
           OR (
@@ -83,38 +77,32 @@ BEGIN
   END IF;
 
   IF NOT EXISTS (
-    SELECT 1
-    FROM information_schema.columns
+    SELECT 1 FROM information_schema.columns
     WHERE table_schema = 'public'
       AND table_name = 'order_settlement_resolution_position_v1'
       AND column_name = 'resolution_status'
   ) OR NOT EXISTS (
-    SELECT 1
-    FROM information_schema.columns
+    SELECT 1 FROM information_schema.columns
     WHERE table_schema = 'public'
       AND table_name = 'order_settlement_resolution_position_v1'
       AND column_name = 'remaining_unresolved_gbp'
   ) OR NOT EXISTS (
-    SELECT 1
-    FROM information_schema.columns
+    SELECT 1 FROM information_schema.columns
     WHERE table_schema = 'public'
       AND table_name = 'order_settlement_resolution_position_v1'
       AND column_name = 'over_resolved_gbp'
   ) OR NOT EXISTS (
-    SELECT 1
-    FROM information_schema.columns
+    SELECT 1 FROM information_schema.columns
     WHERE table_schema = 'public'
       AND table_name = 'order_settlement_resolution_position_v1'
       AND column_name = 'pending_evidence_count'
   ) OR NOT EXISTS (
-    SELECT 1
-    FROM information_schema.columns
+    SELECT 1 FROM information_schema.columns
     WHERE table_schema = 'public'
       AND table_name = 'order_settlement_resolution_position_v1'
       AND column_name = 'pending_credit_confirmed_count'
   ) OR NOT EXISTS (
-    SELECT 1
-    FROM information_schema.columns
+    SELECT 1 FROM information_schema.columns
     WHERE table_schema = 'public'
       AND table_name = 'order_settlement_resolution_position_v1'
       AND column_name = 'confirmed_customer_credit_gbp'
@@ -125,22 +113,36 @@ BEGIN
   SELECT pg_get_functiondef(v_oid)
   INTO v_definition;
 
-  -- Guard against scope drift or re-running against an unexpected resolver.
-  IF strpos(v_definition, v_old_select) = 0
-     OR strpos(v_definition, v_old_join) = 0
-     OR strpos(v_definition, v_old_amount_proof) = 0
-  THEN
-    RAISE EXCEPTION 'Expected supplier-source overfunding proof shape not found. Stop before patching.';
-  END IF;
-
   IF strpos(v_definition, 'settlement_resolution_status') > 0
      OR strpos(v_definition, 'settlement_remaining_unresolved_gbp') > 0
   THEN
     RAISE EXCEPTION 'Partial-overfunding proof appears already installed. Stop before patching.';
   END IF;
 
-  v_patched := replace(v_definition, v_old_select, v_new_select);
-  v_patched := replace(v_patched, v_old_join, v_new_join);
+  -- Each scoped patch anchor must occur exactly once. This prevents broad
+  -- replacement if the live resolver has drifted.
+  SELECT COUNT(*) INTO v_count
+  FROM regexp_matches(v_definition, v_select_pattern, 'g');
+  IF v_count <> 1 THEN
+    RAISE EXCEPTION 'Expected one overfunding SELECT anchor; found %. Stop before patching.', v_count;
+  END IF;
+
+  SELECT COUNT(*) INTO v_count
+  FROM regexp_matches(v_definition, v_join_pattern, 'g');
+  IF v_count <> 1 THEN
+    RAISE EXCEPTION 'Expected one overfunding JOIN anchor; found %. Stop before patching.', v_count;
+  END IF;
+
+  SELECT (
+    length(v_definition) - length(replace(v_definition, v_old_amount_proof, ''))
+  ) / NULLIF(length(v_old_amount_proof), 0)
+  INTO v_count;
+  IF v_count <> 1 THEN
+    RAISE EXCEPTION 'Expected one full-overfunding equality proof; found %. Stop before patching.', v_count;
+  END IF;
+
+  v_patched := regexp_replace(v_definition, v_select_pattern, v_new_select, '');
+  v_patched := regexp_replace(v_patched, v_join_pattern, v_new_join, '');
   v_patched := replace(v_patched, v_old_amount_proof, v_new_amount_proof);
 
   IF v_patched = v_definition THEN
