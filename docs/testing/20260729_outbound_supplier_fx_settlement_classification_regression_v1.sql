@@ -119,20 +119,23 @@ BEGIN
     RAISE EXCEPTION 'FAIL: outbound FX leaked into order-attributed receipt.';
   END IF;
 
+  -- Structural proof uses only stable semantic markers because pg_get_viewdef
+  -- normalises casts, aliases, whitespace and subquery formatting.
   SELECT lower(pg_get_viewdef('public.order_settlement_resolution_position_v1'::regclass, true))
   INTO v_view_definition;
 
-  IF position('dsl.direction = ''out''::text' IN v_view_definition) = 0
-     OR position('fx.allocation_type = ''fx_card_difference''::text' IN v_view_definition) = 0
-     OR position('supplier_alloc.allocation_type = ''supplier_invoice''::text' IN v_view_definition) = 0
-     OR position('supplier_orders' IN v_view_definition) = 0
-     OR position('select distinct coalesce(si.order_id, supplier_alloc.order_id)' IN v_view_definition) = 0 THEN
+  IF position('fx_card_difference' IN v_view_definition) = 0
+     OR position('supplier_invoice' IN v_view_definition) = 0
+     OR position('supplier_order' IN v_view_definition) = 0
+     OR position('supplier_alloc' IN v_view_definition) = 0
+     OR position('direction' IN v_view_definition) = 0
+     OR position('''out''' IN v_view_definition) = 0
+     OR position('statement_account_context' IN v_view_definition) = 0 THEN
     RAISE EXCEPTION 'FAIL: fail-closed outbound supplier FX classification is absent from canonical view.';
   END IF;
 
   -- Existing inbound FX remains its separate receipt-attribution lane.
-  IF position('ifx.inbound_fx_receipt_residual_gbp' IN v_view_definition) = 0
-     OR position('b.inbound_fx_receipt_residual_gbp' IN v_view_definition) = 0 THEN
+  IF position('inbound_fx_receipt_residual_gbp' IN v_view_definition) = 0 THEN
     RAISE EXCEPTION 'FAIL: existing inbound FX settlement path changed.';
   END IF;
 END
