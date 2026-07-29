@@ -115,7 +115,7 @@ BEGIN
   ) INTO v_resolver_definition;
 
   SELECT pg_get_functiondef(
-    'public.staff_allocate_statement_line_to_supplier_invoice_bundle_core_v1(uuid,jsonb,text)'::regprocedure
+    'public.staff_allocate_statement_line_to_supplier_invoice_bundle_core_v(uuid,jsonb,text)'::regprocedure
   ) INTO v_bundle_core_definition;
 
   SELECT pg_get_functiondef(
