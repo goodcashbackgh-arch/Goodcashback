@@ -6,8 +6,9 @@ SET LOCAL statement_timeout = '0';
 -- Narrow patch only: teach the existing canonical settlement read model that a
 -- confirmed FX allocation on a supplier-payment OUT is already a settlement
 -- classification when that OUT line resolves to exactly one supplier order.
--- The FX row itself may have no order_id. Statement-line consumption, supplier
--- payment, funding, sales and customer-credit facts remain unchanged.
+-- The OUT FX row itself is expected to have no order_id under the existing allocator.
+-- Statement-line consumption, supplier payment, funding, sales and customer-credit
+-- facts remain unchanged.
 DO $migration$
 DECLARE
   v_definition text;
@@ -55,7 +56,6 @@ settlement_actions AS (
          ) supplier_order ON supplier_order.order_id IS NOT NULL
         WHERE fx.allocation_type = 'fx_card_difference'::text
           AND fx.allocation_status = 'confirmed'::text
-          AND (fx.order_id IS NULL OR fx.order_id = supplier_order.order_id)
           AND dsl.direction = 'out'::text
           AND COALESCE(ds.statement_account_context, 'importer_dva_card_account'::text) = 'importer_dva_card_account'::text
         GROUP BY supplier_order.order_id
@@ -134,7 +134,6 @@ BEGIN
      OR position('supplier_alloc.allocation_status = ''confirmed''::text' IN v_definition) = 0
      OR position('count(*) = 1' IN v_definition) = 0
      OR position('dsl.direction = ''out''::text' IN v_definition) = 0
-     OR position('fx.order_id is null or fx.order_id = supplier_order.order_id' IN v_definition) = 0
      OR position('statement_account_context' IN v_definition) = 0
      OR position('b.inbound_fx_receipt_residual_gbp' IN v_definition) = 0
      OR position('b.settlement_fx_card_difference_gbp' IN v_definition) = 0 THEN
