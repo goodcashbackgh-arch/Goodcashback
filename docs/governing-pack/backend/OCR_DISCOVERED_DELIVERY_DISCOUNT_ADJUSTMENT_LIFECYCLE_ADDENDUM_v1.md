@@ -97,11 +97,12 @@ Adjustment materialisation is permitted only when all of the following are true:
 3. the line has an active `non_physical_financial` resolution;
 4. `financial_type` is exactly `delivery` or `discount`;
 5. the resolved amount is non-zero;
-6. no non-rejected matching adjustment already exists for the same supplier invoice, mapped adjustment type and amount within £0.01;
-7. if a non-rejected adjustment of the same mapped type already exists with a different amount, do not create a second adjustment; leave the review flag unresolved for the existing correction route;
-8. operator provenance must be available from the resolution or source supplier invoice before a new adjustment is created.
+6. no non-rejected adjustment of the same mapped type already exists for that supplier invoice; an existing same-type row is reused as the commercial fact and is never duplicated;
+7. if that existing same-type row has a different amount, do not create a second adjustment; leave the review flag unresolved for the existing correction route;
+8. operator provenance must be available from the resolution or source supplier invoice before a new adjustment is created;
+9. no locked `invoice_adjustment_basis` may already exist for the invoice. This defect patch must not introduce a new accepted adjustment after downstream allocation basis has been frozen.
 
-The patch must be idempotent. Re-saving or reclassifying the same resolved fact must not create duplicate adjustments.
+The patch must be idempotent. Re-saving or reclassifying the same resolved fact must not create duplicate adjustments. Same-invoice/type materialisation must be serialised against concurrent retries.
 
 ---
 
@@ -128,7 +129,8 @@ The migration may repair only the exact orphan lifecycle shape described by this
 - pending-review supplier invoice;
 - open/under-review `delivery_discount_query`;
 - active delivery/discount `non_physical_financial` resolution;
-- no non-rejected adjustment of the mapped type.
+- no non-rejected adjustment of the mapped type;
+- no locked invoice adjustment basis.
 
 No other historical adjustment, resolution, review flag, invoice state or downstream artefact may be rewritten.
 
@@ -195,11 +197,12 @@ The patch must not:
 
 - invent an adjustment from OCR description alone;
 - create an adjustment without an active explicit non-physical financial resolution;
-- create a duplicate adjustment when a live same-type adjustment already exists with a conflicting amount;
+- create a duplicate adjustment when a live same-type adjustment already exists;
 - auto-approve an over-limit delivery;
 - auto-approve a retailer discount;
 - resolve the review flag while a relevant adjustment remains pending or rejected;
 - resolve the review flag when accepted adjustment totals do not agree with active resolved financial totals;
+- create a new adjustment after a locked invoice adjustment basis exists;
 - alter any immutable export/customer-release history;
 - rewrite a locked adjustment basis as part of this defect fix.
 
@@ -212,15 +215,16 @@ The regression must prove at minimum:
 1. both existing non-physical resolution RPC definitions are unchanged;
 2. the new resolution trigger is restricted to active `non_physical_financial` delivery/discount facts;
 3. materialisation requires an open/under-review `delivery_discount_query` and a pending-review invoice;
-4. existing matching live adjustments are reused, not duplicated;
+4. existing live same-type adjustments are reused, not duplicated;
 5. conflicting same-type live adjustments do not cause another row to be created;
-6. delivery uses the existing configured shipper/global threshold with £10 fallback;
-7. discounts remain supervisor-required;
-8. the controlled £11.42 orphan becomes exactly one `retailer_delivery` `pending_supervisor` adjustment;
-9. the controlled open flag remains open before supervisor approval;
-10. within a rollback-only approval simulation, accepting that £11.42 adjustment resolves the query flag;
-11. rejecting or leaving the adjustment pending does not resolve the flag;
-12. no supplier invoice approval/Sage/funding/tracking/shipping/customer-sales object is changed by the migration.
+6. locked adjustment bases fail closed and are not rewritten;
+7. delivery uses the existing configured shipper/global threshold with £10 fallback;
+8. discounts remain supervisor-required;
+9. the controlled £11.42 orphan becomes exactly one `retailer_delivery` `pending_supervisor` adjustment;
+10. the controlled open flag remains open before supervisor approval;
+11. within a rollback-only approval simulation, accepting that £11.42 adjustment resolves the query flag;
+12. rejecting or leaving the adjustment pending does not resolve the flag;
+13. no supplier invoice approval/Sage/funding/tracking/shipping/customer-sales object is changed by the migration.
 
 ---
 
