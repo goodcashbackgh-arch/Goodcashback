@@ -4,9 +4,10 @@ SET LOCAL lock_timeout = '15s';
 SET LOCAL statement_timeout = '0';
 
 -- Narrow patch only: teach the existing canonical settlement read model that a
--- confirmed order-linked FX allocation on a supplier-payment OUT is already a
--- settlement classification. It remains part of statement-line consumption and
--- is not added to order-attributed receipt or supplier-invoice value.
+-- confirmed FX allocation on a supplier-payment OUT is already a settlement
+-- classification when that OUT line resolves to exactly one supplier order.
+-- The FX row itself may have no order_id. Statement-line consumption, supplier
+-- payment, funding, sales and customer-credit facts remain unchanged.
 DO $migration$
 DECLARE
   v_definition text;
@@ -35,19 +36,31 @@ settlement_actions AS (
          FROM order_settlement_resolution_actions a
         GROUP BY a.order_id
        UNION ALL
-       SELECT dsa.order_id,
-          COALESCE(sum(abs(COALESCE(NULLIF(dsa.fx_or_card_diff_gbp, (0)::numeric), dsa.allocated_gbp_amount, (0)::numeric))), (0)::numeric) AS fx_card_difference_gbp,
+       SELECT supplier_order.order_id,
+          COALESCE(sum(abs(COALESCE(NULLIF(fx.fx_or_card_diff_gbp, (0)::numeric), fx.allocated_gbp_amount, (0)::numeric))), (0)::numeric) AS fx_card_difference_gbp,
           (0)::bigint AS active_resolution_action_count,
           (0)::bigint AS reversed_resolution_action_count
-         FROM dva_statement_line_allocations dsa
-         JOIN dva_statement_lines dsl ON dsl.id = dsa.dva_statement_line_id
+         FROM dva_statement_line_allocations fx
+         JOIN dva_statement_lines dsl ON dsl.id = fx.dva_statement_line_id
          JOIN dva_statements ds ON ds.id = dsl.dva_statement_id
-        WHERE dsa.order_id IS NOT NULL
-          AND dsa.allocation_type = 'fx_card_difference'::text
-          AND dsa.allocation_status = 'confirmed'::text
+         JOIN LATERAL (
+           SELECT min(z.order_id) AS order_id
+             FROM (
+               SELECT DISTINCT COALESCE(si.order_id, supplier_alloc.order_id) AS order_id
+                 FROM dva_statement_line_allocations supplier_alloc
+                 LEFT JOIN supplier_invoices si ON si.id = supplier_alloc.supplier_invoice_id
+                WHERE supplier_alloc.dva_statement_line_id = fx.dva_statement_line_id
+                  AND supplier_alloc.allocation_status = 'confirmed'::text
+                  AND supplier_alloc.allocation_type = 'supplier_invoice'::text
+                  AND COALESCE(si.order_id, supplier_alloc.order_id) IS NOT NULL
+             ) z
+            HAVING count(*) = 1
+         ) supplier_order ON supplier_order.order_id IS NOT NULL
+        WHERE fx.allocation_type = 'fx_card_difference'::text
+          AND fx.allocation_status = 'confirmed'::text
           AND dsl.direction = 'out'::text
           AND COALESCE(ds.statement_account_context, 'importer_dva_card_account'::text) = 'importer_dva_card_account'::text
-        GROUP BY dsa.order_id
+        GROUP BY supplier_order.order_id
      ) x
     GROUP BY x.order_id
 ), blockers AS (
@@ -60,14 +73,16 @@ BEGIN
   IF to_regclass('public.dva_statement_line_allocations') IS NULL
      OR to_regclass('public.dva_statement_lines') IS NULL
      OR to_regclass('public.dva_statements') IS NULL
+     OR to_regclass('public.supplier_invoices') IS NULL
      OR to_regclass('public.order_settlement_resolution_actions') IS NULL THEN
-    RAISE EXCEPTION 'Required existing settlement/statement objects are missing.';
+    RAISE EXCEPTION 'Required existing settlement/statement/supplier objects are missing.';
   END IF;
 
   SELECT pg_get_viewdef('public.order_settlement_resolution_position_v1'::regclass, true)
   INTO v_definition;
 
-  IF position('dsa.allocation_type = ''fx_card_difference''::text' IN v_definition) > 0
+  IF position('supplier_order.order_id' IN v_definition) > 0
+     AND position('fx.allocation_type = ''fx_card_difference''::text' IN v_definition) > 0
      AND position('dsl.direction = ''out''::text' IN v_definition) > 0 THEN
     RAISE EXCEPTION 'Outbound supplier FX settlement classification appears already installed. Stop before patching.';
   END IF;
@@ -96,8 +111,11 @@ BEGIN
   SELECT pg_get_viewdef('public.order_settlement_resolution_position_v1'::regclass, true)
   INTO v_definition;
 
-  IF position('dsa.allocation_type = ''fx_card_difference''::text' IN v_definition) = 0
-     OR position('dsa.allocation_status = ''confirmed''::text' IN v_definition) = 0
+  IF position('fx.allocation_type = ''fx_card_difference''::text' IN v_definition) = 0
+     OR position('fx.allocation_status = ''confirmed''::text' IN v_definition) = 0
+     OR position('supplier_alloc.allocation_type = ''supplier_invoice''::text' IN v_definition) = 0
+     OR position('supplier_alloc.allocation_status = ''confirmed''::text' IN v_definition) = 0
+     OR position('having count(*) = 1' IN lower(v_definition)) = 0
      OR position('dsl.direction = ''out''::text' IN v_definition) = 0
      OR position('statement_account_context' IN v_definition) = 0
      OR position('b.inbound_fx_receipt_residual_gbp' IN v_definition) = 0
