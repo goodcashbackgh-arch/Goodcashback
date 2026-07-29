@@ -274,8 +274,8 @@ export default function MainBankAllocationController({
         <p className="mt-2 text-sm text-slate-600">FX/payment: {gbp(residualByType.get("fx_card_difference") ?? 0)} · Bank fee: {gbp(residualByType.get("bank_fee") ?? 0)} · Hold: {gbp(residualByType.get("unmatched_hold") ?? 0)}</p>
       </section>
 
-      <div className="fixed inset-x-0 bottom-0 z-40 px-4 pb-3 sm:px-6 lg:px-8">
-        <div className="mx-auto grid max-w-7xl gap-3 rounded-t-3xl border border-slate-200 bg-white/95 p-3 shadow-[0_-10px_30px_rgba(15,23,42,0.12)] backdrop-blur lg:grid-cols-[minmax(0,1fr)_minmax(0,34rem)] lg:items-end">
+      <div className="fixed inset-x-0 bottom-[calc(6rem+env(safe-area-inset-bottom))] z-40 px-4 pb-3 sm:bottom-0 sm:px-6 lg:px-8">
+        <div className="mx-auto grid max-h-[calc(100dvh-7rem)] max-w-7xl gap-3 overflow-y-auto overscroll-contain rounded-t-3xl border border-slate-200 bg-white/95 p-3 shadow-[0_-10px_30px_rgba(15,23,42,0.12)] backdrop-blur sm:max-h-none sm:overflow-visible lg:grid-cols-[minmax(0,1fr)_minmax(0,34rem)] lg:items-end">
           <div className="min-w-0 space-y-1 text-sm text-slate-700">
             <p className="font-bold text-slate-950">Bank selected: {selectedLine ? short(selectedLine.reference_raw, 54) : "none"} · available {gbp(selectedLineAvailable)}</p>
             <p>{targetMode === "completion_loyalty" ? `Loyalty rewards selected: ${selectedLoyaltyTargets.length} · ${gbp(selectedLoyaltyAmount)}` : `Shipper charges selected: ${selectedTargetIds.length} charge record(s) · ${gbp(selectedTargetTotal)}`}</p>
