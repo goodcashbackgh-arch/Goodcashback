@@ -34,7 +34,7 @@ begin
     raise exception 'Only admin or supervisor staff can recover stale statement OCR jobs. Current role: %', v_staff.role_type;
   end if;
 
-  if p_http_status <> 404 then
+  if p_http_status is distinct from 404 then
     raise exception 'Stale statement OCR recovery requires HTTP 404. Received: %', p_http_status;
   end if;
 
