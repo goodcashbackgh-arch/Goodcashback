@@ -387,6 +387,7 @@ BEGIN
     RAISE EXCEPTION 'Could not read live definition of dva_statement_line_allocation_status_vw.';
   END IF;
 
+  v_existing_definition := regexp_replace(btrim(v_existing_definition), ';[[:space:]]*$', '');
   v_patched_definition := v_existing_definition;
   IF position('dlil.active_yn' IN lower(v_patched_definition)) = 0 THEN
     v_patched_definition := regexp_replace(
@@ -439,6 +440,7 @@ BEGIN
     RAISE EXCEPTION 'Could not read live definition of dva_statement_line_allocation_summary_vw.';
   END IF;
 
+  v_existing_definition := regexp_replace(btrim(v_existing_definition), ';[[:space:]]*$', '');
   v_final_definition := v_existing_definition;
   IF position('voided_link.dva_statement_line_id' IN lower(v_final_definition)) = 0 THEN
     v_final_definition :=
