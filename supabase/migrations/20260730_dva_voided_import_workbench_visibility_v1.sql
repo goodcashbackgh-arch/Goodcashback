@@ -11,8 +11,9 @@ SET LOCAL statement_timeout = '0';
 --   1) baseline-lock and surgically augment staff_void_dva_statement_import_batch(uuid,text);
 --   2) patch exact live dva_statement_line_allocation_status_vw definition;
 --   3) patch exact live dva_statement_line_allocation_summary_vw definition;
---   4) prove retained-row invariance inside this transaction;
---   5) no funding/day2, allocation-RPC, Sage, order, OCR, loyalty, shipper-AP, or UI changes.
+--   4) prove exact retained-row invariance using the inactive-only boundary;
+--   5) prove supplier-suggestion candidate-set invariance;
+--   6) no funding/day2, allocation-RPC, Sage, order, OCR, loyalty, shipper-AP, or UI changes.
 
 DO $$
 BEGIN
@@ -25,6 +26,11 @@ BEGIN
      OR to_regclass('public.statement_line_control_position_v1') IS NULL
      OR to_regclass('public.dva_statement_line_allocation_status_vw') IS NULL
      OR to_regclass('public.dva_statement_line_allocation_summary_vw') IS NULL
+     OR to_regclass('public.supplier_invoices') IS NULL
+     OR to_regclass('public.supplier_invoice_lines') IS NULL
+     OR to_regclass('public.orders') IS NULL
+     OR to_regclass('public.retailers') IS NULL
+     OR to_regclass('public.match_suggestions') IS NULL
      OR to_regclass('public.staff') IS NULL
   THEN
     RAISE EXCEPTION 'DVA voided-import visibility prerequisite relation/view is missing.';
@@ -32,6 +38,10 @@ BEGIN
 
   IF to_regprocedure('public.staff_void_dva_statement_import_batch(uuid,text)') IS NULL THEN
     RAISE EXCEPTION 'Missing public.staff_void_dva_statement_import_batch(uuid,text).';
+  END IF;
+
+  IF to_regprocedure('public.staff_generate_supplier_invoice_match_suggestions(uuid,numeric,integer)') IS NULL THEN
+    RAISE EXCEPTION 'Missing supplier suggestion RPC required for candidate-set non-regression.';
   END IF;
 
   IF NOT EXISTS (
@@ -43,15 +53,14 @@ BEGIN
     GROUP BY table_schema, table_name
     HAVING COUNT(*) = 3
   ) THEN
-    RAISE EXCEPTION 'statement_line_control_position_v1 does not expose the required active usage columns.';
+    RAISE EXCEPTION 'statement_line_control_position_v1 does not expose required active usage columns.';
   END IF;
 END $$;
 
 -- -----------------------------------------------------------------------------
--- 1. Snapshot retained rows BEFORE any view change.
---    Rows with any inactive import link are excluded from byte-for-byte invariance
---    because the addendum explicitly permits their provenance/display visibility to
---    change. Active-only imported rows and no-link legacy/manual rows must not move.
+-- 1. Snapshot retained rows BEFORE view changes.
+--    Exclude only inactive-only imported lines. A line with both historical inactive
+--    provenance and an active link is retained and must remain byte-for-byte stable.
 -- -----------------------------------------------------------------------------
 
 CREATE TEMP TABLE _dva_void_status_before ON COMMIT DROP AS
@@ -62,9 +71,15 @@ SELECT
 FROM public.dva_statement_line_allocation_status_vw s
 WHERE NOT EXISTS (
   SELECT 1
-  FROM public.dva_statement_line_import_links l
-  WHERE l.dva_statement_line_id = s.dva_statement_line_id
-    AND l.active_yn = false
+  FROM public.dva_statement_line_import_links inactive_link
+  WHERE inactive_link.dva_statement_line_id = s.dva_statement_line_id
+    AND inactive_link.active_yn = false
+    AND NOT EXISTS (
+      SELECT 1
+      FROM public.dva_statement_line_import_links active_link
+      WHERE active_link.dva_statement_line_id = s.dva_statement_line_id
+        AND active_link.active_yn = true
+    )
 );
 
 CREATE TEMP TABLE _dva_void_summary_before ON COMMIT DROP AS
@@ -75,13 +90,109 @@ SELECT
 FROM public.dva_statement_line_allocation_summary_vw s
 WHERE NOT EXISTS (
   SELECT 1
-  FROM public.dva_statement_line_import_links l
-  WHERE l.dva_statement_line_id = s.dva_statement_line_id
-    AND l.active_yn = false
+  FROM public.dva_statement_line_import_links inactive_link
+  WHERE inactive_link.dva_statement_line_id = s.dva_statement_line_id
+    AND inactive_link.active_yn = false
+    AND NOT EXISTS (
+      SELECT 1
+      FROM public.dva_statement_line_import_links active_link
+      WHERE active_link.dva_statement_line_id = s.dva_statement_line_id
+        AND active_link.active_yn = true
+    )
 );
 
 -- -----------------------------------------------------------------------------
--- 2. Baseline-lock the existing Void RPC, then surgically insert only the new
+-- 2. Snapshot the actual supplier-suggestion candidate set BEFORE view changes.
+--    This reproduces the existing RPC's default candidate/ranking logic read-only:
+--    tolerance £5, max 14 days, all statement lines, top 3 per statement line.
+-- -----------------------------------------------------------------------------
+
+CREATE TEMP TABLE _dva_void_suggestion_candidates_before ON COMMIT DROP AS
+WITH invoice_totals AS (
+  SELECT
+    si.id AS supplier_invoice_id,
+    si.order_id,
+    coalesce(
+      si.ocr_invoice_total_gbp,
+      si.reconciliation_gbp_total,
+      sum(coalesce(sil.amount_confirmed, sil.amount_inc_vat_gbp, 0))
+    )::numeric AS invoice_total_gbp
+  FROM public.supplier_invoices si
+  LEFT JOIN public.supplier_invoice_lines sil
+    ON sil.supplier_invoice_id = si.id
+  GROUP BY si.id, si.order_id, si.ocr_invoice_total_gbp, si.reconciliation_gbp_total
+), candidates AS (
+  SELECT
+    s.dva_statement_line_id,
+    it.supplier_invoice_id,
+    abs(round((s.statement_gbp_amount - it.invoice_total_gbp)::numeric, 2)) AS variance_gbp,
+    abs(s.statement_date - si.uploaded_at::date) AS variance_days,
+    CASE
+      WHEN abs(round((s.statement_gbp_amount - it.invoice_total_gbp)::numeric, 2)) <= 1.00
+       AND abs(s.statement_date - si.uploaded_at::date) <= 3 THEN 'high'
+      WHEN abs(round((s.statement_gbp_amount - it.invoice_total_gbp)::numeric, 2)) <= 5.00
+       AND abs(s.statement_date - si.uploaded_at::date) <= 14 THEN 'medium'
+      ELSE 'low'
+    END AS confidence
+  FROM public.dva_statement_line_allocation_summary_vw s
+  JOIN public.dva_statement_lines dsl ON dsl.id = s.dva_statement_line_id
+  JOIN invoice_totals it ON it.invoice_total_gbp IS NOT NULL AND it.invoice_total_gbp > 0
+  JOIN public.supplier_invoices si ON si.id = it.supplier_invoice_id
+  JOIN public.orders o ON o.id = si.order_id AND o.importer_id = s.importer_id
+  LEFT JOIN public.retailers r ON r.id = o.retailer_id
+  WHERE s.direction = 'out'
+    AND coalesce(s.confirmed_balanced_yn, false) = false
+    AND coalesce(si.blocked_from_sage_yn, false) = false
+    AND si.review_status IN ('approved_current')
+    AND abs(round((s.statement_gbp_amount - it.invoice_total_gbp)::numeric, 2)) <= 5.00
+    AND abs(s.statement_date - si.uploaded_at::date) <= 14
+    AND (
+      regexp_replace(lower(coalesce(s.retailer_name_ref, '') || ' ' || coalesce(s.reference_raw, '') || ' ' || coalesce(s.auth_id_ref, '')), '[^a-z0-9]+', '', 'g') LIKE
+        '%' || left(regexp_replace(lower(coalesce(r.name, '')), '[^a-z0-9]+', '', 'g'), 5) || '%'
+      OR regexp_replace(lower(coalesce(r.name, '')), '[^a-z0-9]+', '', 'g') LIKE
+        '%' || left(regexp_replace(lower(coalesce(s.retailer_name_ref, '')), '[^a-z0-9]+', '', 'g'), 5) || '%'
+    )
+    AND length(left(regexp_replace(lower(coalesce(r.name, '')), '[^a-z0-9]+', '', 'g'), 5)) >= 3
+    AND NOT EXISTS (
+      SELECT 1
+      FROM public.match_suggestions ms
+      WHERE ms.dva_statement_line_id = s.dva_statement_line_id
+        AND ms.suggested_match_type = 'supplier_invoice'
+        AND ms.suggested_match_id = it.supplier_invoice_id
+    )
+), ranked AS (
+  SELECT
+    c.*,
+    row_number() OVER (
+      PARTITION BY c.dva_statement_line_id
+      ORDER BY c.variance_gbp ASC, c.variance_days ASC, c.confidence ASC
+    ) AS rn
+  FROM candidates c
+)
+SELECT
+  r.dva_statement_line_id,
+  r.supplier_invoice_id,
+  r.variance_gbp,
+  r.variance_days,
+  r.confidence,
+  r.rn,
+  EXISTS (
+    SELECT 1
+    FROM public.dva_statement_line_import_links inactive_link
+    WHERE inactive_link.dva_statement_line_id = r.dva_statement_line_id
+      AND inactive_link.active_yn = false
+      AND NOT EXISTS (
+        SELECT 1
+        FROM public.dva_statement_line_import_links active_link
+        WHERE active_link.dva_statement_line_id = r.dva_statement_line_id
+          AND active_link.active_yn = true
+      )
+  ) AS expected_inactive_only_exclusion
+FROM ranked r
+WHERE r.rn <= 3;
+
+-- -----------------------------------------------------------------------------
+-- 3. Baseline-lock the existing Void RPC, then surgically insert only the new
 --    canonical active-consumed / active-reserved guard into its exact live definition.
 -- -----------------------------------------------------------------------------
 
@@ -187,8 +298,7 @@ begin
 end;
 $baseline$;
 BEGIN
-  SELECT p.prosrc
-    INTO v_live_body
+  SELECT p.prosrc INTO v_live_body
   FROM pg_proc p
   WHERE p.oid = v_oid;
 
@@ -205,16 +315,14 @@ BEGIN
       AND l.lanname = 'plpgsql'
       AND p.prosecdef = true
       AND p.prorettype = 'jsonb'::regtype
-      AND COALESCE(array_to_string(p.proconfig, ','), '') ILIKE '%search_path=public, pg_temp%'
+      AND coalesce(array_to_string(p.proconfig, ','), '') ILIKE '%search_path=public, pg_temp%'
   ) THEN
     RAISE EXCEPTION 'Refusing void-RPC patch: live function attributes differ from reviewed SECURITY DEFINER / plpgsql / jsonb / search_path baseline.';
   END IF;
 
   SELECT pg_get_functiondef(v_oid) INTO v_live_definition;
-  v_patched_definition := v_live_definition;
-
   v_patched_definition := replace(
-    v_patched_definition,
+    v_live_definition,
     'v_blocking_allocations integer := 0;',
     'v_blocking_allocations integer := 0;' || E'\n  ' || 'v_blocking_usage integer := 0;'
   );
@@ -259,12 +367,11 @@ END $$;
 
 COMMENT ON FUNCTION public.staff_void_dva_statement_import_batch(uuid, text) IS
 'Admin/supervisor RPC preserving the reviewed import-void baseline while additionally blocking linked statement lines with canonical active economic consumption/reservation.';
-
 REVOKE ALL ON FUNCTION public.staff_void_dva_statement_import_batch(uuid, text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.staff_void_dva_statement_import_batch(uuid, text) TO authenticated;
 
 -- -----------------------------------------------------------------------------
--- 3. Allocation status view: patch its exact live definition only.
+-- 4. Allocation status view: patch its exact live definition only.
 -- -----------------------------------------------------------------------------
 
 DO $$
@@ -281,7 +388,6 @@ BEGIN
   END IF;
 
   v_patched_definition := v_existing_definition;
-
   IF position('dlil.active_yn' IN lower(v_patched_definition)) = 0 THEN
     v_patched_definition := regexp_replace(
       v_patched_definition,
@@ -289,14 +395,12 @@ BEGIN
       E'\\1 AND dlil.active_yn = true',
       'i'
     );
-
     IF v_patched_definition = v_existing_definition THEN
       RAISE EXCEPTION 'Refusing status-view patch: expected dlil -> dsl import-link join anchor was not found.';
     END IF;
   END IF;
 
   v_final_definition := v_patched_definition;
-
   IF position('voided_link.dva_statement_line_id' IN lower(v_final_definition)) = 0 THEN
     v_final_definition :=
       'SELECT live_status.* FROM (' || v_final_definition || ') live_status '
@@ -320,7 +424,7 @@ COMMENT ON VIEW public.dva_statement_line_allocation_status_vw IS
 GRANT SELECT ON public.dva_statement_line_allocation_status_vw TO authenticated;
 
 -- -----------------------------------------------------------------------------
--- 4. Allocation summary view: patch its exact live definition only.
+-- 5. Allocation summary view: patch its exact live definition only.
 -- -----------------------------------------------------------------------------
 
 DO $$
@@ -359,8 +463,7 @@ COMMENT ON VIEW public.dva_statement_line_allocation_summary_vw IS
 GRANT SELECT ON public.dva_statement_line_allocation_summary_vw TO authenticated;
 
 -- -----------------------------------------------------------------------------
--- 5. Exact retained-row invariance. Any unexpected retained-row difference aborts
---    this transaction and rolls back the function and both views.
+-- 6. Exact retained-row invariance after patch.
 -- -----------------------------------------------------------------------------
 
 CREATE TEMP TABLE _dva_void_status_after ON COMMIT DROP AS
@@ -371,9 +474,14 @@ SELECT
 FROM public.dva_statement_line_allocation_status_vw s
 WHERE NOT EXISTS (
   SELECT 1
-  FROM public.dva_statement_line_import_links l
-  WHERE l.dva_statement_line_id = s.dva_statement_line_id
-    AND l.active_yn = false
+  FROM public.dva_statement_line_import_links inactive_link
+  WHERE inactive_link.dva_statement_line_id = s.dva_statement_line_id
+    AND inactive_link.active_yn = false
+    AND NOT EXISTS (
+      SELECT 1 FROM public.dva_statement_line_import_links active_link
+      WHERE active_link.dva_statement_line_id = s.dva_statement_line_id
+        AND active_link.active_yn = true
+    )
 );
 
 CREATE TEMP TABLE _dva_void_summary_after ON COMMIT DROP AS
@@ -384,9 +492,14 @@ SELECT
 FROM public.dva_statement_line_allocation_summary_vw s
 WHERE NOT EXISTS (
   SELECT 1
-  FROM public.dva_statement_line_import_links l
-  WHERE l.dva_statement_line_id = s.dva_statement_line_id
-    AND l.active_yn = false
+  FROM public.dva_statement_line_import_links inactive_link
+  WHERE inactive_link.dva_statement_line_id = s.dva_statement_line_id
+    AND inactive_link.active_yn = false
+    AND NOT EXISTS (
+      SELECT 1 FROM public.dva_statement_line_import_links active_link
+      WHERE active_link.dva_statement_line_id = s.dva_statement_line_id
+        AND active_link.active_yn = true
+    )
 );
 
 DO $$
@@ -413,6 +526,111 @@ BEGIN
      SELECT dva_statement_line_id, row_json, row_multiplicity FROM _dva_void_summary_before)
   ) THEN
     RAISE EXCEPTION 'Retained-line invariance failed for dva_statement_line_allocation_summary_vw. Rolling back.';
+  END IF;
+END $$;
+
+-- -----------------------------------------------------------------------------
+-- 7. Rebuild supplier-suggestion candidate set AFTER patch and compare exactly to
+--    BEFORE minus only inactive-only statement lines. No suggestion rows are written.
+-- -----------------------------------------------------------------------------
+
+CREATE TEMP TABLE _dva_void_suggestion_candidates_after ON COMMIT DROP AS
+WITH invoice_totals AS (
+  SELECT
+    si.id AS supplier_invoice_id,
+    si.order_id,
+    coalesce(si.ocr_invoice_total_gbp, si.reconciliation_gbp_total,
+      sum(coalesce(sil.amount_confirmed, sil.amount_inc_vat_gbp, 0)))::numeric AS invoice_total_gbp
+  FROM public.supplier_invoices si
+  LEFT JOIN public.supplier_invoice_lines sil ON sil.supplier_invoice_id = si.id
+  GROUP BY si.id, si.order_id, si.ocr_invoice_total_gbp, si.reconciliation_gbp_total
+), candidates AS (
+  SELECT
+    s.dva_statement_line_id,
+    it.supplier_invoice_id,
+    abs(round((s.statement_gbp_amount - it.invoice_total_gbp)::numeric, 2)) AS variance_gbp,
+    abs(s.statement_date - si.uploaded_at::date) AS variance_days,
+    CASE
+      WHEN abs(round((s.statement_gbp_amount - it.invoice_total_gbp)::numeric, 2)) <= 1.00
+       AND abs(s.statement_date - si.uploaded_at::date) <= 3 THEN 'high'
+      WHEN abs(round((s.statement_gbp_amount - it.invoice_total_gbp)::numeric, 2)) <= 5.00
+       AND abs(s.statement_date - si.uploaded_at::date) <= 14 THEN 'medium'
+      ELSE 'low'
+    END AS confidence
+  FROM public.dva_statement_line_allocation_summary_vw s
+  JOIN public.dva_statement_lines dsl ON dsl.id = s.dva_statement_line_id
+  JOIN invoice_totals it ON it.invoice_total_gbp IS NOT NULL AND it.invoice_total_gbp > 0
+  JOIN public.supplier_invoices si ON si.id = it.supplier_invoice_id
+  JOIN public.orders o ON o.id = si.order_id AND o.importer_id = s.importer_id
+  LEFT JOIN public.retailers r ON r.id = o.retailer_id
+  WHERE s.direction = 'out'
+    AND coalesce(s.confirmed_balanced_yn, false) = false
+    AND coalesce(si.blocked_from_sage_yn, false) = false
+    AND si.review_status IN ('approved_current')
+    AND abs(round((s.statement_gbp_amount - it.invoice_total_gbp)::numeric, 2)) <= 5.00
+    AND abs(s.statement_date - si.uploaded_at::date) <= 14
+    AND (
+      regexp_replace(lower(coalesce(s.retailer_name_ref, '') || ' ' || coalesce(s.reference_raw, '') || ' ' || coalesce(s.auth_id_ref, '')), '[^a-z0-9]+', '', 'g') LIKE
+        '%' || left(regexp_replace(lower(coalesce(r.name, '')), '[^a-z0-9]+', '', 'g'), 5) || '%'
+      OR regexp_replace(lower(coalesce(r.name, '')), '[^a-z0-9]+', '', 'g') LIKE
+        '%' || left(regexp_replace(lower(coalesce(s.retailer_name_ref, '')), '[^a-z0-9]+', '', 'g'), 5) || '%'
+    )
+    AND length(left(regexp_replace(lower(coalesce(r.name, '')), '[^a-z0-9]+', '', 'g'), 5)) >= 3
+    AND NOT EXISTS (
+      SELECT 1 FROM public.match_suggestions ms
+      WHERE ms.dva_statement_line_id = s.dva_statement_line_id
+        AND ms.suggested_match_type = 'supplier_invoice'
+        AND ms.suggested_match_id = it.supplier_invoice_id
+    )
+), ranked AS (
+  SELECT c.*,
+         row_number() OVER (
+           PARTITION BY c.dva_statement_line_id
+           ORDER BY c.variance_gbp ASC, c.variance_days ASC, c.confidence ASC
+         ) AS rn
+  FROM candidates c
+)
+SELECT r.dva_statement_line_id, r.supplier_invoice_id, r.variance_gbp,
+       r.variance_days, r.confidence, r.rn
+FROM ranked r
+WHERE r.rn <= 3;
+
+DO $$
+BEGIN
+  IF EXISTS (
+    (SELECT dva_statement_line_id, supplier_invoice_id, variance_gbp, variance_days, confidence, rn
+     FROM _dva_void_suggestion_candidates_before
+     WHERE expected_inactive_only_exclusion = false
+     EXCEPT ALL
+     SELECT dva_statement_line_id, supplier_invoice_id, variance_gbp, variance_days, confidence, rn
+     FROM _dva_void_suggestion_candidates_after)
+    UNION ALL
+    (SELECT dva_statement_line_id, supplier_invoice_id, variance_gbp, variance_days, confidence, rn
+     FROM _dva_void_suggestion_candidates_after
+     EXCEPT ALL
+     SELECT dva_statement_line_id, supplier_invoice_id, variance_gbp, variance_days, confidence, rn
+     FROM _dva_void_suggestion_candidates_before
+     WHERE expected_inactive_only_exclusion = false)
+  ) THEN
+    RAISE EXCEPTION 'Supplier-suggestion candidate-set invariance failed outside inactive-only exclusions. Rolling back.';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM _dva_void_suggestion_candidates_after c
+    WHERE EXISTS (
+      SELECT 1
+      FROM public.dva_statement_line_import_links inactive_link
+      WHERE inactive_link.dva_statement_line_id = c.dva_statement_line_id
+        AND inactive_link.active_yn = false
+        AND NOT EXISTS (
+          SELECT 1 FROM public.dva_statement_line_import_links active_link
+          WHERE active_link.dva_statement_line_id = c.dva_statement_line_id
+            AND active_link.active_yn = true
+        )
+    )
+  ) THEN
+    RAISE EXCEPTION 'Inactive-only statement line remained in supplier-suggestion candidate set. Rolling back.';
   END IF;
 END $$;
 
