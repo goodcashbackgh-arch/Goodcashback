@@ -20,6 +20,9 @@ type InvoiceRow = {
   ocr_invoice_total_gbp: number | null;
   ocr_retailer_name: string | null;
   ocr_invoice_date: string | null;
+  ocr_raw_json: Record<string, unknown> | null;
+  reviewed_invoice_net_gbp: number | null;
+  reviewed_invoice_vat_gbp: number | null;
   review_status: string;
   blocked_from_sage_yn: boolean;
   review_notes: string | null;
@@ -66,6 +69,19 @@ function orderOf(invoice: InvoiceRow) { return first(invoice.orders); }
 function orderRetailer(invoice: InvoiceRow) { return first(orderOf(invoice)?.retailers)?.name ?? "—"; }
 function importer(invoice: InvoiceRow) { return first(orderOf(invoice)?.importers)?.company_name ?? "—"; }
 function enteredTotal(invoice: InvoiceRow) { return first(invoice.supplier_invoice_financial_summary)?.invoice_total_gbp ?? null; }
+function rawOcrHeaderMoney(invoice: InvoiceRow, fieldName: "total_net" | "total_tax") {
+  const inference = invoice.ocr_raw_json?.inference;
+  if (!inference || typeof inference !== "object") return null;
+  const result = (inference as Record<string, unknown>).result;
+  if (!result || typeof result !== "object") return null;
+  const fields = (result as Record<string, unknown>).fields;
+  if (!fields || typeof fields !== "object") return null;
+  const field = (fields as Record<string, unknown>)[fieldName];
+  if (!field || typeof field !== "object") return null;
+  const value = (field as Record<string, unknown>).value;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.round(parsed * 100) / 100 : null;
+}
 function openFlags(invoice: InvoiceRow) { return (invoice.supplier_invoice_review_flags ?? []).filter((f) => ["open", "under_review"].includes(f.status)); }
 function hasMindeeJob(invoice: InvoiceRow) { return Boolean(invoice.mindee_job_id); }
 function mindeeCompleted(invoice: InvoiceRow) { return invoice.mindee_ocr_status === "completed" || Boolean(invoice.mindee_result_saved_at); }
@@ -114,7 +130,7 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
 
   const { data, error } = await supabase
     .from("supplier_invoices")
-    .select(`id, order_id, invoice_ref, invoice_pdf_url, uploaded_at, ocr_invoice_ref, ocr_invoice_total_gbp, ocr_retailer_name, ocr_invoice_date, review_status, blocked_from_sage_yn, review_notes, mindee_job_id, mindee_inference_id, mindee_model_id, mindee_ocr_status, mindee_enqueued_at, mindee_result_saved_at, mindee_pages_consumed, mindee_error_message, orders(order_ref, order_total_gbp_declared, total_qty_declared, retailers(name), importers(company_name)), supplier_invoice_financial_summary(invoice_total_gbp), supplier_invoice_review_flags(flag_type, message, status)`)
+    .select(`id, order_id, invoice_ref, invoice_pdf_url, uploaded_at, ocr_invoice_ref, ocr_invoice_total_gbp, ocr_retailer_name, ocr_invoice_date, ocr_raw_json, reviewed_invoice_net_gbp, reviewed_invoice_vat_gbp, review_status, blocked_from_sage_yn, review_notes, mindee_job_id, mindee_inference_id, mindee_model_id, mindee_ocr_status, mindee_enqueued_at, mindee_result_saved_at, mindee_pages_consumed, mindee_error_message, orders(order_ref, order_total_gbp_declared, total_qty_declared, retailers(name), importers(company_name)), supplier_invoice_financial_summary(invoice_total_gbp), supplier_invoice_review_flags(flag_type, message, status)`)
     .in("review_status", ["pending_review", "duplicate_blocked"])
     .order("uploaded_at", { ascending: false })
     .limit(100);
@@ -219,6 +235,8 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
             const flags = openFlags(invoice);
             const block = readiness.get(invoice.id);
             const total = enteredTotal(invoice);
+            const acceptedNet = invoice.reviewed_invoice_net_gbp ?? rawOcrHeaderMoney(invoice, "total_net");
+            const acceptedVat = invoice.reviewed_invoice_vat_gbp ?? rawOcrHeaderMoney(invoice, "total_tax");
             const match = matchByInvoiceId.get(invoice.id);
             return (
               <article key={invoice.id} className="overflow-hidden rounded-[2rem] border border-slate-200 bg-white shadow-sm">
@@ -331,6 +349,8 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
                         <input name="ocr_invoice_ref" className="mt-3 w-full rounded-2xl border border-slate-200 bg-white p-3 text-sm outline-none transition focus:border-sky-300" defaultValue={invoice.ocr_invoice_ref ?? ""} placeholder="Extracted invoice ref" />
                         <input name="ocr_retailer_name" className="mt-3 w-full rounded-2xl border border-slate-200 bg-white p-3 text-sm outline-none transition focus:border-sky-300" defaultValue={invoice.ocr_retailer_name ?? ""} placeholder="Extracted retailer / supplier name" />
                         <input name="ocr_invoice_date" type="date" className="mt-3 w-full rounded-2xl border border-slate-200 bg-white p-3 text-sm outline-none transition focus:border-sky-300" defaultValue={invoice.ocr_invoice_date ?? ""} />
+                        <input name="reviewed_invoice_net_gbp" type="number" min="0" step="0.01" className="mt-3 w-full rounded-2xl border border-slate-200 bg-white p-3 text-sm outline-none transition focus:border-sky-300" defaultValue={acceptedNet ?? ""} placeholder="Accepted invoice net GBP" />
+                        <input name="reviewed_invoice_vat_gbp" type="number" min="0" step="0.01" className="mt-3 w-full rounded-2xl border border-slate-200 bg-white p-3 text-sm outline-none transition focus:border-sky-300" defaultValue={acceptedVat ?? ""} placeholder="Accepted invoice VAT GBP" />
                         <input name="ocr_invoice_total_gbp" type="number" min="0" step="0.01" className="mt-3 w-full rounded-2xl border border-slate-200 bg-white p-3 text-sm outline-none transition focus:border-sky-300" defaultValue={invoice.ocr_invoice_total_gbp ?? total ?? ""} placeholder="Accepted/extracted invoice total GBP" />
                         <input name="review_notes" className="mt-3 w-full rounded-2xl border border-slate-200 bg-white p-3 text-sm outline-none transition focus:border-sky-300" placeholder="Review note / correction reason" />
                         <button className="mt-4 rounded-full px-5 py-3 text-sm font-semibold text-slate-950 shadow-sm transition hover:opacity-90" style={{ backgroundColor: BRAND_COLOUR }}>Save correction</button>
