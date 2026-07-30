@@ -11,7 +11,11 @@ SET LOCAL statement_timeout = '0';
 --   2. Determine how much of the physical receipt residual still belongs to this order:
 --        active pending receipt residual
 --        less any exact customer credit already created from that same residual
---   3. Reduce the shortfall by that order-applied physical residual, floored at zero.
+--   3. If an active receipt-residual position exists, recompute the collectible balance
+--      from canonical settlement facts and reduce it only by the still-order-applied
+--      physical residual, floored at zero.
+--   4. If there is no active receipt-residual position, preserve the existing audience
+--      balance exactly.
 --
 -- This is deliberately NOT an FX calculation. FX/card residuals, attributed-receipt
 -- totals and supplier-side FX never enter the customer collectible-balance formula.
@@ -136,6 +140,7 @@ BEGIN
   ), receipt_application AS (
     SELECT
       b.order_id,
+      COALESCE(ap.active_pending_receipt_gbp, 0)::numeric AS active_pending_receipt_gbp,
       ROUND(
         GREATEST(
           COALESCE(ap.active_pending_receipt_gbp, 0)
@@ -150,13 +155,15 @@ BEGIN
   ), scoped AS (
     SELECT
       b.*,
+      COALESCE(ra.active_pending_receipt_gbp, 0)::numeric AS active_pending_receipt_gbp,
       COALESCE(ra.physical_residual_applied_to_order_gbp, 0)::numeric AS physical_residual_applied_to_order_gbp,
       COALESCE(s.final_sale_document_count, 0)::integer AS final_sale_document_count,
       ROUND(
         CASE
-          -- Exact pass-through when there is no still-order-applied physical residual.
-          -- This keeps every unrelated order byte-for-byte on the existing audience balance.
-          WHEN COALESCE(ra.physical_residual_applied_to_order_gbp, 0) > 0.01
+          -- Any active residual position must be recalculated here, even when the
+          -- residual has been fully converted to linked customer credit. This avoids
+          -- inheriting the 20260728 overlay's broader credit_confirmed coverage rule.
+          WHEN COALESCE(ra.active_pending_receipt_gbp, 0) > 0.01
            AND COALESCE(s.final_sale_document_count, 0) > 0
           THEN GREATEST(
             GREATEST(
@@ -249,7 +256,7 @@ REVOKE ALL ON FUNCTION public.order_audience_status_v1(uuid) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.order_audience_status_v1(uuid) TO authenticated;
 
 COMMENT ON FUNCTION public.order_audience_status_v1(uuid) IS
-'Current shared audience status with an FX-excluding physical receipt-residual balance correction. Active physical residual reduces the final-sale shortfall only to the extent it has not already been converted into exact linked customer credit. Reversed residuals and all FX/card amounts are excluded. Orders with no remaining physical residual pass through unchanged. No financial or operational write occurs.';
+'Current shared audience status with an FX-excluding physical receipt-residual balance correction. Any active residual position is recalculated from final order value and payment already applied; only the portion not already converted into exact linked customer credit reduces the balance. Reversed residuals and all FX/card amounts are excluded. Orders with no active residual position pass through unchanged. No financial or operational write occurs.';
 
 NOTIFY pgrst, 'reload schema';
 
