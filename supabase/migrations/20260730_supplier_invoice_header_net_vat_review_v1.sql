@@ -1,7 +1,8 @@
 -- Supplier invoice header Net/VAT review override.
 -- Scope locked by docs/governing-pack/ui/SUPPLIER_INVOICE_HEADER_NET_VAT_REVIEW_ADDENDUM_v1.md.
 -- Adds reviewed header Net/VAT only, extends the existing header-review RPC,
--- and makes the existing accounting totals view prefer reviewed values.
+-- makes the existing accounting totals view prefer reviewed values, and exposes
+-- lightweight raw OCR Net/VAT numerics for the invoice-review queue.
 
 BEGIN;
 
@@ -123,12 +124,15 @@ $$;
 REVOKE ALL ON FUNCTION public.staff_save_supplier_invoice_header_review(uuid, text, text, text, date, numeric, numeric, numeric, text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.staff_save_supplier_invoice_header_review(uuid, text, text, text, date, numeric, numeric, numeric, text) TO authenticated;
 
--- Recreate the latest accounting totals contract exactly, changing only the
--- accepted Net/VAT source precedence. Physical/non-physical codability,
--- adjustments, gross precedence and reconciliation guards remain unchanged.
-DROP VIEW IF EXISTS public.supplier_invoice_accounting_coding_totals_vw;
-
-CREATE VIEW public.supplier_invoice_accounting_coding_totals_vw AS
+-- Production dependency proof before this build:
+-- * no dependent views/materialized views were returned for this view;
+-- * only two functions were found to reference it:
+--   internal_supplier_goods_ap_ready_rows_pre_signed_nonphysical_v1()
+--   staff_bulk_save_supplier_invoice_line_accounting_codes(uuid,jsonb)
+-- * the live view has 19 columns. Preserve columns 1-19 name/type/order exactly,
+--   then append the two raw OCR numeric projections as columns 20-21.
+-- Therefore use CREATE OR REPLACE VIEW, not DROP VIEW and not CASCADE.
+CREATE OR REPLACE VIEW public.supplier_invoice_accounting_coding_totals_vw AS
 WITH codable_invoice_lines AS (
   SELECT
     sil.id,
@@ -169,6 +173,8 @@ WITH codable_invoice_lines AS (
 ), invoice_summary AS (
   SELECT
     si.id AS supplier_invoice_id,
+    NULLIF(si.ocr_raw_json #>> '{inference,result,fields,total_net,value}', '')::numeric(12,2) AS ocr_invoice_net_gbp,
+    NULLIF(si.ocr_raw_json #>> '{inference,result,fields,total_tax,value}', '')::numeric(12,2) AS ocr_invoice_vat_gbp,
     COALESCE(
       si.reviewed_invoice_net_gbp,
       NULLIF(si.ocr_raw_json #>> '{inference,result,fields,total_net,value}', '')::numeric,
@@ -235,7 +241,9 @@ SELECT
   CASE
     WHEN inv.invoice_vat_gbp IS NULL THEN NULL
     ELSE ((COALESCE(lc.coded_vat_gbp, 0) + COALESCE(ac.adjustment_vat_gbp, 0)) - inv.invoice_vat_gbp)::numeric(12,2)
-  END AS vat_variance_gbp
+  END AS vat_variance_gbp,
+  inv.ocr_invoice_net_gbp,
+  inv.ocr_invoice_vat_gbp
 FROM public.supplier_invoices si
 LEFT JOIN invoice_summary inv ON inv.supplier_invoice_id = si.id
 LEFT JOIN line_codes lc ON lc.supplier_invoice_id = si.id
@@ -244,7 +252,7 @@ LEFT JOIN adjustment_codes ac ON ac.supplier_invoice_id = si.id;
 GRANT SELECT ON public.supplier_invoice_accounting_coding_totals_vw TO authenticated;
 
 COMMENT ON VIEW public.supplier_invoice_accounting_coding_totals_vw IS
-  'Supplier invoice accounting coding totals. Reviewed invoice header Net/VAT override raw OCR when present; accounting-codable lines include progressed physical lines and active parked non-physical financial lines. Physical shipment/tracking flows remain controlled elsewhere.';
+  'Supplier invoice accounting coding totals. Existing columns 1-19 preserved; raw OCR Net/VAT are appended as read-only columns 20-21 for lightweight review defaults. Reviewed invoice header Net/VAT override raw OCR when present; accounting-codable lines include progressed physical lines and active parked non-physical financial lines. Physical shipment/tracking flows remain controlled elsewhere.';
 
 NOTIFY pgrst, 'reload schema';
 
