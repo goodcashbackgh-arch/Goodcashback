@@ -638,6 +638,8 @@ export async function saveSupplierInvoiceHeaderReviewAction(formData: FormData) 
   const ocrRetailerName = readString(formData, "ocr_retailer_name") || null;
   const ocrInvoiceDate = readString(formData, "ocr_invoice_date") || null;
   const ocrInvoiceTotal = readOptionalMoney(formData, "ocr_invoice_total_gbp");
+  const reviewedInvoiceNet = readOptionalMoney(formData, "reviewed_invoice_net_gbp");
+  const reviewedInvoiceVat = readOptionalMoney(formData, "reviewed_invoice_vat_gbp");
   const reviewNotes = readString(formData, "review_notes") || null;
 
   if (!supplierInvoiceId) redirectWithResult({ error: "Missing supplier invoice reference." });
@@ -652,6 +654,8 @@ export async function saveSupplierInvoiceHeaderReviewAction(formData: FormData) 
     p_ocr_retailer_name: ocrRetailerName,
     p_ocr_invoice_date: ocrInvoiceDate,
     p_ocr_invoice_total_gbp: ocrInvoiceTotal,
+    p_reviewed_invoice_net_gbp: reviewedInvoiceNet,
+    p_reviewed_invoice_vat_gbp: reviewedInvoiceVat,
     p_review_notes: reviewNotes,
   });
 
