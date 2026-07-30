@@ -9,19 +9,22 @@ DECLARE
   v_full_cover_order_id uuid;
   v_definition text;
   v_pending numeric;
+  v_linked_credit numeric;
   v_payment_applied numeric;
   v_funding_total numeric;
   v_applied_credit numeric;
   v_final numeric;
   v_expected_balance numeric;
-  v_full_cover_expected numeric;
+  v_full_pending numeric;
+  v_full_linked_credit numeric;
+  v_full_expected numeric;
+  v_bad_case text;
+  v_bad_actual numeric;
+  v_bad_expected numeric;
   v_count integer;
 BEGIN
   -- -------------------------------------------------------------------------
-  -- 1. Required objects and source-level scope guard.
-  --    The audience wrapper may use the physical pending receipt residual.
-  --    It must not use attributed receipt or any FX residual as a customer
-  --    balance reducer.
+  -- 1. Required objects and hard scope guards.
   -- -------------------------------------------------------------------------
   IF to_regprocedure('public.order_audience_status_v1(uuid)') IS NULL
      OR to_regprocedure('public.order_audience_status_pre_partial_receipt_residual_balance_v1(uuid)') IS NULL
@@ -29,32 +32,106 @@ BEGIN
     RAISE EXCEPTION 'FAIL: partial receipt residual audience wrapper or predecessor is missing.';
   END IF;
 
-  IF to_regclass('public.order_settlement_resolution_position_v1') IS NULL THEN
-    RAISE EXCEPTION 'FAIL: canonical settlement position is missing.';
+  IF to_regclass('public.order_settlement_resolution_position_v1') IS NULL
+     OR to_regclass('public.order_pending_funding_surplus') IS NULL
+     OR to_regclass('public.importer_credit_ledger') IS NULL
+  THEN
+    RAISE EXCEPTION 'FAIL: required settlement/pending/credit objects are missing.';
   END IF;
 
   SELECT lower(pg_get_functiondef('public.order_audience_status_v1(uuid)'::regprocedure))
   INTO v_definition;
 
-  IF position('pending_receipt_residual_gbp' IN v_definition) = 0
+  IF position('physical_residual_applied_to_order_gbp' IN v_definition) = 0
      OR position('payment_applied_to_order_gbp' IN v_definition) = 0
-     OR position('safe_collectible_balance_due_gbp' IN v_definition) = 0
+     OR position('final_order_value_gbp' IN v_definition) = 0
+     OR position('confirmed_credit_ledger_id' IN v_definition) = 0
+     OR position('select distinct' IN v_definition) = 0
+     OR position('p.status in (''pending_evidence'', ''credit_confirmed'')' IN v_definition) = 0
+     OR position('p.status = ''credit_confirmed''' IN v_definition) = 0
+     OR position('c.direction = ''credit''' IN v_definition) = 0
   THEN
-    RAISE EXCEPTION 'FAIL: wrapper is missing the locked physical-receipt balance formula.';
+    RAISE EXCEPTION 'FAIL: wrapper is missing the locked physical-residual / exact-linked-credit controls.';
   END IF;
 
   IF position('order_attributed_receipt_gbp' IN v_definition) > 0
      OR position('inbound_fx_receipt_residual_gbp' IN v_definition) > 0
      OR position('settlement_fx_card_difference_gbp' IN v_definition) > 0
+     OR position('fx_or_card_diff_gbp' IN v_definition) > 0
   THEN
-    RAISE EXCEPTION 'FAIL: wrapper references attributed-receipt or FX fields; customer balance must exclude FX.';
+    RAISE EXCEPTION 'FAIL: wrapper references attributed-receipt or FX fields; customer collectible balance must exclude FX.';
+  END IF;
+
+  IF position('insert into' IN v_definition) > 0
+     OR position('update public.' IN v_definition) > 0
+     OR position('delete from' IN v_definition) > 0
+  THEN
+    RAISE EXCEPTION 'FAIL: audience wrapper contains a financial or operational write path.';
   END IF;
 
   -- -------------------------------------------------------------------------
-  -- 2. Controlled partial-residual order.
+  -- 2. Pure arithmetic scenario matrix.
+  --    Formula under test:
+  --      order residual = max(active physical residual - exact linked credit, 0)
+  --      if residual > 0.01 and final sale exists:
+  --        balance = max(max(final - payment already applied, 0) - residual, 0)
+  --      otherwise preserve existing audience balance exactly.
+  -- -------------------------------------------------------------------------
+  WITH cases(
+    case_name,
+    base_balance,
+    final_value,
+    payment_applied,
+    active_pending,
+    linked_credit,
+    final_docs,
+    expected_balance
+  ) AS (
+    VALUES
+      ('no_residual_pass_through',          47.60::numeric, 749.43::numeric, 701.83::numeric,  0.00::numeric,  0.00::numeric, 1, 47.60::numeric),
+      ('partial_uncredited_residual',       47.60::numeric, 749.43::numeric, 701.83::numeric, 38.13::numeric,  0.00::numeric, 1,  9.47::numeric),
+      ('uncredited_residual_covers_balance',47.60::numeric, 749.43::numeric, 701.83::numeric, 60.00::numeric,  0.00::numeric, 1,  0.00::numeric),
+      ('partially_credited_residual',        0.00::numeric, 928.96::numeric, 884.96::numeric, 81.20::numeric, 37.20::numeric, 1,  0.00::numeric),
+      ('fully_credited_residual_pass_through',47.60::numeric,749.43::numeric,701.83::numeric,38.13::numeric,38.13::numeric,1,47.60::numeric),
+      ('overlinked_credit_fail_closed',     47.60::numeric, 749.43::numeric, 701.83::numeric, 38.13::numeric, 40.00::numeric, 1, 47.60::numeric),
+      ('prior_final_balance_payment',       42.60::numeric, 749.43::numeric, 706.83::numeric, 30.00::numeric,  0.00::numeric, 1, 12.60::numeric),
+      ('no_final_sale_pass_through',        47.60::numeric,   0.00::numeric,   0.00::numeric, 38.13::numeric,  0.00::numeric, 0, 47.60::numeric),
+      ('de_minimis_residual_pass_through',  47.60::numeric, 749.43::numeric, 701.83::numeric,  0.01::numeric,  0.00::numeric, 1, 47.60::numeric)
+  ), evaluated AS (
+    SELECT
+      c.*,
+      GREATEST(c.active_pending - c.linked_credit, 0)::numeric AS order_residual,
+      ROUND(
+        CASE
+          WHEN GREATEST(c.active_pending - c.linked_credit, 0) > 0.01
+           AND c.final_docs > 0
+          THEN GREATEST(
+            GREATEST(c.final_value - c.payment_applied, 0)
+              - GREATEST(c.active_pending - c.linked_credit, 0),
+            0
+          )
+          ELSE c.base_balance
+        END::numeric,
+        2
+      ) AS actual_balance
+    FROM cases c
+  )
+  SELECT case_name, actual_balance, expected_balance
+  INTO v_bad_case, v_bad_actual, v_bad_expected
+  FROM evaluated
+  WHERE actual_balance IS DISTINCT FROM expected_balance
+  ORDER BY case_name
+  LIMIT 1;
+
+  IF v_bad_case IS NOT NULL THEN
+    RAISE EXCEPTION 'FAIL: scenario % produced %, expected %.', v_bad_case, v_bad_actual, v_bad_expected;
+  END IF;
+
+  -- -------------------------------------------------------------------------
+  -- 3. Live controlled partial-residual order.
   --    £701.83 already applied includes the £37.20 account credit.
-  --    Only the £38.13 pending physical receipt residual additionally reduces
-  --    the £47.60 final shortfall, leaving £9.47.
+  --    £38.13 is a separate unclassified physical receipt residual.
+  --    £749.43 - £701.83 - £38.13 = £9.47.
   -- -------------------------------------------------------------------------
   SELECT o.id INTO v_target_order_id
   FROM public.orders o
@@ -64,32 +141,54 @@ BEGIN
     RAISE EXCEPTION 'FAIL: controlled partial-residual order ORD-1785274708774 is missing.';
   END IF;
 
+  WITH active_pending AS (
+    SELECT ROUND(COALESCE(SUM(p.pending_surplus_gbp), 0)::numeric, 2) AS amount
+    FROM public.order_pending_funding_surplus p
+    WHERE p.order_id = v_target_order_id
+      AND p.status IN ('pending_evidence','credit_confirmed')
+  ), credit_links AS (
+    SELECT DISTINCT p.confirmed_credit_ledger_id
+    FROM public.order_pending_funding_surplus p
+    WHERE p.order_id = v_target_order_id
+      AND p.status = 'credit_confirmed'
+      AND p.confirmed_credit_ledger_id IS NOT NULL
+  ), linked_credit AS (
+    SELECT ROUND(COALESCE(SUM(ABS(c.amount_gbp)), 0)::numeric, 2) AS amount
+    FROM credit_links l
+    JOIN public.importer_credit_ledger c
+      ON c.id = l.confirmed_credit_ledger_id
+     AND c.direction = 'credit'
+  )
   SELECT
-    p.pending_receipt_residual_gbp,
-    p.payment_applied_to_order_gbp,
-    p.funding_total_gbp,
-    p.applied_account_credit_gbp,
-    p.final_order_value_gbp,
+    ap.amount,
+    lc.amount,
+    s.payment_applied_to_order_gbp,
+    s.funding_total_gbp,
+    s.applied_account_credit_gbp,
+    s.final_order_value_gbp,
     ROUND(
       GREATEST(
-        p.final_order_value_gbp
-          - p.payment_applied_to_order_gbp
-          - p.pending_receipt_residual_gbp,
+        GREATEST(s.final_order_value_gbp - s.payment_applied_to_order_gbp, 0)
+          - GREATEST(ap.amount - lc.amount, 0),
         0
       )::numeric,
       2
     )
   INTO
     v_pending,
+    v_linked_credit,
     v_payment_applied,
     v_funding_total,
     v_applied_credit,
     v_final,
     v_expected_balance
-  FROM public.order_settlement_resolution_position_v1 p
-  WHERE p.order_id = v_target_order_id;
+  FROM public.order_settlement_resolution_position_v1 s
+  CROSS JOIN active_pending ap
+  CROSS JOIN linked_credit lc
+  WHERE s.order_id = v_target_order_id;
 
   IF ROUND(v_pending, 2) <> 38.13
+     OR ROUND(v_linked_credit, 2) <> 0.00
      OR ROUND(v_payment_applied, 2) <> 701.83
      OR ROUND(v_funding_total, 2) <> 701.83
      OR ROUND(v_applied_credit, 2) <> 37.20
@@ -97,64 +196,11 @@ BEGIN
      OR ROUND(v_expected_balance, 2) <> 9.47
   THEN
     RAISE EXCEPTION
-      'FAIL: controlled partial residual proof changed. pending %, payment applied %, funding %, applied credit %, final %, expected balance %',
-      v_pending,
-      v_payment_applied,
-      v_funding_total,
-      v_applied_credit,
-      v_final,
-      v_expected_balance;
+      'FAIL: target proof changed. pending %, linked residual credit %, payment applied %, funding %, applied account credit %, final %, expected balance %',
+      v_pending, v_linked_credit, v_payment_applied, v_funding_total, v_applied_credit, v_final, v_expected_balance;
   END IF;
 
-  -- -------------------------------------------------------------------------
-  -- 3. Previously proven fully-covered case remains £0.00 using the same
-  --    FX-excluding formula.
-  -- -------------------------------------------------------------------------
-  SELECT o.id INTO v_full_cover_order_id
-  FROM public.orders o
-  WHERE o.order_ref = 'ORD-1784976429191';
-
-  IF v_full_cover_order_id IS NOT NULL THEN
-    SELECT ROUND(
-      GREATEST(
-        p.final_order_value_gbp
-          - p.payment_applied_to_order_gbp
-          - p.pending_receipt_residual_gbp,
-        0
-      )::numeric,
-      2
-    )
-    INTO v_full_cover_expected
-    FROM public.order_settlement_resolution_position_v1 p
-    WHERE p.order_id = v_full_cover_order_id;
-
-    IF ROUND(COALESCE(v_full_cover_expected, 0), 2) <> 0.00 THEN
-      RAISE EXCEPTION 'FAIL: fully-covered receipt residual formula regressed; expected balance is %.', v_full_cover_expected;
-    END IF;
-  END IF;
-
-  -- -------------------------------------------------------------------------
-  -- 4. No-pending-residual branch is explicit pass-through in source.
-  -- -------------------------------------------------------------------------
-  IF position('else coalesce(b.canonical_balance_due_gbp, 0)' IN v_definition) = 0 THEN
-    RAISE EXCEPTION 'FAIL: no-pending-residual balance pass-through is missing.';
-  END IF;
-
-  -- -------------------------------------------------------------------------
-  -- 5. Wrapper is read-only: reject any financial or operational write verb.
-  -- -------------------------------------------------------------------------
-  IF position('insert into' IN v_definition) > 0
-     OR position('update public.' IN v_definition) > 0
-     OR position('delete from' IN v_definition) > 0
-  THEN
-    RAISE EXCEPTION 'FAIL: audience wrapper contains a write path.';
-  END IF;
-
-  -- -------------------------------------------------------------------------
-  -- 6. No accidental creation/reclassification of the controlled £37.20 credit.
-  --    The existing settlement position must still show one applied-credit
-  --    component inside the already-applied funding total, not an extra amount.
-  -- -------------------------------------------------------------------------
+  -- Existing £37.20 account credit must remain one funding component only.
   SELECT COUNT(*)::integer
   INTO v_count
   FROM public.order_funding_events e
@@ -163,14 +209,72 @@ BEGIN
     AND ROUND(ABS(COALESCE(e.amount_gbp, 0))::numeric, 2) = 37.20;
 
   IF v_count <> 1 THEN
-    RAISE EXCEPTION 'FAIL: expected exactly one £37.20 applied-credit funding event on controlled order; found %.', v_count;
+    RAISE EXCEPTION 'FAIL: expected exactly one £37.20 applied-credit funding event on target order; found %.', v_count;
+  END IF;
+
+  -- -------------------------------------------------------------------------
+  -- 4. Live previously-proven credit-confirmed residual scenario.
+  --    £81.20 physical residual was later classified: £37.20 became customer
+  --    credit, leaving £44.00 still order-applied. The final-sale shortfall is
+  --    also £44.00, therefore collectible balance remains £0.00.
+  -- -------------------------------------------------------------------------
+  SELECT o.id INTO v_full_cover_order_id
+  FROM public.orders o
+  WHERE o.order_ref = 'ORD-1784976429191';
+
+  IF v_full_cover_order_id IS NULL THEN
+    RAISE EXCEPTION 'FAIL: controlled credit-confirmed residual order ORD-1784976429191 is missing.';
+  END IF;
+
+  WITH active_pending AS (
+    SELECT ROUND(COALESCE(SUM(p.pending_surplus_gbp), 0)::numeric, 2) AS amount
+    FROM public.order_pending_funding_surplus p
+    WHERE p.order_id = v_full_cover_order_id
+      AND p.status IN ('pending_evidence','credit_confirmed')
+  ), credit_links AS (
+    SELECT DISTINCT p.confirmed_credit_ledger_id
+    FROM public.order_pending_funding_surplus p
+    WHERE p.order_id = v_full_cover_order_id
+      AND p.status = 'credit_confirmed'
+      AND p.confirmed_credit_ledger_id IS NOT NULL
+  ), linked_credit AS (
+    SELECT ROUND(COALESCE(SUM(ABS(c.amount_gbp)), 0)::numeric, 2) AS amount
+    FROM credit_links l
+    JOIN public.importer_credit_ledger c
+      ON c.id = l.confirmed_credit_ledger_id
+     AND c.direction = 'credit'
+  )
+  SELECT
+    ap.amount,
+    lc.amount,
+    ROUND(
+      GREATEST(
+        GREATEST(s.final_order_value_gbp - s.payment_applied_to_order_gbp, 0)
+          - GREATEST(ap.amount - lc.amount, 0),
+        0
+      )::numeric,
+      2
+    )
+  INTO v_full_pending, v_full_linked_credit, v_full_expected
+  FROM public.order_settlement_resolution_position_v1 s
+  CROSS JOIN active_pending ap
+  CROSS JOIN linked_credit lc
+  WHERE s.order_id = v_full_cover_order_id;
+
+  IF ROUND(v_full_pending, 2) <> 81.20
+     OR ROUND(v_full_linked_credit, 2) <> 37.20
+     OR ROUND(v_full_expected, 2) <> 0.00
+  THEN
+    RAISE EXCEPTION
+      'FAIL: credit-confirmed residual proof changed. active residual %, exact linked customer credit %, expected balance %',
+      v_full_pending, v_full_linked_credit, v_full_expected;
   END IF;
 END;
 $regression$;
 
 SELECT jsonb_build_object(
   'regression_result', 'PASS',
-  'proof', 'partial physical receipt residual only: £701.83 already applied (including £37.20 account credit) + £38.13 pending physical receipt residual against £749.43 final value leaves £9.47; FX/attributed-receipt fields are absent from the wrapper; prior fully-covered case remains £0.00; no-pending branch passes through; wrapper is read-only'
+  'proof', 'FX-excluding physical-receipt balance matrix passed: no residual pass-through; £38.13 partial residual leaves £9.47; covering residual floors at zero; exact linked customer credit is deducted from residual once; fully credited/reversed-or-absent residual does not reduce balance; prior final-balance payments remain inside payment_applied_to_order_gbp; live £81.20 credit-confirmed case leaves £44.00 order-applied after £37.20 linked credit and therefore £0 collectible balance; wrapper is read-only'
 ) AS regression_result;
 
 ROLLBACK;
