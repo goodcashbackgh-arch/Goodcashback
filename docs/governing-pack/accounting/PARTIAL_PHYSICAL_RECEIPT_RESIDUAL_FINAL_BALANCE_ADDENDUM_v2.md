@@ -2,9 +2,9 @@
 
 ## Status
 
-Plan-only, scope-frozen implementation addendum. This v2 supersedes v1 for PR #206 and incorporates the proven release-audit compatibility dependency discovered during verification.
+Scope-frozen implementation and release-verification addendum. This v2 supersedes v1 for PR #206 and incorporates the proven release-audit compatibility dependency discovered during verification.
 
-No implementation beyond this document is authorised by this addendum until explicit approval.
+The authorised implementation has been applied to the target database and the dedicated audience, drift-audit and retained 28 July settlement regressions have passed. The PR remains draft pending final branch/release review.
 
 ## Defect
 
@@ -63,16 +63,16 @@ This case exists only to prove that an exact newly-created overfunding credit is
 
 `public.internal_order_status_drift_audit_v1()` is a release-blocking audit and calls `public.order_audience_status_v1(NULL)`.
 
-Its current expected-audience comparison assumes the old canonical balance formula and does not account for the valid physical receipt residual overlay.
+Its pre-alignment expected-audience comparison assumed the old canonical balance formula and did not account for the valid physical receipt residual overlay.
 
-This is proven by live DB output for `ORD-1784976429191`:
+This was proven by live DB output for `ORD-1784976429191` before alignment:
 
 - expected canonical balance: £44.00
 - canonical status balance: £44.00
 - audience balance: £0.00
-- current audit result: `AUDIENCE_STATUS_DRIFT`
+- audit result: `AUDIENCE_STATUS_DRIFT`
 
-Therefore a corrected audience balance can be valid while the existing release audit still reports a false drift.
+Therefore a corrected audience balance can be valid while the pre-alignment release audit still reports a false drift.
 
 ## Implementation boundary
 
@@ -85,12 +85,13 @@ This build may change only the following contracts:
    - change only `canonical_balance_due_gbp` and the same customer/importer status/action suppression already owned by the 28 July overlay when the corrected balance reaches zero.
 
 2. `public.internal_order_status_drift_audit_v1()`
-   - preserve the same public function name, return signature, permissions and release-blocking purpose;
+   - preserve the same public function name, return signature, `SECURITY DEFINER` and release-blocking purpose;
    - preserve the existing canonical-status drift check against the established canonical formula;
    - change only the expected **audience** balance comparison so a valid receipt-residual overlay is not reported as drift;
    - expected audience balance must be derived from canonical status less only the same still-order-applied physical residual defined above;
    - exact linked overfunding-credit provenance rules must match the audience repair;
-   - no FX/card or attributed-receipt amount may enter the audience expectation.
+   - no FX/card or attributed-receipt amount may enter the audience expectation;
+   - enforce the intended execution boundary: `authenticated` retains `EXECUTE`; `anon` has no `EXECUTE` grant.
 
 3. Regression contracts
    - the new 30 July regression may be extended to prove the release-audit alignment;
@@ -168,7 +169,8 @@ Before merge, all of the following must be proven:
 ### Release drift audit
 
 - public function name remains `internal_order_status_drift_audit_v1()`;
-- return signature and execution boundary remain unchanged;
+- return signature, `SECURITY DEFINER` and fixed `search_path` boundary remain unchanged;
+- `authenticated` has `EXECUTE` and `anon` does not;
 - canonical-status drift formula remains unchanged;
 - expected audience balance uses canonical status less only still-order-applied physical residual;
 - exact linked credit is deduplicated by credit-ledger identity;
@@ -211,9 +213,9 @@ Any failed step stops the release. No compensating change outside this scope is 
 
 ## Current branch caution
 
-At the time this v2 plan was written, implementation commits had already been added to the branch before this expanded scope was formally documented. Their presence does not constitute approval.
+Implementation commits were added to the branch before this expanded scope was formally documented. Their presence did not constitute approval; the live migrations and directly corresponding regressions were subsequently reviewed and executed against the target database.
 
-They must be reviewed line-by-line against this v2 addendum before execution or merge. Anything not authorised above must be removed or separately approved.
+Anything not authorised above remains outside scope and must be removed or separately approved before merge.
 
 ## Scope freeze
 
