@@ -21,12 +21,19 @@ DECLARE
   v_active_tracking_count integer;
   v_unassigned_physical_count integer;
   v_bad_live_assignment_count integer;
+  v_bad_open_query_count integer;
+  v_bad_open_flag_count integer;
+  v_bad_unresolved_count integer;
+  v_bad_missing_confirmation_count integer;
+  v_bad_resubmission_count integer;
+  v_bad_exception_count integer;
 BEGIN
-  IF to_regprocedure('public.order_audience_status_v1(uuid)') IS NULL THEN
-    RAISE EXCEPTION 'Missing public.order_audience_status_v1(uuid)';
+  IF to_regprocedure('public.order_audience_status_v1(uuid)') IS NULL
+     OR to_regprocedure('public.order_audience_status_pre_receipt_residual_overlay_v1(uuid)') IS NULL
+  THEN
+    RAISE EXCEPTION 'Required audience function is missing.';
   END IF;
 
-  -- The clean implementation must not introduce the abandoned rename/helper architecture.
   IF to_regprocedure('public.order_audience_status_pre_importer_reconciled_action_v1(uuid)') IS NOT NULL
      OR to_regprocedure('public.internal_importer_pending_approval_action_v1(uuid,text,text,text,numeric,text)') IS NOT NULL
      OR to_regprocedure('public.internal_importer_reconciled_next_action_v1(uuid,text,numeric,text,text)') IS NOT NULL
@@ -39,26 +46,32 @@ BEGIN
   FROM pg_proc p
   WHERE p.oid = 'public.order_audience_status_v1(uuid)'::regprocedure;
 
-  -- Existing 30 July projection mappings must remain present.
+  -- Existing projection wiring must remain and the new work must be candidate-scoped.
   IF position('from public.order_audience_status_pre_receipt_residual_overlay_v1(p_order_id)' IN v_definition) = 0
      OR position('p.corrected_balance_due_gbp::numeric as canonical_balance_due_gbp' IN v_definition) = 0
      OR position('p.corrected_customer_status_label as customer_status_label' IN v_definition) = 0
      OR position('p.corrected_customer_next_action as customer_next_action' IN v_definition) = 0
      OR position('p.corrected_importer_status_label as importer_status_label' IN v_definition) = 0
-     OR position('p.shipper_status_label' IN v_definition) = 0
-     OR position('p.shipper_next_action' IN v_definition) = 0
      OR position('when p.tracking_assignment_needed then ''assign tracking''' IN v_definition) = 0
+     OR position('else p.corrected_importer_next_action' IN v_definition) = 0
+     OR position('importer_pending_review_candidates as' IN v_definition) = 0
+     OR position('join importer_pending_review_candidates c on c.order_id = si.order_id' IN v_definition) = 0
   THEN
-    RAISE EXCEPTION 'Scope drift: an existing 30 July audience projection mapping is missing.';
+    RAISE EXCEPTION 'Scope drift: existing mapping or candidate-scoped correction wiring is missing.';
   END IF;
 
-  -- Exact correction boundary and addendum blockers must be encoded in the final action only.
+  -- The correction itself must not inspect POD. POD remains predecessor-owned.
+  IF position('p.pod_delivery_state is distinct from ''accepted_current''' IN v_definition) > 0
+     OR position('p.pod_delivery_state = ''accepted_current''' IN substring(v_definition from position('when p.supplier_state = ''review_needed''' IN v_definition))) > 0
+  THEN
+    RAISE EXCEPTION 'Scope drift: pending-approval correction contains POD logic.';
+  END IF;
+
   IF position('p.supplier_state = ''review_needed''' IN v_definition) = 0
      OR position('p.reconciliation_state = ''complete''' IN v_definition) = 0
      OR position('p.corrected_importer_next_action = ''resolve evidence issue''' IN v_definition) = 0
      OR position('coalesce(p.corrected_balance_due_gbp, 0) <= 0.01' IN v_definition) = 0
      OR position('coalesce(p.internal_current_stage, '''') <> ''exception_or_hold_open''' IN v_definition) = 0
-     OR position('p.pod_delivery_state is distinct from ''accepted_current''' IN v_definition) = 0
      OR position('p.pending_review_invoice_count > 0' IN v_definition) = 0
      OR position('p.genuine_resubmission_count = 0' IN v_definition) = 0
      OR position('p.open_query_count = 0' IN v_definition) = 0
@@ -69,15 +82,14 @@ BEGIN
      OR position('when p.active_tracking_count = 0 then ''add tracking''' IN v_definition) = 0
      OR position('when p.importer_unassigned_physical_line_count > 0 then ''assign tracking''' IN v_definition) = 0
      OR position('else ''no importer action required''' IN v_definition) = 0
-     OR position('else p.corrected_importer_next_action' IN v_definition) = 0
   THEN
-    RAISE EXCEPTION 'Addendum contract drift: narrow importer-next-action gate or blocker guard is missing.';
+    RAISE EXCEPTION 'Addendum contract drift: correction gate, blocker or tracking branch is missing.';
   END IF;
 
-  -- is_current_for_order may remain in the pre-existing approved-current tracking scope
-  -- and in the genuine-resubmission test, but must not gate importer reconciliation lines.
-  IF position('where si.review_status in (''pending_review'', ''approved_current'', ''ref_corrected_approved'') and lower(coalesce(sil.eligible_for_invoice_yn::text, ''''))' IN v_definition) = 0 THEN
-    RAISE EXCEPTION 'Compatibility drift: pending-review importer line scope is missing or no longer independent of is_current_for_order.';
+  -- Importer reconciliation line scope must not require is_current_for_order or approved_current.
+  IF position('where si.review_status in (''pending_review'', ''approved_current'', ''ref_corrected_approved'') group by si.order_id' IN v_definition) = 0
+  THEN
+    RAISE EXCEPTION 'Compatibility drift: pending-review line scope is not present as agreed.';
   END IF;
 
   FOR v_candidate IN
@@ -244,51 +256,38 @@ BEGIN
     RAISE EXCEPTION 'Target projection failed: action is %, expected No importer action required.', v_target_action;
   END IF;
 
-  -- For every live row that currently satisfies the same blocker-free pending-approval
-  -- boundary but has unassigned physical quantity, the public action must be Assign tracking.
-  -- If there is no such live row, the structural branch assertion above still protects
-  -- the shipped SQL path without writing synthetic business fixtures.
+  -- Requirement 2: every live blocker-free partial-assignment case must resolve to Assign tracking.
   WITH audience AS (
     SELECT * FROM public.order_audience_status_v1(NULL)
+  ), base AS (
+    SELECT * FROM public.order_audience_status_pre_receipt_residual_overlay_v1(NULL)
   ), candidates AS (
     SELECT a.order_id
     FROM audience a
+    JOIN base b USING (order_id)
     WHERE a.supplier_state = 'review_needed'
       AND a.reconciliation_state = 'complete'
+      AND b.importer_next_action = 'Resolve evidence issue'
       AND COALESCE(a.canonical_balance_due_gbp, 0) <= 0.01
       AND COALESCE(a.internal_current_stage, '') <> 'exception_or_hold_open'
-      AND a.pod_delivery_state IS DISTINCT FROM 'accepted_current'
-      AND EXISTS (
-        SELECT 1
-        FROM public.supplier_invoices si
-        WHERE si.order_id = a.order_id
-          AND si.review_status = 'pending_review'
-      )
+      AND EXISTS (SELECT 1 FROM public.supplier_invoices si WHERE si.order_id = a.order_id AND si.review_status = 'pending_review')
+      AND NOT EXISTS (SELECT 1 FROM public.order_evidence_queries q WHERE q.order_id = a.order_id AND q.status = 'open')
       AND NOT EXISTS (
-        SELECT 1
-        FROM public.order_evidence_queries q
-        WHERE q.order_id = a.order_id
-          AND q.status = 'open'
-      )
-      AND NOT EXISTS (
-        SELECT 1
-        FROM public.supplier_invoice_review_flags f
+        SELECT 1 FROM public.supplier_invoice_review_flags f
         JOIN public.supplier_invoices si ON si.id = f.supplier_invoice_id
         WHERE si.order_id = a.order_id
           AND si.review_status IN ('pending_review', 'approved_current', 'ref_corrected_approved')
           AND f.status IN ('open', 'under_review')
       )
       AND NOT EXISTS (
-        SELECT 1
-        FROM public.supplier_invoices si
+        SELECT 1 FROM public.supplier_invoices si
         WHERE si.order_id = a.order_id
           AND si.review_status = 'rejected_resubmit_required'
           AND COALESCE(si.is_current_for_order, true) = true
           AND COALESCE(si.rejection_requires_resubmission_yn, true) = true
       )
       AND NOT EXISTS (
-        SELECT 1
-        FROM public.supplier_invoices si
+        SELECT 1 FROM public.supplier_invoices si
         JOIN public.supplier_invoice_lines sil ON sil.supplier_invoice_id = si.id
         WHERE si.order_id = a.order_id
           AND si.review_status IN ('pending_review', 'approved_current', 'ref_corrected_approved')
@@ -296,35 +295,27 @@ BEGIN
           AND (sil.qty_confirmed IS NULL OR sil.amount_confirmed IS NULL)
       )
       AND NOT EXISTS (
-        SELECT 1
-        FROM public.supplier_invoices si
+        SELECT 1 FROM public.supplier_invoices si
         JOIN public.supplier_invoice_lines sil ON sil.supplier_invoice_id = si.id
         WHERE si.order_id = a.order_id
           AND si.review_status IN ('pending_review', 'approved_current', 'ref_corrected_approved')
           AND lower(COALESCE(sil.eligible_for_invoice_yn::text, '')) NOT IN ('y', 'yes', 'true', '1')
           AND NOT EXISTS (
-            SELECT 1
-            FROM public.supplier_invoice_line_resolutions r
+            SELECT 1 FROM public.supplier_invoice_line_resolutions r
             WHERE r.supplier_invoice_line_id = sil.id
               AND r.supplier_invoice_id = si.id
               AND r.resolution_type = 'non_physical_financial'
               AND r.active = true
           )
           AND NOT EXISTS (
-            SELECT 1
-            FROM public.dispute_lines dl
+            SELECT 1 FROM public.dispute_lines dl
             JOIN public.disputes d ON d.id = dl.dispute_id
             WHERE dl.supplier_invoice_line_id = sil.id
               AND dl.resolved_at IS NULL
               AND d.resolved_at IS NULL
           )
       )
-      AND EXISTS (
-        SELECT 1
-        FROM public.order_tracking_submissions ots
-        WHERE ots.order_id = a.order_id
-          AND ots.superseded_at IS NULL
-      )
+      AND EXISTS (SELECT 1 FROM public.order_tracking_submissions ots WHERE ots.order_id = a.order_id AND ots.superseded_at IS NULL)
       AND EXISTS (
         SELECT 1
         FROM public.supplier_invoices si
@@ -349,17 +340,131 @@ BEGIN
   SELECT COUNT(*)::integer
   INTO v_bad_live_assignment_count
   FROM candidates c
-  JOIN audience a ON a.order_id = c.order_id
+  JOIN audience a USING (order_id)
   WHERE a.importer_next_action IS DISTINCT FROM 'Assign tracking';
 
   IF v_bad_live_assignment_count <> 0 THEN
     RAISE EXCEPTION 'Live partial-assignment regression failed for % row(s).', v_bad_live_assignment_count;
   END IF;
+
+  -- Requirements 3-8: for each live review_needed/reconciled row carrying the named
+  -- blocker, the public action must equal the preserved lower-projection action.
+  WITH audience AS (
+    SELECT * FROM public.order_audience_status_v1(NULL)
+  ), base AS (
+    SELECT * FROM public.order_audience_status_pre_receipt_residual_overlay_v1(NULL)
+  )
+  SELECT COUNT(*)::integer INTO v_bad_open_query_count
+  FROM audience a JOIN base b USING (order_id)
+  WHERE a.supplier_state = 'review_needed'
+    AND a.reconciliation_state = 'complete'
+    AND EXISTS (SELECT 1 FROM public.order_evidence_queries q WHERE q.order_id = a.order_id AND q.status = 'open')
+    AND a.importer_next_action IS DISTINCT FROM b.importer_next_action;
+
+  WITH audience AS (SELECT * FROM public.order_audience_status_v1(NULL)),
+       base AS (SELECT * FROM public.order_audience_status_pre_receipt_residual_overlay_v1(NULL))
+  SELECT COUNT(*)::integer INTO v_bad_open_flag_count
+  FROM audience a JOIN base b USING (order_id)
+  WHERE a.supplier_state = 'review_needed'
+    AND a.reconciliation_state = 'complete'
+    AND EXISTS (
+      SELECT 1 FROM public.supplier_invoice_review_flags f
+      JOIN public.supplier_invoices si ON si.id = f.supplier_invoice_id
+      WHERE si.order_id = a.order_id
+        AND si.review_status IN ('pending_review', 'approved_current', 'ref_corrected_approved')
+        AND f.status IN ('open', 'under_review')
+    )
+    AND a.importer_next_action IS DISTINCT FROM b.importer_next_action;
+
+  WITH audience AS (SELECT * FROM public.order_audience_status_v1(NULL)),
+       base AS (SELECT * FROM public.order_audience_status_pre_receipt_residual_overlay_v1(NULL))
+  SELECT COUNT(*)::integer INTO v_bad_unresolved_count
+  FROM audience a JOIN base b USING (order_id)
+  WHERE a.supplier_state = 'review_needed'
+    AND a.reconciliation_state = 'complete'
+    AND EXISTS (
+      SELECT 1 FROM public.supplier_invoices si
+      JOIN public.supplier_invoice_lines sil ON sil.supplier_invoice_id = si.id
+      WHERE si.order_id = a.order_id
+        AND si.review_status IN ('pending_review', 'approved_current', 'ref_corrected_approved')
+        AND lower(COALESCE(sil.eligible_for_invoice_yn::text, '')) NOT IN ('y', 'yes', 'true', '1')
+        AND NOT EXISTS (
+          SELECT 1 FROM public.supplier_invoice_line_resolutions r
+          WHERE r.supplier_invoice_line_id = sil.id
+            AND r.supplier_invoice_id = si.id
+            AND r.resolution_type = 'non_physical_financial'
+            AND r.active = true
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM public.dispute_lines dl
+          JOIN public.disputes d ON d.id = dl.dispute_id
+          WHERE dl.supplier_invoice_line_id = sil.id
+            AND dl.resolved_at IS NULL
+            AND d.resolved_at IS NULL
+        )
+    )
+    AND a.importer_next_action IS DISTINCT FROM b.importer_next_action;
+
+  WITH audience AS (SELECT * FROM public.order_audience_status_v1(NULL)),
+       base AS (SELECT * FROM public.order_audience_status_pre_receipt_residual_overlay_v1(NULL))
+  SELECT COUNT(*)::integer INTO v_bad_missing_confirmation_count
+  FROM audience a JOIN base b USING (order_id)
+  WHERE a.supplier_state = 'review_needed'
+    AND a.reconciliation_state = 'complete'
+    AND EXISTS (
+      SELECT 1 FROM public.supplier_invoices si
+      JOIN public.supplier_invoice_lines sil ON sil.supplier_invoice_id = si.id
+      WHERE si.order_id = a.order_id
+        AND si.review_status IN ('pending_review', 'approved_current', 'ref_corrected_approved')
+        AND lower(COALESCE(sil.eligible_for_invoice_yn::text, '')) IN ('y', 'yes', 'true', '1')
+        AND (sil.qty_confirmed IS NULL OR sil.amount_confirmed IS NULL)
+    )
+    AND a.importer_next_action IS DISTINCT FROM b.importer_next_action;
+
+  WITH audience AS (SELECT * FROM public.order_audience_status_v1(NULL)),
+       base AS (SELECT * FROM public.order_audience_status_pre_receipt_residual_overlay_v1(NULL))
+  SELECT COUNT(*)::integer INTO v_bad_resubmission_count
+  FROM audience a JOIN base b USING (order_id)
+  WHERE a.supplier_state = 'review_needed'
+    AND a.reconciliation_state = 'complete'
+    AND EXISTS (
+      SELECT 1 FROM public.supplier_invoices si
+      WHERE si.order_id = a.order_id
+        AND si.review_status = 'rejected_resubmit_required'
+        AND COALESCE(si.is_current_for_order, true) = true
+        AND COALESCE(si.rejection_requires_resubmission_yn, true) = true
+    )
+    AND a.importer_next_action IS DISTINCT FROM b.importer_next_action;
+
+  WITH audience AS (SELECT * FROM public.order_audience_status_v1(NULL)),
+       base AS (SELECT * FROM public.order_audience_status_pre_receipt_residual_overlay_v1(NULL))
+  SELECT COUNT(*)::integer INTO v_bad_exception_count
+  FROM audience a JOIN base b USING (order_id)
+  WHERE a.supplier_state = 'review_needed'
+    AND a.reconciliation_state = 'complete'
+    AND COALESCE(a.internal_current_stage, '') = 'exception_or_hold_open'
+    AND a.importer_next_action IS DISTINCT FROM b.importer_next_action;
+
+  IF v_bad_open_query_count <> 0
+     OR v_bad_open_flag_count <> 0
+     OR v_bad_unresolved_count <> 0
+     OR v_bad_missing_confirmation_count <> 0
+     OR v_bad_resubmission_count <> 0
+     OR v_bad_exception_count <> 0
+  THEN
+    RAISE EXCEPTION 'Blocker preservation regression failed: query %, flag %, unresolved %, confirmation %, resubmission %, exception/hold %.',
+      v_bad_open_query_count,
+      v_bad_open_flag_count,
+      v_bad_unresolved_count,
+      v_bad_missing_confirmation_count,
+      v_bad_resubmission_count,
+      v_bad_exception_count;
+  END IF;
 END $$;
 
 SELECT jsonb_build_object(
   'regression_result', 'PASS',
-  'proof', 'in-place function only; no helper/predecessor; existing projection mappings preserved; exact addendum gate present; target stays Tracking submitted and changes only stale importer action to No importer action required; blocker-free live partial-assignment rows, when present, resolve to Assign tracking'
+  'proof', 'in-place function only; no helper/predecessor; candidate-scoped evidence work; no POD predicate in correction; target fully-assigned case passes; every live partial-assignment case passes; every live addendum blocker case preserves the lower-projection importer action'
 ) AS regression_result;
 
 ROLLBACK;
