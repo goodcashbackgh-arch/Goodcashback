@@ -18,13 +18,13 @@ contains(actions, /const CURRENCY_TOLERANCE_GBP = 0\.01;/, "Currency tolerance c
 
 // Current-main safety/provenance facts.
 contains(actions, /supplier_invoice_id, line_source, description, qty, amount_inc_vat_gbp, qty_confirmed, amount_confirmed, eligible_for_invoice_yn/, "Progression line read is missing signed/provenance fields.");
-contains(actions, /!== "ocr_extracted"/, "Provisional financial proof is not restricted to OCR rows.");
-contains(actions, /isProgressedFlag\(line\.eligible_for_invoice_yn\)/, "Progressed rows can enter provisional proof.");
+contains(actions, /!== "ocr_extracted"/, "Server provisional financial proof is not restricted to OCR rows.");
+contains(actions, /isProgressedFlag\(line\.eligible_for_invoice_yn\)/, "Progressed rows can enter server provisional proof.");
 contains(actions, /\.eq\("active", true\)[\s\S]*?\.eq\("resolution_type", "non_physical_financial"\)/, "Resolved financial read is not restricted to active non-physical resolutions.");
 contains(actions, /resolution\.financial_type === "discount"\) return -Math\.abs\(amount\)/, "Resolved discount sign changed.");
 contains(actions, /\["delivery", "fee"\]\.includes\(resolution\.financial_type\)\) return Math\.abs\(amount\)/, "Resolved delivery/fee sign changed.");
 contains(actions, /qty: totals\.qty \+ \(resolution \? 0 : values\.qty\)/, "Resolved financial quantity is not zero.");
-contains(actions, /!accountedLineIds\.has\(line\.id\)[\s\S]*?!resolvedLineIds\.has\(line\.id\)[\s\S]*?!disputeLineIds\.has\(line\.id\)/, "Accounted/resolved/exception rows can enter provisional offset.");
+contains(actions, /!accountedLineIds\.has\(line\.id\)[\s\S]*?!resolvedLineIds\.has\(line\.id\)[\s\S]*?!disputeLineIds\.has\(line\.id\)/, "Accounted/resolved/exception rows can enter server provisional offset.");
 contains(actions, /adjustment\.approval_status !== "rejected"/, "Rejected adjustment handling changed.");
 contains(actions, /Math\.abs\(Math\.abs\(extractedAmount\) - Math\.abs\(adjustmentAmount\)\) <= CURRENCY_TOLERANCE_GBP/, "Adjustment tolerance changed.");
 contains(actions, /line\.qty_confirmed \?\? line\.qty \?\? 0/, "Confirmed quantity fallback changed.");
@@ -33,9 +33,12 @@ contains(actions, /alreadyAccounted\.qty \+ selectedUnresolvedTotals\.qty > base
 contains(actions, /alreadyAccounted\.amount \+ selectedUnresolvedTotals\.amount \+ unresolvedFinancialOffset[\s\S]*?>[\s\S]*?baselineAmount \+ CURRENCY_TOLERANCE_GBP/, "Projected value rule changed.");
 contains(actions, /\.from\("dispute_lines"\)[\s\S]*?\.is\("resolved_at", null\)/, "Line-level exception boundary changed.");
 
-// Page remains the original PR194 selection-capacity projection; exception UI is not redesigned.
+// Page selection-capacity projection must be as narrow as the server projection.
 contains(page, /line\.qty_confirmed \?\? line\.qty/, "Page quantity fallback does not match server intent.");
 contains(page, /line\.amount_confirmed \?\? line\.amount_inc_vat_gbp/, "Page amount fallback does not match server intent.");
+contains(page, /function unresolvedFinancialKind\(line: Line\)[\s\S]*?line_source[\s\S]*?!== "ocr_extracted"/, "Page provisional financial proof is not restricted to OCR rows.");
+contains(page, /const accountedLineIds = new Set\(allLines\.filter\(\(line\) => progressed\(line\) \|\| disputes\.has\(line\.id\) \|\| resolutions\.has\(line\.id\)\)/, "Page accounted boundary no longer excludes progressed/exception/resolved rows from provisional proof.");
+contains(page, /adjustment\.approval_status !== "rejected"/, "Page rejected adjustment handling changed.");
 contains(page, /provedUnresolvedFinancialOffset/, "Page signed offset is missing.");
 contains(page, /const exceptionEligible = lines\.filter/, "Existing exception selection path is missing.");
 
@@ -96,4 +99,4 @@ assert(previousAccountedValue + 250.01 + provedOffset > 701.83 + TOLERANCE, "Gen
 assert(3 + 2 > 4, "Genuine quantity excess was not blocked.");
 assert.doesNotMatch(actions + page, /ORD-|invoice-current|701\.83|466\.39|249\.99/, "Controlled test values were hard-coded in production.");
 
-console.log(JSON.stringify({ regression_result: "PASS", proof: "signed progression projection remains order-baseline bounded; OCR provenance is required for provisional financial offsets; Parked, progressed, exception-linked, manual and unmatched rows cannot manufacture capacity; goods-first resolves £701.83/qty4" }, null, 2));
+console.log(JSON.stringify({ regression_result: "PASS", proof: "signed progression projection remains order-baseline bounded; server and page provisional capacity require OCR provenance; Parked, progressed, exception-linked, manual and unmatched rows cannot manufacture capacity; goods-first resolves £701.83/qty4" }, null, 2));
