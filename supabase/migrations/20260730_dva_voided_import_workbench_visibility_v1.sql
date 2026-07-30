@@ -13,6 +13,11 @@ SET LOCAL statement_timeout = '0';
 --      and use active import provenance for imported display metadata;
 --   3) make dva_statement_line_allocation_summary_vw exclude inactive-only imported lines;
 --   4) no funding/day2, allocation-RPC, Sage, order, OCR, loyalty, shipper-AP, or UI changes.
+--
+-- Important implementation rule:
+--   both views are patched from their exact live pg_get_viewdef() definitions.
+--   This preserves all current columns/calculations and fails closed if the expected
+--   status-view import-link join cannot be identified.
 
 DO $$
 BEGIN
@@ -182,152 +187,73 @@ REVOKE ALL ON FUNCTION public.staff_void_dva_statement_import_batch(uuid, text) 
 GRANT EXECUTE ON FUNCTION public.staff_void_dva_statement_import_batch(uuid, text) TO authenticated;
 
 -- -----------------------------------------------------------------------------
--- 2. Allocation status view: preserve existing status calculations and signature,
---    but use only active import linkage for imported display metadata and exclude
---    physical lines whose import provenance is inactive-only.
+-- 2. Allocation status view: patch the exact live definition.
+--    a) imported display metadata may come only from an active import link;
+--    b) inactive-only imported physical lines are excluded from the active view.
 -- -----------------------------------------------------------------------------
 
 DO $$
 DECLARE
-  v_line_statement_date_expr text;
-  v_line_transaction_date_expr text;
-  v_line_description_expr text;
-  v_line_reference_expr text;
-  v_line_amount_local_expr text;
-  v_line_currency_expr text;
-  v_has_col boolean;
+  v_existing_definition text;
+  v_patched_definition text;
+  v_final_definition text;
 BEGIN
-  SELECT EXISTS (
-    SELECT 1 FROM information_schema.columns
-    WHERE table_schema = 'public' AND table_name = 'dva_statement_lines' AND column_name = 'statement_date'
-  ) INTO v_has_col;
-  v_line_statement_date_expr := CASE WHEN v_has_col THEN 'coalesce(dsl.statement_date, dir.statement_date)' ELSE 'dir.statement_date' END;
+  SELECT pg_get_viewdef('public.dva_statement_line_allocation_status_vw'::regclass, true)
+    INTO v_existing_definition;
 
-  SELECT EXISTS (
-    SELECT 1 FROM information_schema.columns
-    WHERE table_schema = 'public' AND table_name = 'dva_statement_lines' AND column_name = 'transaction_date'
-  ) INTO v_has_col;
-  v_line_transaction_date_expr := CASE WHEN v_has_col THEN 'coalesce(dsl.transaction_date, dir.transaction_date)' ELSE 'dir.transaction_date' END;
+  IF v_existing_definition IS NULL OR btrim(v_existing_definition) = '' THEN
+    RAISE EXCEPTION 'Could not read live definition of dva_statement_line_allocation_status_vw.';
+  END IF;
 
-  SELECT EXISTS (
-    SELECT 1 FROM information_schema.columns
-    WHERE table_schema = 'public' AND table_name = 'dva_statement_lines' AND column_name = 'description'
-  ) INTO v_has_col;
-  v_line_description_expr := CASE WHEN v_has_col THEN 'dsl.description' ELSE 'dir.raw_text' END;
+  v_patched_definition := v_existing_definition;
 
-  SELECT EXISTS (
-    SELECT 1 FROM information_schema.columns
-    WHERE table_schema = 'public' AND table_name = 'dva_statement_lines' AND column_name = 'reference'
-  ) INTO v_has_col;
-  v_line_reference_expr := CASE WHEN v_has_col THEN 'dsl.reference' ELSE 'dir.bank_reference' END;
-
-  SELECT EXISTS (
-    SELECT 1 FROM information_schema.columns
-    WHERE table_schema = 'public' AND table_name = 'dva_statement_lines' AND column_name = 'amount_local_ccy'
-  ) INTO v_has_col;
-  v_line_amount_local_expr := CASE WHEN v_has_col THEN 'dsl.amount_local_ccy' ELSE 'dir.amount_local_ccy' END;
-
-  SELECT EXISTS (
-    SELECT 1 FROM information_schema.columns
-    WHERE table_schema = 'public' AND table_name = 'dva_statement_lines' AND column_name = 'currency'
-  ) INTO v_has_col;
-  v_line_currency_expr := CASE WHEN v_has_col THEN 'dsl.currency' ELSE 'dir.local_ccy' END;
-
-  EXECUTE format($view$
-    CREATE OR REPLACE VIEW public.dva_statement_line_allocation_status_vw AS
-    WITH allocation_totals AS (
-      SELECT
-        a.dva_statement_line_id,
-        round(coalesce(sum(a.allocated_gbp_amount) filter (where a.allocation_status = 'confirmed'), 0)::numeric, 2) AS confirmed_allocated_gbp,
-        round(coalesce(sum(a.allocated_gbp_amount) filter (where a.allocation_status = 'confirmed' and a.allocation_type = 'supplier_invoice'), 0)::numeric, 2) AS confirmed_supplier_invoice_gbp,
-        round(coalesce(sum(a.allocated_gbp_amount) filter (where a.allocation_status = 'confirmed' and a.allocation_type in ('retailer_refund', 'exception_hold', 'not_charged_closure', 'unmatched_hold')), 0)::numeric, 2) AS confirmed_operational_gbp,
-        round(coalesce(sum(a.allocated_gbp_amount) filter (where a.allocation_status = 'confirmed' and a.allocation_type in ('fx_card_difference', 'bank_fee')), 0)::numeric, 2) AS confirmed_fx_fee_gbp,
-        count(*) filter (where a.allocation_status = 'confirmed') AS confirmed_allocation_count,
-        count(*) filter (where a.allocation_status = 'held') AS held_allocation_count,
-        count(*) filter (where a.allocation_status = 'reversed') AS reversed_allocation_count,
-        count(*) AS total_allocation_count
-      FROM public.dva_statement_line_allocations a
-      GROUP BY a.dva_statement_line_id
-    )
-    SELECT
-      dsl.id AS dva_statement_line_id,
-      dsl.dva_statement_id,
-      ds.importer_id,
-      %s AS statement_date,
-      %s AS transaction_date,
-      %s AS description,
-      %s AS reference,
-      dsl.direction,
-      round(coalesce(dsl.amount_gbp_equivalent, 0)::numeric, 2) AS statement_gbp_amount,
-      round(coalesce(%s, 0)::numeric, 2) AS amount_local_ccy,
-      %s AS currency,
-      coalesce(t.confirmed_allocated_gbp, 0::numeric) AS confirmed_allocated_gbp,
-      coalesce(t.confirmed_supplier_invoice_gbp, 0::numeric) AS confirmed_supplier_invoice_gbp,
-      coalesce(t.confirmed_operational_gbp, 0::numeric) AS confirmed_operational_gbp,
-      coalesce(t.confirmed_fx_fee_gbp, 0::numeric) AS confirmed_fx_fee_gbp,
-      round(coalesce(dsl.amount_gbp_equivalent, 0)::numeric - coalesce(t.confirmed_allocated_gbp, 0::numeric), 2) AS confirmed_unallocated_gbp,
-      coalesce(t.confirmed_allocation_count, 0) AS confirmed_allocation_count,
-      coalesce(t.held_allocation_count, 0) AS held_allocation_count,
-      coalesce(t.reversed_allocation_count, 0) AS reversed_allocation_count,
-      coalesce(t.total_allocation_count, 0) AS total_allocation_count,
-      CASE
-        WHEN coalesce(t.held_allocation_count, 0) > 0 THEN 'held'
-        WHEN coalesce(t.confirmed_allocation_count, 0) = 0 AND coalesce(t.reversed_allocation_count, 0) > 0 THEN 'reversed_only'
-        WHEN coalesce(t.confirmed_allocation_count, 0) = 0 THEN 'unmatched'
-        WHEN abs(round(coalesce(dsl.amount_gbp_equivalent, 0)::numeric - coalesce(t.confirmed_allocated_gbp, 0::numeric), 2)) < 0.01 THEN 'balanced'
-        WHEN coalesce(t.confirmed_allocated_gbp, 0::numeric) > 0 THEN 'part_allocated'
-        ELSE 'unmatched'
-      END AS allocation_status_bucket,
-      CASE
-        WHEN coalesce(t.confirmed_allocation_count, 0) = 0 THEN true
-        WHEN abs(round(coalesce(dsl.amount_gbp_equivalent, 0)::numeric - coalesce(t.confirmed_allocated_gbp, 0::numeric), 2)) >= 0.01 THEN true
-        ELSE false
-      END AS selectable_for_new_allocation_yn,
-      CASE
-        WHEN abs(round(coalesce(dsl.amount_gbp_equivalent, 0)::numeric - coalesce(t.confirmed_allocated_gbp, 0::numeric), 2)) < 0.01
-          AND coalesce(t.confirmed_allocation_count, 0) > 0
-          AND coalesce(t.held_allocation_count, 0) = 0
-        THEN true ELSE false
-      END AS ready_for_supervisor_review_yn
-    FROM public.dva_statement_lines dsl
-    JOIN public.dva_statements ds
-      ON ds.id = dsl.dva_statement_id
-    LEFT JOIN public.dva_statement_line_import_links dlil
-      ON dlil.dva_statement_line_id = dsl.id
-     AND dlil.active_yn = true
-    LEFT JOIN public.dva_statement_import_rows dir
-      ON dir.id = dlil.import_row_id
-    LEFT JOIN allocation_totals t
-      ON t.dva_statement_line_id = dsl.id
-    WHERE NOT EXISTS (
-      SELECT 1
-      FROM public.dva_statement_line_import_links voided_link
-      WHERE voided_link.dva_statement_line_id = dsl.id
-        AND voided_link.active_yn = false
-        AND NOT EXISTS (
-          SELECT 1
-          FROM public.dva_statement_line_import_links active_link
-          WHERE active_link.dva_statement_line_id = dsl.id
-            AND active_link.active_yn = true
-        )
+  -- If the live view has not already restricted its dlil join to active provenance,
+  -- add that restriction without reconstructing any existing columns/calculations.
+  IF position('dlil.active_yn' IN lower(v_patched_definition)) = 0 THEN
+    v_patched_definition := regexp_replace(
+      v_patched_definition,
+      '(left[[:space:]]+join[[:space:]]+(public\.)?dva_statement_line_import_links[[:space:]]+dlil[[:space:]]+on[[:space:]]+\(*dlil\.dva_statement_line_id[[:space:]]*=[[:space:]]*dsl\.id\)*)',
+      E'\\1 AND dlil.active_yn = true',
+      'i'
     );
-  $view$,
-    v_line_statement_date_expr,
-    v_line_transaction_date_expr,
-    v_line_description_expr,
-    v_line_reference_expr,
-    v_line_amount_local_expr,
-    v_line_currency_expr
-  );
+
+    IF v_patched_definition = v_existing_definition THEN
+      RAISE EXCEPTION 'Refusing status-view patch: expected dlil -> dsl active import-link join anchor was not found in the live definition.';
+    END IF;
+  END IF;
+
+  v_final_definition := v_patched_definition;
+
+  -- Apply the governing inactive-only visibility predicate at the outer edge so
+  -- every existing live status calculation/column remains byte-for-byte sourced
+  -- from the current definition.
+  IF position('voided_link.dva_statement_line_id' IN lower(v_final_definition)) = 0 THEN
+    v_final_definition :=
+      'SELECT live_status.* FROM ('
+      || v_final_definition
+      || ') live_status '
+      || 'WHERE NOT EXISTS ('
+      || ' SELECT 1 FROM public.dva_statement_line_import_links voided_link'
+      || ' WHERE voided_link.dva_statement_line_id = live_status.dva_statement_line_id'
+      || '   AND voided_link.active_yn = false'
+      || '   AND NOT EXISTS ('
+      || '     SELECT 1 FROM public.dva_statement_line_import_links active_link'
+      || '     WHERE active_link.dva_statement_line_id = live_status.dva_statement_line_id'
+      || '       AND active_link.active_yn = true'
+      || '   )'
+      || ')';
+  END IF;
+
+  EXECUTE 'CREATE OR REPLACE VIEW public.dva_statement_line_allocation_status_vw AS ' || v_final_definition;
 END $$;
 
 COMMENT ON VIEW public.dva_statement_line_allocation_status_vw IS
-'DVA/card statement-line allocation status view. Inactive-only imported statement lines are historical and excluded from active workbench status; active and non-import lines retain existing allocation calculations.';
+'Existing DVA/card statement-line allocation status read model with inactive-only imported lines excluded from active workbench status and imported display metadata restricted to active import provenance; existing live columns/calculations are otherwise preserved.';
 
 GRANT SELECT ON public.dva_statement_line_allocation_status_vw TO authenticated;
 
 -- -----------------------------------------------------------------------------
--- 3. Allocation summary view: preserve the exact live definition/signature and
+-- 3. Allocation summary view: patch the exact live definition/signature and
 --    calculations, adding only the same inactive-only provenance visibility rule.
 --    This intentionally avoids reconstructing or changing loyalty/control logic.
 -- -----------------------------------------------------------------------------
@@ -335,6 +261,7 @@ GRANT SELECT ON public.dva_statement_line_allocation_status_vw TO authenticated;
 DO $$
 DECLARE
   v_existing_definition text;
+  v_final_definition text;
 BEGIN
   SELECT pg_get_viewdef('public.dva_statement_line_allocation_summary_vw'::regclass, true)
     INTO v_existing_definition;
@@ -343,12 +270,13 @@ BEGIN
     RAISE EXCEPTION 'Could not read live definition of dva_statement_line_allocation_summary_vw.';
   END IF;
 
+  v_final_definition := v_existing_definition;
+
   -- Idempotence: if this exact provenance guard is already present, do not nest it.
-  IF position('voided_link.dva_statement_line_id' IN v_existing_definition) = 0 THEN
-    EXECUTE
-      'CREATE OR REPLACE VIEW public.dva_statement_line_allocation_summary_vw AS '
-      || 'SELECT live_summary.* FROM ('
-      || v_existing_definition
+  IF position('voided_link.dva_statement_line_id' IN lower(v_final_definition)) = 0 THEN
+    v_final_definition :=
+      'SELECT live_summary.* FROM ('
+      || v_final_definition
       || ') live_summary '
       || 'WHERE NOT EXISTS ('
       || ' SELECT 1 FROM public.dva_statement_line_import_links voided_link'
@@ -361,6 +289,8 @@ BEGIN
       || '   )'
       || ')';
   END IF;
+
+  EXECUTE 'CREATE OR REPLACE VIEW public.dva_statement_line_allocation_summary_vw AS ' || v_final_definition;
 END $$;
 
 COMMENT ON VIEW public.dva_statement_line_allocation_summary_vw IS
