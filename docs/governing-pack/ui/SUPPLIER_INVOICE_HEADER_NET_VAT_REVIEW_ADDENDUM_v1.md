@@ -257,7 +257,83 @@ VAT default = reviewed_invoice_vat_gbp ?? ocr_invoice_vat_gbp
 
 The page must not select `ocr_raw_json`, and any TypeScript helper whose sole purpose is traversing the JSON on this queue page must be removed.
 
-The existing queue limit, filtering, routing, permissions, buttons, navigation and review behaviour remain unchanged.
+The existing queue limit, filtering, routing, permissions, buttons, navigation and review behaviour remain unchanged except for the narrow fail-closed protection below.
+
+## OCR header projection read failure rule
+
+The lightweight OCR Net/VAT projection is a read dependency of the existing header-correction form. Its database query must not fail silently.
+
+The page must distinguish these two states:
+
+### Normal pre-OCR/null state
+
+An invoice can legitimately appear in `/internal/invoice-review` before Mindee OCR has been run or before an OCR result has been saved.
+
+In that state:
+
+```text
+ocr_invoice_net_gbp = NULL
+ocr_invoice_vat_gbp = NULL
+```
+
+is valid and is **not** an error.
+
+The invoice-review page must continue to load normally, the existing OCR start/fetch controls must remain available according to their existing rules, and no warning is required solely because these projected values are null.
+
+Normal lifecycle:
+
+```text
+invoice uploaded
+→ invoice may appear in /internal/invoice-review
+→ OCR Net/VAT can legitimately be null
+→ supervisor can start/fetch OCR using the existing controls
+→ Mindee result is saved
+→ page reloads
+→ projected OCR Net/VAT are available for review
+```
+
+### Actual projection-query failure
+
+If the database request for:
+
+```text
+supplier_invoice_id
+ocr_invoice_net_gbp
+ocr_invoice_vat_gbp
+```
+
+fails, that is a different state from legitimate null OCR values.
+
+The page must capture the Supabase error from that lightweight query.
+
+On an actual query error:
+
+```text
+page remains available for inspection
+existing invoice/PDF/status/routing/OCR controls remain available
+clear red warning is displayed
+Save header correction is disabled
+no header correction is submitted using unavailable OCR defaults
+```
+
+Required warning meaning:
+
+```text
+Invoice Net/VAT OCR values are temporarily unavailable.
+Do not save a header correction until this is resolved.
+```
+
+The fail-closed block applies only to the existing `Save header correction` button. It must not disable:
+
+- Start document extraction
+- Fetch/save extraction result
+- Open invoice
+- Staff detail
+- Open reconciliation
+- Reject and request corrected invoice
+- Exclude invoice — no corrected invoice required
+
+This is an application read-safety control only. It does not change the migration, database write contract, OCR lifecycle, reconciliation logic, approval logic, or any downstream state.
 
 ## Accounting totals view contract
 
@@ -460,9 +536,11 @@ Existing downstream consumers continue to use the same totals view and the same 
 9. Preserve current accepted gross and accounting-codable-line semantics.
 10. Remove `ocr_raw_json` from the invoice-review queue query.
 11. Read only the two lightweight OCR Net/VAT columns from the totals view for the loaded invoice IDs.
-12. Preserve the existing 100-row queue limit, filtering, navigation and status logic.
-13. Reload the PostgREST schema cache.
-14. Run focused regression checks before merge.
+12. Capture an actual lightweight projection-query error; do not treat legitimate null pre-OCR values as an error.
+13. On an actual projection-query error, show the scoped warning and disable only `Save header correction`.
+14. Preserve the existing 100-row queue limit, filtering, navigation, status logic and all other actions.
+15. Reload the PostgREST schema cache.
+16. Run focused regression checks before merge.
 
 ## Required regression checks
 
@@ -559,6 +637,30 @@ Post-migration view columns 1-19 must retain the proven live names/types/order, 
 
 The two known function consumers must remain unchanged and continue resolving their existing fields.
 
+### L — legitimate pre-OCR null state
+
+For an invoice that has not yet completed OCR, a successful projection query returning null OCR Net/VAT must not be treated as an error.
+
+Expected:
+
+```text
+page loads normally
+no projection-read warning solely because values are null
+existing Start document extraction / Fetch-save extraction controls retain their existing behaviour
+```
+
+### M — actual projection-query failure
+
+If the lightweight totals-view query itself returns an error:
+
+```text
+page remains available
+red OCR Net/VAT availability warning is shown
+Save header correction is disabled
+no header correction can be submitted through that button
+all unrelated inspection/OCR/reject/exclude/navigation controls remain unchanged
+```
+
 ## Acceptance criteria
 
 The build is complete only when:
@@ -575,9 +677,11 @@ The build is complete only when:
 10. Existing live columns 1-19 remain compatible and in the same order.
 11. Only read-only OCR Net/VAT columns 20-21 are appended.
 12. The invoice-review queue no longer fetches complete `ocr_raw_json` payloads.
-13. Existing queue behaviour, routes, permissions and refresh paths remain unchanged.
-14. The two known function consumers are not edited.
-15. No unrelated payment, Sage, funding, shipment, exception, status, permission, navigation or UI logic is changed.
+13. A successful lightweight query with null pre-OCR values is not treated as an error.
+14. An actual lightweight projection-query failure is surfaced and disables only `Save header correction`.
+15. Existing OCR start/fetch, reject/exclude, inspection, queue behaviour, routes, permissions and refresh paths remain unchanged.
+16. The two known function consumers are not edited.
+17. No unrelated payment, Sage, funding, shipment, exception, status, permission, navigation or UI logic is changed.
 
 ## Scope lock
 
@@ -592,5 +696,14 @@ public.supplier_invoices
 + supabase/migrations/20260730_supplier_invoice_header_net_vat_review_v1.sql
 + this addendum
 ```
+
+For this final fail-closed refinement, only these existing files are authorised to change:
+
+```text
+app/internal/invoice-review/page.tsx
+docs/governing-pack/ui/SUPPLIER_INVOICE_HEADER_NET_VAT_REVIEW_ADDENDUM_v1.md
+```
+
+The current migration file is intentionally unchanged by this refinement.
 
 No other application or database object may be modified without separate explicit approval.
