@@ -13,6 +13,9 @@ DECLARE
 BEGIN
   -- -------------------------------------------------------------------------
   -- 1. Required canonical objects and narrow audience overlay are installed.
+  --    The original 28 July all-or-nothing implementation has been superseded
+  --    by the partial receipt-residual correction; lock the preserved boundary,
+  --    provenance controls and no-FX/no-write scope instead of the obsolete body.
   -- -------------------------------------------------------------------------
   IF to_regclass('public.order_settlement_resolution_position_v1') IS NULL THEN
     RAISE EXCEPTION 'FAIL: canonical settlement position is missing.';
@@ -27,16 +30,34 @@ BEGIN
   SELECT lower(pg_get_functiondef('public.order_audience_status_v1(uuid)'::regprocedure))
   INTO v_definition;
 
-  IF position('coalesce(b.canonical_balance_due_gbp, 0) > 0.01' IN v_definition) = 0
-     OR position('pending_receipt_residual_gbp' IN v_definition) = 0
-     OR position('order_attributed_receipt_gbp' IN v_definition) = 0
-     OR position('false_positive_final_balance' IN v_definition) = 0
+  IF position('order_audience_status_pre_receipt_residual_overlay_v1' IN v_definition) = 0
+     OR position('still_order_applied_residual_gbp' IN v_definition) = 0
+     OR position('active_pending_receipt_gbp' IN v_definition) = 0
+     OR position('confirmed_credit_ledger_id' IN v_definition) = 0
+     OR position('select distinct' IN v_definition) = 0
+     OR position('p.reversed_at is null' IN v_definition) = 0
+     OR position('c.source_type = ''overfunding''' IN v_definition) = 0
      OR position('q.customer_complete_yn' IN v_definition) = 0
      OR position('q.importer_complete_yn' IN v_definition) = 0
      OR position('q.shipper_status_label' IN v_definition) = 0
      OR position('q.shipper_next_action' IN v_definition) = 0
   THEN
-    RAISE EXCEPTION 'FAIL: audience overlay is broader than the locked false-balance scope.';
+    RAISE EXCEPTION 'FAIL: repaired audience overlay is broader than the locked receipt-residual scope.';
+  END IF;
+
+  IF position('order_attributed_receipt_gbp' IN v_definition) > 0
+     OR position('inbound_fx_receipt_residual_gbp' IN v_definition) > 0
+     OR position('settlement_fx_card_difference_gbp' IN v_definition) > 0
+     OR position('fx_or_card_diff_gbp' IN v_definition) > 0
+  THEN
+    RAISE EXCEPTION 'FAIL: repaired audience overlay references attributed-receipt or FX/card amounts.';
+  END IF;
+
+  IF position('insert into' IN v_definition) > 0
+     OR position('update public.' IN v_definition) > 0
+     OR position('delete from' IN v_definition) > 0
+  THEN
+    RAISE EXCEPTION 'FAIL: repaired audience overlay contains a business-data write path.';
   END IF;
 
   -- -------------------------------------------------------------------------
@@ -163,7 +184,7 @@ $regression$;
 
 SELECT jsonb_build_object(
   'regression_result', 'PASS',
-  'proof', 'controlled receipt residual is fully resolved at £37.20; £81.20 residual is credit_confirmed; £80.03 applied credit, £884.96 funding, £928.96 posted sales and zero final-balance payment remain intact; audience overlay remains narrowly gated'
+  'proof', 'controlled settlement fingerprint remains intact; repaired audience overlay preserves the 28 July predecessor boundary, exact linked-credit provenance and no-FX/no-write scope'
 ) AS regression_result;
 
 ROLLBACK;
