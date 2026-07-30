@@ -7,8 +7,7 @@ DO $regression$
 DECLARE
   v_target_order_id uuid;
   v_previous_order_id uuid;
-  v_layer_definition text;
-  v_top_definition text;
+  v_definition text;
   v_bad_case text;
   v_bad_actual numeric;
   v_bad_expected numeric;
@@ -29,13 +28,12 @@ DECLARE
   v_count integer;
 BEGIN
   -- -------------------------------------------------------------------------
-  -- 1. Architectural boundary and definition guards.
+  -- 1. Actual current-main audience chain and hard scope guards.
   -- -------------------------------------------------------------------------
   IF to_regprocedure('public.order_audience_status_v1(uuid)') IS NULL
-     OR to_regprocedure('public.order_audience_status_pre_importer_tracking_assignment_v1(uuid)') IS NULL
      OR to_regprocedure('public.order_audience_status_pre_receipt_residual_overlay_v1(uuid)') IS NULL
   THEN
-    RAISE EXCEPTION 'FAIL: required audience function chain is missing.';
+    RAISE EXCEPTION 'FAIL: required 28 July audience chain is missing.';
   END IF;
 
   IF to_regclass('public.order_pending_funding_surplus') IS NULL
@@ -45,71 +43,70 @@ BEGIN
     RAISE EXCEPTION 'FAIL: required proof objects are missing.';
   END IF;
 
-  SELECT lower(pg_get_functiondef(
-    'public.order_audience_status_pre_importer_tracking_assignment_v1(uuid)'::regprocedure
-  )) INTO v_layer_definition;
+  SELECT lower(pg_get_functiondef('public.order_audience_status_v1(uuid)'::regprocedure))
+  INTO v_definition;
 
-  SELECT lower(pg_get_functiondef(
-    'public.order_audience_status_v1(uuid)'::regprocedure
-  )) INTO v_top_definition;
-
-  IF position('still_order_applied_residual_gbp' IN v_layer_definition) = 0
-     OR position('active_pending_receipt_gbp' IN v_layer_definition) = 0
-     OR position('coalesce(b.canonical_balance_due_gbp' IN v_layer_definition) = 0
-     OR position('confirmed_credit_ledger_id' IN v_layer_definition) = 0
-     OR position('select distinct' IN v_layer_definition) = 0
-     OR position('p.status in (''pending_evidence'', ''credit_confirmed'')' IN v_layer_definition) = 0
-     OR position('p.reversed_at is null' IN v_layer_definition) = 0
-     OR position('c.entry_type = ''manual_credit''' IN v_layer_definition) = 0
-     OR position('c.source_type = ''overfunding''' IN v_layer_definition) = 0
-     OR position('c.source_table = ''orders''' IN v_layer_definition) = 0
-     OR position('c.source_id = l.order_id' IN v_layer_definition) = 0
-     OR position('c.linked_order_id = l.order_id' IN v_layer_definition) = 0
-     OR position('c.source_entity_type = ''order''' IN v_layer_definition) = 0
-     OR position('c.source_entity_id = l.order_id' IN v_layer_definition) = 0
-     OR position('order_audience_status_pre_receipt_residual_overlay_v1' IN v_layer_definition) = 0
+  -- The repaired function must be the actual 28 July wrapper and must use its exact
+  -- preserved predecessor. It must not depend on an assumed/unmerged wrapper name.
+  IF position('order_audience_status_pre_receipt_residual_overlay_v1' IN v_definition) = 0
+     OR position('still_order_applied_residual_gbp' IN v_definition) = 0
+     OR position('active_pending_receipt_gbp' IN v_definition) = 0
+     OR position('confirmed_credit_ledger_id' IN v_definition) = 0
+     OR position('select distinct' IN v_definition) = 0
+     OR position('p.status in (''pending_evidence'', ''credit_confirmed'')' IN v_definition) = 0
+     OR position('p.reversed_at is null' IN v_definition) = 0
+     OR position('c.entry_type = ''manual_credit''' IN v_definition) = 0
+     OR position('c.source_type = ''overfunding''' IN v_definition) = 0
+     OR position('c.source_table = ''orders''' IN v_definition) = 0
+     OR position('c.source_id = l.order_id' IN v_definition) = 0
+     OR position('c.linked_order_id = l.order_id' IN v_definition) = 0
+     OR position('c.source_entity_type = ''order''' IN v_definition) = 0
+     OR position('c.source_entity_id = l.order_id' IN v_definition) = 0
   THEN
-    RAISE EXCEPTION 'FAIL: repaired 28 July layer is missing a locked residual/provenance control.';
+    RAISE EXCEPTION 'FAIL: repaired 28 July audience wrapper is missing a locked residual/provenance control.';
   END IF;
 
-  -- The migration must not rederive the canonical starting balance from another
-  -- settlement/funding model and must not admit FX into customer receivables.
-  IF position('order_settlement_resolution_position_v1' IN v_layer_definition) > 0
-     OR position('payment_applied_to_order_gbp' IN v_layer_definition) > 0
-     OR position('final_order_value_gbp' IN v_layer_definition) > 0
-     OR position('order_attributed_receipt_gbp' IN v_layer_definition) > 0
-     OR position('inbound_fx_receipt_residual_gbp' IN v_layer_definition) > 0
-     OR position('settlement_fx_card_difference_gbp' IN v_layer_definition) > 0
-     OR position('fx_or_card_diff_gbp' IN v_layer_definition) > 0
-  THEN
-    RAISE EXCEPTION 'FAIL: repaired layer rederives canonical balance or references FX/attributed-receipt fields.';
+  IF position('order_audience_status_pre_importer_tracking_assignment_v1' IN v_definition) > 0 THEN
+    RAISE EXCEPTION 'FAIL: repair depends on an assumed/unmerged audience wrapper.';
   END IF;
 
-  -- Hard downstream boundary: recent top-level supplier/tracking/audience logic is
-  -- not replaced with residual arithmetic.
-  IF position('still_order_applied_residual_gbp' IN v_top_definition) > 0
-     OR position('active_pending_receipt_gbp' IN v_top_definition) > 0
-     OR position('confirmed_credit_ledger_id' IN v_top_definition) > 0
+  -- No re-derivation of funding/final-sale balance and no FX/attributed receipt.
+  IF position('order_settlement_resolution_position_v1' IN v_definition) > 0
+     OR position('payment_applied_to_order_gbp' IN v_definition) > 0
+     OR position('final_order_value_gbp' IN v_definition) > 0
+     OR position('order_attributed_receipt_gbp' IN v_definition) > 0
+     OR position('inbound_fx_receipt_residual_gbp' IN v_definition) > 0
+     OR position('settlement_fx_card_difference_gbp' IN v_definition) > 0
+     OR position('fx_or_card_diff_gbp' IN v_definition) > 0
   THEN
-    RAISE EXCEPTION 'FAIL: residual arithmetic leaked into top-level order_audience_status_v1.';
+    RAISE EXCEPTION 'FAIL: audience repair rederives canonical balance or references FX/attributed-receipt fields.';
   END IF;
 
-  IF position('insert into' IN v_layer_definition) > 0
-     OR position('update public.' IN v_layer_definition) > 0
-     OR position('delete from' IN v_layer_definition) > 0
+  IF position('insert into' IN v_definition) > 0
+     OR position('update public.' IN v_definition) > 0
+     OR position('delete from' IN v_definition) > 0
   THEN
-    RAISE EXCEPTION 'FAIL: repaired audience layer contains a write path.';
+    RAISE EXCEPTION 'FAIL: repaired audience function contains a business-data write path.';
+  END IF;
+
+  -- Preserve the 28 July status/action suppression boundary only when the physical
+  -- residual actually clears a previously positive balance.
+  IF position('balance_cleared_by_physical_residual' IN v_definition) = 0
+     OR position('q.customer_status_label' IN v_definition) = 0
+     OR position('q.importer_status_label' IN v_definition) = 0
+     OR position('q.shipper_status_label' IN v_definition) = 0
+  THEN
+    RAISE EXCEPTION 'FAIL: existing audience pass-through/status boundary is not preserved.';
   END IF;
 
   -- -------------------------------------------------------------------------
-  -- 2. Pure accounting scenario matrix.
-  --    Only the existing canonical balance is adjusted.
+  -- 2. Accounting scenario matrix. Only the existing canonical balance changes.
   -- -------------------------------------------------------------------------
   WITH cases(case_name, base_balance, active_pending, linked_credit, expected_balance) AS (
     VALUES
       ('no_residual_pass_through',            47.60::numeric,  0.00::numeric,  0.00::numeric, 47.60::numeric),
       ('partial_uncredited_residual',         47.60::numeric, 38.13::numeric,  0.00::numeric,  9.47::numeric),
-      ('uncredited_residual_covers_balance',  47.60::numeric, 60.00::numeric,  0.00::numeric,  0.00::numeric),
+      ('uncredited_residual_covers_balance',  20.00::numeric, 50.00::numeric,  0.00::numeric,  0.00::numeric),
       ('partially_credited_residual',          44.00::numeric, 81.20::numeric, 37.20::numeric,  0.00::numeric),
       ('fully_credited_residual',              47.60::numeric, 38.13::numeric, 38.13::numeric, 47.60::numeric),
       ('overlinked_credit_fails_closed',       47.60::numeric, 38.13::numeric, 40.00::numeric, 47.60::numeric),
@@ -123,10 +120,7 @@ BEGIN
       ROUND(
         CASE
           WHEN c.active_pending > 0.01
-          THEN GREATEST(
-            c.base_balance - GREATEST(c.active_pending - c.linked_credit, 0),
-            0
-          )
+          THEN GREATEST(c.base_balance - GREATEST(c.active_pending - c.linked_credit, 0), 0)
           ELSE c.base_balance
         END::numeric,
         2
@@ -149,7 +143,7 @@ BEGIN
   -- 3. Live target: ORD-1785274708774.
   --    Physical receipt 702.76; cash funding 664.63; pre-existing account credit
   --    37.20; funded total 701.83; physical residual 38.13; final 749.43.
-  --    Existing canonical shortfall 47.60 - residual 38.13 = 9.47.
+  --    Existing shortfall 47.60 - residual 38.13 = 9.47.
   -- -------------------------------------------------------------------------
   SELECT o.id INTO v_target_order_id
   FROM public.orders o
@@ -257,6 +251,8 @@ BEGIN
       v_base_balance, v_expected_balance;
   END IF;
 
+  -- The £37.20 already applied to this target is existing account credit, not the
+  -- £38.13 pending residual and not FX. Prove it appears exactly once as applied credit.
   SELECT COUNT(*)::integer INTO v_count
   FROM public.order_funding_events e
   WHERE e.order_id = v_target_order_id
@@ -270,7 +266,7 @@ BEGIN
   -- -------------------------------------------------------------------------
   -- 4. Live previous model: ORD-1784976429191.
   --    Original residual 81.20; exact new overfunding credit 37.20; therefore
-  --    44.00 remains attached to this order. Existing shortfall is 44.00 -> zero.
+  --    44.00 remains attached to this order. Existing shortfall 44.00 -> zero.
   -- -------------------------------------------------------------------------
   SELECT o.id INTO v_previous_order_id
   FROM public.orders o
@@ -345,7 +341,7 @@ $regression$;
 
 SELECT jsonb_build_object(
   'regression_result', 'PASS',
-  'proof', '28 July audience layer only; predecessor canonical balance remains authoritative; target physical receipt £702.76 less cash funding £664.63 leaves £38.13 residual; £701.83 funding already includes £37.20 applied account credit; £47.60 canonical shortfall less £38.13 physical residual = £9.47; previous £81.20 residual less exact £37.20 overfunding credit leaves £44.00 against a £44.00 shortfall = £0; reversed rows excluded; exact credit provenance required; FX and alternate settlement arithmetic forbidden; top-level audience function untouched; read-only regression'
+  'proof', 'actual 28 July top-level audience wrapper repaired; exact predecessor preserved; no assumed wrapper dependency; existing canonical balance remains authoritative; partial residual £38.13 reduces £47.60 to £9.47; £81.20 residual less exact £37.20 overfunding credit leaves £44.00 and clears £44.00 shortfall; reversed rows excluded; FX and attributed-receipt fields forbidden; no business-data writes'
 ) AS regression_result;
 
 ROLLBACK;
