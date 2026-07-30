@@ -7,7 +7,8 @@ DO $regression$
 DECLARE
   v_target_order_id uuid;
   v_full_cover_order_id uuid;
-  v_definition text;
+  v_layer_definition text;
+  v_top_definition text;
   v_pending numeric;
   v_linked_credit numeric;
   v_payment_applied numeric;
@@ -25,11 +26,13 @@ DECLARE
 BEGIN
   -- -------------------------------------------------------------------------
   -- 1. Required objects and hard scope guards.
+  --    The repair must live only in the 28 July receipt-residual layer.
   -- -------------------------------------------------------------------------
   IF to_regprocedure('public.order_audience_status_v1(uuid)') IS NULL
-     OR to_regprocedure('public.order_audience_status_pre_partial_receipt_residual_balance_v1(uuid)') IS NULL
+     OR to_regprocedure('public.order_audience_status_pre_importer_tracking_assignment_v1(uuid)') IS NULL
+     OR to_regprocedure('public.order_audience_status_pre_receipt_residual_overlay_v1(uuid)') IS NULL
   THEN
-    RAISE EXCEPTION 'FAIL: partial receipt residual audience wrapper or predecessor is missing.';
+    RAISE EXCEPTION 'FAIL: required audience chain is missing.';
   END IF;
 
   IF to_regclass('public.order_settlement_resolution_position_v1') IS NULL
@@ -39,53 +42,51 @@ BEGIN
     RAISE EXCEPTION 'FAIL: required settlement/pending/credit objects are missing.';
   END IF;
 
+  SELECT lower(pg_get_functiondef('public.order_audience_status_pre_importer_tracking_assignment_v1(uuid)'::regprocedure))
+  INTO v_layer_definition;
+
   SELECT lower(pg_get_functiondef('public.order_audience_status_v1(uuid)'::regprocedure))
-  INTO v_definition;
+  INTO v_top_definition;
 
-  IF position('physical_residual_applied_to_order_gbp' IN v_definition) = 0
-     OR position('active_pending_receipt_gbp' IN v_definition) = 0
-     OR position('payment_applied_to_order_gbp' IN v_definition) = 0
-     OR position('final_order_value_gbp' IN v_definition) = 0
-     OR position('confirmed_credit_ledger_id' IN v_definition) = 0
-     OR position('select distinct' IN v_definition) = 0
-     OR position('p.status in (''pending_evidence'', ''credit_confirmed'')' IN v_definition) = 0
-     OR position('p.status = ''credit_confirmed''' IN v_definition) = 0
-     OR position('c.direction = ''credit''' IN v_definition) = 0
+  IF position('still_order_applied_residual_gbp' IN v_layer_definition) = 0
+     OR position('active_pending_receipt_gbp' IN v_layer_definition) = 0
+     OR position('payment_applied_to_order_gbp' IN v_layer_definition) = 0
+     OR position('final_order_value_gbp' IN v_layer_definition) = 0
+     OR position('confirmed_credit_ledger_id' IN v_layer_definition) = 0
+     OR position('select distinct' IN v_layer_definition) = 0
+     OR position('p.status in (''pending_evidence'', ''credit_confirmed'')' IN v_layer_definition) = 0
+     OR position('p.status = ''credit_confirmed''' IN v_layer_definition) = 0
+     OR position('c.direction = ''credit''' IN v_layer_definition) = 0
+     OR position('order_audience_status_pre_receipt_residual_overlay_v1' IN v_layer_definition) = 0
   THEN
-    RAISE EXCEPTION 'FAIL: wrapper is missing the locked physical-residual / exact-linked-credit controls.';
+    RAISE EXCEPTION 'FAIL: 28 July audience layer is missing the locked physical-residual controls.';
   END IF;
 
-  IF position('order_attributed_receipt_gbp' IN v_definition) > 0
-     OR position('inbound_fx_receipt_residual_gbp' IN v_definition) > 0
-     OR position('settlement_fx_card_difference_gbp' IN v_definition) > 0
-     OR position('fx_or_card_diff_gbp' IN v_definition) > 0
+  -- Hard boundary: do not move this arithmetic into the shared top-level audience function.
+  IF position('still_order_applied_residual_gbp' IN v_top_definition) > 0
+     OR position('active_pending_receipt_gbp' IN v_top_definition) > 0
+     OR position('confirmed_credit_ledger_id' IN v_top_definition) > 0
   THEN
-    RAISE EXCEPTION 'FAIL: wrapper references attributed-receipt or FX fields; customer collectible balance must exclude FX.';
+    RAISE EXCEPTION 'FAIL: receipt-residual arithmetic leaked into top-level order_audience_status_v1.';
   END IF;
 
-  IF position('else q.customer_complete_yn' IN v_definition) = 0
-     OR position('else q.importer_complete_yn' IN v_definition) = 0
+  IF position('order_attributed_receipt_gbp' IN v_layer_definition) > 0
+     OR position('inbound_fx_receipt_residual_gbp' IN v_layer_definition) > 0
+     OR position('settlement_fx_card_difference_gbp' IN v_layer_definition) > 0
+     OR position('fx_or_card_diff_gbp' IN v_layer_definition) > 0
   THEN
-    RAISE EXCEPTION 'FAIL: corrected positive balances are not locked to customer/importer incomplete.';
+    RAISE EXCEPTION 'FAIL: repaired audience layer references attributed-receipt or FX fields.';
   END IF;
 
-  IF position('insert into' IN v_definition) > 0
-     OR position('update public.' IN v_definition) > 0
-     OR position('delete from' IN v_definition) > 0
+  IF position('insert into' IN v_layer_definition) > 0
+     OR position('update public.' IN v_layer_definition) > 0
+     OR position('delete from' IN v_layer_definition) > 0
   THEN
-    RAISE EXCEPTION 'FAIL: audience wrapper contains a financial or operational write path.';
+    RAISE EXCEPTION 'FAIL: repaired audience layer contains a financial or operational write path.';
   END IF;
 
   -- -------------------------------------------------------------------------
-  -- 2. Pure arithmetic scenario matrix.
-  --    Formula under test:
-  --      order residual = max(active physical residual - exact linked credit, 0)
-  --      if ANY active physical residual exists and final sale exists:
-  --        balance = max(max(final - payment already applied, 0) - order residual, 0)
-  --      otherwise preserve existing audience balance exactly.
-  --
-  --    This deliberately recomputes fully credited / over-linked active residual
-  --    cases instead of inheriting the broader 20260728 audience overlay.
+  -- 2. Pure accounting/arithmetic scenario matrix.
   -- -------------------------------------------------------------------------
   WITH cases(
     case_name,
@@ -110,7 +111,6 @@ BEGIN
   ), evaluated AS (
     SELECT
       c.*,
-      GREATEST(c.active_pending - c.linked_credit, 0)::numeric AS order_residual,
       ROUND(
         CASE
           WHEN c.active_pending > 0.01
@@ -139,8 +139,8 @@ BEGIN
 
   -- -------------------------------------------------------------------------
   -- 3. Live controlled partial-residual order.
-  --    £701.83 already applied includes the £37.20 account credit.
-  --    £38.13 is a separate unclassified physical receipt residual.
+  --    £701.83 already applied includes £37.20 account credit.
+  --    £38.13 is separate physical receipt residual.
   --    £749.43 - £701.83 - £38.13 = £9.47.
   -- -------------------------------------------------------------------------
   SELECT o.id INTO v_target_order_id
@@ -210,7 +210,6 @@ BEGIN
       v_pending, v_linked_credit, v_payment_applied, v_funding_total, v_applied_credit, v_final, v_expected_balance;
   END IF;
 
-  -- Existing £37.20 account credit must remain one funding component only.
   SELECT COUNT(*)::integer
   INTO v_count
   FROM public.order_funding_events e
@@ -223,10 +222,9 @@ BEGIN
   END IF;
 
   -- -------------------------------------------------------------------------
-  -- 4. Live previously-proven credit-confirmed residual scenario.
-  --    £81.20 physical residual was later classified: £37.20 became customer
-  --    credit, leaving £44.00 still order-applied. The final-sale shortfall is
-  --    also £44.00, therefore collectible balance remains £0.00.
+  -- 4. Live credit-confirmed residual scenario.
+  --    £81.20 residual - £37.20 new customer credit = £44 still order-applied.
+  --    Final-sale shortfall is £44, therefore balance remains £0.
   -- -------------------------------------------------------------------------
   SELECT o.id INTO v_full_cover_order_id
   FROM public.orders o
@@ -284,7 +282,7 @@ $regression$;
 
 SELECT jsonb_build_object(
   'regression_result', 'PASS',
-  'proof', 'FX-excluding physical-receipt balance matrix passed: no active residual passes through; £38.13 partial residual leaves £9.47; covering residual floors at zero; exact linked customer credit is deducted from residual once; fully credited/over-linked active residuals are recomputed from final value and payment instead of inheriting the 20260728 overlay; prior final-balance payments remain inside payment_applied_to_order_gbp; positive corrected balances force customer/importer incomplete; live £81.20 credit-confirmed case leaves £44.00 order-applied after £37.20 linked credit and therefore £0 collectible balance; wrapper is read-only'
+  'proof', 'Repair is confined to the 28 July pre-importer-tracking receipt-residual audience layer; top-level audience function contains no new residual arithmetic; FX excluded; no write path; scenario matrix passed; target £9.47 and prior £81.20/£37.20 credit-confirmed case £0 both proved'
 ) AS regression_result;
 
 ROLLBACK;
