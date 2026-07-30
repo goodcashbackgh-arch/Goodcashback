@@ -29,12 +29,95 @@ function isLiveInvoiceLine(line: unknown) {
 
 type ProgressionLine = {
   id: string;
+  supplier_invoice_id: string;
+  line_source: string | null;
+  description: string | null;
   qty: number | null;
   amount_inc_vat_gbp: number | null;
   qty_confirmed: number | null;
   amount_confirmed: number | null;
   eligible_for_invoice_yn: string | null;
 };
+
+type ProgressionResolution = {
+  supplier_invoice_line_id: string;
+  resolution_type: string;
+  financial_type: string;
+};
+
+type OrderValueAdjustment = {
+  supplier_invoice_id: string | null;
+  adjustment_type: string;
+  amount_gbp: number;
+  approval_status: string | null;
+};
+
+function normalisedProgressionDescription(value: string | null | undefined) {
+  return (value ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function progressionFinancialKind(line: ProgressionLine) {
+  if (String(line.line_source ?? "").trim().toLowerCase() !== "ocr_extracted") return null;
+  if (isProgressedFlag(line.eligible_for_invoice_yn)) return null;
+  const description = normalisedProgressionDescription(line.description);
+  const amount = Number(line.amount_inc_vat_gbp ?? 0);
+  const discount = /(^| )(discount|promotion|promotional|promo|voucher|coupon|saving|savings)( |$)/.test(description);
+  const delivery = /(^| )(delivery|shipping|postage|freight|carriage)( |$)/.test(description);
+  if (amount < 0 && discount) return "discount" as const;
+  if (amount > 0 && delivery) return "delivery" as const;
+  return null;
+}
+
+function resolvedFinancialAmount(line: ProgressionLine, resolution: ProgressionResolution) {
+  const amount = Number(line.amount_inc_vat_gbp ?? 0);
+  if (resolution.financial_type === "discount") return -Math.abs(amount);
+  if (["delivery", "fee"].includes(resolution.financial_type)) return Math.abs(amount);
+  if (resolution.financial_type === "zero_value_delivery") return 0;
+  return amount;
+}
+
+function provedUnresolvedFinancialOffset(params: {
+  lines: ProgressionLine[];
+  accountedLineIds: Set<string>;
+  resolvedLineIds: Set<string>;
+  disputeLineIds: Set<string>;
+  selectedInvoiceIds: Set<string>;
+  adjustments: OrderValueAdjustment[];
+}) {
+  const { lines, accountedLineIds, resolvedLineIds, disputeLineIds, selectedInvoiceIds, adjustments } = params;
+  let offset = 0;
+
+  for (const supplierInvoiceId of selectedInvoiceIds) {
+    const invoiceLines = lines.filter(
+      (line) =>
+        line.supplier_invoice_id === supplierInvoiceId &&
+        !accountedLineIds.has(line.id) &&
+        !resolvedLineIds.has(line.id) &&
+        !disputeLineIds.has(line.id)
+    );
+    const invoiceAdjustments = adjustments.filter(
+      (adjustment) => adjustment.supplier_invoice_id === supplierInvoiceId && adjustment.approval_status !== "rejected"
+    );
+
+    for (const kind of ["discount", "delivery"] as const) {
+      const extractedAmount = invoiceLines
+        .filter((line) => progressionFinancialKind(line) === kind)
+        .reduce((sum, line) => sum + Number(line.amount_inc_vat_gbp ?? 0), 0);
+      const adjustmentAmount = invoiceAdjustments
+        .filter((adjustment) => adjustment.adjustment_type === `retailer_${kind}`)
+        .reduce((sum, adjustment) => sum + Number(adjustment.amount_gbp ?? 0), 0);
+
+      if (
+        extractedAmount !== 0 &&
+        Math.abs(Math.abs(extractedAmount) - Math.abs(adjustmentAmount)) <= CURRENCY_TOLERANCE_GBP
+      ) {
+        offset += extractedAmount;
+      }
+    }
+  }
+
+  return offset;
+}
 
 type ManualEditBaselineLine = {
   id: string;
@@ -140,7 +223,7 @@ async function enforceProgressionWithinBaseline(params: {
 
   const { data: allLines, error: linesError } = await supabase
     .from("supplier_invoice_lines")
-    .select("id, qty, amount_inc_vat_gbp, qty_confirmed, amount_confirmed, eligible_for_invoice_yn, supplier_invoices!inner(order_id, review_status)")
+    .select("id, supplier_invoice_id, line_source, description, qty, amount_inc_vat_gbp, qty_confirmed, amount_confirmed, eligible_for_invoice_yn, supplier_invoices!inner(order_id, review_status)")
     .eq("supplier_invoices.order_id", orderId);
 
   if (linesError) {
@@ -155,23 +238,79 @@ async function enforceProgressionWithinBaseline(params: {
     return { ok: false as const, error: "One or more selected lines could not be found for this active invoice." };
   }
 
-  const selectedLineIds = new Set(selectedLines.map((line) => line.id));
+  const liveLineIds = lines.map((line) => line.id);
+  const invoiceIds = [...new Set(lines.map((line) => line.supplier_invoice_id))];
 
-  const currentProgressed = lines
-    .filter((line) => isProgressedFlag(line.eligible_for_invoice_yn) && !selectedLineIds.has(line.id))
+  const [
+    { data: resolutionRows, error: resolutionsError },
+    { data: disputeRows, error: disputesError },
+    { data: adjustmentRows, error: adjustmentsError },
+  ] = await Promise.all([
+    liveLineIds.length
+      ? supabase
+          .from("supplier_invoice_line_resolutions")
+          .select("supplier_invoice_line_id, resolution_type, financial_type")
+          .in("supplier_invoice_line_id", liveLineIds)
+          .eq("active", true)
+          .eq("resolution_type", "non_physical_financial")
+      : Promise.resolve({ data: [] as ProgressionResolution[], error: null }),
+    liveLineIds.length
+      ? supabase
+          .from("dispute_lines")
+          .select("supplier_invoice_line_id")
+          .in("supplier_invoice_line_id", liveLineIds)
+          .is("resolved_at", null)
+      : Promise.resolve({ data: [] as { supplier_invoice_line_id: string }[], error: null }),
+    invoiceIds.length
+      ? supabase
+          .from("order_value_adjustments")
+          .select("supplier_invoice_id, adjustment_type, amount_gbp, approval_status")
+          .eq("order_id", orderId)
+          .in("supplier_invoice_id", invoiceIds)
+      : Promise.resolve({ data: [] as OrderValueAdjustment[], error: null }),
+  ]);
+
+  if (resolutionsError || disputesError || adjustmentsError) {
+    return {
+      ok: false as const,
+      error:
+        resolutionsError?.message ??
+        disputesError?.message ??
+        adjustmentsError?.message ??
+        "Unable to verify the order baseline.",
+    };
+  }
+
+  const resolutions = new Map(
+    ((resolutionRows ?? []) as ProgressionResolution[]).map((resolution) => [resolution.supplier_invoice_line_id, resolution])
+  );
+  const disputeLineIds = new Set((disputeRows ?? []).map((row) => row.supplier_invoice_line_id));
+  const accountedLineIds = new Set(
+    lines
+      .filter((line) => isProgressedFlag(line.eligible_for_invoice_yn) || resolutions.has(line.id))
+      .map((line) => line.id)
+  );
+
+  if (selectedLines.some((line) => progressionFinancialKind(line) !== null || resolutions.has(line.id))) {
+    return { ok: false as const, error: "Non-physical financial lines cannot be progressed as physical goods." };
+  }
+
+  const alreadyAccounted = lines
+    .filter((line) => accountedLineIds.has(line.id))
     .reduce(
       (totals, line) => {
         const values = lineProgressionValues(line);
+        const resolution = resolutions.get(line.id);
         return {
-          qty: totals.qty + values.qty,
-          amount: totals.amount + values.amount,
+          qty: totals.qty + (resolution ? 0 : values.qty),
+          amount: totals.amount + (resolution ? resolvedFinancialAmount(line, resolution) : values.amount),
         };
       },
       { qty: 0, amount: 0 }
     );
 
   const selectedUnresolvedTotals = selectedLines
-    .filter((line) => !isProgressedFlag(line.eligible_for_invoice_yn))
+    .filter((line) => !accountedLineIds.has(line.id))
     .reduce(
       (totals, line) => {
         const values = lineProgressionValues(line);
@@ -185,9 +324,19 @@ async function enforceProgressionWithinBaseline(params: {
 
   const baselineQty = Number(order.total_qty_declared ?? 0);
   const baselineAmount = Number(order.order_total_gbp_declared ?? 0);
+  const unresolvedFinancialOffset = provedUnresolvedFinancialOffset({
+    lines,
+    accountedLineIds,
+    resolvedLineIds: new Set(resolutions.keys()),
+    disputeLineIds,
+    selectedInvoiceIds: new Set(selectedLines.map((line) => line.supplier_invoice_id)),
+    adjustments: (adjustmentRows ?? []) as OrderValueAdjustment[],
+  });
 
-  const exceedsQty = currentProgressed.qty + selectedUnresolvedTotals.qty > baselineQty;
-  const exceedsAmount = currentProgressed.amount + selectedUnresolvedTotals.amount > baselineAmount + CURRENCY_TOLERANCE_GBP;
+  const exceedsQty = alreadyAccounted.qty + selectedUnresolvedTotals.qty > baselineQty;
+  const exceedsAmount =
+    alreadyAccounted.amount + selectedUnresolvedTotals.amount + unresolvedFinancialOffset >
+    baselineAmount + CURRENCY_TOLERANCE_GBP;
 
   if (exceedsQty || exceedsAmount) {
     return { ok: false as const, error: PROGRESSION_BASELINE_EXCEEDED_ERROR };

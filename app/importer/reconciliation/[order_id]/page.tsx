@@ -41,8 +41,16 @@ type Line = {
 
 type Resolution = {
   supplier_invoice_line_id: string;
+  resolution_type: string;
   financial_type: string;
   notes: string | null;
+};
+
+type OrderValueAdjustment = {
+  supplier_invoice_id: string | null;
+  adjustment_type: string;
+  amount_gbp: number;
+  approval_status: string | null;
 };
 
 type Search = { success?: string; error?: string; supplier_invoice_id?: string };
@@ -90,6 +98,38 @@ function resolvedSignedAmount(line: Line, resolution: Resolution | undefined) {
   if (["delivery", "fee"].includes(resolution.financial_type)) return Math.abs(amount);
   if (resolution.financial_type === "zero_value_delivery") return 0;
   return amount;
+}
+
+function unresolvedFinancialKind(line: Line) {
+  if (String(line.line_source ?? "").trim().toLowerCase() !== "ocr_extracted") return null;
+  const amount = Number(line.amount_inc_vat_gbp ?? 0);
+  if (amount < 0 && isDiscountDescription(line.description)) return "discount" as const;
+  if (amount > 0 && isDeliveryDescription(line.description)) return "delivery" as const;
+  return null;
+}
+
+function provedUnresolvedFinancialOffset(params: {
+  supplierInvoiceId: string;
+  lines: Line[];
+  accountedLineIds: Set<string>;
+  resolvedLineIds: Set<string>;
+  adjustments: OrderValueAdjustment[];
+}) {
+  const { supplierInvoiceId, lines, accountedLineIds, resolvedLineIds, adjustments } = params;
+  const unresolvedLines = lines.filter((line) => line.supplier_invoice_id === supplierInvoiceId && !accountedLineIds.has(line.id) && !resolvedLineIds.has(line.id));
+  const invoiceAdjustments = adjustments.filter((adjustment) => adjustment.supplier_invoice_id === supplierInvoiceId && adjustment.approval_status !== "rejected");
+
+  return (["discount", "delivery"] as const).reduce((offset, kind) => {
+    const extractedAmount = unresolvedLines
+      .filter((line) => unresolvedFinancialKind(line) === kind)
+      .reduce((sum, line) => sum + Number(line.amount_inc_vat_gbp ?? 0), 0);
+    const adjustmentAmount = invoiceAdjustments
+      .filter((adjustment) => adjustment.adjustment_type === `retailer_${kind}`)
+      .reduce((sum, adjustment) => sum + Number(adjustment.amount_gbp ?? 0), 0);
+    return extractedAmount !== 0 && Math.abs(Math.abs(extractedAmount) - Math.abs(adjustmentAmount)) <= 0.01
+      ? offset + extractedAmount
+      : offset;
+  }, 0);
 }
 
 export default async function Page({
@@ -151,13 +191,16 @@ export default async function Page({
   const lines = invoice ? allLines.filter((line) => line.supplier_invoice_id === invoice.id) : [];
   const lineIds = allLines.map((line) => line.id);
 
-  const [{ data: resolutionRows }, { data: disputeRows }] = await Promise.all([
+  const [{ data: resolutionRows }, { data: disputeRows }, { data: adjustmentRows }] = await Promise.all([
     lineIds.length
-      ? supabase.from("supplier_invoice_line_resolutions").select("supplier_invoice_line_id, financial_type, notes").in("supplier_invoice_line_id", lineIds).eq("active", true)
+      ? supabase.from("supplier_invoice_line_resolutions").select("supplier_invoice_line_id, resolution_type, financial_type, notes").in("supplier_invoice_line_id", lineIds).eq("active", true).eq("resolution_type", "non_physical_financial")
       : Promise.resolve({ data: [] as Resolution[] }),
     lineIds.length
       ? supabase.from("dispute_lines").select("supplier_invoice_line_id, disputes!inner(id, desired_outcome, resolved_at)").in("supplier_invoice_line_id", lineIds).is("resolved_at", null)
       : Promise.resolve({ data: [] as any[] }),
+    invoiceIds.length
+      ? supabase.from("order_value_adjustments").select("supplier_invoice_id, adjustment_type, amount_gbp, approval_status").eq("order_id", orderId).in("supplier_invoice_id", invoiceIds)
+      : Promise.resolve({ data: [] as OrderValueAdjustment[] }),
   ]);
   const resolutions = new Map(((resolutionRows ?? []) as Resolution[]).map((resolution) => [resolution.supplier_invoice_line_id, resolution]));
   const disputes = new Map<string, string>();
@@ -176,14 +219,17 @@ export default async function Page({
     .reduce((sum, line) => sum + resolvedSignedAmount(line, resolutions.get(line.id)), 0);
   const remainingQty = Math.max(0, declaredQty - accountedQty);
   const remainingValue = Math.max(0, declaredValue - accountedValue);
+  const accountedLineIds = new Set(allLines.filter((line) => progressed(line) || disputes.has(line.id) || resolutions.has(line.id)).map((line) => line.id));
+  const resolvedLineIds = new Set(resolutions.keys());
+  const adjustments = (adjustmentRows ?? []) as OrderValueAdjustment[];
   const selectable = lines.filter((line) =>
     !progressed(line)
     && !disputes.has(line.id)
     && !resolutions.has(line.id)
     && !obviousNonPhysical(line)
-    && Number(line.amount_inc_vat_gbp) > 0
-    && Number(line.qty) <= remainingQty
-    && Number(line.amount_inc_vat_gbp) <= remainingValue + 0.01
+    && Number(line.amount_confirmed ?? line.amount_inc_vat_gbp) > 0
+    && Number(line.qty_confirmed ?? line.qty) <= remainingQty
+    && Number(line.amount_confirmed ?? line.amount_inc_vat_gbp) + provedUnresolvedFinancialOffset({ supplierInvoiceId: line.supplier_invoice_id, lines: allLines, accountedLineIds, resolvedLineIds, adjustments }) <= remainingValue + 0.01
   );
   const exceptionEligible = lines.filter((line) =>
     !progressed(line)

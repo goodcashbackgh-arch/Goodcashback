@@ -4,9 +4,9 @@
 
 Correct the false **original order baseline exceeded** block when a valid physical supplier-invoice line is accompanied by signed non-physical financial rows such as a retailer discount and delivery charge.
 
-The patch must make the importer reconciliation page and its server-side progression pre-check use the same order-wide accounted position.
+The patch must make the importer reconciliation page and its server-side progression pre-check use the same signed non-physical financial treatment without changing their pre-existing exception semantics.
 
-This is an application-layer reconciliation-guard correction only. It must not create a new reconciliation workflow, change the order baseline, change database progression rules, or alter downstream accounting/Sage behaviour.
+This is an application-layer reconciliation-guard correction only. It must not create a new reconciliation workflow, change the order baseline, change database progression rules, alter downstream accounting/Sage behaviour, or change existing exception lifecycle/accounting semantics. Open dispute membership is read solely to prevent exception-linked rows from entering the new provisional unresolved financial offset; this patch does not reconcile or redesign pre-existing page/server exception accounting differences.
 
 ---
 
@@ -81,7 +81,7 @@ operator_bulk_mark_supplier_invoice_lines_progressed
 
 The database RPCs remain the progression write authority and must not be replaced.
 
-The current `enforceProgressionWithinBaseline(...)` defect is narrower but more serious: it rebuilds current order value from progressed physical `Y` lines only. It omits already-Parked financial resolutions and open exception value from the amount projection.
+The current `enforceProgressionWithinBaseline(...)` defect is narrower but more serious: it rebuilds current order value from progressed physical `Y` lines only. It omits already-Parked financial resolutions from the amount projection. Existing exception baseline accounting is frozen and is not part of this defect.
 
 ---
 
@@ -159,23 +159,23 @@ The current server guard instead sees the physical goods without the complete si
 
 ## Required calculation contract
 
-There must be one economic rule, implemented consistently in the page read model and server pre-write guard.
+The signed non-physical financial rule must be implemented consistently in the page read model and server pre-write guard. Pre-existing page/server exception accounting differences are outside this correction and remain frozen.
 
 ### A. Already-accounted quantity
 
 Count quantity only where a line is:
 
-- already progressed physical; or
-- linked to an open exception/dispute under the existing reconciliation model.
+- already progressed physical.
 
 Active non-physical financial resolutions contribute **zero physical quantity**.
+
+Existing exception lifecycle/accounting semantics are frozen. Open dispute membership does not enter this new server baseline position.
 
 ### B. Already-accounted value
 
 Count value where a line is:
 
 - already progressed physical;
-- linked to an open exception/dispute; or
 - covered by an active `non_physical_financial` resolution.
 
 For active `non_physical_financial` resolutions, signed value must be derived from the existing `financial_type`:
@@ -189,6 +189,8 @@ rounding / other      => preserve source signed amount
 ```
 
 Do not treat an arbitrary active resolution type as non-physical financial value.
+
+Existing exception lifecycle/accounting semantics are frozen. Open dispute membership does not enter this new server baseline position.
 
 ### C. Selected physical proposal
 
@@ -306,7 +308,7 @@ Inside `enforceProgressionWithinBaseline(...)` only, the patch may:
 
 - extend the existing line read with the line's `supplier_invoice_id` and `description`;
 - read active `non_physical_financial` resolutions for live lines, including `financial_type`;
-- read open dispute membership needed to preserve existing exception accounting;
+- read open dispute membership solely to exclude exception-linked rows from the provisional unresolved financial offset;
 - read existing `order_value_adjustments` for the represented live supplier invoices;
 - calculate already-accounted quantity/value under this addendum;
 - calculate the proved unresolved same-invoice delivery/discount offset;
@@ -344,7 +346,7 @@ The patch must not manufacture baseline capacity from:
 - an arbitrary active resolution type;
 - a discount stored with the wrong commercial sign unless its `financial_type` proves it is a discount;
 - a delivery row stored with the wrong commercial sign unless its `financial_type` proves it is delivery;
-- an exception line being double-counted as selected physical;
+- an exception-linked row entering the provisional unresolved financial offset;
 - retired/rejected/superseded invoice evidence.
 
 The server action remains authoritative. If the new server reads needed for the guard fail, progression must fail closed rather than silently assume zero accounted value.
