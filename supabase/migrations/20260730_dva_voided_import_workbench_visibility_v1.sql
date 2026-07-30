@@ -8,16 +8,11 @@ SET LOCAL statement_timeout = '0';
 -- docs/governing-pack/ui/DVA_VOIDED_IMPORT_WORKBENCH_VISIBILITY_ADDENDUM_v1.md
 --
 -- Frozen production scope:
---   1) strengthen staff_void_dva_statement_import_batch(uuid,text) guard only;
---   2) make dva_statement_line_allocation_status_vw exclude inactive-only imported lines
---      and use active import provenance for imported display metadata;
---   3) make dva_statement_line_allocation_summary_vw exclude inactive-only imported lines;
---   4) no funding/day2, allocation-RPC, Sage, order, OCR, loyalty, shipper-AP, or UI changes.
---
--- Important implementation rule:
---   both views are patched from their exact live pg_get_viewdef() definitions.
---   This preserves all current columns/calculations and fails closed if the expected
---   status-view import-link join cannot be identified.
+--   1) baseline-lock and surgically augment staff_void_dva_statement_import_batch(uuid,text);
+--   2) patch exact live dva_statement_line_allocation_status_vw definition;
+--   3) patch exact live dva_statement_line_allocation_summary_vw definition;
+--   4) prove retained-row invariance inside this transaction;
+--   5) no funding/day2, allocation-RPC, Sage, order, OCR, loyalty, shipper-AP, or UI changes.
 
 DO $$
 BEGIN
@@ -53,143 +48,223 @@ BEGIN
 END $$;
 
 -- -----------------------------------------------------------------------------
--- 1. Existing Void action: retain mechanics, strengthen fail-closed guard.
+-- 1. Snapshot retained rows BEFORE any view change.
+--    Rows with any inactive import link are excluded from byte-for-byte invariance
+--    because the addendum explicitly permits their provenance/display visibility to
+--    change. Active-only imported rows and no-link legacy/manual rows must not move.
 -- -----------------------------------------------------------------------------
 
-CREATE OR REPLACE FUNCTION public.staff_void_dva_statement_import_batch(
-  p_import_batch_id uuid,
-  p_void_reason text
-)
-RETURNS jsonb
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public, pg_temp
-AS $$
+CREATE TEMP TABLE _dva_void_status_before ON COMMIT DROP AS
+SELECT
+  s.dva_statement_line_id,
+  to_jsonb(s) AS row_json,
+  count(*) OVER (PARTITION BY s.dva_statement_line_id, to_jsonb(s)) AS row_multiplicity
+FROM public.dva_statement_line_allocation_status_vw s
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM public.dva_statement_line_import_links l
+  WHERE l.dva_statement_line_id = s.dva_statement_line_id
+    AND l.active_yn = false
+);
+
+CREATE TEMP TABLE _dva_void_summary_before ON COMMIT DROP AS
+SELECT
+  s.dva_statement_line_id,
+  to_jsonb(s) AS row_json,
+  count(*) OVER (PARTITION BY s.dva_statement_line_id, to_jsonb(s)) AS row_multiplicity
+FROM public.dva_statement_line_allocation_summary_vw s
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM public.dva_statement_line_import_links l
+  WHERE l.dva_statement_line_id = s.dva_statement_line_id
+    AND l.active_yn = false
+);
+
+-- -----------------------------------------------------------------------------
+-- 2. Baseline-lock the existing Void RPC, then surgically insert only the new
+--    canonical active-consumed / active-reserved guard into its exact live definition.
+-- -----------------------------------------------------------------------------
+
+DO $$
 DECLARE
+  v_oid oid := 'public.staff_void_dva_statement_import_batch(uuid,text)'::regprocedure::oid;
+  v_live_body text;
+  v_live_definition text;
+  v_patched_definition text;
+  v_expected_body text := $baseline$
+declare
   v_auth_uid uuid := auth.uid();
   v_staff record;
   v_batch record;
-  v_reason text := NULLIF(TRIM(COALESCE(p_void_reason, '')), '');
+  v_reason text := nullif(trim(coalesce(p_void_reason, '')), '');
   v_blocking_allocations integer := 0;
-  v_blocking_usage integer := 0;
   v_linked_lines integer := 0;
   v_rows_voided integer := 0;
-BEGIN
-  IF v_auth_uid IS NULL THEN
-    RAISE EXCEPTION 'Unauthenticated user: statement import void requires auth.uid()';
-  END IF;
+begin
+  if v_auth_uid is null then
+    raise exception 'Unauthenticated user: statement import void requires auth.uid()';
+  end if;
 
-  SELECT s.id, s.role_type
-    INTO v_staff
-  FROM public.staff s
-  WHERE s.auth_user_id = v_auth_uid
-    AND COALESCE(s.active, true) = true
-  LIMIT 1;
+  select s.id, s.role_type
+    into v_staff
+  from public.staff s
+  where s.auth_user_id = v_auth_uid
+    and coalesce(s.active, true) = true
+  limit 1;
 
-  IF v_staff.id IS NULL THEN
-    RAISE EXCEPTION 'Active staff user not found for auth user %', v_auth_uid;
-  END IF;
+  if v_staff.id is null then
+    raise exception 'Active staff user not found for auth user %', v_auth_uid;
+  end if;
 
-  IF v_staff.role_type NOT IN ('admin', 'supervisor') THEN
-    RAISE EXCEPTION 'Only admin or supervisor staff can void statement imports. Current role: %', v_staff.role_type;
-  END IF;
+  if v_staff.role_type not in ('admin', 'supervisor') then
+    raise exception 'Only admin or supervisor staff can void statement imports. Current role: %', v_staff.role_type;
+  end if;
 
-  IF v_reason IS NULL OR LENGTH(v_reason) < 8 THEN
-    RAISE EXCEPTION 'A void reason of at least 8 characters is required.';
-  END IF;
+  if v_reason is null or length(v_reason) < 8 then
+    raise exception 'A void reason of at least 8 characters is required.';
+  end if;
 
-  SELECT *
-    INTO v_batch
-  FROM public.dva_statement_import_batches
-  WHERE id = p_import_batch_id
-  FOR UPDATE;
+  select *
+    into v_batch
+  from public.dva_statement_import_batches
+  where id = p_import_batch_id
+  for update;
 
-  IF v_batch.id IS NULL THEN
-    RAISE EXCEPTION 'Statement import batch not found: %', p_import_batch_id;
-  END IF;
+  if v_batch.id is null then
+    raise exception 'Statement import batch not found: %', p_import_batch_id;
+  end if;
 
-  IF v_batch.status = 'voided' THEN
-    RAISE EXCEPTION 'Statement import batch % is already voided.', p_import_batch_id;
-  END IF;
+  if v_batch.status = 'voided' then
+    raise exception 'Statement import batch % is already voided.', p_import_batch_id;
+  end if;
 
-  SELECT COUNT(*)
-    INTO v_linked_lines
-  FROM public.dva_statement_line_import_links l
-  WHERE l.import_batch_id = p_import_batch_id
-    AND l.active_yn = true;
+  select count(*)
+    into v_linked_lines
+  from public.dva_statement_line_import_links l
+  where l.import_batch_id = p_import_batch_id
+    and l.active_yn = true;
 
-  -- Preserve the existing confirmed/held allocation guard exactly.
-  SELECT COUNT(*)
-    INTO v_blocking_allocations
-  FROM public.dva_statement_line_import_links l
-  JOIN public.dva_statement_line_allocations a
-    ON a.dva_statement_line_id = l.dva_statement_line_id
-   AND a.allocation_status IN ('confirmed', 'held')
-  WHERE l.import_batch_id = p_import_batch_id
-    AND l.active_yn = true;
+  select count(*)
+    into v_blocking_allocations
+  from public.dva_statement_line_import_links l
+  join public.dva_statement_line_allocations a
+    on a.dva_statement_line_id = l.dva_statement_line_id
+   and a.allocation_status in ('confirmed', 'held')
+  where l.import_batch_id = p_import_batch_id
+    and l.active_yn = true;
 
-  -- Add the canonical cross-lane control guard. This catches active economic
-  -- consumption/reservation outside the narrow allocation table as well.
-  SELECT COUNT(DISTINCT l.dva_statement_line_id)
-    INTO v_blocking_usage
-  FROM public.dva_statement_line_import_links l
-  JOIN public.statement_line_control_position_v1 p
-    ON p.statement_line_id = l.dva_statement_line_id
-  WHERE l.import_batch_id = p_import_batch_id
-    AND l.active_yn = true
-    AND (
-      COALESCE(p.active_consumed_gbp, 0) > 0
-      OR COALESCE(p.active_reserved_gbp, 0) > 0
-    );
+  if v_blocking_allocations > 0 then
+    raise exception 'Cannot void statement import %. % active allocation(s) exist. Reverse allocations first.', p_import_batch_id, v_blocking_allocations;
+  end if;
 
-  IF v_blocking_allocations > 0 OR v_blocking_usage > 0 THEN
-    RAISE EXCEPTION
-      'Cannot void statement import %. Active economic use exists on linked statement lines (confirmed/held allocations: %, canonical used/reserved lines: %). Reverse or resolve active usage first.',
-      p_import_batch_id,
-      v_blocking_allocations,
-      v_blocking_usage;
-  END IF;
+  update public.dva_statement_line_import_links l
+     set active_yn = false
+   where l.import_batch_id = p_import_batch_id
+     and l.active_yn = true;
 
-  UPDATE public.dva_statement_line_import_links l
-     SET active_yn = false
-   WHERE l.import_batch_id = p_import_batch_id
-     AND l.active_yn = true;
+  update public.dva_statement_import_rows r
+     set parse_status = 'voided'
+   where r.import_batch_id = p_import_batch_id
+     and r.parse_status <> 'voided';
 
-  UPDATE public.dva_statement_import_rows r
-     SET parse_status = 'voided'
-   WHERE r.import_batch_id = p_import_batch_id
-     AND r.parse_status <> 'voided';
+  get diagnostics v_rows_voided = row_count;
 
-  GET DIAGNOSTICS v_rows_voided = ROW_COUNT;
-
-  UPDATE public.dva_statement_import_batches b
-     SET status = 'voided',
+  update public.dva_statement_import_batches b
+     set status = 'voided',
          voided_by_staff_id = v_staff.id,
          voided_at = now(),
          void_reason = v_reason,
          notes = concat_ws(E'\n', b.notes, 'VOID: ' || v_reason)
-   WHERE b.id = p_import_batch_id;
+   where b.id = p_import_batch_id;
 
-  RETURN jsonb_build_object(
+  return jsonb_build_object(
     'ok', true,
     'import_batch_id', p_import_batch_id,
     'linked_lines_inactivated', v_linked_lines,
     'rows_voided', v_rows_voided,
     'void_reason', v_reason
   );
-END;
-$$;
+end;
+$baseline$;
+BEGIN
+  SELECT p.prosrc
+    INTO v_live_body
+  FROM pg_proc p
+  WHERE p.oid = v_oid;
+
+  IF regexp_replace(lower(btrim(v_live_body)), '[[:space:]]+', ' ', 'g')
+     <> regexp_replace(lower(btrim(v_expected_body)), '[[:space:]]+', ' ', 'g') THEN
+    RAISE EXCEPTION 'Refusing void-RPC patch: live function body has drifted from reviewed dva_import_void_guard_v1 baseline.';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_proc p
+    JOIN pg_language l ON l.oid = p.prolang
+    WHERE p.oid = v_oid
+      AND l.lanname = 'plpgsql'
+      AND p.prosecdef = true
+      AND p.prorettype = 'jsonb'::regtype
+      AND COALESCE(array_to_string(p.proconfig, ','), '') ILIKE '%search_path=public, pg_temp%'
+  ) THEN
+    RAISE EXCEPTION 'Refusing void-RPC patch: live function attributes differ from reviewed SECURITY DEFINER / plpgsql / jsonb / search_path baseline.';
+  END IF;
+
+  SELECT pg_get_functiondef(v_oid) INTO v_live_definition;
+  v_patched_definition := v_live_definition;
+
+  v_patched_definition := replace(
+    v_patched_definition,
+    'v_blocking_allocations integer := 0;',
+    'v_blocking_allocations integer := 0;' || E'\n  ' || 'v_blocking_usage integer := 0;'
+  );
+
+  IF v_patched_definition = v_live_definition THEN
+    RAISE EXCEPTION 'Refusing void-RPC patch: declaration anchor not found.';
+  END IF;
+
+  v_live_definition := v_patched_definition;
+  v_patched_definition := replace(
+    v_live_definition,
+    $anchor$if v_blocking_allocations > 0 then
+    raise exception 'Cannot void statement import %. % active allocation(s) exist. Reverse allocations first.', p_import_batch_id, v_blocking_allocations;
+  end if;$anchor$,
+    $replacement$if v_blocking_allocations > 0 then
+    raise exception 'Cannot void statement import %. % active allocation(s) exist. Reverse allocations first.', p_import_batch_id, v_blocking_allocations;
+  end if;
+
+  select count(distinct l.dva_statement_line_id)
+    into v_blocking_usage
+  from public.dva_statement_line_import_links l
+  join public.statement_line_control_position_v1 p
+    on p.statement_line_id = l.dva_statement_line_id
+  where l.import_batch_id = p_import_batch_id
+    and l.active_yn = true
+    and (
+      coalesce(p.active_consumed_gbp, 0) > 0
+      or coalesce(p.active_reserved_gbp, 0) > 0
+    );
+
+  if v_blocking_usage > 0 then
+    raise exception 'Cannot void statement import %. % linked statement line(s) have active economic consumption or reservation. Reverse or resolve active usage first.', p_import_batch_id, v_blocking_usage;
+  end if;$replacement$
+  );
+
+  IF v_patched_definition = v_live_definition THEN
+    RAISE EXCEPTION 'Refusing void-RPC patch: existing confirmed/held guard anchor not found.';
+  END IF;
+
+  EXECUTE v_patched_definition;
+END $$;
 
 COMMENT ON FUNCTION public.staff_void_dva_statement_import_batch(uuid, text) IS
-'Admin/supervisor RPC to void a DVA/card statement import batch only when linked statement lines have no active canonical economic consumption/reservation; historical statement evidence is retained.';
+'Admin/supervisor RPC preserving the reviewed import-void baseline while additionally blocking linked statement lines with canonical active economic consumption/reservation.';
 
 REVOKE ALL ON FUNCTION public.staff_void_dva_statement_import_batch(uuid, text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.staff_void_dva_statement_import_batch(uuid, text) TO authenticated;
 
 -- -----------------------------------------------------------------------------
--- 2. Allocation status view: patch the exact live definition.
---    a) imported display metadata may come only from an active import link;
---    b) inactive-only imported physical lines are excluded from the active view.
+-- 3. Allocation status view: patch its exact live definition only.
 -- -----------------------------------------------------------------------------
 
 DO $$
@@ -207,8 +282,6 @@ BEGIN
 
   v_patched_definition := v_existing_definition;
 
-  -- If the live view has not already restricted its dlil join to active provenance,
-  -- add that restriction without reconstructing any existing columns/calculations.
   IF position('dlil.active_yn' IN lower(v_patched_definition)) = 0 THEN
     v_patched_definition := regexp_replace(
       v_patched_definition,
@@ -218,20 +291,15 @@ BEGIN
     );
 
     IF v_patched_definition = v_existing_definition THEN
-      RAISE EXCEPTION 'Refusing status-view patch: expected dlil -> dsl active import-link join anchor was not found in the live definition.';
+      RAISE EXCEPTION 'Refusing status-view patch: expected dlil -> dsl import-link join anchor was not found.';
     END IF;
   END IF;
 
   v_final_definition := v_patched_definition;
 
-  -- Apply the governing inactive-only visibility predicate at the outer edge so
-  -- every existing live status calculation/column remains byte-for-byte sourced
-  -- from the current definition.
   IF position('voided_link.dva_statement_line_id' IN lower(v_final_definition)) = 0 THEN
     v_final_definition :=
-      'SELECT live_status.* FROM ('
-      || v_final_definition
-      || ') live_status '
+      'SELECT live_status.* FROM (' || v_final_definition || ') live_status '
       || 'WHERE NOT EXISTS ('
       || ' SELECT 1 FROM public.dva_statement_line_import_links voided_link'
       || ' WHERE voided_link.dva_statement_line_id = live_status.dva_statement_line_id'
@@ -248,14 +316,11 @@ BEGIN
 END $$;
 
 COMMENT ON VIEW public.dva_statement_line_allocation_status_vw IS
-'Existing DVA/card statement-line allocation status read model with inactive-only imported lines excluded from active workbench status and imported display metadata restricted to active import provenance; existing live columns/calculations are otherwise preserved.';
-
+'Existing DVA/card allocation status read model with inactive-only imported lines excluded and imported display metadata restricted to active provenance; retained live calculations are unchanged.';
 GRANT SELECT ON public.dva_statement_line_allocation_status_vw TO authenticated;
 
 -- -----------------------------------------------------------------------------
--- 3. Allocation summary view: patch the exact live definition/signature and
---    calculations, adding only the same inactive-only provenance visibility rule.
---    This intentionally avoids reconstructing or changing loyalty/control logic.
+-- 4. Allocation summary view: patch its exact live definition only.
 -- -----------------------------------------------------------------------------
 
 DO $$
@@ -271,13 +336,9 @@ BEGIN
   END IF;
 
   v_final_definition := v_existing_definition;
-
-  -- Idempotence: if this exact provenance guard is already present, do not nest it.
   IF position('voided_link.dva_statement_line_id' IN lower(v_final_definition)) = 0 THEN
     v_final_definition :=
-      'SELECT live_summary.* FROM ('
-      || v_final_definition
-      || ') live_summary '
+      'SELECT live_summary.* FROM (' || v_final_definition || ') live_summary '
       || 'WHERE NOT EXISTS ('
       || ' SELECT 1 FROM public.dva_statement_line_import_links voided_link'
       || ' WHERE voided_link.dva_statement_line_id = live_summary.dva_statement_line_id'
@@ -294,9 +355,66 @@ BEGIN
 END $$;
 
 COMMENT ON VIEW public.dva_statement_line_allocation_summary_vw IS
-'Existing DVA/card statement-line allocation summary read model with inactive-only imported statement lines excluded from active workbench participation. Existing live columns and calculations are otherwise preserved.';
-
+'Existing DVA/card allocation summary with inactive-only imported statement lines excluded; retained live columns/calculations are unchanged.';
 GRANT SELECT ON public.dva_statement_line_allocation_summary_vw TO authenticated;
+
+-- -----------------------------------------------------------------------------
+-- 5. Exact retained-row invariance. Any unexpected retained-row difference aborts
+--    this transaction and rolls back the function and both views.
+-- -----------------------------------------------------------------------------
+
+CREATE TEMP TABLE _dva_void_status_after ON COMMIT DROP AS
+SELECT
+  s.dva_statement_line_id,
+  to_jsonb(s) AS row_json,
+  count(*) OVER (PARTITION BY s.dva_statement_line_id, to_jsonb(s)) AS row_multiplicity
+FROM public.dva_statement_line_allocation_status_vw s
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM public.dva_statement_line_import_links l
+  WHERE l.dva_statement_line_id = s.dva_statement_line_id
+    AND l.active_yn = false
+);
+
+CREATE TEMP TABLE _dva_void_summary_after ON COMMIT DROP AS
+SELECT
+  s.dva_statement_line_id,
+  to_jsonb(s) AS row_json,
+  count(*) OVER (PARTITION BY s.dva_statement_line_id, to_jsonb(s)) AS row_multiplicity
+FROM public.dva_statement_line_allocation_summary_vw s
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM public.dva_statement_line_import_links l
+  WHERE l.dva_statement_line_id = s.dva_statement_line_id
+    AND l.active_yn = false
+);
+
+DO $$
+BEGIN
+  IF EXISTS (
+    (SELECT dva_statement_line_id, row_json, row_multiplicity FROM _dva_void_status_before
+     EXCEPT ALL
+     SELECT dva_statement_line_id, row_json, row_multiplicity FROM _dva_void_status_after)
+    UNION ALL
+    (SELECT dva_statement_line_id, row_json, row_multiplicity FROM _dva_void_status_after
+     EXCEPT ALL
+     SELECT dva_statement_line_id, row_json, row_multiplicity FROM _dva_void_status_before)
+  ) THEN
+    RAISE EXCEPTION 'Retained-line invariance failed for dva_statement_line_allocation_status_vw. Rolling back.';
+  END IF;
+
+  IF EXISTS (
+    (SELECT dva_statement_line_id, row_json, row_multiplicity FROM _dva_void_summary_before
+     EXCEPT ALL
+     SELECT dva_statement_line_id, row_json, row_multiplicity FROM _dva_void_summary_after)
+    UNION ALL
+    (SELECT dva_statement_line_id, row_json, row_multiplicity FROM _dva_void_summary_after
+     EXCEPT ALL
+     SELECT dva_statement_line_id, row_json, row_multiplicity FROM _dva_void_summary_before)
+  ) THEN
+    RAISE EXCEPTION 'Retained-line invariance failed for dva_statement_line_allocation_summary_vw. Rolling back.';
+  END IF;
+END $$;
 
 NOTIFY pgrst, 'reload schema';
 
