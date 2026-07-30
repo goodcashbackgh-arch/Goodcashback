@@ -21,14 +21,19 @@ BEGIN
     RAISE EXCEPTION 'Importer reconciled pending-approval action patch is not installed.';
   END IF;
 
-  IF has_function_privilege('authenticated', v_decision, 'EXECUTE')
+  IF has_function_privilege(
+       'authenticated',
+       'public.order_audience_status_pre_importer_reconciled_action_v1(uuid)'::regprocedure,
+       'EXECUTE'
+     )
+     OR has_function_privilege('authenticated', v_decision, 'EXECUTE')
      OR has_function_privilege(
        'authenticated',
        'public.internal_importer_reconciled_next_action_v1(uuid,text,text,text,numeric,text,text)'::regprocedure,
        'EXECUTE'
      )
   THEN
-    RAISE EXCEPTION 'Scope/security drift: internal importer action helper is directly executable by authenticated.';
+    RAISE EXCEPTION 'Scope/security drift: preserved predecessor or internal helper is directly executable by authenticated.';
   END IF;
 
   FOR v_candidate IN
@@ -243,7 +248,7 @@ END $$;
 
 SELECT jsonb_build_object(
   'regression_result', 'PASS',
-  'proof', 'exact defect boundary enforced; every listed importer blocker fails closed; missing/partial/full tracking decisions proven without business-data fixture writes; internal helpers are not executable by authenticated; only importer_next_action may differ from preserved predecessor; diagnosed target moves from Resolve evidence issue to No importer action required while every other audience field remains unchanged'
+  'proof', 'exact defect boundary enforced; every listed importer blocker fails closed; missing/partial/full tracking decisions proven without business-data fixture writes; predecessor and internal helpers are not executable by authenticated; only importer_next_action may differ from preserved predecessor; diagnosed target moves from Resolve evidence issue to No importer action required while every other audience field remains unchanged'
 ) AS regression_result;
 
 ROLLBACK;
