@@ -37,10 +37,10 @@ BEGIN
      OR position('select distinct' IN v_definition) = 0
      OR position('p.reversed_at is null' IN v_definition) = 0
      OR position('c.source_type = ''overfunding''' IN v_definition) = 0
-     OR position('q.customer_complete_yn' IN v_definition) = 0
-     OR position('q.importer_complete_yn' IN v_definition) = 0
-     OR position('q.shipper_status_label' IN v_definition) = 0
-     OR position('q.shipper_next_action' IN v_definition) = 0
+     OR position('p.customer_complete_yn' IN v_definition) = 0
+     OR position('p.importer_complete_yn' IN v_definition) = 0
+     OR position('p.shipper_status_label' IN v_definition) = 0
+     OR position('p.shipper_next_action' IN v_definition) = 0
   THEN
     RAISE EXCEPTION 'FAIL: repaired audience overlay is broader than the locked receipt-residual scope.';
   END IF;
