@@ -14,8 +14,12 @@ SET LOCAL statement_timeout = '0';
 --     = max(active_pending_receipt_residual - exact_linked_customer_credit, 0)
 --
 --   collectible_balance
---     = max(max(final_order_value - payment_applied_to_order, 0)
+--     = max(existing_pre_overlay_canonical_balance
 --           - still_order_applied_residual, 0)
+--
+-- The predecessor canonical balance remains authoritative for funding, final-sale
+-- and prior final-balance-payment arithmetic. This repair must not recompute that
+-- starting balance from a second funding/settlement source.
 --
 -- If there is no active physical receipt-residual position, preserve the
 -- predecessor audience balance exactly.
@@ -105,7 +109,8 @@ BEGIN
 
   RETURN QUERY
   WITH base AS (
-    -- Exact predecessor of the 28 July receipt-residual overlay.
+    -- Exact predecessor of the 28 July receipt-residual overlay. Its canonical
+    -- balance stays authoritative; this repair subtracts only the physical residual.
     SELECT *
     FROM public.order_audience_status_pre_receipt_residual_overlay_v1(p_order_id)
   ), active_pending AS (
@@ -117,10 +122,11 @@ BEGIN
     WHERE p.status IN ('pending_evidence', 'credit_confirmed')
     GROUP BY p.order_id
   ), distinct_credit_links AS (
-    -- A single confirmed credit may be linked to more than one pending row.
-    -- Deduplicate by ledger id so the credit is removed from the residual once.
+    -- The confirmation RPC may link the same exact customer-credit row to multiple
+    -- pending rows. Deduplicate by ledger identity so that credit is removed once.
     SELECT DISTINCT
       p.order_id,
+      p.importer_id,
       p.confirmed_credit_ledger_id
     FROM public.order_pending_funding_surplus p
     JOIN base b ON b.order_id = p.order_id
@@ -133,7 +139,10 @@ BEGIN
     FROM distinct_credit_links l
     JOIN public.importer_credit_ledger c
       ON c.id = l.confirmed_credit_ledger_id
+     AND c.importer_id = l.importer_id
      AND c.direction = 'credit'
+     AND c.source_entity_type = 'order'
+     AND c.source_entity_id = l.order_id
     GROUP BY l.order_id
   ), scoped AS (
     SELECT
@@ -153,11 +162,7 @@ BEGIN
           WHEN COALESCE(ap.active_pending_receipt_gbp, 0) > 0.01
            AND COALESCE(s.final_sale_document_count, 0) > 0
           THEN GREATEST(
-            GREATEST(
-              COALESCE(s.final_order_value_gbp, 0)
-                - COALESCE(s.payment_applied_to_order_gbp, 0),
-              0
-            )
+            COALESCE(b.canonical_balance_due_gbp, 0)
               - GREATEST(
                   COALESCE(ap.active_pending_receipt_gbp, 0)
                     - COALESCE(lcc.linked_confirmed_credit_gbp, 0),
@@ -267,7 +272,7 @@ REVOKE ALL ON FUNCTION public.order_audience_status_pre_importer_tracking_assign
 GRANT EXECUTE ON FUNCTION public.order_audience_status_pre_importer_tracking_assignment_v1(uuid) TO authenticated;
 
 COMMENT ON FUNCTION public.order_audience_status_pre_importer_tracking_assignment_v1(uuid) IS
-'28 July receipt-residual audience layer repaired in place. Active physical receipt residual reduces collectible balance only to the extent it has not already been converted into exact linked customer credit. FX/card residuals and attributed-receipt totals are excluded. Later supplier/tracking/audience projections are untouched.';
+'28 July receipt-residual audience layer repaired in place. Existing predecessor canonical balance remains authoritative; active physical receipt residual reduces that balance only to the extent it has not already been converted into exact linked customer credit. FX/card residuals and attributed-receipt totals are excluded. Later supplier/tracking/audience projections are untouched.';
 
 NOTIFY pgrst, 'reload schema';
 
