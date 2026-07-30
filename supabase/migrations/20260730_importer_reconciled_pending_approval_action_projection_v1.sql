@@ -63,6 +63,11 @@ END $$;
 ALTER FUNCTION public.order_audience_status_v1(uuid)
   RENAME TO order_audience_status_pre_importer_reconciled_action_v1;
 
+-- The predecessor is implementation detail only. Renaming preserves old grants, so
+-- explicitly remove direct access before creating the replacement public wrapper.
+REVOKE ALL ON FUNCTION public.order_audience_status_pre_importer_reconciled_action_v1(uuid)
+  FROM PUBLIC, anon, authenticated;
+
 -- Pure, private decision function. Keeping the branch logic separate lets regression
 -- prove every fail-closed condition without writing fixture data into business tables.
 CREATE OR REPLACE FUNCTION public.internal_importer_reconciled_action_decision_v1(
