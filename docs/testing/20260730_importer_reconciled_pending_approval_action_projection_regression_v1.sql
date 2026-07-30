@@ -27,18 +27,15 @@ BEGIN
     RAISE EXCEPTION 'Importer reconciled pending-approval action patch is not installed.';
   END IF;
 
+  -- Only the newly introduced helper has a new permission boundary. The preserved
+  -- predecessor keeps whatever privileges it had before the rename.
   IF has_function_privilege(
-       'authenticated',
-       'public.order_audience_status_pre_importer_reconciled_action_v1(uuid)'::regprocedure,
-       'EXECUTE'
-     )
-     OR has_function_privilege(
        'authenticated',
        'public.internal_importer_pending_approval_action_v1(uuid,text,text,text,numeric,text)'::regprocedure,
        'EXECUTE'
      )
   THEN
-    RAISE EXCEPTION 'Scope/security drift: predecessor or internal helper is directly executable by authenticated.';
+    RAISE EXCEPTION 'Scope/security drift: internal helper is directly executable by authenticated.';
   END IF;
 
   SELECT lower(regexp_replace(pg_get_functiondef(p.oid), '\s+', ' ', 'g'))
@@ -46,8 +43,6 @@ BEGIN
   FROM pg_proc p
   WHERE p.oid = 'public.internal_importer_pending_approval_action_v1(uuid,text,text,text,numeric,text)'::regprocedure;
 
-  -- Structural contract: the helper must contain only the addendum-defined boundary,
-  -- blocker checks and tracking outcomes. POD and unrelated review-state inference are forbidden.
   IF position('pod_delivery_state' IN v_helper_definition) > 0
      OR position('needs_action' IN v_helper_definition) > 0
   THEN
@@ -92,7 +87,6 @@ BEGIN
 
   PERFORM set_config('request.jwt.claim.sub', v_staff_uid::text, true);
 
-  -- Every field except importer_next_action must be identical to the preserved predecessor.
   WITH old_rows AS (
     SELECT * FROM public.order_audience_status_pre_importer_reconciled_action_v1(NULL)
   ), new_rows AS (
@@ -112,7 +106,6 @@ BEGIN
     RAISE EXCEPTION 'Scope drift: % audience row(s) changed outside importer_next_action.', v_non_action_drift_count;
   END IF;
 
-  -- Any changed action must originate inside the exact predecessor defect boundary.
   WITH old_rows AS (
     SELECT * FROM public.order_audience_status_pre_importer_reconciled_action_v1(NULL)
   ), new_rows AS (
@@ -135,7 +128,6 @@ BEGIN
     RAISE EXCEPTION 'Boundary drift: % audience row(s) changed importer action outside the agreed defect boundary.', v_outside_boundary_change_count;
   END IF;
 
-  -- No row actually changed by the wrapper may still carry an addendum-defined blocker.
   WITH old_rows AS (
     SELECT * FROM public.order_audience_status_pre_importer_reconciled_action_v1(NULL)
   ), new_rows AS (
@@ -211,7 +203,6 @@ BEGIN
     RAISE EXCEPTION 'Blocker regression failed: % changed audience row(s) still have an addendum-defined importer blocker.', v_blocker_change_count;
   END IF;
 
-  -- Production acceptance fixture: fully assigned tracking must clear the stale action.
   SELECT o.id
   INTO v_target_id
   FROM public.orders o
