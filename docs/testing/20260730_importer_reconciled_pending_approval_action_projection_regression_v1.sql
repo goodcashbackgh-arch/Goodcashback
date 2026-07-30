@@ -11,6 +11,12 @@ DECLARE
   v_old_status text;
   v_non_action_drift_count integer;
   v_outside_boundary_change_count integer;
+  v_target_open_query_count integer;
+  v_target_open_flag_count integer;
+  v_target_unresolved_line_count integer;
+  v_target_missing_confirmation_count integer;
+  v_target_evidence_action_invoice_count integer;
+  v_target_exception_or_hold boolean;
 BEGIN
   IF to_regprocedure('public.order_audience_status_v1(uuid)') IS NULL
      OR to_regprocedure('public.order_audience_status_pre_importer_reconciled_action_v1(uuid)') IS NULL
@@ -19,7 +25,6 @@ BEGIN
     RAISE EXCEPTION 'Importer reconciled pending-approval action patch is not installed.';
   END IF;
 
-  -- Internal implementation must not be directly callable by normal authenticated users.
   IF has_function_privilege(
        'authenticated',
        'public.order_audience_status_pre_importer_reconciled_action_v1(uuid)'::regprocedure,
@@ -56,14 +61,11 @@ BEGIN
 
   PERFORM set_config('request.jwt.claim.sub', v_staff_uid::text, true);
 
-  -- Scope invariant: every audience field except importer_next_action must be identical
-  -- to the preserved predecessor for every current audience row.
+  -- Every field except importer_next_action must be identical to the preserved predecessor.
   WITH old_rows AS (
-    SELECT *
-    FROM public.order_audience_status_pre_importer_reconciled_action_v1(NULL)
+    SELECT * FROM public.order_audience_status_pre_importer_reconciled_action_v1(NULL)
   ), new_rows AS (
-    SELECT *
-    FROM public.order_audience_status_v1(NULL)
+    SELECT * FROM public.order_audience_status_v1(NULL)
   )
   SELECT COUNT(*)::integer
   INTO v_non_action_drift_count
@@ -79,15 +81,11 @@ BEGIN
     RAISE EXCEPTION 'Scope drift: % audience row(s) changed outside importer_next_action.', v_non_action_drift_count;
   END IF;
 
-  -- Wiring invariant: if the public wrapper changes importer_next_action at all, the
-  -- predecessor row must be exactly the diagnosed defect boundary. This catches any
-  -- accidental broadening in the real wrapper, not merely in an isolated helper test.
+  -- Any changed importer action must be inside the exact agreed predecessor boundary.
   WITH old_rows AS (
-    SELECT *
-    FROM public.order_audience_status_pre_importer_reconciled_action_v1(NULL)
+    SELECT * FROM public.order_audience_status_pre_importer_reconciled_action_v1(NULL)
   ), new_rows AS (
-    SELECT *
-    FROM public.order_audience_status_v1(NULL)
+    SELECT * FROM public.order_audience_status_v1(NULL)
   )
   SELECT COUNT(*)::integer
   INTO v_outside_boundary_change_count
@@ -106,7 +104,7 @@ BEGIN
     RAISE EXCEPTION 'Boundary drift: % audience row(s) changed importer action outside the agreed defect boundary.', v_outside_boundary_change_count;
   END IF;
 
-  -- Production acceptance fixture for the diagnosed order.
+  -- Production acceptance fixture.
   SELECT o.id
   INTO v_target_id
   FROM public.orders o
@@ -136,11 +134,96 @@ BEGIN
   IF v_new_status IS DISTINCT FROM v_old_status THEN
     RAISE EXCEPTION 'Status-label scope drift: new %, old %.', v_new_status, v_old_status;
   END IF;
+
+  -- Explicit blocker proof for the diagnosed fixture: every listed blocker must be absent
+  -- before this row is allowed to change action.
+  SELECT COUNT(*)::integer
+  INTO v_target_open_query_count
+  FROM public.order_evidence_queries q
+  WHERE q.order_id = v_target_id
+    AND q.status = 'open';
+
+  SELECT COUNT(*)::integer
+  INTO v_target_open_flag_count
+  FROM public.supplier_invoice_review_flags f
+  JOIN public.supplier_invoices si ON si.id = f.supplier_invoice_id
+  WHERE si.order_id = v_target_id
+    AND si.review_status IN ('pending_review', 'approved_current', 'ref_corrected_approved')
+    AND f.status IN ('open', 'under_review');
+
+  SELECT COUNT(*)::integer
+  INTO v_target_evidence_action_invoice_count
+  FROM public.supplier_invoices si
+  WHERE si.order_id = v_target_id
+    AND (
+      si.review_status = 'needs_action'
+      OR (
+        si.review_status = 'rejected_resubmit_required'
+        AND COALESCE(si.is_current_for_order, true) = true
+        AND COALESCE(si.rejection_requires_resubmission_yn, true) = true
+      )
+    );
+
+  SELECT COUNT(*)::integer
+  INTO v_target_unresolved_line_count
+  FROM public.supplier_invoices si
+  JOIN public.supplier_invoice_lines sil ON sil.supplier_invoice_id = si.id
+  WHERE si.order_id = v_target_id
+    AND si.review_status IN ('pending_review', 'approved_current', 'ref_corrected_approved')
+    AND lower(COALESCE(sil.eligible_for_invoice_yn::text, '')) NOT IN ('y', 'yes', 'true', '1')
+    AND NOT EXISTS (
+      SELECT 1
+      FROM public.supplier_invoice_line_resolutions r
+      WHERE r.supplier_invoice_line_id = sil.id
+        AND r.supplier_invoice_id = si.id
+        AND r.resolution_type = 'non_physical_financial'
+        AND r.active = true
+    )
+    AND NOT EXISTS (
+      SELECT 1
+      FROM public.dispute_lines dl
+      JOIN public.disputes d ON d.id = dl.dispute_id
+      WHERE dl.supplier_invoice_line_id = sil.id
+        AND dl.resolved_at IS NULL
+        AND d.resolved_at IS NULL
+    );
+
+  SELECT COUNT(*)::integer
+  INTO v_target_missing_confirmation_count
+  FROM public.supplier_invoices si
+  JOIN public.supplier_invoice_lines sil ON sil.supplier_invoice_id = si.id
+  WHERE si.order_id = v_target_id
+    AND si.review_status IN ('pending_review', 'approved_current', 'ref_corrected_approved')
+    AND lower(COALESCE(sil.eligible_for_invoice_yn::text, '')) IN ('y', 'yes', 'true', '1')
+    AND (sil.qty_confirmed IS NULL OR sil.amount_confirmed IS NULL);
+
+  SELECT COALESCE(a.internal_current_stage, '') = 'exception_or_hold_open'
+  INTO v_target_exception_or_hold
+  FROM public.order_audience_status_pre_importer_reconciled_action_v1(v_target_id) a;
+
+  IF v_target_open_query_count <> 0 THEN
+    RAISE EXCEPTION 'Blocker regression failed: target has % open evidence query/queryies.', v_target_open_query_count;
+  END IF;
+  IF v_target_open_flag_count <> 0 THEN
+    RAISE EXCEPTION 'Blocker regression failed: target has % open/under-review invoice flag(s).', v_target_open_flag_count;
+  END IF;
+  IF v_target_evidence_action_invoice_count <> 0 THEN
+    RAISE EXCEPTION 'Blocker regression failed: target has % genuine evidence-action invoice(s).', v_target_evidence_action_invoice_count;
+  END IF;
+  IF v_target_unresolved_line_count <> 0 THEN
+    RAISE EXCEPTION 'Blocker regression failed: target has % unresolved invoice line(s).', v_target_unresolved_line_count;
+  END IF;
+  IF v_target_missing_confirmation_count <> 0 THEN
+    RAISE EXCEPTION 'Blocker regression failed: target has % progressed physical line(s) missing confirmed qty/value.', v_target_missing_confirmation_count;
+  END IF;
+  IF v_target_exception_or_hold THEN
+    RAISE EXCEPTION 'Blocker regression failed: target predecessor is in exception/hold.';
+  END IF;
 END $$;
 
 SELECT jsonb_build_object(
   'regression_result', 'PASS',
-  'proof', 'read-only regression; all non-action audience fields unchanged; every changed importer action constrained to exact review_needed + reconciliation complete + Resolve evidence issue predecessor boundary; predecessor/helper private; diagnosed target changes only importer_next_action from Resolve evidence issue to No importer action required'
+  'proof', 'read-only regression; all non-action audience fields unchanged; every changed importer action constrained to exact review_needed + reconciliation complete + Resolve evidence issue predecessor boundary; diagnosed target has no open query, open review flag, genuine evidence-action invoice, unresolved line, missing confirmation or exception/hold and changes only importer_next_action to No importer action required'
 ) AS regression_result;
 
 ROLLBACK;
