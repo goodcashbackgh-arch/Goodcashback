@@ -218,8 +218,14 @@ BEGIN
     q.accounting_sage_state,
     q.vat_compliance_state,
     q.internal_complete_yn,
-    q.customer_complete_yn,
-    q.importer_complete_yn,
+    CASE
+      WHEN q.safe_collectible_balance_due_gbp > 0.01 THEN false
+      ELSE q.customer_complete_yn
+    END AS customer_complete_yn,
+    CASE
+      WHEN q.safe_collectible_balance_due_gbp > 0.01 THEN false
+      ELSE q.importer_complete_yn
+    END AS importer_complete_yn,
     q.shipper_complete_yn,
     CASE
       WHEN q.safe_collectible_balance_due_gbp > 0.01
@@ -256,7 +262,7 @@ REVOKE ALL ON FUNCTION public.order_audience_status_v1(uuid) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.order_audience_status_v1(uuid) TO authenticated;
 
 COMMENT ON FUNCTION public.order_audience_status_v1(uuid) IS
-'Current shared audience status with an FX-excluding physical receipt-residual balance correction. Any active residual position is recalculated from final order value and payment already applied; only the portion not already converted into exact linked customer credit reduces the balance. Reversed residuals and all FX/card amounts are excluded. Orders with no active residual position pass through unchanged. No financial or operational write occurs.';
+'Current shared audience status with an FX-excluding physical receipt-residual balance correction. Any active residual position is recalculated from final order value and payment already applied; only the portion not already converted into exact linked customer credit reduces the balance. Reversed residuals and all FX/card amounts are excluded. Orders with no active residual position pass through unchanged. Positive corrected balances force customer/importer completion false; all other completion/status fields pass through. No financial or operational write occurs.';
 
 NOTIFY pgrst, 'reload schema';
 
