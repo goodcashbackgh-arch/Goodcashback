@@ -6,22 +6,30 @@ SET LOCAL statement_timeout = '0';
 -- Narrow successor to the 20260728 audience receipt-residual overlay.
 --
 -- Accounting rule:
---   collectible balance = max(final order value
---                             - payment already applied to the order
---                             - pending physical receipt residual,
---                             0)
+--   1. Start from the final-sale shortfall before the old receipt-residual overlay:
+--        max(final order value - payment already applied to the order, 0)
+--   2. Determine how much of the physical receipt residual still belongs to this order:
+--        active pending receipt residual
+--        less any exact customer credit already created from that same residual
+--   3. Reduce the shortfall by that order-applied physical residual, floored at zero.
 --
--- Only pending_receipt_residual_gbp is allowed to provide the additional receipt
--- reduction here. FX/card residuals are deliberately excluded.
+-- This is deliberately NOT an FX calculation. FX/card residuals, attributed-receipt
+-- totals and supplier-side FX never enter the customer collectible-balance formula.
 --
--- This wrapper changes only the shared audience projection. It does not write or
--- reclassify funding, account credit, DVA evidence/allocations, customer sales,
--- Sage/accounting, VAT, shipment, tracking, holds or disputes.
+-- The wrapper is read-only and changes only the shared audience projection. It does
+-- not write or reclassify funding, account credit, DVA evidence/allocations,
+-- customer sales, Sage/accounting, VAT, shipment, tracking, holds or disputes.
 
 DO $$
 BEGIN
   IF to_regclass('public.order_settlement_resolution_position_v1') IS NULL THEN
     RAISE EXCEPTION 'Missing public.order_settlement_resolution_position_v1';
+  END IF;
+  IF to_regclass('public.order_pending_funding_surplus') IS NULL THEN
+    RAISE EXCEPTION 'Missing public.order_pending_funding_surplus';
+  END IF;
+  IF to_regclass('public.importer_credit_ledger') IS NULL THEN
+    RAISE EXCEPTION 'Missing public.importer_credit_ledger';
   END IF;
 
   IF to_regprocedure('public.order_audience_status_pre_partial_receipt_residual_balance_v1(uuid)') IS NULL THEN
@@ -93,28 +101,75 @@ BEGIN
 
   RETURN QUERY
   WITH base AS (
+    -- Preserve every later audience/status/tracking correction already installed.
     SELECT *
     FROM public.order_audience_status_pre_partial_receipt_residual_balance_v1(p_order_id)
+  ), active_pending AS (
+    -- Physical receipt residuals remain economically attached to the order while
+    -- pending_evidence or credit_confirmed. Reversed rows are historical only.
+    SELECT
+      p.order_id,
+      ROUND(COALESCE(SUM(p.pending_surplus_gbp), 0)::numeric, 2) AS active_pending_receipt_gbp
+    FROM public.order_pending_funding_surplus p
+    JOIN base b ON b.order_id = p.order_id
+    WHERE p.status IN ('pending_evidence', 'credit_confirmed')
+    GROUP BY p.order_id
+  ), distinct_credit_links AS (
+    -- One confirmed customer-credit row can be linked to multiple pending rows;
+    -- deduplicate by ledger identity before summing so the credit is removed once.
+    SELECT DISTINCT
+      p.order_id,
+      p.confirmed_credit_ledger_id
+    FROM public.order_pending_funding_surplus p
+    JOIN base b ON b.order_id = p.order_id
+    WHERE p.status = 'credit_confirmed'
+      AND p.confirmed_credit_ledger_id IS NOT NULL
+  ), linked_confirmed_credit AS (
+    SELECT
+      l.order_id,
+      ROUND(COALESCE(SUM(ABS(c.amount_gbp)), 0)::numeric, 2) AS linked_confirmed_credit_gbp
+    FROM distinct_credit_links l
+    JOIN public.importer_credit_ledger c
+      ON c.id = l.confirmed_credit_ledger_id
+     AND c.direction = 'credit'
+    GROUP BY l.order_id
+  ), receipt_application AS (
+    SELECT
+      b.order_id,
+      ROUND(
+        GREATEST(
+          COALESCE(ap.active_pending_receipt_gbp, 0)
+            - COALESCE(lcc.linked_confirmed_credit_gbp, 0),
+          0
+        )::numeric,
+        2
+      ) AS physical_residual_applied_to_order_gbp
+    FROM base b
+    LEFT JOIN active_pending ap ON ap.order_id = b.order_id
+    LEFT JOIN linked_confirmed_credit lcc ON lcc.order_id = b.order_id
   ), scoped AS (
     SELECT
       b.*,
-      COALESCE(s.pending_receipt_residual_gbp, 0)::numeric AS pending_receipt_residual_gbp,
+      COALESCE(ra.physical_residual_applied_to_order_gbp, 0)::numeric AS physical_residual_applied_to_order_gbp,
       COALESCE(s.final_sale_document_count, 0)::integer AS final_sale_document_count,
       ROUND(
         CASE
-          WHEN COALESCE(s.pending_receipt_residual_gbp, 0) > 0.01
-           AND COALESCE(s.final_sale_document_count, 0) > 0
-          THEN GREATEST(
-            COALESCE(s.final_order_value_gbp, 0)
-              - COALESCE(s.payment_applied_to_order_gbp, 0)
-              - COALESCE(s.pending_receipt_residual_gbp, 0),
-            0
-          )
+          WHEN COALESCE(s.final_sale_document_count, 0) > 0 THEN
+            GREATEST(
+              GREATEST(
+                COALESCE(s.final_order_value_gbp, 0)
+                  - COALESCE(s.payment_applied_to_order_gbp, 0),
+                0
+              )
+                - COALESCE(ra.physical_residual_applied_to_order_gbp, 0),
+              0
+            )
           ELSE COALESCE(b.canonical_balance_due_gbp, 0)
         END::numeric,
         2
       ) AS safe_collectible_balance_due_gbp
     FROM base b
+    LEFT JOIN receipt_application ra ON ra.order_id = b.order_id
     LEFT JOIN public.order_settlement_resolution_position_v1 s
       ON s.order_id = b.order_id
   )
@@ -191,7 +246,7 @@ REVOKE ALL ON FUNCTION public.order_audience_status_v1(uuid) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.order_audience_status_v1(uuid) TO authenticated;
 
 COMMENT ON FUNCTION public.order_audience_status_v1(uuid) IS
-'Current shared audience status with an FX-excluding partial physical receipt-residual balance correction. Collectible balance is final order value less payment already applied and pending_receipt_residual_gbp, floored at zero. No FX residual, account-credit creation, funding mutation, DVA mutation or accounting mutation occurs here.';
+'Current shared audience status with an FX-excluding physical receipt-residual balance correction. Active physical residual reduces the final-sale shortfall only to the extent it has not already been converted into exact linked customer credit. Reversed residuals and all FX/card amounts are excluded. No financial or operational write occurs.';
 
 NOTIFY pgrst, 'reload schema';
 
