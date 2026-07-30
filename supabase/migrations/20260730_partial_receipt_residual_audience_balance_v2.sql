@@ -131,6 +131,8 @@ BEGIN
       AND p.reversed_at IS NULL
       AND p.confirmed_credit_ledger_id IS NOT NULL
   ), linked_confirmed_credit AS (
+    -- Fail closed unless the linked row has the exact provenance written by the
+    -- established pending-surplus confirmation path for this same order/importer.
     SELECT
       l.order_id,
       ROUND(COALESCE(SUM(ABS(c.amount_gbp)), 0)::numeric, 2) AS linked_confirmed_credit_gbp
@@ -139,6 +141,11 @@ BEGIN
       ON c.id = l.confirmed_credit_ledger_id
      AND c.importer_id = l.importer_id
      AND c.direction = 'credit'
+     AND c.entry_type = 'manual_credit'
+     AND c.source_type = 'overfunding'
+     AND c.source_table = 'orders'
+     AND c.source_id = l.order_id
+     AND c.linked_order_id = l.order_id
      AND c.source_entity_type = 'order'
      AND c.source_entity_id = l.order_id
     GROUP BY l.order_id
@@ -266,7 +273,7 @@ REVOKE ALL ON FUNCTION public.order_audience_status_pre_importer_tracking_assign
 GRANT EXECUTE ON FUNCTION public.order_audience_status_pre_importer_tracking_assignment_v1(uuid) TO authenticated;
 
 COMMENT ON FUNCTION public.order_audience_status_pre_importer_tracking_assignment_v1(uuid) IS
-'28 July receipt-residual audience layer repaired in place. Existing predecessor canonical balance remains authoritative; active non-reversed physical receipt residual reduces that balance only to the extent it has not already been converted into exact linked customer credit. FX/card residuals and attributed-receipt totals are excluded. Later supplier/tracking/audience projections are untouched.';
+'28 July receipt-residual audience layer repaired in place. Existing predecessor canonical balance remains authoritative; active non-reversed physical receipt residual reduces that balance only to the extent it has not already been converted into the exact linked overfunding credit for the same order/importer. FX/card residuals and attributed-receipt totals are excluded. Later supplier/tracking/audience projections are untouched.';
 
 NOTIFY pgrst, 'reload schema';
 
