@@ -36,7 +36,10 @@ BEGIN
 
   IF to_regclass('public.supplier_invoices') IS NULL
      OR to_regclass('public.supplier_invoice_lines') IS NULL
+     OR to_regclass('public.supplier_invoice_line_resolutions') IS NULL
      OR to_regclass('public.supplier_invoice_review_flags') IS NULL
+     OR to_regclass('public.dispute_lines') IS NULL
+     OR to_regclass('public.disputes') IS NULL
      OR to_regclass('public.order_evidence_queries') IS NULL
      OR to_regclass('public.order_tracking_submissions') IS NULL
      OR to_regclass('public.order_tracking_line_allocations') IS NULL
@@ -103,6 +106,8 @@ DECLARE
   v_open_query_count integer := 0;
   v_open_review_flag_count integer := 0;
   v_pending_review_invoice_count integer := 0;
+  v_evidence_action_invoice_count integer := 0;
+  v_unresolved_line_count integer := 0;
   v_missing_confirmation_count integer := 0;
   v_physical_line_count integer := 0;
   v_active_tracking_count integer := 0;
@@ -129,6 +134,25 @@ BEGIN
     RETURN p_fallback_action;
   END IF;
 
+  -- Genuine evidence-action invoice states remain importer work. Historical rejection
+  -- rows are ignored unless they are still current and still require resubmission.
+  SELECT COUNT(*)::integer
+  INTO v_evidence_action_invoice_count
+  FROM public.supplier_invoices si
+  WHERE si.order_id = p_order_id
+    AND (
+      si.review_status = 'needs_action'
+      OR (
+        si.review_status = 'rejected_resubmit_required'
+        AND COALESCE(si.is_current_for_order, true) = true
+        AND COALESCE(si.rejection_requires_resubmission_yn, true) = true
+      )
+    );
+
+  IF v_evidence_action_invoice_count > 0 THEN
+    RETURN p_fallback_action;
+  END IF;
+
   SELECT COUNT(*)::integer
   INTO v_open_query_count
   FROM public.order_evidence_queries q
@@ -151,9 +175,36 @@ BEGIN
     RETURN p_fallback_action;
   END IF;
 
-  -- reconciliation_state=complete already governs unresolved-line semantics. The only
-  -- extra importer completeness check needed here is confirmed qty/value on progressed
-  -- physical lines, because that is not guaranteed by reconciliation_state itself.
+  -- Do not rely on is_current_for_order for importer reconciliation. A pending-review
+  -- invoice can legitimately have is_current_for_order=false after header review.
+  SELECT COUNT(*)::integer
+  INTO v_unresolved_line_count
+  FROM public.supplier_invoices si
+  JOIN public.supplier_invoice_lines sil ON sil.supplier_invoice_id = si.id
+  WHERE si.order_id = p_order_id
+    AND si.review_status IN ('pending_review', 'approved_current', 'ref_corrected_approved')
+    AND lower(COALESCE(sil.eligible_for_invoice_yn::text, '')) NOT IN ('y', 'yes', 'true', '1')
+    AND NOT EXISTS (
+      SELECT 1
+      FROM public.supplier_invoice_line_resolutions r
+      WHERE r.supplier_invoice_line_id = sil.id
+        AND r.supplier_invoice_id = si.id
+        AND r.resolution_type = 'non_physical_financial'
+        AND r.active = true
+    )
+    AND NOT EXISTS (
+      SELECT 1
+      FROM public.dispute_lines dl
+      JOIN public.disputes d ON d.id = dl.dispute_id
+      WHERE dl.supplier_invoice_line_id = sil.id
+        AND dl.resolved_at IS NULL
+        AND d.resolved_at IS NULL
+    );
+
+  IF v_unresolved_line_count > 0 THEN
+    RETURN p_fallback_action;
+  END IF;
+
   SELECT
     COUNT(*)::integer,
     COUNT(*) FILTER (
