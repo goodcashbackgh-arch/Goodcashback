@@ -17,6 +17,10 @@ SET LOCAL statement_timeout = '0';
 DO $$
 DECLARE
   v_audit_definition text;
+  v_normalized_definition text;
+  v_result_signature text;
+  v_prosecdef boolean;
+  v_proconfig text[];
 BEGIN
   IF to_regprocedure('public.internal_order_status_drift_audit_v1()') IS NULL THEN
     RAISE EXCEPTION 'Missing public.internal_order_status_drift_audit_v1()';
@@ -34,13 +38,62 @@ BEGIN
     RAISE EXCEPTION 'Missing public.importer_credit_ledger';
   END IF;
 
-  SELECT lower(pg_get_functiondef('public.internal_order_status_drift_audit_v1()'::regprocedure))
-  INTO v_audit_definition;
+  SELECT
+    lower(pg_get_functiondef(p.oid)),
+    pg_get_function_result(p.oid),
+    p.prosecdef,
+    p.proconfig
+  INTO
+    v_audit_definition,
+    v_result_signature,
+    v_prosecdef,
+    v_proconfig
+  FROM pg_proc p
+  WHERE p.oid = 'public.internal_order_status_drift_audit_v1()'::regprocedure;
 
-  IF position('order_audience_status_v1(null)' IN v_audit_definition) = 0
-     OR position('expected_canonical_balance_due_gbp' IN v_audit_definition) = 0
+  v_normalized_definition := regexp_replace(v_audit_definition, '\s+', ' ', 'g');
+
+  IF v_result_signature IS DISTINCT FROM
+    'TABLE(order_id uuid, order_ref text, importer_name text, retailer_name text, drift_result text, final_sale_value_gbp numeric, legacy_local_balance_due_gbp numeric, expected_canonical_balance_due_gbp numeric, canonical_status_balance_due_gbp numeric, audience_balance_due_gbp numeric, confirmed_final_balance_payment_gbp numeric, details jsonb)'
   THEN
-    RAISE EXCEPTION 'Status drift audit contract has changed; stop before aligning receipt-residual expectations.';
+    RAISE EXCEPTION 'Status drift audit return signature changed; stop before aligning receipt-residual expectations: %', v_result_signature;
+  END IF;
+
+  IF NOT COALESCE(v_prosecdef, false)
+     OR NOT COALESCE(v_proconfig, ARRAY[]::text[]) @> ARRAY['search_path=public, pg_temp']::text[]
+  THEN
+    RAISE EXCEPTION 'Status drift audit execution boundary changed; stop before aligning receipt-residual expectations.';
+  END IF;
+
+  IF position('if auth.uid() is null then' IN v_normalized_definition) = 0
+     OR position('if not public.is_active_staff() then' IN v_normalized_definition) = 0
+  THEN
+    RAISE EXCEPTION 'Status drift audit authentication/staff boundary changed; stop before aligning receipt-residual expectations.';
+  END IF;
+
+  IF position('select * from public.order_audience_status_v1(null)' IN v_normalized_definition) = 0
+  THEN
+    RAISE EXCEPTION 'Status drift audit no longer calls the canonical audience RPC directly; stop before patching.';
+  END IF;
+
+  IF position(
+       'greatest(coalesce(s.signed_final_sale_value_gbp, 0) - coalesce(f.accepted_estimate_amount_received_gbp, 0) - coalesce(fbp.confirmed_final_balance_payment_gbp, 0), 0)'
+       IN v_normalized_definition
+     ) = 0
+     OR position(
+       'abs(a.canonical_status_balance_due_gbp - a.expected_canonical_balance_due_gbp) > 0.01'
+       IN v_normalized_definition
+     ) = 0
+  THEN
+    RAISE EXCEPTION 'Established canonical-status drift formula changed; stop before aligning audience expectations.';
+  END IF;
+
+  IF position(
+       'abs(a.audience_balance_due_gbp - a.expected_canonical_balance_due_gbp) > 0.01'
+       IN v_normalized_definition
+     ) = 0
+  THEN
+    RAISE EXCEPTION 'Expected pre-alignment audience drift comparison is no longer present; stop before patching.';
   END IF;
 END $$;
 
