@@ -136,12 +136,12 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
         .in("supplier_invoice_id", invoiceIds)
     : { data: [] as MatchDecisionRow[], error: null };
 
-  const { data: ocrHeaderTotalsData } = invoiceIds.length > 0
+  const { data: ocrHeaderTotalsData, error: ocrHeaderTotalsError } = invoiceIds.length > 0
     ? await supabase
         .from("supplier_invoice_accounting_coding_totals_vw")
         .select("supplier_invoice_id, ocr_invoice_net_gbp, ocr_invoice_vat_gbp")
         .in("supplier_invoice_id", invoiceIds)
-    : { data: [] as OcrHeaderTotalsRow[] };
+    : { data: [] as OcrHeaderTotalsRow[], error: null };
 
   const matchByInvoiceId = new Map<string, MatchDecisionRow>();
   for (const row of (matchData ?? []) as MatchDecisionRow[]) {
@@ -196,11 +196,12 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
             </div>
           </div>
 
-          {(qp.success || qp.error || matchError) ? (
+          {(qp.success || qp.error || matchError || ocrHeaderTotalsError) ? (
             <div className="space-y-3 border-t border-slate-100 px-5 py-4 sm:px-7">
               {qp.success ? <p className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-medium text-emerald-800">{qp.success}</p> : null}
               {qp.error ? <p className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-medium text-rose-800">{qp.error}</p> : null}
               {matchError ? <p className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-medium text-amber-800">Match decision view not available yet. Fallback filtering is active.</p> : null}
+              {ocrHeaderTotalsError ? <p className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-medium text-rose-800">Invoice Net/VAT OCR values are temporarily unavailable. Do not save a header correction until this is resolved.</p> : null}
             </div>
           ) : null}
         </section>
@@ -358,7 +359,7 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
                         <input name="reviewed_invoice_vat_gbp" type="number" min="0" step="0.01" className="mt-3 w-full rounded-2xl border border-slate-200 bg-white p-3 text-sm outline-none transition focus:border-sky-300" defaultValue={acceptedVat ?? ""} placeholder="Accepted invoice VAT GBP" />
                         <input name="ocr_invoice_total_gbp" type="number" min="0" step="0.01" className="mt-3 w-full rounded-2xl border border-slate-200 bg-white p-3 text-sm outline-none transition focus:border-sky-300" defaultValue={invoice.ocr_invoice_total_gbp ?? total ?? ""} placeholder="Accepted/extracted invoice total GBP" />
                         <input name="review_notes" className="mt-3 w-full rounded-2xl border border-slate-200 bg-white p-3 text-sm outline-none transition focus:border-sky-300" placeholder="Review note / correction reason" />
-                        <button className="mt-4 rounded-full px-5 py-3 text-sm font-semibold text-slate-950 shadow-sm transition hover:opacity-90" style={{ backgroundColor: BRAND_COLOUR }}>Save correction</button>
+                        <button disabled={Boolean(ocrHeaderTotalsError)} className="mt-4 rounded-full px-5 py-3 text-sm font-semibold text-slate-950 shadow-sm transition hover:opacity-90" style={{ backgroundColor: BRAND_COLOUR }}>Save correction</button>
                       </form>
 
                       <form action={rejectSupplierInvoiceRequireResubmissionAction} className="rounded-3xl border border-rose-200 bg-rose-50 p-5">
