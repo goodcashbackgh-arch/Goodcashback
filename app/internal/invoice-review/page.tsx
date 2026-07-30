@@ -20,7 +20,6 @@ type InvoiceRow = {
   ocr_invoice_total_gbp: number | null;
   ocr_retailer_name: string | null;
   ocr_invoice_date: string | null;
-  ocr_raw_json: Record<string, unknown> | null;
   reviewed_invoice_net_gbp: number | null;
   reviewed_invoice_vat_gbp: number | null;
   review_status: string;
@@ -58,6 +57,12 @@ type MatchDecisionRow = {
   supplier_approval_block_reason: string | null;
 };
 
+type OcrHeaderTotalsRow = {
+  supplier_invoice_id: string;
+  ocr_invoice_net_gbp: number | null;
+  ocr_invoice_vat_gbp: number | null;
+};
+
 function first<T>(value: MaybeArray<T>): T | null {
   if (!value) return null;
   return Array.isArray(value) ? value[0] ?? null : value;
@@ -69,19 +74,6 @@ function orderOf(invoice: InvoiceRow) { return first(invoice.orders); }
 function orderRetailer(invoice: InvoiceRow) { return first(orderOf(invoice)?.retailers)?.name ?? "—"; }
 function importer(invoice: InvoiceRow) { return first(orderOf(invoice)?.importers)?.company_name ?? "—"; }
 function enteredTotal(invoice: InvoiceRow) { return first(invoice.supplier_invoice_financial_summary)?.invoice_total_gbp ?? null; }
-function rawOcrHeaderMoney(invoice: InvoiceRow, fieldName: "total_net" | "total_tax") {
-  const inference = invoice.ocr_raw_json?.inference;
-  if (!inference || typeof inference !== "object") return null;
-  const result = (inference as Record<string, unknown>).result;
-  if (!result || typeof result !== "object") return null;
-  const fields = (result as Record<string, unknown>).fields;
-  if (!fields || typeof fields !== "object") return null;
-  const field = (fields as Record<string, unknown>)[fieldName];
-  if (!field || typeof field !== "object") return null;
-  const value = (field as Record<string, unknown>).value;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? Math.round(parsed * 100) / 100 : null;
-}
 function openFlags(invoice: InvoiceRow) { return (invoice.supplier_invoice_review_flags ?? []).filter((f) => ["open", "under_review"].includes(f.status)); }
 function hasMindeeJob(invoice: InvoiceRow) { return Boolean(invoice.mindee_job_id); }
 function mindeeCompleted(invoice: InvoiceRow) { return invoice.mindee_ocr_status === "completed" || Boolean(invoice.mindee_result_saved_at); }
@@ -130,7 +122,7 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
 
   const { data, error } = await supabase
     .from("supplier_invoices")
-    .select(`id, order_id, invoice_ref, invoice_pdf_url, uploaded_at, ocr_invoice_ref, ocr_invoice_total_gbp, ocr_retailer_name, ocr_invoice_date, ocr_raw_json, reviewed_invoice_net_gbp, reviewed_invoice_vat_gbp, review_status, blocked_from_sage_yn, review_notes, mindee_job_id, mindee_inference_id, mindee_model_id, mindee_ocr_status, mindee_enqueued_at, mindee_result_saved_at, mindee_pages_consumed, mindee_error_message, orders(order_ref, order_total_gbp_declared, total_qty_declared, retailers(name), importers(company_name)), supplier_invoice_financial_summary(invoice_total_gbp), supplier_invoice_review_flags(flag_type, message, status)`)
+    .select(`id, order_id, invoice_ref, invoice_pdf_url, uploaded_at, ocr_invoice_ref, ocr_invoice_total_gbp, ocr_retailer_name, ocr_invoice_date, reviewed_invoice_net_gbp, reviewed_invoice_vat_gbp, review_status, blocked_from_sage_yn, review_notes, mindee_job_id, mindee_inference_id, mindee_model_id, mindee_ocr_status, mindee_enqueued_at, mindee_result_saved_at, mindee_pages_consumed, mindee_error_message, orders(order_ref, order_total_gbp_declared, total_qty_declared, retailers(name), importers(company_name)), supplier_invoice_financial_summary(invoice_total_gbp), supplier_invoice_review_flags(flag_type, message, status)`)
     .in("review_status", ["pending_review", "duplicate_blocked"])
     .order("uploaded_at", { ascending: false })
     .limit(100);
@@ -144,9 +136,21 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
         .in("supplier_invoice_id", invoiceIds)
     : { data: [] as MatchDecisionRow[], error: null };
 
+  const { data: ocrHeaderTotalsData } = invoiceIds.length > 0
+    ? await supabase
+        .from("supplier_invoice_accounting_coding_totals_vw")
+        .select("supplier_invoice_id, ocr_invoice_net_gbp, ocr_invoice_vat_gbp")
+        .in("supplier_invoice_id", invoiceIds)
+    : { data: [] as OcrHeaderTotalsRow[] };
+
   const matchByInvoiceId = new Map<string, MatchDecisionRow>();
   for (const row of (matchData ?? []) as MatchDecisionRow[]) {
     matchByInvoiceId.set(row.supplier_invoice_id, row);
+  }
+
+  const ocrHeaderTotalsByInvoiceId = new Map<string, OcrHeaderTotalsRow>();
+  for (const row of (ocrHeaderTotalsData ?? []) as OcrHeaderTotalsRow[]) {
+    ocrHeaderTotalsByInvoiceId.set(row.supplier_invoice_id, row);
   }
 
   const readiness = new Map(await Promise.all(invoices.map(async (invoice) => [invoice.id, await assertInvoiceReadyForCurrentApproval(supabase, invoice.id)] as const)));
@@ -235,8 +239,9 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
             const flags = openFlags(invoice);
             const block = readiness.get(invoice.id);
             const total = enteredTotal(invoice);
-            const acceptedNet = invoice.reviewed_invoice_net_gbp ?? rawOcrHeaderMoney(invoice, "total_net");
-            const acceptedVat = invoice.reviewed_invoice_vat_gbp ?? rawOcrHeaderMoney(invoice, "total_tax");
+            const ocrHeaderTotals = ocrHeaderTotalsByInvoiceId.get(invoice.id);
+            const acceptedNet = invoice.reviewed_invoice_net_gbp ?? ocrHeaderTotals?.ocr_invoice_net_gbp ?? null;
+            const acceptedVat = invoice.reviewed_invoice_vat_gbp ?? ocrHeaderTotals?.ocr_invoice_vat_gbp ?? null;
             const match = matchByInvoiceId.get(invoice.id);
             return (
               <article key={invoice.id} className="overflow-hidden rounded-[2rem] border border-slate-200 bg-white shadow-sm">
