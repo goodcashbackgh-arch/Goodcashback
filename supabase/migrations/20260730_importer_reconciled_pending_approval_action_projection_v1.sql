@@ -85,8 +85,9 @@ END $$;
 ALTER FUNCTION public.order_audience_status_v1(uuid)
   RENAME TO order_audience_status_pre_importer_reconciled_action_v1;
 
-REVOKE ALL ON FUNCTION public.order_audience_status_pre_importer_reconciled_action_v1(uuid)
-  FROM PUBLIC, anon, authenticated;
+-- Preserve the predecessor's existing privileges unchanged. Renaming preserves its OID
+-- and grants, which avoids altering working dependent objects while the new public name
+-- is recreated below.
 
 CREATE OR REPLACE FUNCTION public.internal_importer_pending_approval_action_v1(
   p_order_id uuid,
@@ -112,7 +113,6 @@ DECLARE
   v_active_tracking_count integer := 0;
   v_unassigned_physical_line_count integer := 0;
 BEGIN
-  -- Exact defect boundary. Everything else is predecessor behaviour.
   IF p_supplier_state IS DISTINCT FROM 'review_needed'
      OR p_reconciliation_state IS DISTINCT FROM 'complete'
      OR p_fallback_action IS DISTINCT FROM 'Resolve evidence issue'
@@ -122,7 +122,6 @@ BEGIN
     RETURN p_fallback_action;
   END IF;
 
-  -- This correction applies only where internal approval is genuinely pending.
   SELECT COUNT(*)::integer
   INTO v_pending_review_invoice_count
   FROM public.supplier_invoices si
@@ -133,7 +132,6 @@ BEGIN
     RETURN p_fallback_action;
   END IF;
 
-  -- Addendum-defined genuine supplier-evidence resubmission blocker only.
   SELECT COUNT(*)::integer
   INTO v_genuine_resubmission_count
   FROM public.supplier_invoices si
@@ -168,7 +166,6 @@ BEGIN
     RETURN p_fallback_action;
   END IF;
 
-  -- Do not use is_current_for_order as the importer reconciliation-complete gate.
   SELECT COUNT(*)::integer
   INTO v_unresolved_line_count
   FROM public.supplier_invoices si
