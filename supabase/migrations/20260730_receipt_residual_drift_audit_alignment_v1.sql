@@ -315,7 +315,7 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.internal_order_status_drift_audit_v1() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.internal_order_status_drift_audit_v1() FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.internal_order_status_drift_audit_v1() TO authenticated;
 
 COMMENT ON FUNCTION public.internal_order_status_drift_audit_v1() IS
