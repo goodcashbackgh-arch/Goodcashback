@@ -9,8 +9,9 @@ SET LOCAL statement_timeout = '0';
 --
 -- No business-data writes. No supplier approval/coding/funding/Sage/internal/customer/
 -- shipper changes. The live audience function is preserved as an exact predecessor;
--- the new public wrapper overrides importer_next_action only when importer-owned
--- reconciliation work is proven complete.
+-- the new public wrapper overrides importer_next_action only inside the exact proven
+-- defect boundary: supplier review_needed + reconciliation complete + predecessor
+-- action Resolve evidence issue.
 
 DO $$
 DECLARE
@@ -65,6 +66,8 @@ ALTER FUNCTION public.order_audience_status_v1(uuid)
 CREATE OR REPLACE FUNCTION public.internal_importer_reconciled_next_action_v1(
   p_order_id uuid,
   p_fallback_action text,
+  p_supplier_state text,
+  p_reconciliation_state text,
   p_canonical_balance_due_gbp numeric,
   p_internal_current_stage text,
   p_pod_delivery_state text
@@ -85,6 +88,14 @@ DECLARE
   v_active_tracking_count integer := 0;
   v_unassigned_physical_line_count integer := 0;
 BEGIN
+  -- Exact defect boundary. Everything else is byte-for-byte predecessor behaviour.
+  IF p_supplier_state IS DISTINCT FROM 'review_needed'
+     OR p_reconciliation_state IS DISTINCT FROM 'complete'
+     OR p_fallback_action IS DISTINCT FROM 'Resolve evidence issue'
+  THEN
+    RETURN p_fallback_action;
+  END IF;
+
   -- Preserve all existing higher-priority action semantics.
   IF COALESCE(p_canonical_balance_due_gbp, 0) > 0.01
      OR COALESCE(p_internal_current_stage, '') = 'exception_or_hold_open'
@@ -231,10 +242,10 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.internal_importer_reconciled_next_action_v1(uuid, text, numeric, text, text)
-  FROM PUBLIC, anon;
-GRANT EXECUTE ON FUNCTION public.internal_importer_reconciled_next_action_v1(uuid, text, numeric, text, text)
-  TO authenticated;
+-- Internal-only helper. The SECURITY DEFINER audience wrapper can call it as owner;
+-- authenticated/anon callers do not get direct EXECUTE permission.
+REVOKE ALL ON FUNCTION public.internal_importer_reconciled_next_action_v1(uuid, text, text, text, numeric, text, text)
+  FROM PUBLIC, anon, authenticated;
 
 CREATE OR REPLACE FUNCTION public.order_audience_status_v1(
   p_order_id uuid DEFAULT NULL
@@ -338,6 +349,8 @@ BEGIN
     public.internal_importer_reconciled_next_action_v1(
       b.order_id,
       b.importer_next_action,
+      b.supplier_state,
+      b.reconciliation_state,
       b.canonical_balance_due_gbp,
       b.internal_current_stage,
       b.pod_delivery_state
@@ -353,7 +366,7 @@ REVOKE ALL ON FUNCTION public.order_audience_status_v1(uuid) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.order_audience_status_v1(uuid) TO authenticated;
 
 COMMENT ON FUNCTION public.order_audience_status_v1(uuid) IS
-'Importer-action-only wrapper. Preserves the complete prior audience projection and changes only importer_next_action when importer reconciliation is proven complete while supplier invoices legitimately await later internal coding/supervisor approval.';
+'Importer-action-only wrapper. Preserves the complete prior audience projection and changes only importer_next_action inside the exact proven defect boundary: supplier_state review_needed, reconciliation_state complete, predecessor action Resolve evidence issue; genuine importer blockers still preserve the predecessor action.';
 
 NOTIFY pgrst, 'reload schema';
 
