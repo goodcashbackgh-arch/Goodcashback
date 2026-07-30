@@ -63,11 +63,13 @@ The £37.20 is new credit for future use; it is not credit applied to the same o
 
 ## Implementation boundary
 
-The repair is confined to `public.order_audience_status_pre_importer_tracking_assignment_v1(uuid)`, the existing 28 July receipt-residual audience layer.
+On current `main`, the 28 July migration made `public.order_audience_status_v1(uuid)` the receipt-residual wrapper and preserved its exact predecessor as `public.order_audience_status_pre_receipt_residual_overlay_v1(uuid)`.
 
-The function must continue to use `public.order_audience_status_pre_receipt_residual_overlay_v1(uuid)` as the authoritative predecessor and adjust only its `canonical_balance_due_gbp` for the physical receipt residual rule above.
+The repair therefore replaces only the current `public.order_audience_status_v1(uuid)` definition created by that 28 July overlay. It must continue to call `public.order_audience_status_pre_receipt_residual_overlay_v1(uuid)` as the authoritative base and adjust only the audience-facing `canonical_balance_due_gbp` plus the same customer/importer status/action suppression already owned by the 28 July overlay when the corrected balance reaches zero.
 
-The current top-level `public.order_audience_status_v1(uuid)` must not be replaced or wrapped by this change. Later supplier-rejection, evidence-query, tracking-assignment and audience corrections remain intact and consume the corrected result through the existing dependency chain.
+The migration must fail closed if the current top-level audience function no longer directly contains the 28 July predecessor call. It must not depend on any unmerged or assumed audience-wrapper function.
+
+All supplier-rejection, evidence-query, reconciliation and tracking behaviour already present in the preserved predecessor remains unchanged and passes through normally.
 
 ## Explicitly untouched
 
@@ -85,24 +87,25 @@ This addendum authorises no change to:
 - tracking/shipment logic;
 - holds/disputes;
 - customer/importer page code, wording, styling or navigation;
-- permissions other than preserving the existing execution boundary of the repaired function.
+- permissions other than preserving the existing execution boundary of `order_audience_status_v1(uuid)`.
 
 ## Provenance requirement for carved-out customer credit
 
-A linked credit reduces the active physical residual only when it is the exact established overfunding credit for the same importer and order, including matching ledger identity and established source/provenance fields. Otherwise the calculation fails closed and leaves the balance higher rather than granting an unsupported reduction.
+A linked credit reduces the active physical residual only when it is the exact established overfunding credit for the same importer and order, including matching ledger identity and the source fields written by the established pending-surplus confirmation route. Otherwise the calculation fails closed and leaves the balance higher rather than granting an unsupported reduction.
 
 ## Regression requirements
 
 The regression must prove:
 
-- the repair exists only in the 28 July residual layer and has not leaked into the top-level audience function;
-- the repaired layer contains no write path;
+- the repair is in the current 28 July top-level audience wrapper and still calls only `order_audience_status_pre_receipt_residual_overlay_v1(uuid)` as its audience base;
+- no assumed/unmerged `order_audience_status_pre_importer_tracking_assignment_v1(uuid)` dependency exists in the repair;
+- the repaired audience function contains no write path;
 - no FX/card or attributed-receipt field participates in the balance formula;
-- no second funding/final-sale calculation is introduced;
+- no second funding/final-sale calculation is introduced into the audience function;
 - the scenario matrix above passes;
 - ORD-1785274708774 resolves from £47.60 to £9.47 using the £38.13 active physical residual;
 - ORD-1784976429191 resolves its £44.00 shortfall to zero while preserving the £37.20 as separate newly created overfunding credit.
 
 ## Scope freeze
 
-Any proposed change outside this function, its regression proof, or this addendum is outside this build and requires a separate diagnosis and explicit approval.
+Any proposed change outside this one audience function, its regression proof, or this addendum is outside this build and requires a separate diagnosis and explicit approval.
