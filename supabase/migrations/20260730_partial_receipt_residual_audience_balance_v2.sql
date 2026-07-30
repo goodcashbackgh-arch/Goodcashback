@@ -120,7 +120,7 @@ BEGIN
      OR position('tracking_assignment_needed' IN v_current_normalized) = 0
      OR position('from public.order_evidence_queries' IN v_current_normalized) = 0
      OR position('from public.order_tracking_submissions' IN v_current_normalized) = 0
-     OR position('from public.order_tracking_line_allocations' IN v_current_normalized) = 0
+     OR position('join public.order_tracking_line_allocations' IN v_current_normalized) = 0
      OR position('when p.tracking_assignment_needed then ''assign tracking''' IN v_current_normalized) = 0
   THEN
     RAISE EXCEPTION 'Live top-level audience function is no longer the proven importer tracking-assignment wrapper; stop before patching.';
