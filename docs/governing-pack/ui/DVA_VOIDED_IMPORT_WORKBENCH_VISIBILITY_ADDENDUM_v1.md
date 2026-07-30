@@ -2,7 +2,7 @@
 
 **Status:** GOVERNING ADDENDUM — final build scope locked; implementation not authorised by this document alone  
 **Scope:** DVA/card statement import voiding and downstream active-workbench visibility only  
-**Principle:** preserve immutable statement evidence; remove only safely voided imported lines from active operational use; prove retained behaviour is unchanged
+**Principle:** preserve immutable statement evidence; remove only safely voided imported lines from active operational use; prove every retained path is unchanged
 
 ## 1. Objective
 
@@ -10,7 +10,7 @@ Extend the existing DVA statement-import **Void** action seamlessly so that a co
 
 The existing Void action remains the single operator action and the existing import-link provenance remains the source of truth.
 
-No second void workflow, deletion mechanism, replacement status system, parallel suppression table, page-specific cleanup action, or funding rewrite may be introduced.
+No second void workflow, deletion mechanism, replacement status system, parallel suppression table, page-specific cleanup action, funding rewrite, or downstream business-rule rewrite may be introduced.
 
 ## 2. Confirmed current behaviour
 
@@ -30,7 +30,7 @@ The defect is downstream DVA visibility: committed physical statement lines can 
 
 ## 3. Governing active-workbench visibility rule
 
-A committed DVA statement line is excluded from active DVA allocation/matching workbench visibility when:
+A committed DVA statement line is excluded from active DVA allocation/matching workbench visibility only when:
 
 1. it has at least one inactive import link; and
 2. it has no active import link.
@@ -52,7 +52,12 @@ NOT EXISTS (
 )
 ```
 
-This deliberately preserves lines that have an active import link and lines that were never created through the import-link mechanism. A missing import link must **not** make a line invisible.
+This deliberately preserves:
+
+- lines with an active import link even if they also have historical inactive links; and
+- lines that were never created through the import-link mechanism.
+
+A missing import link must **not** make a line invisible.
 
 ## 4. Required seamless implementation
 
@@ -64,12 +69,12 @@ The operator continues to use the existing statement-import **Void** action. The
 
 Before inactivating any import link, the void RPC must fail closed if any linked statement line has active economic consumption or reservation according to `public.statement_line_control_position_v1`.
 
-A linked line blocks void where the canonical position shows either:
+A linked line blocks void where either:
 
 - `active_consumed_gbp > 0`; or
 - `active_reserved_gbp > 0`.
 
-The existing confirmed/held allocation protection must remain intact. The void must fail before any import link, import row, or batch status changes.
+The existing confirmed/held allocation protection must remain intact and execute before the new cross-lane guard. The void must fail before any import link, import row, or batch status changes.
 
 The central position must be used rather than rebuilding separate funding/allocation/loyalty/shipper-AP rules inside the void RPC.
 
@@ -77,15 +82,11 @@ The central position must be used rather than rebuilding separate funding/alloca
 
 The production migration must **not blindly replace** the whole Void RPC from a copied implementation.
 
-Before changing it, the migration must verify that the live `staff_void_dva_statement_import_batch(uuid,text)` implementation matches the reviewed baseline represented by `docs/governing-pack/backend/dva_import_void_guard_v1.sql` for the function body and governing attributes.
+Before changing it, the migration must verify that the live `staff_void_dva_statement_import_batch(uuid,text)` implementation matches the reviewed baseline represented by `docs/governing-pack/backend/dva_import_void_guard_v1.sql` for the complete stored PL/pgSQL body and governing attributes.
 
-The lock may normalise insignificant whitespace/case, but it must compare the complete stored PL/pgSQL body, not merely search for a few tokens.
-
-If the live function has drifted from that reviewed baseline, the migration must raise and roll back before changing the function or either view.
+The lock may normalise insignificant whitespace/case. If the live function has drifted from that reviewed baseline, the migration must raise and roll back before changing the function or either view.
 
 Once the baseline is proven, the migration must patch the **live definition surgically** so that the only semantic addition is the canonical active-consumed/active-reserved guard. Existing authentication, role, reason, locking, confirmed/held guard, inactivation, row/batch voiding, provenance and return behaviour must remain sourced from the current live definition.
-
-The existing confirmed/held guard should remain separately executable so its existing protection/error path is not weakened by the new cross-lane guard.
 
 ### 4.4 Active DVA workbench views must honour void provenance
 
@@ -206,13 +207,23 @@ For the four controlled lines:
 - both active replacements present exactly once;
 - physical statement rows and import provenance retained.
 
-### 10.2 Retained-line invariance — exact pre/post proof
+### 10.2 Retained-line invariance — exact inactive-only boundary
 
 The migration must snapshot the retained population of both live views **before** patching and compare it with the retained population **after** patching in the same transaction.
 
-For retained active and legacy/non-import rows, the comparison must preserve complete row values and multiplicity, not merely selected headline columns. Any unexpected changed, missing or additional retained row must raise and roll back the migration.
+The snapshot may exclude **only** statement lines satisfying the governing exclusion condition:
 
-This proves, among other fields, no unintended change to statement amounts, allocation totals, unallocated amount, status bucket, selectable flag, supervisor readiness, loyalty values or control reason.
+```text
+inactive import link exists
+AND
+no active import link exists
+```
+
+A line that has both an inactive historical link **and** an active link is retained and must be included in exact invariance protection.
+
+For every retained active, active-plus-historical, and legacy/non-import row, the comparison must preserve complete row values and multiplicity, not merely selected headline columns. Any unexpected changed, missing or additional retained row must raise and roll back the migration.
+
+This proves no unintended change to statement amounts, allocation totals, unallocated amount, status bucket, selectable flag, supervisor readiness, loyalty values, control reason, display values, or duplicate/multiplicity behaviour.
 
 Only inactive-only imported rows are allowed to leave the active views.
 
@@ -224,16 +235,30 @@ The migration must also prove the deployed function body contains the exact revi
 
 A production economic transaction must **not** be mutated merely to test the guard. Where an authenticated controlled batch is available, application smoke must confirm the actual Void action refuses it and leaves link/row/batch state unchanged.
 
-### 10.4 Supplier suggestion non-regression
+### 10.4 Supplier suggestion candidate-set non-regression
 
 Use a read-only candidate-set test. Do not create production suggestions merely for testing.
 
-Prove:
+The test must reproduce the existing candidate-selection logic used by `staff_generate_supplier_invoice_match_suggestions(...)`, including its existing direction, balance, supplier-invoice readiness, tolerance/date/reference/name matching and target-line filters as applicable. Merely proving that a row exists in `dva_statement_line_allocation_summary_vw` is insufficient.
 
-- inactive-only/voided OUT is absent from the summary source and therefore cannot be a new suggestion candidate;
-- valid retained OUT candidate population is unchanged apart from rows deliberately excluded by the governing void predicate.
+Capture the candidate population before the view patch and compare it with the candidate population after the patch in the same transaction.
 
-The migration's exact retained-summary comparison is the primary invariant protecting the existing suggestion route.
+Required invariant:
+
+```text
+post-patch suggestion candidates
+=
+pre-patch suggestion candidates
+minus candidates whose statement lines are inactive-only under the governing void predicate
+```
+
+Therefore:
+
+- inactive-only/voided OUT must not remain a new suggestion candidate;
+- every retained eligible OUT candidate must remain eligible with the same candidate identity/ranking inputs;
+- no new candidate may appear merely because of this migration.
+
+If the candidate-set comparison differs outside the deliberate inactive-only exclusions, the migration must raise and roll back.
 
 ### 10.5 Funding non-regression
 
@@ -260,9 +285,9 @@ Without editing pages, smoke existing paths after DB patch:
 
 ### 10.8 Atomic migration safety
 
-All preflight baseline checks, pre-patch snapshots, function/view patches and retained-row invariance checks must occur inside one transaction.
+All preflight baseline checks, pre-patch retained-row snapshots, pre-patch suggestion-candidate snapshot, function/view patches, retained-row invariance and suggestion-candidate invariance must occur inside one transaction.
 
-If the Void RPC baseline does not match, a view anchor cannot be safely identified, or retained-row invariance fails, the migration must roll back **all** changes.
+If the Void RPC baseline does not match, a view anchor cannot be safely identified, retained-row invariance fails, or suggestion-candidate invariance fails, the migration must roll back **all** changes.
 
 ## 11. Final implementation boundary
 
@@ -271,10 +296,11 @@ The final production build is limited to:
 1. baseline-locked surgical augmentation of the existing Void RPC with the canonical consumed/reserved guard;
 2. exact-live-definition patch of `dva_statement_line_allocation_status_vw`;
 3. exact-live-definition patch of `dva_statement_line_allocation_summary_vw`;
-4. focused regression SQL implementing the gates above.
+4. atomic retained-row and supplier-suggestion candidate-set invariance gates;
+5. focused regression SQL implementing the gates above.
 
 **Do not change Funding/day2 or application files.**
 
 ## 12. Acceptance statement
 
-The patch is accepted only when one existing **Void** action behaves atomically and predictably: safely voidable imports retain immutable evidence but cease active DVA allocation/matching participation; economically used/reserved imports fail before mutation; retained active/legacy rows are proven byte-for-byte equivalent at the view-row level; Funding remains unchanged; and the Void RPC is proven to be the reviewed existing baseline plus only the canonical usage guard addition.
+The patch is accepted only when one existing **Void** action behaves atomically and predictably: safely voidable imports retain immutable evidence but cease active DVA allocation/matching participation; economically used/reserved imports fail before mutation; every retained active/active-plus-historical/legacy row is proven byte-for-byte equivalent at the view-row level; the existing supplier-suggestion candidate set changes only by removal of inactive-only rows; Funding remains unchanged; and the Void RPC is proven to be the reviewed existing baseline plus only the canonical usage guard addition.
