@@ -154,16 +154,19 @@ BEGIN
       COALESCE(s.final_sale_document_count, 0)::integer AS final_sale_document_count,
       ROUND(
         CASE
-          WHEN COALESCE(s.final_sale_document_count, 0) > 0 THEN
+          -- Exact pass-through when there is no still-order-applied physical residual.
+          -- This keeps every unrelated order byte-for-byte on the existing audience balance.
+          WHEN COALESCE(ra.physical_residual_applied_to_order_gbp, 0) > 0.01
+           AND COALESCE(s.final_sale_document_count, 0) > 0
+          THEN GREATEST(
             GREATEST(
-              GREATEST(
-                COALESCE(s.final_order_value_gbp, 0)
-                  - COALESCE(s.payment_applied_to_order_gbp, 0),
-                0
-              )
-                - COALESCE(ra.physical_residual_applied_to_order_gbp, 0),
+              COALESCE(s.final_order_value_gbp, 0)
+                - COALESCE(s.payment_applied_to_order_gbp, 0),
               0
             )
+              - COALESCE(ra.physical_residual_applied_to_order_gbp, 0),
+            0
+          )
           ELSE COALESCE(b.canonical_balance_due_gbp, 0)
         END::numeric,
         2
@@ -246,7 +249,7 @@ REVOKE ALL ON FUNCTION public.order_audience_status_v1(uuid) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.order_audience_status_v1(uuid) TO authenticated;
 
 COMMENT ON FUNCTION public.order_audience_status_v1(uuid) IS
-'Current shared audience status with an FX-excluding physical receipt-residual balance correction. Active physical residual reduces the final-sale shortfall only to the extent it has not already been converted into exact linked customer credit. Reversed residuals and all FX/card amounts are excluded. No financial or operational write occurs.';
+'Current shared audience status with an FX-excluding physical receipt-residual balance correction. Active physical residual reduces the final-sale shortfall only to the extent it has not already been converted into exact linked customer credit. Reversed residuals and all FX/card amounts are excluded. Orders with no remaining physical residual pass through unchanged. No financial or operational write occurs.';
 
 NOTIFY pgrst, 'reload schema';
 
