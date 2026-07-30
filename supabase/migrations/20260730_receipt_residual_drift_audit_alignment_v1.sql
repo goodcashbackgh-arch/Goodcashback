@@ -21,6 +21,8 @@ DECLARE
   v_result_signature text;
   v_prosecdef boolean;
   v_proconfig text[];
+  v_is_pre_alignment boolean;
+  v_is_post_alignment boolean;
 BEGIN
   IF to_regprocedure('public.internal_order_status_drift_audit_v1()') IS NULL THEN
     RAISE EXCEPTION 'Missing public.internal_order_status_drift_audit_v1()';
@@ -88,12 +90,27 @@ BEGIN
     RAISE EXCEPTION 'Established canonical-status drift formula changed; stop before aligning audience expectations.';
   END IF;
 
-  IF position(
-       'abs(a.audience_balance_due_gbp - a.expected_canonical_balance_due_gbp) > 0.01'
-       IN v_normalized_definition
-     ) = 0
-  THEN
-    RAISE EXCEPTION 'Expected pre-alignment audience drift comparison is no longer present; stop before patching.';
+  v_is_pre_alignment := position(
+    'abs(a.audience_balance_due_gbp - a.expected_canonical_balance_due_gbp) > 0.01'
+    IN v_normalized_definition
+  ) > 0;
+
+  v_is_post_alignment :=
+    position('expected_audience_balance_due_gbp' IN v_normalized_definition) > 0
+    AND position(
+      'abs(a.audience_balance_due_gbp - a.expected_audience_balance_due_gbp) > 0.01'
+      IN v_normalized_definition
+    ) > 0
+    AND position('active_pending_receipt_gbp' IN v_normalized_definition) > 0
+    AND position('linked_confirmed_credit_gbp' IN v_normalized_definition) > 0
+    AND position('still_order_applied_residual_gbp' IN v_normalized_definition) > 0
+    AND position('c.entry_type = ''manual_credit''' IN v_normalized_definition) > 0
+    AND position('c.source_type = ''overfunding''' IN v_normalized_definition) > 0
+    AND position('c.source_table = ''orders''' IN v_normalized_definition) > 0
+    AND position('c.source_entity_type = ''order''' IN v_normalized_definition) > 0;
+
+  IF NOT v_is_pre_alignment AND NOT v_is_post_alignment THEN
+    RAISE EXCEPTION 'Drift audit is neither the proven pre-alignment form nor the proven post-alignment form; stop before patching.';
   END IF;
 END $$;
 
