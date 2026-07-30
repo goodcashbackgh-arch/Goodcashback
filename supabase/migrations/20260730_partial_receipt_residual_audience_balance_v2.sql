@@ -3,50 +3,50 @@ BEGIN;
 SET LOCAL lock_timeout = '15s';
 SET LOCAL statement_timeout = '0';
 
--- Narrow successor to the 20260728 audience receipt-residual overlay.
+-- Narrow repair of the 20260728 receipt-residual audience overlay only.
 --
--- Accounting rule:
---   1. Start from the final-sale shortfall before the old receipt-residual overlay:
---        max(final order value - payment already applied to the order, 0)
---   2. Determine how much of the physical receipt residual still belongs to this order:
---        active pending receipt residual
---        less any exact customer credit already created from that same residual
---   3. If an active receipt-residual position exists, recompute the collectible balance
---      from canonical settlement facts and reduce it only by the still-order-applied
---      physical residual, floored at zero.
---   4. If there is no active receipt-residual position, preserve the existing audience
---      balance exactly.
+-- Do NOT replace or wrap the current top-level order_audience_status_v1(uuid).
+-- Later supplier-rejection, evidence-query, tracking-assignment and audience
+-- corrections remain untouched and continue to consume this layer normally.
 --
--- This is deliberately NOT an FX calculation. FX/card residuals, attributed-receipt
--- totals and supplier-side FX never enter the customer collectible-balance formula.
+-- Accounting rule for an active physical receipt-residual position:
+--   still_order_applied_residual
+--     = max(active_pending_receipt_residual - exact_linked_customer_credit, 0)
 --
--- The wrapper is read-only and changes only the shared audience projection. It does
--- not write or reclassify funding, account credit, DVA evidence/allocations,
--- customer sales, Sage/accounting, VAT, shipment, tracking, holds or disputes.
+--   collectible_balance
+--     = max(max(final_order_value - payment_applied_to_order, 0)
+--           - still_order_applied_residual, 0)
+--
+-- If there is no active physical receipt-residual position, preserve the
+-- predecessor audience balance exactly.
+--
+-- FX/card residuals and attributed-receipt totals are deliberately excluded.
+-- This migration performs no financial or operational writes.
 
 DO $$
 BEGIN
+  IF to_regprocedure('public.order_audience_status_pre_importer_tracking_assignment_v1(uuid)') IS NULL THEN
+    RAISE EXCEPTION 'Missing public.order_audience_status_pre_importer_tracking_assignment_v1(uuid)';
+  END IF;
+
+  IF to_regprocedure('public.order_audience_status_pre_receipt_residual_overlay_v1(uuid)') IS NULL THEN
+    RAISE EXCEPTION 'Missing public.order_audience_status_pre_receipt_residual_overlay_v1(uuid)';
+  END IF;
+
   IF to_regclass('public.order_settlement_resolution_position_v1') IS NULL THEN
     RAISE EXCEPTION 'Missing public.order_settlement_resolution_position_v1';
   END IF;
+
   IF to_regclass('public.order_pending_funding_surplus') IS NULL THEN
     RAISE EXCEPTION 'Missing public.order_pending_funding_surplus';
   END IF;
+
   IF to_regclass('public.importer_credit_ledger') IS NULL THEN
     RAISE EXCEPTION 'Missing public.importer_credit_ledger';
   END IF;
-
-  IF to_regprocedure('public.order_audience_status_pre_partial_receipt_residual_balance_v1(uuid)') IS NULL THEN
-    IF to_regprocedure('public.order_audience_status_v1(uuid)') IS NULL THEN
-      RAISE EXCEPTION 'Missing public.order_audience_status_v1(uuid) prerequisite';
-    END IF;
-
-    ALTER FUNCTION public.order_audience_status_v1(uuid)
-      RENAME TO order_audience_status_pre_partial_receipt_residual_balance_v1;
-  END IF;
 END $$;
 
-CREATE OR REPLACE FUNCTION public.order_audience_status_v1(
+CREATE OR REPLACE FUNCTION public.order_audience_status_pre_importer_tracking_assignment_v1(
   p_order_id uuid DEFAULT NULL
 )
 RETURNS TABLE (
@@ -105,12 +105,10 @@ BEGIN
 
   RETURN QUERY
   WITH base AS (
-    -- Preserve every later audience/status/tracking correction already installed.
+    -- Exact predecessor of the 28 July receipt-residual overlay.
     SELECT *
-    FROM public.order_audience_status_pre_partial_receipt_residual_balance_v1(p_order_id)
+    FROM public.order_audience_status_pre_receipt_residual_overlay_v1(p_order_id)
   ), active_pending AS (
-    -- Physical receipt residuals remain economically attached to the order while
-    -- pending_evidence or credit_confirmed. Reversed rows are historical only.
     SELECT
       p.order_id,
       ROUND(COALESCE(SUM(p.pending_surplus_gbp), 0)::numeric, 2) AS active_pending_receipt_gbp
@@ -119,8 +117,8 @@ BEGIN
     WHERE p.status IN ('pending_evidence', 'credit_confirmed')
     GROUP BY p.order_id
   ), distinct_credit_links AS (
-    -- One confirmed customer-credit row can be linked to multiple pending rows;
-    -- deduplicate by ledger identity before summing so the credit is removed once.
+    -- A single confirmed credit may be linked to more than one pending row.
+    -- Deduplicate by ledger id so the credit is removed from the residual once.
     SELECT DISTINCT
       p.order_id,
       p.confirmed_credit_ledger_id
@@ -137,9 +135,9 @@ BEGIN
       ON c.id = l.confirmed_credit_ledger_id
      AND c.direction = 'credit'
     GROUP BY l.order_id
-  ), receipt_application AS (
+  ), scoped AS (
     SELECT
-      b.order_id,
+      b.*,
       COALESCE(ap.active_pending_receipt_gbp, 0)::numeric AS active_pending_receipt_gbp,
       ROUND(
         GREATEST(
@@ -148,22 +146,11 @@ BEGIN
           0
         )::numeric,
         2
-      ) AS physical_residual_applied_to_order_gbp
-    FROM base b
-    LEFT JOIN active_pending ap ON ap.order_id = b.order_id
-    LEFT JOIN linked_confirmed_credit lcc ON lcc.order_id = b.order_id
-  ), scoped AS (
-    SELECT
-      b.*,
-      COALESCE(ra.active_pending_receipt_gbp, 0)::numeric AS active_pending_receipt_gbp,
-      COALESCE(ra.physical_residual_applied_to_order_gbp, 0)::numeric AS physical_residual_applied_to_order_gbp,
+      ) AS still_order_applied_residual_gbp,
       COALESCE(s.final_sale_document_count, 0)::integer AS final_sale_document_count,
       ROUND(
         CASE
-          -- Any active residual position must be recalculated here, even when the
-          -- residual has been fully converted to linked customer credit. This avoids
-          -- inheriting the 20260728 overlay's broader credit_confirmed coverage rule.
-          WHEN COALESCE(ra.active_pending_receipt_gbp, 0) > 0.01
+          WHEN COALESCE(ap.active_pending_receipt_gbp, 0) > 0.01
            AND COALESCE(s.final_sale_document_count, 0) > 0
           THEN GREATEST(
             GREATEST(
@@ -171,17 +158,30 @@ BEGIN
                 - COALESCE(s.payment_applied_to_order_gbp, 0),
               0
             )
-              - COALESCE(ra.physical_residual_applied_to_order_gbp, 0),
+              - GREATEST(
+                  COALESCE(ap.active_pending_receipt_gbp, 0)
+                    - COALESCE(lcc.linked_confirmed_credit_gbp, 0),
+                  0
+                ),
             0
           )
           ELSE COALESCE(b.canonical_balance_due_gbp, 0)
         END::numeric,
         2
-      ) AS safe_collectible_balance_due_gbp
+      ) AS corrected_balance_due_gbp
     FROM base b
-    LEFT JOIN receipt_application ra ON ra.order_id = b.order_id
+    LEFT JOIN active_pending ap ON ap.order_id = b.order_id
+    LEFT JOIN linked_confirmed_credit lcc ON lcc.order_id = b.order_id
     LEFT JOIN public.order_settlement_resolution_position_v1 s
       ON s.order_id = b.order_id
+  ), projected AS (
+    SELECT
+      q.*,
+      (
+        COALESCE(q.canonical_balance_due_gbp, 0) > 0.01
+        AND COALESCE(q.corrected_balance_due_gbp, 0) <= 0.01
+      ) AS balance_cleared_by_physical_residual
+    FROM scoped q
   )
   SELECT
     q.order_id,
@@ -195,7 +195,7 @@ BEGIN
     q.accepted_estimate_gbp,
     q.final_sale_value_gbp,
     q.canonical_amount_received_gbp,
-    q.safe_collectible_balance_due_gbp::numeric AS canonical_balance_due_gbp,
+    q.corrected_balance_due_gbp::numeric AS canonical_balance_due_gbp,
     q.potential_credit_pending_review_gbp,
     q.internal_current_stage,
     q.internal_current_stage_label,
@@ -218,51 +218,56 @@ BEGIN
     q.accounting_sage_state,
     q.vat_compliance_state,
     q.internal_complete_yn,
-    CASE
-      WHEN q.safe_collectible_balance_due_gbp > 0.01 THEN false
-      ELSE q.customer_complete_yn
-    END AS customer_complete_yn,
-    CASE
-      WHEN q.safe_collectible_balance_due_gbp > 0.01 THEN false
-      ELSE q.importer_complete_yn
-    END AS importer_complete_yn,
+    q.customer_complete_yn,
+    q.importer_complete_yn,
     q.shipper_complete_yn,
     CASE
-      WHEN q.safe_collectible_balance_due_gbp > 0.01
-       AND COALESCE(q.canonical_balance_due_gbp, 0) <= 0.01
-      THEN 'Final balance due'
-      ELSE q.customer_status_label
+      WHEN NOT q.balance_cleared_by_physical_residual THEN q.customer_status_label
+      WHEN q.pod_delivery_state = 'accepted_current' THEN 'Completed'
+      WHEN q.export_evidence_state = 'accepted_current' THEN 'Shipment delivered'
+      WHEN q.shipment_state = 'allocated' THEN 'Shipment arranged'
+      WHEN q.funding_state = 'complete' THEN 'Payment received; processing'
+      ELSE 'In progress'
     END::text AS customer_status_label,
     CASE
-      WHEN q.safe_collectible_balance_due_gbp > 0.01
-       AND COALESCE(q.canonical_balance_due_gbp, 0) <= 0.01
-      THEN 'Pay final balance'
-      ELSE q.customer_next_action
+      WHEN NOT q.balance_cleared_by_physical_residual THEN q.customer_next_action
+      WHEN q.pod_delivery_state = 'accepted_current' THEN 'Order complete'
+      WHEN q.export_evidence_state = 'accepted_current' THEN 'Delivery confirmation received'
+      WHEN q.shipment_state = 'allocated' THEN 'Waiting for delivery confirmation'
+      ELSE 'No action needed right now'
     END::text AS customer_next_action,
     CASE
-      WHEN q.safe_collectible_balance_due_gbp > 0.01
-       AND COALESCE(q.canonical_balance_due_gbp, 0) <= 0.01
-      THEN 'Final balance due'
-      ELSE q.importer_status_label
+      WHEN NOT q.balance_cleared_by_physical_residual THEN q.importer_status_label
+      WHEN COALESCE(q.internal_current_stage, '') = 'exception_or_hold_open' THEN q.importer_status_label
+      WHEN q.supplier_state IN ('rejected_resubmit_required', 'review_needed') THEN q.importer_status_label
+      WHEN q.reconciliation_state = 'incomplete' THEN 'Invoice reconciliation open'
+      WHEN q.reconciliation_state = 'complete' AND q.tracking_state = 'missing' THEN 'Invoice reconciled; tracking open'
+      WHEN q.reconciliation_state = 'complete' AND q.tracking_state IN ('allocation_incomplete', 'submitted') THEN 'Tracking submitted'
+      WHEN q.pod_delivery_state = 'accepted_current' THEN 'Order complete'
+      ELSE 'No importer action required'
     END::text AS importer_status_label,
     CASE
-      WHEN q.safe_collectible_balance_due_gbp > 0.01
-       AND COALESCE(q.canonical_balance_due_gbp, 0) <= 0.01
-      THEN 'Collect final balance'
-      ELSE q.importer_next_action
+      WHEN NOT q.balance_cleared_by_physical_residual THEN q.importer_next_action
+      WHEN COALESCE(q.internal_current_stage, '') = 'exception_or_hold_open' THEN q.importer_next_action
+      WHEN q.supplier_state IN ('rejected_resubmit_required', 'review_needed') THEN q.importer_next_action
+      WHEN q.reconciliation_state = 'incomplete' THEN 'Continue invoice reconciliation'
+      WHEN q.reconciliation_state = 'complete' AND q.tracking_state = 'missing' THEN 'Add tracking'
+      WHEN q.pod_delivery_state = 'accepted_current' THEN 'Order complete'
+      ELSE 'No importer action required'
     END::text AS importer_next_action,
     q.shipper_status_label,
     q.shipper_next_action
-  FROM scoped q
+  FROM projected q
   ORDER BY q.order_ref;
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.order_audience_status_v1(uuid) FROM PUBLIC, anon;
-GRANT EXECUTE ON FUNCTION public.order_audience_status_v1(uuid) TO authenticated;
+-- Preserve the existing execution boundary of this audience layer.
+REVOKE ALL ON FUNCTION public.order_audience_status_pre_importer_tracking_assignment_v1(uuid) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.order_audience_status_pre_importer_tracking_assignment_v1(uuid) TO authenticated;
 
-COMMENT ON FUNCTION public.order_audience_status_v1(uuid) IS
-'Current shared audience status with an FX-excluding physical receipt-residual balance correction. Any active residual position is recalculated from final order value and payment already applied; only the portion not already converted into exact linked customer credit reduces the balance. Reversed residuals and all FX/card amounts are excluded. Orders with no active residual position pass through unchanged. Positive corrected balances force customer/importer completion false; all other completion/status fields pass through. No financial or operational write occurs.';
+COMMENT ON FUNCTION public.order_audience_status_pre_importer_tracking_assignment_v1(uuid) IS
+'28 July receipt-residual audience layer repaired in place. Active physical receipt residual reduces collectible balance only to the extent it has not already been converted into exact linked customer credit. FX/card residuals and attributed-receipt totals are excluded. Later supplier/tracking/audience projections are untouched.';
 
 NOTIFY pgrst, 'reload schema';
 
