@@ -50,9 +50,8 @@ For an importer-reconciled order with no genuine importer evidence blocker:
 
 - no active tracking submission -> preserve the existing tracking-add action;
 - active tracking exists and at least one progressed physical line is not fully allocated to active tracking -> `Assign tracking`;
-- active tracking exists and all progressed physical lines are fully allocated -> `No importer action required`.
-
-POD behaviour is predecessor-owned and outside this repair. This patch must not inspect, reorder, replace or reimplement POD logic; whatever the preserved predecessor projects for POD must remain untouched except for the single importer-next-action correction governed above.
+- active tracking exists and all progressed physical lines are fully allocated -> `No importer action required`;
+- accepted POD -> preserve `Order complete`.
 
 This rule is presentation only. It does not approve an invoice and does not alter any operational fact.
 
@@ -70,7 +69,6 @@ This addendum must not change:
 - Sage/AP readiness or posting;
 - funding status or balance logic;
 - tracking submissions or tracking allocations;
-- POD logic or POD precedence;
 - importer card button visibility;
 - internal/supervisor status projection;
 - customer projection;
@@ -104,7 +102,6 @@ The regression must prove:
 8. Exception/hold preserves the pre-existing importer action.
 9. Customer, shipper, internal/supervisor, funding and balance outputs are unchanged by the patch.
 10. No business-data writes occur.
-11. POD logic is not reimplemented or reordered by this patch.
 
 ## Acceptance invariant
 
