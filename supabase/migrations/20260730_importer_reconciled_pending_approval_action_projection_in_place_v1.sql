@@ -6,7 +6,7 @@ SET LOCAL statement_timeout = '0';
 -- Governing addendum:
 -- docs/governing-pack/ui/IMPORTER_RECONCILED_PENDING_APPROVAL_ACTION_PROJECTION_ADDENDUM_v1.md
 --
--- One read-model correction only. Patch the live function definition in place by four
+-- One read-model correction only. Patch the live function definition in place by three
 -- exact fail-closed substitutions. This preserves the existing function OID, owner,
 -- ACL, SECURITY DEFINER boundary, search_path, predecessor chain and every existing
 -- projection expression outside the importer-next-action correction governed here.
