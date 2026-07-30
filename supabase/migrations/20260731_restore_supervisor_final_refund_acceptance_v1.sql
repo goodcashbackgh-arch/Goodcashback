@@ -157,6 +157,7 @@ COMMENT ON FUNCTION public.operator_update_dispute_retailer_update(uuid, text, t
 'Operator-only atomic retailer update. Records retailer reply/outcome and dispute-line conversation status only. Parent dispute status remains unchanged; final refund acceptance remains the existing supervisor-controlled action.';
 
 REVOKE ALL ON FUNCTION public.operator_update_dispute_retailer_update(uuid, text, text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.operator_update_dispute_retailer_update(uuid, text, text) FROM anon;
 GRANT EXECUTE ON FUNCTION public.operator_update_dispute_retailer_update(uuid, text, text) TO authenticated;
 
 NOTIFY pgrst, 'reload schema';
