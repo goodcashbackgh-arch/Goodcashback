@@ -40,6 +40,7 @@ type ManualEditBaselineLine = {
   id: string;
   supplier_invoice_id: string;
   line_source: string | null;
+  eligible_for_invoice_yn: string | null;
   description: string | null;
   qty: number | null;
   amount_inc_vat_gbp: number | null;
@@ -66,6 +67,7 @@ function normalisedManualEditDescription(value: string | null | undefined) {
 
 function manualEditFinancialKind(line: ManualEditBaselineLine) {
   if (String(line.line_source ?? "").trim().toLowerCase() !== "ocr_extracted") return null;
+  if (isProgressedFlag(line.eligible_for_invoice_yn)) return null;
   const description = normalisedManualEditDescription(line.description);
   const amount = Number(line.amount_inc_vat_gbp ?? 0);
   const discount = /(^| )(discount|promotion|promotional|promo|voucher|coupon|saving|savings)( |$)/.test(description);
@@ -215,7 +217,7 @@ async function enforceManualEditWithinBaseline(params: {
 
   const { data: allLines, error: linesError } = await supabase
     .from("supplier_invoice_lines")
-    .select("id, supplier_invoice_id, line_source, description, qty, amount_inc_vat_gbp, supplier_invoices!inner(order_id, review_status)")
+    .select("id, supplier_invoice_id, line_source, eligible_for_invoice_yn, description, qty, amount_inc_vat_gbp, supplier_invoices!inner(order_id, review_status)")
     .eq("supplier_invoices.order_id", orderId);
 
   if (linesError) {
