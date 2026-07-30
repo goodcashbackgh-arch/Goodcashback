@@ -6,6 +6,8 @@ This addendum supplements the existing supplier invoice OCR/header review and su
 
 It is intentionally narrow. It does not replace the current invoice-review workflow, does not alter raw Mindee evidence, and does not create a second invoice-header source of truth.
 
+This addendum is the governing source for the implementation. The build must remain inside the scope lock in this document.
+
 ## Problem being corrected
 
 The existing supervisor header-review flow can correct and save:
@@ -15,7 +17,7 @@ The existing supervisor header-review flow can correct and save:
 - invoice date
 - invoice gross/total
 
-The existing live RPC is:
+The existing live RPC before this addendum is:
 
 ```text
 staff_save_supplier_invoice_header_review(
@@ -94,6 +96,183 @@ reviewed header value
 
 Do not rewrite `ocr_raw_json` to make OCR appear correct after review.
 
+## Exact end-to-end behaviour
+
+### A. OCR ingestion remains unchanged
+
+Mindee continues to run and save through the existing OCR path. The raw inference is persisted unchanged in `supplier_invoices.ocr_raw_json`.
+
+The addendum does not change:
+
+```text
+Mindee enqueue
+Mindee polling
+Mindee inference fetch
+staff_save_mindee_invoice_ocr_result
+OCR line creation
+review-flag creation
+```
+
+### B. Existing invoice-review page remains the correction point
+
+The existing page:
+
+```text
+/internal/invoice-review
+```
+
+remains the only supervisor header-correction UI.
+
+The existing `Save header correction` form is extended with:
+
+```text
+Net
+VAT
+Total
+```
+
+No new page is created.
+
+### C. Supervisor corrects only the header value that is wrong
+
+For the proven invoice the intended accepted values are:
+
+```text
+Net   £199.99
+VAT    £40.00
+Total £239.99
+```
+
+Line coding is not changed by this action.
+
+### D. Existing server action remains the write path
+
+The existing action:
+
+```text
+saveSupplierInvoiceHeaderReviewAction
+```
+
+continues to be used. It is extended to read and pass:
+
+```text
+reviewed_invoice_net_gbp
+reviewed_invoice_vat_gbp
+```
+
+No parallel endpoint or action is allowed.
+
+### E. Existing RPC remains the database write boundary
+
+The existing RPC name remains:
+
+```text
+public.staff_save_supplier_invoice_header_review
+```
+
+It is extended with the two reviewed values and remains the single database write boundary for header review.
+
+### F. Database validates the reviewed header
+
+When Net, VAT and Total are all present, the database must fail closed unless:
+
+```text
+abs((Net + VAT) - Total) <= £0.01
+```
+
+Valid:
+
+```text
+199.99 + 40.00 = 239.99
+```
+
+Invalid:
+
+```text
+239.99 + 40.00 != 239.99
+```
+
+The invalid save must not partially persist the reviewed Net/VAT.
+
+### G. Reviewed Net/VAT are stored separately from raw OCR
+
+Persist:
+
+```text
+supplier_invoices.reviewed_invoice_net_gbp
+supplier_invoices.reviewed_invoice_vat_gbp
+```
+
+Do not mutate:
+
+```text
+supplier_invoices.ocr_raw_json
+```
+
+The system must retain both:
+
+```text
+what OCR returned
+```
+
+and
+
+```text
+what the authorised supervisor accepted
+```
+
+### H. Existing review state remains unchanged by save
+
+Saving a valid header correction must continue to leave the invoice:
+
+```text
+review_status = pending_review
+blocked_from_sage_yn = true
+is_current_for_order = false
+```
+
+It must not approve, post, release, set current, or bypass any existing readiness rule.
+
+### I. Accounting reconciliation consumes the reviewed values
+
+The existing view:
+
+```text
+public.supplier_invoice_accounting_coding_totals_vw
+```
+
+must prefer reviewed Net/VAT when present.
+
+The existing reconciliation UI and readiness code already consume this view, so no additional downstream endpoint is introduced.
+
+### J. Existing accounting guard remains intact
+
+The existing coding readiness rule continues to require:
+
+```text
+all progressed/accounting-codable lines coded
+posting accounts present
+coded gross > 0
+Net reconciled
+VAT reconciled
+Gross reconciled
+```
+
+The build does not weaken that guard. It only corrects the accepted header source used by the guard.
+
+### K. Legacy invoices remain unchanged
+
+When:
+
+```text
+reviewed_invoice_net_gbp IS NULL
+reviewed_invoice_vat_gbp IS NULL
+```
+
+the existing OCR/fallback behaviour must remain exactly as before.
+
+No historical backfill is authorised.
+
 ## Minimal data-model extension
 
 Add exactly two nullable columns to `public.supplier_invoices`:
@@ -120,6 +299,14 @@ supplier_invoices.ocr_invoice_total_gbp
 That behaviour remains authoritative for this addendum.
 
 This addendum adds reviewed net and VAT alongside that existing reviewed total path; it does not redesign gross storage.
+
+The existing gross hierarchy in `supplier_invoice_accounting_coding_totals_vw` must remain:
+
+```text
+supplier_invoices.ocr_invoice_total_gbp
+-> raw OCR total_amount
+-> supplier_invoice_financial_summary.invoice_total_gbp
+```
 
 ## Header-review RPC extension
 
@@ -157,6 +344,30 @@ supplier_invoices.reviewed_invoice_net_gbp
 supplier_invoices.reviewed_invoice_vat_gbp
 ```
 
+## RPC signature compatibility rule
+
+The pre-build live signature is:
+
+```text
+staff_save_supplier_invoice_header_review(uuid,text,text,text,date,numeric,text)
+```
+
+The repo has one application caller for this RPC:
+
+```text
+app/internal/invoice-review/actions.ts
+```
+
+The migration and that caller must move together.
+
+Do not leave both the old and new defaulted overloads active under the same RPC name because PostgREST resolution could become ambiguous.
+
+The implementation must replace the old signature atomically and issue:
+
+```text
+NOTIFY pgrst, 'reload schema'
+```
+
 ## Header arithmetic guard
 
 When reviewed net, reviewed VAT, and reviewed gross are all present, the save must fail closed unless:
@@ -183,6 +394,8 @@ Gross £239.99
 
 The RPC must reject the second case rather than persist an internally contradictory reviewed header.
 
+Net and VAT remain non-negative money fields, consistent with the existing header money parser.
+
 The guard is a header-integrity check only. It must not alter line coding, tax rates, discounts, delivery treatment, quantities, or invoice state.
 
 ## OCR/header review UI
@@ -201,14 +414,14 @@ No new page and no new workflow are required.
 
 ### Display/default rules
 
-For Net, initial display should prefer:
+For Net, initial display must prefer:
 
 ```text
 reviewed_invoice_net_gbp
 -> OCR total_net
 ```
 
-For VAT, initial display should prefer:
+For VAT, initial display must prefer:
 
 ```text
 reviewed_invoice_vat_gbp
@@ -221,11 +434,53 @@ The supervisor must be able to overwrite bad OCR net or VAT values before progre
 
 ### Save rules
 
-Saving the form must call the existing `staff_save_supplier_invoice_header_review` route/action extended with the two new values.
+Saving the form must call the existing `saveSupplierInvoiceHeaderReviewAction`, which calls the existing `staff_save_supplier_invoice_header_review` RPC extended with the two new values.
 
 Do not create a parallel write endpoint.
 
 Do not write corrections into `ocr_raw_json`.
+
+## Exact integration endpoints and refresh path
+
+The build connects only to these existing integration points:
+
+```text
+/internal/invoice-review
+        ↓
+saveSupplierInvoiceHeaderReviewAction
+        ↓
+public.staff_save_supplier_invoice_header_review(...)
+        ↓
+public.supplier_invoices reviewed Net/VAT
+        ↓
+public.supplier_invoice_accounting_coding_totals_vw
+        ↓
+/internal/reconciliation/[order_id]
+        ↓
+existing supplier-draft-ready / approval flow
+```
+
+The existing action already revalidates:
+
+```text
+/internal/invoice-review
+/internal/supplier-draft-ready
+/internal/evidence/{orderId}
+/importer/orders/{orderId}/operations
+/importer/reconciliation/{orderId}
+```
+
+That refresh chain is preserved.
+
+The OCR path remains separate and unchanged:
+
+```text
+Mindee
+  ↓
+staff_save_mindee_invoice_ocr_result
+  ↓
+ocr_raw_json + OCR lines + review flags
+```
 
 ## Accounting reconciliation totals rule
 
@@ -234,6 +489,8 @@ Update only the accepted-header input logic inside:
 ```text
 public.supplier_invoice_accounting_coding_totals_vw
 ```
+
+The latest accounting-codable-line contract must be preserved, including active `non_physical_financial` parked lines and accounting adjustment lines.
 
 ### Accepted net
 
@@ -260,9 +517,100 @@ COALESCE(
 
 ### Accepted gross
 
-Preserve the existing gross hierarchy exactly unless a separately approved addendum changes it.
+Preserve the existing gross hierarchy exactly.
 
 This addendum must not broaden the change into gross-source redesign.
+
+## Upstream impact and protection
+
+### Expected upstream behavioural impact: none
+
+The build must not change:
+
+- invoice upload
+- operator-entered financial summary
+- Mindee model selection
+- Mindee enqueue endpoint
+- Mindee job polling
+- Mindee inference fetch
+- OCR result persistence
+- OCR line extraction
+- OCR flags
+- PDF evidence
+
+### Real upstream compatibility risk: RPC signature
+
+The header-review RPC signature changes. The migration and server-action caller must ship together and the PostgREST schema cache must be reloaded.
+
+### Form parsing protection
+
+Reuse the existing non-negative optional-money parsing behaviour. Do not loosen the generic parser and do not change line/adjustment money semantics.
+
+## Downstream impact and protection
+
+### Deliberate downstream change
+
+Consumers of:
+
+```text
+supplier_invoice_accounting_coding_totals_vw.accepted_invoice_net_gbp
+supplier_invoice_accounting_coding_totals_vw.accepted_invoice_vat_gbp
+```
+
+will see reviewed values when present.
+
+That is the intended propagation point.
+
+### Approval readiness
+
+The existing `assertSupplierInvoiceAccountingCodingReady()` remains unchanged. It already consumes the totals view and requires Net/VAT/Gross reconciliation.
+
+The build must not weaken or bypass that rule.
+
+### Gross/line/adjustment readiness
+
+The existing `assertInvoiceReadyForCurrentApproval()` remains unchanged. It independently checks invoice total against supported line/delivery/discount representations.
+
+Reviewed Net/VAT must not affect this gross/line gate.
+
+### Line coding
+
+No line accounting code is changed by this build.
+
+For the proven invoice the existing coding remains:
+
+```text
+5000 goods
+5010 discount
+5100 delivery
+```
+
+### Other downstream areas that must remain untouched
+
+- supplier payment allocation
+- supplier payment readiness except through the existing invoice approval state
+- bundle limits
+- DVA reconciliation
+- importer/customer funding
+- shipment allocation
+- tracking
+- customer sales
+- Sage payload construction
+- Sage posting routes
+- exception handling
+- discount approval
+- delivery approval
+- invoice-current selection rules
+
+## Reviewed-value lifecycle rule
+
+A reviewed Net/VAT override belongs to the specific uploaded `supplier_invoices` row/evidence record.
+
+A corrected/replacement invoice is represented by a different supplier-invoice evidence row under the existing resubmission flow. Therefore reviewed Net/VAT must not be copied to replacement evidence.
+
+Fetching/saving the result for the same existing Mindee job on the same invoice row must not silently rewrite or clear an already saved reviewed Net/VAT override.
+
+This build must not add a blanket OCR-result hook that clears reviewed values.
 
 ## Raw OCR evidence rule
 
@@ -303,6 +651,10 @@ This addendum does not authorise any of the following:
 - adding new review statuses
 - creating a new invoice-review page
 - creating a new header-review table
+- changing reconciliation navigation
+- changing UI labels unrelated to Net/VAT fields
+- changing permissions
+- changing totals outside the accepted Net/VAT header source
 
 ## Existing dependency protection
 
@@ -320,9 +672,9 @@ trg_supplier_invoice_post_ocr_duplicate_gate
 
 This addendum does not require changing those dependants merely to add reviewed net/VAT support.
 
-The implementation should avoid unnecessary edits to them.
+The implementation must avoid unnecessary edits to them.
 
-The only known downstream accounting object that must consume the new reviewed values is:
+The only downstream accounting object that must consume the new reviewed values is:
 
 ```text
 supplier_invoice_accounting_coding_totals_vw
@@ -345,16 +697,20 @@ Historical invoices must not be rewritten automatically.
 
 No existing reviewed gross values should be changed by the migration.
 
+Adding the nullable columns must not require rewrites to unrelated `supplier_invoices` consumers.
+
 ## Required implementation sequence
 
 1. Add nullable `reviewed_invoice_net_gbp` and `reviewed_invoice_vat_gbp` columns to `supplier_invoices`.
-2. Extend `staff_save_supplier_invoice_header_review` with the two nullable parameters.
-3. Add the `net + VAT = gross` tolerance guard to that RPC when all three reviewed values are present.
-4. Extend the existing invoice-review server action to pass the new values.
-5. Add Net and VAT inputs to the existing invoice OCR/header review form.
-6. Update `supplier_invoice_accounting_coding_totals_vw` so reviewed net/VAT override raw OCR net/VAT.
-7. Preserve the current accepted gross hierarchy.
-8. Run focused regression checks before merge.
+2. Replace the existing seven-argument `staff_save_supplier_invoice_header_review` signature with the extended signature in the same migration.
+3. Preserve all existing RPC security/state/review-flag behaviour.
+4. Add the `net + VAT = gross` tolerance guard to that RPC when all three values are present.
+5. Extend the existing invoice-review server action to pass the new values.
+6. Add Net and VAT inputs to the existing invoice OCR/header review form.
+7. Update only the accepted Net/VAT source precedence in the latest `supplier_invoice_accounting_coding_totals_vw` definition.
+8. Preserve the current accepted gross hierarchy and accounting-codable-line logic.
+9. Reload the PostgREST schema cache.
+10. Run focused regression checks before merge.
 
 ## Required regression checks
 
@@ -426,7 +782,25 @@ For the proven invoice, existing coded lines must remain unchanged, including:
 5100 delivery
 ```
 
-The addendum fixes accepted header values only.
+### Regression F — latest accounting-codable line semantics preserved
+
+Active parked `non_physical_financial` lines and accounting adjustment lines must be counted exactly as before the change.
+
+### Regression G — gross readiness preserved
+
+`assertInvoiceReadyForCurrentApproval()` must produce the same result before and after the migration for invoices whose reviewed Net/VAT are null.
+
+### Regression H — accounting readiness changes only when reviewed Net/VAT require it
+
+`assertSupplierInvoiceAccountingCodingReady()` must retain every existing guard. Only the accepted Net/VAT input may differ when reviewed values are non-null.
+
+### Regression I — RPC resolution
+
+After migration and PostgREST schema reload, the existing invoice-review action must resolve exactly one `staff_save_supplier_invoice_header_review` RPC signature and save successfully.
+
+### Regression J — same-evidence OCR fetch does not erase review override
+
+Fetching/saving an already-created Mindee inference for the same supplier-invoice row must not clear `reviewed_invoice_net_gbp` or `reviewed_invoice_vat_gbp`.
 
 ## Acceptance criteria
 
@@ -439,7 +813,12 @@ This addendum is complete only when all of the following are true:
 5. Header save rejects reviewed values that do not arithmetically reconcile within £0.01.
 6. Legacy invoices with null reviewed Net/VAT retain existing behaviour.
 7. Gross/total behaviour is not redesigned.
-8. No unrelated invoice, payment, Sage, discount, delivery, or status logic is changed.
+8. Existing gross/line/delivery/discount readiness remains unchanged.
+9. Existing accounting coding guards remain unchanged.
+10. Existing OCR endpoints and result persistence remain unchanged.
+11. Existing refresh/revalidation paths remain unchanged.
+12. Same-evidence OCR result fetch does not silently clear reviewed Net/VAT.
+13. No unrelated invoice, payment, Sage, discount, delivery, funding, shipment, exception, status, permission, navigation, or UI logic is changed.
 
 ## Scope lock
 
@@ -450,6 +829,9 @@ supplier_invoices
 + existing supplier invoice header-review RPC
 + existing invoice-review UI/action
 + supplier_invoice_accounting_coding_totals_vw
++ one scoped migration implementing the above
 ```
 
-Any proposed change outside that path requires a separate explicit justification before implementation.
+No other application behaviour may be modified.
+
+Any proposed change outside that path requires separate explicit approval before implementation.
