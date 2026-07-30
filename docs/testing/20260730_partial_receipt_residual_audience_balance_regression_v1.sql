@@ -28,12 +28,12 @@ DECLARE
   v_count integer;
 BEGIN
   -- -------------------------------------------------------------------------
-  -- 1. Actual current-main audience chain and hard scope guards.
+  -- 1. Actual live post-migration audience structure and hard scope guards.
   -- -------------------------------------------------------------------------
   IF to_regprocedure('public.order_audience_status_v1(uuid)') IS NULL
      OR to_regprocedure('public.order_audience_status_pre_receipt_residual_overlay_v1(uuid)') IS NULL
   THEN
-    RAISE EXCEPTION 'FAIL: required 28 July audience chain is missing.';
+    RAISE EXCEPTION 'FAIL: required audience chain is missing.';
   END IF;
 
   IF to_regclass('public.order_pending_funding_surplus') IS NULL
@@ -46,8 +46,8 @@ BEGIN
   SELECT lower(pg_get_functiondef('public.order_audience_status_v1(uuid)'::regprocedure))
   INTO v_definition;
 
-  -- The repaired function must be the actual 28 July wrapper and must use its exact
-  -- preserved predecessor. It must not depend on an assumed/unmerged wrapper name.
+  -- Lock the residual arithmetic and exact linked-credit provenance that are present
+  -- in the actual live post-migration function definition captured from PostgreSQL.
   IF position('order_audience_status_pre_receipt_residual_overlay_v1' IN v_definition) = 0
      OR position('still_order_applied_residual_gbp' IN v_definition) = 0
      OR position('active_pending_receipt_gbp' IN v_definition) = 0
@@ -63,11 +63,13 @@ BEGIN
      OR position('c.source_entity_type = ''order''' IN v_definition) = 0
      OR position('c.source_entity_id = l.order_id' IN v_definition) = 0
   THEN
-    RAISE EXCEPTION 'FAIL: repaired 28 July audience wrapper is missing a locked residual/provenance control.';
+    RAISE EXCEPTION 'FAIL: repaired audience function is missing a locked residual/provenance control.';
   END IF;
 
+  -- The repaired top-level function intentionally bypasses the defective old
+  -- receipt-residual wrapper; it must not call the preserved tracking wrapper.
   IF position('order_audience_status_pre_importer_tracking_assignment_v1' IN v_definition) > 0 THEN
-    RAISE EXCEPTION 'FAIL: repair depends on an assumed/unmerged audience wrapper.';
+    RAISE EXCEPTION 'FAIL: repaired audience function unexpectedly calls the preserved tracking wrapper instead of preserving its behaviour in place.';
   END IF;
 
   -- No re-derivation of funding/final-sale balance and no FX/attributed receipt.
@@ -89,14 +91,24 @@ BEGIN
     RAISE EXCEPTION 'FAIL: repaired audience function contains a business-data write path.';
   END IF;
 
-  -- Preserve the 28 July status/action suppression boundary only when the physical
-  -- residual actually clears a previously positive balance.
+  -- Lock the ACTUAL live post-migration status/tracking structure rather than old
+  -- local alias names. Customer/importer status/action pass through unless the
+  -- corrected physical residual clears the balance; shipper fields pass straight
+  -- through; and the newer importer tracking-assignment behaviour remains present.
   IF position('balance_cleared_by_physical_residual' IN v_definition) = 0
-     OR position('q.customer_status_label' IN v_definition) = 0
-     OR position('q.importer_status_label' IN v_definition) = 0
-     OR position('q.shipper_status_label' IN v_definition) = 0
+     OR position('then r.customer_status_label' IN v_definition) = 0
+     OR position('then r.customer_next_action' IN v_definition) = 0
+     OR position('then r.importer_status_label' IN v_definition) = 0
+     OR position('then r.importer_next_action' IN v_definition) = 0
+     OR position('corrected_customer_status_label as customer_status_label' IN v_definition) = 0
+     OR position('corrected_customer_next_action as customer_next_action' IN v_definition) = 0
+     OR position('corrected_importer_status_label as importer_status_label' IN v_definition) = 0
+     OR position('tracking_assignment_needed' IN v_definition) = 0
+     OR position('when p.tracking_assignment_needed then ''assign tracking''' IN v_definition) = 0
+     OR position('p.shipper_status_label' IN v_definition) = 0
+     OR position('p.shipper_next_action' IN v_definition) = 0
   THEN
-    RAISE EXCEPTION 'FAIL: existing audience pass-through/status boundary is not preserved.';
+    RAISE EXCEPTION 'FAIL: actual live audience pass-through/status/tracking boundary is not preserved.';
   END IF;
 
   -- -------------------------------------------------------------------------
@@ -341,7 +353,7 @@ $regression$;
 
 SELECT jsonb_build_object(
   'regression_result', 'PASS',
-  'proof', 'actual 28 July top-level audience wrapper repaired; exact predecessor preserved; no assumed wrapper dependency; existing canonical balance remains authoritative; partial residual £38.13 reduces £47.60 to £9.47; £81.20 residual less exact £37.20 overfunding credit leaves £44.00 and clears £44.00 shortfall; reversed rows excluded; FX and attributed-receipt fields forbidden; no business-data writes'
+  'proof', 'actual live post-migration audience structure verified; residual provenance locked; customer/importer pass-through preserved until corrected residual clears balance; shipper fields pass through unchanged; importer tracking assignment including Assign tracking preserved; existing canonical balance remains authoritative; partial residual £38.13 reduces £47.60 to £9.47; £81.20 residual less exact £37.20 overfunding credit leaves £44.00 and clears £44.00 shortfall; reversed rows excluded; FX and attributed-receipt fields forbidden; no business-data writes'
 ) AS regression_result;
 
 ROLLBACK;
