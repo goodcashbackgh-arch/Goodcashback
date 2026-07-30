@@ -3,34 +3,31 @@ BEGIN;
 SET LOCAL lock_timeout = '15s';
 SET LOCAL statement_timeout = '0';
 
--- Narrow repair of the 20260728 receipt-residual audience overlay only.
+-- Narrow repair of the current 20260728 receipt-residual audience overlay only.
 --
--- Do NOT replace or wrap the current top-level order_audience_status_v1(uuid).
--- Later supplier-rejection, evidence-query, tracking-assignment and audience
--- corrections remain untouched and continue to consume this layer normally.
+-- Current main contract:
+--   order_audience_status_v1(uuid)
+--     -> order_audience_status_pre_receipt_residual_overlay_v1(uuid)
+--
+-- Preserve that exact predecessor and change only the receipt-residual treatment.
+-- No alternate funding/final-sale calculation is introduced here.
 --
 -- Accounting rule:
 --   still_order_applied_residual
---     = max(active_physical_receipt_residual - exact_linked_customer_credit, 0)
+--     = max(active_non_reversed_physical_residual - exact_linked_overfunding_credit, 0)
 --
 --   collectible_balance
---     = max(existing_pre_overlay_canonical_balance
---           - still_order_applied_residual, 0)
---
--- The predecessor canonical balance remains authoritative for funding, final-sale
--- and prior final-balance-payment arithmetic. This repair does not recalculate any
--- of those amounts from a second settlement/funding source.
---
--- If there is no active physical receipt-residual position, preserve the
--- predecessor audience balance exactly.
+--     = max(existing_pre_overlay_canonical_balance - still_order_applied_residual, 0)
 --
 -- FX/card residuals and attributed-receipt totals are deliberately excluded.
 -- This migration performs no financial or operational writes.
 
 DO $$
+DECLARE
+  v_current_definition text;
 BEGIN
-  IF to_regprocedure('public.order_audience_status_pre_importer_tracking_assignment_v1(uuid)') IS NULL THEN
-    RAISE EXCEPTION 'Missing public.order_audience_status_pre_importer_tracking_assignment_v1(uuid)';
+  IF to_regprocedure('public.order_audience_status_v1(uuid)') IS NULL THEN
+    RAISE EXCEPTION 'Missing public.order_audience_status_v1(uuid)';
   END IF;
 
   IF to_regprocedure('public.order_audience_status_pre_receipt_residual_overlay_v1(uuid)') IS NULL THEN
@@ -44,9 +41,16 @@ BEGIN
   IF to_regclass('public.importer_credit_ledger') IS NULL THEN
     RAISE EXCEPTION 'Missing public.importer_credit_ledger';
   END IF;
+
+  SELECT lower(pg_get_functiondef('public.order_audience_status_v1(uuid)'::regprocedure))
+  INTO v_current_definition;
+
+  IF position('order_audience_status_pre_receipt_residual_overlay_v1' IN v_current_definition) = 0 THEN
+    RAISE EXCEPTION 'Audience dependency chain has changed since the 28 July overlay; stop before patching.';
+  END IF;
 END $$;
 
-CREATE OR REPLACE FUNCTION public.order_audience_status_pre_importer_tracking_assignment_v1(
+CREATE OR REPLACE FUNCTION public.order_audience_status_v1(
   p_order_id uuid DEFAULT NULL
 )
 RETURNS TABLE (
@@ -105,8 +109,7 @@ BEGIN
 
   RETURN QUERY
   WITH base AS (
-    -- Exact predecessor of the 28 July receipt-residual overlay. Its canonical
-    -- balance stays authoritative; this repair subtracts only the physical residual.
+    -- Exact predecessor preserved by the 28 July overlay.
     SELECT *
     FROM public.order_audience_status_pre_receipt_residual_overlay_v1(p_order_id)
   ), active_pending AS (
@@ -119,8 +122,8 @@ BEGIN
       AND p.reversed_at IS NULL
     GROUP BY p.order_id
   ), distinct_credit_links AS (
-    -- The confirmation RPC may link the same exact customer-credit row to multiple
-    -- pending rows. Deduplicate by ledger identity so that credit is removed once.
+    -- The established confirmation route can attach one exact new credit to more
+    -- than one pending row. Deduplicate by ledger identity before subtracting it.
     SELECT DISTINCT
       p.order_id,
       p.importer_id,
@@ -131,8 +134,6 @@ BEGIN
       AND p.reversed_at IS NULL
       AND p.confirmed_credit_ledger_id IS NOT NULL
   ), linked_confirmed_credit AS (
-    -- Fail closed unless the linked row has the exact provenance written by the
-    -- established pending-surplus confirmation path for this same order/importer.
     SELECT
       l.order_id,
       ROUND(COALESCE(SUM(ABS(c.amount_gbp)), 0)::numeric, 2) AS linked_confirmed_credit_gbp
@@ -268,12 +269,12 @@ BEGIN
 END;
 $$;
 
--- Preserve the existing execution boundary of this audience layer.
-REVOKE ALL ON FUNCTION public.order_audience_status_pre_importer_tracking_assignment_v1(uuid) FROM PUBLIC, anon;
-GRANT EXECUTE ON FUNCTION public.order_audience_status_pre_importer_tracking_assignment_v1(uuid) TO authenticated;
+-- Preserve the existing public execution boundary of the canonical audience RPC.
+REVOKE ALL ON FUNCTION public.order_audience_status_v1(uuid) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.order_audience_status_v1(uuid) TO authenticated;
 
-COMMENT ON FUNCTION public.order_audience_status_pre_importer_tracking_assignment_v1(uuid) IS
-'28 July receipt-residual audience layer repaired in place. Existing predecessor canonical balance remains authoritative; active non-reversed physical receipt residual reduces that balance only to the extent it has not already been converted into the exact linked overfunding credit for the same order/importer. FX/card residuals and attributed-receipt totals are excluded. Later supplier/tracking/audience projections are untouched.';
+COMMENT ON FUNCTION public.order_audience_status_v1(uuid) IS
+'28 July receipt-residual audience overlay repaired in place. Existing predecessor canonical balance remains authoritative; active non-reversed physical receipt residual reduces that balance only to the extent it has not already been converted into the exact linked overfunding credit for the same order/importer. FX/card residuals and attributed-receipt totals are excluded. Existing supplier/reconciliation/tracking facts pass through unchanged.';
 
 NOTIFY pgrst, 'reload schema';
 
