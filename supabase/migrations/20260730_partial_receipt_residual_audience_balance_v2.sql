@@ -25,6 +25,10 @@ SET LOCAL statement_timeout = '0';
 DO $$
 DECLARE
   v_current_definition text;
+  v_normalized_definition text;
+  v_result_signature text;
+  v_prosecdef boolean;
+  v_proconfig text[];
 BEGIN
   IF to_regprocedure('public.order_audience_status_v1(uuid)') IS NULL THEN
     RAISE EXCEPTION 'Missing public.order_audience_status_v1(uuid)';
@@ -42,11 +46,43 @@ BEGIN
     RAISE EXCEPTION 'Missing public.importer_credit_ledger';
   END IF;
 
-  SELECT lower(pg_get_functiondef('public.order_audience_status_v1(uuid)'::regprocedure))
-  INTO v_current_definition;
+  SELECT
+    lower(pg_get_functiondef(p.oid)),
+    pg_get_function_result(p.oid),
+    p.prosecdef,
+    p.proconfig
+  INTO
+    v_current_definition,
+    v_result_signature,
+    v_prosecdef,
+    v_proconfig
+  FROM pg_proc p
+  WHERE p.oid = 'public.order_audience_status_v1(uuid)'::regprocedure;
 
-  IF position('order_audience_status_pre_receipt_residual_overlay_v1' IN v_current_definition) = 0 THEN
-    RAISE EXCEPTION 'Audience dependency chain has changed since the 28 July overlay; stop before patching.';
+  v_normalized_definition := regexp_replace(v_current_definition, '\s+', ' ', 'g');
+
+  IF v_result_signature IS DISTINCT FROM
+    'TABLE(order_id uuid, order_ref text, raw_order_status text, lifecycle_status text, importer_id uuid, importer_name text, retailer_id uuid, retailer_name text, accepted_estimate_gbp numeric, final_sale_value_gbp numeric, canonical_amount_received_gbp numeric, canonical_balance_due_gbp numeric, potential_credit_pending_review_gbp numeric, internal_current_stage text, internal_current_stage_label text, internal_next_owner text, internal_next_action text, internal_next_href text, internal_status_tone text, gate_complete_count integer, gate_total integer, funding_state text, dva_state text, supplier_state text, reconciliation_state text, tracking_state text, shipment_state text, export_evidence_state text, pod_delivery_state text, customer_sales_state text, shipper_ap_state text, accounting_sage_state text, vat_compliance_state text, internal_complete_yn boolean, customer_complete_yn boolean, importer_complete_yn boolean, shipper_complete_yn boolean, customer_status_label text, customer_next_action text, importer_status_label text, importer_next_action text, shipper_status_label text, shipper_next_action text)'
+  THEN
+    RAISE EXCEPTION 'Audience return signature has changed since the 28 July overlay; stop before patching: %', v_result_signature;
+  END IF;
+
+  IF NOT COALESCE(v_prosecdef, false)
+     OR NOT COALESCE(v_proconfig, ARRAY[]::text[]) @> ARRAY['search_path=public, pg_temp']::text[]
+  THEN
+    RAISE EXCEPTION 'Audience execution boundary has changed since the 28 July overlay; stop before patching.';
+  END IF;
+
+  IF position(
+       'with base as ( select * from public.order_audience_status_pre_receipt_residual_overlay_v1(p_order_id) ), scoped as ('
+       IN v_normalized_definition
+     ) = 0
+  THEN
+    RAISE EXCEPTION 'Audience dependency chain has changed: the preserved 28 July predecessor is no longer the direct authoritative base call.';
+  END IF;
+
+  IF position('order_audience_status_pre_importer_tracking_assignment_v1' IN v_current_definition) > 0 THEN
+    RAISE EXCEPTION 'Audience dependency chain contains an unexpected wrapper; stop before patching.';
   END IF;
 END $$;
 
