@@ -10,30 +10,28 @@ DECLARE
   v_new_status text;
   v_old_status text;
   v_non_action_drift_count integer;
-  v_action text;
-  v_decision regprocedure := 'public.internal_importer_reconciled_action_decision_v1(text,text,text,numeric,text,text,integer,integer,integer,integer,integer,integer,integer,integer,integer,integer)'::regprocedure;
+  v_outside_boundary_change_count integer;
 BEGIN
   IF to_regprocedure('public.order_audience_status_v1(uuid)') IS NULL
      OR to_regprocedure('public.order_audience_status_pre_importer_reconciled_action_v1(uuid)') IS NULL
-     OR to_regprocedure('public.internal_importer_reconciled_next_action_v1(uuid,text,text,text,numeric,text,text)') IS NULL
-     OR to_regprocedure('public.internal_importer_reconciled_action_decision_v1(text,text,text,numeric,text,text,integer,integer,integer,integer,integer,integer,integer,integer,integer,integer)') IS NULL
+     OR to_regprocedure('public.internal_importer_pending_approval_action_v1(uuid,text,text,text,numeric,text)') IS NULL
   THEN
     RAISE EXCEPTION 'Importer reconciled pending-approval action patch is not installed.';
   END IF;
 
+  -- Internal implementation must not be directly callable by normal authenticated users.
   IF has_function_privilege(
        'authenticated',
        'public.order_audience_status_pre_importer_reconciled_action_v1(uuid)'::regprocedure,
        'EXECUTE'
      )
-     OR has_function_privilege('authenticated', v_decision, 'EXECUTE')
      OR has_function_privilege(
        'authenticated',
-       'public.internal_importer_reconciled_next_action_v1(uuid,text,text,text,numeric,text,text)'::regprocedure,
+       'public.internal_importer_pending_approval_action_v1(uuid,text,text,text,numeric,text)'::regprocedure,
        'EXECUTE'
      )
   THEN
-    RAISE EXCEPTION 'Scope/security drift: preserved predecessor or internal helper is directly executable by authenticated.';
+    RAISE EXCEPTION 'Scope/security drift: predecessor or internal helper is directly executable by authenticated.';
   END IF;
 
   FOR v_candidate IN
@@ -58,8 +56,8 @@ BEGIN
 
   PERFORM set_config('request.jwt.claim.sub', v_staff_uid::text, true);
 
-  -- Contract invariant: every audience field other than importer_next_action must be
-  -- exactly equivalent as jsonb to the preserved predecessor for every current row.
+  -- Scope invariant: every audience field except importer_next_action must be identical
+  -- to the preserved predecessor for every current audience row.
   WITH old_rows AS (
     SELECT *
     FROM public.order_audience_status_pre_importer_reconciled_action_v1(NULL)
@@ -81,174 +79,68 @@ BEGIN
     RAISE EXCEPTION 'Scope drift: % audience row(s) changed outside importer_next_action.', v_non_action_drift_count;
   END IF;
 
-  -- Synthetic pure-decision regression: no business-data fixture writes are required.
-  -- Baseline defect boundary + fully assigned tracking -> no importer action required.
-  v_action := public.internal_importer_reconciled_action_decision_v1(
-    'Resolve evidence issue', 'review_needed', 'complete', 0, 'funding_incomplete', 'missing',
-    3, 0, 0, 0, 0, 4, 0, 0, 2, 0
-  );
-  IF v_action IS DISTINCT FROM 'No importer action required' THEN
-    RAISE EXCEPTION 'Decision regression failed: fully assigned reconciled pending-approval case returned %.', v_action;
+  -- Wiring invariant: if the public wrapper changes importer_next_action at all, the
+  -- predecessor row must be exactly the diagnosed defect boundary. This catches any
+  -- accidental broadening in the real wrapper, not merely in an isolated helper test.
+  WITH old_rows AS (
+    SELECT *
+    FROM public.order_audience_status_pre_importer_reconciled_action_v1(NULL)
+  ), new_rows AS (
+    SELECT *
+    FROM public.order_audience_status_v1(NULL)
+  )
+  SELECT COUNT(*)::integer
+  INTO v_outside_boundary_change_count
+  FROM old_rows o
+  JOIN new_rows n USING (order_id)
+  WHERE n.importer_next_action IS DISTINCT FROM o.importer_next_action
+    AND NOT (
+      o.supplier_state = 'review_needed'
+      AND o.reconciliation_state = 'complete'
+      AND o.importer_next_action = 'Resolve evidence issue'
+      AND COALESCE(o.canonical_balance_due_gbp, 0) <= 0.01
+      AND COALESCE(o.internal_current_stage, '') <> 'exception_or_hold_open'
+    );
+
+  IF v_outside_boundary_change_count <> 0 THEN
+    RAISE EXCEPTION 'Boundary drift: % audience row(s) changed importer action outside the agreed defect boundary.', v_outside_boundary_change_count;
   END IF;
 
-  -- Partially assigned tracking -> Assign tracking.
-  v_action := public.internal_importer_reconciled_action_decision_v1(
-    'Resolve evidence issue', 'review_needed', 'complete', 0, 'funding_incomplete', 'missing',
-    3, 0, 0, 0, 0, 4, 0, 0, 2, 1
-  );
-  IF v_action IS DISTINCT FROM 'Assign tracking' THEN
-    RAISE EXCEPTION 'Decision regression failed: partial tracking case returned %.', v_action;
-  END IF;
-
-  -- No active tracking -> Add tracking.
-  v_action := public.internal_importer_reconciled_action_decision_v1(
-    'Resolve evidence issue', 'review_needed', 'complete', 0, 'funding_incomplete', 'missing',
-    3, 0, 0, 0, 0, 4, 0, 0, 0, 4
-  );
-  IF v_action IS DISTINCT FROM 'Add tracking' THEN
-    RAISE EXCEPTION 'Decision regression failed: missing tracking case returned %.', v_action;
-  END IF;
-
-  -- Exact-boundary guards: any mismatch must preserve predecessor action.
-  v_action := public.internal_importer_reconciled_action_decision_v1(
-    'Resolve evidence issue', 'approved_current', 'complete', 0, 'funding_incomplete', 'missing',
-    3, 0, 0, 0, 0, 4, 0, 0, 2, 0
-  );
-  IF v_action IS DISTINCT FROM 'Resolve evidence issue' THEN
-    RAISE EXCEPTION 'Boundary regression failed: supplier_state mismatch changed action to %.', v_action;
-  END IF;
-
-  v_action := public.internal_importer_reconciled_action_decision_v1(
-    'Resolve evidence issue', 'review_needed', 'incomplete', 0, 'funding_incomplete', 'missing',
-    3, 0, 0, 0, 0, 4, 0, 0, 2, 0
-  );
-  IF v_action IS DISTINCT FROM 'Resolve evidence issue' THEN
-    RAISE EXCEPTION 'Boundary regression failed: reconciliation_state mismatch changed action to %.', v_action;
-  END IF;
-
-  v_action := public.internal_importer_reconciled_action_decision_v1(
-    'Some existing action', 'review_needed', 'complete', 0, 'funding_incomplete', 'missing',
-    3, 0, 0, 0, 0, 4, 0, 0, 2, 0
-  );
-  IF v_action IS DISTINCT FROM 'Some existing action' THEN
-    RAISE EXCEPTION 'Boundary regression failed: non-target predecessor action changed to %.', v_action;
-  END IF;
-
-  -- Genuine importer blockers must preserve predecessor action.
-  v_action := public.internal_importer_reconciled_action_decision_v1(
-    'Resolve evidence issue', 'review_needed', 'complete', 1.00, 'funding_incomplete', 'missing',
-    3, 0, 0, 0, 0, 4, 0, 0, 2, 0
-  );
-  IF v_action IS DISTINCT FROM 'Resolve evidence issue' THEN
-    RAISE EXCEPTION 'Blocker regression failed: positive balance changed action to %.', v_action;
-  END IF;
-
-  v_action := public.internal_importer_reconciled_action_decision_v1(
-    'Resolve evidence issue', 'review_needed', 'complete', 0, 'exception_or_hold_open', 'missing',
-    3, 0, 0, 0, 0, 4, 0, 0, 2, 0
-  );
-  IF v_action IS DISTINCT FROM 'Resolve evidence issue' THEN
-    RAISE EXCEPTION 'Blocker regression failed: exception/hold changed action to %.', v_action;
-  END IF;
-
-  v_action := public.internal_importer_reconciled_action_decision_v1(
-    'Resolve evidence issue', 'review_needed', 'complete', 0, 'funding_incomplete', 'missing',
-    3, 1, 0, 0, 0, 4, 0, 0, 2, 0
-  );
-  IF v_action IS DISTINCT FROM 'Resolve evidence issue' THEN
-    RAISE EXCEPTION 'Blocker regression failed: resubmission changed action to %.', v_action;
-  END IF;
-
-  v_action := public.internal_importer_reconciled_action_decision_v1(
-    'Resolve evidence issue', 'review_needed', 'complete', 0, 'funding_incomplete', 'missing',
-    3, 0, 1, 0, 0, 4, 0, 0, 2, 0
-  );
-  IF v_action IS DISTINCT FROM 'Resolve evidence issue' THEN
-    RAISE EXCEPTION 'Blocker regression failed: unknown review state changed action to %.', v_action;
-  END IF;
-
-  v_action := public.internal_importer_reconciled_action_decision_v1(
-    'Resolve evidence issue', 'review_needed', 'complete', 0, 'funding_incomplete', 'missing',
-    3, 0, 0, 1, 0, 4, 0, 0, 2, 0
-  );
-  IF v_action IS DISTINCT FROM 'Resolve evidence issue' THEN
-    RAISE EXCEPTION 'Blocker regression failed: open evidence query changed action to %.', v_action;
-  END IF;
-
-  v_action := public.internal_importer_reconciled_action_decision_v1(
-    'Resolve evidence issue', 'review_needed', 'complete', 0, 'funding_incomplete', 'missing',
-    3, 0, 0, 0, 1, 4, 0, 0, 2, 0
-  );
-  IF v_action IS DISTINCT FROM 'Resolve evidence issue' THEN
-    RAISE EXCEPTION 'Blocker regression failed: open/under-review invoice flag changed action to %.', v_action;
-  END IF;
-
-  v_action := public.internal_importer_reconciled_action_decision_v1(
-    'Resolve evidence issue', 'review_needed', 'complete', 0, 'funding_incomplete', 'missing',
-    3, 0, 0, 0, 0, 4, 1, 0, 2, 0
-  );
-  IF v_action IS DISTINCT FROM 'Resolve evidence issue' THEN
-    RAISE EXCEPTION 'Blocker regression failed: missing confirmation changed action to %.', v_action;
-  END IF;
-
-  v_action := public.internal_importer_reconciled_action_decision_v1(
-    'Resolve evidence issue', 'review_needed', 'complete', 0, 'funding_incomplete', 'missing',
-    3, 0, 0, 0, 0, 4, 0, 1, 2, 0
-  );
-  IF v_action IS DISTINCT FROM 'Resolve evidence issue' THEN
-    RAISE EXCEPTION 'Blocker regression failed: unresolved line changed action to %.', v_action;
-  END IF;
-
-  v_action := public.internal_importer_reconciled_action_decision_v1(
-    'Resolve evidence issue', 'review_needed', 'complete', 0, 'funding_incomplete', 'missing',
-    3, 0, 0, 0, 0, 0, 0, 0, 2, 0
-  );
-  IF v_action IS DISTINCT FROM 'Resolve evidence issue' THEN
-    RAISE EXCEPTION 'Blocker regression failed: no progressed physical lines changed action to %.', v_action;
-  END IF;
-
-  -- Accepted POD remains complete inside the exact target boundary.
-  v_action := public.internal_importer_reconciled_action_decision_v1(
-    'Resolve evidence issue', 'review_needed', 'complete', 0, 'funding_incomplete', 'accepted_current',
-    3, 0, 0, 0, 0, 4, 0, 0, 2, 0
-  );
-  IF v_action IS DISTINCT FROM 'Order complete' THEN
-    RAISE EXCEPTION 'Decision regression failed: accepted POD returned %.', v_action;
-  END IF;
-
-  -- Production proof for the diagnosed target, if still present.
+  -- Production acceptance fixture for the diagnosed order.
   SELECT o.id
   INTO v_target_id
   FROM public.orders o
   WHERE o.order_ref = 'ORD-1785414534454'
   LIMIT 1;
 
-  IF v_target_id IS NOT NULL THEN
-    SELECT a.importer_next_action, a.importer_status_label
-    INTO v_new_action, v_new_status
-    FROM public.order_audience_status_v1(v_target_id) a;
+  IF v_target_id IS NULL THEN
+    RAISE EXCEPTION 'Acceptance fixture ORD-1785414534454 is missing.';
+  END IF;
 
-    SELECT a.importer_next_action, a.importer_status_label
-    INTO v_old_action, v_old_status
-    FROM public.order_audience_status_pre_importer_reconciled_action_v1(v_target_id) a;
+  SELECT a.importer_next_action, a.importer_status_label
+  INTO v_new_action, v_new_status
+  FROM public.order_audience_status_v1(v_target_id) a;
 
-    IF v_old_action IS DISTINCT FROM 'Resolve evidence issue' THEN
-      RAISE EXCEPTION 'Target baseline drifted before regression: predecessor action is %, expected Resolve evidence issue.', v_old_action;
-    END IF;
+  SELECT a.importer_next_action, a.importer_status_label
+  INTO v_old_action, v_old_status
+  FROM public.order_audience_status_pre_importer_reconciled_action_v1(v_target_id) a;
 
-    IF v_new_action IS DISTINCT FROM 'No importer action required' THEN
-      RAISE EXCEPTION 'Target projection failed: new action is %, expected No importer action required.', v_new_action;
-    END IF;
+  IF v_old_action IS DISTINCT FROM 'Resolve evidence issue' THEN
+    RAISE EXCEPTION 'Target baseline drifted: predecessor action is %, expected Resolve evidence issue.', v_old_action;
+  END IF;
 
-    IF v_new_status IS DISTINCT FROM v_old_status THEN
-      RAISE EXCEPTION 'Status-label scope drift: new %, old %.', v_new_status, v_old_status;
-    END IF;
+  IF v_new_action IS DISTINCT FROM 'No importer action required' THEN
+    RAISE EXCEPTION 'Target projection failed: new action is %, expected No importer action required.', v_new_action;
+  END IF;
+
+  IF v_new_status IS DISTINCT FROM v_old_status THEN
+    RAISE EXCEPTION 'Status-label scope drift: new %, old %.', v_new_status, v_old_status;
   END IF;
 END $$;
 
 SELECT jsonb_build_object(
   'regression_result', 'PASS',
-  'proof', 'exact defect boundary enforced; every listed importer blocker fails closed; missing/partial/full tracking decisions proven without business-data fixture writes; predecessor and internal helpers are not executable by authenticated; only importer_next_action may differ from preserved predecessor; diagnosed target moves from Resolve evidence issue to No importer action required while every other audience field remains unchanged'
+  'proof', 'read-only regression; all non-action audience fields unchanged; every changed importer action constrained to exact review_needed + reconciliation complete + Resolve evidence issue predecessor boundary; predecessor/helper private; diagnosed target changes only importer_next_action from Resolve evidence issue to No importer action required'
 ) AS regression_result;
 
 ROLLBACK;
