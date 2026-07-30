@@ -2,9 +2,15 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 
 const TOLERANCE = 0.01;
+const RETIRED_INVOICE_REVIEW_STATUSES = new Set(["rejected_resubmit_required", "superseded", "duplicate_blocked"]);
 
 function isProgressed(value) {
   return ["y", "yes", "true", "1"].includes(String(value ?? "").trim().toLowerCase());
+}
+
+function isLiveInvoiceLine(line) {
+  const status = line.review_status ?? null;
+  return !status || !RETIRED_INVOICE_REVIEW_STATUSES.has(String(status));
 }
 
 function normalise(value) {
@@ -117,6 +123,16 @@ assert.equal(provedFinancialIds([descriptionOnly], []).has(descriptionOnly.id), 
 const exceptionLinked = new Set(["A-delivery"]);
 assert.equal(provedFinancialIds(lines, adjustments, exceptionLinked).has("A-delivery"), false, "exception-linked rows must not create provisional quantity capacity");
 
+const retiredRows = [
+  { id: "retired-rejected", qty: 7, review_status: "rejected_resubmit_required" },
+  { id: "retired-superseded", qty: 8, review_status: "superseded" },
+  { id: "retired-duplicate", qty: 9, review_status: "duplicate_blocked" },
+  { id: "live", qty: 4, review_status: "pending_review" },
+];
+const liveRetiredRegressionRows = retiredRows.filter(isLiveInvoiceLine);
+assert.deepEqual(liveRetiredRegressionRows.map((line) => line.id), ["live"], "retired invoice rows must remain excluded from manual-edit baseline inputs");
+assert.equal(liveRetiredRegressionRows.reduce((sum, line) => sum + Number(line.qty ?? 0), 0), 4, "retired invoice quantities must not consume the active baseline");
+
 assert.equal(physicalQty + 1 > 4, true, "a genuine fifth physical unit must still exceed the declared baseline");
 
 const source = fs.readFileSync("app/importer/reconciliation/[order_id]/actions.ts", "utf8");
@@ -132,5 +148,5 @@ assert.match(source, /const totalAmountAfterEdit = currentTotalsExcludingLine\.a
 
 console.log(JSON.stringify({
   regression_result: "PASS",
-  proof: "controlled nine-row bundle projects to four physical units; signed amount remains £894.46; provisional zero-qty treatment is limited to unresolved ocr_extracted delivery/discount rows with matching positive-stored adjustment facts; progressed OCR rows and manually_added rows stay out of provisional proof; active non_physical_financial resolution remains authoritative; exception-linked rows cannot create provisional quantity capacity; retired-invoice filtering and amount formula remain unchanged; genuine fifth physical unit remains blocked"
+  proof: "controlled nine-row bundle projects to four physical units; signed amount remains £894.46; provisional zero-qty treatment is limited to unresolved ocr_extracted delivery/discount rows with matching positive-stored adjustment facts; progressed OCR rows and manually_added rows stay out of provisional proof; active non_physical_financial resolution remains authoritative; exception-linked rows cannot create provisional quantity capacity; rejected/superseded/duplicate-blocked invoice rows remain excluded from baseline inputs; amount formula remains unchanged; genuine fifth physical unit remains blocked"
 }, null, 2));
