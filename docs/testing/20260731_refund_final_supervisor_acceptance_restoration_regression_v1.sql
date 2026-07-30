@@ -140,7 +140,7 @@ BEGIN
         AND op.active = true
         AND op.auth_user_id IS NOT NULL
     )
-  ORDER BY d.created_at DESC NULLS LAST, d.id
+  ORDER BY d.id
   LIMIT 1
   FOR UPDATE OF d;
 
