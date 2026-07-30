@@ -36,6 +36,80 @@ type ProgressionLine = {
   eligible_for_invoice_yn: string | null;
 };
 
+type ManualEditBaselineLine = {
+  id: string;
+  supplier_invoice_id: string;
+  line_source: string | null;
+  description: string | null;
+  qty: number | null;
+  amount_inc_vat_gbp: number | null;
+};
+
+type ManualEditResolution = {
+  supplier_invoice_line_id: string;
+};
+
+type ManualEditAdjustment = {
+  supplier_invoice_id: string | null;
+  adjustment_type: string;
+  amount_gbp: number;
+  approval_status: string | null;
+};
+
+type ManualEditDisputeLine = {
+  supplier_invoice_line_id: string;
+};
+
+function normalisedManualEditDescription(value: string | null | undefined) {
+  return (value ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function manualEditFinancialKind(line: ManualEditBaselineLine) {
+  if (String(line.line_source ?? "").trim().toLowerCase() !== "ocr_extracted") return null;
+  const description = normalisedManualEditDescription(line.description);
+  const amount = Number(line.amount_inc_vat_gbp ?? 0);
+  const discount = /(^| )(discount|promotion|promotional|promo|voucher|coupon|saving|savings)( |$)/.test(description);
+  const delivery = /(^| )(delivery|shipping|postage|freight|carriage)( |$)/.test(description);
+  if (amount < 0 && discount) return "discount" as const;
+  if (amount > 0 && delivery) return "delivery" as const;
+  return null;
+}
+
+function provedManualEditFinancialLineIds(
+  lines: ManualEditBaselineLine[],
+  adjustments: ManualEditAdjustment[],
+  exceptionLinkedLineIds: Set<string>
+) {
+  const proved = new Set<string>();
+  const invoiceIds = [...new Set(lines.map((line) => line.supplier_invoice_id))];
+
+  for (const supplierInvoiceId of invoiceIds) {
+    const invoiceLines = lines.filter(
+      (line) => line.supplier_invoice_id === supplierInvoiceId && !exceptionLinkedLineIds.has(line.id)
+    );
+    const invoiceAdjustments = adjustments.filter(
+      (adjustment) => adjustment.supplier_invoice_id === supplierInvoiceId && adjustment.approval_status !== "rejected"
+    );
+
+    for (const kind of ["discount", "delivery"] as const) {
+      const matchingLines = invoiceLines.filter((line) => manualEditFinancialKind(line) === kind);
+      const extractedAmount = matchingLines.reduce((sum, line) => sum + Number(line.amount_inc_vat_gbp ?? 0), 0);
+      const adjustmentAmount = invoiceAdjustments
+        .filter((adjustment) => adjustment.adjustment_type === `retailer_${kind}`)
+        .reduce((sum, adjustment) => sum + Number(adjustment.amount_gbp ?? 0), 0);
+
+      if (
+        matchingLines.length > 0 &&
+        Math.abs(Math.abs(extractedAmount) - Math.abs(adjustmentAmount)) <= CURRENCY_TOLERANCE_GBP
+      ) {
+        matchingLines.forEach((line) => proved.add(line.id));
+      }
+    }
+  }
+
+  return proved;
+}
+
 function lineProgressionValues(line: ProgressionLine) {
   const qty = Number(line.qty_confirmed ?? line.qty ?? 0);
   const amount = Number(line.amount_confirmed ?? line.amount_inc_vat_gbp ?? 0);
@@ -141,24 +215,87 @@ async function enforceManualEditWithinBaseline(params: {
 
   const { data: allLines, error: linesError } = await supabase
     .from("supplier_invoice_lines")
-    .select("id, qty, amount_inc_vat_gbp, supplier_invoices!inner(order_id, review_status)")
+    .select("id, supplier_invoice_id, line_source, description, qty, amount_inc_vat_gbp, supplier_invoices!inner(order_id, review_status)")
     .eq("supplier_invoices.order_id", orderId);
 
   if (linesError) {
     return { ok: false as const, error: linesError.message };
   }
 
-  const currentTotalsExcludingLine = (allLines ?? [])
-    .filter((line) => line.id !== lineId && isLiveInvoiceLine(line))
+  const liveLines = ((allLines ?? []) as ManualEditBaselineLine[]).filter(isLiveInvoiceLine);
+  const liveLineIds = liveLines.map((line) => line.id);
+  const invoiceIds = [...new Set(liveLines.map((line) => line.supplier_invoice_id))];
+
+  const [
+    { data: resolutionRows, error: resolutionsError },
+    { data: adjustmentRows, error: adjustmentsError },
+    { data: disputeLineRows, error: disputeLinesError },
+  ] = await Promise.all([
+    liveLineIds.length
+      ? supabase
+          .from("supplier_invoice_line_resolutions")
+          .select("supplier_invoice_line_id")
+          .in("supplier_invoice_line_id", liveLineIds)
+          .eq("active", true)
+          .eq("resolution_type", "non_physical_financial")
+      : Promise.resolve({ data: [] as ManualEditResolution[], error: null }),
+    invoiceIds.length
+      ? supabase
+          .from("order_value_adjustments")
+          .select("supplier_invoice_id, adjustment_type, amount_gbp, approval_status")
+          .eq("order_id", orderId)
+          .in("supplier_invoice_id", invoiceIds)
+      : Promise.resolve({ data: [] as ManualEditAdjustment[], error: null }),
+    liveLineIds.length
+      ? supabase
+          .from("dispute_lines")
+          .select("supplier_invoice_line_id")
+          .in("supplier_invoice_line_id", liveLineIds)
+          .is("resolved_at", null)
+      : Promise.resolve({ data: [] as ManualEditDisputeLine[], error: null }),
+  ]);
+
+  if (resolutionsError || adjustmentsError || disputeLinesError) {
+    return {
+      ok: false as const,
+      error:
+        resolutionsError?.message ??
+        adjustmentsError?.message ??
+        disputeLinesError?.message ??
+        "Unable to verify the order baseline.",
+    };
+  }
+
+  const resolvedFinancialLineIds = new Set(
+    ((resolutionRows ?? []) as ManualEditResolution[]).map((row) => row.supplier_invoice_line_id)
+  );
+  const exceptionLinkedLineIds = new Set(
+    ((disputeLineRows ?? []) as ManualEditDisputeLine[]).map((row) => row.supplier_invoice_line_id)
+  );
+  const provedUnresolvedFinancialLineIds = provedManualEditFinancialLineIds(
+    liveLines,
+    (adjustmentRows ?? []) as ManualEditAdjustment[],
+    exceptionLinkedLineIds
+  );
+  const isZeroPhysicalQtyLine = (line: ManualEditBaselineLine) =>
+    resolvedFinancialLineIds.has(line.id) || provedUnresolvedFinancialLineIds.has(line.id);
+
+  const currentTotalsExcludingLine = liveLines
+    .filter((line) => line.id !== lineId)
     .reduce(
       (totals, line) => ({
-        qty: totals.qty + Number(line.qty ?? 0),
+        qty: totals.qty + (isZeroPhysicalQtyLine(line) ? 0 : Number(line.qty ?? 0)),
         amount: totals.amount + Number(line.amount_inc_vat_gbp ?? 0),
       }),
       { qty: 0, amount: 0 }
     );
 
-  const totalQtyAfterEdit = currentTotalsExcludingLine.qty + nextQty;
+  const editedLine = liveLines.find((line) => line.id === lineId);
+  if (!editedLine) {
+    return { ok: false as const, error: "Invoice line not found for this order." };
+  }
+
+  const totalQtyAfterEdit = currentTotalsExcludingLine.qty + (isZeroPhysicalQtyLine(editedLine) ? 0 : nextQty);
   const totalAmountAfterEdit = currentTotalsExcludingLine.amount + nextAmount;
   const baselineQty = Number(order.total_qty_declared ?? 0);
   const baselineAmount = Number(order.order_total_gbp_declared ?? 0);
