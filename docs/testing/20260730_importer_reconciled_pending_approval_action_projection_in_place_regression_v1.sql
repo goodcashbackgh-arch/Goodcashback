@@ -244,9 +244,10 @@ BEGIN
     RAISE EXCEPTION 'Target projection failed: action is %, expected No importer action required.', v_target_action;
   END IF;
 
-  -- For every live row that currently satisfies the addendum's partially-assigned case,
-  -- the public action must be Assign tracking. If the environment has no such row, the
-  -- structural branch assertion above still protects the shipped SQL path.
+  -- For every live row that currently satisfies the same blocker-free pending-approval
+  -- boundary but has unassigned physical quantity, the public action must be Assign tracking.
+  -- If there is no such live row, the structural branch assertion above still protects
+  -- the shipped SQL path without writing synthetic business fixtures.
   WITH audience AS (
     SELECT * FROM public.order_audience_status_v1(NULL)
   ), candidates AS (
@@ -258,17 +259,71 @@ BEGIN
       AND COALESCE(a.internal_current_stage, '') <> 'exception_or_hold_open'
       AND a.pod_delivery_state IS DISTINCT FROM 'accepted_current'
       AND EXISTS (
-        SELECT 1 FROM public.supplier_invoices si
-        WHERE si.order_id = a.order_id AND si.review_status = 'pending_review'
+        SELECT 1
+        FROM public.supplier_invoices si
+        WHERE si.order_id = a.order_id
+          AND si.review_status = 'pending_review'
       )
       AND NOT EXISTS (
-        SELECT 1 FROM public.order_evidence_queries q
-        WHERE q.order_id = a.order_id AND q.status = 'open'
+        SELECT 1
+        FROM public.order_evidence_queries q
+        WHERE q.order_id = a.order_id
+          AND q.status = 'open'
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM public.supplier_invoice_review_flags f
+        JOIN public.supplier_invoices si ON si.id = f.supplier_invoice_id
+        WHERE si.order_id = a.order_id
+          AND si.review_status IN ('pending_review', 'approved_current', 'ref_corrected_approved')
+          AND f.status IN ('open', 'under_review')
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM public.supplier_invoices si
+        WHERE si.order_id = a.order_id
+          AND si.review_status = 'rejected_resubmit_required'
+          AND COALESCE(si.is_current_for_order, true) = true
+          AND COALESCE(si.rejection_requires_resubmission_yn, true) = true
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM public.supplier_invoices si
+        JOIN public.supplier_invoice_lines sil ON sil.supplier_invoice_id = si.id
+        WHERE si.order_id = a.order_id
+          AND si.review_status IN ('pending_review', 'approved_current', 'ref_corrected_approved')
+          AND lower(COALESCE(sil.eligible_for_invoice_yn::text, '')) IN ('y', 'yes', 'true', '1')
+          AND (sil.qty_confirmed IS NULL OR sil.amount_confirmed IS NULL)
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM public.supplier_invoices si
+        JOIN public.supplier_invoice_lines sil ON sil.supplier_invoice_id = si.id
+        WHERE si.order_id = a.order_id
+          AND si.review_status IN ('pending_review', 'approved_current', 'ref_corrected_approved')
+          AND lower(COALESCE(sil.eligible_for_invoice_yn::text, '')) NOT IN ('y', 'yes', 'true', '1')
+          AND NOT EXISTS (
+            SELECT 1
+            FROM public.supplier_invoice_line_resolutions r
+            WHERE r.supplier_invoice_line_id = sil.id
+              AND r.supplier_invoice_id = si.id
+              AND r.resolution_type = 'non_physical_financial'
+              AND r.active = true
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM public.dispute_lines dl
+            JOIN public.disputes d ON d.id = dl.dispute_id
+            WHERE dl.supplier_invoice_line_id = sil.id
+              AND dl.resolved_at IS NULL
+              AND d.resolved_at IS NULL
+          )
       )
       AND EXISTS (
         SELECT 1
         FROM public.order_tracking_submissions ots
-        WHERE ots.order_id = a.order_id AND ots.superseded_at IS NULL
+        WHERE ots.order_id = a.order_id
+          AND ots.superseded_at IS NULL
       )
       AND EXISTS (
         SELECT 1
@@ -304,7 +359,7 @@ END $$;
 
 SELECT jsonb_build_object(
   'regression_result', 'PASS',
-  'proof', 'in-place function only; no helper/predecessor; existing projection mappings preserved; exact addendum gate present; target stays Tracking submitted and changes only stale importer action to No importer action required; live partial-assignment rows, when present, resolve to Assign tracking'
+  'proof', 'in-place function only; no helper/predecessor; existing projection mappings preserved; exact addendum gate present; target stays Tracking submitted and changes only stale importer action to No importer action required; blocker-free live partial-assignment rows, when present, resolve to Assign tracking'
 ) AS regression_result;
 
 ROLLBACK;
