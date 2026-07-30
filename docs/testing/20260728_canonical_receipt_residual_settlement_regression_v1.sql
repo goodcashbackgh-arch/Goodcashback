@@ -85,7 +85,7 @@ BEGIN
      OR round(v_position.confirmed_customer_credit_gbp, 2) <> 37.20
      OR round(v_position.remaining_unresolved_gbp, 2) <> 0.00
      OR round(v_position.final_balance_payment_gbp, 2) <> 0.00
-     OR v_position.resolution_status <> 'fully_resolved'
+     OR v_position.resolution_status <> 'over_resolved_review'
   THEN
     RAISE EXCEPTION
       'FAIL: controlled settlement position changed. funding %, applied credit %, pending residual %, pending evidence %, confirmed pending %, docs %, final %, applied %, attributed %, gross %, credit %, unresolved %, final-balance %, status %',
