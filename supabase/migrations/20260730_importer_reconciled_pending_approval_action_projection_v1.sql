@@ -12,10 +12,10 @@ SET LOCAL statement_timeout = '0';
 --   supplier_state = review_needed
 --   reconciliation_state = complete
 --   importer_next_action = Resolve evidence issue
--- plus no balance/exception/evidence blocker.
+-- plus no addendum-defined importer blocker.
 --
--- No business-data writes. No supplier approval/coding/Sage/funding/customer/shipper/UI
--- changes. No replacement lifecycle engine is introduced here.
+-- No POD logic is introduced here. No business-data writes. No supplier approval/coding/
+-- Sage/funding/customer/shipper/UI changes. No replacement lifecycle engine.
 
 DO $$
 DECLARE
@@ -85,7 +85,6 @@ END $$;
 ALTER FUNCTION public.order_audience_status_v1(uuid)
   RENAME TO order_audience_status_pre_importer_reconciled_action_v1;
 
--- Renaming preserves grants; the predecessor is implementation detail only.
 REVOKE ALL ON FUNCTION public.order_audience_status_pre_importer_reconciled_action_v1(uuid)
   FROM PUBLIC, anon, authenticated;
 
@@ -106,7 +105,7 @@ DECLARE
   v_open_query_count integer := 0;
   v_open_review_flag_count integer := 0;
   v_pending_review_invoice_count integer := 0;
-  v_evidence_action_invoice_count integer := 0;
+  v_genuine_resubmission_count integer := 0;
   v_unresolved_line_count integer := 0;
   v_missing_confirmation_count integer := 0;
   v_physical_line_count integer := 0;
@@ -123,7 +122,7 @@ BEGIN
     RETURN p_fallback_action;
   END IF;
 
-  -- The repair is only for invoices legitimately waiting at pending_review.
+  -- This correction applies only where internal approval is genuinely pending.
   SELECT COUNT(*)::integer
   INTO v_pending_review_invoice_count
   FROM public.supplier_invoices si
@@ -134,22 +133,16 @@ BEGIN
     RETURN p_fallback_action;
   END IF;
 
-  -- Genuine evidence-action invoice states remain importer work. Historical rejection
-  -- rows are ignored unless they are still current and still require resubmission.
+  -- Addendum-defined genuine supplier-evidence resubmission blocker only.
   SELECT COUNT(*)::integer
-  INTO v_evidence_action_invoice_count
+  INTO v_genuine_resubmission_count
   FROM public.supplier_invoices si
   WHERE si.order_id = p_order_id
-    AND (
-      si.review_status = 'needs_action'
-      OR (
-        si.review_status = 'rejected_resubmit_required'
-        AND COALESCE(si.is_current_for_order, true) = true
-        AND COALESCE(si.rejection_requires_resubmission_yn, true) = true
-      )
-    );
+    AND si.review_status = 'rejected_resubmit_required'
+    AND COALESCE(si.is_current_for_order, true) = true
+    AND COALESCE(si.rejection_requires_resubmission_yn, true) = true;
 
-  IF v_evidence_action_invoice_count > 0 THEN
+  IF v_genuine_resubmission_count > 0 THEN
     RETURN p_fallback_action;
   END IF;
 
@@ -175,8 +168,7 @@ BEGIN
     RETURN p_fallback_action;
   END IF;
 
-  -- Do not rely on is_current_for_order for importer reconciliation. A pending-review
-  -- invoice can legitimately have is_current_for_order=false after header review.
+  -- Do not use is_current_for_order as the importer reconciliation-complete gate.
   SELECT COUNT(*)::integer
   INTO v_unresolved_line_count
   FROM public.supplier_invoices si
@@ -235,8 +227,7 @@ BEGIN
     SELECT
       sil.id,
       GREATEST(COALESCE(sil.qty_confirmed, sil.qty, 0), 0)::numeric AS required_qty,
-      COALESCE(SUM(otla.qty_allocated) FILTER (WHERE ats.id IS NOT NULL), 0)::numeric
-        AS active_tracking_allocated_qty
+      COALESCE(SUM(otla.qty_allocated) FILTER (WHERE ats.id IS NOT NULL), 0)::numeric AS active_tracking_allocated_qty
     FROM public.supplier_invoices si
     JOIN public.supplier_invoice_lines sil ON sil.supplier_invoice_id = si.id
     LEFT JOIN public.order_tracking_line_allocations otla
@@ -389,7 +380,7 @@ REVOKE ALL ON FUNCTION public.order_audience_status_v1(uuid) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.order_audience_status_v1(uuid) TO authenticated;
 
 COMMENT ON FUNCTION public.order_audience_status_v1(uuid) IS
-'Importer-next-action-only wrapper for reconciled pending-review supplier invoices. All predecessor audience fields pass through unchanged; only the exact review_needed + reconciliation complete + Resolve evidence issue defect can be replaced with the appropriate tracking action when no importer evidence blocker remains.';
+'Importer-next-action-only wrapper for the reconciled pending-approval defect. All predecessor audience fields pass through unchanged; only the exact review_needed + reconciliation complete + Resolve evidence issue case can move to the appropriate tracking action when no addendum-defined importer blocker remains.';
 
 NOTIFY pgrst, 'reload schema';
 
