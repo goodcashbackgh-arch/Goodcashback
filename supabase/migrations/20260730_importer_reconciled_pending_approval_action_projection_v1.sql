@@ -63,6 +63,81 @@ END $$;
 ALTER FUNCTION public.order_audience_status_v1(uuid)
   RENAME TO order_audience_status_pre_importer_reconciled_action_v1;
 
+-- Pure, private decision function. Keeping the branch logic separate lets regression
+-- prove every fail-closed condition without writing fixture data into business tables.
+CREATE OR REPLACE FUNCTION public.internal_importer_reconciled_action_decision_v1(
+  p_fallback_action text,
+  p_supplier_state text,
+  p_reconciliation_state text,
+  p_canonical_balance_due_gbp numeric,
+  p_internal_current_stage text,
+  p_pod_delivery_state text,
+  p_live_invoice_count integer,
+  p_genuine_resubmission_count integer,
+  p_other_review_state_count integer,
+  p_open_query_count integer,
+  p_open_review_flag_count integer,
+  p_progressed_physical_count integer,
+  p_progressed_missing_confirmation_count integer,
+  p_unresolved_line_count integer,
+  p_active_tracking_count integer,
+  p_unassigned_physical_line_count integer
+)
+RETURNS text
+LANGUAGE plpgsql
+IMMUTABLE
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  -- Exact defect boundary. Every other predecessor action passes through untouched.
+  IF p_supplier_state IS DISTINCT FROM 'review_needed'
+     OR p_reconciliation_state IS DISTINCT FROM 'complete'
+     OR p_fallback_action IS DISTINCT FROM 'Resolve evidence issue'
+  THEN
+    RETURN p_fallback_action;
+  END IF;
+
+  IF COALESCE(p_canonical_balance_due_gbp, 0) > 0.01
+     OR COALESCE(p_internal_current_stage, '') = 'exception_or_hold_open'
+  THEN
+    RETURN p_fallback_action;
+  END IF;
+
+  IF p_pod_delivery_state = 'accepted_current' THEN
+    RETURN 'Order complete';
+  END IF;
+
+  IF COALESCE(p_live_invoice_count, 0) = 0
+     OR COALESCE(p_genuine_resubmission_count, 0) > 0
+     OR COALESCE(p_other_review_state_count, 0) > 0
+     OR COALESCE(p_open_query_count, 0) > 0
+     OR COALESCE(p_open_review_flag_count, 0) > 0
+     OR COALESCE(p_progressed_physical_count, 0) = 0
+     OR COALESCE(p_progressed_missing_confirmation_count, 0) > 0
+     OR COALESCE(p_unresolved_line_count, 0) > 0
+  THEN
+    RETURN p_fallback_action;
+  END IF;
+
+  IF COALESCE(p_active_tracking_count, 0) = 0 THEN
+    RETURN 'Add tracking';
+  END IF;
+
+  IF COALESCE(p_unassigned_physical_line_count, 0) > 0 THEN
+    RETURN 'Assign tracking';
+  END IF;
+
+  RETURN 'No importer action required';
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.internal_importer_reconciled_action_decision_v1(
+  text, text, text, numeric, text, text, integer, integer, integer, integer,
+  integer, integer, integer, integer, integer, integer
+) FROM PUBLIC, anon, authenticated;
+
+-- Private data adapter: reads the minimum evidence/reconciliation/tracking facts needed
+-- only after the exact predecessor defect boundary has matched.
 CREATE OR REPLACE FUNCTION public.internal_importer_reconciled_next_action_v1(
   p_order_id uuid,
   p_fallback_action text,
@@ -80,6 +155,7 @@ AS $$
 DECLARE
   v_live_invoice_count integer := 0;
   v_genuine_resubmission_count integer := 0;
+  v_other_review_state_count integer := 0;
   v_open_query_count integer := 0;
   v_open_review_flag_count integer := 0;
   v_progressed_physical_count integer := 0;
@@ -88,23 +164,11 @@ DECLARE
   v_active_tracking_count integer := 0;
   v_unassigned_physical_line_count integer := 0;
 BEGIN
-  -- Exact defect boundary. Everything else is byte-for-byte predecessor behaviour.
   IF p_supplier_state IS DISTINCT FROM 'review_needed'
      OR p_reconciliation_state IS DISTINCT FROM 'complete'
      OR p_fallback_action IS DISTINCT FROM 'Resolve evidence issue'
   THEN
     RETURN p_fallback_action;
-  END IF;
-
-  -- Preserve all existing higher-priority action semantics.
-  IF COALESCE(p_canonical_balance_due_gbp, 0) > 0.01
-     OR COALESCE(p_internal_current_stage, '') = 'exception_or_hold_open'
-  THEN
-    RETURN p_fallback_action;
-  END IF;
-
-  IF p_pod_delivery_state = 'accepted_current' THEN
-    RETURN 'Order complete';
   END IF;
 
   SELECT
@@ -116,24 +180,25 @@ BEGIN
     COUNT(*) FILTER (
       WHERE si.review_status = 'rejected_resubmit_required'
         AND COALESCE(si.rejection_requires_resubmission_yn, true) = true
+    )::integer,
+    COUNT(*) FILTER (
+      WHERE COALESCE(si.review_status, '') NOT IN (
+        'pending_review', 'approved_current', 'ref_corrected_approved',
+        'rejected_resubmit_required', 'superseded', 'duplicate_blocked'
+      )
     )::integer
-  INTO v_live_invoice_count, v_genuine_resubmission_count
+  INTO
+    v_live_invoice_count,
+    v_genuine_resubmission_count,
+    v_other_review_state_count
   FROM public.supplier_invoices si
   WHERE si.order_id = p_order_id;
-
-  IF v_live_invoice_count = 0 OR v_genuine_resubmission_count > 0 THEN
-    RETURN p_fallback_action;
-  END IF;
 
   SELECT COUNT(*)::integer
   INTO v_open_query_count
   FROM public.order_evidence_queries q
   WHERE q.order_id = p_order_id
     AND q.status = 'open';
-
-  IF v_open_query_count > 0 THEN
-    RETURN p_fallback_action;
-  END IF;
 
   SELECT COUNT(*)::integer
   INTO v_open_review_flag_count
@@ -144,10 +209,6 @@ BEGIN
       'rejected_resubmit_required', 'superseded', 'duplicate_blocked'
     )
     AND f.status IN ('open', 'under_review');
-
-  IF v_open_review_flag_count > 0 THEN
-    RETURN p_fallback_action;
-  END IF;
 
   SELECT
     COUNT(sil.id) FILTER (
@@ -187,22 +248,11 @@ BEGIN
       'rejected_resubmit_required', 'superseded', 'duplicate_blocked'
     );
 
-  IF v_progressed_physical_count = 0
-     OR v_progressed_missing_confirmation_count > 0
-     OR v_unresolved_line_count > 0
-  THEN
-    RETURN p_fallback_action;
-  END IF;
-
   SELECT COUNT(*)::integer
   INTO v_active_tracking_count
   FROM public.order_tracking_submissions ots
   WHERE ots.order_id = p_order_id
     AND ots.superseded_at IS NULL;
-
-  IF v_active_tracking_count = 0 THEN
-    RETURN 'Add tracking';
-  END IF;
 
   WITH physical_position AS (
     SELECT
@@ -234,18 +284,30 @@ BEGIN
   INTO v_unassigned_physical_line_count
   FROM physical_position;
 
-  IF v_unassigned_physical_line_count > 0 THEN
-    RETURN 'Assign tracking';
-  END IF;
-
-  RETURN 'No importer action required';
+  RETURN public.internal_importer_reconciled_action_decision_v1(
+    p_fallback_action,
+    p_supplier_state,
+    p_reconciliation_state,
+    p_canonical_balance_due_gbp,
+    p_internal_current_stage,
+    p_pod_delivery_state,
+    v_live_invoice_count,
+    v_genuine_resubmission_count,
+    v_other_review_state_count,
+    v_open_query_count,
+    v_open_review_flag_count,
+    v_progressed_physical_count,
+    v_progressed_missing_confirmation_count,
+    v_unresolved_line_count,
+    v_active_tracking_count,
+    v_unassigned_physical_line_count
+  );
 END;
 $$;
 
--- Internal-only helper. The SECURITY DEFINER audience wrapper can call it as owner;
--- authenticated/anon callers do not get direct EXECUTE permission.
-REVOKE ALL ON FUNCTION public.internal_importer_reconciled_next_action_v1(uuid, text, text, text, numeric, text, text)
-  FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.internal_importer_reconciled_next_action_v1(
+  uuid, text, text, text, numeric, text, text
+) FROM PUBLIC, anon, authenticated;
 
 CREATE OR REPLACE FUNCTION public.order_audience_status_v1(
   p_order_id uuid DEFAULT NULL
