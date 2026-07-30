@@ -16,8 +16,9 @@ DECLARE
   v_target_open_flag_count integer;
   v_target_unresolved_line_count integer;
   v_target_missing_confirmation_count integer;
-  v_target_evidence_action_invoice_count integer;
+  v_target_genuine_resubmission_count integer;
   v_target_exception_or_hold boolean;
+  v_helper_definition text;
 BEGIN
   IF to_regprocedure('public.order_audience_status_v1(uuid)') IS NULL
      OR to_regprocedure('public.order_audience_status_pre_importer_reconciled_action_v1(uuid)') IS NULL
@@ -38,6 +39,35 @@ BEGIN
      )
   THEN
     RAISE EXCEPTION 'Scope/security drift: predecessor or internal helper is directly executable by authenticated.';
+  END IF;
+
+  SELECT lower(regexp_replace(pg_get_functiondef(p.oid), '\s+', ' ', 'g'))
+  INTO v_helper_definition
+  FROM pg_proc p
+  WHERE p.oid = 'public.internal_importer_pending_approval_action_v1(uuid,text,text,text,numeric,text)'::regprocedure;
+
+  -- Structural contract: the helper must contain only the addendum-defined boundary,
+  -- blocker checks and tracking outcomes. POD and unrelated review-state inference are forbidden.
+  IF position('pod_delivery_state' IN v_helper_definition) > 0
+     OR position('needs_action' IN v_helper_definition) > 0
+  THEN
+    RAISE EXCEPTION 'Scope drift: helper contains POD logic or non-addendum needs_action inference.';
+  END IF;
+
+  IF position('p_supplier_state is distinct from ''review_needed''' IN v_helper_definition) = 0
+     OR position('p_reconciliation_state is distinct from ''complete''' IN v_helper_definition) = 0
+     OR position('p_fallback_action is distinct from ''resolve evidence issue''' IN v_helper_definition) = 0
+     OR position('q.status = ''open''' IN v_helper_definition) = 0
+     OR position('f.status in (''open'', ''under_review'')' IN v_helper_definition) = 0
+     OR position('si.review_status = ''rejected_resubmit_required''' IN v_helper_definition) = 0
+     OR position('r.resolution_type = ''non_physical_financial''' IN v_helper_definition) = 0
+     OR position('sil.qty_confirmed is null or sil.amount_confirmed is null' IN v_helper_definition) = 0
+     OR position('exception_or_hold_open' IN v_helper_definition) = 0
+     OR position('if v_active_tracking_count = 0 then return ''add tracking''' IN v_helper_definition) = 0
+     OR position('if v_unassigned_physical_line_count > 0 then return ''assign tracking''' IN v_helper_definition) = 0
+     OR position('return ''no importer action required''' IN v_helper_definition) = 0
+  THEN
+    RAISE EXCEPTION 'Addendum regression contract drift: required blocker or tracking branch is missing from helper.';
   END IF;
 
   FOR v_candidate IN
@@ -82,7 +112,7 @@ BEGIN
     RAISE EXCEPTION 'Scope drift: % audience row(s) changed outside importer_next_action.', v_non_action_drift_count;
   END IF;
 
-  -- Any changed importer action must be inside the exact agreed predecessor boundary.
+  -- Any changed action must originate inside the exact predecessor defect boundary.
   WITH old_rows AS (
     SELECT * FROM public.order_audience_status_pre_importer_reconciled_action_v1(NULL)
   ), new_rows AS (
@@ -105,9 +135,7 @@ BEGIN
     RAISE EXCEPTION 'Boundary drift: % audience row(s) changed importer action outside the agreed defect boundary.', v_outside_boundary_change_count;
   END IF;
 
-  -- Explicit fail-closed proof against the real wrapper. No changed row may have any
-  -- blocker named by the addendum: exception/hold, open query, open review flag,
-  -- needs_action/current genuine resubmission, unresolved line, or missing confirmation.
+  -- No row actually changed by the wrapper may still carry an addendum-defined blocker.
   WITH old_rows AS (
     SELECT * FROM public.order_audience_status_pre_importer_reconciled_action_v1(NULL)
   ), new_rows AS (
@@ -122,6 +150,7 @@ BEGIN
   INTO v_blocker_change_count
   FROM changed c
   WHERE COALESCE(c.internal_current_stage, '') = 'exception_or_hold_open'
+     OR COALESCE(c.canonical_balance_due_gbp, 0) > 0.01
      OR EXISTS (
        SELECT 1
        FROM public.order_evidence_queries q
@@ -140,14 +169,9 @@ BEGIN
        SELECT 1
        FROM public.supplier_invoices si
        WHERE si.order_id = c.order_id
-         AND (
-           si.review_status = 'needs_action'
-           OR (
-             si.review_status = 'rejected_resubmit_required'
-             AND COALESCE(si.is_current_for_order, true) = true
-             AND COALESCE(si.rejection_requires_resubmission_yn, true) = true
-           )
-         )
+         AND si.review_status = 'rejected_resubmit_required'
+         AND COALESCE(si.is_current_for_order, true) = true
+         AND COALESCE(si.rejection_requires_resubmission_yn, true) = true
      )
      OR EXISTS (
        SELECT 1
@@ -187,7 +211,7 @@ BEGIN
     RAISE EXCEPTION 'Blocker regression failed: % changed audience row(s) still have an addendum-defined importer blocker.', v_blocker_change_count;
   END IF;
 
-  -- Production acceptance fixture.
+  -- Production acceptance fixture: fully assigned tracking must clear the stale action.
   SELECT o.id
   INTO v_target_id
   FROM public.orders o
@@ -218,7 +242,6 @@ BEGIN
     RAISE EXCEPTION 'Status-label scope drift: new %, old %.', v_new_status, v_old_status;
   END IF;
 
-  -- Explicit acceptance proof for the diagnosed fixture.
   SELECT COUNT(*)::integer
   INTO v_target_open_query_count
   FROM public.order_evidence_queries q
@@ -234,17 +257,12 @@ BEGIN
     AND f.status IN ('open', 'under_review');
 
   SELECT COUNT(*)::integer
-  INTO v_target_evidence_action_invoice_count
+  INTO v_target_genuine_resubmission_count
   FROM public.supplier_invoices si
   WHERE si.order_id = v_target_id
-    AND (
-      si.review_status = 'needs_action'
-      OR (
-        si.review_status = 'rejected_resubmit_required'
-        AND COALESCE(si.is_current_for_order, true) = true
-        AND COALESCE(si.rejection_requires_resubmission_yn, true) = true
-      )
-    );
+    AND si.review_status = 'rejected_resubmit_required'
+    AND COALESCE(si.is_current_for_order, true) = true
+    AND COALESCE(si.rejection_requires_resubmission_yn, true) = true;
 
   SELECT COUNT(*)::integer
   INTO v_target_unresolved_line_count
@@ -283,29 +301,20 @@ BEGIN
   INTO v_target_exception_or_hold
   FROM public.order_audience_status_pre_importer_reconciled_action_v1(v_target_id) a;
 
-  IF v_target_open_query_count <> 0 THEN
-    RAISE EXCEPTION 'Blocker regression failed: target has % open evidence query/queryies.', v_target_open_query_count;
-  END IF;
-  IF v_target_open_flag_count <> 0 THEN
-    RAISE EXCEPTION 'Blocker regression failed: target has % open/under-review invoice flag(s).', v_target_open_flag_count;
-  END IF;
-  IF v_target_evidence_action_invoice_count <> 0 THEN
-    RAISE EXCEPTION 'Blocker regression failed: target has % genuine evidence-action invoice(s).', v_target_evidence_action_invoice_count;
-  END IF;
-  IF v_target_unresolved_line_count <> 0 THEN
-    RAISE EXCEPTION 'Blocker regression failed: target has % unresolved invoice line(s).', v_target_unresolved_line_count;
-  END IF;
-  IF v_target_missing_confirmation_count <> 0 THEN
-    RAISE EXCEPTION 'Blocker regression failed: target has % progressed physical line(s) missing confirmed qty/value.', v_target_missing_confirmation_count;
-  END IF;
-  IF v_target_exception_or_hold THEN
-    RAISE EXCEPTION 'Blocker regression failed: target predecessor is in exception/hold.';
+  IF v_target_open_query_count <> 0
+     OR v_target_open_flag_count <> 0
+     OR v_target_genuine_resubmission_count <> 0
+     OR v_target_unresolved_line_count <> 0
+     OR v_target_missing_confirmation_count <> 0
+     OR v_target_exception_or_hold
+  THEN
+    RAISE EXCEPTION 'Acceptance fixture no longer satisfies the addendum blocker-free condition.';
   END IF;
 END $$;
 
 SELECT jsonb_build_object(
   'regression_result', 'PASS',
-  'proof', 'read-only regression; all non-action audience fields unchanged; every changed importer action constrained to exact predecessor boundary; real wrapper proves addendum blockers fail closed; diagnosed target has no blocker and changes only importer_next_action from Resolve evidence issue to No importer action required'
+  'proof', 'read-only; only importer_next_action may change; every live change is inside the exact predecessor boundary and blocker-free; helper structurally contains Add tracking / Assign tracking / No importer action required branches; POD and needs_action inference are absent; diagnosed fully-assigned target changes only from Resolve evidence issue to No importer action required'
 ) AS regression_result;
 
 ROLLBACK;
