@@ -101,6 +101,7 @@ function resolvedSignedAmount(line: Line, resolution: Resolution | undefined) {
 }
 
 function unresolvedFinancialKind(line: Line) {
+  if (String(line.line_source ?? "").trim().toLowerCase() !== "ocr_extracted") return null;
   const amount = Number(line.amount_inc_vat_gbp ?? 0);
   if (amount < 0 && isDiscountDescription(line.description)) return "discount" as const;
   if (amount > 0 && isDeliveryDescription(line.description)) return "delivery" as const;
