@@ -6,12 +6,13 @@ SET LOCAL statement_timeout = '0';
 -- Narrow successor to the 20260728 audience receipt-residual overlay.
 --
 -- Accounting rule:
---   collectible balance = max(pre-receipt-residual canonical balance
---                             - pending physical receipt residual, 0)
+--   collectible balance = max(final order value
+--                             - payment already applied to the order
+--                             - pending physical receipt residual,
+--                             0)
 --
--- Only public.order_settlement_resolution_position_v1.pending_receipt_residual_gbp
--- is allowed to reduce the balance here. Do not use order_attributed_receipt_gbp,
--- inbound FX receipt residuals, settlement FX/card differences or outbound supplier FX.
+-- Only pending_receipt_residual_gbp is allowed to provide the additional receipt
+-- reduction here. FX/card residuals are deliberately excluded.
 --
 -- This wrapper changes only the shared audience projection. It does not write or
 -- reclassify funding, account credit, DVA evidence/allocations, customer sales,
@@ -21,10 +22,6 @@ DO $$
 BEGIN
   IF to_regclass('public.order_settlement_resolution_position_v1') IS NULL THEN
     RAISE EXCEPTION 'Missing public.order_settlement_resolution_position_v1';
-  END IF;
-
-  IF to_regprocedure('public.order_audience_status_pre_receipt_residual_overlay_v1(uuid)') IS NULL THEN
-    RAISE EXCEPTION 'Missing public.order_audience_status_pre_receipt_residual_overlay_v1(uuid)';
   END IF;
 
   IF to_regprocedure('public.order_audience_status_pre_partial_receipt_residual_balance_v1(uuid)') IS NULL THEN
@@ -95,30 +92,21 @@ BEGIN
   END IF;
 
   RETURN QUERY
-  WITH current_base AS (
+  WITH base AS (
     SELECT *
     FROM public.order_audience_status_pre_partial_receipt_residual_balance_v1(p_order_id)
-  ), pre_receipt_overlay AS (
-    SELECT *
-    FROM public.order_audience_status_pre_receipt_residual_overlay_v1(p_order_id)
   ), scoped AS (
     SELECT
       b.*,
-      pre.order_id IS NOT NULL AS pre_receipt_row_present_yn,
-      pre.canonical_balance_due_gbp AS pre_receipt_balance_due_gbp,
-      pre.customer_status_label AS pre_receipt_customer_status_label,
-      pre.customer_next_action AS pre_receipt_customer_next_action,
-      pre.importer_status_label AS pre_receipt_importer_status_label,
-      pre.importer_next_action AS pre_receipt_importer_next_action,
       COALESCE(s.pending_receipt_residual_gbp, 0)::numeric AS pending_receipt_residual_gbp,
       COALESCE(s.final_sale_document_count, 0)::integer AS final_sale_document_count,
       ROUND(
         CASE
-          WHEN pre.order_id IS NOT NULL
-           AND COALESCE(s.pending_receipt_residual_gbp, 0) > 0.01
+          WHEN COALESCE(s.pending_receipt_residual_gbp, 0) > 0.01
            AND COALESCE(s.final_sale_document_count, 0) > 0
           THEN GREATEST(
-            COALESCE(pre.canonical_balance_due_gbp, 0)
+            COALESCE(s.final_order_value_gbp, 0)
+              - COALESCE(s.payment_applied_to_order_gbp, 0)
               - COALESCE(s.pending_receipt_residual_gbp, 0),
             0
           )
@@ -126,9 +114,7 @@ BEGIN
         END::numeric,
         2
       ) AS safe_collectible_balance_due_gbp
-    FROM current_base b
-    LEFT JOIN pre_receipt_overlay pre
-      ON pre.order_id = b.order_id
+    FROM base b
     LEFT JOIN public.order_settlement_resolution_position_v1 s
       ON s.order_id = b.order_id
   )
@@ -171,34 +157,27 @@ BEGIN
     q.importer_complete_yn,
     q.shipper_complete_yn,
     CASE
-      -- Restore the pre-overlay balance-due wording only if the older 20260728
-      -- overlay suppressed it but the FX-excluding physical-residual calculation
-      -- proves a real balance still remains.
       WHEN q.safe_collectible_balance_due_gbp > 0.01
        AND COALESCE(q.canonical_balance_due_gbp, 0) <= 0.01
-       AND q.pre_receipt_row_present_yn
-      THEN COALESCE(q.pre_receipt_customer_status_label, q.customer_status_label)
+      THEN 'Final balance due'
       ELSE q.customer_status_label
     END::text AS customer_status_label,
     CASE
       WHEN q.safe_collectible_balance_due_gbp > 0.01
        AND COALESCE(q.canonical_balance_due_gbp, 0) <= 0.01
-       AND q.pre_receipt_row_present_yn
-      THEN COALESCE(q.pre_receipt_customer_next_action, q.customer_next_action)
+      THEN 'Pay final balance'
       ELSE q.customer_next_action
     END::text AS customer_next_action,
     CASE
       WHEN q.safe_collectible_balance_due_gbp > 0.01
        AND COALESCE(q.canonical_balance_due_gbp, 0) <= 0.01
-       AND q.pre_receipt_row_present_yn
-      THEN COALESCE(q.pre_receipt_importer_status_label, q.importer_status_label)
+      THEN 'Final balance due'
       ELSE q.importer_status_label
     END::text AS importer_status_label,
     CASE
       WHEN q.safe_collectible_balance_due_gbp > 0.01
        AND COALESCE(q.canonical_balance_due_gbp, 0) <= 0.01
-       AND q.pre_receipt_row_present_yn
-      THEN COALESCE(q.pre_receipt_importer_next_action, q.importer_next_action)
+      THEN 'Collect final balance'
       ELSE q.importer_next_action
     END::text AS importer_next_action,
     q.shipper_status_label,
@@ -212,7 +191,7 @@ REVOKE ALL ON FUNCTION public.order_audience_status_v1(uuid) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.order_audience_status_v1(uuid) TO authenticated;
 
 COMMENT ON FUNCTION public.order_audience_status_v1(uuid) IS
-'Current shared audience status with an FX-excluding partial physical receipt-residual balance correction. Collectible balance is the preserved pre-receipt-residual canonical balance less pending_receipt_residual_gbp, floored at zero. No FX residual, account-credit creation, funding mutation, DVA mutation or accounting mutation occurs here.';
+'Current shared audience status with an FX-excluding partial physical receipt-residual balance correction. Collectible balance is final order value less payment already applied and pending_receipt_residual_gbp, floored at zero. No FX residual, account-credit creation, funding mutation, DVA mutation or accounting mutation occurs here.';
 
 NOTIFY pgrst, 'reload schema';
 
