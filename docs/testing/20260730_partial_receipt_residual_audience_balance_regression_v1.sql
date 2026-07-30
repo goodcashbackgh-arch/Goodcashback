@@ -43,6 +43,7 @@ BEGIN
   INTO v_definition;
 
   IF position('physical_residual_applied_to_order_gbp' IN v_definition) = 0
+     OR position('active_pending_receipt_gbp' IN v_definition) = 0
      OR position('payment_applied_to_order_gbp' IN v_definition) = 0
      OR position('final_order_value_gbp' IN v_definition) = 0
      OR position('confirmed_credit_ledger_id' IN v_definition) = 0
@@ -62,6 +63,12 @@ BEGIN
     RAISE EXCEPTION 'FAIL: wrapper references attributed-receipt or FX fields; customer collectible balance must exclude FX.';
   END IF;
 
+  IF position('else q.customer_complete_yn' IN v_definition) = 0
+     OR position('else q.importer_complete_yn' IN v_definition) = 0
+  THEN
+    RAISE EXCEPTION 'FAIL: corrected positive balances are not locked to customer/importer incomplete.';
+  END IF;
+
   IF position('insert into' IN v_definition) > 0
      OR position('update public.' IN v_definition) > 0
      OR position('delete from' IN v_definition) > 0
@@ -73,9 +80,12 @@ BEGIN
   -- 2. Pure arithmetic scenario matrix.
   --    Formula under test:
   --      order residual = max(active physical residual - exact linked credit, 0)
-  --      if residual > 0.01 and final sale exists:
-  --        balance = max(max(final - payment already applied, 0) - residual, 0)
+  --      if ANY active physical residual exists and final sale exists:
+  --        balance = max(max(final - payment already applied, 0) - order residual, 0)
   --      otherwise preserve existing audience balance exactly.
+  --
+  --    This deliberately recomputes fully credited / over-linked active residual
+  --    cases instead of inheriting the broader 20260728 audience overlay.
   -- -------------------------------------------------------------------------
   WITH cases(
     case_name,
@@ -88,22 +98,22 @@ BEGIN
     expected_balance
   ) AS (
     VALUES
-      ('no_residual_pass_through',          47.60::numeric, 749.43::numeric, 701.83::numeric,  0.00::numeric,  0.00::numeric, 1, 47.60::numeric),
-      ('partial_uncredited_residual',       47.60::numeric, 749.43::numeric, 701.83::numeric, 38.13::numeric,  0.00::numeric, 1,  9.47::numeric),
-      ('uncredited_residual_covers_balance',47.60::numeric, 749.43::numeric, 701.83::numeric, 60.00::numeric,  0.00::numeric, 1,  0.00::numeric),
-      ('partially_credited_residual',        0.00::numeric, 928.96::numeric, 884.96::numeric, 81.20::numeric, 37.20::numeric, 1,  0.00::numeric),
-      ('fully_credited_residual_pass_through',47.60::numeric,749.43::numeric,701.83::numeric,38.13::numeric,38.13::numeric,1,47.60::numeric),
-      ('overlinked_credit_fail_closed',     47.60::numeric, 749.43::numeric, 701.83::numeric, 38.13::numeric, 40.00::numeric, 1, 47.60::numeric),
-      ('prior_final_balance_payment',       42.60::numeric, 749.43::numeric, 706.83::numeric, 30.00::numeric,  0.00::numeric, 1, 12.60::numeric),
-      ('no_final_sale_pass_through',        47.60::numeric,   0.00::numeric,   0.00::numeric, 38.13::numeric,  0.00::numeric, 0, 47.60::numeric),
-      ('de_minimis_residual_pass_through',  47.60::numeric, 749.43::numeric, 701.83::numeric,  0.01::numeric,  0.00::numeric, 1, 47.60::numeric)
+      ('no_residual_pass_through',             47.60::numeric, 749.43::numeric, 701.83::numeric,  0.00::numeric,  0.00::numeric, 1, 47.60::numeric),
+      ('partial_uncredited_residual',          47.60::numeric, 749.43::numeric, 701.83::numeric, 38.13::numeric,  0.00::numeric, 1,  9.47::numeric),
+      ('uncredited_residual_covers_balance',   47.60::numeric, 749.43::numeric, 701.83::numeric, 60.00::numeric,  0.00::numeric, 1,  0.00::numeric),
+      ('partially_credited_residual',            0.00::numeric, 928.96::numeric, 884.96::numeric, 81.20::numeric, 37.20::numeric, 1,  0.00::numeric),
+      ('fully_credited_recomputes_old_overlay',  0.00::numeric, 749.43::numeric, 701.83::numeric, 38.13::numeric, 38.13::numeric, 1, 47.60::numeric),
+      ('overlinked_credit_fail_closed',          0.00::numeric, 749.43::numeric, 701.83::numeric, 38.13::numeric, 40.00::numeric, 1, 47.60::numeric),
+      ('prior_final_balance_payment',          42.60::numeric, 749.43::numeric, 706.83::numeric, 30.00::numeric,  0.00::numeric, 1, 12.60::numeric),
+      ('no_final_sale_pass_through',           47.60::numeric,   0.00::numeric,   0.00::numeric, 38.13::numeric,  0.00::numeric, 0, 47.60::numeric),
+      ('de_minimis_residual_pass_through',     47.60::numeric, 749.43::numeric, 701.83::numeric,  0.01::numeric,  0.00::numeric, 1, 47.60::numeric)
   ), evaluated AS (
     SELECT
       c.*,
       GREATEST(c.active_pending - c.linked_credit, 0)::numeric AS order_residual,
       ROUND(
         CASE
-          WHEN GREATEST(c.active_pending - c.linked_credit, 0) > 0.01
+          WHEN c.active_pending > 0.01
            AND c.final_docs > 0
           THEN GREATEST(
             GREATEST(c.final_value - c.payment_applied, 0)
@@ -274,7 +284,7 @@ $regression$;
 
 SELECT jsonb_build_object(
   'regression_result', 'PASS',
-  'proof', 'FX-excluding physical-receipt balance matrix passed: no residual pass-through; £38.13 partial residual leaves £9.47; covering residual floors at zero; exact linked customer credit is deducted from residual once; fully credited/reversed-or-absent residual does not reduce balance; prior final-balance payments remain inside payment_applied_to_order_gbp; live £81.20 credit-confirmed case leaves £44.00 order-applied after £37.20 linked credit and therefore £0 collectible balance; wrapper is read-only'
+  'proof', 'FX-excluding physical-receipt balance matrix passed: no active residual passes through; £38.13 partial residual leaves £9.47; covering residual floors at zero; exact linked customer credit is deducted from residual once; fully credited/over-linked active residuals are recomputed from final value and payment instead of inheriting the 20260728 overlay; prior final-balance payments remain inside payment_applied_to_order_gbp; positive corrected balances force customer/importer incomplete; live £81.20 credit-confirmed case leaves £44.00 order-applied after £37.20 linked credit and therefore £0 collectible balance; wrapper is read-only'
 ) AS regression_result;
 
 ROLLBACK;
