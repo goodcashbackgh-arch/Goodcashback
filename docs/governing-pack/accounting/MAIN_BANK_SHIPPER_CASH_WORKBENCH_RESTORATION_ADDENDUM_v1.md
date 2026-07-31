@@ -110,11 +110,32 @@ Inside one migration transaction:
 4. obtain every pre-existing row from the preserved implementation;
 5. obtain only shipper rows from the dedicated helper;
 6. union the two sets with a defensive de-duplication guard for the shipper source/category/id tuple;
-7. apply the same canonical status semantics, ordering and pagination to the combined set.
+7. apply canonical ordering and final pagination to the combined set.
 
-Direction/category/search filters must be passed into both row sources before their internal 300-row caps. In particular, a request for `shipper_invoice_payment` must not lose valid shipper rows because unrelated workbench rows filled a cap first.
+### 6.1 Status-preservation rule
+
+The preserved current function must receive the caller's original `p_status` unchanged. It must not be called with `p_status = 'all'` and then have status filtering reconstructed outside the preserved function.
+
+This is required because the preserved function already owns the established ordering, filtering and internal row cap for every existing row family. Changing the order of `status filter -> limit` into `limit -> status filter` can silently remove existing ready/blocked rows when more than 300 mixed-status rows exist.
+
+Therefore:
+
+- existing rows are filtered for status by the preserved function exactly as they are today;
+- the shipper helper may return shipper rows independently;
+- the new outer wrapper applies the same status predicate only to the shipper rows before combining them with the already-status-filtered preserved rows;
+- the outer wrapper must not re-filter or reinterpret the status of existing preserved rows.
+
+Direction/category/search filters must also be passed into both row sources before their internal 300-row caps. In particular, a request for `shipper_invoice_payment` must not lose valid shipper rows because unrelated workbench rows filled a cap first.
 
 No existing non-shipper row family may be re-derived or copied into the new helper.
+
+### 6.2 Non-shipper observational equivalence
+
+For every request that excludes `shipper_invoice_payment`, the new canonical function must be observationally equivalent to the preserved function for the same parameters.
+
+The comparison must cover the full returned row contract, including source/category identifiers, amounts, target identifiers, posting status, blocker, selectability and detail JSON. `total_count` must also remain equivalent for non-shipper requests.
+
+This equivalence is a deployment requirement, not merely a documentation preference.
 
 ## 7. Freeze/posting contract
 
@@ -153,15 +174,20 @@ Before deployment approval, regression evidence must prove at minimum:
 1. the preserved canonical function still exists and remains private;
 2. current non-shipper workbench rows come from that preserved function rather than being re-derived;
 3. retailer-refund readiness behaviour is unchanged because the preserved implementation remains authoritative;
-4. confirmed shipper allocations appear with the historical source/category/queue-row contract;
-5. the current confirmed/unfrozen shipper allocations are visible when queried by shipper category;
-6. reversed shipper allocations are absent;
-7. shipper Sage contact mapping resolves dynamically;
-8. `DVA_CASH_BANK_ACCOUNT` resolves dynamically and no Sage bank UUID is hardcoded in the restoration migration;
-9. target Sage purchase-invoice ids are populated;
-10. a rollback-only authenticated freeze test creates the expected source/category/idempotency/payload shape;
-11. the existing freeze/reversal database invariant still rejects reversed-source freeze and frozen-source reversal;
-12. no migration automatically inserts, updates, deactivates, batches, or posts cash snapshots for the backlog.
+4. the preserved implementation receives the original caller `p_status`, not a forced `all` status;
+5. authenticated bidirectional `EXCEPT` comparisons show zero non-shipper row differences between the preserved and new canonical functions for representative `all`, `ready`, `blocked`, customer receipt, supplier payment, retailer refund, FX/card difference, bank fee, unmatched-hold and final-balance request shapes;
+6. those equivalence comparisons include `total_count` so pagination/filter semantics are also protected;
+7. confirmed shipper allocations appear with the historical source/category/queue-row contract;
+8. the current confirmed/unfrozen shipper allocations are visible when queried by shipper category;
+9. reversed shipper allocations are absent;
+10. shipper Sage contact mapping resolves dynamically;
+11. `DVA_CASH_BANK_ACCOUNT` resolves dynamically and no Sage bank UUID is hardcoded in the restoration migration;
+12. target Sage purchase-invoice ids are populated;
+13. a rollback-only authenticated freeze test creates the expected source/category/idempotency/payload shape;
+14. the existing freeze/reversal database invariant still rejects reversed-source freeze and frozen-source reversal;
+15. no migration automatically inserts, updates, deactivates, batches, or posts cash snapshots for the backlog.
+
+Any non-zero non-shipper equivalence difference is a deployment blocker and must not be waived as part of this restoration.
 
 ## 10. Scope boundary
 
