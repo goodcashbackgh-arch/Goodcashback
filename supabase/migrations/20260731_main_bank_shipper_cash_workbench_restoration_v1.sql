@@ -2,8 +2,8 @@ BEGIN;
 
 -- Main-bank shipper cash workbench restoration v1.
 -- Preservation-first forward repair: restore only the omitted shipper row family.
--- Do not replace the current private pre-refund workbench implementation,
--- freeze/batch RPCs, payload normalisers, Sage posters, or applied reversal controls.
+-- Preserve the current canonical workbench implementation by renaming it once,
+-- then compose the restored shipper rows around that preserved implementation.
 
 SET LOCAL lock_timeout = '15s';
 SET LOCAL statement_timeout = '0';
@@ -19,21 +19,27 @@ BEGIN
   IF to_regclass('public.sage_party_mappings') IS NULL THEN RAISE EXCEPTION 'Missing public.sage_party_mappings'; END IF;
   IF to_regclass('public.sage_mapping_settings') IS NULL THEN RAISE EXCEPTION 'Missing public.sage_mapping_settings'; END IF;
   IF to_regprocedure('public.internal_has_accounting_admin_access_v1()') IS NULL THEN RAISE EXCEPTION 'Missing public.internal_has_accounting_admin_access_v1()'; END IF;
-  IF to_regprocedure('public.internal_cash_posting_workbench_rows_pre_refund_readiness_v1(text,text,text,text,integer,integer)') IS NULL THEN
-    RAISE EXCEPTION 'Missing preserved private cash workbench implementation';
+  IF to_regprocedure('public.internal_cash_posting_workbench_rows_v1(text,text,text,text,integer,integer)') IS NULL
+     AND to_regprocedure('public.internal_cash_posting_workbench_rows_pre_shipper_restoration_v1(text,text,text,text,integer,integer)') IS NULL THEN
+    RAISE EXCEPTION 'Missing canonical cash workbench';
   END IF;
-  IF to_regprocedure('public.internal_cash_posting_workbench_rows_v1(text,text,text,text,integer,integer)') IS NULL THEN
-    RAISE EXCEPTION 'Missing canonical cash workbench wrapper';
-  END IF;
-  IF to_regprocedure('public.internal_retailer_refund_has_posted_settlement_v1(uuid)') IS NULL THEN
-    RAISE EXCEPTION 'Missing canonical retailer-refund settlement gate';
+
+  -- Preserve today's working canonical implementation byte-for-byte in behaviour.
+  -- Do not reconstruct its retailer-refund or other row-family logic here.
+  IF to_regprocedure('public.internal_cash_posting_workbench_rows_pre_shipper_restoration_v1(text,text,text,text,integer,integer)') IS NULL THEN
+    ALTER FUNCTION public.internal_cash_posting_workbench_rows_v1(text,text,text,text,integer,integer)
+      RENAME TO internal_cash_posting_workbench_rows_pre_shipper_restoration_v1;
   END IF;
 END
 $guard$;
 
--- Dedicated row producer for the historically supported shipper cash family.
--- It does not mutate any accounting object and does not duplicate any other
--- workbench family. Bank/contact/target ids are resolved dynamically.
+REVOKE ALL ON FUNCTION public.internal_cash_posting_workbench_rows_pre_shipper_restoration_v1(text,text,text,text,integer,integer) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.internal_cash_posting_workbench_rows_pre_shipper_restoration_v1(text,text,text,text,integer,integer) FROM anon;
+REVOKE ALL ON FUNCTION public.internal_cash_posting_workbench_rows_pre_shipper_restoration_v1(text,text,text,text,integer,integer) FROM authenticated;
+REVOKE ALL ON FUNCTION public.internal_cash_posting_workbench_rows_pre_shipper_restoration_v1(text,text,text,text,integer,integer) FROM service_role;
+
+-- Restore the shipper row family as close as possible to the original May 24
+-- contract, while resolving current Sage bank/contact ids dynamically.
 CREATE OR REPLACE FUNCTION public.internal_main_bank_shipper_cash_workbench_rows_v1(
   p_direction text DEFAULT 'all',
   p_category text DEFAULT 'all',
@@ -111,10 +117,10 @@ BEGIN
       'shipper_invoice_payment'::text AS category,
       'shipper'::text AS counterparty_type,
       sd.shipper_id AS counterparty_id,
-      COALESCE(NULLIF(sh.name, ''), 'Shipper')::text AS counterparty_name,
+      COALESCE(sh.name, 'Shipper')::text AS counterparty_name,
       NULL::uuid AS order_id,
       sps.order_ref::text AS order_ref,
-      COALESCE(NULLIF(dsl.auth_id_ref, ''), a.id::text)::text AS auth_ref,
+      COALESCE(dsl.auth_id_ref, a.id::text)::text AS auth_ref,
       dsl.reference_raw::text AS reference_raw,
       dsl.amount_local_ccy::numeric AS amount_local,
       dsl.local_ccy::text AS local_currency,
@@ -122,14 +128,10 @@ BEGIN
       'posted_shipper_purchase_invoice'::text AS matched_target_type,
       sd.id AS matched_target_id,
       COALESCE(NULLIF(sd.document_ref, ''), NULLIF(sps.reference_text, ''), sd.id::text)::text AS matched_target_ref,
-      pm.sage_contact_id::text AS sage_contact_id,
-      pm.sage_contact_display_name::text AS sage_contact_name,
-      cd.bank_account_id::text AS sage_bank_account_id,
-      COALESCE(
-        NULLIF(a.sage_purchase_invoice_id, ''),
-        NULLIF(sps.sage_invoice_id, ''),
-        NULLIF(posted_batch.sage_object_id, '')
-      )::text AS target_sage_object_id,
+      pm.sage_contact_id::text,
+      pm.sage_contact_display_name::text,
+      cd.bank_account_id::text,
+      COALESCE(NULLIF(a.sage_purchase_invoice_id, ''), NULLIF(sps.sage_invoice_id, ''), NULLIF(posted_batch.sage_object_id, ''))::text AS target_sage_object_id,
       CASE
         WHEN NULLIF(trim(COALESCE(cd.bank_account_id, '')), '') IS NULL THEN 'blocked_missing_sage_bank_account'
         WHEN NULLIF(trim(COALESCE(pm.sage_contact_id, '')), '') IS NULL THEN 'blocked_missing_sage_contact'
@@ -160,8 +162,7 @@ BEGIN
         'posting_category', 'shipper_invoice_payment',
         'target_sage_object_id', COALESCE(NULLIF(a.sage_purchase_invoice_id, ''), NULLIF(sps.sage_invoice_id, ''), NULLIF(posted_batch.sage_object_id, '')),
         'short_reference', ('GCB-OUT-' || left(COALESCE(NULLIF(sd.document_ref, ''), NULLIF(sps.reference_text, ''), a.id::text), 18)),
-        'endpoint', 'POST /contact_payments · VENDOR_PAYMENT · allocated_artefacts',
-        'bank_mapping_code', 'DVA_CASH_BANK_ACCOUNT'
+        'endpoint', 'POST /contact_payments · VENDOR_PAYMENT · allocated_artefacts'
       ) AS detail_json
     FROM public.main_bank_shipper_ap_allocations a
     JOIN public.dva_statement_lines dsl ON dsl.id = a.dva_statement_line_id
@@ -174,7 +175,7 @@ BEGIN
       WHERE br.snapshot_id = sps.id
         AND br.posting_status = 'posted'
         AND NULLIF(trim(COALESCE(br.sage_object_id, '')), '') IS NOT NULL
-      ORDER BY br.posted_at DESC NULLS LAST, br.updated_at DESC NULLS LAST, br.created_at DESC
+      ORDER BY br.posted_at DESC NULLS LAST, br.created_at DESC
       LIMIT 1
     ) posted_batch ON true
     CROSS JOIN cash_defaults cd
@@ -195,19 +196,7 @@ BEGIN
       AND (v_category = 'all' OR lower(sr.category) = v_category)
       AND (
         v_search IS NULL
-        OR lower(concat_ws(
-          ' ',
-          sr.counterparty_name,
-          sr.order_ref,
-          sr.auth_ref,
-          sr.reference_raw,
-          sr.matched_target_ref,
-          sr.category,
-          sr.source_type,
-          sr.blocker,
-          sr.detail_json->>'shipper_invoice_ref',
-          sr.detail_json->>'bank_mapping_code'
-        )) LIKE '%' || v_search || '%'
+        OR lower(concat_ws(' ', sr.counterparty_name, sr.order_ref, sr.auth_ref, sr.reference_raw, sr.matched_target_ref, sr.category, sr.source_type, sr.blocker)) LIKE '%' || v_search || '%'
       )
   )
   SELECT
@@ -242,7 +231,7 @@ BEGIN
     f.detail_json,
     count(*) over() AS total_count
   FROM filtered f
-  ORDER BY f.statement_date_text DESC NULLS LAST, f.counterparty_name, f.queue_row_id
+  ORDER BY f.statement_date_text DESC NULLS LAST, f.category, f.counterparty_name, f.queue_row_id
   LIMIT v_limit OFFSET v_offset;
 END;
 $function$;
@@ -253,12 +242,10 @@ REVOKE ALL ON FUNCTION public.internal_main_bank_shipper_cash_workbench_rows_v1(
 REVOKE ALL ON FUNCTION public.internal_main_bank_shipper_cash_workbench_rows_v1(text,text,text,integer,integer) FROM service_role;
 
 COMMENT ON FUNCTION public.internal_main_bank_shipper_cash_workbench_rows_v1(text,text,text,integer,integer) IS
-'Private preservation helper restoring confirmed main-bank shipper AP rows to the canonical cash workbench without changing other row families.';
+'Private preservation helper restoring the historical confirmed main-bank shipper AP row family.';
 
--- Preserve the current retailer-refund wrapper behaviour and integrate only the
--- dedicated shipper row producer. The private pre-refund implementation remains
--- untouched. Existing base rows are explicitly projected without their old
--- total_count so the combined canonical result owns pagination/counting.
+-- New canonical wrapper: existing working rows come from the preserved current
+-- implementation; only the restored shipper family is added around it.
 CREATE OR REPLACE FUNCTION public.internal_cash_posting_workbench_rows_v1(
   p_direction text DEFAULT 'all',
   p_category text DEFAULT 'all',
@@ -303,38 +290,16 @@ LANGUAGE sql
 SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $function$
-  WITH base_rows AS (
+  WITH preserved_rows AS (
     SELECT
-      b.queue_row_id,
-      b.source_type,
-      b.source_id,
-      b.statement_line_id,
-      b.statement_id,
-      b.statement_date_text,
-      b.direction,
-      b.category,
-      b.counterparty_type,
-      b.counterparty_id,
-      b.counterparty_name,
-      b.order_id,
-      b.order_ref,
-      b.auth_ref,
-      b.reference_raw,
-      b.amount_local,
-      b.local_currency,
-      b.amount_gbp,
-      b.matched_target_type,
-      b.matched_target_id,
-      b.matched_target_ref,
-      b.sage_contact_id,
-      b.sage_contact_name,
-      b.sage_bank_account_id,
-      b.target_sage_object_id,
-      b.posting_status,
-      b.blocker,
-      b.selectable,
-      b.detail_json
-    FROM public.internal_cash_posting_workbench_rows_pre_refund_readiness_v1(
+      b.queue_row_id, b.source_type, b.source_id, b.statement_line_id, b.statement_id,
+      b.statement_date_text, b.direction, b.category, b.counterparty_type, b.counterparty_id,
+      b.counterparty_name, b.order_id, b.order_ref, b.auth_ref, b.reference_raw,
+      b.amount_local, b.local_currency, b.amount_gbp, b.matched_target_type,
+      b.matched_target_id, b.matched_target_ref, b.sage_contact_id, b.sage_contact_name,
+      b.sage_bank_account_id, b.target_sage_object_id, b.posting_status, b.blocker,
+      b.selectable, b.detail_json
+    FROM public.internal_cash_posting_workbench_rows_pre_shipper_restoration_v1(
       p_direction,
       p_category,
       'all',
@@ -344,35 +309,13 @@ AS $function$
     ) b
   ), shipper_rows AS (
     SELECT
-      s.queue_row_id,
-      s.source_type,
-      s.source_id,
-      s.statement_line_id,
-      s.statement_id,
-      s.statement_date_text,
-      s.direction,
-      s.category,
-      s.counterparty_type,
-      s.counterparty_id,
-      s.counterparty_name,
-      s.order_id,
-      s.order_ref,
-      s.auth_ref,
-      s.reference_raw,
-      s.amount_local,
-      s.local_currency,
-      s.amount_gbp,
-      s.matched_target_type,
-      s.matched_target_id,
-      s.matched_target_ref,
-      s.sage_contact_id,
-      s.sage_contact_name,
-      s.sage_bank_account_id,
-      s.target_sage_object_id,
-      s.posting_status,
-      s.blocker,
-      s.selectable,
-      s.detail_json
+      s.queue_row_id, s.source_type, s.source_id, s.statement_line_id, s.statement_id,
+      s.statement_date_text, s.direction, s.category, s.counterparty_type, s.counterparty_id,
+      s.counterparty_name, s.order_id, s.order_ref, s.auth_ref, s.reference_raw,
+      s.amount_local, s.local_currency, s.amount_gbp, s.matched_target_type,
+      s.matched_target_id, s.matched_target_ref, s.sage_contact_id, s.sage_contact_name,
+      s.sage_bank_account_id, s.target_sage_object_id, s.posting_status, s.blocker,
+      s.selectable, s.detail_json
     FROM public.internal_main_bank_shipper_cash_workbench_rows_v1(
       p_direction,
       p_category,
@@ -381,79 +324,20 @@ AS $function$
       0
     ) s
   ), combined_rows AS (
-    SELECT * FROM base_rows
+    SELECT * FROM preserved_rows
     UNION ALL
     SELECT s.*
     FROM shipper_rows s
     WHERE NOT EXISTS (
       SELECT 1
-      FROM base_rows b
+      FROM preserved_rows b
       WHERE b.source_type = 'main_bank_shipper_ap_allocation'
         AND b.category = 'shipper_invoice_payment'
         AND b.source_id = s.source_id
     )
-  ), resolved AS (
-    SELECT
-      b.queue_row_id,
-      b.source_type,
-      b.source_id,
-      b.statement_line_id,
-      b.statement_id,
-      b.statement_date_text,
-      b.direction,
-      b.category,
-      b.counterparty_type,
-      b.counterparty_id,
-      b.counterparty_name,
-      b.order_id,
-      b.order_ref,
-      b.auth_ref,
-      b.reference_raw,
-      b.amount_local,
-      b.local_currency,
-      b.amount_gbp,
-      b.matched_target_type,
-      b.matched_target_id,
-      b.matched_target_ref,
-      b.sage_contact_id,
-      b.sage_contact_name,
-      b.sage_bank_account_id,
-      b.target_sage_object_id,
-      CASE
-        WHEN b.category = 'retailer_refund_received'
-         AND b.direction = 'in'
-         AND public.internal_retailer_refund_has_posted_settlement_v1(b.source_id)
-          THEN 'ready_to_freeze'
-        ELSE b.posting_status
-      END::text AS posting_status,
-      CASE
-        WHEN b.category = 'retailer_refund_received'
-         AND b.direction = 'in'
-         AND public.internal_retailer_refund_has_posted_settlement_v1(b.source_id)
-          THEN NULL::text
-        ELSE b.blocker
-      END::text AS blocker,
-      CASE
-        WHEN b.category = 'retailer_refund_received'
-         AND b.direction = 'in'
-         AND public.internal_retailer_refund_has_posted_settlement_v1(b.source_id)
-          THEN true
-        ELSE b.selectable
-      END AS selectable,
-      CASE
-        WHEN b.category = 'retailer_refund_received'
-         AND b.direction = 'in'
-         AND public.internal_retailer_refund_has_posted_settlement_v1(b.source_id)
-          THEN COALESCE(b.detail_json, '{}'::jsonb) || jsonb_build_object(
-            'settlement_gate', 'internal_retailer_refund_has_posted_settlement_v1',
-            'settlement_gate_passed', true
-          )
-        ELSE b.detail_json
-      END AS detail_json
-    FROM combined_rows b
   ), filtered AS (
     SELECT r.*
-    FROM resolved r
+    FROM combined_rows r
     WHERE lower(COALESCE(NULLIF(trim(p_status), ''), 'all')) = 'all'
        OR lower(r.posting_status) = lower(trim(p_status))
        OR (lower(trim(p_status)) = 'blocked' AND lower(r.posting_status) LIKE 'blocked%')
@@ -501,8 +385,11 @@ REVOKE ALL ON FUNCTION public.internal_cash_posting_workbench_rows_v1(text,text,
 GRANT EXECUTE ON FUNCTION public.internal_cash_posting_workbench_rows_v1(text,text,text,text,integer,integer) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.internal_cash_posting_workbench_rows_v1(text,text,text,text,integer,integer) TO service_role;
 
+COMMENT ON FUNCTION public.internal_cash_posting_workbench_rows_pre_shipper_restoration_v1(text,text,text,text,integer,integer) IS
+'Private exact canonical cash-workbench implementation preserved before main-bank shipper row restoration.';
+
 COMMENT ON FUNCTION public.internal_cash_posting_workbench_rows_v1(text,text,text,text,integer,integer) IS
-'Canonical cash-posting workbench. Preserves the private pre-refund row families and retailer-refund readiness logic, and restores the historical main-bank shipper AP cash row family through a dedicated helper.';
+'Canonical cash-posting workbench. Preserves the prior implementation and adds only the historical main-bank shipper AP row family.';
 
 NOTIFY pgrst, 'reload schema';
 
