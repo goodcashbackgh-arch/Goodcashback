@@ -2,6 +2,11 @@
 -- Post-migration structural and live-control checks.
 -- Read-only except for the explicitly marked NON-PRODUCTION concurrency harnesses.
 -- Run after 20260731_main_bank_shipper_allocation_review_reversal_v1.sql is deployed.
+--
+-- Sections 1-11 and 15 are safe to run from Supabase SQL Editor, where auth.uid()
+-- is normally NULL. Section 12 and the section 14 RPC concurrency harness require
+-- a real authenticated active admin session and are intentionally not executed by
+-- the SQL Editor-safe run.
 
 -- 1. Required objects exist.
 DO $$
@@ -171,41 +176,46 @@ WHERE r.allocation_status = 'confirmed'
 ORDER BY r.created_at DESC
 LIMIT 100;
 
--- 12. Find an eligible confirmed, unfrozen shipper allocation through the
--- ACTUAL cash-posting workbench and use its production queue_row_id verbatim.
--- This deliberately avoids reconstructing queue identity in the regression.
-SELECT
-  a.id AS allocation_id,
-  a.dva_statement_line_id,
-  a.shipping_document_id,
-  a.allocated_gbp_amount,
-  w.queue_row_id,
-  w.source_type,
-  w.category,
-  w.posting_status,
-  w.selectable
-FROM public.main_bank_shipper_ap_allocations a
-JOIN public.internal_cash_posting_workbench_rows_v1('all','all','all',NULL,500,0) w
-  ON w.source_type = 'main_bank_shipper_ap_allocation'
- AND w.source_id = a.id
- AND w.category = 'shipper_invoice_payment'
-WHERE a.allocation_status = 'confirmed'
-  AND w.posting_status = 'ready_to_freeze'
-  AND w.selectable = true
-  AND NOT EXISTS (
-    SELECT 1
-    FROM public.cash_posting_snapshots cps
-    WHERE cps.active = true
-      AND cps.source_type = 'main_bank_shipper_ap_allocation'
-      AND cps.source_id = a.id
-      AND cps.posting_category = 'shipper_invoice_payment'
-  )
-ORDER BY a.created_at DESC
-LIMIT 50;
--- Use the returned queue_row_id exactly as printed in section 14.
-
--- Optional parser sanity check for the currently deployed freeze contract.
--- For current governed shipper rows the returned value is expected to satisfy:
+-- ============================================================================
+-- 12. AUTHENTICATED WORKBENCH CANDIDATE LOOKUP — DO NOT RUN IN SQL EDITOR
+-- ============================================================================
+-- internal_cash_posting_workbench_rows_v1 requires auth.uid(). Supabase SQL
+-- Editor normally has auth.uid() = NULL, so the executable form of this query
+-- belongs in a real authenticated active-admin session used for section 14.
+--
+-- Run there, not as part of the SQL Editor-safe regression:
+--
+-- SELECT
+--   a.id AS allocation_id,
+--   a.dva_statement_line_id,
+--   a.shipping_document_id,
+--   a.allocated_gbp_amount,
+--   w.queue_row_id,
+--   w.source_type,
+--   w.category,
+--   w.posting_status,
+--   w.selectable
+-- FROM public.main_bank_shipper_ap_allocations a
+-- JOIN public.internal_cash_posting_workbench_rows_v1('all','all','all',NULL,500,0) w
+--   ON w.source_type = 'main_bank_shipper_ap_allocation'
+--  AND w.source_id = a.id
+--  AND w.category = 'shipper_invoice_payment'
+-- WHERE a.allocation_status = 'confirmed'
+--   AND w.posting_status = 'ready_to_freeze'
+--   AND w.selectable = true
+--   AND NOT EXISTS (
+--     SELECT 1
+--     FROM public.cash_posting_snapshots cps
+--     WHERE cps.active = true
+--       AND cps.source_type = 'main_bank_shipper_ap_allocation'
+--       AND cps.source_id = a.id
+--       AND cps.posting_category = 'shipper_invoice_payment'
+--   )
+-- ORDER BY a.created_at DESC
+-- LIMIT 50;
+--
+-- Use the returned queue_row_id verbatim in section 14.
+-- Expected current parser shape:
 --   split_part(queue_row_id, ':', 1) = 'cash'
 --   split_part(queue_row_id, ':', 2) = 'shipper_invoice_payment'
 --   split_part(queue_row_id, ':', 3)::uuid = allocation_id
