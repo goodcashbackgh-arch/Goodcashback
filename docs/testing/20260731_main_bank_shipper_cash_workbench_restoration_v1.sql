@@ -174,6 +174,7 @@ BEGIN
     SELECT * FROM (VALUES
       ('customer_all',   'in',  'customer_receipt_on_account', 'all',     NULL::text, 100, 0),
       ('customer_ready', 'in',  'customer_receipt_on_account', 'ready',   NULL::text, 100, 0),
+      ('final_balance_all', 'in', 'customer_receipt_on_account', 'all',   NULL::text, 300, 0),
       ('supplier_all',   'out', 'supplier_invoice_payment',     'all',     NULL::text, 100, 0),
       ('supplier_ready', 'out', 'supplier_invoice_payment',     'ready',   NULL::text, 100, 0),
       ('refund_all',     'in',  'retailer_refund_received',     'all',     NULL::text, 100, 0),
@@ -221,6 +222,41 @@ SELECT *
 FROM _shipper_restore_equivalence
 ORDER BY case_name;
 
+-- Final-balance is emitted under customer_receipt_on_account with
+-- source_type = 'dva_final_balance_allocation'. Assert exact preservation for
+-- that subset as well, matching the deployment check already exercised live.
+WITH preserved AS (
+  SELECT *
+  FROM public.internal_cash_posting_workbench_rows_pre_shipper_restoration_v1(
+    'in', 'customer_receipt_on_account', 'all', NULL, 300, 0
+  )
+  WHERE source_type = 'dva_final_balance_allocation'
+), canonical AS (
+  SELECT *
+  FROM public.internal_cash_posting_workbench_rows_v1(
+    'in', 'customer_receipt_on_account', 'all', NULL, 300, 0
+  )
+  WHERE source_type = 'dva_final_balance_allocation'
+)
+SELECT
+  (
+    SELECT count(*)
+    FROM (
+      SELECT * FROM preserved
+      EXCEPT
+      SELECT * FROM canonical
+    ) d
+  ) AS final_balance_preserved_minus_canonical,
+  (
+    SELECT count(*)
+    FROM (
+      SELECT * FROM canonical
+      EXCEPT
+      SELECT * FROM preserved
+    ) d
+  ) AS final_balance_canonical_minus_preserved;
+
+-- Expected: both final-balance difference counts = 0.
 -- DEPLOYMENT BLOCKER: every difference count must be zero.
 
 -- 6B. Restored shipper category contract.
