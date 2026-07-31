@@ -25,9 +25,6 @@ BEGIN
   IF to_regprocedure('public.internal_shipper_ap_posted_targets_for_main_bank_v1(text,text,integer,integer)') IS NULL THEN
     RAISE EXCEPTION 'Missing public.internal_shipper_ap_posted_targets_for_main_bank_v1(text,text,integer,integer)';
   END IF;
-  IF to_regprocedure('public.internal_freeze_cash_posting_rows_v2(text[],text)') IS NULL THEN
-    RAISE EXCEPTION 'Missing public.internal_freeze_cash_posting_rows_v2(text[],text)';
-  END IF;
 
   -- Do not install a forward-looking invariant over an already-invalid state.
   -- Existing accounting history must be remediated explicitly, never rewritten here.
