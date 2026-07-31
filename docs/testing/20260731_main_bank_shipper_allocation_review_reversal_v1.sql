@@ -11,7 +11,8 @@ BEGIN
   IF to_regprocedure('public.guard_main_bank_shipper_cash_snapshot_v1()') IS NULL THEN RAISE EXCEPTION 'Missing guard_main_bank_shipper_cash_snapshot_v1()'; END IF;
   IF to_regprocedure('public.staff_reverse_main_bank_shipper_ap_allocation_v1(uuid,text)') IS NULL THEN RAISE EXCEPTION 'Missing staff_reverse_main_bank_shipper_ap_allocation_v1(uuid,text)'; END IF;
   IF to_regprocedure('public.staff_allocate_main_bank_line_to_shipper_ap_v1(uuid,uuid,numeric,text)') IS NULL THEN RAISE EXCEPTION 'Missing staff_allocate_main_bank_line_to_shipper_ap_v1(uuid,uuid,numeric,text)'; END IF;
-  IF to_regprocedure('public.internal_freeze_cash_posting_rows_v2(text[],text)') IS NULL THEN RAISE EXCEPTION 'Missing internal_freeze_cash_posting_rows_v2(text[],text)'; END IF;
+  IF to_regprocedure('public.internal_freeze_cash_posting_rows_v2(text[],text)') IS NULL THEN RAISE EXCEPTION 'Missing internal_freeze_cash_posting_rows_v2(text[],text) required for end-to-end concurrency validation'; END IF;
+  IF to_regprocedure('public.internal_cash_posting_workbench_rows_v1(text,text,text,text,integer,integer)') IS NULL THEN RAISE EXCEPTION 'Missing internal_cash_posting_workbench_rows_v1(text,text,text,text,integer,integer) required for governed queue identity'; END IF;
 END $$;
 
 -- 2. Record validation isolation. The concurrency contract below is for the
@@ -48,6 +49,35 @@ JOIN pg_namespace n ON n.oid = p.pronamespace
 WHERE n.nspname = 'public'
   AND p.proname = 'internal_statement_line_matching_review_v1';
 -- Expected: all true.
+
+-- 5a. Structural privilege signal for the exact canonical-control view used by
+-- the page. This does not replace caller-context testing below.
+SELECT has_table_privilege(
+  'authenticated',
+  'public.statement_line_control_position_v1',
+  'SELECT'
+) AS authenticated_role_has_statement_control_select;
+-- Record the result. If false, the target-environment caller checks below are expected to fail.
+
+-- 5b. TARGET-ENVIRONMENT CALLER CHECKS — execute the exact page read under a
+-- real authenticated active ADMIN session and then a real authenticated active
+-- SUPERVISOR session. Do not simulate these by SET ROLE alone because auth.uid()
+-- and the application's Supabase caller context are part of the access contract.
+--
+-- Use one statement_line_id returned by section 11 and run this exact query in
+-- each authenticated session:
+--
+-- SELECT statement_line_id,
+--        active_consumed_gbp,
+--        active_reserved_gbp,
+--        remaining_unconsumed_gbp,
+--        overconsumed_gbp
+-- FROM public.statement_line_control_position_v1
+-- WHERE statement_line_id = '<KNOWN_REVIEW_STATEMENT_LINE_UUID>'::uuid;
+--
+-- Expected for BOTH active admin and active supervisor: exactly one canonical row.
+-- If this fails, do not treat row-level fallback arithmetic as acceptable; the
+-- UI is intentionally fail-closed and any read-surface correction requires new evidence.
 
 -- 6. Reversal contains the active frozen-cash boundary and row lock.
 SELECT
@@ -141,15 +171,27 @@ WHERE r.allocation_status = 'confirmed'
 ORDER BY r.created_at DESC
 LIMIT 100;
 
--- 12. Find an eligible confirmed, unfrozen shipper allocation for controlled testing.
+-- 12. Find an eligible confirmed, unfrozen shipper allocation through the
+-- ACTUAL cash-posting workbench and use its production queue_row_id verbatim.
+-- This deliberately avoids reconstructing queue identity in the regression.
 SELECT
   a.id AS allocation_id,
   a.dva_statement_line_id,
   a.shipping_document_id,
   a.allocated_gbp_amount,
-  ('cash:shipper_invoice_payment:main_bank_shipper_ap_allocation:' || a.id::text) AS queue_row_id
+  w.queue_row_id,
+  w.source_type,
+  w.category,
+  w.posting_status,
+  w.selectable
 FROM public.main_bank_shipper_ap_allocations a
+JOIN public.internal_cash_posting_workbench_rows_v1('all','all','all',NULL,500,0) w
+  ON w.source_type = 'main_bank_shipper_ap_allocation'
+ AND w.source_id = a.id
+ AND w.category = 'shipper_invoice_payment'
 WHERE a.allocation_status = 'confirmed'
+  AND w.posting_status = 'ready_to_freeze'
+  AND w.selectable = true
   AND NOT EXISTS (
     SELECT 1
     FROM public.cash_posting_snapshots cps
@@ -160,6 +202,14 @@ WHERE a.allocation_status = 'confirmed'
   )
 ORDER BY a.created_at DESC
 LIMIT 50;
+-- Use the returned queue_row_id exactly as printed in section 14.
+
+-- Optional parser sanity check for the currently deployed freeze contract.
+-- For current governed shipper rows the returned value is expected to satisfy:
+--   split_part(queue_row_id, ':', 1) = 'cash'
+--   split_part(queue_row_id, ':', 2) = 'shipper_invoice_payment'
+--   split_part(queue_row_id, ':', 3)::uuid = allocation_id
+-- Do NOT rebuild the value from those parts in the concurrency harness.
 
 -- ============================================================================
 -- 13. LOW-LEVEL TRIGGER HARNESS — NON-PRODUCTION ONLY
@@ -178,9 +228,9 @@ LIMIT 50;
 -- * Use authenticated database sessions whose auth.uid() resolves to an active
 --   admin user with accounting-admin access. The admin role satisfies both the
 --   freeze RPC and reversal RPC permissions without changing either contract.
--- * Use an allocation returned by section 12 that is selectable in
---   internal_cash_posting_workbench_rows_v1.
--- * Replace <ALLOCATION_UUID> and <QUEUE_ROW_ID> in both sessions.
+-- * Use one exact allocation_id + queue_row_id pair returned by section 12.
+-- * Replace <ALLOCATION_UUID> and <WORKBENCH_QUEUE_ROW_ID> in both sessions.
+-- * NEVER substitute a manually constructed four-part queue identity.
 -- * Confirm BOTH sessions report READ COMMITTED before starting.
 -- * These calls exercise the real production database functions; they do not call Sage.
 --
@@ -203,7 +253,7 @@ LIMIT 50;
 -- BEGIN;
 -- SELECT *
 -- FROM public.internal_freeze_cash_posting_rows_v2(
---   ARRAY['<QUEUE_ROW_ID>']::text[],
+--   ARRAY['<WORKBENCH_QUEUE_ROW_ID>']::text[],
 --   'non-production reversal wins concurrency test'
 -- );
 -- -- Expected: Session B waits on the shipper-allocation row in the snapshot trigger.
@@ -230,7 +280,8 @@ LIMIT 50;
 -- GROUP BY a.id, a.allocation_status;
 -- Expected: allocation_status = reversed; active_shipper_snapshots = 0.
 --
--- Use a fresh eligible confirmed allocation for Ordering B. Do not rewrite production history.
+-- Use a fresh eligible confirmed allocation + its fresh workbench queue_row_id for Ordering B.
+-- Do not rewrite production history.
 
 -- ---------------------------------------------------------------------------
 -- ORDERING B — REAL FREEZE RPC WINS
@@ -239,7 +290,7 @@ LIMIT 50;
 -- BEGIN;
 -- SELECT *
 -- FROM public.internal_freeze_cash_posting_rows_v2(
---   ARRAY['<QUEUE_ROW_ID>']::text[],
+--   ARRAY['<WORKBENCH_QUEUE_ROW_ID>']::text[],
 --   'non-production freeze wins concurrency test'
 -- );
 -- -- Expected result includes freeze_status='frozen'. The transaction remains open,
