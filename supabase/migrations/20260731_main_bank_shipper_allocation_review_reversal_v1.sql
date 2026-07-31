@@ -6,6 +6,7 @@ BEGIN;
 SET LOCAL lock_timeout = '15s';
 SET LOCAL statement_timeout = '0';
 
+-- Fail before any migration mutation if an exact prerequisite is missing.
 DO $$
 BEGIN
   IF to_regclass('public.main_bank_shipper_ap_allocations') IS NULL THEN RAISE EXCEPTION 'Missing public.main_bank_shipper_ap_allocations'; END IF;
@@ -14,7 +15,13 @@ BEGIN
   IF to_regclass('public.statement_line_control_position_v1') IS NULL THEN RAISE EXCEPTION 'Missing public.statement_line_control_position_v1'; END IF;
   IF to_regclass('public.cash_posting_snapshots') IS NULL THEN RAISE EXCEPTION 'Missing public.cash_posting_snapshots'; END IF;
   IF to_regclass('public.shipping_documents') IS NULL THEN RAISE EXCEPTION 'Missing public.shipping_documents'; END IF;
+  IF to_regclass('public.dva_statement_lines') IS NULL THEN RAISE EXCEPTION 'Missing public.dva_statement_lines'; END IF;
+  IF to_regclass('public.dva_statements') IS NULL THEN RAISE EXCEPTION 'Missing public.dva_statements'; END IF;
+  IF to_regclass('public.shippers') IS NULL THEN RAISE EXCEPTION 'Missing public.shippers'; END IF;
   IF to_regprocedure('public.internal_has_accounting_admin_access_v1()') IS NULL THEN RAISE EXCEPTION 'Missing public.internal_has_accounting_admin_access_v1()'; END IF;
+  IF to_regprocedure('public.internal_shipper_ap_posted_targets_for_main_bank_v1(text,text,integer,integer)') IS NULL THEN
+    RAISE EXCEPTION 'Missing public.internal_shipper_ap_posted_targets_for_main_bank_v1(text,text,integer,integer)';
+  END IF;
 END $$;
 
 -- One review read model, while preserving distinct write families.
