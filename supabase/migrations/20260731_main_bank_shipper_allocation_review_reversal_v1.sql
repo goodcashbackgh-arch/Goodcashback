@@ -383,7 +383,7 @@ BEGIN
     INTO v_staff
   FROM public.staff s
   WHERE s.auth_user_id = v_auth_uid
-    AND COALESCE(s.active, true) = true
+    AND s.active = true
   LIMIT 1;
 
   IF v_staff.id IS NULL THEN
