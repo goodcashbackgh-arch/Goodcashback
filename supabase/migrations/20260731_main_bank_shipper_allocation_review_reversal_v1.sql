@@ -8,6 +8,8 @@ SET LOCAL statement_timeout = '0';
 
 -- Fail before any migration mutation if an exact prerequisite is missing.
 DO $$
+DECLARE
+  v_invalid_count integer;
 BEGIN
   IF to_regclass('public.main_bank_shipper_ap_allocations') IS NULL THEN RAISE EXCEPTION 'Missing public.main_bank_shipper_ap_allocations'; END IF;
   IF to_regclass('public.dva_statement_line_allocations') IS NULL THEN RAISE EXCEPTION 'Missing public.dva_statement_line_allocations'; END IF;
@@ -18,9 +20,29 @@ BEGIN
   IF to_regclass('public.dva_statement_lines') IS NULL THEN RAISE EXCEPTION 'Missing public.dva_statement_lines'; END IF;
   IF to_regclass('public.dva_statements') IS NULL THEN RAISE EXCEPTION 'Missing public.dva_statements'; END IF;
   IF to_regclass('public.shippers') IS NULL THEN RAISE EXCEPTION 'Missing public.shippers'; END IF;
+  IF to_regclass('public.staff') IS NULL THEN RAISE EXCEPTION 'Missing public.staff'; END IF;
   IF to_regprocedure('public.internal_has_accounting_admin_access_v1()') IS NULL THEN RAISE EXCEPTION 'Missing public.internal_has_accounting_admin_access_v1()'; END IF;
   IF to_regprocedure('public.internal_shipper_ap_posted_targets_for_main_bank_v1(text,text,integer,integer)') IS NULL THEN
     RAISE EXCEPTION 'Missing public.internal_shipper_ap_posted_targets_for_main_bank_v1(text,text,integer,integer)';
+  END IF;
+  IF to_regprocedure('public.internal_freeze_cash_posting_rows_v2(text[],text)') IS NULL THEN
+    RAISE EXCEPTION 'Missing public.internal_freeze_cash_posting_rows_v2(text[],text)';
+  END IF;
+
+  -- Do not install a forward-looking invariant over an already-invalid state.
+  -- Existing accounting history must be remediated explicitly, never rewritten here.
+  SELECT count(*)::integer
+    INTO v_invalid_count
+  FROM public.main_bank_shipper_ap_allocations a
+  JOIN public.cash_posting_snapshots cps
+    ON cps.active = true
+   AND cps.source_type = 'main_bank_shipper_ap_allocation'
+   AND cps.source_id = a.id
+   AND cps.posting_category = 'shipper_invoice_payment'
+  WHERE a.allocation_status = 'reversed';
+
+  IF v_invalid_count > 0 THEN
+    RAISE EXCEPTION 'Cannot install main-bank shipper freeze/reversal invariant: % reversed allocation(s) already have an active shipper-payment cash snapshot. Remediate those accounting states before retrying; this migration will not alter them.', v_invalid_count;
   END IF;
 END $$;
 
@@ -89,6 +111,7 @@ REVOKE ALL ON public.statement_line_matching_review_v1 FROM PUBLIC;
 REVOKE ALL ON public.statement_line_matching_review_v1 FROM authenticated;
 
 -- Staff-safe wrapper avoids widening raw-table visibility through the review surface.
+-- Review and reversal are intentionally limited to active admin/supervisor staff.
 CREATE OR REPLACE FUNCTION public.internal_statement_line_matching_review_v1(
   p_status text DEFAULT 'confirmed',
   p_family text DEFAULT 'all',
@@ -129,9 +152,19 @@ DECLARE
   v_status text := lower(COALESCE(NULLIF(trim(p_status), ''), 'confirmed'));
   v_family text := lower(COALESCE(NULLIF(trim(p_family), ''), 'all'));
   v_limit integer := LEAST(GREATEST(COALESCE(p_limit, 200), 1), 500);
+  v_staff_role text;
 BEGIN
   IF auth.uid() IS NULL THEN RAISE EXCEPTION 'Unauthenticated user: allocation review requires auth.uid()'; END IF;
-  IF NOT public.internal_has_accounting_admin_access_v1() THEN RAISE EXCEPTION 'Accounting admin access required for allocation review.'; END IF;
+
+  SELECT s.role_type
+    INTO v_staff_role
+  FROM public.staff s
+  WHERE s.auth_user_id = auth.uid()
+    AND s.active = true
+  LIMIT 1;
+
+  IF v_staff_role IS NULL THEN RAISE EXCEPTION 'Active staff user not found for allocation review.'; END IF;
+  IF v_staff_role NOT IN ('admin','supervisor') THEN RAISE EXCEPTION 'Only admin or supervisor staff can access allocation review. Current role: %', v_staff_role; END IF;
   IF v_status NOT IN ('confirmed','held','reversed') THEN RAISE EXCEPTION 'Unsupported allocation review status: %', v_status; END IF;
   IF v_family NOT IN ('all','dva_allocation','main_bank_shipper_ap') THEN RAISE EXCEPTION 'Unsupported allocation review family: %', v_family; END IF;
 
