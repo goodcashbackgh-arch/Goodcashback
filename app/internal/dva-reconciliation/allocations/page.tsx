@@ -216,9 +216,15 @@ export default async function DvaAllocationReviewPage({ searchParams }: { search
                 const statement = numeric(row.statement_gbp_amount);
                 const control = controlByLineId.get(row.dva_statement_line_id);
                 const hasCanonicalControl = !controlError && Boolean(control);
-                const sourceUsedNow = control ? numeric(control.active_consumed_gbp) + numeric(control.active_reserved_gbp) : null;
-                const sourceOpenNow = control ? numeric(control.remaining_unconsumed_gbp) : null;
-                const sourceOverNow = control ? numeric(control.overconsumed_gbp) : null;
+                const sourceUsedNow = hasCanonicalControl
+                  ? numeric(control!.active_consumed_gbp) + numeric(control!.active_reserved_gbp)
+                  : null;
+                const sourceOpenNow = hasCanonicalControl
+                  ? numeric(control!.remaining_unconsumed_gbp)
+                  : null;
+                const sourceOverNow = hasCanonicalControl
+                  ? numeric(control!.overconsumed_gbp)
+                  : null;
                 const direction = String(row.statement_direction || "—").toUpperCase();
                 const sourceDate = row.transaction_date || row.statement_date || "No date";
                 const currentSourceState = hasCanonicalControl && sourceUsedNow !== null && sourceOpenNow !== null && sourceOverNow !== null
