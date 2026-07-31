@@ -78,7 +78,116 @@ JOIN public.shipping_documents sd ON sd.id = a.shipping_document_id
 LEFT JOIN public.shippers sh ON sh.id = sd.shipper_id;
 
 ALTER VIEW public.statement_line_matching_review_v1 SET (security_invoker = true);
-GRANT SELECT ON public.statement_line_matching_review_v1 TO authenticated;
+REVOKE ALL ON public.statement_line_matching_review_v1 FROM PUBLIC;
+REVOKE ALL ON public.statement_line_matching_review_v1 FROM authenticated;
+
+-- Staff-safe wrapper avoids widening raw-table visibility through the review surface.
+CREATE OR REPLACE FUNCTION public.internal_statement_line_matching_review_v1(
+  p_status text DEFAULT 'confirmed',
+  p_family text DEFAULT 'all',
+  p_importer_id uuid DEFAULT NULL,
+  p_limit integer DEFAULT 200
+)
+RETURNS TABLE (
+  allocation_family text,
+  allocation_id uuid,
+  importer_id uuid,
+  dva_statement_line_id uuid,
+  transaction_date text,
+  statement_date text,
+  statement_description text,
+  statement_reference text,
+  statement_direction text,
+  statement_gbp_amount numeric,
+  allocation_type text,
+  allocation_status text,
+  supplier_invoice_ref text,
+  dispute_id uuid,
+  order_ref text,
+  allocated_gbp_amount numeric,
+  notes text,
+  created_at timestamptz,
+  shipping_document_id uuid,
+  shipper_invoice_ref text,
+  shipper_id uuid,
+  shipper_name text,
+  sage_purchase_invoice_id text
+)
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_status text := lower(COALESCE(NULLIF(trim(p_status), ''), 'confirmed'));
+  v_family text := lower(COALESCE(NULLIF(trim(p_family), ''), 'all'));
+  v_limit integer := LEAST(GREATEST(COALESCE(p_limit, 200), 1), 500);
+BEGIN
+  IF auth.uid() IS NULL THEN RAISE EXCEPTION 'Unauthenticated user: allocation review requires auth.uid()'; END IF;
+  IF NOT public.internal_has_accounting_admin_access_v1() THEN RAISE EXCEPTION 'Accounting admin access required for allocation review.'; END IF;
+  IF v_status NOT IN ('confirmed','held','reversed') THEN RAISE EXCEPTION 'Unsupported allocation review status: %', v_status; END IF;
+  IF v_family NOT IN ('all','dva_allocation','main_bank_shipper_ap') THEN RAISE EXCEPTION 'Unsupported allocation review family: %', v_family; END IF;
+
+  RETURN QUERY
+  SELECT r.*
+  FROM public.statement_line_matching_review_v1 r
+  WHERE r.allocation_status = v_status
+    AND (v_family = 'all' OR r.allocation_family = v_family)
+    AND (p_importer_id IS NULL OR r.importer_id = p_importer_id)
+  ORDER BY r.created_at DESC
+  LIMIT v_limit;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.internal_statement_line_matching_review_v1(text, text, uuid, integer) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.internal_statement_line_matching_review_v1(text, text, uuid, integer) TO authenticated;
+
+-- Database invariant for the freeze/reversal boundary. Any insertion or
+-- reactivation of an active shipper-payment snapshot must serialize on the
+-- source shipper allocation and prove that the source is still confirmed.
+CREATE OR REPLACE FUNCTION public.guard_main_bank_shipper_cash_snapshot_v1()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_status text;
+BEGIN
+  IF COALESCE(NEW.active, false) = true
+     AND NEW.source_type = 'main_bank_shipper_ap_allocation'
+     AND NEW.posting_category = 'shipper_invoice_payment' THEN
+    IF NEW.source_id IS NULL THEN
+      RAISE EXCEPTION 'Active shipper payment cash snapshot requires a source allocation id.';
+    END IF;
+
+    SELECT a.allocation_status
+      INTO v_status
+    FROM public.main_bank_shipper_ap_allocations a
+    WHERE a.id = NEW.source_id
+    FOR UPDATE;
+
+    IF v_status IS NULL THEN
+      RAISE EXCEPTION 'Main-bank shipper allocation not found for cash snapshot source: %', NEW.source_id;
+    END IF;
+
+    IF v_status <> 'confirmed' THEN
+      RAISE EXCEPTION 'Main-bank shipper allocation % is % and cannot be frozen into cash posting.', NEW.source_id, v_status;
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_guard_main_bank_shipper_cash_snapshot_v1 ON public.cash_posting_snapshots;
+CREATE TRIGGER trg_guard_main_bank_shipper_cash_snapshot_v1
+BEFORE INSERT OR UPDATE OF active, source_type, source_id, posting_category
+ON public.cash_posting_snapshots
+FOR EACH ROW
+EXECUTE FUNCTION public.guard_main_bank_shipper_cash_snapshot_v1();
+
+REVOKE ALL ON FUNCTION public.guard_main_bank_shipper_cash_snapshot_v1() FROM PUBLIC;
 
 -- Correct the shipper allocator so statement availability respects all active
 -- main-bank consumption families through the authoritative amount-aware control position.
