@@ -974,3 +974,170 @@ After prerequisite diagnostics and regression SQL are updated, perform one final
 - allocator availability remains canonical and cross-family;
 - freeze/reversal concurrency tests are explicit and runnable;
 - the PR remains draft until target-database migration and concurrency validation have been completed.
+
+## 18. Final pre-build closure and execution procedure
+
+This section records the final static review findings discovered after the first implementation pass. Where this section is more specific than earlier wording in this addendum, this section controls.
+
+### 18.1 Review and reversal role boundary
+
+The unified Allocation Review and dedicated shipper reversal are one review/remediation lane. Both are restricted to active staff whose `role_type` is `admin` or `supervisor`.
+
+This does **not** broaden the higher-risk creation/freeze boundary:
+
+```text
+Allocation Review                         active admin/supervisor
+Shipper allocation reversal              active admin/supervisor
+Main-bank shipper allocation creation    existing accounting-admin helper
+Cash-posting freeze                      existing accounting-admin helper
+```
+
+Any earlier reference in this addendum to generic authenticated active-staff review access must therefore be read as active admin/supervisor access for this Allocation Review surface. No new general-staff access is approved.
+
+### 18.2 Canonical control totals must fail closed
+
+`SOURCE USED NOW`, `SOURCE OPEN NOW`, and the displayed current source state are financial/control values and must be driven only by successfully loaded canonical `statement_line_control_position_v1` data.
+
+The implementation must use one explicit success predicate for every displayed canonical value. If the control query errors, or a review row unexpectedly has no canonical control position, the page must:
+
+```text
+show control position unavailable / equivalent review-required state
+withhold source used
+withhold source open
+withhold derived source state
+```
+
+It must not fall back to allocation-row arithmetic such as:
+
+```text
+used = this allocation amount
+open = statement amount - this allocation amount
+```
+
+This is a fail-closed display rule, not a new accounting model. The expected normal case remains that every allocation-backed statement line has a canonical control row.
+
+### 18.3 Migration prerequisites are direct dependencies only
+
+Migration prerequisite diagnostics must cover every relation/function directly referenced by the migration-created objects, including `public.staff`.
+
+The explicit relation/function set therefore includes at least:
+
+```text
+public.main_bank_shipper_ap_allocations
+public.dva_statement_line_allocations
+public.dva_statement_line_allocation_detail_vw
+public.statement_line_control_position_v1
+public.cash_posting_snapshots
+public.shipping_documents
+public.dva_statement_lines
+public.dva_statements
+public.shippers
+public.staff
+public.internal_has_accounting_admin_access_v1()
+public.internal_shipper_ap_posted_targets_for_main_bank_v1(text,text,integer,integer)
+```
+
+`public.internal_freeze_cash_posting_rows_v2(text[],text)` is a required regression/deployment-test dependency for the real governed concurrency test, but it is **not** a direct dependency of the migration's database invariant. The migration must not refuse to install solely because that caller RPC is absent if all objects directly required by the migration itself are present.
+
+The regression pack must separately fail/flag if the governed freeze RPC required for end-to-end testing is absent.
+
+### 18.4 Existing invalid-state preflight
+
+Before installing the forward-looking snapshot guard, the migration must prove that it is not being installed over an already-invalid state.
+
+It must abort before migration mutation if any row satisfies all of:
+
+```text
+main_bank_shipper_ap_allocations.allocation_status = reversed
+cash_posting_snapshots.active = true
+cash_posting_snapshots.source_type = main_bank_shipper_ap_allocation
+cash_posting_snapshots.source_id = allocation id
+cash_posting_snapshots.posting_category = shipper_invoice_payment
+```
+
+The diagnostic must report at least the count of invalid rows and make clear that deliberate remediation is required. The migration must not automatically reactivate an allocation, deactivate a cash snapshot, rewrite accounting history, or otherwise repair the state silently.
+
+### 18.5 Governed concurrency harness must use production queue identity
+
+The end-to-end concurrency test must use the actual governed queue identity returned by `internal_cash_posting_workbench_rows_v1(...)` for the selected eligible shipper allocation. It must not invent or manually reconstruct a queue ID when the workbench can supply the production value.
+
+The live freeze RPC parses queue identifiers as:
+
+```text
+segment 1 = cash
+segment 2 = category
+segment 3 = source UUID
+```
+
+For the current shipper lane the expected shape is therefore:
+
+```text
+cash:shipper_invoice_payment:<allocation_uuid>
+```
+
+A four-part value containing `main_bank_shipper_ap_allocation` as a separate segment is invalid for `internal_freeze_cash_posting_rows_v2(text[],text)` and would fail before exercising the race.
+
+The regression setup must resolve one candidate through the actual workbench and assert:
+
+```text
+source_type = main_bank_shipper_ap_allocation
+category = shipper_invoice_payment
+posting_status = ready_to_freeze
+selectable = true
+no active snapshot already exists for the allocation
+```
+
+The returned `queue_row_id` is then passed verbatim to `internal_freeze_cash_posting_rows_v2(text[],text)`.
+
+The two-session end-to-end test must invoke the actual governed functions:
+
+```text
+internal_freeze_cash_posting_rows_v2(text[],text)
+staff_reverse_main_bank_shipper_ap_allocation_v1(uuid,text)
+```
+
+The lower-level trigger/row-lock harness may remain as diagnostic coverage, but it does not substitute for this actual-function test.
+
+### 18.6 Canonical-control access proof before redesign
+
+The page currently reads canonical totals from `statement_line_control_position_v1` using the authenticated server-side Supabase session. The repository evidence reviewed so far does not prove an explicit authenticated SELECT grant for that view.
+
+This is a deployment-proof requirement, not permission to redesign the architecture pre-emptively.
+
+Regression/deployment validation must therefore:
+
+1. inspect `has_table_privilege('authenticated', 'public.statement_line_control_position_v1', 'SELECT')`;
+2. execute the exact canonical-control query used by Allocation Review under an authenticated active admin session;
+3. execute the same query under an authenticated active supervisor session;
+4. require the expected statement-control row(s) to be returned.
+
+If both governed role sessions can read the required canonical rows, the direct read remains unchanged.
+
+If the target database proves that the direct read is not available, that failed evidence is the trigger for a separate minimal permission/read-surface correction. Do not add a new SECURITY DEFINER control RPC merely as speculation before the access test fails.
+
+Because the UI is fail-closed, a permission failure must never degrade into estimated financial totals.
+
+### 18.7 Locked build procedure
+
+After this addendum is committed, implementation must proceed in this order:
+
+1. **Regression identity correction** — change the real freeze/reversal harness to select the eligible allocation's actual `queue_row_id` from `internal_cash_posting_workbench_rows_v1(...)` and pass it verbatim to `internal_freeze_cash_posting_rows_v2(text[],text)`.
+2. **UI fail-closed predicate correction** — ensure the same `hasCanonicalControl` success predicate controls source-used, source-open, overconsumption and derived source-state display; no financial value may be rendered from a returned row when the canonical query itself is in error.
+3. **Migration dependency correction** — retain `public.staff` as a prerequisite; retain the existing invalid-state preflight; remove `internal_freeze_cash_posting_rows_v2(text[],text)` from the migration prerequisite block because it is not a direct migration dependency.
+4. **Regression access verification** — add structural privilege inspection plus explicit target-environment admin/supervisor execution instructions for the exact canonical-control read used by Allocation Review. Do not create a replacement RPC unless that target-environment proof actually fails.
+5. **Static scope review** — verify the resulting PR still changes only the intended five files and introduces no DVA reversal modification, loyalty write, Sage mutation, generic reversal command, second review page or broad cash-posting rewrite.
+6. **Target database validation** — apply the migration in the intended test/target PostgreSQL environment; record transaction isolation; execute structural regression SQL; execute both orderings of the low-level and actual-function two-session concurrency tests; execute admin/supervisor review/control-read checks.
+7. **Sign-off** — keep the PR draft until the target-database migration and concurrency/access checks have actually passed. Do not describe unexecuted tests as passed.
+
+### 18.8 Closed static patch list
+
+The static patch list is closed to the following items:
+
+```text
+A. Correct governed concurrency test queue identity.
+B. Make the Allocation Review canonical-control success predicate truly fail closed.
+C. Remove the non-direct freeze RPC from migration prerequisites while retaining public.staff and invalid-state preflight.
+D. Add canonical-control admin/supervisor access verification and align governing wording.
+```
+
+No additional database object or permission expansion is approved by this closure. Any further architectural change requires new evidence from target-environment validation rather than another speculative defensive addition.
