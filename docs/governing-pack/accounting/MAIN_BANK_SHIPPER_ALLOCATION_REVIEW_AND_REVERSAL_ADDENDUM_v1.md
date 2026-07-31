@@ -1161,3 +1161,25 @@ because that expression can treat an indeterminate/null activity state as active
 This is the only additional static correction approved at this stage. The implementation change is one predicate replacement inside the dedicated shipper reversal RPC. It does not alter role eligibility, locking, allocation/freeze permissions, DVA reversal, loyalty, Sage, cash-posting behavior, read models, or any other write domain.
 
 After that one correction, perform a final migration/PR scope review and move to target-database validation. Do not add further defensive architecture without failed runtime evidence.
+
+### 18.10 Family-specific post-reversal return navigation
+
+The unified Allocation Review remains the single review surface for both allocation families. Post-reversal navigation must, however, preserve each family's established working flow rather than force both families through one new return destination.
+
+The locked behavior is:
+
+```text
+DVA allocation reversal
+  -> existing DVA reversal action
+  -> return to existing DVA workspace
+
+Main-bank shipper AP reversal
+  -> dedicated shipper reversal action
+  -> return to /internal/dva-reconciliation/main-bank
+```
+
+This is a UI/navigation rule only. It must not change either reversal RPC, database mutation, statement-control arithmetic, cash-posting behavior, Sage behavior, permissions, or allocation-family ownership.
+
+The shared Allocation Review page may select the return path from the authoritative `allocation_family` discriminator already used to select the reversal action. It must not use one shared `reviewPath` for both families.
+
+This section supersedes the implementation's current shared post-reversal return destination. The preservation requirement is explicit: existing DVA post-reversal navigation is restored, while the new main-bank shipper reversal returns the operator to the specialist main-bank matching workbench where the released amount can be reallocated.
