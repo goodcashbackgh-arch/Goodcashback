@@ -192,7 +192,7 @@ BEGIN
       AND (v_category = 'all' OR lower(sr.category) = v_category)
       AND (
         v_search IS NULL
-        OR lower(concat_ws(' ', sr.counterparty_name, sr.order_ref, sr.auth_ref, sr.reference_raw, sr.matched_target_ref, sr.category, sr.source_type, sr.blocker)) LIKE '%' || v_search || '%'
+        OR lower(concat_ws(' ', sr.counterparty_name, sr.order_ref, sr.auth_ref, sr.reference_raw, sr.matched_target_ref, sr.category, sr.blocker)) LIKE '%' || v_search || '%'
       )
   )
   SELECT
