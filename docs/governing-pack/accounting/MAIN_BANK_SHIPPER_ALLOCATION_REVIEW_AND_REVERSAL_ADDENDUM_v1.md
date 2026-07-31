@@ -1,0 +1,840 @@
+# Main-Bank Shipper Allocation Review and Reversal Addendum v1
+
+Status: locked implementation addendum. This document defines the required build and safety boundaries. It does not itself alter live database state, Sage objects, cash-posting artefacts, or existing allocation records.
+
+Date: 31 July 2026
+
+## 1. Purpose
+
+This addendum closes a specific control gap in the main-company-bank shipper AP matching lane.
+
+The current system can create and consume `main_bank_shipper_ap_allocations`, and those allocations are correctly included in the amount-aware statement-control model and cash-posting workbench. However:
+
+- the existing Allocation Review page is driven by the legacy DVA allocation detail/status views and therefore does not present main-bank shipper AP allocations as reviewable matching records;
+- there is no dedicated main-bank shipper allocation reversal action equivalent to the existing DVA allocation reversal path;
+- the current main-bank shipper allocation RPC calculates remaining statement amount using only confirmed shipper allocations, while other live main-bank controls also subtract residual/FX/fee/hold and completion-loyalty consumption;
+- once a shipper allocation has been frozen into `cash_posting_snapshots`, reversing the source match without first resolving the frozen accounting artefact would break the accounting chain.
+
+This addendum defines one coordinated, additive solution:
+
+1. extend the existing Allocation Review surface to include main-bank shipper AP allocations;
+2. add a dedicated guarded shipper-allocation reversal RPC and server action;
+3. block reversal once an active cash-posting snapshot exists for that allocation;
+4. correct the shipper allocation RPC so statement availability is calculated across all active main-bank consumption families;
+5. preserve every existing DVA, loyalty, Sage, cash-posting and statement-control contract.
+
+The goal is one coherent review experience without merging economically distinct write paths.
+
+## 2. Authority and relationship to existing controls
+
+This addendum extends and must be read with the existing treasury, DVA/card, cash-posting, Sage-posting, completion-loyalty and statement-control contracts.
+
+It does not replace:
+
+- `staff_reverse_dva_statement_line_allocation(...)`;
+- `staff_allocate_main_bank_line_to_shipper_ap_v1(...)` as the main-bank shipper allocation entry point;
+- `statement_line_control_position_v1` and its underlying amount-aware usage model;
+- `internal_cash_posting_workbench_rows_v1(...)`;
+- `internal_freeze_cash_posting_rows_v2(...)`;
+- `internal_create_cash_batch_v2(...)`;
+- Sage posting/freeze/batch controls;
+- main-bank completion-loyalty pairing controls.
+
+Where a previous implementation assumes that a main-bank shipper allocation can be reviewed only in the main-bank matching workspace, this addendum controls: confirmed and historical shipper allocations must be visible in the unified allocation-review surface.
+
+Where a previous implementation assumes that the remaining amount on a main-bank statement line is statement amount minus shipper allocations only, this addendum controls: all active economic consumption on the main-bank line must be respected.
+
+## 3. Confirmed evidence
+
+### 3.1 Allocation storage and review visibility
+
+Live evidence confirmed the following rows for the same description family, `Jobyco shipment batch A`:
+
+```text
+2026-07-25  GBP 24.00
+  MAIN_BANK_SHIPPER_AP  GBP 24.00 confirmed
+
+2026-07-30  GBP 26.00
+  MAIN_BANK_SHIPPER_AP  GBP 18.00 confirmed
+
+2026-08-03  GBP 27.60
+  DVA_ALLOCATION       GBP  7.60 confirmed / fx_card_difference
+  MAIN_BANK_SHIPPER_AP GBP 20.00 confirmed
+```
+
+The Allocation Review page presents the `GBP 7.60` `fx_card_difference` row because that row is in `dva_statement_line_allocations` and is exposed by `dva_statement_line_allocation_detail_vw`.
+
+The same page does not present the `GBP 20.00` shipper AP match on the exact same statement line because main-bank shipper rows live in `main_bank_shipper_ap_allocations` and are not part of the legacy DVA allocation-detail read model.
+
+Therefore the current Allocation Review surface is incomplete for main-bank shipper matching records.
+
+### 3.2 Canonical amount-aware statement position
+
+For statement line:
+
+```text
+cc11ec42-e6fc-4f6f-83fc-a3ad3e54a9e9
+Jobyco shipment batch A
+GBP 26.00
+```
+
+live control evidence confirmed:
+
+```text
+source amount       GBP 26.00
+active consumed     GBP 18.00
+active reserved     GBP  0.00
+remaining           GBP  8.00
+active family       main_bank_shipper_ap
+```
+
+The amount-aware usage layer already models `main_bank_shipper_ap_allocations` as a principal economic lane and treats `allocation_status = 'reversed'` as historical evidence with zero active consumption.
+
+This is the authoritative statement-position behavior required after reversal.
+
+### 3.3 Existing DVA reversal contract
+
+The live `staff_reverse_dva_statement_line_allocation(p_allocation_id uuid, p_reversal_reason text)` function establishes the current reversal governance pattern:
+
+- `SECURITY DEFINER`;
+- `search_path = public, pg_temp`;
+- requires `auth.uid()`;
+- resolves active staff;
+- permits only `admin` or `supervisor`;
+- requires a reversal reason of at least eight characters;
+- locks the allocation row using `FOR UPDATE`;
+- rejects a missing allocation;
+- rejects an already-reversed allocation;
+- changes status to `reversed` rather than deleting the row;
+- stamps staff/time/reason audit fields;
+- returns a JSON result containing the reversed amount and post-reversal position.
+
+The main-bank shipper reversal must replicate this governance pattern, while retaining its own table-specific command.
+
+### 3.4 Main-bank shipper allocation lifecycle
+
+`main_bank_shipper_ap_allocations` already contains the fields needed for a governed reversal lifecycle:
+
+```text
+allocation_status           confirmed | reversed
+reversed_by_staff_id
+reversed_by_auth_user_id
+reversed_at
+reversal_reason
+```
+
+The table has a partial unique index on `(dva_statement_line_id, shipping_document_id)` for active confirmed pairs, so changing a row to `reversed` naturally releases that active-pair constraint without destroying history.
+
+### 3.5 Downstream cash-posting freeze boundary
+
+The live cash-posting flow proves the exact irreversible boundary for this review action.
+
+`internal_cash_posting_workbench_rows_v1(...)` exposes confirmed shipper allocations as:
+
+```text
+source_type       main_bank_shipper_ap_allocation
+source_id         <main_bank_shipper_ap_allocations.id>
+category          shipper_invoice_payment
+```
+
+`internal_freeze_cash_posting_rows_v2(...)` then freezes that workbench row into `cash_posting_snapshots` with:
+
+```text
+source_type       main_bank_shipper_ap_allocation
+source_id         <allocation id>
+posting_category  shipper_invoice_payment
+active            true
+freeze_status     frozen
+validation_status validated
+```
+
+Subsequent batching and Sage posting operate from the frozen snapshot.
+
+Therefore an active cash-posting snapshot is the correct boundary: once such a snapshot exists, the allocation cannot be reversed from Allocation Review. The accounting artefact must first be resolved through its governed cash-posting/accounting path.
+
+### 3.6 Existing main-bank allocation inconsistency
+
+The live `staff_allocate_main_bank_line_to_shipper_ap_v1(...)` currently calculates statement remaining as:
+
+```text
+statement amount
+- confirmed main-bank shipper allocations
+```
+
+It does not subtract other active main-bank uses.
+
+Other live controls correctly account for:
+
+```text
+confirmed main-bank shipper AP
++ confirmed residual allocations
+    fx_card_difference
+    bank_fee
+    unmatched_hold
++ active completion-loyalty source consumption
+```
+
+The main-bank workspace itself also uses all of those families to determine `remaining_gbp` and `match_status`.
+
+This inconsistency must be corrected in the same release as reversal so that a reversed amount cannot later be reallocated using a narrower, stale definition of statement availability.
+
+## 4. Locked target operating model
+
+```text
+                     ALLOCATION REVIEW
+                           |
+          +----------------+----------------+
+          |                                 |
+   DVA allocation                   Main-bank shipper AP
+          |                                 |
+ existing DVA reversal          dedicated shipper reversal
+          |                                 |
+ dva_statement_line_            main_bank_shipper_ap_
+ allocations                    allocations
+          |                                 |
+          +----------------+----------------+
+                           |
+              amount-aware statement control
+                           |
+                    current used/open
+
+Main-bank shipper reversal only:
+
+confirmed allocation
+      |
+      v
+active cash-posting snapshot exists?
+      |
+  +---+---+
+  |       |
+ yes      no
+  |       |
+BLOCK     reverse to historical
+          |
+          v
+statement amount released
+shipper target amount released
+no Sage mutation
+```
+
+## 5. Unified Allocation Review
+
+### 5.1 One review surface
+
+Do not create a second main-bank allocation-review page.
+
+Extend the existing page:
+
+```text
+/internal/dva-reconciliation/allocations
+```
+
+so it becomes the review surface for both:
+
+```text
+dva_statement_line_allocations
+main_bank_shipper_ap_allocations
+```
+
+The specialist main-bank matching workspace remains the place where shipper AP matches are created. Allocation Review is where active and historical matching records are reviewed and, where permitted, reversed.
+
+### 5.2 Additive read model
+
+Do not silently redefine `dva_statement_line_allocation_detail_vw` to mean two different storage families.
+
+Add a new review read model/view or staff-safe RPC with a stable discriminator, for example:
+
+```text
+dva_active_matching_review_v1
+```
+
+The exact name may vary, but the output must include an explicit family discriminator such as:
+
+```text
+allocation_family = 'dva_allocation'
+allocation_family = 'main_bank_shipper_ap'
+```
+
+Minimum common fields:
+
+```text
+allocation_family
+allocation_id
+dva_statement_line_id
+transaction_date / statement_date
+statement_reference
+statement_description
+statement_direction
+statement_gbp_amount
+allocation_type
+allocation_status
+allocated_gbp_amount
+created_at
+notes
+```
+
+Main-bank shipper rows must additionally expose sufficient target context for the card, including:
+
+```text
+shipping_document_id
+shipper_invoice_ref
+shipper_id / shipper name where available
+sage_purchase_invoice_id
+```
+
+The review UI must not infer the storage family from `allocation_type` or from UUID lookup order. The family discriminator is authoritative.
+
+### 5.3 Source used/open totals
+
+For review cards, `SOURCE USED NOW` and `SOURCE OPEN NOW` must come from the current amount-aware statement-position model, not from the legacy DVA-only allocation-status view.
+
+This is required because one main-bank line can contain multiple active consumption families.
+
+Example:
+
+```text
+statement line       GBP 27.60
+shipper AP           GBP 20.00
+FX/card residual     GBP  7.60
+source used now      GBP 27.60
+source open now      GBP  0.00
+```
+
+If the `GBP 20.00` shipper row is reversed before freeze:
+
+```text
+statement line       GBP 27.60
+remaining FX/card    GBP  7.60
+source used now      GBP  7.60
+source open now      GBP 20.00
+```
+
+The UI must never report `GBP 27.60` open in that scenario.
+
+### 5.4 Review filters
+
+The existing status filters should remain. Add an optional allocation-family filter:
+
+```text
+All
+DVA allocations
+Main-bank shipper AP
+```
+
+This is a presentation filter only. It must not alter economic status calculations.
+
+## 6. Dedicated main-bank shipper reversal RPC
+
+Add a dedicated RPC, for example:
+
+```text
+staff_reverse_main_bank_shipper_ap_allocation_v1(
+  p_allocation_id uuid,
+  p_reversal_reason text
+) returns jsonb
+```
+
+Do not route main-bank shipper reversals through `staff_reverse_dva_statement_line_allocation(...)`.
+
+Do not create one generic RPC that guesses which table owns an allocation UUID.
+
+Separate write commands preserve clear economic and audit boundaries.
+
+### 6.1 Required security and validation
+
+The RPC must:
+
+1. be `SECURITY DEFINER`;
+2. set `search_path = public, pg_temp`;
+3. require `auth.uid()`;
+4. resolve an active staff record;
+5. allow only `admin` or `supervisor`;
+6. require a trimmed reversal reason of at least eight characters;
+7. reject a missing allocation;
+8. reject an already-reversed allocation;
+9. reject any status other than the expected active `confirmed` state;
+10. never accept statement-line amount, shipping-document amount, Sage object ID or target ID as mutable input.
+
+### 6.2 Locking order
+
+Use one consistent concurrency order for main-bank statement consumption mutations.
+
+The reversal path must resolve the allocation, then lock the associated physical statement line before performing the final locked allocation-state transition, or otherwise use a single deterministic lock order shared by the corrected shipper allocation path.
+
+The implementation must avoid one path locking an allocation first while another locks the statement line first if both later require the other row.
+
+The preferred contract for new/updated main-bank consumption writes is:
+
+```text
+statement line lock
+then family-specific allocation/target lock as required
+```
+
+The exact SQL may first perform an unlocked lookup to obtain the statement-line ID, but the mutation must occur only after the deterministic lock set is held.
+
+### 6.3 Frozen accounting guard
+
+Before reversal, the RPC must reject the operation if the source allocation has any active frozen cash-posting snapshot:
+
+```sql
+exists (
+  select 1
+  from public.cash_posting_snapshots cps
+  where cps.active = true
+    and cps.source_type = 'main_bank_shipper_ap_allocation'
+    and cps.source_id = p_allocation_id
+    and cps.posting_category = 'shipper_invoice_payment'
+)
+```
+
+This guard intentionally blocks all active snapshot states, including frozen/validated, batched, posting-failed, posted and posted-needs-review descendants.
+
+The reversal RPC must not attempt to deactivate, rewrite or reverse those accounting artefacts.
+
+Required user-facing error meaning:
+
+```text
+This match has already been frozen into cash posting and cannot be reversed here.
+Resolve the accounting/cash-posting artefact first.
+```
+
+### 6.4 Mutation
+
+A permitted reversal changes only the allocation lifecycle/audit fields.
+
+Required transition:
+
+```text
+allocation_status        confirmed -> reversed
+reversed_by_staff_id     current active staff id
+reversed_by_auth_user_id auth.uid()
+reversed_at              now()
+reversal_reason          trimmed mandatory reason
+```
+
+The row must not be deleted.
+
+The following must not be changed by this RPC:
+
+```text
+dva_statement_line_id
+shipping_document_id
+sage_posting_snapshot_id
+sage_purchase_invoice_id
+allocated_gbp_amount
+created_by_staff_id
+created_by_auth_user_id
+created_at
+```
+
+Existing `notes` may be left unchanged. If implementation chooses to append a human-readable reversal note, the structured reversal fields remain authoritative and the original note content must be preserved.
+
+### 6.5 Post-reversal response
+
+The RPC should return a JSON result consistent with the existing DVA reversal experience, including at least:
+
+```text
+ok
+allocation_id
+dva_statement_line_id
+shipping_document_id
+reversed_allocation_type = main_bank_shipper_ap
+reversed_amount_gbp
+reversal_reason
+```
+
+It should also return current post-reversal statement-control figures if cheaply available from the amount-aware model, for example:
+
+```text
+active_consumed_after_gbp
+active_reserved_after_gbp
+remaining_unconsumed_after_gbp
+```
+
+Those values are a response/readback, not a validation authority and not stored back into the allocation row.
+
+## 7. Server action and UI reversal behavior
+
+Add a dedicated server action, for example:
+
+```text
+reverseMainBankShipperAllocationAction(formData)
+```
+
+It must mirror the established DVA action pattern:
+
+- create server Supabase client;
+- resolve return path;
+- require signed-in user;
+- read allocation ID and reversal reason;
+- reject missing allocation ID;
+- reject a reason shorter than eight characters before RPC call;
+- call only the dedicated main-bank shipper reversal RPC;
+- surface database errors without converting a blocked reversal into success;
+- revalidate the affected reconciliation pages;
+- redirect back with a success message containing the reversed amount where returned.
+
+Recommended revalidation set:
+
+```text
+/internal/dva-reconciliation
+/internal/dva-reconciliation/main-bank
+/internal/dva-reconciliation/allocations
+/internal/dva-reconciliation/control-summary
+```
+
+The review card must dispatch by `allocation_family`:
+
+```text
+dva_allocation
+  -> reverseDvaStatementLineAllocationAction
+
+main_bank_shipper_ap
+  -> reverseMainBankShipperAllocationAction
+```
+
+The UI must not send a shipper allocation ID to the DVA reversal action.
+
+## 8. Correct main-bank shipper allocation availability
+
+The existing `staff_allocate_main_bank_line_to_shipper_ap_v1(...)` must be corrected in the same release.
+
+### 8.1 Current defect
+
+The current function calculates line availability from confirmed shipper allocations only.
+
+That permits a narrower interpretation of availability than the rest of the main-bank system.
+
+### 8.2 Required calculation
+
+Before inserting a new shipper allocation, the function must determine the physical statement-line position using all active consumption that competes for that main-bank OUT amount.
+
+At minimum this includes:
+
+```text
+confirmed main_bank_shipper_ap_allocations
+confirmed dva_statement_line_allocations where allocation_type in:
+  fx_card_difference
+  bank_fee
+  unmatched_hold
+active main_bank_completion_loyalty_funding_matches where match_status in:
+  confirmed
+  released_available_dashboard_credit
+```
+
+The required equation is:
+
+```text
+line remaining = statement GBP amount
+               - active shipper AP consumption
+               - active residual/fee/hold consumption
+               - active loyalty-source consumption
+```
+
+The implementation may use the amount-aware control resolver if doing so preserves correct locking and security semantics. Otherwise it may reproduce the same family arithmetic inside the locked RPC. What is not permitted is reverting to shipper-only availability.
+
+### 8.3 Allocation insertion rules that remain unchanged
+
+The corrected RPC must continue to require:
+
+- authenticated accounting-admin access;
+- main-company-bank account context;
+- OUT direction;
+- positive physical statement amount;
+- a valid posted shipper AP target;
+- a Sage purchase invoice ID for that target;
+- positive allocation amount;
+- amount not greater than true remaining statement amount;
+- amount not greater than remaining shipper target amount;
+- insertion into `main_bank_shipper_ap_allocations` with full creation audit fields.
+
+No new allocation family is introduced.
+
+## 9. Upstream and downstream safety boundaries
+
+### 9.1 Upstream objects that must not be mutated by reversal
+
+The reversal action must not alter:
+
+- statement files;
+- `dva_statements`;
+- physical values in `dva_statement_lines`;
+- `shipping_documents`;
+- shippers;
+- Sage posting snapshots for the purchase invoice;
+- the posted Sage purchase invoice;
+- statement interpretation corrections;
+- loyalty matches;
+- DVA allocation rows.
+
+### 9.2 Downstream objects that must not be mutated by reversal
+
+The reversal action must not alter:
+
+- `cash_posting_snapshots`;
+- `cash_posting_batches`;
+- `cash_posting_batch_rows`;
+- Sage contact/payment objects;
+- Sage allocations/settlements;
+- Sage purchase invoices;
+- accounting closure rows.
+
+If an active cash-posting snapshot exists, the reversal is blocked instead.
+
+### 9.3 Expected automatic read-model effects after an allowed reversal
+
+Because existing read models count only confirmed shipper allocations, an allowed reversal should automatically cause:
+
+```text
+main-bank statement source:
+  shipper consumed amount decreases by reversed amount
+  remaining amount increases by reversed amount, subject to other active families
+
+shipper AP target:
+  allocated amount decreases by reversed amount
+  remaining/open amount increases by reversed amount
+
+statement control:
+  shipper evidence becomes historical
+  active consumed amount decreases
+  historical evidence remains visible
+
+cash-posting workbench:
+  the allocation no longer appears as a confirmed selectable shipper payment candidate
+```
+
+No compensating database write is required for these read-model effects.
+
+## 10. Examples
+
+### 10.1 Simple partial shipper allocation
+
+Before reversal:
+
+```text
+statement amount       GBP 26.00
+shipper allocation     GBP 18.00
+other active use       GBP  0.00
+remaining              GBP  8.00
+```
+
+Allowed reversal, assuming no active cash snapshot:
+
+```text
+statement amount       GBP 26.00
+active shipper use     GBP  0.00
+remaining              GBP 26.00
+historical shipper row GBP 18.00 reversed
+```
+
+The associated shipper target also regains `GBP 18.00` of matching capacity.
+
+### 10.2 Mixed shipper plus FX allocation
+
+Before reversal:
+
+```text
+statement amount       GBP 27.60
+shipper allocation     GBP 20.00
+FX/card allocation     GBP  7.60
+remaining              GBP  0.00
+```
+
+Allowed shipper reversal:
+
+```text
+statement amount       GBP 27.60
+active shipper use     GBP  0.00
+active FX/card use     GBP  7.60
+remaining              GBP 20.00
+```
+
+The review card must not report `GBP 27.60` open.
+
+### 10.3 Frozen shipper payment
+
+If an active cash snapshot exists with:
+
+```text
+source_type       main_bank_shipper_ap_allocation
+source_id         <allocation id>
+posting_category  shipper_invoice_payment
+```
+
+then Allocation Review must reject reversal.
+
+No source allocation status is changed.
+
+The operator must resolve the frozen/posting/accounting artefact through the existing cash-posting/accounting workflow first.
+
+## 11. Database privileges
+
+For the new reversal RPC:
+
+```text
+REVOKE ALL FROM PUBLIC
+GRANT EXECUTE TO authenticated
+```
+
+The function itself must enforce active-staff and role checks, matching the existing DVA reversal governance pattern.
+
+No direct UPDATE/INSERT/DELETE RLS policy should be added to allow browser writes to `main_bank_shipper_ap_allocations`.
+
+Existing staff SELECT behavior may remain.
+
+## 12. Required regression tests
+
+Implementation is incomplete without regression coverage for all of the following.
+
+### 12.1 Review visibility
+
+- confirmed DVA allocation appears once;
+- confirmed main-bank shipper allocation appears once;
+- a statement line containing both a shipper and FX allocation presents two distinct cards;
+- each card shows the same canonical current source used/open totals;
+- family filter does not change totals.
+
+### 12.2 Allowed reversal
+
+- admin can reverse an unfrozen confirmed shipper allocation;
+- supervisor can reverse an unfrozen confirmed shipper allocation;
+- allocation row remains present;
+- status becomes `reversed`;
+- staff/auth/time/reason audit fields are populated;
+- amount and source/target IDs remain unchanged;
+- statement-control evidence becomes historical;
+- statement remaining increases by the reversed amount subject to other active consumption;
+- shipper target remaining increases by the reversed amount;
+- the row no longer appears as a selectable cash-posting candidate.
+
+### 12.3 Reversal rejection
+
+- unauthenticated caller rejected;
+- inactive staff rejected;
+- non-admin/non-supervisor rejected;
+- reason shorter than eight characters rejected;
+- missing allocation rejected;
+- already-reversed allocation rejected;
+- any active cash-posting snapshot for the allocation blocks reversal;
+- blocked reversal leaves every allocation field unchanged.
+
+### 12.4 Mixed-consumption correctness
+
+Test at least:
+
+```text
+statement GBP 27.60
+shipper GBP 20.00
+FX GBP 7.60
+```
+
+After shipper reversal, assert:
+
+```text
+active consumed GBP 7.60
+remaining GBP 20.00
+```
+
+Also test shipper + loyalty, shipper + bank fee, and shipper + unmatched hold combinations.
+
+### 12.5 Allocation availability correction
+
+For `staff_allocate_main_bank_line_to_shipper_ap_v1(...)`:
+
+- residual/FX consumption reduces shipper allocatable amount;
+- loyalty consumption reduces shipper allocatable amount;
+- shipper consumption reduces shipper allocatable amount;
+- combined consumption cannot exceed the physical statement amount;
+- a proposed allocation above true cross-family remaining amount is rejected;
+- target-side remaining validation remains enforced.
+
+### 12.6 Downstream non-impact
+
+For an allowed reversal, prove unchanged:
+
+- `dva_statement_lines` physical values;
+- `shipping_documents`;
+- Sage purchase invoice snapshot/object identifiers;
+- existing DVA allocation rows;
+- loyalty rows;
+- cash-posting snapshots and batches, because an allowed reversal by definition has none active for that source allocation.
+
+For a blocked reversal with an active snapshot, prove no database mutation occurs.
+
+## 13. Rollout order
+
+Use this order:
+
+1. add regression tests and live-read verification queries;
+2. correct main-bank shipper allocation cross-family availability;
+3. add dedicated reversal RPC and privileges;
+4. add unified review read model;
+5. add server action and UI routing by allocation family;
+6. switch review used/open figures to amount-aware statement position;
+7. run regression tests against mixed-consumption examples;
+8. verify frozen-snapshot blocker using a non-production test/frozen row;
+9. deploy UI after database functions/read models are live;
+10. perform post-deploy smoke checks on main-bank workspace, Allocation Review, control summary and cash-posting workbench.
+
+The reversal UI must not be deployed before the guarded RPC exists.
+
+## 14. Rollback strategy
+
+The change is additive and should be independently reversible.
+
+If UI issues occur:
+
+- revert Allocation Review to its previous read source;
+- leave the database reversal function unused.
+
+If reversal-function issues occur before any use:
+
+- revoke execute on the new RPC;
+- remove/disable its UI action.
+
+Do not roll back by deleting historical reversed allocation rows.
+
+The main-bank cross-family availability correction should not be rolled back to shipper-only arithmetic unless a separately proven defect requires it; shipper-only arithmetic is inconsistent with the amount-aware main-bank control contract.
+
+## 15. Completion criteria
+
+This addendum is complete only when all of the following are true:
+
+- main-bank shipper allocations are visible in the existing Allocation Review page;
+- DVA and shipper allocation families remain distinct write domains;
+- review cards use canonical amount-aware source used/open figures;
+- main-bank shipper allocation availability respects all active main-bank economic families;
+- an unfrozen confirmed shipper allocation can be surgically reversed by an admin/supervisor with a mandatory reason;
+- the reversal is historical, not destructive;
+- an allocation with any active cash-posting snapshot cannot be reversed from Allocation Review;
+- reversal does not alter Sage or cash-posting artefacts;
+- statement and target positions reopen automatically through existing confirmed-only read logic;
+- mixed shipper + residual/FX/fee/hold/loyalty cases pass regression tests;
+- existing DVA reversal behavior remains unchanged;
+- no upstream physical statement or shipping-document evidence is modified.
+
+## 16. Final locked implementation decision
+
+The approved pattern is:
+
+```text
+one unified Allocation Review page
++ separate family-specific reversal commands
++ active cash-snapshot reversal blocker
++ canonical amount-aware source totals
++ corrected cross-family shipper allocation availability
+```
+
+Do not create a second review page.
+
+Do not reuse the DVA reversal RPC for shipper rows.
+
+Do not create a generic reverse-by-UUID RPC.
+
+Do not reverse or mutate Sage from the matching-review action.
+
+Do not reverse a shipper allocation after it has entered the active cash-posting snapshot lifecycle.
+
+Do not calculate main-bank shipper availability from shipper allocations alone.
+
+This design preserves current economic boundaries while closing the review, reversal and amount-availability gaps with the smallest controlled blast radius.
