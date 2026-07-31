@@ -128,17 +128,21 @@ export default async function DvaAllocationReviewPage({ searchParams }: { search
   const rows = (data ?? []) as AllocationDetailRow[];
   const lineIds = [...new Set(rows.map((row) => row.dva_statement_line_id).filter(Boolean))];
 
-  let controlQuery = supabase
-    .from("statement_line_control_position_v1")
-    .select("statement_line_id, active_consumed_gbp, active_reserved_gbp, remaining_unconsumed_gbp, overconsumed_gbp")
-    .limit(500);
+  let controlData: StatementControlRow[] = [];
+  let controlError: { message: string } | null = null;
 
-  if (lineIds.length > 0) controlQuery = controlQuery.in("statement_line_id", lineIds);
+  if (lineIds.length > 0) {
+    const controlResult = await supabase
+      .from("statement_line_control_position_v1")
+      .select("statement_line_id, active_consumed_gbp, active_reserved_gbp, remaining_unconsumed_gbp, overconsumed_gbp")
+      .in("statement_line_id", lineIds)
+      .limit(500);
 
-  const { data: controlData } = await controlQuery;
-  const controlByLineId = new Map(
-    ((controlData ?? []) as StatementControlRow[]).map((row) => [row.statement_line_id, row])
-  );
+    controlData = (controlResult.data ?? []) as StatementControlRow[];
+    controlError = controlResult.error;
+  }
+
+  const controlByLineId = new Map(controlData.map((row) => [row.statement_line_id, row]));
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-6 text-slate-950 sm:px-6 lg:px-8">
@@ -162,6 +166,12 @@ export default async function DvaAllocationReviewPage({ searchParams }: { search
 
         {params.allocation_success ? (
           <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">{cleanUiText(params.allocation_success)}</div>
+        ) : null}
+
+        {controlError ? (
+          <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">
+            Canonical statement-control totals could not be loaded. Source used/open figures are withheld rather than estimated. {cleanUiText(controlError.message)}
+          </div>
         ) : null}
 
         <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -205,16 +215,15 @@ export default async function DvaAllocationReviewPage({ searchParams }: { search
                 const allocated = numeric(row.allocated_gbp_amount);
                 const statement = numeric(row.statement_gbp_amount);
                 const control = controlByLineId.get(row.dva_statement_line_id);
-                const sourceUsedNow = control
-                  ? numeric(control.active_consumed_gbp) + numeric(control.active_reserved_gbp)
-                  : allocated;
-                const sourceOpenNow = control
-                  ? numeric(control.remaining_unconsumed_gbp)
-                  : Math.max(0, statement - allocated);
-                const sourceOverNow = control ? numeric(control.overconsumed_gbp) : 0;
+                const hasCanonicalControl = !controlError && Boolean(control);
+                const sourceUsedNow = control ? numeric(control.active_consumed_gbp) + numeric(control.active_reserved_gbp) : null;
+                const sourceOpenNow = control ? numeric(control.remaining_unconsumed_gbp) : null;
+                const sourceOverNow = control ? numeric(control.overconsumed_gbp) : null;
                 const direction = String(row.statement_direction || "—").toUpperCase();
                 const sourceDate = row.transaction_date || row.statement_date || "No date";
-                const currentSourceState = sourceState(statement, sourceUsedNow, sourceOpenNow, sourceOverNow);
+                const currentSourceState = hasCanonicalControl && sourceUsedNow !== null && sourceOpenNow !== null && sourceOverNow !== null
+                  ? sourceState(statement, sourceUsedNow, sourceOpenNow, sourceOverNow)
+                  : "control unavailable";
                 const reverseAction = row.allocation_family === "main_bank_shipper_ap"
                   ? reverseMainBankShipperAllocationAction
                   : reverseDvaStatementLineAllocationAction;
@@ -240,15 +249,21 @@ export default async function DvaAllocationReviewPage({ searchParams }: { search
                           <p className="text-lg font-semibold text-slate-900">{gbp(statement)}</p>
                           <p className="text-xs text-slate-500">{sourceDate}</p>
                         </div>
-                        <div className="min-w-0 rounded-xl border border-emerald-200 bg-emerald-50 p-3">
-                          <p className="text-[11px] font-bold uppercase tracking-wide text-emerald-700">Source used now</p>
-                          <p className="text-xl font-extrabold text-emerald-900">{gbp(sourceUsedNow)}</p>
+                        <div className={`min-w-0 rounded-xl border p-3 ${hasCanonicalControl ? "border-emerald-200 bg-emerald-50" : "border-slate-200 bg-slate-50"}`}>
+                          <p className={`text-[11px] font-bold uppercase tracking-wide ${hasCanonicalControl ? "text-emerald-700" : "text-slate-500"}`}>Source used now</p>
+                          <p className={`text-xl font-extrabold ${hasCanonicalControl ? "text-emerald-900" : "text-slate-600"}`}>{sourceUsedNow === null ? "Unavailable" : gbp(sourceUsedNow)}</p>
                         </div>
-                        <div className="min-w-0 rounded-xl border border-amber-200 bg-amber-50 p-3">
-                          <p className="text-[11px] font-bold uppercase tracking-wide text-amber-700">Source open now</p>
-                          <p className="text-xl font-extrabold text-amber-900">{gbp(sourceOpenNow)}</p>
+                        <div className={`min-w-0 rounded-xl border p-3 ${hasCanonicalControl ? "border-amber-200 bg-amber-50" : "border-slate-200 bg-slate-50"}`}>
+                          <p className={`text-[11px] font-bold uppercase tracking-wide ${hasCanonicalControl ? "text-amber-700" : "text-slate-500"}`}>Source open now</p>
+                          <p className={`text-xl font-extrabold ${hasCanonicalControl ? "text-amber-900" : "text-slate-600"}`}>{sourceOpenNow === null ? "Unavailable" : gbp(sourceOpenNow)}</p>
                         </div>
                       </div>
+
+                      {!hasCanonicalControl ? (
+                        <div className="mt-3 rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs font-semibold text-rose-700">
+                          Canonical control position unavailable for this statement line. Financial source totals are intentionally not estimated.
+                        </div>
+                      ) : null}
 
                       <div className="mt-3 min-w-0 rounded-xl bg-slate-50 p-3 text-sm text-slate-600">
                         <p className="break-words font-semibold text-slate-900 [overflow-wrap:anywhere]">→ {targetLabel(row)}</p>
