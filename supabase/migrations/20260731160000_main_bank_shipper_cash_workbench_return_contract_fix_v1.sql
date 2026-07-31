@@ -1,0 +1,206 @@
+BEGIN;
+
+-- Forward-only corrective migration for the already-applied shipper cash
+-- workbench restoration. The original helper CTE inherited PostgreSQL column
+-- names `sage_contact_display_name` and `bank_account_id`, while the declared
+-- canonical return contract requires `sage_contact_name` and
+-- `sage_bank_account_id`. No economic logic, filtering, permissions, freeze,
+-- batching, reversal, or Sage-posting behaviour is changed here.
+
+SET LOCAL lock_timeout = '15s';
+SET LOCAL statement_timeout = '0';
+
+DO $guard$
+BEGIN
+  IF to_regprocedure('public.internal_main_bank_shipper_cash_workbench_rows_v1(text,text,text,integer,integer)') IS NULL THEN
+    RAISE EXCEPTION 'Missing public.internal_main_bank_shipper_cash_workbench_rows_v1(text,text,text,integer,integer)';
+  END IF;
+  IF to_regclass('public.main_bank_shipper_ap_allocations') IS NULL THEN RAISE EXCEPTION 'Missing public.main_bank_shipper_ap_allocations'; END IF;
+  IF to_regclass('public.dva_statement_lines') IS NULL THEN RAISE EXCEPTION 'Missing public.dva_statement_lines'; END IF;
+  IF to_regclass('public.shipping_documents') IS NULL THEN RAISE EXCEPTION 'Missing public.shipping_documents'; END IF;
+  IF to_regclass('public.shippers') IS NULL THEN RAISE EXCEPTION 'Missing public.shippers'; END IF;
+  IF to_regclass('public.sage_posting_snapshots') IS NULL THEN RAISE EXCEPTION 'Missing public.sage_posting_snapshots'; END IF;
+  IF to_regclass('public.sage_posting_batch_rows') IS NULL THEN RAISE EXCEPTION 'Missing public.sage_posting_batch_rows'; END IF;
+  IF to_regclass('public.sage_party_mappings') IS NULL THEN RAISE EXCEPTION 'Missing public.sage_party_mappings'; END IF;
+  IF to_regclass('public.sage_mapping_settings') IS NULL THEN RAISE EXCEPTION 'Missing public.sage_mapping_settings'; END IF;
+  IF to_regprocedure('public.internal_has_accounting_admin_access_v1()') IS NULL THEN RAISE EXCEPTION 'Missing public.internal_has_accounting_admin_access_v1()'; END IF;
+END
+$guard$;
+
+CREATE OR REPLACE FUNCTION public.internal_main_bank_shipper_cash_workbench_rows_v1(
+  p_direction text DEFAULT 'all',
+  p_category text DEFAULT 'all',
+  p_search text DEFAULT NULL,
+  p_limit integer DEFAULT 300,
+  p_offset integer DEFAULT 0
+)
+RETURNS TABLE (
+  queue_row_id text,
+  source_type text,
+  source_id uuid,
+  statement_line_id uuid,
+  statement_id uuid,
+  statement_date_text text,
+  direction text,
+  category text,
+  counterparty_type text,
+  counterparty_id uuid,
+  counterparty_name text,
+  order_id uuid,
+  order_ref text,
+  auth_ref text,
+  reference_raw text,
+  amount_local numeric,
+  local_currency text,
+  amount_gbp numeric,
+  matched_target_type text,
+  matched_target_id uuid,
+  matched_target_ref text,
+  sage_contact_id text,
+  sage_contact_name text,
+  sage_bank_account_id text,
+  target_sage_object_id text,
+  posting_status text,
+  blocker text,
+  selectable boolean,
+  detail_json jsonb,
+  total_count bigint
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $function$
+DECLARE
+  v_direction text := lower(COALESCE(NULLIF(trim(p_direction), ''), 'all'));
+  v_category text := lower(COALESCE(NULLIF(trim(p_category), ''), 'all'));
+  v_search text := lower(NULLIF(trim(COALESCE(p_search, '')), ''));
+  v_limit integer := LEAST(GREATEST(COALESCE(p_limit, 300), 1), 300);
+  v_offset integer := GREATEST(COALESCE(p_offset, 0), 0);
+BEGIN
+  IF auth.uid() IS NULL THEN
+    RAISE EXCEPTION 'Unauthenticated user: cash posting workbench requires auth.uid()';
+  END IF;
+  IF NOT public.internal_has_accounting_admin_access_v1() THEN
+    RAISE EXCEPTION 'Accounting admin access required for cash posting workbench.';
+  END IF;
+
+  RETURN QUERY
+  WITH cash_defaults AS (
+    SELECT MAX(sms.sage_external_id) FILTER (
+      WHERE sms.mapping_code = 'DVA_CASH_BANK_ACCOUNT' AND sms.is_active = true
+    ) AS bank_account_id
+    FROM public.sage_mapping_settings sms
+  ), shipper_rows AS (
+    SELECT
+      ('cash:shipper_invoice_payment:' || a.id::text)::text AS queue_row_id,
+      'main_bank_shipper_ap_allocation'::text AS source_type,
+      a.id AS source_id,
+      dsl.id AS statement_line_id,
+      dsl.dva_statement_id AS statement_id,
+      dsl.statement_date::text AS statement_date_text,
+      'out'::text AS direction,
+      'shipper_invoice_payment'::text AS category,
+      'shipper'::text AS counterparty_type,
+      sd.shipper_id AS counterparty_id,
+      COALESCE(sh.name, 'Shipper')::text AS counterparty_name,
+      NULL::uuid AS order_id,
+      sps.order_ref::text AS order_ref,
+      COALESCE(dsl.auth_id_ref, a.id::text)::text AS auth_ref,
+      dsl.reference_raw::text AS reference_raw,
+      dsl.amount_local_ccy::numeric AS amount_local,
+      dsl.local_ccy::text AS local_currency,
+      round(a.allocated_gbp_amount::numeric, 2) AS amount_gbp,
+      'posted_shipper_purchase_invoice'::text AS matched_target_type,
+      sd.id AS matched_target_id,
+      COALESCE(NULLIF(sd.document_ref, ''), NULLIF(sps.reference_text, ''), sd.id::text)::text AS matched_target_ref,
+      pm.sage_contact_id::text AS sage_contact_id,
+      pm.sage_contact_display_name::text AS sage_contact_name,
+      cd.bank_account_id::text AS sage_bank_account_id,
+      COALESCE(NULLIF(a.sage_purchase_invoice_id, ''), NULLIF(sps.sage_invoice_id, ''), NULLIF(posted_batch.sage_object_id, ''))::text AS target_sage_object_id,
+      CASE
+        WHEN NULLIF(trim(COALESCE(cd.bank_account_id, '')), '') IS NULL THEN 'blocked_missing_sage_bank_account'
+        WHEN NULLIF(trim(COALESCE(pm.sage_contact_id, '')), '') IS NULL THEN 'blocked_missing_sage_contact'
+        WHEN NULLIF(trim(COALESCE(a.sage_purchase_invoice_id, sps.sage_invoice_id, posted_batch.sage_object_id, '')), '') IS NULL THEN 'blocked_target_invoice_not_posted'
+        WHEN round(COALESCE(a.allocated_gbp_amount, 0)::numeric, 2) <= 0 THEN 'blocked_invalid_amount'
+        ELSE 'ready_to_freeze'
+      END::text AS posting_status,
+      CASE
+        WHEN NULLIF(trim(COALESCE(cd.bank_account_id, '')), '') IS NULL THEN 'DVA_CASH_BANK_ACCOUNT mapping missing'
+        WHEN NULLIF(trim(COALESCE(pm.sage_contact_id, '')), '') IS NULL THEN 'shipper Sage contact mapping missing'
+        WHEN NULLIF(trim(COALESCE(a.sage_purchase_invoice_id, sps.sage_invoice_id, posted_batch.sage_object_id, '')), '') IS NULL THEN 'matched shipper AP purchase invoice has not been posted to Sage'
+        WHEN round(COALESCE(a.allocated_gbp_amount, 0)::numeric, 2) <= 0 THEN 'cash amount must be positive'
+        ELSE NULL::text
+      END AS blocker,
+      (
+        NULLIF(trim(COALESCE(cd.bank_account_id, '')), '') IS NOT NULL
+        AND NULLIF(trim(COALESCE(pm.sage_contact_id, '')), '') IS NOT NULL
+        AND NULLIF(trim(COALESCE(a.sage_purchase_invoice_id, sps.sage_invoice_id, posted_batch.sage_object_id, '')), '') IS NOT NULL
+        AND round(COALESCE(a.allocated_gbp_amount, 0)::numeric, 2) > 0
+      ) AS selectable,
+      jsonb_build_object(
+        'allocation_id', a.id,
+        'allocation_type', 'shipper_ap_payment',
+        'statement_line_id', dsl.id,
+        'shipping_document_id', sd.id,
+        'shipper_id', sd.shipper_id,
+        'shipper_invoice_ref', COALESCE(NULLIF(sd.document_ref, ''), NULLIF(sps.reference_text, ''), sd.id::text),
+        'posting_category', 'shipper_invoice_payment',
+        'target_sage_object_id', COALESCE(NULLIF(a.sage_purchase_invoice_id, ''), NULLIF(sps.sage_invoice_id, ''), NULLIF(posted_batch.sage_object_id, '')),
+        'short_reference', ('GCB-OUT-' || left(COALESCE(NULLIF(sd.document_ref, ''), NULLIF(sps.reference_text, ''), a.id::text), 18)),
+        'endpoint', 'POST /contact_payments · VENDOR_PAYMENT · allocated_artefacts'
+      ) AS detail_json
+    FROM public.main_bank_shipper_ap_allocations a
+    JOIN public.dva_statement_lines dsl ON dsl.id = a.dva_statement_line_id
+    JOIN public.shipping_documents sd ON sd.id = a.shipping_document_id
+    LEFT JOIN public.shippers sh ON sh.id = sd.shipper_id
+    LEFT JOIN public.sage_posting_snapshots sps ON sps.id = a.sage_posting_snapshot_id
+    LEFT JOIN LATERAL (
+      SELECT br.sage_object_id
+      FROM public.sage_posting_batch_rows br
+      WHERE br.snapshot_id = sps.id
+        AND br.posting_status = 'posted'
+        AND NULLIF(trim(COALESCE(br.sage_object_id, '')), '') IS NOT NULL
+      ORDER BY br.posted_at DESC NULLS LAST, br.created_at DESC
+      LIMIT 1
+    ) posted_batch ON true
+    CROSS JOIN cash_defaults cd
+    LEFT JOIN LATERAL (
+      SELECT spm.sage_contact_id, spm.sage_contact_display_name
+      FROM public.sage_party_mappings spm
+      WHERE spm.platform_party_type = 'shipper'
+        AND spm.platform_party_id = sd.shipper_id
+        AND spm.active = true
+      ORDER BY spm.verified_at DESC NULLS LAST, spm.updated_at DESC NULLS LAST
+      LIMIT 1
+    ) pm ON true
+    WHERE a.allocation_status = 'confirmed'
+  ), filtered AS (
+    SELECT sr.*
+    FROM shipper_rows sr
+    WHERE (v_direction = 'all' OR lower(sr.direction) = v_direction)
+      AND (v_category = 'all' OR lower(sr.category) = v_category)
+      AND (
+        v_search IS NULL
+        OR lower(concat_ws(' ', sr.counterparty_name, sr.order_ref, sr.auth_ref, sr.reference_raw, sr.matched_target_ref, sr.category, sr.blocker)) LIKE '%' || v_search || '%'
+      )
+  )
+  SELECT
+    f.queue_row_id, f.source_type, f.source_id, f.statement_line_id, f.statement_id,
+    f.statement_date_text, f.direction, f.category, f.counterparty_type, f.counterparty_id,
+    f.counterparty_name, f.order_id, f.order_ref, f.auth_ref, f.reference_raw,
+    f.amount_local, f.local_currency, f.amount_gbp, f.matched_target_type,
+    f.matched_target_id, f.matched_target_ref, f.sage_contact_id, f.sage_contact_name,
+    f.sage_bank_account_id, f.target_sage_object_id, f.posting_status, f.blocker,
+    f.selectable, f.detail_json, count(*) over() AS total_count
+  FROM filtered f
+  ORDER BY f.statement_date_text DESC NULLS LAST, f.category, f.counterparty_name, f.queue_row_id
+  LIMIT v_limit OFFSET v_offset;
+END;
+$function$;
+
+COMMENT ON FUNCTION public.internal_main_bank_shipper_cash_workbench_rows_v1(text,text,text,integer,integer) IS
+'Private preservation helper restoring the historical confirmed main-bank shipper AP row family. Return-column aliases are explicit to the canonical cash-workbench contract.';
+
+NOTIFY pgrst, 'reload schema';
+
+COMMIT;
