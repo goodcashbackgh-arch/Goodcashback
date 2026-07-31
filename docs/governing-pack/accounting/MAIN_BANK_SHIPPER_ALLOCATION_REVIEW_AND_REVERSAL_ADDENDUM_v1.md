@@ -1183,3 +1183,22 @@ This is a UI/navigation rule only. It must not change either reversal RPC, datab
 The shared Allocation Review page may select the return path from the authoritative `allocation_family` discriminator already used to select the reversal action. It must not use one shared `reviewPath` for both families.
 
 This section supersedes the implementation's current shared post-reversal return destination. The preservation requirement is explicit: existing DVA post-reversal navigation is restored, while the new main-bank shipper reversal returns the operator to the specialist main-bank matching workbench where the released amount can be reallocated.
+
+### 18.11 Combined-PR scope supersession
+
+The five-file constraint in section 18.7 item 5 applies to the reversal build itself, not to unrelated work that is separately governed by another locked addendum.
+
+PR #211 also contains the separately governed `MAIN_BANK_SHIPPER_CASH_WORKBENCH_RESTORATION_ADDENDUM_v1` restoration build and its required migration/regression files. Their presence in the same PR does not expand the reversal build's write domains and does not authorize either build to modify the other's protected behavior.
+
+For final scope review, evaluate the two governed change sets independently:
+
+```text
+Reversal build
+  -> only the reversal addendum's approved UI/action/migration/regression surface
+
+Restoration build
+  -> only the restoration addendum's approved workbench-preservation migration,
+     forward-only return-contract correction, and restoration regression surface
+```
+
+This section supersedes the literal PR-wide reading of “only the intended five files” in section 18.7. The preservation rule remains: no cross-scope DVA reversal change, loyalty write, Sage mutation, generic reversal command, second review page, freeze/batch rewrite, or unrelated database object is authorized.
