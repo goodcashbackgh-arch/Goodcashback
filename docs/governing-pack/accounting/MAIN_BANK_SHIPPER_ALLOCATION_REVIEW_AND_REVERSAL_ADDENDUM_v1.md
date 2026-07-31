@@ -910,3 +910,67 @@ Do not permit cash freeze to create a new active shipper-payment snapshot from a
 Do not calculate main-bank shipper availability from shipper allocations alone.
 
 This design preserves current economic boundaries while closing the review, reversal, concurrency and amount-availability gaps with the smallest controlled blast radius.
+
+## 17. Migration diagnostics and concurrency sign-off
+
+The migration is not production-ready merely because its SQL compiles. It must fail early with explicit prerequisite diagnostics and the freeze/reversal invariant must be exercised in the target PostgreSQL environment.
+
+### 17.1 Required migration prerequisite checks
+
+Before creating/replacing any review, allocation, reversal or cash-freeze object, the migration must explicitly verify every relation/function it directly depends on. At minimum this includes:
+
+```text
+public.main_bank_shipper_ap_allocations
+public.dva_statement_line_allocations
+public.dva_statement_line_allocation_detail_vw
+public.statement_line_control_position_v1
+public.cash_posting_snapshots
+public.shipping_documents
+public.dva_statement_lines
+public.dva_statements
+public.shippers
+public.internal_has_accounting_admin_access_v1()
+public.internal_shipper_ap_posted_targets_for_main_bank_v1(text,text,integer,integer)
+```
+
+A missing prerequisite must raise a specific exception naming the missing object before any migration mutation occurs.
+
+### 17.2 Explicit two-session freeze/reversal regression
+
+The regression pack must contain executable two-session instructions using one eligible, unfrozen, confirmed test allocation. It must test both lock orderings under the target environment's normal transaction isolation level.
+
+Ordering A — reversal wins:
+
+```text
+Session A: begin, lock/reverse the allocation, pause before commit.
+Session B: attempt governed cash freeze for the same allocation and demonstrate that it waits.
+Session A: commit reversed.
+Session B: resume and fail because the source allocation is no longer confirmed.
+Final assertion: reversed allocation exists and no new active shipper-payment snapshot exists.
+```
+
+Ordering B — freeze wins:
+
+```text
+Session A: begin governed freeze and hold the source-allocation lock before commit.
+Session B: attempt reversal and demonstrate that it waits.
+Session A: commit active snapshot.
+Session B: resume and fail because an active cash-posting snapshot now exists.
+Final assertion: allocation remains confirmed and the active shipper-payment snapshot exists.
+```
+
+The regression pack must also record the transaction isolation level used during the test. If the production execution path is changed away from the normal `READ COMMITTED` behavior, this concurrency contract must be re-reviewed rather than assumed.
+
+### 17.3 Final PR sign-off gate
+
+After prerequisite diagnostics and regression SQL are updated, perform one final full-PR review. Sign-off requires all of the following:
+
+- no new database objects or write domains outside this addendum's scope;
+- no change to the existing DVA reversal RPC;
+- no loyalty write-path mutation;
+- no Sage mutation from Allocation Review/reversal;
+- no broad cash-posting behavior change outside the narrowly conditioned shipper snapshot guard;
+- review access remains staff-gated;
+- allocator availability remains canonical and cross-family;
+- freeze/reversal concurrency tests are explicit and runnable;
+- the PR remains draft until target-database migration and concurrency validation have been completed.
