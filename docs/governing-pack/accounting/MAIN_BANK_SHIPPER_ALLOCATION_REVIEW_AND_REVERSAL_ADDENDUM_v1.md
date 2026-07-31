@@ -1141,3 +1141,23 @@ D. Add canonical-control admin/supervisor access verification and align governin
 ```
 
 No additional database object or permission expansion is approved by this closure. Any further architectural change requires new evidence from target-environment validation rather than another speculative defensive addition.
+
+### 18.9 Final necessary correction: explicit active staff for shipper reversal
+
+Final migration review found one remaining implementation mismatch with the already-locked role boundary. `staff_reverse_main_bank_shipper_ap_allocation_v1(uuid,text)` must require an explicitly active staff row:
+
+```sql
+s.active = true
+```
+
+It must not use a null-tolerant predicate such as:
+
+```sql
+COALESCE(s.active, true) = true
+```
+
+because that expression can treat an indeterminate/null activity state as active and is weaker than the governing requirement in sections 6.1 and 18.1.
+
+This is the only additional static correction approved at this stage. The implementation change is one predicate replacement inside the dedicated shipper reversal RPC. It does not alter role eligibility, locking, allocation/freeze permissions, DVA reversal, loyalty, Sage, cash-posting behavior, read models, or any other write domain.
+
+After that one correction, perform a final migration/PR scope review and move to target-database validation. Do not add further defensive architecture without failed runtime evidence.
