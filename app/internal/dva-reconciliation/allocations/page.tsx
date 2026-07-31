@@ -118,17 +118,13 @@ export default async function DvaAllocationReviewPage({ searchParams }: { search
   const reviewPath = `/internal/dva-reconciliation/allocations?${reviewParams.toString()}`;
   const supabase = await createClient();
 
-  let query = supabase
-    .from("statement_line_matching_review_v1")
-    .select("allocation_family, allocation_id, importer_id, dva_statement_line_id, transaction_date, statement_date, statement_description, statement_reference, statement_direction, statement_gbp_amount, allocation_type, allocation_status, supplier_invoice_ref, dispute_id, order_ref, allocated_gbp_amount, notes, created_at, shipping_document_id, shipper_invoice_ref, shipper_id, shipper_name, sage_purchase_invoice_id")
-    .eq("allocation_status", status)
-    .order("created_at", { ascending: false })
-    .limit(200);
+  const { data, error } = await supabase.rpc("internal_statement_line_matching_review_v1", {
+    p_status: status,
+    p_family: family,
+    p_importer_id: importerId || null,
+    p_limit: 200,
+  });
 
-  if (importerId) query = query.eq("importer_id", importerId);
-  if (family !== "all") query = query.eq("allocation_family", family);
-
-  const { data, error } = await query;
   const rows = (data ?? []) as AllocationDetailRow[];
   const lineIds = [...new Set(rows.map((row) => row.dva_statement_line_id).filter(Boolean))];
 
@@ -150,7 +146,7 @@ export default async function DvaAllocationReviewPage({ searchParams }: { search
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.25em] text-sky-600">Payment statement matching</p>
-            <h1 className="mt-2 text-2xl font-bold tracking-tight">Active matching records</h1>
+            <h1 className="mt-2 text-2xl font-bold tracking-tight">Matching records</h1>
             <p className="mt-1 max-w-3xl text-sm text-slate-600">
               One card = one matching record across DVA allocations and main-bank shipper AP. Source used/open comes from the amount-aware statement control position.
             </p>
