@@ -13,15 +13,17 @@ The current system can create and consume `main_bank_shipper_ap_allocations`, an
 - the existing Allocation Review page is driven by the legacy DVA allocation detail/status views and therefore does not present main-bank shipper AP allocations as reviewable matching records;
 - there is no dedicated main-bank shipper allocation reversal action equivalent to the existing DVA allocation reversal path;
 - the current main-bank shipper allocation RPC calculates remaining statement amount using only confirmed shipper allocations, while other live main-bank controls also subtract residual/FX/fee/hold and completion-loyalty consumption;
-- once a shipper allocation has been frozen into `cash_posting_snapshots`, reversing the source match without first resolving the frozen accounting artefact would break the accounting chain.
+- once a shipper allocation has been frozen into `cash_posting_snapshots`, reversing the source match without first resolving the frozen accounting artefact would break the accounting chain;
+- a reversal-side `NOT EXISTS` check alone is not a sufficient concurrency boundary: cash freeze and reversal must serialize on the same shipper allocation row so a snapshot cannot be created from a row that is concurrently being reversed.
 
 This addendum defines one coordinated, additive solution:
 
 1. extend the existing Allocation Review surface to include main-bank shipper AP allocations;
 2. add a dedicated guarded shipper-allocation reversal RPC and server action;
 3. block reversal once an active cash-posting snapshot exists for that allocation;
-4. correct the shipper allocation RPC so statement availability is calculated across all active main-bank consumption families;
-5. preserve every existing DVA, loyalty, Sage, cash-posting and statement-control contract.
+4. enforce a database-level freeze/reversal concurrency invariant by locking and revalidating the source shipper allocation before an active shipper-payment cash snapshot may be inserted;
+5. correct the shipper allocation RPC so statement availability is calculated across all active main-bank consumption families;
+6. preserve every existing DVA, loyalty, Sage, cash-posting and statement-control contract.
 
 The goal is one coherent review experience without merging economically distinct write paths.
 
@@ -43,6 +45,8 @@ It does not replace:
 Where a previous implementation assumes that a main-bank shipper allocation can be reviewed only in the main-bank matching workspace, this addendum controls: confirmed and historical shipper allocations must be visible in the unified allocation-review surface.
 
 Where a previous implementation assumes that the remaining amount on a main-bank statement line is statement amount minus shipper allocations only, this addendum controls: all active economic consumption on the main-bank line must be respected.
+
+Where a previous implementation assumes that checking `cash_posting_snapshots` immediately before reversal is sufficient, this addendum controls: freeze and reversal must also share a row-level serialization boundary on `main_bank_shipper_ap_allocations`.
 
 ## 3. Confirmed evidence
 
@@ -150,7 +154,7 @@ validation_status validated
 
 Subsequent batching and Sage posting operate from the frozen snapshot.
 
-Therefore an active cash-posting snapshot is the correct boundary: once such a snapshot exists, the allocation cannot be reversed from Allocation Review. The accounting artefact must first be resolved through its governed cash-posting/accounting path.
+Therefore an active cash-posting snapshot is the correct irreversible boundary: once such a snapshot exists, the allocation cannot be reversed from Allocation Review. The accounting artefact must first be resolved through its governed cash-posting/accounting path.
 
 ### 3.6 Existing main-bank allocation inconsistency
 
@@ -178,6 +182,36 @@ The main-bank workspace itself also uses all of those families to determine `rem
 
 This inconsistency must be corrected in the same release as reversal so that a reversed amount cannot later be reallocated using a narrower, stale definition of statement availability.
 
+### 3.7 Freeze/reversal concurrency defect
+
+The live freeze flow reads the cash-posting workbench and inserts a snapshot, while the new reversal flow locks and updates `main_bank_shipper_ap_allocations`.
+
+If reversal only checks `NOT EXISTS (active cash snapshot)` without making the freeze path participate in the same source-allocation lock, this race is possible:
+
+```text
+freeze transaction                  reversal transaction
+------------------                  --------------------
+reads allocation as confirmed
+                                    locks allocation
+                                    sees no active snapshot
+                                    marks allocation reversed
+inserts active cash snapshot
+```
+
+The resulting state is invalid:
+
+```text
+source shipper allocation = reversed
+active cash snapshot       = frozen/validated
+```
+
+Therefore the safety contract is two-sided:
+
+- reversal must lock the shipper allocation and reject an existing active shipper-payment snapshot;
+- creation of an active shipper-payment cash snapshot must lock that same shipper allocation and re-check that it is still `confirmed` before the snapshot is accepted.
+
+This must be enforced at the database boundary, not only in the page or server action.
+
 ## 4. Locked target operating model
 
 ```text
@@ -198,23 +232,20 @@ This inconsistency must be corrected in the same release as reversal so that a r
                            |
                     current used/open
 
-Main-bank shipper reversal only:
+Main-bank shipper freeze/reversal invariant:
 
-confirmed allocation
-      |
-      v
-active cash-posting snapshot exists?
-      |
-  +---+---+
-  |       |
- yes      no
-  |       |
-BLOCK     reverse to historical
-          |
-          v
-statement amount released
-shipper target amount released
-no Sage mutation
+                confirmed shipper allocation
+                         |
+                 source-row lock
+                    /          \
+                   /            \
+              CASH FREEZE      REVERSAL
+                  |                |
+        re-check confirmed   check no active snapshot
+                  |                |
+          insert snapshot    confirmed -> reversed
+                  |                |
+                  +------ mutually serialized ------+
 ```
 
 ## 5. Unified Allocation Review
@@ -283,6 +314,8 @@ sage_purchase_invoice_id
 ```
 
 The review UI must not infer the storage family from `allocation_type` or from UUID lookup order. The family discriminator is authoritative.
+
+The review read model must also follow the repository's staff-safe access pattern. If implemented as a `security_invoker` view, deployment evidence must prove that authenticated active staff can select every required underlying relation through existing grants/RLS and that non-staff access is not widened. If that cannot be proven, use a staff-guarded read RPC instead.
 
 ### 5.3 Source used/open totals
 
@@ -372,7 +405,7 @@ then family-specific allocation/target lock as required
 
 The exact SQL may first perform an unlocked lookup to obtain the statement-line ID, but the mutation must occur only after the deterministic lock set is held.
 
-### 6.3 Frozen accounting guard
+### 6.3 Frozen accounting guard and serialization
 
 Before reversal, the RPC must reject the operation if the source allocation has any active frozen cash-posting snapshot:
 
@@ -389,7 +422,11 @@ exists (
 
 This guard intentionally blocks all active snapshot states, including frozen/validated, batched, posting-failed, posted and posted-needs-review descendants.
 
-The reversal RPC must not attempt to deactivate, rewrite or reverse those accounting artefacts.
+In addition, the database must reject creation of an active `shipper_invoice_payment` snapshot for `source_type = 'main_bank_shipper_ap_allocation'` unless the referenced `main_bank_shipper_ap_allocations` row is locked and is still `confirmed` at snapshot-insert time.
+
+The invariant must be enforced for every database insertion route, not only the current UI freeze RPC. A narrow `BEFORE INSERT`/relevant-update trigger on `cash_posting_snapshots`, or an equivalently comprehensive database constraint mechanism, is acceptable.
+
+The reversal RPC must not attempt to deactivate, rewrite or reverse accounting artefacts.
 
 Required user-facing error meaning:
 
@@ -581,6 +618,8 @@ The reversal action must not alter:
 
 If an active cash-posting snapshot exists, the reversal is blocked instead.
 
+The freeze-side concurrency guard is validation only: it may lock/read the source allocation and reject invalid snapshot creation, but it must not mutate the source allocation.
+
 ### 9.3 Expected automatic read-model effects after an allowed reversal
 
 Because existing read models count only confirmed shipper allocations, an allowed reversal should automatically cause:
@@ -667,6 +706,15 @@ No source allocation status is changed.
 
 The operator must resolve the frozen/posting/accounting artefact through the existing cash-posting/accounting workflow first.
 
+### 10.4 Concurrent freeze versus reversal
+
+If freeze and reversal start at the same time for one shipper allocation, exactly one may cross the boundary first:
+
+- if freeze obtains the source-allocation lock first and confirms the row is still `confirmed`, it may insert the active snapshot; reversal then sees that active snapshot and must fail;
+- if reversal obtains the source-allocation lock first and commits `reversed`, freeze then re-checks the source row and must fail without creating a snapshot.
+
+The final database state must never contain both a reversed source allocation and a newly active shipper-payment snapshot created from that reversal race.
+
 ## 11. Database privileges
 
 For the new reversal RPC:
@@ -682,6 +730,8 @@ No direct UPDATE/INSERT/DELETE RLS policy should be added to allow browser write
 
 Existing staff SELECT behavior may remain.
 
+The unified review read model must not widen raw table visibility. Deployment tests must prove its authenticated staff access path and verify that unauthorised callers do not gain broader access through the new object.
+
 ## 12. Required regression tests
 
 Implementation is incomplete without regression coverage for all of the following.
@@ -692,7 +742,8 @@ Implementation is incomplete without regression coverage for all of the followin
 - confirmed main-bank shipper allocation appears once;
 - a statement line containing both a shipper and FX allocation presents two distinct cards;
 - each card shows the same canonical current source used/open totals;
-- family filter does not change totals.
+- family filter does not change totals;
+- the chosen view/RPC access pattern works for authenticated active staff without widening access for non-staff callers.
 
 ### 12.2 Allowed reversal
 
@@ -748,7 +799,18 @@ For `staff_allocate_main_bank_line_to_shipper_ap_v1(...)`:
 - a proposed allocation above true cross-family remaining amount is rejected;
 - target-side remaining validation remains enforced.
 
-### 12.6 Downstream non-impact
+### 12.6 Freeze/reversal serialization
+
+Regression must prove the database invariant, not just the UI flow:
+
+- creating an active shipper-payment cash snapshot for a `reversed` main-bank shipper allocation is rejected;
+- creating one for a missing shipper allocation is rejected;
+- creating one for a `confirmed` shipper allocation remains allowed through the governed freeze path;
+- the freeze-side validation takes a row lock on the referenced shipper allocation;
+- reversal still blocks when an active snapshot already exists;
+- a concurrency test or transactional harness demonstrates that simultaneous freeze/reversal cannot commit the invalid combination `reversed allocation + newly active snapshot`.
+
+### 12.7 Downstream non-impact
 
 For an allowed reversal, prove unchanged:
 
@@ -767,16 +829,17 @@ Use this order:
 
 1. add regression tests and live-read verification queries;
 2. correct main-bank shipper allocation cross-family availability;
-3. add dedicated reversal RPC and privileges;
-4. add unified review read model;
-5. add server action and UI routing by allocation family;
-6. switch review used/open figures to amount-aware statement position;
-7. run regression tests against mixed-consumption examples;
-8. verify frozen-snapshot blocker using a non-production test/frozen row;
-9. deploy UI after database functions/read models are live;
-10. perform post-deploy smoke checks on main-bank workspace, Allocation Review, control summary and cash-posting workbench.
+3. add the database freeze/source-allocation serialization guard;
+4. add dedicated reversal RPC and privileges;
+5. add unified review read model and prove its staff-safe privilege/RLS path;
+6. add server action and UI routing by allocation family;
+7. switch review used/open figures to amount-aware statement position;
+8. run regression tests against mixed-consumption examples;
+9. verify frozen-snapshot blocker and freeze/reversal race in a non-production transactional test;
+10. deploy UI after database functions/read models/invariants are live;
+11. perform post-deploy smoke checks on main-bank workspace, Allocation Review, control summary and cash-posting workbench.
 
-The reversal UI must not be deployed before the guarded RPC exists.
+The reversal UI must not be deployed before both the guarded reversal RPC and the freeze-side serialization invariant exist.
 
 ## 14. Rollback strategy
 
@@ -792,6 +855,8 @@ If reversal-function issues occur before any use:
 - revoke execute on the new RPC;
 - remove/disable its UI action.
 
+If the freeze-side guard causes an unexpected compatibility problem, disable the new reversal action at the UI/RPC privilege boundary before altering the guard. Do not restore a state where reversal is enabled while freeze and reversal can race unsafely.
+
 Do not roll back by deleting historical reversed allocation rows.
 
 The main-bank cross-family availability correction should not be rolled back to shipper-only arithmetic unless a separately proven defect requires it; shipper-only arithmetic is inconsistent with the amount-aware main-bank control contract.
@@ -803,10 +868,13 @@ This addendum is complete only when all of the following are true:
 - main-bank shipper allocations are visible in the existing Allocation Review page;
 - DVA and shipper allocation families remain distinct write domains;
 - review cards use canonical amount-aware source used/open figures;
+- the review read path is proven staff-safe and does not widen underlying data access;
 - main-bank shipper allocation availability respects all active main-bank economic families;
 - an unfrozen confirmed shipper allocation can be surgically reversed by an admin/supervisor with a mandatory reason;
 - the reversal is historical, not destructive;
 - an allocation with any active cash-posting snapshot cannot be reversed from Allocation Review;
+- an active shipper-payment cash snapshot cannot be created unless the source shipper allocation is locked and still `confirmed`;
+- simultaneous freeze/reversal cannot commit a reversed allocation plus a newly active snapshot;
 - reversal does not alter Sage or cash-posting artefacts;
 - statement and target positions reopen automatically through existing confirmed-only read logic;
 - mixed shipper + residual/FX/fee/hold/loyalty cases pass regression tests;
@@ -821,8 +889,10 @@ The approved pattern is:
 one unified Allocation Review page
 + separate family-specific reversal commands
 + active cash-snapshot reversal blocker
++ database-level freeze/reversal serialization on the shipper allocation row
 + canonical amount-aware source totals
 + corrected cross-family shipper allocation availability
++ proven staff-safe review read access
 ```
 
 Do not create a second review page.
@@ -835,6 +905,8 @@ Do not reverse or mutate Sage from the matching-review action.
 
 Do not reverse a shipper allocation after it has entered the active cash-posting snapshot lifecycle.
 
+Do not permit cash freeze to create a new active shipper-payment snapshot from a source allocation that is no longer confirmed.
+
 Do not calculate main-bank shipper availability from shipper allocations alone.
 
-This design preserves current economic boundaries while closing the review, reversal and amount-availability gaps with the smallest controlled blast radius.
+This design preserves current economic boundaries while closing the review, reversal, concurrency and amount-availability gaps with the smallest controlled blast radius.
