@@ -137,6 +137,20 @@ The comparison must cover the full returned row contract, including source/categ
 
 This equivalence is a deployment requirement, not merely a documentation preference.
 
+### 6.3 Search-semantics preservation
+
+The restored shipper helper must preserve the original May 2026 shipper search surface. Search matching is limited to the same business-facing fields used by the historical workbench row family:
+
+- counterparty name;
+- order reference;
+- auth reference;
+- raw statement reference;
+- matched target reference;
+- category;
+- blocker.
+
+Internal implementation identifiers such as `source_type` must not be added to the search predicate. A restoration must not create new user-visible search matches that did not exist in the original shipper cash-workbench contract.
+
 ## 7. Freeze/posting contract
 
 Do not modify the existing freeze RPC merely to support this restoration. It already recognises `shipper_invoice_payment` and uses the row's canonical fields.
@@ -185,7 +199,8 @@ Before deployment approval, regression evidence must prove at minimum:
 12. target Sage purchase-invoice ids are populated;
 13. a rollback-only authenticated freeze test creates the expected source/category/idempotency/payload shape;
 14. the existing freeze/reversal database invariant still rejects reversed-source freeze and frozen-source reversal;
-15. no migration automatically inserts, updates, deactivates, batches, or posts cash snapshots for the backlog.
+15. no migration automatically inserts, updates, deactivates, batches, or posts cash snapshots for the backlog;
+16. the shipper helper search predicate matches the historical business-facing field list and does not include `source_type` or another new internal identifier.
 
 Any non-zero non-shipper equivalence difference is a deployment blocker and must not be waived as part of this restoration.
 
