@@ -8,9 +8,9 @@ Date: 31 July 2026
 
 This addendum restores an existing main-bank shipper AP cash-posting row family that was present in the cash-posting workbench on 24 May 2026 and was later omitted by a full replacement of the workbench read-model function.
 
-This is a preservation correction. It does not create a new cash-posting architecture and must not replace, roll back, or rewrite any currently working cash-posting, retailer-refund, DVA, loyalty, Sage-posting, allocation-review, allocation-reversal, batching, statement-control, or accounting-control implementation.
+This is a preservation correction. It does not create a new cash-posting architecture and must not roll back or reconstruct any currently working cash-posting, retailer-refund, DVA, loyalty, Sage-posting, allocation-review, allocation-reversal, batching, statement-control, or accounting-control implementation.
 
-The required outcome is that confirmed, unfrozen `main_bank_shipper_ap_allocations` once again appear in the canonical cash-posting workbench as `shipper_invoice_payment` rows and continue through the already-existing freeze/batch/posting path.
+The required outcome is that confirmed `main_bank_shipper_ap_allocations` once again appear in the canonical cash-posting workbench as `shipper_invoice_payment` rows and continue through the already-existing freeze/batch/posting path.
 
 ## 2. Confirmed live evidence
 
@@ -22,7 +22,7 @@ Live database evidence on 31 July 2026 confirms:
 - historical idempotency contract: `cash:shipper_invoice_payment:main_bank_shipper_ap_allocation:<allocation_uuid>`;
 - counterparty type: `shipper`;
 - active Sage bank mapping code: `DVA_CASH_BANK_ACCOUNT`;
-- the mapping resolves dynamically to Sage bank account `1d21e52bed0a4fedb1b1dc21044b7d07` in the current database;
+- the mapping currently resolves through `sage_mapping_settings` to Sage bank account `1d21e52bed0a4fedb1b1dc21044b7d07`;
 - the historical successful shipper snapshot reached `sage_posting_status = posted`;
 - five confirmed shipper allocations are currently unfrozen, totalling GBP 102.00;
 - each of those five rows has an active shipper-to-Sage contact mapping and a concrete Sage purchase-invoice id.
@@ -35,8 +35,9 @@ Therefore the missing component is the read-model row producer, not the freeze, 
 
 The repair must be forward-only and preservation-first.
 
-The following existing working objects must not be replaced or modified by this correction unless a later explicit decision authorises it:
+The following working implementations must remain unchanged in behaviour:
 
+- the current canonical `internal_cash_posting_workbench_rows_v1(...)` implementation, including its retailer-refund readiness behaviour;
 - `internal_cash_posting_workbench_rows_pre_refund_readiness_v1(...)`;
 - `internal_freeze_cash_posting_rows_v2(...)`;
 - `internal_create_cash_batch_v2(...)`;
@@ -48,6 +49,8 @@ The following existing working objects must not be replaced or modified by this 
 - the already-applied main-bank shipper allocation review/reversal migration.
 
 The May 2026 workbench implementation must not be replayed wholesale because subsequent workbench families and controls have been added since then.
+
+To preserve the current canonical implementation rather than re-copying it, the restoration may rename that exact function to a private `pre_shipper_restoration` name inside the same transaction and place a new canonical composition wrapper at the original name. The preserved function must remain the source of every pre-existing workbench row and every pre-existing retailer-refund readiness decision.
 
 ## 4. Required restored row contract
 
@@ -95,18 +98,23 @@ The restoration must not weaken or duplicate either control.
 
 ## 6. Integration seam
 
-Preserve the current private pre-refund workbench implementation unchanged.
+Preserve the current canonical cash-workbench implementation itself rather than rebuilding its internals.
 
-Add one new private shipper-row producer function with the same row contract as the canonical workbench.
+Add one private shipper-row producer function with the same row contract as the canonical workbench.
 
-The canonical outer `internal_cash_posting_workbench_rows_v1(...)` is the only integration seam that may need a forward replacement: its existing retailer-refund readiness transformation, status semantics, ordering and pagination must be preserved byte-for-byte in behaviour, while its input set becomes the union of:
+Inside one migration transaction:
 
-1. the existing private pre-refund rows; and
-2. the dedicated restored shipper rows.
+1. rename the exact current `internal_cash_posting_workbench_rows_v1(...)` implementation to `internal_cash_posting_workbench_rows_pre_shipper_restoration_v1(...)` if that preserved name does not already exist;
+2. keep the preserved implementation private;
+3. create a new function at the canonical `internal_cash_posting_workbench_rows_v1(...)` name;
+4. obtain every pre-existing row from the preserved implementation;
+5. obtain only shipper rows from the dedicated helper;
+6. union the two sets with a defensive de-duplication guard for the shipper source/category/id tuple;
+7. apply the same canonical status semantics, ordering and pagination to the combined set.
 
-Direction/category/search filtering for shipper rows must be applied before the outer 300-row cap so that a request such as category `shipper_invoice_payment` cannot lose valid rows because unrelated workbench rows filled the cap first.
+Direction/category/search filters must be passed into both row sources before their internal 300-row caps. In particular, a request for `shipper_invoice_payment` must not lose valid shipper rows because unrelated workbench rows filled a cap first.
 
-No existing row family may be re-derived or copied into the new helper.
+No existing non-shipper row family may be re-derived or copied into the new helper.
 
 ## 7. Freeze/posting contract
 
@@ -142,20 +150,21 @@ After restoration they should become ordinary visible/selectable workbench candi
 
 Before deployment approval, regression evidence must prove at minimum:
 
-1. current non-shipper workbench rows are unchanged;
-2. retailer-refund readiness behaviour is unchanged;
-3. confirmed shipper allocations appear with the historical source/category/queue-row contract;
-4. the current five confirmed/unfrozen allocations are visible when queried by shipper category;
-5. reversed shipper allocations are absent;
-6. shipper Sage contact mapping resolves dynamically;
-7. `DVA_CASH_BANK_ACCOUNT` resolves dynamically and no Sage bank UUID is hardcoded in the restoration;
-8. target Sage purchase-invoice ids are populated;
-9. a rollback-only authenticated freeze test creates the expected source/category/idempotency/payload shape;
-10. the existing freeze/reversal database invariant still rejects reversed-source freeze and frozen-source reversal;
-11. no migration automatically inserts, updates, deactivates, batches, or posts cash snapshots for the backlog.
+1. the preserved canonical function still exists and remains private;
+2. current non-shipper workbench rows come from that preserved function rather than being re-derived;
+3. retailer-refund readiness behaviour is unchanged because the preserved implementation remains authoritative;
+4. confirmed shipper allocations appear with the historical source/category/queue-row contract;
+5. the current confirmed/unfrozen shipper allocations are visible when queried by shipper category;
+6. reversed shipper allocations are absent;
+7. shipper Sage contact mapping resolves dynamically;
+8. `DVA_CASH_BANK_ACCOUNT` resolves dynamically and no Sage bank UUID is hardcoded in the restoration migration;
+9. target Sage purchase-invoice ids are populated;
+10. a rollback-only authenticated freeze test creates the expected source/category/idempotency/payload shape;
+11. the existing freeze/reversal database invariant still rejects reversed-source freeze and frozen-source reversal;
+12. no migration automatically inserts, updates, deactivates, batches, or posts cash snapshots for the backlog.
 
 ## 10. Scope boundary
 
 This correction is complete when the existing shipper cash-posting lane is restored through the current canonical cash-workbench contract without changing any other economic row family or posting architecture.
 
-Any proposal to alter the current private pre-refund function, freeze RPC, batch RPC, Sage poster, mapping-code model, existing applied reversal migration, or UI behaviour beyond consuming the restored canonical rows requires a separate explicit decision.
+Any proposal to alter the preserved canonical implementation, private pre-refund function, freeze RPC, batch RPC, Sage poster, mapping-code model, existing applied reversal migration, or UI behaviour beyond consuming the restored canonical rows requires a separate explicit decision.
