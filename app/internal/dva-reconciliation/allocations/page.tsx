@@ -111,11 +111,7 @@ export default async function DvaAllocationReviewPage({ searchParams }: { search
   const requestedFamily = params.family || "all";
   const family = ["all", "dva_allocation", "main_bank_shipper_ap"].includes(requestedFamily) ? requestedFamily : "all";
   const workspacePath = `/internal/dva-reconciliation/workspace${importerId ? `?importer_id=${encodeURIComponent(importerId)}` : ""}`;
-  const reviewParams = new URLSearchParams();
-  reviewParams.set("status", status);
-  if (importerId) reviewParams.set("importer_id", importerId);
-  if (family !== "all") reviewParams.set("family", family);
-  const reviewPath = `/internal/dva-reconciliation/allocations?${reviewParams.toString()}`;
+  const mainBankWorkspacePath = "/internal/dva-reconciliation/main-bank";
   const supabase = await createClient();
 
   const { data, error } = await supabase.rpc("internal_statement_line_matching_review_v1", {
@@ -233,6 +229,9 @@ export default async function DvaAllocationReviewPage({ searchParams }: { search
                 const reverseAction = row.allocation_family === "main_bank_shipper_ap"
                   ? reverseMainBankShipperAllocationAction
                   : reverseDvaStatementLineAllocationAction;
+                const reversalReturnPath = row.allocation_family === "main_bank_shipper_ap"
+                  ? mainBankWorkspacePath
+                  : workspacePath;
 
                 return (
                   <article key={`${row.allocation_family}:${row.allocation_id}`} className="grid min-w-0 gap-3 p-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
@@ -291,7 +290,7 @@ export default async function DvaAllocationReviewPage({ searchParams }: { search
                           <p className="text-xs text-slate-500">Blocked automatically if this match has already been frozen into cash posting.</p>
                         ) : null}
                         <input type="hidden" name="allocation_id" value={row.allocation_id} />
-                        <input type="hidden" name="return_path" value={reviewPath} />
+                        <input type="hidden" name="return_path" value={reversalReturnPath} />
                         <input name="reversal_reason" placeholder="Reason" className="min-w-0 rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-900" minLength={8} required />
                         <button className="whitespace-normal break-words rounded-xl bg-rose-600 px-3 py-2 text-sm font-semibold text-white hover:bg-rose-700 [overflow-wrap:anywhere]" type="submit">Reverse this match only</button>
                       </form>
