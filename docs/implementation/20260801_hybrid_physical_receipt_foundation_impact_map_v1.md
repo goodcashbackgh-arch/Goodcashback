@@ -41,6 +41,7 @@ Validation files:
 ```text
 docs/testing/20260801_hybrid_physical_receipt_foundation_source_regression_v1.mjs
 docs/testing/20260801_hybrid_physical_receipt_foundation_regression_v1.sql
+docs/testing/20260801_hybrid_physical_receipt_terminal_immutability_regression_v1.sql
 ```
 
 These files form one foundation build. They are not separate business rollouts and do not introduce a feature flag.
@@ -119,6 +120,8 @@ Stores the physical triage bridge only:
 - existing dispute link where the case enters the existing retailer route;
 - controlled supersession by a later corrected receipt.
 
+A linked, rejected, no-action or superseded review is terminal and cannot have its dispute, liability, actor or decision facts edited in place.
+
 It is not a second retailer-conversation, refund or replacement state machine.
 
 ### 5.4 `physical_exception_remedy_allocations`
@@ -133,6 +136,8 @@ approved_remedy_type / approved_remedy_qty / approved_by_staff_id
 This proves who proposed and who authorised the route without overwriting either decision.
 
 It also retains exact disposition, tracking allocation, supplier line, dispute line, supplier cost mode and replacement-child provenance.
+
+Importer proposal rows cannot carry invented supplier-claim or customer-commercial outcome amounts. Once linked, dispute and replacement-child source identities are immutable. Completed, no-action and rerouted remedy rows are terminal. A replacement cannot complete while supplier cost evidence remains pending.
 
 ## 6. Integrity rules
 
@@ -153,7 +158,8 @@ The database enforces:
 - importer proposals and approved quantities cannot exceed the affected quantity;
 - refund/replacement progression requires the existing exact dispute line;
 - replacement progression requires exact parent/child provenance;
-- completed replacement requires exact replacement-child tracking allocation;
+- completed replacement requires exact replacement-child tracking allocation and final supplier cost mode;
+- terminal review/remedy financial and source provenance cannot be edited in place;
 - rejected, cancelled, rerouted and completed states cannot silently reopen.
 
 ## 7. Concurrency and compatibility rules
@@ -280,12 +286,13 @@ The source regression verifies the repository itself:
 - no application/runtime files;
 - no `CREATE OR REPLACE` or `DROP ... CASCADE` in Build 1;
 - no protected existing function/view creation;
+- balanced PostgreSQL dollar-quote tags;
 - no stale `remedy_type` or `remedy_qty` columns;
 - exact trigger ordering;
 - single correction supersession authority;
-- v1 fingerprint guard, v1-after-v2 block, v2 header identity, legacy dispute fail-closed, supervisor-note and quantity-position rules.
+- v1 fingerprint guard, v1-after-v2 block, v2 header identity, legacy dispute fail-closed, supervisor-note, terminal provenance and quantity-position rules.
 
-The rollback-only SQL regression verifies the installed database:
+The main rollback-only SQL regression verifies the installed database:
 
 - all schema, integrity, concurrency and position objects;
 - protected function fingerprints and signatures;
@@ -306,7 +313,9 @@ The rollback-only SQL regression verifies the installed database:
 - a safe corrected clean receipt supersedes only the unlinked preliminary review;
 - the entire write simulation rolls back.
 
-When no unused live package satisfies the safe test criteria, the catalog, security, legacy-parity and live-invariant checks still run and the synthetic write section reports a skip notice.
+The focused terminal-provenance SQL regression verifies the two final database guards, trigger installation, private execute boundary, frozen linked review state, frozen completed remedy financial/source identities and pending replacement-cost completion block.
+
+When no unused live package satisfies the safe test criteria, the main regression's catalog, security, legacy-parity and live-invariant checks still run and the synthetic write section reports a skip notice.
 
 ## 13. Gate before database execution
 
@@ -314,7 +323,7 @@ When no unused live package satisfies the safe test criteria, the catalog, secur
 2. Confirm current `main` still matches the branch baseline or re-audit all drift.
 3. Review the exact branch diff and migration order.
 4. Apply the five migrations only in the approved Supabase test environment.
-5. Run the rollback-only SQL regression and require `PASS`.
+5. Run both rollback-only SQL regressions and require `PASS` from each.
 6. Inspect every row in `tracking_allocation_fulfilment_anomalies_v1`.
 7. Smoke-test the existing legacy clean receipt, review, shipment and customer-release routes.
 8. Do not merge, deploy or begin the v2 application switch until every foundation gate passes.
