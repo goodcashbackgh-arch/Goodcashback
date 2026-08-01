@@ -149,7 +149,8 @@ export default async function ExactPhysicalReceiptPage({
                         </label>
                         <label className="space-y-1 text-sm">
                           <span className="text-xs uppercase tracking-wide text-slate-500">Affected disposition</span>
-                          <select name={`affected_type_${row.tracking_line_allocation_id}`} defaultValue="damaged" className="w-full rounded-xl border border-slate-300 px-3 py-2">
+                          <select name={`affected_type_${row.tracking_line_allocation_id}`} defaultValue="" className="w-full rounded-xl border border-slate-300 px-3 py-2">
+                            <option value="">Not applicable — clean</option>
                             <option value="damaged">Damaged</option>
                             <option value="missing">Missing</option>
                             <option value="wrong">Wrong item</option>
@@ -161,7 +162,7 @@ export default async function ExactPhysicalReceiptPage({
                           <input name={`condition_note_${row.tracking_line_allocation_id}`} className="w-full rounded-xl border border-slate-300 px-3 py-2" placeholder="Required only when affected quantity is above zero" />
                         </label>
                       </div>
-                      <p className="mt-3 text-xs text-slate-500">Clean plus affected must equal exactly {allocated}. The server and database both enforce this.</p>
+                      <p className="mt-3 text-xs text-slate-500">Clean plus affected must equal exactly {allocated}. Choose an affected disposition only when affected quantity is above zero.</p>
                     </article>
                   );
                 })}
