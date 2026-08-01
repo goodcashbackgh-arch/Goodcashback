@@ -24,9 +24,7 @@ BEGIN
 END
 $preflight$;
 
-CREATE FUNCTION public.importer_physical_receipt_reviews_v1(
-  p_review_id uuid DEFAULT NULL
-)
+CREATE FUNCTION public.importer_physical_receipt_reviews_v1(p_review_id uuid DEFAULT NULL)
 RETURNS jsonb
 LANGUAGE sql
 STABLE
@@ -63,12 +61,7 @@ AS $function$
       'receipt_id', review.receipt_id,
       'importer_proposal_note', review.importer_proposal_note,
       'decision_note', review.decision_note,
-      'affected_quantity', COALESCE((
-        SELECT SUM(d.quantity)
-        FROM public.shipper_package_receipt_line_dispositions d
-        WHERE d.receipt_id = review.receipt_id
-          AND d.disposition_type <> 'clean'
-      ), 0),
+      'affected_quantity', COALESCE((SELECT SUM(d.quantity) FROM public.shipper_package_receipt_line_dispositions d WHERE d.receipt_id = review.receipt_id AND d.disposition_type <> 'clean'), 0),
       'dispositions', COALESCE((
         SELECT jsonb_agg(jsonb_build_object(
           'id', d.id,
@@ -122,9 +115,7 @@ AS $function$
   );
 $function$;
 
-CREATE FUNCTION public.staff_physical_receipt_reviews_v1(
-  p_review_id uuid DEFAULT NULL
-)
+CREATE FUNCTION public.staff_physical_receipt_reviews_v1(p_review_id uuid DEFAULT NULL)
 RETURNS jsonb
 LANGUAGE sql
 STABLE
@@ -158,11 +149,7 @@ AS $function$
       'receipt_id', review.receipt_id,
       'importer_proposal_note', review.importer_proposal_note,
       'decision_note', review.decision_note,
-      'affected_quantity', COALESCE((
-        SELECT SUM(d.quantity)
-        FROM public.shipper_package_receipt_line_dispositions d
-        WHERE d.receipt_id = review.receipt_id AND d.disposition_type <> 'clean'
-      ), 0),
+      'affected_quantity', COALESCE((SELECT SUM(d.quantity) FROM public.shipper_package_receipt_line_dispositions d WHERE d.receipt_id = review.receipt_id AND d.disposition_type <> 'clean'), 0),
       'dispositions', COALESCE((
         SELECT jsonb_agg(jsonb_build_object(
           'id', d.id,
@@ -205,7 +192,7 @@ AS $function$
       'linked_disputes', COALESCE((
         SELECT jsonb_agg(jsonb_build_object(
           'dispute_id', link.dispute_id,
-          'remedy_type', link.remedy_type
+          'remedy_type', link.desired_outcome
         ) ORDER BY link.created_at, link.dispute_id)
         FROM public.physical_receipt_review_dispute_links link
         WHERE link.physical_receipt_review_id = review.id
