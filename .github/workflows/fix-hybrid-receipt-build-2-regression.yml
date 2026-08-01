@@ -55,11 +55,7 @@ jobs:
           Path('.github/workflows/fix-hybrid-receipt-build-2-regression.yml').unlink()
           PY
 
-      - name: Run source regression
-        shell: bash
-        run: BASE_REF=origin/main node docs/testing/20260801_hybrid_physical_receipt_build_2_receipt_source_regression_v1.mjs
-
-      - name: Commit correction
+      - name: Create local fix commit
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
@@ -67,4 +63,11 @@ jobs:
           git add -A
           git diff --cached --check
           git commit -m "Fix Build 2 receipt regression assertions"
-          git push origin HEAD:agent/hybrid-receipt-build-2-v1
+
+      - name: Run source regression
+        shell: bash
+        run: BASE_REF=origin/main node docs/testing/20260801_hybrid_physical_receipt_build_2_receipt_source_regression_v1.mjs
+
+      - name: Push verified correction
+        shell: bash
+        run: git push origin HEAD:agent/hybrid-receipt-build-2-v1
