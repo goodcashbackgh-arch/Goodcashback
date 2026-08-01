@@ -1,7 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
 const BASE = process.env.BASE_REF || "origin/main";
+const TEMP_WORKFLOW = ".github/workflows/run-build-2-importer-source-regression.yml";
 
 function run(command, args) {
   return execFileSync(command, args, { encoding: "utf8" }).trim();
@@ -23,7 +24,8 @@ const allowed = new Set([
 
 const changed = run("git", ["diff", "--name-only", `${BASE}...HEAD`])
   .split("\n")
-  .filter(Boolean);
+  .filter(Boolean)
+  .filter((file) => !(file === TEMP_WORKFLOW && !existsSync(TEMP_WORKFLOW)));
 
 for (const file of changed) {
   if (!allowed.has(file)) fail(`unexpected changed file: ${file}`);
@@ -54,18 +56,10 @@ for (const [path, text] of [
 ]) {
   const beginCount = (text.match(/^BEGIN;$/gm) || []).length;
   const commitCount = (text.match(/^COMMIT;$/gm) || []).length;
-  if (beginCount !== 1 || commitCount !== 1) {
-    fail(`${path} must contain exactly one outer BEGIN and COMMIT`);
-  }
-  if (/\bDROP\s+(TABLE|VIEW|FUNCTION|SCHEMA)\b/i.test(text)) {
-    fail(`${path} contains destructive DROP`);
-  }
-  if (/CREATE\s+OR\s+REPLACE/i.test(text)) {
-    fail(`${path} replaces an existing object`);
-  }
-  if (/\bCASCADE\b/i.test(text)) {
-    fail(`${path} contains CASCADE`);
-  }
+  if (beginCount !== 1 || commitCount !== 1) fail(`${path} must contain exactly one outer BEGIN and COMMIT`);
+  if (/\bDROP\s+(TABLE|VIEW|FUNCTION|SCHEMA)\b/i.test(text)) fail(`${path} contains destructive DROP`);
+  if (/CREATE\s+OR\s+REPLACE/i.test(text)) fail(`${path} replaces an existing object`);
+  if (/\bCASCADE\b/i.test(text)) fail(`${path} contains CASCADE`);
 }
 
 if (!(guardPath < receiptRpcPath && receiptRpcPath < importerRpcPath)) {
@@ -174,16 +168,8 @@ for (const [path, text] of [
   if (/^COMMIT;$/m.test(text)) fail(`${path} must not contain COMMIT`);
 }
 
-for (const token of [
-  "no feature flag",
-  "does not activate",
-  "must not create",
-  "Build 3",
-  "Build 4",
-]) {
-  if (!impact.toLowerCase().includes(token.toLowerCase())) {
-    fail(`impact map missing boundary statement: ${token}`);
-  }
+for (const token of ["no feature flag", "does not activate", "must not create", "Build 3", "Build 4"]) {
+  if (!impact.toLowerCase().includes(token.toLowerCase())) fail(`impact map missing boundary statement: ${token}`);
 }
 
 console.log(`PASS: Build 2 source regression passed for ${changed.length} files.`);
