@@ -47,7 +47,7 @@ export async function submitPhysicalReceiptProposalAction(formData: FormData) {
   }
 
   const supabase = await createClient();
-  const { error } = await (supabase as any).rpc("operator_submit_physical_receipt_proposal_v1", {
+  const { error } = await (supabase as any).rpc("operator_submit_physical_receipt_proposal_v2", {
     p_physical_receipt_review_id: reviewId,
     p_proposals: proposals,
     p_proposal_note: proposalNote,
