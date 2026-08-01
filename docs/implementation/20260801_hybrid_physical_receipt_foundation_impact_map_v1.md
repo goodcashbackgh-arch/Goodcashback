@@ -32,16 +32,22 @@ Build 1 is intentionally split into focused migrations:
 supabase/migrations/20260801130000_hybrid_physical_receipt_foundation_v1.sql
 supabase/migrations/20260801131000_hybrid_physical_receipt_integrity_v1.sql
 supabase/migrations/20260801131500_hybrid_physical_receipt_concurrency_v1.sql
+supabase/migrations/20260801131700_hybrid_physical_receipt_legacy_fail_closed_v1.sql
 supabase/migrations/20260801132000_hybrid_physical_receipt_position_v1.sql
+```
+
+Validation files:
+
+```text
+docs/testing/20260801_hybrid_physical_receipt_foundation_source_regression_v1.mjs
 docs/testing/20260801_hybrid_physical_receipt_foundation_regression_v1.sql
-docs/implementation/20260801_hybrid_physical_receipt_foundation_impact_map_v1.md
 ```
 
 These files form one foundation build. They are not separate business rollouts and do not introduce a feature flag.
 
 ## 3. Audited existing authorities
 
-The preflight inspected the current definitions for:
+The preflight inspected current definitions for:
 
 - `shipper_package_receipts` and `shipper_record_package_receipt_v1`;
 - `order_tracking_line_allocations`;
@@ -108,7 +114,7 @@ Stores the physical triage bridge only:
 
 - exact receipt, order, importer and tracking identity;
 - importer proposal actor/time;
-- supervisor decision actor/time;
+- supervisor decision actor/time and mandatory decision note;
 - approved liability route;
 - existing dispute link where the case enters the existing retailer route;
 - controlled supersession by a later corrected receipt.
@@ -132,19 +138,21 @@ It also retains exact disposition, tracking allocation, supplier line, dispute l
 
 The database enforces:
 
+- every v2 header matches the current tracking, order shipper and active shipper user;
 - every affected disposition has a factual note;
 - cumulative dispositions cannot exceed the exact allocation;
 - finalisation requires every positive allocation and exact balance;
 - every affected disposition has linked or shared receipt evidence;
 - the header status is derived from line facts;
 - finalised receipt facts are immutable;
-- a later receipt must identify the latest finalised receipt as its correction predecessor;
+- a later receipt identifies the latest finalised receipt as its correction predecessor;
 - a correction cannot reduce clean or affected quantity below irreversible downstream use;
 - active legacy holds without exact membership fail closed;
+- legacy source lines with dispute history but no package provenance fail closed;
 - an existing retailer-linked or supervisor-progressed remedy cannot be silently erased by a corrected receipt;
 - importer proposals and approved quantities cannot exceed the affected quantity;
 - refund/replacement progression requires the existing exact dispute line;
-- replacement progression requires the exact parent/child provenance;
+- replacement progression requires exact parent/child provenance;
 - completed replacement requires exact replacement-child tracking allocation;
 - rejected, cancelled, rerouted and completed states cannot silently reopen.
 
@@ -156,7 +164,7 @@ This prevents simultaneous receipt histories from both becoming authoritative.
 
 After an exact finalised v2 receipt exists, a legacy v1 write for the same tracking package is rejected. V1 continues to work normally for packages that have never entered exact v2 history.
 
-A correction can automatically supersede only an unlinked preliminary physical review. Proposed remedy rows are cancelled in the same transaction. Supervisor-approved investigation, existing retailer exception linkage or progressed remedy work requires controlled remediation rather than silent supersession.
+A correction has one transactional supersession authority. It can supersede only an unlinked preliminary physical review. Proposed remedy rows are cancelled in the same transaction. Supervisor-approved investigation, existing retailer exception linkage or progressed remedy work requires controlled remediation rather than silent supersession.
 
 Remedy writes lock the exact tracking allocation so correction, review, shipment, release and remedy quantities cannot race independently.
 
@@ -170,7 +178,7 @@ tracking_allocation_fulfilment_position_v1
 tracking_allocation_fulfilment_anomalies_v1
 ```
 
-The scoped function is the operational source for later function adaptations. The full views are private diagnostics.
+The scoped function is the operational source for later function adaptations. It limits shipment reads to shipment batches relevant to the requested order/package/allocation. The full views are private diagnostics.
 
 Per exact tracking allocation it returns:
 
@@ -200,7 +208,7 @@ Compatibility rules:
 - no receipt fails closed;
 - a broken cumulative invariant returns zero availability and an explicit blocker;
 - legacy clean shipment basis remains compatible with the current fixed-deadline review route;
-- v2 shipment basis cannot exceed exact reviewed clean quantity.
+- v2 active hold, shipment and active-hold-plus-shipment quantities cannot exceed exact reviewed clean quantity.
 
 Availability clipping occurs only after explicit validity checks. It does not hide over-review, over-hold, over-shipment, over-release or over-remedy anomalies.
 
@@ -220,7 +228,7 @@ Authenticated INSERT, UPDATE and DELETE privileges are revoked. Later workflow w
 
 ## 10. Existing objects deliberately unchanged
 
-No Build 1 migration performs `CREATE OR REPLACE` on any existing operational function or view, including:
+No Build 1 migration performs `CREATE OR REPLACE` on an existing operational function or view, including:
 
 ```text
 shipper_record_package_receipt_v1
@@ -263,14 +271,26 @@ Build 1 does not include:
 
 Those are later focused builds governed by the same addendum.
 
-## 12. Rollback-only validation
+## 12. Validation
 
-The SQL regression proves:
+The source regression verifies the repository itself:
 
-- all schema, integrity, concurrency and position objects are installed;
-- protected function fingerprints and signatures remain unchanged;
-- direct authenticated writes are denied;
-- the position authority remains private;
+- exact changed-file scope;
+- exact five-migration order;
+- no application/runtime files;
+- no `CREATE OR REPLACE` or `DROP ... CASCADE` in Build 1;
+- no protected existing function/view creation;
+- no stale `remedy_type` or `remedy_qty` columns;
+- exact trigger ordering;
+- single correction supersession authority;
+- v1 fingerprint guard, v1-after-v2 block, v2 header identity, legacy dispute fail-closed, supervisor-note and quantity-position rules.
+
+The rollback-only SQL regression verifies the installed database:
+
+- all schema, integrity, concurrency and position objects;
+- protected function fingerprints and signatures;
+- RLS and direct-write denial;
+- private quantity-position authority;
 - existing receipts remain legacy v1 metadata only;
 - legacy clean quantity remains unchanged;
 - legacy uncertain and no-receipt allocations fail closed;
@@ -288,14 +308,15 @@ The SQL regression proves:
 
 When no unused live package satisfies the safe test criteria, the catalog, security, legacy-parity and live-invariant checks still run and the synthetic write section reports a skip notice.
 
-## 13. Gate before any database execution
+## 13. Gate before database execution
 
-1. Review the exact branch diff and migration order.
+1. Run the source regression against the exact branch head.
 2. Confirm current `main` still matches the branch baseline or re-audit all drift.
-3. Apply the four migrations only in the approved Supabase test environment.
-4. Run the rollback-only regression and require `PASS`.
-5. Inspect every row in `tracking_allocation_fulfilment_anomalies_v1`.
-6. Smoke-test the existing legacy clean receipt, review, shipment and customer-release routes.
-7. Do not merge, deploy or begin the v2 application switch until every foundation gate passes.
+3. Review the exact branch diff and migration order.
+4. Apply the five migrations only in the approved Supabase test environment.
+5. Run the rollback-only SQL regression and require `PASS`.
+6. Inspect every row in `tracking_allocation_fulfilment_anomalies_v1`.
+7. Smoke-test the existing legacy clean receipt, review, shipment and customer-release routes.
+8. Do not merge, deploy or begin the v2 application switch until every foundation gate passes.
 
 Any mismatch stops the build. No quantity, liability or provenance may be guessed.
