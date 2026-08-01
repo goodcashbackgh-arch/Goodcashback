@@ -109,11 +109,16 @@ export async function recordExactPackageReceiptV2Action(formData: FormData) {
   }
 
   const evidence: Array<Record<string, unknown>> = [];
+  const uploadedPaths: string[] = [];
   for (let index = 0; index < files.length; index += 1) {
     const file = files[index];
     const objectPath = `shipper-receipts/${shipperUser.shipper_id}/${trackingId}/${submissionId}/${index}-${safeName(file.name)}`;
-    const { error: uploadError } = await supabase.storage.from(BUCKET).upload(objectPath, file, { upsert: false });
+    const { error: uploadError } = await supabase.storage.from(BUCKET).upload(objectPath, file, {
+      upsert: true,
+      contentType: file.type || undefined,
+    });
     if (uploadError) redirect(destination(trackingId, "error", `Evidence upload failed: ${uploadError.message}`));
+    uploadedPaths.push(objectPath);
     evidence.push({
       storage_object_path: objectPath,
       original_filename: file.name,
@@ -133,7 +138,10 @@ export async function recordExactPackageReceiptV2Action(formData: FormData) {
     p_correction_reason: correctionReason,
   });
 
-  if (error) redirect(destination(trackingId, "error", error.message));
+  if (error) {
+    if (uploadedPaths.length > 0) await supabase.storage.from(BUCKET).remove(uploadedPaths);
+    redirect(destination(trackingId, "error", error.message));
+  }
 
   revalidatePath("/shipper");
   revalidatePath("/shipper/package-receipts");
