@@ -11,6 +11,8 @@ DECLARE
   v_run_id uuid := gen_random_uuid();
   v_source_60 uuid := gen_random_uuid();
   v_source_40 uuid := gen_random_uuid();
+  v_period_start date := (date_trunc('month', current_date) - interval '1 month')::date;
+  v_period_end date := (date_trunc('month', current_date) - interval '1 day')::date;
   v_preview jsonb;
   v_materialised jsonb;
   v_journal_id uuid;
@@ -48,9 +50,9 @@ BEGIN
   ) VALUES (
     v_run_id,
     'VAT-MULTI-SOURCE-REGRESSION-' || replace(v_run_id::text, '-', ''),
-    'Multi-source rollback fixture',
-    DATE '2099-01-01',
-    DATE '2099-03-31',
+    'Multi-source rollback fixture ' || to_char(v_period_start, 'YYYY-MM'),
+    v_period_start,
+    v_period_end,
     'calculated',
     v_admin_staff_id,
     v_admin_auth_user_id,
@@ -67,8 +69,8 @@ BEGIN
     created_by_staff_id
   ) VALUES (
     v_run_id,
-    DATE '2099-01-01',
-    DATE '2099-03-31',
+    v_period_start,
+    v_period_end,
     'reconstructed',
     'rollback_regression_fixture',
     0.00,
@@ -108,8 +110,8 @@ BEGIN
     60.00,
     0.00,
     'net',
-    DATE '2099-03-31',
-    'Multi-source rollback fixture',
+    v_period_end,
+    'Multi-source rollback fixture ' || to_char(v_period_start, 'YYYY-MM'),
     false,
     true,
     'Regression multi-source Box 6 adjustment',
@@ -128,8 +130,8 @@ BEGIN
     40.00,
     0.00,
     'net',
-    DATE '2099-03-31',
-    'Multi-source rollback fixture',
+    v_period_end,
+    'Multi-source rollback fixture ' || to_char(v_period_start, 'YYYY-MM'),
     false,
     true,
     'Regression multi-source Box 6 adjustment',
@@ -209,8 +211,6 @@ BEGIN
     RAISE EXCEPTION 'Materialisation must not post to Sage or advance posting status.';
   END IF;
 
-  -- Tamper with the stored allocation hash and prove even a direct status
-  -- transition cannot reach admin_approved.
   UPDATE public.vat_return_adjustment_journals
   SET source_allocation_hash = repeat('0', 64)
   WHERE id = v_journal_id;
@@ -232,7 +232,6 @@ BEGIN
   SET source_allocation_hash = public.internal_vat_adjustment_allocation_hash_v1(v_journal_id)
   WHERE id = v_journal_id;
 
-  -- Freeze the journal and prove allocations cannot then be edited.
   UPDATE public.vat_return_adjustment_journals
   SET status = 'admin_approved'
   WHERE id = v_journal_id;
