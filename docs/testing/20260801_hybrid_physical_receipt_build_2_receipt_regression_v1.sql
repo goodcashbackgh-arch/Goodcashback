@@ -16,6 +16,7 @@ DECLARE
   v_receipt_v1_fingerprint text;
   v_rpc_definition text;
   v_guard_definition text;
+  v_supersession_update text;
   v_rpc_oid oid;
   v_guard_oid oid;
   v_guard_trigger_oid oid;
@@ -156,16 +157,32 @@ BEGIN
     RAISE EXCEPTION 'FAIL: correction event ordering protection is missing';
   END IF;
 
-  IF v_rpc_definition LIKE
-       '%''approved_for_investigation'',%''rejected'',%'
-     OR v_rpc_definition LIKE
-       '%''rejected'',%''closed_no_action''%'
+  v_supersession_update := split_part(
+    split_part(
+      v_rpc_definition,
+      'UPDATE public.physical_receipt_reviews pr',
+      2
+    ),
+    'IF v_affected_qty > 0',
+    1
+  );
+
+  IF NULLIF(BTRIM(v_supersession_update), '') IS NULL THEN
+    RAISE EXCEPTION 'FAIL: RPC supersession update block could not be isolated';
+  END IF;
+
+  IF v_supersession_update LIKE '%''rejected''%'
+     OR v_supersession_update LIKE '%''closed_no_action''%'
+     OR v_supersession_update LIKE '%''approved_to_existing_exception''%'
+     OR v_supersession_update LIKE '%''superseded''%'
   THEN
     RAISE EXCEPTION 'FAIL: terminal review states remain in RPC supersession update';
   END IF;
 
-  IF v_rpc_definition NOT LIKE
-       '%pr.status IN (%''awaiting_importer_proposal''%''awaiting_supervisor_review''%''returned_for_information''%''approved_for_investigation''%'
+  IF v_supersession_update NOT LIKE '%''awaiting_importer_proposal''%'
+     OR v_supersession_update NOT LIKE '%''awaiting_supervisor_review''%'
+     OR v_supersession_update NOT LIKE '%''returned_for_information''%'
+     OR v_supersession_update NOT LIKE '%''approved_for_investigation''%'
   THEN
     RAISE EXCEPTION 'FAIL: open-review correction supersession states are incomplete';
   END IF;
