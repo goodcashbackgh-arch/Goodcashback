@@ -1,0 +1,64 @@
+name: Fix hybrid receipt Build 2 regression
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.head_ref == 'agent/hybrid-receipt-build-2-v1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/hybrid-receipt-build-2-v1
+          fetch-depth: 0
+
+      - name: Correct regression assertions
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('docs/testing/20260801_hybrid_physical_receipt_build_2_receipt_regression_v1.sql')
+          text = path.read_text(encoding='utf-8')
+
+          replacements = [
+            (
+              "  IF v_rpc_definition NOT ILIKE '%SECURITY DEFINER%'\n     OR v_rpc_definition NOT ILIKE '%SET search_path TO public, pg_temp%'",
+              "  IF v_rpc_definition NOT ILIKE '%SECURITY DEFINER%'\n     OR REPLACE(v_rpc_definition, '''', '') NOT ILIKE\n        '%SET search_path TO public, pg_temp%'",
+            ),
+            (
+              "POSITION('SELECT count(*)::integer' IN LOWER(v_rpc_definition))",
+              "POSITION('select count(*)::integer' IN LOWER(v_rpc_definition))",
+            ),
+          ]
+
+          for old, new in replacements:
+            count = text.count(old)
+            if count != 1:
+              raise RuntimeError(f'Expected one regression replacement, found {count}: {old!r}')
+            text = text.replace(old, new, 1)
+
+          path.write_text(text, encoding='utf-8')
+          Path('.github/workflows/fix-hybrid-receipt-build-2-regression.yml').unlink()
+          PY
+
+      - name: Run source regression
+        shell: bash
+        run: node docs/testing/20260801_hybrid_physical_receipt_build_2_receipt_source_regression_v1.mjs
+
+      - name: Commit correction
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "Fix Build 2 receipt regression assertions"
+          git push origin HEAD:agent/hybrid-receipt-build-2-v1
