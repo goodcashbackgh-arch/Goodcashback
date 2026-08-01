@@ -93,6 +93,7 @@ VALUES (
   ARRAY[
     'text/csv',
     'text/plain',
+    'text/tab-separated-values',
     'application/csv',
     'application/vnd.ms-excel',
     'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -178,7 +179,6 @@ BEGIN
     RAISE EXCEPTION 'VAT return run is not editable for integrity finalisation: %', v_run.status;
   END IF;
 
-  -- Rebuild only finaliser-owned lines and blockers.
   UPDATE public.vat_return_run_lines
   SET
     status = 'superseded',
@@ -205,9 +205,6 @@ BEGIN
       'vat_export_reinstatement_prior_breach_already_reversed_v1'
     );
 
-  -- Orders with impossible negative cumulative qualifying funding are blocked and
-  -- excluded from finaliser-owned Box 6 lines. Running balance considers all
-  -- qualifying events through the run end, not merely events in this month.
   WITH signed_events AS (
     SELECT
       fe.id,
@@ -283,8 +280,6 @@ BEGIN
 
   GET DIAGNOSTICS v_funding_blockers = ROW_COUNT;
 
-  -- Add exact event-level Box 6 lines only where no non-void positive main or
-  -- supplementary invoice exists for the order.
   WITH invalid_orders AS (
     SELECT DISTINCT b.source_id AS order_id
     FROM public.vat_return_blockers b
@@ -381,64 +376,21 @@ BEGIN
 
   GET DIAGNOSTICS v_inserted_box6 = ROW_COUNT;
 
-  -- Link each active reinstatement to one exact earlier filed breach.
-  WITH candidates AS (
-    SELECT
-      r.id AS reinstatement_id,
-      count(b.id) AS candidate_count,
-      min(b.id) AS candidate_id
-    FROM public.vat_return_run_lines r
-    LEFT JOIN public.vat_return_run_lines b
-      ON b.line_kind = 'box1_export_evidence_breach'
-     AND b.status = 'active'
-     AND b.source_table = r.source_table
-     AND b.source_id IS NOT DISTINCT FROM r.source_id
-     AND abs(COALESCE(b.amount_gbp, 0) - COALESCE(r.amount_gbp, 0)) <= 0.01
-    LEFT JOIN public.vat_return_runs br
-      ON br.id = b.vat_return_run_id
-     AND br.status = 'matched_to_sage_locked'
-     AND br.locked_at IS NOT NULL
-     AND br.period_end_date < r.tax_point_date
-    WHERE r.vat_return_run_id = p_vat_return_run_id
-      AND r.status = 'active'
-      AND r.line_kind = 'box1_export_evidence_reinstatement'
-      AND br.id IS NOT NULL
-    GROUP BY r.id
-  ), eligible AS (
-    SELECT c.*
-    FROM candidates c
-    WHERE c.candidate_count = 1
-      AND NOT EXISTS (
-        SELECT 1
-        FROM public.vat_return_run_lines other
-        WHERE other.line_kind = 'box1_export_evidence_reinstatement'
-          AND other.status = 'active'
-          AND other.id <> c.reinstatement_id
-          AND other.prior_vat_return_line_id = c.candidate_id
-      )
-  )
-  UPDATE public.vat_return_run_lines r
-  SET prior_vat_return_line_id = e.candidate_id
-  FROM eligible e
-  WHERE r.id = e.reinstatement_id
-    AND r.prior_vat_return_line_id IS DISTINCT FROM e.candidate_id;
-
-  GET DIAGNOSTICS v_linked_exports = ROW_COUNT;
-
-  -- Supersede unsupported reinstatements and create exact blockers.
+  -- Classify unsupported reinstatements before assigning any prior-line links.
+  -- This prevents two current rows from racing the partial unique index.
   WITH reinstatements AS (
     SELECT r.*
     FROM public.vat_return_run_lines r
     WHERE r.vat_return_run_id = p_vat_return_run_id
       AND r.status = 'active'
       AND r.line_kind = 'box1_export_evidence_reinstatement'
-  ), assessed AS (
+  ), candidate_arrays AS (
     SELECT
       r.id,
       r.source_id,
       r.source_ref,
       count(b.id) FILTER (WHERE br.id IS NOT NULL) AS candidate_count,
-      min(b.id) FILTER (WHERE br.id IS NOT NULL) AS candidate_id
+      array_agg(b.id ORDER BY b.id) FILTER (WHERE br.id IS NOT NULL) AS candidate_ids
     FROM reinstatements r
     LEFT JOIN public.vat_return_run_lines b
       ON b.line_kind = 'box1_export_evidence_breach'
@@ -452,28 +404,41 @@ BEGIN
      AND br.locked_at IS NOT NULL
      AND br.period_end_date < r.tax_point_date
     GROUP BY r.id, r.source_id, r.source_ref
-  ), invalid AS (
+  ), assessed AS (
+    SELECT
+      c.*,
+      c.candidate_ids[1] AS candidate_id
+    FROM candidate_arrays c
+  ), claimed AS (
     SELECT
       a.*,
+      count(*) FILTER (WHERE a.candidate_count = 1)
+        OVER (PARTITION BY a.candidate_id) AS current_candidate_claim_count
+    FROM assessed a
+  ), invalid AS (
+    SELECT
+      c.*,
       CASE
-        WHEN a.candidate_count = 0 THEN 'vat_export_reinstatement_missing_prior_breach_v1'
-        WHEN a.candidate_count > 1 THEN 'vat_export_reinstatement_ambiguous_prior_breach_v1'
+        WHEN c.candidate_count = 0 THEN 'vat_export_reinstatement_missing_prior_breach_v1'
+        WHEN c.candidate_count > 1 THEN 'vat_export_reinstatement_ambiguous_prior_breach_v1'
         ELSE 'vat_export_reinstatement_prior_breach_already_reversed_v1'
       END AS blocker_code
-    FROM assessed a
-    WHERE a.candidate_count <> 1
+    FROM claimed c
+    WHERE c.candidate_count <> 1
+       OR c.current_candidate_claim_count <> 1
        OR EXISTS (
          SELECT 1
          FROM public.vat_return_run_lines other
          WHERE other.line_kind = 'box1_export_evidence_reinstatement'
            AND other.status = 'active'
-           AND other.id <> a.id
-           AND other.prior_vat_return_line_id = a.candidate_id
+           AND other.id <> c.id
+           AND other.prior_vat_return_line_id = c.candidate_id
        )
   ), superseded AS (
     UPDATE public.vat_return_run_lines r
     SET
       status = 'superseded',
+      prior_vat_return_line_id = NULL,
       adjustment_reason = concat_ws(
         E'\n',
         NULLIF(r.adjustment_reason, ''),
@@ -508,7 +473,7 @@ BEGIN
         THEN 'Late export evidence has no exact earlier active breach in a locked VAT return.'
       WHEN 'vat_export_reinstatement_ambiguous_prior_breach_v1'
         THEN format('Late export evidence matches %s earlier locked breach lines.', s.candidate_count)
-      ELSE 'The exact earlier export breach already has another active reinstatement.'
+      ELSE 'The exact earlier export breach is already claimed, or multiple current reinstatements claim the same breach.'
     END,
     'Use the existing VAT correction/review route. No Box 1 decrease was retained.',
     'open'
@@ -516,7 +481,50 @@ BEGIN
 
   GET DIAGNOSTICS v_blocked_exports = ROW_COUNT;
 
-  -- Recalculate expected boxes from all active lines, preserving boxes 8 and 9.
+  -- Only uniquely supported active rows remain. Link them after all conflicts
+  -- have been superseded so the unique index cannot be raced by this statement.
+  WITH candidates AS (
+    SELECT
+      r.id AS reinstatement_id,
+      count(b.id) FILTER (WHERE br.id IS NOT NULL) AS candidate_count,
+      (array_agg(b.id ORDER BY b.id) FILTER (WHERE br.id IS NOT NULL))[1] AS candidate_id
+    FROM public.vat_return_run_lines r
+    LEFT JOIN public.vat_return_run_lines b
+      ON b.line_kind = 'box1_export_evidence_breach'
+     AND b.status = 'active'
+     AND b.source_table = r.source_table
+     AND b.source_id IS NOT DISTINCT FROM r.source_id
+     AND abs(COALESCE(b.amount_gbp, 0) - COALESCE(r.amount_gbp, 0)) <= 0.01
+    LEFT JOIN public.vat_return_runs br
+      ON br.id = b.vat_return_run_id
+     AND br.status = 'matched_to_sage_locked'
+     AND br.locked_at IS NOT NULL
+     AND br.period_end_date < r.tax_point_date
+    WHERE r.vat_return_run_id = p_vat_return_run_id
+      AND r.status = 'active'
+      AND r.line_kind = 'box1_export_evidence_reinstatement'
+    GROUP BY r.id
+  ), eligible AS (
+    SELECT c.*
+    FROM candidates c
+    WHERE c.candidate_count = 1
+      AND NOT EXISTS (
+        SELECT 1
+        FROM public.vat_return_run_lines other
+        WHERE other.line_kind = 'box1_export_evidence_reinstatement'
+          AND other.status = 'active'
+          AND other.id <> c.reinstatement_id
+          AND other.prior_vat_return_line_id = c.candidate_id
+      )
+  )
+  UPDATE public.vat_return_run_lines r
+  SET prior_vat_return_line_id = e.candidate_id
+  FROM eligible e
+  WHERE r.id = e.reinstatement_id
+    AND r.prior_vat_return_line_id IS DISTINCT FROM e.candidate_id;
+
+  GET DIAGNOSTICS v_linked_exports = ROW_COUNT;
+
   WITH sums AS (
     SELECT
       COALESCE(sum(CASE WHEN box_number = 1 AND direction = 'decrease' THEN -amount_gbp WHEN box_number = 1 THEN amount_gbp ELSE 0 END), 0) AS box1,
@@ -563,10 +571,6 @@ BEGIN
 END;
 $$;
 
--- -----------------------------------------------------------------------------
--- Additive refresh v2: existing refresh first, finaliser second.
--- -----------------------------------------------------------------------------
-
 CREATE OR REPLACE FUNCTION public.staff_refresh_vat_return_source_snapshot_v2(
   p_vat_return_run_id uuid
 )
@@ -590,10 +594,6 @@ BEGIN
     || jsonb_build_object('vat_integrity_finaliser_v1', v_integrity);
 END;
 $$;
-
--- -----------------------------------------------------------------------------
--- Final evidence guarded lock v2. Reuses reviewed v1 comparison/lock semantics.
--- -----------------------------------------------------------------------------
 
 CREATE OR REPLACE FUNCTION public.staff_record_vat_sage_submission_and_lock_v2(
   p_vat_return_run_id uuid,
@@ -690,10 +690,6 @@ BEGIN
 END;
 $$;
 
--- -----------------------------------------------------------------------------
--- Atomic service-role journal claim.
--- -----------------------------------------------------------------------------
-
 CREATE OR REPLACE FUNCTION public.staff_claim_vat_adjustment_journal_post_v1(
   p_vat_return_adjustment_journal_id uuid,
   p_staff_id uuid
@@ -756,11 +752,6 @@ BEGIN
   );
 END;
 $$;
-
--- -----------------------------------------------------------------------------
--- Narrow function exposure.
--- Keep lock v1 authenticated during database-first/application-second deployment.
--- -----------------------------------------------------------------------------
 
 REVOKE ALL ON FUNCTION public.staff_finalize_vat_return_integrity_v1(uuid) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.staff_finalize_vat_return_integrity_v1(uuid) TO service_role;
