@@ -1,0 +1,4 @@
+artifact_id=8821179973
+artifact_url=https://github.com/goodcashbackgh-arch/Goodcashback/actions/runs/30708805288/artifacts/8821179973
+artifact_digest=f8350e56ef5751ea3f658ff2ba5ed03212152a6a267300c39254e6facdec4e38
+run_id=30708805288
