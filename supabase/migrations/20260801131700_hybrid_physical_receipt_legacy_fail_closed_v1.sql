@@ -9,6 +9,7 @@ SET LOCAL statement_timeout = '0';
 --   * a legacy receipt correction cannot guess around supplier-line dispute history;
 --   * the deferred pending guard uses INSERT/UPDATE NEW identity directly;
 --   * transactional correction preparation is the single supersession authority;
+--   * one existing dispute line maps to one exact physical remedy allocation;
 --   * terminal review/remedy provenance cannot be edited in place.
 
 DO $preflight$
@@ -39,9 +40,10 @@ BEGIN
      OR to_regprocedure('public.shipper_package_receipt_legacy_exception_guard_v1()') IS NOT NULL
      OR to_regprocedure('public.physical_receipt_review_terminal_immutability_guard_v1()') IS NOT NULL
      OR to_regprocedure('public.physical_remedy_terminal_immutability_guard_v1()') IS NOT NULL
+     OR to_regclass('public.uq_physical_remedy_dispute_line_v1') IS NOT NULL
   THEN
     RAISE EXCEPTION
-      'One or more hybrid receipt final hardening guards already exist; inspect the target rather than guessing.';
+      'One or more hybrid receipt final hardening objects already exist; inspect the target rather than guessing.';
   END IF;
 END
 $preflight$;
@@ -57,6 +59,10 @@ ALTER TABLE public.physical_receipt_reviews
     )
     OR NULLIF(BTRIM(COALESCE(decision_note, '')), '') IS NOT NULL
   );
+
+CREATE UNIQUE INDEX uq_physical_remedy_dispute_line_v1
+  ON public.physical_exception_remedy_allocations(dispute_line_id)
+  WHERE dispute_line_id IS NOT NULL;
 
 -- Remove the earlier no-op fallback. The BEFORE correction preparation trigger
 -- owns proposal cancellation, safety blocking and review supersession atomically.
