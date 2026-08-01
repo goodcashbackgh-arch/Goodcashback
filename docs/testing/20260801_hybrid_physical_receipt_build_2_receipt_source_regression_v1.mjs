@@ -15,7 +15,9 @@ const allowed = new Set([
   "docs/implementation/20260801_hybrid_physical_receipt_build_2_impact_map_v1.md",
   "supabase/migrations/20260801139900_hybrid_physical_receipt_v2_terminal_correction_guard_v1.sql",
   "supabase/migrations/20260801140000_hybrid_physical_receipt_v2_rpc_v1.sql",
-  "docs/testing/20260801_hybrid_physical_receipt_build_2_receipt_regression_v1.sql",
+  "supabase/migrations/20260801141000_hybrid_physical_receipt_importer_proposal_rpc_v1.sql",
+  "docs/testing/20260801_hybrid_physical_receipt_build_2_receipt_regression_v2.sql",
+  "docs/testing/20260801_hybrid_physical_receipt_build_2_importer_proposal_regression_v1.sql",
   "docs/testing/20260801_hybrid_physical_receipt_build_2_receipt_source_regression_v1.mjs",
 ]);
 
@@ -28,20 +30,28 @@ for (const file of changed) {
 }
 
 for (const file of allowed) {
-  if (!changed.includes(file)) fail(`required Build 2 receipt file missing from diff: ${file}`);
+  if (!changed.includes(file)) fail(`required Build 2 file missing from diff: ${file}`);
 }
 
 const guardPath = "supabase/migrations/20260801139900_hybrid_physical_receipt_v2_terminal_correction_guard_v1.sql";
-const rpcPath = "supabase/migrations/20260801140000_hybrid_physical_receipt_v2_rpc_v1.sql";
-const regressionPath = "docs/testing/20260801_hybrid_physical_receipt_build_2_receipt_regression_v1.sql";
+const receiptRpcPath = "supabase/migrations/20260801140000_hybrid_physical_receipt_v2_rpc_v1.sql";
+const importerRpcPath = "supabase/migrations/20260801141000_hybrid_physical_receipt_importer_proposal_rpc_v1.sql";
+const receiptRegressionPath = "docs/testing/20260801_hybrid_physical_receipt_build_2_receipt_regression_v2.sql";
+const importerRegressionPath = "docs/testing/20260801_hybrid_physical_receipt_build_2_importer_proposal_regression_v1.sql";
 const impactPath = "docs/implementation/20260801_hybrid_physical_receipt_build_2_impact_map_v1.md";
 
 const guard = readFileSync(guardPath, "utf8");
-const rpc = readFileSync(rpcPath, "utf8");
-const regression = readFileSync(regressionPath, "utf8");
+const receiptRpc = readFileSync(receiptRpcPath, "utf8");
+const importerRpc = readFileSync(importerRpcPath, "utf8");
+const receiptRegression = readFileSync(receiptRegressionPath, "utf8");
+const importerRegression = readFileSync(importerRegressionPath, "utf8");
 const impact = readFileSync(impactPath, "utf8");
 
-for (const [path, text] of [[guardPath, guard], [rpcPath, rpc]]) {
+for (const [path, text] of [
+  [guardPath, guard],
+  [receiptRpcPath, receiptRpc],
+  [importerRpcPath, importerRpc],
+]) {
   const beginCount = (text.match(/^BEGIN;$/gm) || []).length;
   const commitCount = (text.match(/^COMMIT;$/gm) || []).length;
   if (beginCount !== 1 || commitCount !== 1) {
@@ -58,7 +68,9 @@ for (const [path, text] of [[guardPath, guard], [rpcPath, rpc]]) {
   }
 }
 
-if (!(guardPath < rpcPath)) fail("terminal guard migration must sort before RPC migration");
+if (!(guardPath < receiptRpcPath && receiptRpcPath < importerRpcPath)) {
+  fail("Build 2 migrations are not ordered guard -> receipt RPC -> importer RPC");
+}
 
 const protectedNames = [
   "shipper_record_package_receipt_v1",
@@ -84,12 +96,12 @@ const protectedNames = [
 
 for (const name of protectedNames) {
   const createPattern = new RegExp(`CREATE\\s+(?:OR\\s+REPLACE\\s+)?(?:FUNCTION|VIEW)\\s+public\\.${name}\\b`, "i");
-  if (createPattern.test(guard) || createPattern.test(rpc)) {
+  if (createPattern.test(guard) || createPattern.test(receiptRpc) || createPattern.test(importerRpc)) {
     fail(`protected existing object is created/replaced: ${name}`);
   }
 }
 
-const requiredRpcTokens = [
+for (const token of [
   "shipper_record_package_receipt_v2",
   "pg_advisory_xact_lock",
   "FOR UPDATE OF ots",
@@ -103,14 +115,12 @@ const requiredRpcTokens = [
   "returned_for_information",
   "approved_for_investigation",
   "idempotent_retry",
-];
-
-for (const token of requiredRpcTokens) {
-  if (!rpc.includes(token)) fail(`RPC missing required control: ${token}`);
+]) {
+  if (!receiptRpc.includes(token)) fail(`receipt RPC missing required control: ${token}`);
 }
 
-if (rpc.includes("'approved_for_investigation',\n        'rejected'")) {
-  fail("terminal review remains in RPC correction supersession list");
+if (receiptRpc.includes("'approved_for_investigation',\n        'rejected'")) {
+  fail("terminal review remains in receipt RPC correction supersession list");
 }
 
 for (const token of [
@@ -123,14 +133,45 @@ for (const token of [
   if (!guard.includes(token)) fail(`terminal correction guard missing: ${token}`);
 }
 
-if (!regression.trimEnd().endsWith("ROLLBACK;")) {
-  fail("SQL regression must end with ROLLBACK");
+for (const token of [
+  "operator_submit_physical_receipt_proposal_v1",
+  "importer_proposal_note",
+  "auth.uid()",
+  "operator_importers",
+  "revoked_at IS NULL",
+  "pg_advisory_xact_lock",
+  "awaiting_importer_proposal",
+  "returned_for_information",
+  "awaiting_supervisor_review",
+  "SET status = 'cancelled'",
+  "proposed_remedy_qty",
+  "> disposition.quantity + 0.0005",
+]) {
+  if (!importerRpc.includes(token)) fail(`importer RPC missing required control: ${token}`);
 }
-if ((regression.match(/^BEGIN;$/gm) || []).length !== 1) {
-  fail("SQL regression must contain one outer BEGIN");
+
+for (const prohibited of [
+  "approved_remedy_type =",
+  "approved_remedy_qty =",
+  "approved_by_staff_id =",
+  "linked_dispute_id =",
+  "supplier_claim_amount_gbp =",
+  "customer_commercial_value_gbp =",
+  "supplier_cost_mode =",
+  "replacement_child_order_id =",
+  "DELETE FROM public.physical_exception_remedy_allocations",
+  "SET status = 'superseded'",
+]) {
+  if (importerRpc.includes(prohibited)) fail(`importer RPC writes prohibited fact: ${prohibited}`);
 }
-if (/^COMMIT;$/m.test(regression)) {
-  fail("SQL regression must not contain COMMIT");
+
+for (const [path, text] of [
+  [receiptRegressionPath, receiptRegression],
+  [importerRegressionPath, importerRegression],
+]) {
+  if (!text.trimEnd().endsWith("ROLLBACK;")) fail(`${path} must end with ROLLBACK`);
+  if ((text.match(/^BEGIN;$/gm) || []).length !== 1) fail(`${path} must contain one outer BEGIN`);
+  if (/^COMMIT;$/m.test(text)) fail(`${path} must not contain COMMIT`);
 }
 
 for (const token of [
@@ -145,4 +186,4 @@ for (const token of [
   }
 }
 
-console.log(`PASS: Build 2 receipt source regression passed for ${changed.length} files.`);
+console.log(`PASS: Build 2 source regression passed for ${changed.length} files.`);
