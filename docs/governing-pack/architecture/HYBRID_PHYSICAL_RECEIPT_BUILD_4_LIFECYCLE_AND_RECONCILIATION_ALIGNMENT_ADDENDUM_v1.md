@@ -33,6 +33,7 @@ The final preflight confirms:
 - the legacy `ready_for_invoicing` trigger gate does not define the current Build 4 lifecycle and must not be repurposed;
 - the current supervisor application action creates replacement children directly instead of calling `create_replacement_child_order`;
 - that direct path does not populate the full governed physical-remedy provenance and therefore must be aligned to the hardened database authority;
+- separate application status updates and child creation are not an acceptable final authority because partial failure can leave a dispute approved without a child or a child created without final dispute completion;
 - the installed physical-remedy guards already enforce immutable source identity, approved route and quantity, replacement supplier-cost mode, exact child linkage, exact child tracking linkage, terminal immutability and audited rerouting;
 - those guards are preserved and must be used in their allowed sequence, not weakened or bypassed.
 
@@ -81,9 +82,13 @@ The migration may replace only the first three objects. The remaining definition
 
 ## 4. Replacement-child lifecycle authority
 
-A final-approved physical replacement must create its child through the hardened `create_replacement_child_order` authority.
+A final-approved replacement must be accepted through one atomic staff authority that performs the permitted dispute transitions, child creation, provenance linkage, dispute-line resolution and final `replaced` transition in one database transaction.
 
-For a dispute line linked to `physical_exception_remedy_allocations`, the function must verify and preserve:
+The application must call that one authority. It must not perform separate status updates around child creation.
+
+For a dispute line linked to `physical_exception_remedy_allocations`, the atomic authority must require exactly one active remedy-linked dispute line and create its child through the hardened `create_replacement_child_order` authority.
+
+For that physical route, the function must verify and preserve:
 
 - parent order;
 - source dispute and source dispute line;
@@ -98,11 +103,13 @@ For a dispute line linked to `physical_exception_remedy_allocations`, the functi
 
 The child must carry `replacement_source_dispute_line_id`. The physical remedy allocation must carry `replacement_child_order_id` and move only through an already permitted guarded transition.
 
-Legacy replacement creation with no physical-remedy allocation remains compatible, but may not manufacture physical provenance.
+Legacy replacement creation with no physical-remedy allocation remains compatible. A legacy dispute may contain several active manual missing-item lines and may aggregate their quantity and value into one child, matching the prior application behaviour. It must not manufacture physical provenance or mix physical and legacy lines in one acceptance.
+
+Any quantity or amount aggregation applies only to the newly created legacy replacement child. Build 4 must never rewrite the parent order’s declared quantity or amount.
 
 Replacement of a replacement remains prohibited.
 
-The application must not continue a parallel direct-insert authority after the hardened RPC is deployed.
+The application must not continue a parallel direct-insert authority after the atomic RPC is deployed.
 
 ## 5. Parent blocking authority
 
@@ -170,7 +177,7 @@ Build 4 must not modify:
 
 - physical-remedy proposal, sequence, quantity, approval, terminal-immutability or reroute guards;
 - `status_transitions` rows;
-- order declared quantity or amount;
+- parent order declared quantity or amount;
 - customer-review membership or deadlines;
 - shipment membership or customer-sales release identity;
 - VAT evidence rules;
@@ -182,10 +189,11 @@ Build 4 must not modify:
 Build 4 is acceptable only when regression evidence proves:
 
 1. a physical replacement child cannot be created without its approved exact remedy provenance;
-2. the application uses the hardened replacement authority;
-3. unfinished and improperly cancelled replacement paths block parent VAT/accounting/completion;
-4. completed or correctly rerouted paths cease blocking at the correct boundary;
-5. canonical reconciliation excludes non-authoritative evidence;
-6. over-progression is visible through `order_reconciliation_anomalies_v1`;
-7. the public reconciliation column contract is unchanged;
-8. protected function fingerprints, grants and unrelated behaviour remain unchanged.
+2. replacement final acceptance is atomic and the application uses the atomic staff authority;
+3. physical replacement requires one exact remedy-linked line while legacy multi-line manual replacement remains compatible;
+4. unfinished and improperly cancelled replacement paths block parent VAT/accounting/completion;
+5. completed or correctly rerouted paths cease blocking at the correct boundary;
+6. canonical reconciliation excludes non-authoritative evidence;
+7. over-progression is visible through `order_reconciliation_anomalies_v1`;
+8. the public reconciliation column contract is unchanged;
+9. protected function fingerprints, grants and unrelated behaviour remain unchanged.
