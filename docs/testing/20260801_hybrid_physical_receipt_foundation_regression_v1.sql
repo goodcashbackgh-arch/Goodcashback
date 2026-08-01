@@ -59,7 +59,7 @@ BEGIN
      OR to_regprocedure('public.customer_review_cycle_candidates_v1(uuid)') IS NULL
      OR to_regprocedure('public.internal_materialize_customer_review_cycles_v1(uuid,uuid)') IS NULL
      OR to_regprocedure('public.customer_review_receipt_materialize_v1()') IS NULL
-     OR to_regprocedure('public.shipper_tracking_review_state_v1(uuid)') IS NULL
+     OR to_regprocedure('public.shipper_tracking_review_state_v1(uuid,uuid)') IS NULL
      OR to_regprocedure('public.shipper_shipment_batch_candidates_v1()') IS NULL
      OR to_regprocedure('public.shipper_create_shipment_batch_v1(uuid,uuid[],text,timestamptz,timestamptz,integer,text,text,text)') IS NULL
      OR to_regprocedure('public.shipper_shipment_batch_effective_lines_v1(uuid)') IS NULL
@@ -68,9 +68,9 @@ BEGIN
      OR to_regprocedure('public.customer_sales_release_financial_guard_v1()') IS NULL
      OR to_regprocedure('public.customer_hold_create_refund_exception_v2()') IS NULL
      OR to_regprocedure('public.customer_hold_refund_target_lines_v1(uuid)') IS NULL
-     OR to_regprocedure('public.create_replacement_child_order(uuid,uuid,numeric,numeric)') IS NULL
+     OR to_regprocedure('public.create_replacement_child_order(uuid,uuid,uuid,text)') IS NULL
      OR to_regprocedure('public.order_has_open_child_exceptions(uuid)') IS NULL
-     OR to_regprocedure('public.approve_vat_release(uuid,uuid)') IS NULL
+     OR to_regprocedure('public.approve_vat_release(uuid,uuid,jsonb)') IS NULL
      OR to_regprocedure('public.mark_order_accounting_release_ready(uuid,uuid)') IS NULL
      OR to_regprocedure('public.recompute_order_status(uuid)') IS NULL
   THEN
