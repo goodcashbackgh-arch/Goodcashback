@@ -4,8 +4,7 @@ SET LOCAL lock_timeout = '15s';
 SET LOCAL statement_timeout = '0';
 
 -- Hybrid physical receipt foundation only.
--- This migration is additive. It does not replace any existing receipt, review,
--- hold, shipment, customer-sales, replacement, closure or reconciliation function.
+-- Additive objects and private read model; no existing workflow function/view is replaced.
 
 DO $preflight$
 DECLARE
@@ -20,6 +19,9 @@ BEGIN
   END IF;
   IF to_regclass('public.order_tracking_submissions') IS NULL THEN
     v_missing := array_append(v_missing, 'order_tracking_submissions');
+  END IF;
+  IF to_regclass('public.supplier_invoice_lines') IS NULL THEN
+    v_missing := array_append(v_missing, 'supplier_invoice_lines');
   END IF;
   IF to_regclass('public.customer_review_cycle_memberships') IS NULL THEN
     v_missing := array_append(v_missing, 'customer_review_cycle_memberships');
@@ -50,6 +52,9 @@ BEGIN
   END IF;
   IF to_regclass('public.operators') IS NULL THEN
     v_missing := array_append(v_missing, 'operators');
+  END IF;
+  IF to_regclass('public.operator_importers') IS NULL THEN
+    v_missing := array_append(v_missing, 'operator_importers');
   END IF;
   IF to_regclass('public.shipper_users') IS NULL THEN
     v_missing := array_append(v_missing, 'shipper_users');
@@ -167,16 +172,11 @@ COMMENT ON COLUMN public.shipper_package_receipts.payload_fingerprint IS
 
 CREATE TABLE public.shipper_package_receipt_line_dispositions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  receipt_id uuid NOT NULL
-    REFERENCES public.shipper_package_receipts(id) ON DELETE RESTRICT,
-  tracking_submission_id uuid NOT NULL
-    REFERENCES public.order_tracking_submissions(id) ON DELETE RESTRICT,
-  tracking_line_allocation_id uuid NOT NULL
-    REFERENCES public.order_tracking_line_allocations(id) ON DELETE RESTRICT,
-  supplier_invoice_line_id uuid NOT NULL
-    REFERENCES public.supplier_invoice_lines(id) ON DELETE RESTRICT,
-  disposition_type text NOT NULL
-    CHECK (disposition_type IN ('clean','damaged','missing','wrong','held')),
+  receipt_id uuid NOT NULL REFERENCES public.shipper_package_receipts(id) ON DELETE RESTRICT,
+  tracking_submission_id uuid NOT NULL REFERENCES public.order_tracking_submissions(id) ON DELETE RESTRICT,
+  tracking_line_allocation_id uuid NOT NULL REFERENCES public.order_tracking_line_allocations(id) ON DELETE RESTRICT,
+  supplier_invoice_line_id uuid NOT NULL REFERENCES public.supplier_invoice_lines(id) ON DELETE RESTRICT,
+  disposition_type text NOT NULL CHECK (disposition_type IN ('clean','damaged','missing','wrong','held')),
   quantity numeric(12,3) NOT NULL CHECK (quantity > 0),
   condition_note text,
   created_at timestamptz NOT NULL DEFAULT now(),
@@ -200,17 +200,13 @@ CREATE INDEX idx_shipper_receipt_dispositions_affected
 
 CREATE TABLE public.shipper_package_receipt_evidence (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  receipt_id uuid NOT NULL
-    REFERENCES public.shipper_package_receipts(id) ON DELETE RESTRICT,
-  line_disposition_id uuid
-    REFERENCES public.shipper_package_receipt_line_dispositions(id) ON DELETE RESTRICT,
-  storage_object_path text NOT NULL
-    CHECK (NULLIF(BTRIM(storage_object_path), '') IS NOT NULL),
+  receipt_id uuid NOT NULL REFERENCES public.shipper_package_receipts(id) ON DELETE RESTRICT,
+  line_disposition_id uuid REFERENCES public.shipper_package_receipt_line_dispositions(id) ON DELETE RESTRICT,
+  storage_object_path text NOT NULL CHECK (NULLIF(BTRIM(storage_object_path), '') IS NOT NULL),
   original_filename text,
   content_type text,
   display_order integer NOT NULL DEFAULT 0 CHECK (display_order >= 0),
-  uploaded_by_shipper_user_id uuid NOT NULL
-    REFERENCES public.shipper_users(id) ON DELETE RESTRICT,
+  uploaded_by_shipper_user_id uuid NOT NULL REFERENCES public.shipper_users(id) ON DELETE RESTRICT,
   created_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT shipper_receipt_evidence_path_uq UNIQUE (receipt_id, storage_object_path)
 );
@@ -226,11 +222,9 @@ CREATE INDEX idx_shipper_receipt_evidence_disposition
 
 CREATE TABLE public.physical_receipt_reviews (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  receipt_id uuid NOT NULL UNIQUE
-    REFERENCES public.shipper_package_receipts(id) ON DELETE RESTRICT,
+  receipt_id uuid NOT NULL UNIQUE REFERENCES public.shipper_package_receipts(id) ON DELETE RESTRICT,
   order_id uuid NOT NULL REFERENCES public.orders(id) ON DELETE RESTRICT,
-  tracking_submission_id uuid NOT NULL
-    REFERENCES public.order_tracking_submissions(id) ON DELETE RESTRICT,
+  tracking_submission_id uuid NOT NULL REFERENCES public.order_tracking_submissions(id) ON DELETE RESTRICT,
   status text NOT NULL DEFAULT 'awaiting_importer_proposal'
     CHECK (status IN (
       'awaiting_importer_proposal',
@@ -256,13 +250,26 @@ CREATE TABLE public.physical_receipt_reviews (
     (supervisor_decided_by_staff_id IS NULL AND supervisor_decided_at IS NULL)
     OR (supervisor_decided_by_staff_id IS NOT NULL AND supervisor_decided_at IS NOT NULL)
   ),
+  CONSTRAINT physical_receipt_review_proposal_required_chk CHECK (
+    status = 'awaiting_importer_proposal'
+    OR (importer_proposed_by_operator_id IS NOT NULL AND importer_proposed_at IS NOT NULL)
+  ),
+  CONSTRAINT physical_receipt_review_decision_required_chk CHECK (
+    status NOT IN (
+      'returned_for_information',
+      'approved_to_existing_exception',
+      'rejected',
+      'closed_no_action'
+    )
+    OR (supervisor_decided_by_staff_id IS NOT NULL AND supervisor_decided_at IS NOT NULL)
+  ),
+  CONSTRAINT physical_receipt_review_note_required_chk CHECK (
+    status NOT IN ('returned_for_information','rejected','closed_no_action')
+    OR NULLIF(BTRIM(COALESCE(decision_note, '')), '') IS NOT NULL
+  ),
   CONSTRAINT physical_receipt_review_link_shape_chk CHECK (
     status <> 'approved_to_existing_exception'
-    OR (
-      linked_dispute_id IS NOT NULL
-      AND supervisor_decided_by_staff_id IS NOT NULL
-      AND supervisor_decided_at IS NOT NULL
-    )
+    OR linked_dispute_id IS NOT NULL
   )
 );
 
@@ -279,17 +286,12 @@ CREATE INDEX idx_physical_receipt_reviews_dispute
 
 CREATE TABLE public.physical_exception_remedy_allocations (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  physical_receipt_review_id uuid NOT NULL
-    REFERENCES public.physical_receipt_reviews(id) ON DELETE RESTRICT,
-  receipt_line_disposition_id uuid NOT NULL
-    REFERENCES public.shipper_package_receipt_line_dispositions(id) ON DELETE RESTRICT,
-  tracking_line_allocation_id uuid NOT NULL
-    REFERENCES public.order_tracking_line_allocations(id) ON DELETE RESTRICT,
-  supplier_invoice_line_id uuid NOT NULL
-    REFERENCES public.supplier_invoice_lines(id) ON DELETE RESTRICT,
+  physical_receipt_review_id uuid NOT NULL REFERENCES public.physical_receipt_reviews(id) ON DELETE RESTRICT,
+  receipt_line_disposition_id uuid NOT NULL REFERENCES public.shipper_package_receipt_line_dispositions(id) ON DELETE RESTRICT,
+  tracking_line_allocation_id uuid NOT NULL REFERENCES public.order_tracking_line_allocations(id) ON DELETE RESTRICT,
+  supplier_invoice_line_id uuid NOT NULL REFERENCES public.supplier_invoice_lines(id) ON DELETE RESTRICT,
   dispute_line_id uuid REFERENCES public.dispute_lines(id) ON DELETE RESTRICT,
-  remedy_type text NOT NULL
-    CHECK (remedy_type IN ('refund','replacement','hold_investigate','no_action')),
+  remedy_type text NOT NULL CHECK (remedy_type IN ('refund','replacement','hold_investigate','no_action')),
   remedy_qty numeric(12,3) NOT NULL CHECK (remedy_qty > 0),
   supplier_claim_amount_gbp numeric(14,2)
     CHECK (supplier_claim_amount_gbp IS NULL OR supplier_claim_amount_gbp >= 0),
@@ -326,6 +328,7 @@ CREATE TABLE public.physical_exception_remedy_allocations (
   CONSTRAINT physical_remedy_replacement_shape_chk CHECK (
     (
       remedy_type = 'replacement'
+      AND supplier_cost_mode IS NOT NULL
       AND supplier_cost_mode IN (
         'free_replacement',
         'charged_repurchase',
@@ -347,7 +350,7 @@ CREATE TABLE public.physical_exception_remedy_allocations (
 );
 
 COMMENT ON TABLE public.physical_exception_remedy_allocations IS
-'Exact approved/proposed split of physically affected quantity. This is provenance and quantity control, not a second dispute/refund/replacement state machine.';
+'Exact proposed/approved split of physically affected quantity. This is provenance and quantity control, not a second dispute/refund/replacement state machine.';
 
 CREATE INDEX idx_physical_remedy_review_status
   ON public.physical_exception_remedy_allocations(physical_receipt_review_id, status);
@@ -372,8 +375,7 @@ USING (
   OR EXISTS (
     SELECT 1
     FROM public.shipper_package_receipts receipt
-    JOIN public.shipper_users shipper_user
-      ON shipper_user.shipper_id = receipt.shipper_id
+    JOIN public.shipper_users shipper_user ON shipper_user.shipper_id = receipt.shipper_id
     WHERE receipt.id = shipper_package_receipt_line_dispositions.receipt_id
       AND shipper_user.auth_user_id = auth.uid()
       AND shipper_user.active = true
@@ -385,8 +387,7 @@ USING (
     JOIN public.operator_importers access_row
       ON access_row.importer_id = order_row.importer_id
      AND access_row.revoked_at IS NULL
-    JOIN public.operators operator_row
-      ON operator_row.id = access_row.operator_id
+    JOIN public.operators operator_row ON operator_row.id = access_row.operator_id
     WHERE receipt.id = shipper_package_receipt_line_dispositions.receipt_id
       AND operator_row.auth_user_id = auth.uid()
       AND COALESCE(operator_row.active, true) = true
@@ -401,8 +402,7 @@ USING (
   OR EXISTS (
     SELECT 1
     FROM public.shipper_package_receipts receipt
-    JOIN public.shipper_users shipper_user
-      ON shipper_user.shipper_id = receipt.shipper_id
+    JOIN public.shipper_users shipper_user ON shipper_user.shipper_id = receipt.shipper_id
     WHERE receipt.id = shipper_package_receipt_evidence.receipt_id
       AND shipper_user.auth_user_id = auth.uid()
       AND shipper_user.active = true
@@ -414,8 +414,7 @@ USING (
     JOIN public.operator_importers access_row
       ON access_row.importer_id = order_row.importer_id
      AND access_row.revoked_at IS NULL
-    JOIN public.operators operator_row
-      ON operator_row.id = access_row.operator_id
+    JOIN public.operators operator_row ON operator_row.id = access_row.operator_id
     WHERE receipt.id = shipper_package_receipt_evidence.receipt_id
       AND operator_row.auth_user_id = auth.uid()
       AND COALESCE(operator_row.active, true) = true
@@ -433,8 +432,7 @@ USING (
     JOIN public.operator_importers access_row
       ON access_row.importer_id = order_row.importer_id
      AND access_row.revoked_at IS NULL
-    JOIN public.operators operator_row
-      ON operator_row.id = access_row.operator_id
+    JOIN public.operators operator_row ON operator_row.id = access_row.operator_id
     WHERE order_row.id = physical_receipt_reviews.order_id
       AND operator_row.auth_user_id = auth.uid()
       AND COALESCE(operator_row.active, true) = true
@@ -442,8 +440,7 @@ USING (
   OR EXISTS (
     SELECT 1
     FROM public.shipper_package_receipts receipt
-    JOIN public.shipper_users shipper_user
-      ON shipper_user.shipper_id = receipt.shipper_id
+    JOIN public.shipper_users shipper_user ON shipper_user.shipper_id = receipt.shipper_id
     WHERE receipt.id = physical_receipt_reviews.receipt_id
       AND shipper_user.auth_user_id = auth.uid()
       AND shipper_user.active = true
@@ -462,8 +459,7 @@ USING (
     JOIN public.operator_importers access_row
       ON access_row.importer_id = order_row.importer_id
      AND access_row.revoked_at IS NULL
-    JOIN public.operators operator_row
-      ON operator_row.id = access_row.operator_id
+    JOIN public.operators operator_row ON operator_row.id = access_row.operator_id
     WHERE review_row.id = physical_exception_remedy_allocations.physical_receipt_review_id
       AND operator_row.auth_user_id = auth.uid()
       AND COALESCE(operator_row.active, true) = true
@@ -474,12 +470,10 @@ REVOKE ALL ON public.shipper_package_receipt_line_dispositions FROM PUBLIC, anon
 REVOKE ALL ON public.shipper_package_receipt_evidence FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON public.physical_receipt_reviews FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON public.physical_exception_remedy_allocations FROM PUBLIC, anon, authenticated;
-
 GRANT SELECT ON public.shipper_package_receipt_line_dispositions TO authenticated;
 GRANT SELECT ON public.shipper_package_receipt_evidence TO authenticated;
 GRANT SELECT ON public.physical_receipt_reviews TO authenticated;
 GRANT SELECT ON public.physical_exception_remedy_allocations TO authenticated;
-
 GRANT ALL ON public.shipper_package_receipt_line_dispositions TO service_role;
 GRANT ALL ON public.shipper_package_receipt_evidence TO service_role;
 GRANT ALL ON public.physical_receipt_reviews TO service_role;
@@ -499,16 +493,12 @@ BEGIN
     RAISE EXCEPTION 'Physical receipt line dispositions are immutable; create a later corrected receipt snapshot.';
   END IF;
 
-  SELECT receipt.*
-  INTO v_receipt
+  SELECT receipt.* INTO v_receipt
   FROM public.shipper_package_receipts receipt
   WHERE receipt.id = NEW.receipt_id
   FOR UPDATE;
 
-  IF v_receipt.id IS NULL THEN
-    RAISE EXCEPTION 'Physical receipt header not found.';
-  END IF;
-  IF v_receipt.receipt_model_version <> 2 THEN
+  IF v_receipt.id IS NULL OR v_receipt.receipt_model_version <> 2 THEN
     RAISE EXCEPTION 'Line dispositions may be written only to a v2 receipt.';
   END IF;
   IF v_receipt.finalised_at IS NOT NULL THEN
@@ -518,8 +508,7 @@ BEGIN
     RAISE EXCEPTION 'Disposition tracking identity does not match its receipt.';
   END IF;
 
-  SELECT allocation.*
-  INTO v_allocation
+  SELECT allocation.* INTO v_allocation
   FROM public.order_tracking_line_allocations allocation
   WHERE allocation.id = NEW.tracking_line_allocation_id
   FOR SHARE;
@@ -542,8 +531,7 @@ END;
 $function$;
 
 CREATE TRIGGER trg_shipper_receipt_line_disposition_guard_v1
-BEFORE INSERT OR UPDATE OR DELETE
-ON public.shipper_package_receipt_line_dispositions
+BEFORE INSERT OR UPDATE OR DELETE ON public.shipper_package_receipt_line_dispositions
 FOR EACH ROW EXECUTE FUNCTION public.shipper_receipt_line_disposition_guard_v1();
 
 CREATE FUNCTION public.shipper_receipt_evidence_guard_v1()
@@ -560,8 +548,7 @@ BEGIN
     RAISE EXCEPTION 'Physical receipt evidence metadata is immutable.';
   END IF;
 
-  SELECT receipt.*
-  INTO v_receipt
+  SELECT receipt.* INTO v_receipt
   FROM public.shipper_package_receipts receipt
   WHERE receipt.id = NEW.receipt_id
   FOR UPDATE;
@@ -578,8 +565,7 @@ BEGIN
   END IF;
 
   IF NEW.line_disposition_id IS NOT NULL THEN
-    SELECT disposition.receipt_id
-    INTO v_line_receipt_id
+    SELECT disposition.receipt_id INTO v_line_receipt_id
     FROM public.shipper_package_receipt_line_dispositions disposition
     WHERE disposition.id = NEW.line_disposition_id;
 
@@ -593,8 +579,7 @@ END;
 $function$;
 
 CREATE TRIGGER trg_shipper_receipt_evidence_guard_v1
-BEFORE INSERT OR UPDATE OR DELETE
-ON public.shipper_package_receipt_evidence
+BEFORE INSERT OR UPDATE OR DELETE ON public.shipper_package_receipt_evidence
 FOR EACH ROW EXECUTE FUNCTION public.shipper_receipt_evidence_guard_v1();
 
 CREATE FUNCTION public.shipper_package_receipt_v2_integrity_guard_v1()
@@ -608,11 +593,16 @@ DECLARE
   v_mismatch_count integer;
   v_clean_qty numeric := 0;
   v_affected_qty numeric := 0;
+  v_downstream_conflict_count integer := 0;
+  v_unproven_hold_count integer := 0;
   v_source public.shipper_package_receipts%ROWTYPE;
 BEGIN
   IF TG_OP = 'INSERT' THEN
     IF NEW.receipt_model_version = 2 AND NEW.finalised_at IS NOT NULL THEN
       RAISE EXCEPTION 'A v2 receipt must be assembled before it is finalised.';
+    END IF;
+    IF NEW.receipt_model_version = 2 AND NEW.receipt_status = 'received_clean' THEN
+      RAISE EXCEPTION 'A draft v2 receipt must use a non-clean assembly summary until exact lines are finalised.';
     END IF;
     RETURN NEW;
   END IF;
@@ -621,8 +611,7 @@ BEGIN
     RAISE EXCEPTION 'Receipt model version is immutable.';
   END IF;
 
-  -- Preserve legacy behaviour. Existing v1 rows and callers are not restricted
-  -- by the new v2 immutability/finalisation trigger.
+  -- Existing v1 rows/callers retain their current behaviour.
   IF OLD.receipt_model_version = 1 THEN
     RETURN NEW;
   END IF;
@@ -654,8 +643,7 @@ BEGIN
   END IF;
 
   IF NEW.correction_of_receipt_id IS NOT NULL THEN
-    SELECT source_receipt.*
-    INTO v_source
+    SELECT source_receipt.* INTO v_source
     FROM public.shipper_package_receipts source_receipt
     WHERE source_receipt.id = NEW.correction_of_receipt_id
     FOR SHARE;
@@ -677,9 +665,8 @@ BEGIN
       AND allocation.tracking_submission_id = NEW.tracking_submission_id
       AND COALESCE(allocation.qty_allocated, 0) > 0
   ), actual AS (
-    SELECT
-      disposition.tracking_line_allocation_id AS id,
-      SUM(disposition.quantity)::numeric AS disposition_qty
+    SELECT disposition.tracking_line_allocation_id AS id,
+           SUM(disposition.quantity)::numeric AS disposition_qty
     FROM public.shipper_package_receipt_line_dispositions disposition
     WHERE disposition.receipt_id = NEW.id
     GROUP BY disposition.tracking_line_allocation_id
@@ -707,8 +694,7 @@ BEGIN
   IF COALESCE(v_missing_count, 0) > 0 OR COALESCE(v_mismatch_count, 0) > 0 THEN
     RAISE EXCEPTION
       'V2 receipt is incomplete or unbalanced: % allocation(s) missing and % allocation(s) mismatched.',
-      COALESCE(v_missing_count, 0),
-      COALESCE(v_mismatch_count, 0);
+      COALESCE(v_missing_count, 0), COALESCE(v_mismatch_count, 0);
   END IF;
 
   SELECT
@@ -747,14 +733,124 @@ BEGIN
     RAISE EXCEPTION 'A v2 receipt containing affected quantity requires evidence.';
   END IF;
 
+  -- A correction cannot invalidate already-used clean or affected quantity.
+  WITH actual AS (
+    SELECT
+      disposition.tracking_line_allocation_id,
+      COALESCE(SUM(disposition.quantity) FILTER (
+        WHERE disposition.disposition_type = 'clean'
+      ), 0)::numeric AS clean_qty,
+      COALESCE(SUM(disposition.quantity) FILTER (
+        WHERE disposition.disposition_type <> 'clean'
+      ), 0)::numeric AS exception_qty
+    FROM public.shipper_package_receipt_line_dispositions disposition
+    WHERE disposition.receipt_id = NEW.id
+    GROUP BY disposition.tracking_line_allocation_id
+  ), reviewed AS (
+    SELECT membership.tracking_line_allocation_id,
+           COALESCE(SUM(membership.review_qty), 0)::numeric AS qty
+    FROM public.customer_review_cycle_memberships membership
+    GROUP BY membership.tracking_line_allocation_id
+  ), exact_hold AS (
+    SELECT review_membership.tracking_line_allocation_id,
+           COALESCE(SUM(hold_membership.affected_qty), 0)::numeric AS qty
+    FROM public.customer_hold_review_memberships hold_membership
+    JOIN public.customer_review_cycle_memberships review_membership
+      ON review_membership.id = hold_membership.review_membership_id
+    JOIN public.customer_pre_shipment_hold_requests hold_row
+      ON hold_row.id = hold_membership.hold_request_id
+    WHERE hold_membership.membership_status = 'active'
+      AND hold_row.status IN ('requested','supervisor_approved')
+    GROUP BY review_membership.tracking_line_allocation_id
+  ), shipped AS (
+    SELECT effective_line.tracking_line_allocation_id,
+           COALESCE(SUM(effective_line.qty_in_shipment), 0)::numeric AS qty
+    FROM public.shipper_shipment_batches batch_row
+    CROSS JOIN LATERAL
+      public.shipper_shipment_batch_effective_lines_v1(batch_row.id) effective_line
+    WHERE batch_row.status <> 'voided'
+    GROUP BY effective_line.tracking_line_allocation_id
+  ), released AS (
+    SELECT release_line.tracking_line_allocation_id,
+           COALESCE(SUM(release_line.released_qty), 0)::numeric AS qty
+    FROM public.customer_sales_release_lines release_line
+    WHERE release_line.release_status = 'active'
+    GROUP BY release_line.tracking_line_allocation_id
+  ), remedy AS (
+    SELECT remedy_row.tracking_line_allocation_id,
+           COALESCE(SUM(remedy_row.remedy_qty), 0)::numeric AS qty
+    FROM public.physical_exception_remedy_allocations remedy_row
+    WHERE remedy_row.status IN (
+      'proposed','approved','in_progress','completed','closed_no_action'
+    )
+    GROUP BY remedy_row.tracking_line_allocation_id
+  )
+  SELECT COUNT(*)::integer
+  INTO v_downstream_conflict_count
+  FROM actual
+  LEFT JOIN reviewed ON reviewed.tracking_line_allocation_id = actual.tracking_line_allocation_id
+  LEFT JOIN exact_hold ON exact_hold.tracking_line_allocation_id = actual.tracking_line_allocation_id
+  LEFT JOIN shipped ON shipped.tracking_line_allocation_id = actual.tracking_line_allocation_id
+  LEFT JOIN released ON released.tracking_line_allocation_id = actual.tracking_line_allocation_id
+  LEFT JOIN remedy ON remedy.tracking_line_allocation_id = actual.tracking_line_allocation_id
+  WHERE actual.clean_qty + 0.0005 < GREATEST(
+          COALESCE(reviewed.qty, 0),
+          COALESCE(shipped.qty, 0),
+          COALESCE(released.qty, 0)
+        )
+     OR actual.clean_qty + 0.0005 < COALESCE(exact_hold.qty, 0) + COALESCE(shipped.qty, 0)
+     OR actual.exception_qty + 0.0005 < COALESCE(remedy.qty, 0);
+
+  SELECT COUNT(*)::integer
+  INTO v_unproven_hold_count
+  FROM public.order_tracking_line_allocations allocation
+  WHERE allocation.order_id = NEW.order_id
+    AND allocation.tracking_submission_id = NEW.tracking_submission_id
+    AND COALESCE(allocation.qty_allocated, 0) > 0
+    AND EXISTS (
+      SELECT 1
+      FROM public.customer_pre_shipment_hold_requests hold_row
+      WHERE hold_row.order_id = allocation.order_id
+        AND hold_row.status IN ('requested','supervisor_approved')
+        AND (
+          hold_row.requested_scope = 'order'
+          OR (
+            hold_row.requested_scope = 'tracking'
+            AND hold_row.tracking_submission_id = allocation.tracking_submission_id
+          )
+          OR (
+            hold_row.requested_scope = 'line'
+            AND hold_row.supplier_invoice_line_id = allocation.supplier_invoice_line_id
+            AND (
+              hold_row.tracking_submission_id IS NULL
+              OR hold_row.tracking_submission_id = allocation.tracking_submission_id
+            )
+          )
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM public.customer_hold_review_memberships hold_membership
+          JOIN public.customer_review_cycle_memberships review_membership
+            ON review_membership.id = hold_membership.review_membership_id
+          WHERE hold_membership.hold_request_id = hold_row.id
+            AND review_membership.tracking_line_allocation_id = allocation.id
+        )
+    );
+
+  IF v_downstream_conflict_count > 0 THEN
+    RAISE EXCEPTION 'V2 receipt would reduce quantity below existing review, hold, shipment, release or remedy provenance.';
+  END IF;
+  IF v_unproven_hold_count > 0 THEN
+    RAISE EXCEPTION 'V2 receipt cannot supersede an active legacy hold whose exact quantity is unproven.';
+  END IF;
+
   NEW.finalised_at := now();
   RETURN NEW;
 END;
 $function$;
 
 CREATE TRIGGER trg_shipper_package_receipt_v2_integrity_guard_v1
-BEFORE INSERT OR UPDATE
-ON public.shipper_package_receipts
+BEFORE INSERT OR UPDATE ON public.shipper_package_receipts
 FOR EACH ROW EXECUTE FUNCTION public.shipper_package_receipt_v2_integrity_guard_v1();
 
 CREATE FUNCTION public.physical_receipt_review_guard_v1()
@@ -768,15 +864,17 @@ DECLARE
   v_affected_qty numeric;
   v_dispute_order_id uuid;
 BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'Physical receipt review provenance cannot be deleted.';
+  END IF;
+
   IF TG_OP = 'INSERT' THEN
-    SELECT receipt.*
-    INTO v_receipt
+    SELECT receipt.* INTO v_receipt
     FROM public.shipper_package_receipts receipt
     WHERE receipt.id = NEW.receipt_id
     FOR SHARE;
 
-    SELECT COALESCE(SUM(disposition.quantity), 0)::numeric
-    INTO v_affected_qty
+    SELECT COALESCE(SUM(disposition.quantity), 0)::numeric INTO v_affected_qty
     FROM public.shipper_package_receipt_line_dispositions disposition
     WHERE disposition.receipt_id = NEW.receipt_id
       AND disposition.disposition_type <> 'clean';
@@ -801,8 +899,7 @@ BEGIN
   END IF;
 
   IF NEW.linked_dispute_id IS NOT NULL THEN
-    SELECT dispute_row.order_id
-    INTO v_dispute_order_id
+    SELECT dispute_row.order_id INTO v_dispute_order_id
     FROM public.disputes dispute_row
     WHERE dispute_row.id = NEW.linked_dispute_id;
 
@@ -817,8 +914,7 @@ END;
 $function$;
 
 CREATE TRIGGER trg_physical_receipt_review_guard_v1
-BEFORE INSERT OR UPDATE
-ON public.physical_receipt_reviews
+BEFORE INSERT OR UPDATE OR DELETE ON public.physical_receipt_reviews
 FOR EACH ROW EXECUTE FUNCTION public.physical_receipt_review_guard_v1();
 
 CREATE FUNCTION public.physical_remedy_allocation_guard_v1()
@@ -830,12 +926,15 @@ AS $function$
 DECLARE
   v_disposition public.shipper_package_receipt_line_dispositions%ROWTYPE;
   v_review public.physical_receipt_reviews%ROWTYPE;
-  v_disposition_receipt_id uuid;
   v_dispute_line_supplier_id uuid;
   v_dispute_order_id uuid;
   v_existing_qty numeric := 0;
   v_new_consumes boolean;
 BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'Physical remedy provenance cannot be deleted; cancel or reroute it.';
+  END IF;
+
   IF TG_OP = 'UPDATE' THEN
     IF NEW.physical_receipt_review_id IS DISTINCT FROM OLD.physical_receipt_review_id
        OR NEW.receipt_line_disposition_id IS DISTINCT FROM OLD.receipt_line_disposition_id
@@ -849,27 +948,20 @@ BEGIN
     END IF;
   END IF;
 
-  SELECT disposition.*
-  INTO v_disposition
+  SELECT disposition.* INTO v_disposition
   FROM public.shipper_package_receipt_line_dispositions disposition
   WHERE disposition.id = NEW.receipt_line_disposition_id
   FOR UPDATE;
 
-  SELECT review_row.*
-  INTO v_review
+  SELECT review_row.* INTO v_review
   FROM public.physical_receipt_reviews review_row
   WHERE review_row.id = NEW.physical_receipt_review_id
   FOR SHARE;
 
-  SELECT receipt_id
-  INTO v_disposition_receipt_id
-  FROM public.shipper_package_receipt_line_dispositions
-  WHERE id = NEW.receipt_line_disposition_id;
-
   IF v_disposition.id IS NULL
      OR v_disposition.disposition_type = 'clean'
      OR v_review.id IS NULL
-     OR v_review.receipt_id IS DISTINCT FROM v_disposition_receipt_id
+     OR v_review.receipt_id IS DISTINCT FROM v_disposition.receipt_id
      OR v_disposition.tracking_line_allocation_id IS DISTINCT FROM NEW.tracking_line_allocation_id
      OR v_disposition.supplier_invoice_line_id IS DISTINCT FROM NEW.supplier_invoice_line_id
   THEN
@@ -890,8 +982,7 @@ BEGIN
     END IF;
   END IF;
 
-  SELECT COALESCE(SUM(remedy.remedy_qty), 0)::numeric
-  INTO v_existing_qty
+  SELECT COALESCE(SUM(remedy.remedy_qty), 0)::numeric INTO v_existing_qty
   FROM public.physical_exception_remedy_allocations remedy
   WHERE remedy.receipt_line_disposition_id = NEW.receipt_line_disposition_id
     AND remedy.status IN ('proposed','approved','in_progress','completed','closed_no_action')
@@ -913,8 +1004,7 @@ END;
 $function$;
 
 CREATE TRIGGER trg_physical_remedy_allocation_guard_v1
-BEFORE INSERT OR UPDATE
-ON public.physical_exception_remedy_allocations
+BEFORE INSERT OR UPDATE OR DELETE ON public.physical_exception_remedy_allocations
 FOR EACH ROW EXECUTE FUNCTION public.physical_remedy_allocation_guard_v1();
 
 REVOKE ALL ON FUNCTION public.shipper_receipt_line_disposition_guard_v1() FROM PUBLIC, anon, authenticated;
@@ -930,14 +1020,9 @@ WITH latest_receipt AS (
     receipt.tracking_submission_id,
     receipt.receipt_status::text AS receipt_status,
     receipt.receipt_model_version,
-    receipt.finalised_at,
-    receipt.recorded_at,
-    receipt.created_at
+    receipt.finalised_at
   FROM public.shipper_package_receipts receipt
-  ORDER BY
-    receipt.tracking_submission_id,
-    receipt.created_at DESC,
-    receipt.id DESC
+  ORDER BY receipt.tracking_submission_id, receipt.created_at DESC, receipt.id DESC
 ),
 v2_disposition AS (
   SELECT
@@ -953,16 +1038,14 @@ v2_disposition AS (
   GROUP BY disposition.receipt_id, disposition.tracking_line_allocation_id
 ),
 reviewed AS (
-  SELECT
-    membership.tracking_line_allocation_id,
-    COALESCE(SUM(membership.review_qty), 0)::numeric AS reviewed_qty
+  SELECT membership.tracking_line_allocation_id,
+         COALESCE(SUM(membership.review_qty), 0)::numeric AS reviewed_qty
   FROM public.customer_review_cycle_memberships membership
   GROUP BY membership.tracking_line_allocation_id
 ),
 exact_active_hold AS (
-  SELECT
-    review_membership.tracking_line_allocation_id,
-    COALESCE(SUM(hold_membership.affected_qty), 0)::numeric AS active_hold_qty
+  SELECT review_membership.tracking_line_allocation_id,
+         COALESCE(SUM(hold_membership.affected_qty), 0)::numeric AS active_hold_qty
   FROM public.customer_hold_review_memberships hold_membership
   JOIN public.customer_review_cycle_memberships review_membership
     ON review_membership.id = hold_membership.review_membership_id
@@ -1006,9 +1089,8 @@ legacy_unproven_hold AS (
   )
 ),
 shipped AS (
-  SELECT
-    effective_line.tracking_line_allocation_id,
-    COALESCE(SUM(effective_line.qty_in_shipment), 0)::numeric AS shipped_qty
+  SELECT effective_line.tracking_line_allocation_id,
+         COALESCE(SUM(effective_line.qty_in_shipment), 0)::numeric AS shipped_qty
   FROM public.shipper_shipment_batches batch_row
   CROSS JOIN LATERAL
     public.shipper_shipment_batch_effective_lines_v1(batch_row.id) effective_line
@@ -1016,17 +1098,15 @@ shipped AS (
   GROUP BY effective_line.tracking_line_allocation_id
 ),
 released AS (
-  SELECT
-    release_line.tracking_line_allocation_id,
-    COALESCE(SUM(release_line.released_qty), 0)::numeric AS released_qty
+  SELECT release_line.tracking_line_allocation_id,
+         COALESCE(SUM(release_line.released_qty), 0)::numeric AS released_qty
   FROM public.customer_sales_release_lines release_line
   WHERE release_line.release_status = 'active'
   GROUP BY release_line.tracking_line_allocation_id
 ),
 remedy AS (
-  SELECT
-    remedy_row.tracking_line_allocation_id,
-    COALESCE(SUM(remedy_row.remedy_qty), 0)::numeric AS remedy_qty
+  SELECT remedy_row.tracking_line_allocation_id,
+         COALESCE(SUM(remedy_row.remedy_qty), 0)::numeric AS remedy_qty
   FROM public.physical_exception_remedy_allocations remedy_row
   WHERE remedy_row.status IN (
     'proposed','approved','in_progress','completed','closed_no_action'
@@ -1049,16 +1129,13 @@ position_source AS (
     latest.receipt_status,
     latest.finalised_at,
     CASE
-      WHEN latest.receipt_model_version = 2
-        THEN COALESCE(disposition.clean_qty, 0)
+      WHEN latest.receipt_model_version = 2 THEN COALESCE(disposition.clean_qty, 0)
       WHEN latest.receipt_model_version = 1
-       AND latest.receipt_status = 'received_clean'
-        THEN COALESCE(allocation.qty_allocated, 0)
+       AND latest.receipt_status = 'received_clean' THEN COALESCE(allocation.qty_allocated, 0)
       ELSE 0
     END::numeric AS physical_clean_qty,
     CASE
-      WHEN latest.receipt_model_version = 2
-        THEN COALESCE(disposition.exception_qty, 0)
+      WHEN latest.receipt_model_version = 2 THEN COALESCE(disposition.exception_qty, 0)
       ELSE 0
     END::numeric AS physical_exception_qty,
     COALESCE(reviewed.reviewed_qty, 0)::numeric AS reviewed_qty,
@@ -1087,37 +1164,28 @@ validated AS (
   SELECT
     source.*,
     CASE
-      WHEN source.source_receipt_model = 'v2_exact'
-       AND source.finalised_at IS NULL THEN false
+      WHEN source.source_receipt_model = 'v2_exact' AND source.finalised_at IS NULL THEN false
       WHEN source.source_receipt_model = 'legacy_v1'
        AND source.receipt_status IS DISTINCT FROM 'received_clean' THEN false
       WHEN source.source_receipt_model = 'v2_exact'
-       AND ABS(
-         source.physical_clean_qty
-         + source.physical_exception_qty
-         - source.allocated_qty
-       ) > 0.0005 THEN false
+       AND ABS(source.physical_clean_qty + source.physical_exception_qty - source.allocated_qty) > 0.0005 THEN false
       WHEN source.legacy_hold_unproven_yn THEN false
       WHEN source.reviewed_qty > source.physical_clean_qty + 0.0005 THEN false
       WHEN source.active_hold_qty > source.physical_clean_qty + 0.0005 THEN false
       WHEN source.shipped_qty > source.physical_clean_qty + 0.0005 THEN false
+      WHEN source.active_hold_qty + source.shipped_qty > source.physical_clean_qty + 0.0005 THEN false
       WHEN source.customer_released_qty > source.shipped_qty + 0.0005 THEN false
       WHEN source.remedy_assigned_qty > source.physical_exception_qty + 0.0005 THEN false
       ELSE true
     END AS position_valid_yn,
     CASE
-      WHEN source.source_receipt_model = 'v2_exact'
-       AND source.finalised_at IS NULL
+      WHEN source.source_receipt_model = 'v2_exact' AND source.finalised_at IS NULL
         THEN 'v2_receipt_not_finalised'
       WHEN source.source_receipt_model = 'legacy_v1'
        AND source.receipt_status IS DISTINCT FROM 'received_clean'
         THEN 'legacy_nonclean_quantity_unproven'
       WHEN source.source_receipt_model = 'v2_exact'
-       AND ABS(
-         source.physical_clean_qty
-         + source.physical_exception_qty
-         - source.allocated_qty
-       ) > 0.0005
+       AND ABS(source.physical_clean_qty + source.physical_exception_qty - source.allocated_qty) > 0.0005
         THEN 'physical_quantity_balance_mismatch'
       WHEN source.legacy_hold_unproven_yn
         THEN 'legacy_hold_quantity_unproven'
@@ -1127,6 +1195,8 @@ validated AS (
         THEN 'active_hold_quantity_exceeds_clean_quantity'
       WHEN source.shipped_qty > source.physical_clean_qty + 0.0005
         THEN 'shipped_quantity_exceeds_clean_quantity'
+      WHEN source.active_hold_qty + source.shipped_qty > source.physical_clean_qty + 0.0005
+        THEN 'active_hold_and_shipped_exceed_clean_quantity'
       WHEN source.customer_released_qty > source.shipped_qty + 0.0005
         THEN 'customer_release_exceeds_shipped_quantity'
       WHEN source.remedy_assigned_qty > source.physical_exception_qty + 0.0005
@@ -1153,11 +1223,7 @@ SELECT
   CASE
     WHEN validated.position_valid_yn THEN GREATEST(
       validated.physical_clean_qty
-      - GREATEST(
-          validated.reviewed_qty,
-          validated.shipped_qty,
-          validated.customer_released_qty
-        ),
+      - GREATEST(validated.reviewed_qty, validated.shipped_qty, validated.customer_released_qty),
       0
     )
     ELSE 0
@@ -1185,7 +1251,7 @@ SELECT
 FROM validated;
 
 COMMENT ON VIEW public.tracking_allocation_fulfilment_position_v1 IS
-'Private exact quantity position per tracking allocation. Legacy clean remains fully clean; uncertain legacy non-clean and broken invariants fail closed without clipping away the diagnostic blocker.';
+'Private exact quantity position per tracking allocation. Legacy clean remains fully clean; uncertain legacy non-clean and broken invariants fail closed without hiding the diagnostic blocker.';
 
 REVOKE ALL ON public.tracking_allocation_fulfilment_position_v1 FROM PUBLIC, anon, authenticated;
 GRANT SELECT ON public.tracking_allocation_fulfilment_position_v1 TO service_role;
