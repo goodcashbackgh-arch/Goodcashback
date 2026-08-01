@@ -1,0 +1,96 @@
+name: Generate full foundation and Build 2 dry run
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    if: github.head_ref == 'agent/hybrid-receipt-build-2-v1'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/hybrid-receipt-build-2-v1
+          fetch-depth: 0
+      - name: Assemble full rollback-only SQL
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          sources = [
+            Path('supabase/migrations/20260801130000_hybrid_physical_receipt_foundation_v1.sql'),
+            Path('supabase/migrations/20260801131000_hybrid_physical_receipt_integrity_v1.sql'),
+            Path('supabase/migrations/20260801131500_hybrid_physical_receipt_concurrency_v1.sql'),
+            Path('supabase/migrations/20260801131700_hybrid_physical_receipt_legacy_fail_closed_v1.sql'),
+            Path('supabase/migrations/20260801132000_hybrid_physical_receipt_position_v1.sql'),
+            Path('docs/testing/20260801_hybrid_physical_receipt_foundation_regression_v1.sql'),
+            Path('docs/testing/20260801_hybrid_physical_receipt_terminal_immutability_regression_v1.sql'),
+            Path('supabase/migrations/20260801139900_hybrid_physical_receipt_v2_terminal_correction_guard_v1.sql'),
+            Path('supabase/migrations/20260801140000_hybrid_physical_receipt_v2_rpc_v1.sql'),
+            Path('docs/testing/20260801_hybrid_physical_receipt_build_2_receipt_regression_v1.sql'),
+          ]
+
+          missing = [str(p) for p in sources if not p.exists()]
+          if missing:
+            raise RuntimeError(f'Missing sources: {missing}')
+
+          def strip_transaction(text: str) -> str:
+            text, begin_count = re.subn(r'(?mi)^\s*BEGIN;\s*$', '', text, count=1)
+            if begin_count != 1:
+              raise RuntimeError('Expected exactly one outer BEGIN in source')
+            text, end_count = re.subn(
+              r'(?mi)^\s*(?:COMMIT|ROLLBACK);\s*\Z',
+              '',
+              text.rstrip(),
+              count=1,
+            )
+            if end_count != 1:
+              raise RuntimeError('Expected exactly one final COMMIT or ROLLBACK in source')
+            return text.strip()
+
+          out = [
+            '-- GOODCASHBACK FOUNDATION + BUILD 2 RECEIPT AUTHORITY',
+            '-- PRODUCTION ROLLBACK-ONLY DRY RUN — COPY/PASTE VERSION',
+            '-- All schema and test changes are rolled back at the end.',
+            '',
+            'BEGIN;',
+            '',
+            "SET LOCAL lock_timeout = '15s';",
+            "SET LOCAL statement_timeout = '0';",
+          ]
+
+          for source in sources:
+            out.extend([
+              '',
+              '-- ============================================================================',
+              f'-- SOURCE: {source.as_posix()}',
+              '-- ============================================================================',
+              '',
+              strip_transaction(source.read_text(encoding='utf-8')),
+            ])
+
+          out.extend(['', '-- Final safety boundary: nothing above persists.', 'ROLLBACK;', ''])
+
+          target = Path('goodcashback_FOUNDATION_AND_BUILD_2_receipt_PRODUCTION_ROLLBACK_DRY_RUN_COPY_PASTE.txt')
+          target.write_text('\n'.join(out), encoding='utf-8')
+          text = target.read_text(encoding='utf-8')
+
+          assert len(re.findall(r'(?mi)^\s*BEGIN;\s*$', text)) == 1
+          assert len(re.findall(r'(?mi)^\s*ROLLBACK;\s*$', text)) == 1
+          assert len(re.findall(r'(?mi)^\s*COMMIT;\s*$', text)) == 0
+          assert text.rstrip().endswith('ROLLBACK;')
+          assert text.count('CREATE FUNCTION public.shipper_record_package_receipt_v2(') == 1
+          assert text.count('-- SOURCE: ') == len(sources)
+          print(f'Generated {target} with {len(text.splitlines())} lines and {len(sources)} exact sources')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: full-foundation-build-2-production-rollback-dry-run
+          path: goodcashback_FOUNDATION_AND_BUILD_2_receipt_PRODUCTION_ROLLBACK_DRY_RUN_COPY_PASTE.txt
+          if-no-files-found: error
