@@ -3,11 +3,12 @@ BEGIN;
 SET LOCAL lock_timeout = '15s';
 SET LOCAL statement_timeout = '0';
 
--- Additional fail-closed controls:
---   * every v2 header must match the exact order shipper and active shipper user;
+-- Final foundation hardening:
+--   * every v2 header matches the exact order shipper and active shipper user;
 --   * every supervisor physical-review decision retains a decision note;
---   * a legacy receipt correction cannot guess around supplier-line dispute history
---     that has no exact package provenance.
+--   * a legacy receipt correction cannot guess around supplier-line dispute history;
+--   * the deferred pending guard uses INSERT/UPDATE NEW identity directly;
+--   * transactional correction preparation is the single supersession authority.
 
 DO $preflight$
 BEGIN
@@ -19,11 +20,13 @@ BEGIN
      OR to_regclass('public.shipper_users') IS NULL
      OR to_regclass('public.dispute_lines') IS NULL
   THEN
-    RAISE EXCEPTION 'Hybrid receipt identity/fail-closed prerequisites are missing.';
+    RAISE EXCEPTION 'Hybrid receipt final hardening prerequisites are missing.';
   END IF;
 
   IF to_regprocedure('public.shipper_package_receipt_v2_integrity_guard_v1()') IS NULL
+     OR to_regprocedure('public.shipper_package_receipt_v2_pending_commit_guard_v1()') IS NULL
      OR to_regprocedure('public.shipper_package_receipt_prepare_correction_v1()') IS NULL
+     OR to_regprocedure('public.shipper_package_receipt_v2_supersede_open_review_v1()') IS NULL
   THEN
     RAISE EXCEPTION 'Hybrid receipt integrity and concurrency guards must be installed first.';
   END IF;
@@ -32,7 +35,7 @@ BEGIN
      OR to_regprocedure('public.shipper_package_receipt_legacy_exception_guard_v1()') IS NOT NULL
   THEN
     RAISE EXCEPTION
-      'One or more hybrid receipt identity/fail-closed guards already exist; inspect the target rather than guessing.';
+      'One or more hybrid receipt final hardening guards already exist; inspect the target rather than guessing.';
   END IF;
 END
 $preflight$;
@@ -48,6 +51,50 @@ ALTER TABLE public.physical_receipt_reviews
     )
     OR NULLIF(BTRIM(COALESCE(decision_note, '')), '') IS NOT NULL
   );
+
+-- Remove the earlier no-op fallback. The BEFORE correction preparation trigger
+-- owns proposal cancellation, safety blocking and review supersession atomically.
+DROP TRIGGER trg_shipper_package_receipt_v2_supersede_open_review_v1
+  ON public.shipper_package_receipts;
+DROP FUNCTION public.shipper_package_receipt_v2_supersede_open_review_v1();
+
+-- Recreate the deferred guard with the only row identity valid for both events
+-- on this INSERT/UPDATE-only constraint trigger.
+DROP TRIGGER trg_shipper_package_receipt_v2_pending_commit_guard_v1
+  ON public.shipper_package_receipts;
+DROP FUNCTION public.shipper_package_receipt_v2_pending_commit_guard_v1();
+
+CREATE FUNCTION public.shipper_package_receipt_v2_pending_commit_guard_v1()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $function$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM public.shipper_package_receipts receipt
+    WHERE receipt.id = NEW.id
+      AND receipt.receipt_model_version = 2
+      AND (
+        receipt.receipt_state <> 'finalised'
+        OR receipt.finalised_at IS NULL
+      )
+  ) THEN
+    RAISE EXCEPTION
+      'A pending v2 receipt cannot be committed; the complete snapshot must finalise in the same transaction.';
+  END IF;
+
+  RETURN NULL;
+END;
+$function$;
+
+CREATE CONSTRAINT TRIGGER trg_shipper_package_receipt_v2_pending_commit_guard_v1
+AFTER INSERT OR UPDATE
+ON public.shipper_package_receipts
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW
+EXECUTE FUNCTION public.shipper_package_receipt_v2_pending_commit_guard_v1();
 
 CREATE FUNCTION public.shipper_package_receipt_header_identity_guard_v1()
 RETURNS trigger
@@ -147,6 +194,8 @@ FOR EACH ROW
 WHEN (OLD.receipt_state IS DISTINCT FROM NEW.receipt_state)
 EXECUTE FUNCTION public.shipper_package_receipt_legacy_exception_guard_v1();
 
+REVOKE ALL ON FUNCTION public.shipper_package_receipt_v2_pending_commit_guard_v1()
+  FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.shipper_package_receipt_header_identity_guard_v1()
   FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.shipper_package_receipt_legacy_exception_guard_v1()
