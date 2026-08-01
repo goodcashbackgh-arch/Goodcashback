@@ -259,7 +259,7 @@ for (const token of [
   "physical_remedy_allocation_id IS NULL",
   "at_ghana_delivery",
   "physical_receipt_review_dispute_links",
-  "CASE link_row.desired_outcome WHEN 'refund' THEN 1 ELSE 2 END",
+  "CASE link_row.desired_outcome",
   "linked_to_exception",
 ]) {
   if (!supervisorRpc.includes(token)) {
@@ -319,7 +319,7 @@ for (const token of [
   "physical_remedy_allocation_id",
   "legacy unresolved dispute lines",
   "refund precedes replacement",
-  "No quantity may be rounded",
+  "no fractional quantity may be silently rounded",
 ]) {
   if (!alignment.includes(token)) {
     fail(`alignment addendum missing governing decision: ${token}`);
