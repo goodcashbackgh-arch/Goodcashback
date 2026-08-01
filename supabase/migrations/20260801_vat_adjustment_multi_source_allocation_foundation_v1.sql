@@ -1,5 +1,7 @@
 BEGIN;
 
+CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA extensions;
+
 ALTER TABLE public.vat_return_adjustment_journals
   ADD COLUMN IF NOT EXISTS source_allocation_version text NULL,
   ADD COLUMN IF NOT EXISTS source_allocation_hash text NULL;
@@ -51,16 +53,16 @@ RETURNS text
 LANGUAGE sql
 STABLE
 SECURITY DEFINER
-SET search_path = public, pg_temp
+SET search_path = public, extensions, pg_temp
 AS $fn$
   SELECT encode(
-    digest(
+    extensions.digest(
       COALESCE(
         string_agg(
           concat_ws('|',
             a.vat_return_run_line_id::text,
             to_char(a.allocated_amount_gbp, 'FM999999999999990.00'),
-            encode(digest(a.source_snapshot_json::text, 'sha256'), 'hex'),
+            encode(extensions.digest(a.source_snapshot_json::text, 'sha256'), 'hex'),
             'multi_source_v1'
           ),
           E'\n' ORDER BY a.vat_return_run_line_id
