@@ -17,6 +17,7 @@ function read(path) {
 }
 
 const allowed = new Set([
+  ".github/workflows/hybrid-physical-receipt-build-3.yml",
   "docs/implementation/20260801_hybrid_physical_receipt_build_3_ui_activation_impact_map_v1.md",
   "docs/testing/20260801_hybrid_physical_receipt_build_3_ui_source_regression_v1.mjs",
   "docs/testing/20260801_hybrid_physical_receipt_build_3_shipper_entry_read_regression_v1.sql",
