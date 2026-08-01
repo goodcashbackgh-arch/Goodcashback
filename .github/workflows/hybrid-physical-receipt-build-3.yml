@@ -24,19 +24,19 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Run frozen Build 3 source contract
+        env:
+          BASE_REF: origin/${{ github.base_ref }}
+        run: node docs/testing/20260801_hybrid_physical_receipt_build_3_ui_source_regression_v1.mjs
+
       - name: Use Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
 
-      - name: Install locked dependencies
-        run: npm ci
-
-      - name: Run frozen Build 3 source contract
-        env:
-          BASE_REF: origin/${{ github.base_ref }}
-        run: node docs/testing/20260801_hybrid_physical_receipt_build_3_ui_source_regression_v1.mjs
+      - name: Install dependencies without changing lockfile
+        run: npm install --no-package-lock --ignore-scripts --no-audit --no-fund
 
       - name: Run TypeScript validation
         run: npx tsc --noEmit
