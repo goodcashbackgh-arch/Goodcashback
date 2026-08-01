@@ -18,6 +18,23 @@ BEGIN
     RAISE EXCEPTION 'FAIL: terminal physical provenance guard is missing';
   END IF;
 
+  IF to_regclass('public.uq_physical_remedy_dispute_line_v1') IS NULL THEN
+    RAISE EXCEPTION
+      'FAIL: one-to-one physical remedy dispute-line provenance index is missing';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_index index_row
+    WHERE index_row.indexrelid =
+          'public.uq_physical_remedy_dispute_line_v1'::regclass
+      AND index_row.indisunique = true
+      AND index_row.indisvalid = true
+  ) THEN
+    RAISE EXCEPTION
+      'FAIL: physical remedy dispute-line provenance index is not unique and valid';
+  END IF;
+
   IF NOT EXISTS (
     SELECT 1
     FROM pg_trigger trigger_row
@@ -87,7 +104,7 @@ BEGIN
   END IF;
 
   RAISE NOTICE
-    'PASS: terminal physical review/remedy identity, financial and replacement provenance guards are installed and private.';
+    'PASS: one-to-one dispute linkage and terminal physical review/remedy identity, financial and replacement provenance guards are installed and private.';
 END
 $regression$;
 
