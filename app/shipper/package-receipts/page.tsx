@@ -21,6 +21,15 @@ type PackageRow = {
   latest_receipt_recorded_at?: string | null;
 };
 
+type SearchParams = {
+  success?: string;
+  error?: string;
+  tracking?: string;
+  q?: string;
+  importer?: string;
+  status?: string;
+};
+
 function receiptLabel(status: string | null | undefined) {
   switch (status) {
     case "received_clean": return "Package received clean";
@@ -44,7 +53,7 @@ function receiptClass(status: string | null | undefined) {
 export default async function ShipperPackageReceiptsPage({
   searchParams,
 }: {
-  searchParams?: Promise<{ success?: string; error?: string; tracking?: string }>;
+  searchParams?: Promise<SearchParams>;
 }) {
   const queryParams = searchParams ? await searchParams : {};
   const supabase = await createClient();
@@ -62,7 +71,23 @@ export default async function ShipperPackageReceiptsPage({
 
   const { data: rpcRows, error: rpcError } = await (supabase as any).rpc("shipper_package_receipt_dashboard_v1");
   const allRows = ((rpcRows ?? []) as PackageRow[]).filter((row) => row.tracking_submission_id);
-  const rows = queryParams.tracking ? allRows.filter((row) => row.tracking_submission_id === queryParams.tracking) : allRows;
+  const search = (queryParams.q ?? "").trim().toLowerCase();
+  const importer = (queryParams.importer ?? "").trim();
+  const status = (queryParams.status ?? "").trim();
+  const importers = Array.from(new Set(
+    allRows.map((row) => row.importer_name?.trim()).filter((value): value is string => Boolean(value)),
+  )).sort((a, b) => a.localeCompare(b));
+
+  const rows = allRows.filter((row) => {
+    if (queryParams.tracking && row.tracking_submission_id !== queryParams.tracking) return false;
+    if (importer && row.importer_name !== importer) return false;
+    if (status === "awaiting" && row.latest_receipt_status) return false;
+    if (status && status !== "awaiting" && row.latest_receipt_status !== status) return false;
+    if (!search) return true;
+    return [row.tracking_ref, row.order_ref, row.order_id]
+      .some((value) => value?.toLowerCase().includes(search));
+  });
+
   const shipper = Array.isArray((shipperUser as any).shippers) ? (shipperUser as any).shippers[0] : (shipperUser as any).shippers;
 
   return (
@@ -82,9 +107,43 @@ export default async function ShipperPackageReceiptsPage({
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-          <h2 className="text-xl font-semibold">Tracking refs / packages</h2>
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+            <div>
+              <h2 className="text-xl font-semibold">Tracking refs / packages</h2>
+              <p className="mt-1 text-sm text-slate-600">Showing {rows.length} of {allRows.length} shipper-visible packages.</p>
+            </div>
+            <form method="get" className="grid w-full gap-3 sm:grid-cols-2 lg:max-w-4xl lg:grid-cols-[minmax(220px,1fr)_minmax(180px,0.8fr)_minmax(180px,0.8fr)_auto]">
+              <label className="space-y-1 text-sm">
+                <span className="text-xs uppercase tracking-wide text-slate-500">Search</span>
+                <input name="q" defaultValue={queryParams.q ?? ""} className="w-full rounded-xl border border-slate-300 px-3 py-2" placeholder="Tracking or order reference" />
+              </label>
+              <label className="space-y-1 text-sm">
+                <span className="text-xs uppercase tracking-wide text-slate-500">Importer</span>
+                <select name="importer" defaultValue={importer} className="w-full rounded-xl border border-slate-300 px-3 py-2">
+                  <option value="">All importers</option>
+                  {importers.map((name) => <option key={name} value={name}>{name}</option>)}
+                </select>
+              </label>
+              <label className="space-y-1 text-sm">
+                <span className="text-xs uppercase tracking-wide text-slate-500">Receipt status</span>
+                <select name="status" defaultValue={status} className="w-full rounded-xl border border-slate-300 px-3 py-2">
+                  <option value="">All statuses</option>
+                  <option value="awaiting">Awaiting package receipt</option>
+                  <option value="received_clean">Package received clean</option>
+                  <option value="received_damaged">Package received damaged</option>
+                  <option value="held_query">Package held / query</option>
+                  <option value="not_received">Package not received</option>
+                </select>
+              </label>
+              <div className="flex items-end gap-2">
+                <button type="submit" className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white">Apply</button>
+                <Link href="/shipper/package-receipts" className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700">Clear</Link>
+              </div>
+            </form>
+          </div>
+
           {rows.length === 0 ? (
-            <p className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">No packages are currently visible for this shipper.</p>
+            <p className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">No packages match the current filters.</p>
           ) : (
             <div className="mt-4 grid gap-4 lg:grid-cols-2">
               {rows.map((row) => (
