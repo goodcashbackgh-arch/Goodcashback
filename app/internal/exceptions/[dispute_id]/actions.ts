@@ -319,60 +319,32 @@ export async function acceptReplacementOutcomeAction(formData: FormData) {
 
   const { data: dispute, error: disputeError } = await guard.supabase
     .from("disputes")
-    .select("id, order_id, desired_outcome, replacement_child_order_id, status")
+    .select("id, desired_outcome, replacement_child_order_id")
     .eq("id", disputeId)
     .maybeSingle();
 
   if (disputeError || !dispute) redirectWithResult(disputeId, { error: "Dispute not found." });
-  if (dispute.desired_outcome !== "replacement") redirectWithResult(disputeId, { error: "Replacement outcome is only available for replacement disputes." });
-  if (dispute.replacement_child_order_id) redirectWithResult(disputeId, { error: "Replacement child order already exists." });
+  if (dispute.desired_outcome !== "replacement") {
+    redirectWithResult(disputeId, { error: "Replacement outcome is only available for replacement disputes." });
+  }
+  if (dispute.replacement_child_order_id) {
+    redirectWithResult(disputeId, { error: "Replacement child order already exists." });
+  }
 
   const finalOutcomeGuard = await requireRetailerMessageAndAcceptedOutcome(guard.supabase, disputeId);
   if (!finalOutcomeGuard.ok) redirectWithResult(disputeId, { error: finalOutcomeGuard.error });
 
-  const { data: activeLines, error: activeLinesError } = await guard.supabase
-    .from("dispute_lines")
-    .select("id, physical_remedy_allocation_id")
-    .eq("dispute_id", disputeId)
-    .is("resolved_at", null);
-
-  if (activeLinesError) redirectWithResult(disputeId, { error: activeLinesError.message });
-  if (!activeLines || activeLines.length !== 1) {
-    redirectWithResult(disputeId, {
-      error: "Replacement child creation requires exactly one final-approved source dispute line. Split distinct replacement remedies before final acceptance.",
-    });
-  }
-
-  let currentStatus = dispute.status;
-  if (currentStatus === "raised") {
-    const underReviewTransition = await transitionDisputeStatus(guard.supabase, disputeId, "raised", "under_review");
-    if (!underReviewTransition.ok) redirectWithResult(disputeId, { error: underReviewTransition.error });
-    currentStatus = "under_review";
-  }
-
-  if (currentStatus !== "under_review") {
-    redirectWithResult(disputeId, { error: `Replacement final acceptance requires dispute status raised or under_review. Current status: ${currentStatus}.` });
-  }
-
-  const approvedReplacementTransition = await transitionDisputeStatus(guard.supabase, disputeId, "under_review", "approved_replacement");
-  if (!approvedReplacementTransition.ok) redirectWithResult(disputeId, { error: approvedReplacementTransition.error });
-
-  const sourceLine = activeLines[0];
-  const { data: childOrderId, error: childOrderError } = await guard.supabase.rpc("create_replacement_child_order", {
-    p_parent_order_id: dispute.order_id,
-    p_dispute_line_id: sourceLine.id,
+  const { data: childOrderId, error: childOrderError } = await guard.supabase.rpc("staff_accept_replacement_outcome_v1", {
+    p_dispute_id: disputeId,
     p_staff_id: guard.staffId,
-    p_notes: sourceLine.physical_remedy_allocation_id
-      ? "Final-approved physical replacement outcome"
-      : "Final-approved legacy replacement outcome",
+    p_notes: "Final replacement outcome accepted by supervisor",
   });
 
   if (childOrderError || !childOrderId) {
-    redirectWithResult(disputeId, { error: childOrderError?.message ?? "Failed to create replacement child order." });
+    redirectWithResult(disputeId, {
+      error: childOrderError?.message ?? "Failed to accept replacement outcome atomically.",
+    });
   }
-
-  const replacedTransition = await transitionDisputeStatus(guard.supabase, disputeId, "approved_replacement", "replaced");
-  if (!replacedTransition.ok) redirectWithResult(disputeId, { error: replacedTransition.error });
 
   revalidatePath(`/internal/exceptions/${disputeId}`);
   revalidatePath(`/importer/exceptions/${disputeId}`);
