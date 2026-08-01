@@ -16,6 +16,11 @@ type EntryRow = {
   correction_allowed: boolean | null;
 };
 
+type DashboardRow = {
+  tracking_submission_id: string | null;
+  tracking_ref: string | null;
+};
+
 type SearchParams = {
   success?: string;
   error?: string;
@@ -55,11 +60,19 @@ export default async function ExactPhysicalReceiptPage({
 
   if (!shipperUser) redirect("/auth/check");
 
-  const { data, error } = await (supabase as any).rpc("shipper_physical_receipt_entry_v1", {
-    p_tracking_submission_id: trackingSubmissionId,
-  });
+  const [{ data, error }, { data: dashboardData }] = await Promise.all([
+    (supabase as any).rpc("shipper_physical_receipt_entry_v1", {
+      p_tracking_submission_id: trackingSubmissionId,
+    }),
+    (supabase as any).rpc("shipper_package_receipt_dashboard_v1"),
+  ]);
 
   const rows = (data ?? []) as EntryRow[];
+  const dashboardRows = (dashboardData ?? []) as DashboardRow[];
+  const trackingRef = dashboardRows.find(
+    (row) => row.tracking_submission_id === trackingSubmissionId,
+  )?.tracking_ref;
+  const trackingLabel = trackingRef?.trim() || "Tracking reference unavailable";
   const first = rows[0] ?? null;
   const latestReceiptId = first?.latest_receipt_id ?? null;
   const latestReviewStatus = first?.latest_review_status ?? null;
@@ -103,7 +116,7 @@ export default async function ExactPhysicalReceiptPage({
               <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                 <div>
                   <h2 className="text-xl font-semibold">Package allocation lines</h2>
-                  <p className="mt-1 text-sm text-slate-600">Tracking package {trackingSubmissionId}</p>
+                  <p className="mt-1 text-sm text-slate-600">Tracking package {trackingLabel}</p>
                 </div>
                 <span className="w-fit rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">{reviewLabel(latestReviewStatus)}</span>
               </div>
@@ -128,27 +141,11 @@ export default async function ExactPhysicalReceiptPage({
                       <div className="mt-4 grid gap-3 md:grid-cols-2">
                         <label className="space-y-1 text-sm">
                           <span className="text-xs uppercase tracking-wide text-slate-500">Clean quantity</span>
-                          <input
-                            type="number"
-                            name={`clean_qty_${row.tracking_line_allocation_id}`}
-                            defaultValue={allocated}
-                            min="0"
-                            step="0.001"
-                            required
-                            className="w-full rounded-xl border border-slate-300 px-3 py-2"
-                          />
+                          <input type="number" name={`clean_qty_${row.tracking_line_allocation_id}`} defaultValue={allocated} min="0" step="0.001" required className="w-full rounded-xl border border-slate-300 px-3 py-2" />
                         </label>
                         <label className="space-y-1 text-sm">
                           <span className="text-xs uppercase tracking-wide text-slate-500">Affected quantity</span>
-                          <input
-                            type="number"
-                            name={`affected_qty_${row.tracking_line_allocation_id}`}
-                            defaultValue="0"
-                            min="0"
-                            step="0.001"
-                            required
-                            className="w-full rounded-xl border border-slate-300 px-3 py-2"
-                          />
+                          <input type="number" name={`affected_qty_${row.tracking_line_allocation_id}`} defaultValue="0" min="0" step="0.001" required className="w-full rounded-xl border border-slate-300 px-3 py-2" />
                         </label>
                         <label className="space-y-1 text-sm">
                           <span className="text-xs uppercase tracking-wide text-slate-500">Affected disposition</span>
@@ -161,11 +158,7 @@ export default async function ExactPhysicalReceiptPage({
                         </label>
                         <label className="space-y-1 text-sm">
                           <span className="text-xs uppercase tracking-wide text-slate-500">Condition note for affected quantity</span>
-                          <input
-                            name={`condition_note_${row.tracking_line_allocation_id}`}
-                            className="w-full rounded-xl border border-slate-300 px-3 py-2"
-                            placeholder="Required only when affected quantity is above zero"
-                          />
+                          <input name={`condition_note_${row.tracking_line_allocation_id}`} className="w-full rounded-xl border border-slate-300 px-3 py-2" placeholder="Required only when affected quantity is above zero" />
                         </label>
                       </div>
                       <p className="mt-3 text-xs text-slate-500">Clean plus affected must equal exactly {allocated}. The server and database both enforce this.</p>
@@ -180,13 +173,7 @@ export default async function ExactPhysicalReceiptPage({
               <div className="mt-4 grid gap-4 md:grid-cols-2">
                 <label className="space-y-1 text-sm md:col-span-2">
                   <span className="text-xs uppercase tracking-wide text-slate-500">Receipt evidence files</span>
-                  <input
-                    name="receipt_evidence_files"
-                    type="file"
-                    multiple
-                    accept=".pdf,image/*,.png,.jpg,.jpeg,.webp"
-                    className="w-full rounded-xl border border-slate-300 px-3 py-2"
-                  />
+                  <input name="receipt_evidence_files" type="file" multiple accept=".pdf,image/*,.png,.jpg,.jpeg,.webp" className="w-full rounded-xl border border-slate-300 px-3 py-2" />
                   <span className="block text-xs text-slate-500">Required when any line has affected quantity. Files are stored under the governed shipper receipt path.</span>
                 </label>
 
@@ -194,13 +181,7 @@ export default async function ExactPhysicalReceiptPage({
                   correctionAllowed ? (
                     <label className="space-y-1 text-sm md:col-span-2">
                       <span className="text-xs uppercase tracking-wide text-slate-500">Correction reason</span>
-                      <textarea
-                        name="correction_reason"
-                        rows={3}
-                        required
-                        className="w-full rounded-xl border border-slate-300 px-3 py-2"
-                        placeholder="Explain the factual correction to the latest receipt"
-                      />
+                      <textarea name="correction_reason" rows={3} required className="w-full rounded-xl border border-slate-300 px-3 py-2" placeholder="Explain the factual correction to the latest receipt" />
                       <span className="block text-xs text-slate-500">This submission will be a complete replacement snapshot of receipt {latestReceiptId}.</span>
                     </label>
                   ) : (
@@ -215,11 +196,7 @@ export default async function ExactPhysicalReceiptPage({
             <section className="rounded-3xl border border-slate-900 bg-slate-900 p-5 text-white shadow-sm sm:p-6">
               <h2 className="text-xl font-semibold">Final submission</h2>
               <p className="mt-2 text-sm text-slate-300">This writes one immutable finalised receipt snapshot. Review every line before submitting.</p>
-              <button
-                type="submit"
-                disabled={hasPriorReceipt && !correctionAllowed}
-                className="mt-4 rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-950 disabled:cursor-not-allowed disabled:bg-slate-500 disabled:text-slate-200"
-              >
+              <button type="submit" disabled={hasPriorReceipt && !correctionAllowed} className="mt-4 rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-950 disabled:cursor-not-allowed disabled:bg-slate-500 disabled:text-slate-200">
                 {hasPriorReceipt ? "Submit corrected exact receipt" : "Submit exact physical receipt"}
               </button>
             </section>
