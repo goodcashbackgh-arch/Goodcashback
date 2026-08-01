@@ -8,83 +8,71 @@
 
 ## Frozen change surface
 
-### Database replacement authorities
+### Migration 1 — lifecycle and reconciliation
 
-1. `create_replacement_child_order(uuid,uuid,uuid,text)`
-   - preserve legacy caller compatibility;
-   - consume one exact source dispute line;
-   - where that line has physical-remedy provenance, verify the approved replacement route, approved quantity, source order and supplier-cost mode;
-   - write `orders.replacement_source_dispute_line_id`;
-   - link the exact remedy allocation to the child and move it through an existing guarded transition;
-   - do not create replacement-of-replacement.
+`20260801210000_hybrid_physical_receipt_build_4_lifecycle_reconciliation_v1.sql`
 
-2. `order_has_open_child_exceptions(uuid)`
-   - retain all legacy conversation blockers;
-   - add unresolved physical remedy blockers;
-   - add unfinished replacement-child blockers;
-   - keep cancelled children blocking until the source remedy is rerouted or explicitly closed.
+- drift-stops the reviewed live replacement, blocker and reconciliation authorities;
+- hardens `create_replacement_child_order` for exact physical-remedy provenance;
+- strengthens `order_has_open_child_exceptions` for unresolved remedies and unfinished or improperly cancelled children;
+- preserves the exact public columns of `order_reconciliation_vw`;
+- applies one identical invoice-authority predicate in canonical reconciliation and anomaly classification:
+  - `is_current_for_order = true`;
+  - approved or corrected-approved review status;
+  - not blocked from Sage;
+  - not superseded;
+- adds `order_reconciliation_anomalies_v1` for non-authoritative evidence and over-progression.
 
-3. `order_reconciliation_vw`
-   - preserve exact public columns and ordering;
-   - count only approved, unblocked, non-superseded supplier invoice identity;
-   - avoid double subtraction of a resolved dispute line whose exact supplier line already progressed;
-   - never clear an over-progressed order.
+### Migration 2 — atomic replacement acceptance
 
-### Additive database authorities
+`20260801213000_hybrid_physical_receipt_build_4_atomic_replacement_acceptance_fix_v1.sql`
 
-4. `order_reconciliation_anomalies_v1`
-   - expose canonical over-progression;
-   - expose eligible lines on non-authoritative invoices;
-   - expose raw evidence exceeding declared baselines;
-   - include sufficient evidence identity for controlled investigation.
-
-5. `staff_accept_replacement_outcome_v1(uuid,uuid,text)`
-   - perform the existing permitted dispute transitions, child creation, provenance linkage, dispute-line resolution and final `replaced` transition atomically;
-   - require one exact remedy-linked line for a physical replacement;
-   - preserve prior legacy multi-line manual replacement aggregation;
-   - reject mixed physical and legacy lines;
-   - authenticate the supplied active staff identity against `auth.uid()`;
-   - call the hardened `create_replacement_child_order` authority rather than duplicating child creation.
+- adds `staff_accept_replacement_outcome_v1`;
+- performs permitted dispute transitions, child creation, line resolution, linkage and final replacement status in one transaction;
+- physical path: exactly one remedy-linked source line and exact `replacement_source_dispute_line_id`;
+- legacy path: multiple manual lines may aggregate into one child, child single-source ID remains null, and the complete source-line set is retained in escalation evidence;
+- rejects mixed physical and legacy lines;
+- preserves replacement-of-replacement prohibition;
+- grants execution to authenticated and service-role callers, not anon.
 
 ### Application alignment
 
-6. `app/internal/exceptions/[dispute_id]/actions.ts`
-   - remove the parallel direct `orders` insertion path from final replacement acceptance;
-   - remove separate mutation calls around child creation;
-   - call `staff_accept_replacement_outcome_v1` once;
-   - retain the existing read-only retailer-reply guard for immediate user feedback while the database repeats the authority check;
-   - preserve current revalidation destinations and role guard.
+`app/internal/exceptions/[dispute_id]/actions.ts`
+
+- removes direct child-order insertion;
+- removes separate status mutations around child creation;
+- calls `staff_accept_replacement_outcome_v1` once;
+- preserves existing read-only retailer-response feedback, staff guard and revalidation destinations.
 
 ## Protected authorities
 
-The migration fingerprints and does not replace:
+Build 4 does not replace or weaken:
 
 - `approve_vat_release`;
 - `mark_order_accounting_release_ready`;
 - `recompute_order_status`;
 - physical-remedy allocation, sequence and terminal-immutability guards;
-- order status-transition and content-lock guards.
+- order transition and content-lock guards.
 
-No `status_transitions` row, UI label, navigation item, role grant, parent declared quantity, parent declared amount, customer-review, shipment, Sage, VAT, refund, payout or AP authority is changed.
+No status-transition row, parent declared quantity/value, UI label, navigation, customer-review, shipment, VAT, Sage, refund, payout or AP authority is changed.
 
-Legacy aggregation may set the newly created replacement child’s declared quantity and value to the aggregate of its source manual lines. It must never rewrite the parent order.
+## Required regression evidence
 
-## Known regression evidence
+Before merge:
 
-`DAY3-TRACK-1d7cfa66`:
-
-- declared: quantity 1 / £100;
-- raw eligible evidence: quantity 3 / £155;
-- evidence invoice: `pending_review`, non-current;
-- required canonical result: raw evidence excluded from canonical progression;
-- required anomaly result: non-authoritative evidence and raw over-progression exposed.
+1. approved but non-current eligible evidence is excluded canonically and exposed as non-authoritative;
+2. physical one-line replacement succeeds with exact provenance;
+3. physical multi-line replacement fails with no surviving writes;
+4. legacy multi-line replacement succeeds with aggregate value/quantity, null single-source ID and complete source-set evidence;
+5. deliberate post-transition failure proves total rollback;
+6. unfinished and improperly cancelled children block the parent;
+7. reconciliation public columns and protected fingerprints remain unchanged.
 
 ## Deployment order
 
-1. review and merge the alignment addendum and both Build 4 migrations;
-2. apply the lifecycle/reconciliation migration;
-3. apply the atomic replacement-acceptance migration;
-4. run the Build 4 SQL regression;
-5. deploy the application action that calls the atomic RPC;
-6. run source regression and controlled final replacement acceptance;
-7. verify protected fingerprints and role behaviour are unchanged.
+1. apply migration 1;
+2. apply migration 2;
+3. run database regressions;
+4. deploy the application;
+5. run source regression and one controlled physical and legacy acceptance test;
+6. verify protected fingerprints and role behaviour.
