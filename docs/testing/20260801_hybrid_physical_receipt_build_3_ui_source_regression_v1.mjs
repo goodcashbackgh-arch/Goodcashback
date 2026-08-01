@@ -9,7 +9,7 @@ function fail(message) {
 }
 
 function git(args) {
-  return execFileSync("git", args, { encoding: "utf8" }).trim();
+  return execFileSync("git", args, { encoding: "utf8" });
 }
 
 function read(path) {
