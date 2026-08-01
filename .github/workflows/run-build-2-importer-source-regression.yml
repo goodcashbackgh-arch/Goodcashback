@@ -1,0 +1,30 @@
+name: Run Build 2 importer source regression
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    if: github.head_ref == 'agent/hybrid-receipt-build-2-v1'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/hybrid-receipt-build-2-v1
+          fetch-depth: 0
+      - name: Run source regression
+        shell: bash
+        run: BASE_REF=origin/main node docs/testing/20260801_hybrid_physical_receipt_build_2_receipt_source_regression_v1.mjs
+      - name: Remove temporary workflow
+        shell: bash
+        run: |
+          rm .github/workflows/run-build-2-importer-source-regression.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Remove temporary Build 2 importer source workflow"
+          git push origin HEAD:agent/hybrid-receipt-build-2-v1
