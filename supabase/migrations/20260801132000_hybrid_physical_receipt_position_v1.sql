@@ -304,9 +304,16 @@ AS $function$
         WHEN source.legacy_hold_unproven_yn THEN false
         WHEN source.reviewed_qty > source.physical_clean_qty + 0.0005 THEN false
         WHEN source.active_hold_qty > source.physical_clean_qty + 0.0005 THEN false
+        WHEN source.source_receipt_model = 'v2_exact'
+         AND source.active_hold_qty > source.reviewed_qty + 0.0005 THEN false
         WHEN source.shipped_qty > source.physical_clean_qty + 0.0005 THEN false
+        WHEN source.source_receipt_model = 'v2_exact'
+         AND source.shipped_qty > source.reviewed_qty + 0.0005 THEN false
         WHEN source.active_hold_qty + source.shipped_qty
              > source.physical_clean_qty + 0.0005 THEN false
+        WHEN source.source_receipt_model = 'v2_exact'
+         AND source.active_hold_qty + source.shipped_qty
+             > source.reviewed_qty + 0.0005 THEN false
         WHEN source.customer_released_qty > source.shipped_qty + 0.0005 THEN false
         WHEN source.remedy_assigned_qty
              > source.physical_exception_qty + 0.0005 THEN false
@@ -331,11 +338,21 @@ AS $function$
           THEN 'reviewed_quantity_exceeds_clean_quantity'
         WHEN source.active_hold_qty > source.physical_clean_qty + 0.0005
           THEN 'active_hold_quantity_exceeds_clean_quantity'
+        WHEN source.source_receipt_model = 'v2_exact'
+         AND source.active_hold_qty > source.reviewed_qty + 0.0005
+          THEN 'v2_active_hold_quantity_exceeds_reviewed_quantity'
         WHEN source.shipped_qty > source.physical_clean_qty + 0.0005
           THEN 'shipped_quantity_exceeds_clean_quantity'
+        WHEN source.source_receipt_model = 'v2_exact'
+         AND source.shipped_qty > source.reviewed_qty + 0.0005
+          THEN 'v2_shipped_quantity_exceeds_reviewed_quantity'
         WHEN source.active_hold_qty + source.shipped_qty
              > source.physical_clean_qty + 0.0005
           THEN 'active_hold_and_shipped_exceed_clean_quantity'
+        WHEN source.source_receipt_model = 'v2_exact'
+         AND source.active_hold_qty + source.shipped_qty
+             > source.reviewed_qty + 0.0005
+          THEN 'v2_active_hold_and_shipped_exceed_reviewed_quantity'
         WHEN source.customer_released_qty > source.shipped_qty + 0.0005
           THEN 'customer_release_exceeds_shipped_quantity'
         WHEN source.remedy_assigned_qty
@@ -410,7 +427,7 @@ $function$;
 COMMENT ON FUNCTION
   public.internal_tracking_allocation_fulfilment_position_v1(uuid,uuid,uuid)
 IS
-'Private scoped exact quantity authority per tracking allocation. Legacy received-clean remains fully clean; no receipt, uncertain legacy non-clean, unproven holds and broken cumulative invariants fail closed with an explicit blocker.';
+'Private scoped exact quantity authority per tracking allocation. Legacy received-clean remains fully clean; v2 hold/shipment quantity cannot exceed exact reviewed clean quantity; no receipt, uncertain legacy non-clean, unproven holds and broken cumulative invariants fail closed with an explicit blocker.';
 
 REVOKE ALL ON FUNCTION
   public.internal_tracking_allocation_fulfilment_position_v1(uuid,uuid,uuid)
