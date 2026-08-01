@@ -19,6 +19,7 @@ declare
   v_active_line_count integer;
   v_physical_line_count integer;
   v_non_manual_line_count integer;
+  v_invalid_legacy_qty_count integer;
   v_first_line_id uuid;
   v_child_id uuid;
   v_legacy_qty integer;
@@ -74,13 +75,19 @@ begin
     count(*),
     count(*) filter (where dl.physical_remedy_allocation_id is not null),
     count(*) filter (where sil.line_source is distinct from 'manually_added'),
-    min(dl.id),
+    count(*) filter (
+      where dl.qty_impact is null
+         or abs(dl.qty_impact) <= 0
+         or trunc(abs(dl.qty_impact)) <> abs(dl.qty_impact)
+    ),
+    (array_agg(dl.id order by dl.id))[1],
     coalesce(sum(abs(dl.qty_impact)), 0)::integer,
     coalesce(sum(abs(dl.amount_impact_gbp)), 0)::numeric
   into
     v_active_line_count,
     v_physical_line_count,
     v_non_manual_line_count,
+    v_invalid_legacy_qty_count,
     v_first_line_id,
     v_legacy_qty,
     v_legacy_amount
@@ -118,8 +125,8 @@ begin
       raise exception 'Legacy replacement child creation requires manual missing-item lines';
     end if;
 
-    if v_legacy_qty <= 0 then
-      raise exception 'Legacy replacement child creation requires a positive quantity';
+    if v_invalid_legacy_qty_count > 0 or v_legacy_qty <= 0 then
+      raise exception 'Legacy replacement child creation requires positive whole-unit quantities';
     end if;
 
     if v_legacy_amount <= 0 then
