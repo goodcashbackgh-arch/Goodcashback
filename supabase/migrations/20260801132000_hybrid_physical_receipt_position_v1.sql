@@ -14,6 +14,7 @@ BEGIN
      OR to_regclass('public.customer_review_cycle_memberships') IS NULL
      OR to_regclass('public.customer_hold_review_memberships') IS NULL
      OR to_regclass('public.shipper_shipment_batches') IS NULL
+     OR to_regclass('public.shipper_shipment_batch_packages') IS NULL
      OR to_regclass('public.customer_sales_release_lines') IS NULL
   THEN
     RAISE EXCEPTION 'Hybrid receipt position prerequisites are missing.';
@@ -189,17 +190,28 @@ AS $function$
         )
     )
   ),
+  relevant_batches AS (
+    SELECT DISTINCT batch_row.id AS shipment_batch_id
+    FROM public.shipper_shipment_batches batch_row
+    JOIN public.shipper_shipment_batch_packages package_row
+      ON package_row.shipment_batch_id = batch_row.id
+     AND package_row.active = true
+    JOIN allocation_scope scope
+      ON scope.order_id = package_row.order_id
+     AND scope.tracking_submission_id = package_row.tracking_submission_id
+    WHERE batch_row.status <> 'voided'
+  ),
   shipped AS (
     SELECT
       effective_line.tracking_line_allocation_id,
       COALESCE(SUM(effective_line.qty_in_shipment), 0)::numeric AS shipped_qty
-    FROM public.shipper_shipment_batches batch_row
+    FROM relevant_batches relevant_batch
     CROSS JOIN LATERAL
-      public.shipper_shipment_batch_effective_lines_v1(batch_row.id)
-        effective_line
+      public.shipper_shipment_batch_effective_lines_v1(
+        relevant_batch.shipment_batch_id
+      ) effective_line
     JOIN allocation_scope scope
       ON scope.id = effective_line.tracking_line_allocation_id
-    WHERE batch_row.status <> 'voided'
     GROUP BY effective_line.tracking_line_allocation_id
   ),
   released AS (
