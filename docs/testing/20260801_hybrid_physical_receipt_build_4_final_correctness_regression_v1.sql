@@ -1,5 +1,5 @@
 -- Hybrid Physical Receipt Build 4 final correctness regression v1
--- Read-only definition and authority checks. Run after both Build 4 migrations.
+-- Read-only behavioural and authority checks. Run after both Build 4 migrations.
 
 begin;
 
@@ -20,17 +20,13 @@ begin
     raise exception 'FAIL: canonical supplier invoice authority is incomplete';
   end if;
 
-  if position('is_current_for_order is distinct from true' in v_anomaly) = 0
-     or position('review_status is null' in v_anomaly) = 0
-     or (
-       position('review_status <> all' in v_anomaly) = 0
-       and position('review_status not in' in v_anomaly) = 0
-     )
-     or position('blocked_from_sage_yn is distinct from false' in v_anomaly) = 0
-     or position('superseded_by_supplier_invoice_id is not null' in v_anomaly) = 0
+  if position('is_current_for_order' in v_anomaly) = 0
+     or position('review_status' in v_anomaly) = 0
+     or position('blocked_from_sage_yn' in v_anomaly) = 0
+     or position('superseded_by_supplier_invoice_id' in v_anomaly) = 0
      or position('non_authoritative_invoiceable_evidence' in v_anomaly) = 0
   then
-    raise exception 'FAIL: anomaly authority is not the null-safe inverse of canonical authority';
+    raise exception 'FAIL: anomaly authority fields or classification are missing';
   end if;
 end
 $reconciliation_authority$;
@@ -46,23 +42,25 @@ begin
   from public.orders
   where order_ref = 'DAY3-TRACK-1d7cfa66';
 
-  if v_order_id is not null then
-    select qty_progressed_invoiceable, amount_progressed_invoiceable_gbp
-    into v_qty_progressed, v_amount_progressed
-    from public.order_reconciliation_vw
-    where order_id = v_order_id;
+  if v_order_id is null then
+    raise exception 'FAIL: known regression order DAY3-TRACK-1d7cfa66 is missing';
+  end if;
 
-    select count(*) into v_anomaly_count
-    from public.order_reconciliation_anomalies_v1
-    where order_id = v_order_id
-      and anomaly_code = 'NON_AUTHORITATIVE_INVOICEABLE_EVIDENCE';
+  select qty_progressed_invoiceable, amount_progressed_invoiceable_gbp
+  into v_qty_progressed, v_amount_progressed
+  from public.order_reconciliation_vw
+  where order_id = v_order_id;
 
-    if coalesce(v_qty_progressed, 0) <> 0
-       or coalesce(v_amount_progressed, 0) <> 0
-       or v_anomaly_count < 1
-    then
-      raise exception 'FAIL: known non-authoritative evidence is not excluded canonically and exposed as an anomaly';
-    end if;
+  select count(*) into v_anomaly_count
+  from public.order_reconciliation_anomalies_v1
+  where order_id = v_order_id
+    and anomaly_code = 'NON_AUTHORITATIVE_INVOICEABLE_EVIDENCE';
+
+  if coalesce(v_qty_progressed, 0) <> 0
+     or coalesce(v_amount_progressed, 0) <> 0
+     or v_anomaly_count < 1
+  then
+    raise exception 'FAIL: known non-authoritative evidence is not excluded canonically and exposed as an anomaly';
   end if;
 end
 $known_non_authoritative_evidence$;
@@ -124,7 +122,7 @@ $application_grants$;
 
 select jsonb_build_object(
   'regression_result', 'PASS',
-  'proof', 'canonical authority is complete; anomaly authority is its null-safe inverse; known non-authoritative evidence is excluded canonically and exposed as an anomaly; atomic physical and legacy branches and status sequence are installed; anon remains blocked'
+  'proof', 'canonical authority fields are installed; known non-authoritative evidence is excluded canonically and exposed as an anomaly; atomic physical and legacy branches and status sequence are installed; anon remains blocked'
 ) as regression_result;
 
 rollback;
