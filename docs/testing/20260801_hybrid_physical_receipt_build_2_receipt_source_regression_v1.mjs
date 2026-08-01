@@ -22,10 +22,16 @@ const receiptRpcPath =
   "supabase/migrations/20260801140000_hybrid_physical_receipt_v2_rpc_v1.sql";
 const importerRpcPath =
   "supabase/migrations/20260801141000_hybrid_physical_receipt_importer_proposal_rpc_v1.sql";
+const compatibilityPath =
+  "supabase/migrations/20260801142000_hybrid_physical_receipt_dispute_compatibility_v1.sql";
+const supervisorRpcPath =
+  "supabase/migrations/20260801143000_hybrid_physical_receipt_supervisor_initial_decision_rpc_v1.sql";
 const receiptRegressionPath =
   "docs/testing/20260801_hybrid_physical_receipt_build_2_receipt_regression_v2.sql";
 const importerRegressionPath =
   "docs/testing/20260801_hybrid_physical_receipt_build_2_importer_proposal_regression_v1.sql";
+const supervisorRegressionPath =
+  "docs/testing/20260801_hybrid_physical_receipt_build_2_supervisor_decision_regression_v1.sql";
 
 const allowed = new Set([
   alignmentPath,
@@ -33,8 +39,11 @@ const allowed = new Set([
   guardPath,
   receiptRpcPath,
   importerRpcPath,
+  compatibilityPath,
+  supervisorRpcPath,
   receiptRegressionPath,
   importerRegressionPath,
+  supervisorRegressionPath,
   "docs/testing/20260801_hybrid_physical_receipt_build_2_receipt_source_regression_v1.mjs",
 ]);
 
@@ -56,13 +65,18 @@ const impact = readFileSync(impactPath, "utf8");
 const guard = readFileSync(guardPath, "utf8");
 const receiptRpc = readFileSync(receiptRpcPath, "utf8");
 const importerRpc = readFileSync(importerRpcPath, "utf8");
+const compatibility = readFileSync(compatibilityPath, "utf8");
+const supervisorRpc = readFileSync(supervisorRpcPath, "utf8");
 const receiptRegression = readFileSync(receiptRegressionPath, "utf8");
 const importerRegression = readFileSync(importerRegressionPath, "utf8");
+const supervisorRegression = readFileSync(supervisorRegressionPath, "utf8");
 
 for (const [path, text] of [
   [guardPath, guard],
   [receiptRpcPath, receiptRpc],
   [importerRpcPath, importerRpc],
+  [compatibilityPath, compatibility],
+  [supervisorRpcPath, supervisorRpc],
 ]) {
   const beginCount = (text.match(/^BEGIN;$/gm) || []).length;
   const commitCount = (text.match(/^COMMIT;$/gm) || []).length;
@@ -72,14 +86,44 @@ for (const [path, text] of [
   if (/\bDROP\s+(TABLE|VIEW|FUNCTION|SCHEMA)\b/i.test(text)) {
     fail(`${path} contains destructive DROP`);
   }
-  if (/CREATE\s+OR\s+REPLACE/i.test(text)) {
-    fail(`${path} replaces an existing object`);
-  }
   if (/\bCASCADE\b/i.test(text)) fail(`${path} contains CASCADE`);
 }
 
-if (!(guardPath < receiptRpcPath && receiptRpcPath < importerRpcPath)) {
-  fail("Build 2 migrations are not ordered guard -> receipt RPC -> importer RPC");
+for (const [path, text] of [
+  [guardPath, guard],
+  [receiptRpcPath, receiptRpc],
+  [importerRpcPath, importerRpc],
+  [supervisorRpcPath, supervisorRpc],
+]) {
+  if (/CREATE\s+OR\s+REPLACE/i.test(text)) {
+    fail(`${path} replaces an existing object`);
+  }
+}
+
+const replacements =
+  compatibility.match(/CREATE\s+OR\s+REPLACE\s+FUNCTION/gi) || [];
+if (replacements.length !== 1) {
+  fail("compatibility migration must replace exactly one audited function");
+}
+if (
+  !/CREATE\s+OR\s+REPLACE\s+FUNCTION\s+public\.physical_remedy_allocation_guard_v1\s*\(\s*\)/i.test(
+    compatibility,
+  )
+) {
+  fail("compatibility migration replaces an unaudited object");
+}
+
+if (
+  !(
+    guardPath < receiptRpcPath &&
+    receiptRpcPath < importerRpcPath &&
+    importerRpcPath < compatibilityPath &&
+    compatibilityPath < supervisorRpcPath
+  )
+) {
+  fail(
+    "Build 2 migrations are not ordered guard -> receipt -> importer -> compatibility -> supervisor",
+  );
 }
 
 const protectedNames = [
@@ -109,12 +153,10 @@ for (const name of protectedNames) {
     `CREATE\\s+(?:OR\\s+REPLACE\\s+)?(?:FUNCTION|VIEW)\\s+public\\.${name}\\b`,
     "i",
   );
-  if (
-    createPattern.test(guard) ||
-    createPattern.test(receiptRpc) ||
-    createPattern.test(importerRpc)
-  ) {
-    fail(`protected existing object is created/replaced: ${name}`);
+  for (const text of [guard, receiptRpc, importerRpc, compatibility, supervisorRpc]) {
+    if (createPattern.test(text)) {
+      fail(`protected existing object is created/replaced: ${name}`);
+    }
   }
 }
 
@@ -190,9 +232,59 @@ for (const prohibited of [
   }
 }
 
+for (const token of [
+  "physical_remedy_allocation_id",
+  "physical_receipt_review_dispute_links",
+  "uq_dispute_lines_open_legacy",
+  "uq_dispute_lines_open_physical",
+  "physical_review_dispute_link_guard_v1",
+  "physical_dispute_line_guard_v1",
+  "Physical review/dispute links are immutable",
+  "approved whole-unit remedy",
+  "physical_receipt_review_dispute_links link_row",
+]) {
+  if (!compatibility.includes(token)) {
+    fail(`compatibility migration missing required control: ${token}`);
+  }
+}
+
+for (const token of [
+  "staff_decide_physical_receipt_review_v1",
+  "awaiting_supervisor_review",
+  "return_for_information",
+  "approve_existing_exception",
+  "Every active importer proposal row must be explicitly decided",
+  "Return for information if a different split is required",
+  "Fractional quantities are not rounded",
+  "physical_remedy_allocation_id IS NULL",
+  "at_ghana_delivery",
+  "physical_receipt_review_dispute_links",
+  "CASE link_row.desired_outcome WHEN 'refund' THEN 1 ELSE 2 END",
+  "linked_to_exception",
+]) {
+  if (!supervisorRpc.includes(token)) {
+    fail(`supervisor RPC missing required control: ${token}`);
+  }
+}
+
+for (const prohibited of [
+  "DELETE FROM public.physical_exception_remedy_allocations",
+  "create_replacement_child_order(",
+  "replacement_child_order_id =",
+  "customer_commercial_value_gbp =",
+  "supplier_claim_amount_gbp =",
+  "status = 'refunded'",
+  "status = 'replaced'",
+]) {
+  if (supervisorRpc.includes(prohibited)) {
+    fail(`supervisor RPC writes prohibited completion fact: ${prohibited}`);
+  }
+}
+
 for (const [path, text] of [
   [receiptRegressionPath, receiptRegression],
   [importerRegressionPath, importerRegression],
+  [supervisorRegressionPath, supervisorRegression],
 ]) {
   if (!text.trimEnd().endsWith("ROLLBACK;")) {
     fail(`${path} must end with ROLLBACK`);
