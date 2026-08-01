@@ -32,7 +32,11 @@ export default function ProposalForm({ reviewId, dispositions, disabled }: { rev
     for (const row of rows) map.set(row.receipt_line_disposition_id, (map.get(row.receipt_line_disposition_id) ?? 0) + Number(row.proposed_remedy_qty || 0));
     return map;
   }, [rows]);
-  const invalid = rows.length === 0 || rows.some((row) => row.proposed_remedy_qty <= 0 || (totals.get(row.receipt_line_disposition_id) ?? 0) > (limits.get(row.receipt_line_disposition_id) ?? 0));
+  const invalid = rows.length === 0 || rows.some((row) =>
+    !Number.isInteger(row.proposed_remedy_qty)
+    || row.proposed_remedy_qty <= 0
+    || (totals.get(row.receipt_line_disposition_id) ?? 0) > (limits.get(row.receipt_line_disposition_id) ?? 0)
+  );
 
   function update(key: string, patch: Partial<ProposalRow>) {
     setRows((current) => current.map((row) => row.key === key ? { ...row, ...patch } : row));
@@ -75,12 +79,12 @@ export default function ProposalForm({ reviewId, dispositions, disabled }: { rev
                       <option value="hold_investigate">Hold / investigate</option>
                       <option value="no_action">No action</option>
                     </select>
-                    <input disabled={disabled} type="number" min="1" step="1" value={row.proposed_remedy_qty} onChange={(event) => update(row.key, { proposed_remedy_qty: Number(event.target.value) })} className="rounded-lg border border-slate-300 bg-white px-3 py-2" />
+                    <input disabled={disabled} type="number" min="1" step="1" inputMode="numeric" value={row.proposed_remedy_qty} onChange={(event) => update(row.key, { proposed_remedy_qty: Number(event.target.value) })} className="rounded-lg border border-slate-300 bg-white px-3 py-2" />
                     <button type="button" disabled={disabled || rows.filter((item) => item.receipt_line_disposition_id === disposition.id).length === 1} onClick={() => setRows((current) => current.filter((item) => item.key !== row.key))} className="rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:opacity-40">Remove</button>
                   </div>
                 ))}
               </div>
-              <div className={`mt-2 text-sm ${used > limit ? "text-rose-700" : "text-slate-600"}`}>Proposed {used} of {limit}</div>
+              <div className={`mt-2 text-sm ${used > limit || !Number.isInteger(used) ? "text-rose-700" : "text-slate-600"}`}>Proposed {used} of {limit} whole units</div>
             </section>
           );
         })}
