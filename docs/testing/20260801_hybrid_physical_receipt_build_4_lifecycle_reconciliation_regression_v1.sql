@@ -119,7 +119,7 @@ begin
 end
 $protected$;
 
--- 4. Replaced function grants remain present for current callers.
+-- 4. Current callers retain their grants and the atomic authority is staff-only.
 do $grants$
 begin
   if not has_function_privilege('authenticated', 'public.create_replacement_child_order(uuid,uuid,uuid,text)', 'EXECUTE') then
@@ -129,14 +129,23 @@ begin
   if not has_function_privilege('service_role', 'public.create_replacement_child_order(uuid,uuid,uuid,text)', 'EXECUTE') then
     raise exception 'FAIL: service_role lost create_replacement_child_order execute';
   end if;
+
+  if not has_function_privilege('authenticated', 'public.staff_accept_replacement_outcome_v1(uuid,uuid,text)', 'EXECUTE') then
+    raise exception 'FAIL: authenticated cannot execute atomic replacement acceptance';
+  end if;
+
+  if has_function_privilege('anon', 'public.staff_accept_replacement_outcome_v1(uuid,uuid,text)', 'EXECUTE') then
+    raise exception 'FAIL: anon can execute atomic replacement acceptance';
+  end if;
 end
 $grants$;
 
--- 5. Parent blocker must include unfinished and improperly cancelled replacement children.
+-- 5. Parent blocker must include unfinished and already-cancelled replacement children.
 do $parent_blocker$
 declare
   v_parent public.orders%rowtype;
-  v_child_id uuid := gen_random_uuid();
+  v_open_child_id uuid := gen_random_uuid();
+  v_cancelled_child_id uuid := gen_random_uuid();
   v_parent_id uuid := gen_random_uuid();
   v_ref_suffix text := replace(gen_random_uuid()::text, '-', '');
 begin
@@ -167,7 +176,7 @@ begin
     order_total_gbp_declared, total_qty_declared, status, sop_version,
     created_at, updated_at
   ) values (
-    v_child_id, 'B4-CHILD-' || left(v_ref_suffix, 12), v_parent.importer_id,
+    v_open_child_id, 'B4-OPEN-' || left(v_ref_suffix, 12), v_parent.importer_id,
     v_parent.operator_id, v_parent.shipper_id, v_parent.retailer_id,
     v_parent.destination_hub_id, v_parent_id, 'replacement_child',
     10, 1, 'evidence_collecting', v_parent.sop_version, now(), now()
@@ -177,7 +186,19 @@ begin
     raise exception 'FAIL: unfinished replacement child did not block parent';
   end if;
 
-  update public.orders set status = 'cancelled' where id = v_child_id;
+  delete from public.orders where id = v_open_child_id;
+
+  insert into public.orders (
+    id, order_ref, importer_id, operator_id, shipper_id, retailer_id,
+    destination_hub_id, parent_order_id, order_type,
+    order_total_gbp_declared, total_qty_declared, status, sop_version,
+    created_at, updated_at
+  ) values (
+    v_cancelled_child_id, 'B4-CANCEL-' || left(v_ref_suffix, 10), v_parent.importer_id,
+    v_parent.operator_id, v_parent.shipper_id, v_parent.retailer_id,
+    v_parent.destination_hub_id, v_parent_id, 'replacement_child',
+    10, 1, 'cancelled', v_parent.sop_version, now(), now()
+  );
 
   if not public.order_has_open_child_exceptions(v_parent_id) then
     raise exception 'FAIL: cancelled replacement child without reroute did not block parent';
@@ -187,7 +208,7 @@ $parent_blocker$;
 
 select jsonb_build_object(
   'regression_result', 'PASS',
-  'proof', 'public reconciliation contract preserved; DAY3 pending-review qty 3 / GBP 155 excluded from canonical qty 1 / GBP 100 order and exposed as anomalies; protected authorities and grants unchanged; unfinished and unrouted-cancelled replacement children block the parent'
+  'proof', 'public reconciliation contract preserved; DAY3 pending-review qty 3 / GBP 155 excluded from canonical qty 1 / GBP 100 order and exposed as anomalies; protected authorities and grants unchanged; atomic replacement authority installed; unfinished and unrouted-cancelled replacement children block the parent'
 ) as regression_result;
 
 rollback;
