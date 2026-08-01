@@ -18,7 +18,17 @@ For each exact tracking allocation:
 
 Database numeric precision remains unchanged for provenance and downstream arithmetic. The UI must not imply that fractional physical units are accepted.
 
-## 2. Required operational navigation and workload badges
+## 2. Whole-unit remedy proposals and decisions
+
+Every importer physical-remedy proposal quantity is a whole unit because its source affected quantity is a whole physical unit. This applies to refund, replacement, hold/investigate and no-action proposals.
+
+The importer may split several affected units across several remedy rows, but every row quantity must be a positive integer and the sum for one source disposition must not exceed that disposition's affected quantity.
+
+The supervisor may reduce an individual proposed quantity but may not invent a different split. Refund and replacement approvals remain explicitly fail-closed against fractional quantities. A changed split must be returned to the importer for a replacement proposal on the same review.
+
+Database numeric columns remain unchanged; the application and write authorities must reject fractional physical-remedy quantities rather than round them.
+
+## 3. Required operational navigation, queues and workload badges
 
 The importer workspace must expose a visible `Physical Receipt Exceptions` entry point. The internal supervisor workspace must expose a visible `Physical Receipt Reviews` entry point.
 
@@ -27,9 +37,11 @@ Each entry point must show a role-scoped count badge for work currently requirin
 - importer: `awaiting_importer_proposal` and `returned_for_information`;
 - supervisor: `awaiting_supervisor_review`.
 
+The default importer queue must contain only those importer-actionable states. The default supervisor queue must contain only `awaiting_supervisor_review`. Completed, rejected, linked, superseded and otherwise non-actionable reviews may appear only through an explicit history view or filter and must not inflate the action badge.
+
 A route that is reachable only by manually entering a UUID does not satisfy this contract.
 
-## 3. Role-scoped read authorities
+## 4. Role-scoped read and evidence authorities
 
 Where ordinary table RLS does not safely expose all facts required by the importer or supervisor queue/detail pages, implementation must add narrow `SECURITY DEFINER` read RPCs.
 
@@ -43,47 +55,52 @@ Those RPCs must:
 - revoke execution from `PUBLIC` and `anon` and grant only to `authenticated`;
 - perform no writes and replace no lifecycle, reconciliation, dispute, refund, replacement or shipment authority.
 
-## 4. Importer and supervisor UI completeness
+Receipt evidence access must be authorised for the same review and role before a signed URL or file response is produced. Existing storage policies may be reused only when they already enforce that scope. Implementation must not broaden the `invoice-evidence` bucket globally or expose raw storage paths as proof of access. If existing storage RLS is insufficient, add a narrow server-side evidence authority that independently rechecks importer tenancy or active supervisor/admin status for the exact review and object path.
+
+## 5. Importer and supervisor UI completeness
 
 The importer `Physical Receipt Exceptions` section must provide:
 
-- a role-scoped queue and count;
-- a detail view with immutable receipt, affected disposition, quantity, condition note and evidence facts;
-- one or more proposal rows for refund, replacement, hold/investigate or no action;
+- a role-scoped actionable queue and count;
+- a detail view with immutable receipt, affected disposition, quantity, condition note and authorised evidence facts;
+- one or more whole-unit proposal rows for refund, replacement, hold/investigate or no action;
 - exact quantity validation and split-proposal support;
 - return-for-information note visibility and resubmission;
 - submission only through `operator_submit_physical_receipt_proposal_v1`.
 
 The supervisor `Physical Receipt Reviews` section must provide:
 
-- a role-scoped queue and count;
+- a role-scoped actionable queue and count;
 - a detail view with immutable receipt evidence and every active importer proposal row;
 - an explicit decision for every active proposal row;
+- decision-specific controls that cannot submit incompatible remedy types or liable-party values;
 - return for information, reject, close no action, approve investigation and approve existing exception decisions;
-- whole-unit fail-closed handling for refund and replacement;
+- whole-unit fail-closed handling for every physical remedy quantity and specifically for downstream refund and replacement routes;
 - supplier-cost mode for replacement decisions;
 - display of every linked dispute after linkage;
 - submission only through `staff_decide_physical_receipt_review_v1`.
 
 After linkage, the existing importer and internal dispute routes remain authoritative.
 
-## 5. Required regression coverage
+## 6. Required regression coverage
 
-Before merge, source and browser regression must prove at minimum:
+Before merge, source, rollback-only database and browser regression must prove at minimum:
 
 1. importer and supervisor navigation entries and count badges are present;
-2. unauthenticated and wrong-role access fails closed;
-3. importer reads cannot cross importer tenancy;
-4. importer proposal payloads contain no supervisor-only fields;
-5. split proposals cannot exceed the exact affected disposition quantity;
-6. supervisor decisions cover every active proposal row;
-7. fractional refund or replacement quantities are rejected without rounding;
-8. return-for-information reopens the same review rather than creating another review;
-9. multiple evidence references and all linked disputes are displayed;
-10. existing dispute pages remain the operational route after linkage;
-11. no service-role credential or elevated browser client is introduced;
-12. database regressions end in `ROLLBACK`.
+2. default queues contain only role-actionable reviews and history does not inflate badges;
+3. unauthenticated and wrong-role access fails closed;
+4. importer reads cannot cross importer tenancy or use revoked access;
+5. evidence access is denied outside the exact authorised review and succeeds for authorised importer/supervisor users;
+6. importer proposal payloads contain no supervisor-only fields;
+7. split proposals cannot exceed the exact affected disposition quantity and fractional proposal quantities are rejected without rounding;
+8. supervisor decisions cover every active proposal row and the UI prevents decision-incompatible combinations;
+9. fractional refund or replacement quantities are rejected without rounding;
+10. return-for-information reopens the same review rather than creating another review;
+11. multiple evidence references and all linked disputes are displayed;
+12. existing dispute pages remain the operational route after linkage;
+13. no service-role credential or elevated browser client is introduced;
+14. database regressions end in `ROLLBACK`.
 
-## 6. Documentation precedence correction
+## 7. Documentation precedence correction
 
-Any earlier Build 3 wording that describes independently editable `numeric(12,3)` clean and affected shipper fields is superseded by section 1 of this amendment. Exact numeric database provenance is preserved; the physical-entry UI is whole-unit and clean quantity is derived.
+Any earlier Build 3 wording that describes independently editable `numeric(12,3)` clean and affected shipper fields, fractional physical-remedy entry, or unfiltered combined operational/history queues is superseded by this amendment. Exact numeric database provenance is preserved; physical-entry and physical-remedy UI quantities are whole-unit, clean quantity is derived, and the default queues are action-only.
