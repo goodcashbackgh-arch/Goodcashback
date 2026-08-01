@@ -20,27 +20,61 @@ type DecisionRow = {
   supplier_cost_mode: SupplierCostMode;
 };
 
-function rowForDecision(proposal: Proposal, decision: Decision): DecisionRow {
+function allTypes(proposals: Proposal[], allowed: RemedyType[]) {
+  return proposals.length > 0 && proposals.every((proposal) => allowed.includes(proposal.proposed_remedy_type as RemedyType));
+}
+
+function initialDecision(proposals: Proposal[]): Decision {
+  if (allTypes(proposals, ["refund", "replacement"])) return "approve_existing_exception";
+  if (allTypes(proposals, ["hold_investigate"])) return "approve_investigation";
+  if (allTypes(proposals, ["no_action"])) return "close_no_action";
+  return "return_for_information";
+}
+
+function rowForDecision(proposal: Proposal, decision: Decision): DecisionRow | null {
   const proposedType = proposal.proposed_remedy_type as RemedyType;
-  const approvedType: RemedyType = decision === "approve_investigation"
-    ? "hold_investigate"
-    : decision === "close_no_action"
-      ? "no_action"
-      : proposedType === "refund" || proposedType === "replacement"
-        ? proposedType
-        : "refund";
-  return {
-    remedy_allocation_id: proposal.id,
-    approved_remedy_type: approvedType,
-    approved_remedy_qty: Number(proposal.proposed_remedy_qty),
-    supplier_cost_mode: approvedType === "replacement" ? "pending_supplier_evidence" : "not_applicable",
-  };
+
+  if (decision === "approve_existing_exception") {
+    if (proposedType !== "refund" && proposedType !== "replacement") return null;
+    return {
+      remedy_allocation_id: proposal.id,
+      approved_remedy_type: proposedType,
+      approved_remedy_qty: Number(proposal.proposed_remedy_qty),
+      supplier_cost_mode: proposedType === "replacement" ? "pending_supplier_evidence" : "not_applicable",
+    };
+  }
+
+  if (decision === "approve_investigation") {
+    return {
+      remedy_allocation_id: proposal.id,
+      approved_remedy_type: "hold_investigate",
+      approved_remedy_qty: Number(proposal.proposed_remedy_qty),
+      supplier_cost_mode: "not_applicable",
+    };
+  }
+
+  if (decision === "close_no_action") {
+    return {
+      remedy_allocation_id: proposal.id,
+      approved_remedy_type: "no_action",
+      approved_remedy_qty: Number(proposal.proposed_remedy_qty),
+      supplier_cost_mode: "not_applicable",
+    };
+  }
+
+  return null;
+}
+
+function rowsForDecision(proposals: Proposal[], decision: Decision) {
+  return proposals.map((proposal) => rowForDecision(proposal, decision)).filter((row): row is DecisionRow => row !== null);
 }
 
 export default function DecisionForm({ reviewId, proposals, disabled }: { reviewId: string; proposals: Proposal[]; disabled?: boolean }) {
-  const [decision, setDecision] = useState<Decision>("approve_existing_exception");
-  const [rows, setRows] = useState<DecisionRow[]>(proposals.map((proposal) => rowForDecision(proposal, "approve_existing_exception")));
-  const [liableParty, setLiableParty] = useState("retailer");
+  const canApproveExisting = allTypes(proposals, ["refund", "replacement"]);
+  const startingDecision = initialDecision(proposals);
+  const [decision, setDecision] = useState<Decision>(startingDecision);
+  const [rows, setRows] = useState<DecisionRow[]>(rowsForDecision(proposals, startingDecision));
+  const [liableParty, setLiableParty] = useState(startingDecision === "close_no_action" ? "no_liability" : "retailer");
 
   const allocationDecision = !["return_for_information", "reject"].includes(decision);
   const allowedTypes: RemedyType[] = decision === "approve_investigation"
@@ -52,6 +86,7 @@ export default function DecisionForm({ reviewId, proposals, disabled }: { review
   const invalid = useMemo(() => {
     if (!allocationDecision) return false;
     if (rows.length !== proposals.length) return true;
+    if (decision === "approve_existing_exception" && !canApproveExisting) return true;
     if (decision === "close_no_action" && liableParty !== "no_liability") return true;
     if (decision === "approve_existing_exception" && liableParty === "no_liability") return true;
     return rows.some((row, index) => {
@@ -63,11 +98,12 @@ export default function DecisionForm({ reviewId, proposals, disabled }: { review
         || (row.approved_remedy_type === "replacement" && row.supplier_cost_mode === "not_applicable")
         || (row.approved_remedy_type !== "replacement" && row.supplier_cost_mode !== "not_applicable");
     });
-  }, [allocationDecision, allowedTypes, decision, liableParty, proposals, rows]);
+  }, [allocationDecision, allowedTypes, canApproveExisting, decision, liableParty, proposals, rows]);
 
   function changeDecision(next: Decision) {
+    if (next === "approve_existing_exception" && !canApproveExisting) return;
     setDecision(next);
-    setRows(proposals.map((proposal) => rowForDecision(proposal, next)));
+    setRows(rowsForDecision(proposals, next));
     if (next === "close_no_action") setLiableParty("no_liability");
     else if (liableParty === "no_liability") setLiableParty("unknown");
   }
@@ -88,13 +124,15 @@ export default function DecisionForm({ reviewId, proposals, disabled }: { review
 
     <label className="block"><span className="text-sm font-semibold">Decision</span>
       <select name="decision" value={decision} onChange={(event) => changeDecision(event.target.value as Decision)} disabled={disabled} className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2">
-        <option value="approve_existing_exception">Approve existing exception route</option>
+        <option value="approve_existing_exception" disabled={!canApproveExisting}>Approve existing exception route</option>
         <option value="approve_investigation">Approve investigation</option>
         <option value="close_no_action">Close — no action</option>
         <option value="return_for_information">Return for information</option>
         <option value="reject">Reject</option>
       </select>
     </label>
+
+    {!canApproveExisting ? <p className="rounded-xl bg-amber-50 p-3 text-sm text-amber-900">Approve existing exception is unavailable because at least one importer proposal is hold/investigate or no action. Choose an explicit compatible decision or return the review for correction.</p> : null}
 
     {allocationDecision ? <div className="space-y-3">
       {rows.map((row, index) => <div key={row.remedy_allocation_id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
