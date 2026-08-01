@@ -3,6 +3,10 @@
 import { useMemo, useState } from "react";
 import { decidePhysicalReceiptReviewAction } from "./actions";
 
+type RemedyType = "refund" | "replacement" | "hold_investigate" | "no_action";
+type Decision = "approve_existing_exception" | "approve_investigation" | "close_no_action" | "return_for_information" | "reject";
+type SupplierCostMode = "not_applicable" | "free_replacement" | "charged_repurchase" | "pending_supplier_evidence";
+
 type Proposal = {
   id: string;
   proposed_remedy_type: string;
@@ -11,30 +15,62 @@ type Proposal = {
 
 type DecisionRow = {
   remedy_allocation_id: string;
-  approved_remedy_type: "refund" | "replacement" | "hold_investigate" | "no_action";
+  approved_remedy_type: RemedyType;
   approved_remedy_qty: number;
-  supplier_cost_mode: "not_applicable" | "free_replacement" | "charged_repurchase" | "pending_supplier_evidence";
+  supplier_cost_mode: SupplierCostMode;
 };
 
-export default function DecisionForm({ reviewId, proposals, disabled }: { reviewId: string; proposals: Proposal[]; disabled?: boolean }) {
-  const [decision, setDecision] = useState("approve_existing_exception");
-  const [rows, setRows] = useState<DecisionRow[]>(proposals.map((proposal) => ({
+function rowForDecision(proposal: Proposal, decision: Decision): DecisionRow {
+  const proposedType = proposal.proposed_remedy_type as RemedyType;
+  const approvedType: RemedyType = decision === "approve_investigation"
+    ? "hold_investigate"
+    : decision === "close_no_action"
+      ? "no_action"
+      : proposedType === "refund" || proposedType === "replacement"
+        ? proposedType
+        : "refund";
+  return {
     remedy_allocation_id: proposal.id,
-    approved_remedy_type: proposal.proposed_remedy_type as DecisionRow["approved_remedy_type"],
+    approved_remedy_type: approvedType,
     approved_remedy_qty: Number(proposal.proposed_remedy_qty),
-    supplier_cost_mode: proposal.proposed_remedy_type === "replacement" ? "pending_supplier_evidence" : "not_applicable",
-  })));
+    supplier_cost_mode: approvedType === "replacement" ? "pending_supplier_evidence" : "not_applicable",
+  };
+}
+
+export default function DecisionForm({ reviewId, proposals, disabled }: { reviewId: string; proposals: Proposal[]; disabled?: boolean }) {
+  const [decision, setDecision] = useState<Decision>("approve_existing_exception");
+  const [rows, setRows] = useState<DecisionRow[]>(proposals.map((proposal) => rowForDecision(proposal, "approve_existing_exception")));
+  const [liableParty, setLiableParty] = useState("retailer");
 
   const allocationDecision = !["return_for_information", "reject"].includes(decision);
+  const allowedTypes: RemedyType[] = decision === "approve_investigation"
+    ? ["hold_investigate"]
+    : decision === "close_no_action"
+      ? ["no_action"]
+      : ["refund", "replacement"];
+
   const invalid = useMemo(() => {
     if (!allocationDecision) return false;
     if (rows.length !== proposals.length) return true;
+    if (decision === "close_no_action" && liableParty !== "no_liability") return true;
+    if (decision === "approve_existing_exception" && liableParty === "no_liability") return true;
     return rows.some((row, index) => {
       const proposed = Number(proposals[index]?.proposed_remedy_qty ?? 0);
-      const wholeRequired = ["refund", "replacement"].includes(row.approved_remedy_type);
-      return row.approved_remedy_qty <= 0 || row.approved_remedy_qty > proposed || (wholeRequired && !Number.isInteger(row.approved_remedy_qty));
+      return !allowedTypes.includes(row.approved_remedy_type)
+        || !Number.isInteger(row.approved_remedy_qty)
+        || row.approved_remedy_qty <= 0
+        || row.approved_remedy_qty > proposed
+        || (row.approved_remedy_type === "replacement" && row.supplier_cost_mode === "not_applicable")
+        || (row.approved_remedy_type !== "replacement" && row.supplier_cost_mode !== "not_applicable");
     });
-  }, [allocationDecision, rows, proposals]);
+  }, [allocationDecision, allowedTypes, decision, liableParty, proposals, rows]);
+
+  function changeDecision(next: Decision) {
+    setDecision(next);
+    setRows(proposals.map((proposal) => rowForDecision(proposal, next)));
+    if (next === "close_no_action") setLiableParty("no_liability");
+    else if (liableParty === "no_liability") setLiableParty("unknown");
+  }
 
   function update(id: string, patch: Partial<DecisionRow>) {
     setRows((current) => current.map((row) => {
@@ -51,7 +87,7 @@ export default function DecisionForm({ reviewId, proposals, disabled }: { review
     <input type="hidden" name="allocations_json" value={JSON.stringify(allocationDecision ? rows : [])} />
 
     <label className="block"><span className="text-sm font-semibold">Decision</span>
-      <select name="decision" value={decision} onChange={(event) => setDecision(event.target.value)} disabled={disabled} className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2">
+      <select name="decision" value={decision} onChange={(event) => changeDecision(event.target.value as Decision)} disabled={disabled} className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2">
         <option value="approve_existing_exception">Approve existing exception route</option>
         <option value="approve_investigation">Approve investigation</option>
         <option value="close_no_action">Close — no action</option>
@@ -64,20 +100,26 @@ export default function DecisionForm({ reviewId, proposals, disabled }: { review
       {rows.map((row, index) => <div key={row.remedy_allocation_id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
         <div className="text-sm text-slate-600">Importer proposed {proposals[index]?.proposed_remedy_type.replaceAll("_", " ")} · {Number(proposals[index]?.proposed_remedy_qty)}</div>
         <div className="mt-3 grid gap-3 md:grid-cols-3">
-          <select disabled={disabled} value={row.approved_remedy_type} onChange={(event) => update(row.remedy_allocation_id, { approved_remedy_type: event.target.value as DecisionRow["approved_remedy_type"] })} className="rounded-lg border border-slate-300 bg-white px-3 py-2">
-            <option value="refund">Refund</option><option value="replacement">Replacement</option><option value="hold_investigate">Hold / investigate</option><option value="no_action">No action</option>
+          <select disabled={disabled || allowedTypes.length === 1} value={row.approved_remedy_type} onChange={(event) => update(row.remedy_allocation_id, { approved_remedy_type: event.target.value as RemedyType })} className="rounded-lg border border-slate-300 bg-white px-3 py-2 disabled:bg-slate-100">
+            {allowedTypes.includes("refund") ? <option value="refund">Refund</option> : null}
+            {allowedTypes.includes("replacement") ? <option value="replacement">Replacement</option> : null}
+            {allowedTypes.includes("hold_investigate") ? <option value="hold_investigate">Hold / investigate</option> : null}
+            {allowedTypes.includes("no_action") ? <option value="no_action">No action</option> : null}
           </select>
-          <input disabled={disabled} type="number" min="1" step="1" value={row.approved_remedy_qty} onChange={(event) => update(row.remedy_allocation_id, { approved_remedy_qty: Number(event.target.value) })} className="rounded-lg border border-slate-300 bg-white px-3 py-2" />
-          <select disabled={disabled || row.approved_remedy_type !== "replacement"} value={row.supplier_cost_mode} onChange={(event) => update(row.remedy_allocation_id, { supplier_cost_mode: event.target.value as DecisionRow["supplier_cost_mode"] })} className="rounded-lg border border-slate-300 bg-white px-3 py-2 disabled:bg-slate-100">
-            <option value="not_applicable">Not applicable</option><option value="free_replacement">Free replacement</option><option value="charged_repurchase">Charged repurchase</option><option value="pending_supplier_evidence">Pending supplier evidence</option>
+          <input disabled={disabled} type="number" min="1" step="1" inputMode="numeric" value={row.approved_remedy_qty} onChange={(event) => update(row.remedy_allocation_id, { approved_remedy_qty: Number(event.target.value) })} className="rounded-lg border border-slate-300 bg-white px-3 py-2" />
+          <select disabled={disabled || row.approved_remedy_type !== "replacement"} value={row.supplier_cost_mode} onChange={(event) => update(row.remedy_allocation_id, { supplier_cost_mode: event.target.value as SupplierCostMode })} className="rounded-lg border border-slate-300 bg-white px-3 py-2 disabled:bg-slate-100">
+            {row.approved_remedy_type !== "replacement" ? <option value="not_applicable">Not applicable</option> : null}
+            <option value="free_replacement">Free replacement</option>
+            <option value="charged_repurchase">Charged repurchase</option>
+            <option value="pending_supplier_evidence">Pending supplier evidence</option>
           </select>
         </div>
       </div>)}
-      <p className="text-sm text-amber-800">Refund and replacement quantities must be whole units. A changed split must be returned to the importer; it cannot be invented here.</p>
+      <p className="text-sm text-amber-800">Every physical remedy quantity must be a whole unit. A changed split must be returned to the importer; it cannot be invented here.</p>
     </div> : null}
 
     <label className="block"><span className="text-sm font-semibold">Liable party</span>
-      <select name="liable_party" disabled={disabled} className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2">
+      <select name="liable_party" value={liableParty} onChange={(event) => setLiableParty(event.target.value)} disabled={disabled || decision === "close_no_action" || decision === "return_for_information" || decision === "reject"} className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 disabled:bg-slate-100">
         <option value="retailer">Retailer</option><option value="shipper">Shipper</option><option value="unknown">Unknown</option><option value="no_liability">No liability</option>
       </select>
     </label>
