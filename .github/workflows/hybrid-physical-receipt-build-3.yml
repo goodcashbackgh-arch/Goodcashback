@@ -1,0 +1,42 @@
+name: Build 3 shipper receipt validation
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/hybrid-physical-receipt-build-3.yml"
+      - "app/shipper/package-receipts/**"
+      - "docs/implementation/20260801_hybrid_physical_receipt_build_3_ui_activation_impact_map_v1.md"
+      - "docs/testing/20260801_hybrid_physical_receipt_build_3_*"
+      - "supabase/migrations/20260801150000_hybrid_physical_receipt_shipper_entry_read_v1.sql"
+
+permissions:
+  contents: read
+
+jobs:
+  source-and-types:
+    name: Build 3 source and TypeScript gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out pull request
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run frozen Build 3 source contract
+        env:
+          BASE_REF: origin/${{ github.base_ref }}
+        run: node docs/testing/20260801_hybrid_physical_receipt_build_3_ui_source_regression_v1.mjs
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies without changing lockfile
+        run: npm install --no-package-lock --ignore-scripts --no-audit --no-fund
+
+      - name: Run TypeScript validation
+        run: npx tsc --noEmit

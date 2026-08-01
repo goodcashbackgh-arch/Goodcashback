@@ -104,6 +104,7 @@ export default async function ShipperPackageReceiptsPage({
                   </div>
 
                   <div className="mt-3 flex flex-wrap gap-3 text-sm">
+                    <Link href={`/shipper/package-receipts/v2/${row.tracking_submission_id}`} className="rounded-xl bg-sky-700 px-3 py-2 font-semibold text-white hover:bg-sky-800">Open exact receipt</Link>
                     {row.tracking_evidence_url ? <a href={row.tracking_evidence_url} target="_blank" rel="noreferrer" className="font-semibold text-sky-700 underline">Open operator tracking evidence</a> : null}
                     {row.latest_receipt_evidence_url ? <a href={row.latest_receipt_evidence_url} target="_blank" rel="noreferrer" className="font-semibold text-sky-700 underline">Open receipt evidence</a> : null}
                   </div>
