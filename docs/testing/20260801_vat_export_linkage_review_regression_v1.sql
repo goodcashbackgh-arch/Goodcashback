@@ -14,7 +14,6 @@ BEGIN;
 SET LOCAL lock_timeout = '5s';
 SET LOCAL statement_timeout = '120s';
 
--- The private evidence bucket must accept the TSV MIME type advertised by the UI.
 DO $$
 DECLARE
   v_mimes text[];
@@ -33,8 +32,6 @@ BEGIN
   END IF;
 END $$;
 
--- Fail if the reviewed UUID bug is reintroduced. PostgreSQL does not provide
--- min(uuid); candidate selection must use an ordered UUID array or equivalent.
 DO $$
 DECLARE
   v_definition text;
@@ -61,10 +58,6 @@ BEGIN
   END IF;
 END $$;
 
--- Execute the exact conflict path when the database contains one suitable locked
--- breach and one later editable run. Two current reinstatements are inserted for
--- the same breach. The finaliser must supersede both and create blockers; it must
--- not fail on the partial unique index.
 DO $$
 DECLARE
   v_breach public.vat_return_run_lines%rowtype;
@@ -76,7 +69,7 @@ DECLARE
   v_superseded_count integer;
   v_blocker_count integer;
 BEGIN
-  SELECT b.*, br.period_end_date
+  SELECT b, br.period_end_date
   INTO v_breach, v_breach_period_end
   FROM public.vat_return_run_lines b
   JOIN public.vat_return_runs br
