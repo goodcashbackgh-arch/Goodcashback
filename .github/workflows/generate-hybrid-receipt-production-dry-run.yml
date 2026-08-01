@@ -1,0 +1,128 @@
+name: Generate hybrid receipt production dry run
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build one rollback-only SQL file
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          root = Path('.')
+          migrations = [
+              'supabase/migrations/20260801130000_hybrid_physical_receipt_foundation_v1.sql',
+              'supabase/migrations/20260801131000_hybrid_physical_receipt_integrity_v1.sql',
+              'supabase/migrations/20260801131500_hybrid_physical_receipt_concurrency_v1.sql',
+              'supabase/migrations/20260801131700_hybrid_physical_receipt_legacy_fail_closed_v1.sql',
+              'supabase/migrations/20260801132000_hybrid_physical_receipt_position_v1.sql',
+          ]
+          regressions = [
+              'docs/testing/20260801_hybrid_physical_receipt_foundation_regression_v1.sql',
+              'docs/testing/20260801_hybrid_physical_receipt_terminal_immutability_regression_v1.sql',
+          ]
+
+          def strip_transaction_wrapper(text: str, closing: str) -> str:
+              lines = text.splitlines()
+              begin_index = next(
+                  (i for i, line in enumerate(lines) if line.strip().upper() == 'BEGIN;'),
+                  None,
+              )
+              if begin_index is None:
+                  raise RuntimeError('BEGIN; wrapper not found')
+              del lines[begin_index]
+
+              close_index = next(
+                  (
+                      i
+                      for i in range(len(lines) - 1, -1, -1)
+                      if lines[i].strip().upper() == closing
+                  ),
+                  None,
+              )
+              if close_index is None:
+                  raise RuntimeError(f'{closing} wrapper not found')
+              del lines[close_index]
+              return '\n'.join(lines).strip() + '\n'
+
+          output = [
+              '-- HYBRID PHYSICAL RECEIPT FOUNDATION: PRODUCTION ROLLBACK-ONLY DRY RUN',
+              '-- Generated from the exact frozen Build 1 migrations and regressions.',
+              '-- Nothing is retained: the final statement is ROLLBACK.',
+              '-- Run as ONE complete query. Do not run only part of this file.',
+              '',
+              'BEGIN;',
+              "SET LOCAL lock_timeout = '15s';",
+              "SET LOCAL statement_timeout = '0';",
+              '',
+          ]
+
+          for path in migrations:
+              text = (root / path).read_text(encoding='utf-8')
+              body = strip_transaction_wrapper(text, 'COMMIT;')
+              output.extend([
+                  f'-- BEGIN SOURCE: {path}',
+                  body,
+                  f'-- END SOURCE: {path}',
+                  '',
+              ])
+
+          for path in regressions:
+              text = (root / path).read_text(encoding='utf-8')
+              body = strip_transaction_wrapper(text, 'ROLLBACK;')
+              output.extend([
+                  f'-- BEGIN SOURCE: {path}',
+                  body,
+                  f'-- END SOURCE: {path}',
+                  '',
+              ])
+
+          output.extend([
+              "DO $dry_run_complete$",
+              'BEGIN',
+              "  RAISE NOTICE 'PASS: complete hybrid receipt foundation production dry run reached final rollback.';",
+              'END',
+              '$dry_run_complete$;',
+              '',
+              'ROLLBACK;',
+              '',
+          ])
+
+          target = root / 'hybrid-physical-receipt-production-rollback-dry-run-v1.sql'
+          target.write_text('\n'.join(output), encoding='utf-8')
+
+          generated = target.read_text(encoding='utf-8')
+          if not generated.startswith('-- HYBRID PHYSICAL RECEIPT FOUNDATION'):
+              raise RuntimeError('Generated header is missing')
+          if generated.rstrip().splitlines()[-1].strip().upper() != 'ROLLBACK;':
+              raise RuntimeError('Generated file does not end in ROLLBACK')
+          if generated.upper().count('\nBEGIN;') != 1:
+              raise RuntimeError('Generated file contains an unexpected transaction wrapper')
+          if generated.upper().count('\nCOMMIT;') != 0:
+              raise RuntimeError('Generated file contains COMMIT')
+          print(f'Generated {target} with {len(generated.splitlines())} lines')
+          PY
+
+      - name: Upload SQL artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hybrid-physical-receipt-production-rollback-dry-run-v1
+          path: hybrid-physical-receipt-production-rollback-dry-run-v1.sql
+          if-no-files-found: error
+          retention-days: 1
