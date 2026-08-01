@@ -10,6 +10,9 @@ SET LOCAL statement_timeout = '0';
 --   * the deferred pending guard uses INSERT/UPDATE NEW identity directly;
 --   * transactional correction preparation is the single supersession authority;
 --   * one existing dispute line maps to one exact physical remedy allocation;
+--   * importer proposals cannot carry approval, financial or outcome facts;
+--   * investigation/no-action approvals require positive exact approved quantity;
+--   * approved replacement quantity always has an explicit supplier cost mode;
 --   * terminal review/remedy provenance cannot be edited in place.
 
 DO $preflight$
@@ -38,6 +41,7 @@ BEGIN
 
   IF to_regprocedure('public.shipper_package_receipt_header_identity_guard_v1()') IS NOT NULL
      OR to_regprocedure('public.shipper_package_receipt_legacy_exception_guard_v1()') IS NOT NULL
+     OR to_regprocedure('public.physical_receipt_review_route_quantity_guard_v1()') IS NOT NULL
      OR to_regprocedure('public.physical_receipt_review_terminal_immutability_guard_v1()') IS NOT NULL
      OR to_regprocedure('public.physical_remedy_terminal_immutability_guard_v1()') IS NOT NULL
      OR to_regclass('public.uq_physical_remedy_dispute_line_v1') IS NOT NULL
@@ -58,6 +62,35 @@ ALTER TABLE public.physical_receipt_reviews
       'closed_no_action'
     )
     OR NULLIF(BTRIM(COALESCE(decision_note, '')), '') IS NOT NULL
+  );
+
+ALTER TABLE public.physical_exception_remedy_allocations
+  ADD CONSTRAINT physical_remedy_proposed_state_boundary_v1 CHECK (
+    status <> 'proposed'
+    OR (
+      approved_remedy_type IS NULL
+      AND approved_remedy_qty IS NULL
+      AND approved_by_staff_id IS NULL
+      AND approved_at IS NULL
+      AND dispute_line_id IS NULL
+      AND supplier_claim_amount_gbp IS NULL
+      AND customer_commercial_value_gbp IS NULL
+      AND supplier_cost_mode IS NULL
+      AND replacement_child_order_id IS NULL
+      AND replacement_child_tracking_allocation_id IS NULL
+      AND rerouted_to_remedy_allocation_id IS NULL
+    )
+  ),
+  ADD CONSTRAINT physical_remedy_replacement_cost_mode_v1 CHECK (
+    approved_remedy_type IS DISTINCT FROM 'replacement'
+    OR (
+      supplier_cost_mode IS NOT NULL
+      AND supplier_cost_mode IN (
+        'free_replacement',
+        'charged_repurchase',
+        'pending_supplier_evidence'
+      )
+    )
   );
 
 CREATE UNIQUE INDEX uq_physical_remedy_dispute_line_v1
@@ -206,6 +239,66 @@ FOR EACH ROW
 WHEN (OLD.receipt_state IS DISTINCT FROM NEW.receipt_state)
 EXECUTE FUNCTION public.shipper_package_receipt_legacy_exception_guard_v1();
 
+CREATE FUNCTION public.physical_receipt_review_route_quantity_guard_v1()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $function$
+DECLARE
+  v_route_count integer := 0;
+  v_bad_count integer := 0;
+BEGIN
+  IF NEW.status = 'approved_for_investigation' THEN
+    SELECT
+      COUNT(*)::integer,
+      COUNT(*) FILTER (
+        WHERE remedy_row.status NOT IN ('approved','in_progress')
+           OR remedy_row.approved_remedy_type <> 'hold_investigate'
+           OR remedy_row.approved_remedy_qty IS NULL
+           OR remedy_row.approved_remedy_qty <= 0
+      )::integer
+    INTO v_route_count, v_bad_count
+    FROM public.physical_exception_remedy_allocations remedy_row
+    WHERE remedy_row.physical_receipt_review_id = NEW.id
+      AND remedy_row.status NOT IN ('cancelled','rerouted');
+
+    IF v_route_count = 0 OR v_bad_count > 0 THEN
+      RAISE EXCEPTION
+        'Investigation approval requires positive exact supervisor-approved hold/investigate quantity.';
+    END IF;
+  END IF;
+
+  IF NEW.status = 'closed_no_action' THEN
+    SELECT
+      COUNT(*)::integer,
+      COUNT(*) FILTER (
+        WHERE remedy_row.status <> 'closed_no_action'
+           OR remedy_row.approved_remedy_type <> 'no_action'
+           OR remedy_row.approved_remedy_qty IS NULL
+           OR remedy_row.approved_remedy_qty <= 0
+      )::integer
+    INTO v_route_count, v_bad_count
+    FROM public.physical_exception_remedy_allocations remedy_row
+    WHERE remedy_row.physical_receipt_review_id = NEW.id
+      AND remedy_row.status NOT IN ('cancelled','rerouted');
+
+    IF v_route_count = 0 OR v_bad_count > 0 THEN
+      RAISE EXCEPTION
+        'No-action closure requires positive exact supervisor-approved no-action quantity.';
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$function$;
+
+CREATE TRIGGER trg_physical_receipt_review_00b_route_quantity_guard_v1
+BEFORE INSERT OR UPDATE OF status
+ON public.physical_receipt_reviews
+FOR EACH ROW
+EXECUTE FUNCTION public.physical_receipt_review_route_quantity_guard_v1();
+
 CREATE FUNCTION public.physical_receipt_review_terminal_immutability_guard_v1()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -242,15 +335,37 @@ SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $function$
 BEGIN
-  IF TG_OP = 'INSERT'
-     AND NEW.status = 'proposed'
+  IF NEW.status = 'proposed'
      AND (
-       NEW.supplier_claim_amount_gbp IS NOT NULL
+       NEW.approved_remedy_type IS NOT NULL
+       OR NEW.approved_remedy_qty IS NOT NULL
+       OR NEW.approved_by_staff_id IS NOT NULL
+       OR NEW.approved_at IS NOT NULL
+       OR NEW.dispute_line_id IS NOT NULL
+       OR NEW.supplier_claim_amount_gbp IS NOT NULL
        OR NEW.customer_commercial_value_gbp IS NOT NULL
+       OR NEW.supplier_cost_mode IS NOT NULL
+       OR NEW.replacement_child_order_id IS NOT NULL
+       OR NEW.replacement_child_tracking_allocation_id IS NOT NULL
+       OR NEW.rerouted_to_remedy_allocation_id IS NOT NULL
      )
   THEN
     RAISE EXCEPTION
-      'Importer remedy proposal cannot invent supplier claim or customer commercial outcome amounts.';
+      'Importer remedy proposal cannot invent approval, supplier claim, customer commercial outcome, dispute or replacement facts.';
+  END IF;
+
+  IF NEW.approved_remedy_type = 'replacement'
+     AND (
+       NEW.supplier_cost_mode IS NULL
+       OR NEW.supplier_cost_mode NOT IN (
+         'free_replacement',
+         'charged_repurchase',
+         'pending_supplier_evidence'
+       )
+     )
+  THEN
+    RAISE EXCEPTION
+      'Approved replacement requires an explicit supplier cost mode.';
   END IF;
 
   IF TG_OP = 'UPDATE' THEN
@@ -312,6 +427,8 @@ REVOKE ALL ON FUNCTION public.shipper_package_receipt_v2_pending_commit_guard_v1
 REVOKE ALL ON FUNCTION public.shipper_package_receipt_header_identity_guard_v1()
   FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.shipper_package_receipt_legacy_exception_guard_v1()
+  FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.physical_receipt_review_route_quantity_guard_v1()
   FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.physical_receipt_review_terminal_immutability_guard_v1()
   FROM PUBLIC, anon, authenticated;
