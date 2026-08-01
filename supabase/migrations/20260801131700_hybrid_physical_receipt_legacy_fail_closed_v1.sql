@@ -8,12 +8,14 @@ SET LOCAL statement_timeout = '0';
 --   * every supervisor physical-review decision retains a decision note;
 --   * a legacy receipt correction cannot guess around supplier-line dispute history;
 --   * the deferred pending guard uses INSERT/UPDATE NEW identity directly;
---   * transactional correction preparation is the single supersession authority.
+--   * transactional correction preparation is the single supersession authority;
+--   * terminal review/remedy provenance cannot be edited in place.
 
 DO $preflight$
 BEGIN
   IF to_regclass('public.shipper_package_receipts') IS NULL
      OR to_regclass('public.physical_receipt_reviews') IS NULL
+     OR to_regclass('public.physical_exception_remedy_allocations') IS NULL
      OR to_regclass('public.order_tracking_line_allocations') IS NULL
      OR to_regclass('public.order_tracking_submissions') IS NULL
      OR to_regclass('public.orders') IS NULL
@@ -27,12 +29,16 @@ BEGIN
      OR to_regprocedure('public.shipper_package_receipt_v2_pending_commit_guard_v1()') IS NULL
      OR to_regprocedure('public.shipper_package_receipt_prepare_correction_v1()') IS NULL
      OR to_regprocedure('public.shipper_package_receipt_v2_supersede_open_review_v1()') IS NULL
+     OR to_regprocedure('public.physical_receipt_review_guard_v1()') IS NULL
+     OR to_regprocedure('public.physical_remedy_allocation_guard_v1()') IS NULL
   THEN
     RAISE EXCEPTION 'Hybrid receipt integrity and concurrency guards must be installed first.';
   END IF;
 
   IF to_regprocedure('public.shipper_package_receipt_header_identity_guard_v1()') IS NOT NULL
      OR to_regprocedure('public.shipper_package_receipt_legacy_exception_guard_v1()') IS NOT NULL
+     OR to_regprocedure('public.physical_receipt_review_terminal_immutability_guard_v1()') IS NOT NULL
+     OR to_regprocedure('public.physical_remedy_terminal_immutability_guard_v1()') IS NOT NULL
   THEN
     RAISE EXCEPTION
       'One or more hybrid receipt final hardening guards already exist; inspect the target rather than guessing.';
@@ -194,11 +200,116 @@ FOR EACH ROW
 WHEN (OLD.receipt_state IS DISTINCT FROM NEW.receipt_state)
 EXECUTE FUNCTION public.shipper_package_receipt_legacy_exception_guard_v1();
 
+CREATE FUNCTION public.physical_receipt_review_terminal_immutability_guard_v1()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $function$
+BEGIN
+  IF OLD.status IN (
+    'approved_to_existing_exception',
+    'rejected',
+    'closed_no_action',
+    'superseded'
+  ) AND (to_jsonb(NEW) - 'updated_at')
+       IS DISTINCT FROM (to_jsonb(OLD) - 'updated_at')
+  THEN
+    RAISE EXCEPTION
+      'Terminal physical receipt review provenance is immutable.';
+  END IF;
+
+  RETURN NEW;
+END;
+$function$;
+
+CREATE TRIGGER trg_physical_receipt_review_00a_terminal_immutability_v1
+BEFORE UPDATE
+ON public.physical_receipt_reviews
+FOR EACH ROW
+EXECUTE FUNCTION public.physical_receipt_review_terminal_immutability_guard_v1();
+
+CREATE FUNCTION public.physical_remedy_terminal_immutability_guard_v1()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $function$
+BEGIN
+  IF TG_OP = 'INSERT'
+     AND NEW.status = 'proposed'
+     AND (
+       NEW.supplier_claim_amount_gbp IS NOT NULL
+       OR NEW.customer_commercial_value_gbp IS NOT NULL
+     )
+  THEN
+    RAISE EXCEPTION
+      'Importer remedy proposal cannot invent supplier claim or customer commercial outcome amounts.';
+  END IF;
+
+  IF TG_OP = 'UPDATE' THEN
+    IF OLD.status IN ('completed','closed_no_action','rerouted')
+       AND (to_jsonb(NEW) - 'updated_at')
+           IS DISTINCT FROM (to_jsonb(OLD) - 'updated_at')
+    THEN
+      RAISE EXCEPTION 'Terminal physical remedy provenance is immutable.';
+    END IF;
+
+    IF OLD.dispute_line_id IS NOT NULL
+       AND NEW.dispute_line_id IS DISTINCT FROM OLD.dispute_line_id
+    THEN
+      RAISE EXCEPTION 'Physical remedy dispute-line provenance is immutable once linked.';
+    END IF;
+
+    IF OLD.replacement_child_order_id IS NOT NULL
+       AND NEW.replacement_child_order_id
+           IS DISTINCT FROM OLD.replacement_child_order_id
+    THEN
+      RAISE EXCEPTION 'Physical remedy replacement-child provenance is immutable once linked.';
+    END IF;
+
+    IF OLD.replacement_child_tracking_allocation_id IS NOT NULL
+       AND NEW.replacement_child_tracking_allocation_id
+           IS DISTINCT FROM OLD.replacement_child_tracking_allocation_id
+    THEN
+      RAISE EXCEPTION
+        'Physical remedy replacement-child tracking provenance is immutable once linked.';
+    END IF;
+
+    IF OLD.supplier_cost_mode IN ('free_replacement','charged_repurchase')
+       AND NEW.supplier_cost_mode IS DISTINCT FROM OLD.supplier_cost_mode
+    THEN
+      RAISE EXCEPTION 'Final replacement supplier cost mode is immutable.';
+    END IF;
+  END IF;
+
+  IF NEW.status = 'completed'
+     AND NEW.approved_remedy_type = 'replacement'
+     AND NEW.supplier_cost_mode = 'pending_supplier_evidence'
+  THEN
+    RAISE EXCEPTION
+      'Replacement remedy cannot complete while supplier cost evidence remains pending.';
+  END IF;
+
+  RETURN NEW;
+END;
+$function$;
+
+CREATE TRIGGER trg_physical_remedy_00a_terminal_immutability_v1
+BEFORE INSERT OR UPDATE
+ON public.physical_exception_remedy_allocations
+FOR EACH ROW
+EXECUTE FUNCTION public.physical_remedy_terminal_immutability_guard_v1();
+
 REVOKE ALL ON FUNCTION public.shipper_package_receipt_v2_pending_commit_guard_v1()
   FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.shipper_package_receipt_header_identity_guard_v1()
   FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.shipper_package_receipt_legacy_exception_guard_v1()
+  FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.physical_receipt_review_terminal_immutability_guard_v1()
+  FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.physical_remedy_terminal_immutability_guard_v1()
   FROM PUBLIC, anon, authenticated;
 
 NOTIFY pgrst, 'reload schema';
