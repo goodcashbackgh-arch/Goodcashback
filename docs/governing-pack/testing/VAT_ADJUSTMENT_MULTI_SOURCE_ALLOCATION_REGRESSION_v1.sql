@@ -1,6 +1,7 @@
 -- VAT adjustment multi-source allocation regression v1
 -- Rollback-only. Creates synthetic VAT workbench rows, makes no Sage request,
--- and leaves no persistent data.
+-- and leaves no persistent data. Existing unlocked VAT runs are temporarily
+-- marked locked inside this transaction so sequence enforcement can admit the fixture.
 
 BEGIN;
 
@@ -37,16 +38,17 @@ BEGIN
   PERFORM set_config('request.jwt.claim.sub', v_admin_auth_user_id::text, true);
   PERFORM set_config('request.jwt.claim.role', 'authenticated', true);
 
+  -- Sequence enforcement requires all prior VAT runs to be locked. These
+  -- changes are transaction-local because the script ends with ROLLBACK.
+  UPDATE public.vat_return_runs
+  SET locked_at = COALESCE(locked_at, now()),
+      locked_by_staff_id = COALESCE(locked_by_staff_id, v_admin_staff_id),
+      updated_at = now()
+  WHERE locked_at IS NULL;
+
   INSERT INTO public.vat_return_runs (
-    id,
-    run_ref,
-    return_period_label,
-    period_start_date,
-    period_end_date,
-    status,
-    generated_by_staff_id,
-    generated_by_auth_user_id,
-    expected_box6_gbp
+    id, run_ref, return_period_label, period_start_date, period_end_date,
+    status, generated_by_staff_id, generated_by_auth_user_id, expected_box6_gbp
   ) VALUES (
     v_run_id,
     'VAT-MULTI-SOURCE-REGRESSION-' || replace(v_run_id::text, '-', ''),
@@ -60,82 +62,33 @@ BEGIN
   );
 
   INSERT INTO public.vat_return_sage_reconstruction_snapshots (
-    vat_return_run_id,
-    period_start_date,
-    period_end_date,
-    status,
-    source_basis,
-    box6_gbp,
-    created_by_staff_id
+    vat_return_run_id, period_start_date, period_end_date, status,
+    source_basis, box6_gbp, created_by_staff_id
   ) VALUES (
-    v_run_id,
-    v_period_start,
-    v_period_end,
-    'reconstructed',
-    'rollback_regression_fixture',
-    0.00,
-    v_admin_staff_id
+    v_run_id, v_period_start, v_period_end, 'reconstructed',
+    'rollback_regression_fixture', 0.00, v_admin_staff_id
   );
 
   INSERT INTO public.vat_return_run_lines (
-    id,
-    vat_return_run_id,
-    line_kind,
-    source_table,
-    source_ref,
-    source_json,
-    source_lineage_json,
-    box_number,
-    direction,
-    amount_gbp,
-    vat_amount_gbp,
-    vat_basis,
-    tax_point_date,
-    return_period_label,
-    natural_sage_covered,
-    adjustment_required,
-    adjustment_reason,
-    status
+    id, vat_return_run_id, line_kind, source_table, source_ref,
+    source_json, source_lineage_json, box_number, direction,
+    amount_gbp, vat_amount_gbp, vat_basis, tax_point_date,
+    return_period_label, natural_sage_covered, adjustment_required,
+    adjustment_reason, status
   ) VALUES
   (
-    v_source_60,
-    v_run_id,
-    'uninvoiced_funding',
-    'regression_fixture',
-    'MULTI-SOURCE-60',
-    jsonb_build_object('fixture', true, 'amount', 60),
-    jsonb_build_object('fixture', true),
-    6,
-    'natural',
-    60.00,
-    0.00,
-    'net',
-    v_period_end,
-    'Multi-source rollback fixture ' || to_char(v_period_start, 'YYYY-MM'),
-    false,
-    true,
-    'Regression multi-source Box 6 adjustment',
-    'active'
+    v_source_60, v_run_id, 'uninvoiced_funding', 'regression_fixture',
+    'MULTI-SOURCE-60', jsonb_build_object('fixture', true, 'amount', 60),
+    jsonb_build_object('fixture', true), 6, 'natural', 60.00, 0.00,
+    'net', v_period_end, 'Multi-source rollback fixture', false, true,
+    'Regression multi-source Box 6 adjustment', 'active'
   ),
   (
-    v_source_40,
-    v_run_id,
-    'uninvoiced_funding',
-    'regression_fixture',
-    'MULTI-SOURCE-40',
-    jsonb_build_object('fixture', true, 'amount', 40),
-    jsonb_build_object('fixture', true),
-    6,
-    'natural',
-    40.00,
-    0.00,
-    'net',
-    v_period_end,
-    'Multi-source rollback fixture ' || to_char(v_period_start, 'YYYY-MM'),
-    false,
-    true,
-    'Regression multi-source Box 6 adjustment',
-    'active'
+    v_source_40, v_run_id, 'uninvoiced_funding', 'regression_fixture',
+    'MULTI-SOURCE-40', jsonb_build_object('fixture', true, 'amount', 40),
+    jsonb_build_object('fixture', true), 6, 'natural', 40.00, 0.00,
+    'net', v_period_end, 'Multi-source rollback fixture', false, true,
+    'Regression multi-source Box 6 adjustment', 'active'
   );
 
   v_preview := public.staff_preview_vat_adjustment_journal_proposals_v2(v_run_id, 0.01);
@@ -144,17 +97,10 @@ BEGIN
     RAISE EXCEPTION 'Expected no preview blockers, got %', v_preview -> 'blockers';
   END IF;
 
-  IF (v_preview ->> 'proposal_count')::integer <> 1 THEN
-    RAISE EXCEPTION 'Expected one proposal, got %', v_preview ->> 'proposal_count';
-  END IF;
-
-  IF (v_preview #>> '{proposals,0,source_count}')::integer <> 2 THEN
-    RAISE EXCEPTION 'Expected two source allocations, got %',
-      v_preview #>> '{proposals,0,source_count}';
-  END IF;
-
-  IF round((v_preview #>> '{proposals,0,amount_gbp}')::numeric, 2) <> 100.00 THEN
-    RAISE EXCEPTION 'Expected £100 proposal amount.';
+  IF (v_preview ->> 'proposal_count')::integer <> 1
+     OR (v_preview #>> '{proposals,0,source_count}')::integer <> 2
+     OR round((v_preview #>> '{proposals,0,amount_gbp}')::numeric, 2) <> 100.00 THEN
+    RAISE EXCEPTION 'Preview did not produce one £100 proposal with two sources: %', v_preview;
   END IF;
 
   SELECT round(sum((x ->> 'allocated_amount_gbp')::numeric), 2)
@@ -168,7 +114,7 @@ BEGIN
   v_materialised := public.staff_materialise_vat_adjustment_journal_proposals_v2(v_run_id, 0.01);
 
   IF (v_materialised ->> 'created_count')::integer <> 1 THEN
-    RAISE EXCEPTION 'Expected one materialised journal, got %', v_materialised ->> 'created_count';
+    RAISE EXCEPTION 'Expected one materialised journal, got %', v_materialised;
   END IF;
 
   v_journal_id := (v_materialised #>> '{journals,0,journal_id}')::uuid;
@@ -187,11 +133,10 @@ BEGIN
   WHERE vat_return_adjustment_journal_id = v_journal_id;
 
   IF v_count <> 2 THEN
-    RAISE EXCEPTION 'Expected exactly two Sage journal lines, got %', v_count;
+    RAISE EXCEPTION 'Expected exactly two accounting lines, got %', v_count;
   END IF;
 
-  SELECT source_allocation_hash
-  INTO v_hash
+  SELECT source_allocation_hash INTO v_hash
   FROM public.vat_return_adjustment_journals
   WHERE id = v_journal_id;
 
@@ -225,7 +170,7 @@ BEGIN
   END;
 
   IF NOT v_failed THEN
-    RAISE EXCEPTION 'Expected approval trigger to reject an invalid allocation hash.';
+    RAISE EXCEPTION 'Expected approval guard to reject an invalid allocation hash.';
   END IF;
 
   UPDATE public.vat_return_adjustment_journals
@@ -250,7 +195,7 @@ BEGIN
     RAISE EXCEPTION 'Expected approved allocation mutation to be rejected.';
   END IF;
 
-  RAISE NOTICE 'PASS: £60 + £40 previewed and materialised as one £100 journal with two allocations.';
+  RAISE NOTICE 'PASS: £60 + £40 became one £100 journal with two allocations.';
   RAISE NOTICE 'PASS: journal retained exactly two accounting lines and made no Sage post.';
   RAISE NOTICE 'PASS: invalid allocation hash blocked approval and approved allocations were immutable.';
 END;
