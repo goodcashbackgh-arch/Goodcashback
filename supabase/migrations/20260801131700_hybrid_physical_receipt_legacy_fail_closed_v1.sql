@@ -5,12 +5,14 @@ SET LOCAL statement_timeout = '0';
 
 -- Additional fail-closed controls:
 --   * every v2 header must match the exact order shipper and active shipper user;
+--   * every supervisor physical-review decision retains a decision note;
 --   * a legacy receipt correction cannot guess around supplier-line dispute history
 --     that has no exact package provenance.
 
 DO $preflight$
 BEGIN
   IF to_regclass('public.shipper_package_receipts') IS NULL
+     OR to_regclass('public.physical_receipt_reviews') IS NULL
      OR to_regclass('public.order_tracking_line_allocations') IS NULL
      OR to_regclass('public.order_tracking_submissions') IS NULL
      OR to_regclass('public.orders') IS NULL
@@ -34,6 +36,18 @@ BEGIN
   END IF;
 END
 $preflight$;
+
+ALTER TABLE public.physical_receipt_reviews
+  ADD CONSTRAINT physical_receipt_review_supervisor_note_required_v1 CHECK (
+    status NOT IN (
+      'returned_for_information',
+      'approved_for_investigation',
+      'approved_to_existing_exception',
+      'rejected',
+      'closed_no_action'
+    )
+    OR NULLIF(BTRIM(COALESCE(decision_note, '')), '') IS NOT NULL
+  );
 
 CREATE FUNCTION public.shipper_package_receipt_header_identity_guard_v1()
 RETURNS trigger
