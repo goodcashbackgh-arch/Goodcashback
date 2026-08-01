@@ -1,0 +1,78 @@
+name: Fix hybrid receipt Build 2 draft
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.head_ref == 'agent/hybrid-receipt-build-2-v1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/hybrid-receipt-build-2-v1
+          fetch-depth: 0
+
+      - name: Apply reviewed fixes
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          rpc_path = Path('supabase/migrations/20260801140000_hybrid_physical_receipt_v2_rpc_v1.sql')
+          guard_old = Path('supabase/migrations/20260801140100_hybrid_physical_receipt_v2_terminal_correction_guard_v1.sql')
+          guard_new = Path('supabase/migrations/20260801139900_hybrid_physical_receipt_v2_terminal_correction_guard_v1.sql')
+          map_path = Path('docs/implementation/20260801_hybrid_physical_receipt_build_2_impact_map_v1.md')
+
+          rpc = rpc_path.read_text(encoding='utf-8')
+
+          replacements = [
+            ("  v_prior_receipt_id uuid;\n  v_existing public.shipper_package_receipts%ROWTYPE;", "  v_prior_receipt_id uuid;\n  v_prior_created_at timestamptz;\n  v_prior_review_status text;\n  v_evidence_prefix text;\n  v_existing public.shipper_package_receipts%ROWTYPE;"),
+            ("  v_affected_qty numeric;\n  v_event_at timestamptz := clock_timestamp();", "  v_affected_qty numeric;\n  v_event_at timestamptz;"),
+            ("  SELECT ots.order_id, o.shipper_id, o.importer_id\n  INTO v_order_id, v_order_shipper_id, v_importer_id\n  FROM public.order_tracking_submissions ots\n  JOIN public.orders o ON o.id = ots.order_id\n  WHERE ots.id = p_tracking_submission_id\n    AND ots.superseded_at IS NULL\n  FOR SHARE OF ots, o;", "  PERFORM pg_advisory_xact_lock(hashtext(p_tracking_submission_id::text));\n\n  SELECT ots.order_id, o.shipper_id, o.importer_id\n  INTO v_order_id, v_order_shipper_id, v_importer_id\n  FROM public.order_tracking_submissions ots\n  JOIN public.orders o ON o.id = ots.order_id\n  WHERE ots.id = p_tracking_submission_id\n    AND ots.superseded_at IS NULL\n  FOR UPDATE OF ots\n  FOR SHARE OF o;"),
+            ("  PERFORM pg_advisory_xact_lock(hashtext(p_tracking_submission_id::text));\n\n  SELECT COUNT(*)::integer\n  INTO v_expected_count\n  FROM public.order_tracking_line_allocations a\n  WHERE a.order_id = v_order_id\n    AND a.tracking_submission_id = p_tracking_submission_id\n    AND COALESCE(a.qty_allocated, 0) > 0;\n\n  PERFORM 1", "  v_evidence_prefix :=\n    'shipper-receipts/' || v_shipper_id::text || '/'\n    || p_tracking_submission_id::text || '/';\n\n  PERFORM 1"),
+            ("  ORDER BY a.id\n  FOR UPDATE;\n\n  IF v_expected_count = 0 THEN", "  ORDER BY a.id\n  FOR UPDATE;\n\n  SELECT COUNT(*)::integer\n  INTO v_expected_count\n  FROM public.order_tracking_line_allocations a\n  WHERE a.order_id = v_order_id\n    AND a.tracking_submission_id = p_tracking_submission_id\n    AND COALESCE(a.qty_allocated, 0) > 0;\n\n  IF v_expected_count = 0 THEN"),
+            ("    WHERE NULLIF(BTRIM(COALESCE(x.storage_object_path, '')), '') IS NULL\n       OR COALESCE(x.display_order, 0) < 0", "    WHERE NULLIF(BTRIM(COALESCE(x.storage_object_path, '')), '') IS NULL\n       OR x.storage_object_path NOT LIKE v_evidence_prefix || '%'\n       OR LENGTH(x.storage_object_path) <= LENGTH(v_evidence_prefix)\n       OR POSITION('..' IN x.storage_object_path) > 0\n       OR COALESCE(x.display_order, 0) < 0"),
+            ("    IF v_existing.shipper_user_id IS DISTINCT FROM v_shipper_user_id\n       OR v_existing.tracking_submission_id IS DISTINCT FROM p_tracking_submission_id\n       OR v_existing.payload_fingerprint IS DISTINCT FROM v_fingerprint THEN", "    IF v_existing.receipt_model_version IS DISTINCT FROM 2\n       OR v_existing.receipt_state IS DISTINCT FROM 'finalised'\n       OR v_existing.finalised_at IS NULL\n       OR v_existing.shipper_user_id IS DISTINCT FROM v_shipper_user_id\n       OR v_existing.tracking_submission_id IS DISTINCT FROM p_tracking_submission_id\n       OR v_existing.payload_fingerprint IS DISTINCT FROM v_fingerprint THEN"),
+            ("  SELECT r.id INTO v_prior_receipt_id\n  FROM public.shipper_package_receipts r", "  SELECT r.id, r.created_at\n  INTO v_prior_receipt_id, v_prior_created_at\n  FROM public.shipper_package_receipts r"),
+            ("  ORDER BY COALESCE(r.finalised_at, r.created_at) DESC,\n           r.created_at DESC,\n           r.id DESC", "  ORDER BY r.created_at DESC, r.id DESC"),
+            ("  IF p_correction_of_receipt_id IS NOT NULL\n     AND NULLIF(BTRIM(COALESCE(p_correction_reason, '')), '') IS NULL THEN\n    RAISE EXCEPTION 'Correction reason is required.';\n  END IF;\n\n  INSERT INTO public.shipper_package_receipts", "  IF p_correction_of_receipt_id IS NOT NULL\n     AND NULLIF(BTRIM(COALESCE(p_correction_reason, '')), '') IS NULL THEN\n    RAISE EXCEPTION 'Correction reason is required.';\n  END IF;\n\n  IF p_correction_of_receipt_id IS NOT NULL THEN\n    SELECT pr.status\n    INTO v_prior_review_status\n    FROM public.physical_receipt_reviews pr\n    WHERE pr.receipt_id = p_correction_of_receipt_id\n    FOR SHARE;\n\n    IF v_prior_review_status IN (\n      'approved_to_existing_exception',\n      'rejected',\n      'closed_no_action',\n      'superseded'\n    ) THEN\n      RAISE EXCEPTION\n        'Receipt correction is blocked because predecessor physical review is terminal or retailer-linked (%). Use controlled staff remediation.',\n        v_prior_review_status;\n    END IF;\n  END IF;\n\n  v_event_at := CASE\n    WHEN v_prior_created_at IS NULL THEN clock_timestamp()\n    ELSE GREATEST(clock_timestamp(), v_prior_created_at + INTERVAL '1 microsecond')\n  END;\n\n  INSERT INTO public.shipper_package_receipts"),
+            ("        'returned_for_information',\n        'approved_for_investigation',\n        'rejected',\n        'closed_no_action'", "        'returned_for_information',\n        'approved_for_investigation'"),
+          ]
+
+          for old, new in replacements:
+            count = rpc.count(old)
+            if count != 1:
+              raise RuntimeError(f'RPC replacement expected once, found {count}: {old[:80]!r}')
+            rpc = rpc.replace(old, new, 1)
+
+          rpc_path.write_text(rpc, encoding='utf-8')
+
+          guard = guard_old.read_text(encoding='utf-8')
+          guard = guard.replace("REVOKE ALL ON FUNCTION\n  public.shipper_package_receipt_v2_terminal_correction_guard_v1()\n  FROM PUBLIC, anon, authenticated;\nGRANT EXECUTE ON FUNCTION\n  public.shipper_package_receipt_v2_terminal_correction_guard_v1()\n  TO service_role;", "REVOKE ALL ON FUNCTION\n  public.shipper_package_receipt_v2_terminal_correction_guard_v1()\n  FROM PUBLIC, anon, authenticated;")
+          guard_new.write_text(guard, encoding='utf-8')
+          guard_old.unlink()
+
+          impact = map_path.read_text(encoding='utf-8')
+          impact = impact.replace("- evidence metadata payload;", "- evidence metadata payload using the private v2 object prefix `shipper-receipts/<shipper_id>/<tracking_submission_id>/`;")
+          impact = impact.replace("- prior non-terminal proposal rows are superseded or replaced without deleting history;", "- prior non-terminal proposal rows use only an existing audited cancellation or reroute transition; no invented `superseded` remedy status is allowed;")
+          map_path.write_text(impact, encoding='utf-8')
+
+          Path('.github/workflows/fix-hybrid-receipt-build-2-draft.yml').unlink()
+          PY
+
+      - name: Commit fixes
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "Fix reviewed hybrid receipt v2 draft blockers"
+          git push origin HEAD:agent/hybrid-receipt-build-2-v1
