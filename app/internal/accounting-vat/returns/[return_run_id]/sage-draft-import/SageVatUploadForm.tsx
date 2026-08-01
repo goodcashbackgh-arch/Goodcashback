@@ -67,7 +67,7 @@ export default function SageVatUploadForm({
           </div>
           {isFinal ? (
             <p className="mt-3 rounded-2xl border border-amber-200 bg-white/70 p-3 text-sm font-semibold text-amber-900">
-              Final evidence will compare submitted Sage boxes to platform expected boxes. If they do not match, the return will not lock.
+              Final evidence requires the original Sage file to be selected again before saving. It will be stored privately and the return locks only when submitted boxes match platform expected boxes.
             </p>
           ) : null}
           <div className="mt-4 overflow-x-auto rounded-2xl border border-white/70 bg-white">
@@ -78,14 +78,14 @@ export default function SageVatUploadForm({
               </tbody>
             </table>
           </div>
-          <p className="mt-3 text-xs leading-5 opacity-90">The values have been copied into the manual boxes below. If they are correct, use the purpose-specific save button. The browser clears file uploads after preview, so reselect the file before saving only if you need its hash recorded; otherwise it saves the confirmed manual Sage totals.</p>
+          <p className="mt-3 text-xs leading-5 opacity-90">The values have been copied into the manual boxes below. Draft reconciliation may save confirmed manual values. Final evidence must include the original file, so reselect it after preview before recording the final submission.</p>
         </section>
       ) : null}
 
       <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
         <h2 className="text-xl font-semibold tracking-tight">Upload Sage VAT return export</h2>
         <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-          Upload a Sage VAT return XLSX/CSV/text export, or enter Boxes 1–9 manually. The safe default is always draft reconciliation; final evidence must be deliberately selected and confirmed.
+          Upload a Sage VAT return XLSX/CSV/text export, or enter Boxes 1–9 manually for draft reconciliation. Final submission evidence requires the original uploaded file and explicit confirmation.
         </p>
 
         <form action={isFinal ? recordFinalSageVatSubmissionEvidenceAction : importSageDraftVatReturnTotalsAction} className="mt-6 grid gap-5">
@@ -93,7 +93,7 @@ export default function SageVatUploadForm({
 
           <section className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
             <h3 className="font-semibold text-slate-950">Upload purpose</h3>
-            <p className="mt-1 text-xs leading-5 text-slate-600">The safe default is Draft reconciliation check. If this is the actual submitted Sage return, manually choose Final submitted Sage VAT return evidence and confirm before lock is attempted.</p>
+            <p className="mt-1 text-xs leading-5 text-slate-600">The safe default is Draft reconciliation check. If this is the actual submitted Sage return, manually choose Final submitted Sage VAT return evidence, upload the original file and confirm before lock is attempted.</p>
             <div className="mt-3 grid gap-3 md:grid-cols-2">
               <label className="flex gap-3 rounded-2xl border border-slate-200 bg-white p-4 text-sm">
                 <input type="radio" name="upload_purpose" value="draft_reconciliation" checked={!isFinal} onChange={() => setSelectedPurpose("draft_reconciliation")} />
@@ -101,7 +101,7 @@ export default function SageVatUploadForm({
               </label>
               <label className="flex gap-3 rounded-2xl border border-slate-200 bg-white p-4 text-sm">
                 <input type="radio" name="upload_purpose" value="final_submission_evidence" checked={isFinal} onChange={() => setSelectedPurpose("final_submission_evidence")} />
-                <span><span className="block font-bold text-slate-950">Final submitted Sage VAT return evidence</span><span className="mt-1 block text-xs leading-5 text-slate-600">Record final Sage values and lock only if the RPC match rules pass.</span></span>
+                <span><span className="block font-bold text-slate-950">Final submitted Sage VAT return evidence</span><span className="mt-1 block text-xs leading-5 text-slate-600">Store the original file privately, record final Sage values and lock only if the database match rules pass.</span></span>
               </label>
             </div>
             <p className="mt-3 text-xs font-semibold text-slate-600">Default selected: {defaultPurpose === "final_submission_evidence" ? "Final submission evidence" : "Draft reconciliation"}. Platform suggested next purpose: {suggestedPurpose === "final_submission_evidence" ? "Final submission evidence" : "Draft reconciliation"}.</p>
@@ -125,16 +125,16 @@ export default function SageVatUploadForm({
           ) : null}
 
           <label className="grid gap-2 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
-            <span className="font-semibold text-slate-950">Sage VAT file</span>
-            <span className="text-xs leading-5 text-slate-600">XLSX, CSV, TSV or plain-text export. Keep it under 2MB.</span>
-            <input name="sage_draft_file" type="file" accept=".xlsx,.csv,.tsv,.txt,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv,text/plain" className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" />
+            <span className="font-semibold text-slate-950">Sage VAT file{isFinal ? " (required for final evidence)" : ""}</span>
+            <span className="text-xs leading-5 text-slate-600">XLSX, CSV, TSV or plain-text export. Keep it under 2MB. Final evidence stores the original bytes privately and immutably.</span>
+            <input name="sage_draft_file" type="file" required={isFinal} accept=".xlsx,.csv,.tsv,.txt,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv,text/plain" className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" />
           </label>
 
           <section className="rounded-2xl border border-slate-200 bg-white p-4">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <h3 className="font-semibold text-slate-950">Manual override / confirmation</h3>
-                <p className="mt-1 text-xs leading-5 text-slate-600">Required boxes are 1, 4, 6 and 7. Optional boxes can be left blank unless Sage shows a value. Box 3 and Box 5 are calculated if blank.</p>
+                <p className="mt-1 text-xs leading-5 text-slate-600">Required boxes are 1, 4, 6 and 7. Optional boxes can be left blank unless Sage shows a value. Box 3 and Box 5 are calculated if blank. For final evidence these values may supplement, but cannot replace, the uploaded file.</p>
               </div>
               <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-800">Admin must check against Sage</span>
             </div>
@@ -152,7 +152,7 @@ export default function SageVatUploadForm({
 
           {isFinal ? (
             <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-900">
-              Final evidence calls the existing lock RPC; blockers, journal state and box mismatches remain enforced by the database.
+              Final evidence is retained in the private VAT evidence bucket and calls the guarded v2 lock RPC. Existing blockers, journal state and box mismatches remain enforced by the database.
             </div>
           ) : (
             <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm leading-6 text-sky-900">

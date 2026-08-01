@@ -10,11 +10,19 @@ type BoxNo = 1|2|3|4|5|6|7|8|9;
 type BoxTotals = Partial<Record<BoxNo, number>>;
 type Row = Record<string, unknown>;
 type ZipEntry = { name: string; data: Buffer };
+type UploadResult = {
+  uploadedText: string;
+  uploadedFileSummary: Row | null;
+  uploadedBuffer: Buffer | null;
+  originalFilename: string;
+  contentType: string;
+};
 
 const ALL: BoxNo[] = [1,2,3,4,5,6,7,8,9];
 const REQUIRED: BoxNo[] = [1,4,6,7];
 const OPTIONAL_ZERO: BoxNo[] = [2,8,9];
 const MAX_UPLOAD_BYTES = 2_000_000;
+const FINAL_EVIDENCE_BUCKET = "vat-return-evidence";
 
 const s = (v: unknown) => typeof v === "string" ? v.trim() : typeof v === "number" && Number.isFinite(v) ? String(v) : "";
 const money2 = (v: number) => Number(v.toFixed(2));
@@ -164,14 +172,23 @@ function finalBoxes(extracted: BoxTotals, overrides: BoxTotals) {
   return { boxes: boxes as Record<BoxNo, number>, warnings };
 }
 
-async function readUpload(value: FormDataEntryValue | null) {
-  if (!(value instanceof File) || value.size <= 0) return { uploadedText: "", uploadedFileSummary: null as Row | null };
+function safeExtension(filename: string) {
+  const ext = filename.toLowerCase().match(/\.([a-z0-9]{1,10})$/)?.[1] ?? "bin";
+  return ["xlsx", "csv", "tsv", "txt"].includes(ext) ? ext : "bin";
+}
+
+async function readUpload(value: FormDataEntryValue | null): Promise<UploadResult> {
+  if (!(value instanceof File) || value.size <= 0) return { uploadedText: "", uploadedFileSummary: null, uploadedBuffer: null, originalFilename: "", contentType: "" };
   if (value.size > MAX_UPLOAD_BYTES) throw new Error("Sage draft file is too large. Export a simple VAT return XLSX/CSV/text file under 2MB.");
   const buffer = Buffer.from(await value.arrayBuffer());
   const xlsx = isXlsx(value);
+  const sha256 = createHash("sha256").update(buffer).digest("hex");
   return {
     uploadedText: xlsx ? xlsxText(buffer) : buffer.toString("utf8"),
-    uploadedFileSummary: { name: value.name, type: value.type || "unknown", size_bytes: value.size, sha256: createHash("sha256").update(buffer).digest("hex"), parser: xlsx ? "xlsx_strict_total_for_box_v3" : "text_strict_total_for_box_v3" },
+    uploadedFileSummary: { name: value.name, type: value.type || "unknown", size_bytes: value.size, sha256, parser: xlsx ? "xlsx_strict_total_for_box_v3" : "text_strict_total_for_box_v3" },
+    uploadedBuffer: buffer,
+    originalFilename: value.name,
+    contentType: value.type || "application/octet-stream",
   };
 }
 
@@ -295,20 +312,60 @@ export async function importSageDraftVatReturnTotalsAction(formData: FormData) {
 export async function recordFinalSageVatSubmissionEvidenceAction(formData: FormData) {
   const runId = s(formData.get("vat_return_run_id"));
   if (!runId) redirect("/internal/accounting-vat?vatError=Missing%20VAT%20return%20run%20id");
+
   let target = "";
+  let cleanup: { supabase: any; path: string; created: boolean } | null = null;
+
   try {
     const { supabase } = await requireAdminStaff();
     const sageReturnReference = s(formData.get("sage_return_reference"));
     if (!sageReturnReference) throw new Error("Enter the Sage return reference before recording final submission evidence.");
-    const confirmed = s(formData.get("confirm_final_sage_submission")) === "yes";
-    if (!confirmed) throw new Error("Confirm this is the final submitted Sage VAT return evidence before locking can be attempted.");
+    if (s(formData.get("confirm_final_sage_submission")) !== "yes") throw new Error("Confirm this is the final submitted Sage VAT return evidence before locking can be attempted.");
+
     const sageSubmissionTimestamp = finalSubmissionTimestamp(formData.get("sage_submission_timestamp"));
     const upload = await readUpload(formData.get("sage_draft_file"));
-    const extracted = upload.uploadedText ? extractBoxTotalsFromText(upload.uploadedText) : {};
+    if (!upload.uploadedBuffer || !upload.uploadedFileSummary) throw new Error("Upload the final Sage VAT return file. Manual-only final locking is not permitted.");
+
+    const extracted = extractBoxTotalsFromText(upload.uploadedText);
     const overrides = manualOverrides(formData);
-    if (!upload.uploadedText && Object.keys(overrides).length === 0) throw new Error("Upload the final Sage VAT return evidence or enter the submitted Sage boxes manually.");
     const { boxes, warnings } = finalBoxes(extracted, overrides);
-    const { data, error } = await (supabase as any).rpc("staff_record_vat_sage_submission_and_lock_v1", {
+    const sha256 = s(upload.uploadedFileSummary.sha256).toLowerCase();
+    const objectPath = `${runId}/final-submission/${sha256}.${safeExtension(upload.originalFilename)}`;
+
+    const { error: storageError } = await supabase.storage
+      .from(FINAL_EVIDENCE_BUCKET)
+      .upload(objectPath, upload.uploadedBuffer, {
+        contentType: upload.contentType || "application/octet-stream",
+        upsert: false,
+      });
+
+    const storageStatus = Number((storageError as any)?.statusCode ?? (storageError as any)?.status ?? 0);
+    const alreadyExists = Boolean(storageError) && (
+      storageStatus === 409
+      || /already exists|duplicate/i.test(String(storageError?.message ?? ""))
+    );
+    if (storageError && !alreadyExists) throw new Error(storageError.message || "Could not store final Sage VAT evidence.");
+
+    cleanup = { supabase, path: objectPath, created: !storageError };
+    const evidenceUrl = `storage://${FINAL_EVIDENCE_BUCKET}/${objectPath}`;
+    const evidenceJson = {
+      upload_purpose: "final_submission_evidence",
+      storage_bucket: FINAL_EVIDENCE_BUCKET,
+      storage_object_path: objectPath,
+      original_filename: upload.originalFilename,
+      content_type: upload.contentType || "application/octet-stream",
+      size_bytes: Number(upload.uploadedFileSummary.size_bytes),
+      sha256,
+      parser: upload.uploadedFileSummary.parser,
+      uploaded_file: upload.uploadedFileSummary,
+      extracted_boxes: extracted,
+      manual_overrides: overrides,
+      final_boxes: boxes,
+      calculation_warnings: warnings,
+      confirmation: "admin_confirmed_final_sage_submission_evidence",
+    };
+
+    const { data, error } = await (supabase as any).rpc("staff_record_vat_sage_submission_and_lock_v2", {
       p_vat_return_run_id: runId,
       p_sage_return_reference: sageReturnReference,
       p_sage_submitted_box1_gbp: boxes[1],
@@ -321,28 +378,26 @@ export async function recordFinalSageVatSubmissionEvidenceAction(formData: FormD
       p_sage_submitted_box8_gbp: boxes[8],
       p_sage_submitted_box9_gbp: boxes[9],
       p_sage_submission_timestamp: sageSubmissionTimestamp,
-      p_evidence_url: null,
-      p_evidence_json: {
-        upload_purpose: "final_submission_evidence",
-        uploaded_file: upload.uploadedFileSummary,
-        extracted_boxes: extracted,
-        manual_overrides: overrides,
-        final_boxes: boxes,
-        calculation_warnings: warnings,
-        confirmation: "admin_confirmed_final_sage_submission_evidence",
-      },
+      p_evidence_url: evidenceUrl,
+      p_evidence_json: evidenceJson,
       p_tolerance_gbp: 0.01,
-      p_notes: "Final Sage VAT submission evidence uploaded through Sage VAT upload page.",
+      p_notes: "Final Sage VAT submission evidence retained in private immutable storage through Sage VAT upload page.",
     });
     if (error) throw new Error(error.message || "Could not record final Sage VAT submission evidence.");
+
+    cleanup = null;
     revalidatePath("/internal/accounting-vat");
     revalidatePath(`/internal/accounting-vat/returns/${runId}`);
     target = rpcMatched(data)
       ? `/internal/accounting-vat/returns/${runId}?tab=submission&vatSuccess=Final%20Sage%20submission%20matched%20and%20return%20locked`
       : `/internal/accounting-vat/returns/${runId}?tab=submission&vatError=Final%20Sage%20submission%20does%20not%20match%20platform%20expected%20boxes`;
   } catch (error) {
+    if (cleanup?.created) {
+      await cleanup.supabase.storage.from(FINAL_EVIDENCE_BUCKET).remove([cleanup.path]).catch(() => undefined);
+    }
     const message = error instanceof Error ? error.message : "Final Sage VAT submission evidence failed.";
     uploadErrorRedirect(runId, formData, message, "final_submission_evidence");
   }
+
   redirect(target);
 }

@@ -332,6 +332,19 @@ function validateJournalBeforePost(run: VatRunRow, journal: VatJournalRow, lines
   if (debits !== round2(num(journal.amount_gbp))) throw new Error("VAT journal total does not match approved amount.");
 }
 
+async function releaseUnsentClaim(journalId: string, message: string) {
+  await supabaseAdmin
+    .from("vat_return_adjustment_journals")
+    .update({
+      status: "admin_approved",
+      last_error: message,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", journalId)
+    .eq("status", "posting_to_sage")
+    .is("sage_journal_id", null);
+}
+
 export async function postVatAdjustmentJournalToSage(params: { journalId: string; staffId: string; origin: string }) {
   if (process.env.SAGE_LIVE_VAT_JOURNAL_POSTING_ENABLED !== "true") {
     throw new Error("Live Sage VAT journal posting is disabled. Set SAGE_LIVE_VAT_JOURNAL_POSTING_ENABLED=true only after approving the controlled VAT journal test.");
@@ -371,15 +384,28 @@ export async function postVatAdjustmentJournalToSage(params: { journalId: string
   const requestPayloadHash = bodyHash(built.requestBody);
   const startedAt = new Date().toISOString();
 
-  await supabaseAdmin.from("vat_return_adjustment_journals").update({
-    status: "posting_to_sage",
-    retry_count: (journal.retry_count ?? 0) + 1,
-    last_error: null,
-    request_payload: asObject(journal.request_payload) || {},
-    updated_at: startedAt,
-  }).eq("id", journal.id).eq("status", "admin_approved");
+  const { data: claimRaw, error: claimError } = await supabaseAdmin.rpc(
+    "staff_claim_vat_adjustment_journal_post_v1",
+    {
+      p_vat_return_adjustment_journal_id: journal.id,
+      p_staff_id: params.staffId,
+    },
+  );
+  if (claimError) throw new Error(claimError.message);
+  if (asObject(claimRaw).claimed !== true) {
+    throw new Error("VAT journal was not claimed. Another posting request may already be in progress or the journal is no longer postable.");
+  }
 
-  const { data: requestLog } = await supabaseAdmin.from("sage_api_request_log").insert({
+  await supabaseAdmin
+    .from("vat_return_adjustment_journals")
+    .update({
+      request_payload: built.requestBody,
+      updated_at: startedAt,
+    })
+    .eq("id", journal.id)
+    .eq("status", "posting_to_sage");
+
+  const { data: requestLog, error: requestLogError } = await supabaseAdmin.from("sage_api_request_log").insert({
     connection_id: context.connectionId,
     sage_business_row_id: context.sageBusinessRowId,
     connection_event_type: "other",
@@ -393,27 +419,31 @@ export async function postVatAdjustmentJournalToSage(params: { journalId: string
     created_by_staff_id: params.staffId,
   }).select("id").single();
 
+  if (requestLogError || !requestLog?.id) {
+    const message = requestLogError?.message || "Could not create Sage request log before posting.";
+    await releaseUnsentClaim(journal.id, message);
+    throw new Error(message);
+  }
+
   const result = await sageRequest(context, "POST", built.endpointPath, built.requestBody);
   const objectId = result.ok ? postedJournalId(result.raw) : "";
   const reference = result.ok ? postedJournalReference(result.raw, built.reference) : "";
   const resultError = result.ok && !objectId ? "Sage returned success but no journal id could be extracted." : errorMessage(result.raw);
 
-  if (requestLog?.id) {
-    await supabaseAdmin.from("sage_api_response_log").insert({
-      request_log_id: requestLog.id,
-      connection_id: context.connectionId,
-      sage_business_row_id: context.sageBusinessRowId,
-      http_status: result.response?.status ?? null,
-      success_yn: result.ok && Boolean(objectId),
-      sage_object_type: "journal",
-      sage_object_id: objectId || null,
-      sage_reference: reference || null,
-      response_payload_redacted: result.raw as Row,
-      error_code: result.ok && objectId ? null : (result.response ? `sage_http_${result.response.status}` : "sage_network_error"),
-      error_message: result.ok && objectId ? null : resultError,
-      duration_ms: result.durationMs,
-    });
-  }
+  await supabaseAdmin.from("sage_api_response_log").insert({
+    request_log_id: requestLog.id,
+    connection_id: context.connectionId,
+    sage_business_row_id: context.sageBusinessRowId,
+    http_status: result.response?.status ?? null,
+    success_yn: result.ok && Boolean(objectId),
+    sage_object_type: "journal",
+    sage_object_id: objectId || null,
+    sage_reference: reference || null,
+    response_payload_redacted: result.raw as Row,
+    error_code: result.ok && objectId ? null : (result.response ? `sage_http_${result.response.status}` : "sage_network_outcome_unknown"),
+    error_message: result.ok && objectId ? null : resultError,
+    duration_ms: result.durationMs,
+  });
 
   const now = new Date().toISOString();
   if (result.ok && objectId) {
@@ -426,20 +456,30 @@ export async function postVatAdjustmentJournalToSage(params: { journalId: string
       response_payload: result.raw as Row,
       last_error: null,
       updated_at: now,
-    }).eq("id", journal.id);
+    }).eq("id", journal.id).eq("status", "posting_to_sage");
 
     await maybeMarkRunPosted(run.id);
     return { posted: 1, failed: 0, journalId: journal.id, sageJournalId: objectId, sageReference: reference || built.reference, endpoint: built.endpointPath };
   }
 
-  const statusCode = result.response?.status ?? 0;
-  const postingStatus = retryableStatus(statusCode) ? "failed_retryable" : "failed_terminal";
+  if (!result.response) {
+    const unknownMessage = `Sage journal outcome is unknown because no HTTP response was received. Do not retry automatically. Reconcile deterministic reference ${built.reference}. ${resultError}`;
+    await supabaseAdmin.from("vat_return_adjustment_journals").update({
+      response_payload: result.raw as Row,
+      last_error: unknownMessage,
+      updated_at: now,
+    }).eq("id", journal.id).eq("status", "posting_to_sage");
+
+    return { posted: 0, failed: 1, outcomeUnknown: true, journalId: journal.id, error: unknownMessage, endpoint: built.endpointPath, sageReference: built.reference };
+  }
+
+  const postingStatus = retryableStatus(result.response.status) ? "failed_retryable" : "failed_terminal";
   await supabaseAdmin.from("vat_return_adjustment_journals").update({
     status: postingStatus,
     response_payload: result.raw as Row,
     last_error: resultError,
     updated_at: now,
-  }).eq("id", journal.id);
+  }).eq("id", journal.id).eq("status", "posting_to_sage");
 
   return { posted: 0, failed: 1, journalId: journal.id, error: resultError, endpoint: built.endpointPath };
 }

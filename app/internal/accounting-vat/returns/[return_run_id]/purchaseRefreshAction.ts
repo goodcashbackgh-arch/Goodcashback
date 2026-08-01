@@ -13,7 +13,7 @@ export async function refreshVatPurchaseSourceLinesAction(formData: FormData) {
   if (!runId) redirect("/internal/accounting-vat?vatError=Missing%20VAT%20return%20run%20id");
 
   const supabase = await createClient();
-  const { error } = await (supabase as any).rpc("staff_refresh_vat_return_source_snapshot_v1", {
+  const { error } = await (supabase as any).rpc("staff_refresh_vat_return_source_snapshot_v2", {
     p_vat_return_run_id: runId,
   });
 
