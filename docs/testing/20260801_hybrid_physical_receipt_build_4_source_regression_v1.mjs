@@ -10,6 +10,11 @@ const atomic = fs.readFileSync(atomicPath, "utf8");
 const action = fs.readFileSync(actionPath, "utf8");
 const addendum = fs.readFileSync(addendumPath, "utf8");
 
+const replacementActionMatch = action.match(
+  /export async function acceptReplacementOutcomeAction[\s\S]*$/,
+);
+const replacementAction = replacementActionMatch?.[0] ?? "";
+
 const checks = [
   [addendum.includes("Single supplier-invoice authority rule"), "addendum freezes one invoice-authority rule"],
   [addendum.includes("Build 4 must finish with exactly two migrations"), "addendum freezes two-migration structure"],
@@ -17,7 +22,8 @@ const checks = [
   [lifecycle.includes("Build 4 drift stop: order_has_open_child_exceptions changed"), "lifecycle migration drift-stops parent blocker"],
   [lifecycle.includes("Build 4 drift stop: order_reconciliation_vw changed"), "lifecycle migration drift-stops reconciliation authority"],
   [lifecycle.includes("si.is_current_for_order = true"), "canonical reconciliation requires explicit current invoice identity"],
-  [lifecycle.match(/si\.is_current_for_order = true/g)?.length >= 2, "canonical and anomaly views share the current-invoice predicate"],
+  [lifecycle.includes("si.is_current_for_order is distinct from true"), "anomaly classification uses the null-safe inverse of current identity"],
+  [lifecycle.includes("si.blocked_from_sage_yn is distinct from false"), "anomaly classification is null-safe for Sage blocking"],
   [lifecycle.includes("NON_AUTHORITATIVE_INVOICEABLE_EVIDENCE"), "non-authoritative eligible evidence is exposed"],
   [lifecycle.includes("replacement_source_dispute_line_id"), "physical child retains exact source dispute line"],
   [lifecycle.includes("replacement_child_order_id = v_child_id"), "physical remedy links to the child"],
@@ -26,9 +32,10 @@ const checks = [
   [atomic.includes("Physical and legacy replacement lines cannot be mixed"), "physical and legacy lines cannot be mixed"],
   [atomic.includes("legacy_source_dispute_line_ids"), "legacy source-line set is retained"],
   [atomic.includes("replacement_source_dispute_line_id, funded_at") && atomic.includes("null,\n      null,\n      now(),"), "legacy child does not claim one arbitrary source line"],
-  [action.includes('.rpc("staff_accept_replacement_outcome_v1"'), "application uses one atomic replacement RPC"],
-  [!action.includes('.rpc("create_replacement_child_order"'), "application does not call child creation separately"],
-  [!action.includes('.from("orders")\n    .insert({\n      order_ref: childOrderRef'), "parallel direct child insertion remains removed"],
+  [replacementAction.includes('.rpc("staff_accept_replacement_outcome_v1"'), "replacement application path uses one atomic RPC"],
+  [!replacementAction.includes('.rpc("create_replacement_child_order"'), "replacement application path does not call child creation separately"],
+  [!replacementAction.includes("transitionDisputeStatus("), "replacement application path does not perform separate status mutations"],
+  [!replacementAction.includes('.from("orders")'), "replacement application path does not write orders directly"],
   [!lifecycle.includes("update public.orders\n  set order_total_gbp_declared"), "lifecycle migration does not rewrite parent declared amount"],
   [!lifecycle.includes("update public.orders\n  set total_qty_declared"), "lifecycle migration does not rewrite parent declared quantity"],
 ];
