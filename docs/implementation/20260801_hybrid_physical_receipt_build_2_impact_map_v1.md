@@ -2,9 +2,12 @@
 
 Status: implementation boundary for Build 2
 
-Governing authority:
+Governing authorities:
 
-`docs/governing-pack/architecture/HYBRID_PHYSICAL_RECEIPT_QUANTITY_FULFILMENT_AND_REMEDY_CONTROL_ADDENDUM_v1.md`
+1. `docs/governing-pack/architecture/HYBRID_PHYSICAL_RECEIPT_QUANTITY_FULFILMENT_AND_REMEDY_CONTROL_ADDENDUM_v1.md`
+2. `docs/governing-pack/architecture/HYBRID_PHYSICAL_RECEIPT_IMPLEMENTATION_ALIGNMENT_ADDENDUM_v1_1.md`
+
+The v1.1 alignment addendum controls where the original contract assumed that exact physical quantities, mixed refund/replacement routes or several open physical allocations could be represented directly by the current legacy dispute model.
 
 Build baseline:
 
@@ -27,7 +30,8 @@ shipper v2 receipt facts can be recorded atomically;
 affected quantity creates one physical receipt review header;
 importer proposals reserve exact affected quantity;
 supervisor initial decisions approve, change, return, reject or close the route;
-approved retailer action links to the existing dispute route;
+whole-unit refund/replacement approval links to outcome-specific existing disputes;
+exact hold/investigate and no-action quantities remain in physical triage;
 no physical triage record independently claims retailer or remedy completion.
 ```
 
@@ -45,165 +49,121 @@ Build 2 must reuse rather than duplicate:
 - `disputes` and `dispute_lines` for the existing retailer-facing exception route;
 - `/importer/exceptions/[dispute_id]` and `/internal/exceptions/[dispute_id]` after linkage.
 
-Build 2 must not create:
+Build 2 must not create another receipt header, customer-review timer, shipment route, retailer conversation, refund process, replacement operations page, customer invoice route or Sage route.
 
-- another receipt header;
-- another customer review timer or membership;
-- another shipment route;
-- another retailer conversation;
-- another refund process;
-- another replacement operations page;
-- another customer invoice or Sage route.
+## 3. Verified legacy compatibility boundary
 
-## 3. Ordered database work
+Live inspection established:
 
-### 3.1 Atomic receipt RPC
+- `physical_exception_remedy_allocations` stores `numeric(12,3)` exact quantity;
+- `dispute_lines.qty_impact` is integer;
+- replacement-child order quantity and `create_replacement_child_order` are integer based;
+- `disputes.desired_outcome` is one header-level refund or replacement value;
+- refund evidence, return/collection and settlement functions require a refund header;
+- `uq_dispute_lines_open` currently allows one unresolved dispute line per supplier invoice line;
+- reconciliation and return-task readers consume the existing integer dispute-line contract.
 
-Add:
+Build 2 therefore must not widen `dispute_lines.qty_impact`, round physical quantities, place refund and replacement lines in one mixed-outcome dispute, or simply remove the legacy open-line protection.
 
-`shipper_record_package_receipt_v2(uuid,uuid,jsonb,jsonb,uuid,text)`
+## 4. Ordered database work
 
-The exact final signature may be refined only if repository/live type inspection proves a conflict. Its governed meaning is:
+### 4.1 Atomic receipt RPC
 
-- tracking submission identity;
-- idempotent receipt submission identity;
-- complete allocation-disposition payload;
-- evidence metadata payload using the private v2 object prefix `shipper-receipts/<shipper_id>/<tracking_submission_id>/`;
-- optional immediate predecessor for correction;
-- required correction reason when correcting.
-
-The RPC must:
-
-1. authenticate one active shipper user;
-2. lock the package/tracking identity and exact positive allocations;
-3. verify the shipper owns the package and identities agree;
-4. canonicalise and fingerprint the complete payload;
-5. return the existing receipt on an identical retry;
-6. reject a changed retry using the same submission identity;
-7. insert one pending v2 header;
-8. insert exactly aggregated positive disposition rows;
-9. insert evidence metadata without publicising storage objects;
-10. require every positive allocation to be present and exactly balanced;
-11. require factual notes and evidence for affected quantity;
-12. set the compatibility header status from the exact snapshot;
-13. finalise the receipt inside the same transaction;
-14. create one `physical_receipt_reviews` row only when affected quantity exists;
-15. leave an all-clean receipt without a physical review;
-16. supersede an older open physical review only through the existing correction controls;
-17. return receipt and review identities.
+Add `shipper_record_package_receipt_v2(uuid,uuid,jsonb,jsonb,uuid,text)` with the already governed authentication, locking, idempotency, exact-balance, evidence, correction, finalisation and review-creation controls.
 
 No pending v2 receipt may commit.
 
-### 3.2 Importer proposal RPC
+### 4.2 Importer proposal RPC
 
-Add one transaction authority for submitting or replacing the active importer proposal while the review is in an importer-owned state.
+Add one transaction authority for submitting or replacing the active importer proposal while the review is in `awaiting_importer_proposal` or `returned_for_information`.
 
-Required behaviour:
+It must allow split exact proposals, preserve prior proposals by audited cancellation rather than deletion, enforce affected-quantity ceilings and prevent importer writes to supervisor, dispute, supplier-cost, customer-commercial, settlement or replacement-child facts.
 
-- active operator with unrevoked access to the review importer;
-- row lock on review, affected dispositions and existing proposal rows;
-- status limited to `awaiting_importer_proposal` or `returned_for_information`;
-- proposal payload contains only source disposition, remedy type, exact proposed quantity and importer factual note where required;
-- no supervisor approval facts, dispute linkage, supplier claim, customer-commercial amount, supplier-cost mode or replacement-child facts may be supplied by the importer;
-- active proposed quantity per affected disposition cannot exceed the exact affected quantity;
-- split proposals are allowed;
-- prior non-terminal proposal rows use only an existing audited cancellation or reroute transition; no invented `superseded` remedy status is allowed;
-- review advances to `awaiting_supervisor_review` atomically.
+### 4.3 Additive dispute compatibility migration
 
-### 3.3 Supervisor initial decision RPC
+Before the supervisor RPC, add an audited compatibility migration that:
 
-Add one transaction authority for the initial route decision.
+1. creates an immutable many-link table between one physical review and every linked legacy dispute;
+2. retains `physical_receipt_reviews.linked_dispute_id` as a deterministic compatibility primary link;
+3. adds nullable `dispute_lines.physical_remedy_allocation_id` provenance;
+4. makes that identity unique when present;
+5. preserves one unresolved legacy dispute line per supplier invoice line where the physical identity is null;
+6. allows separate unresolved physical lines for the same supplier line only when each has a different exact physical remedy allocation;
+7. proves review, order, supplier line, approved route, dispute header outcome and integer quantity agreement;
+8. does not reclassify existing legacy lines as physical;
+9. fails closed on ambiguous existing open exceptions;
+10. leaves protected refund, return, replacement, reconciliation and customer-sales functions unchanged.
 
-Required outcomes:
+### 4.4 Supervisor initial-decision RPC
+
+Add one transaction authority for:
 
 - return for information;
 - reject;
-- close no action with reason;
-- approve hold/investigate;
-- approve no action with reason;
-- approve refund/replacement quantities into the existing exception route.
+- approve exact hold/investigate;
+- approve exact no action with reason;
+- approve whole-unit refund/replacement quantities into outcome-specific existing disputes.
 
 Required controls:
 
-- active staff only;
-- review and remedy rows locked;
-- input applies only while `awaiting_supervisor_review`;
+- active supervisor/admin staff only;
+- review, proposal, source disposition and relevant exception rows locked;
+- input accepted only while `awaiting_supervisor_review`;
 - approved quantities may be reduced, split or rerouted but cannot exceed source affected quantity;
 - every approved route has positive exact quantity;
+- refund/replacement quantities must equal whole units and must fail closed rather than round;
 - replacement approval requires an explicit supplier-cost mode;
-- no retailer refund receipt or replacement completion may be recorded here;
 - decision note is mandatory;
-- final approved quantity is stored separately from importer proposal;
-- refund/replacement approval creates or links the governed existing `disputes`/`dispute_lines` records using verified live identities;
-- review advances to `approved_to_existing_exception` only when `linked_dispute_id` exists;
-- remedy rows advance no further than `linked_to_exception` in Build 2.
+- final approval is stored separately from importer proposal;
+- refund allocations create/link only refund disputes and refund dispute lines;
+- replacement allocations create/link only replacement disputes and replacement dispute lines;
+- one physical remedy allocation links to at most one dispute line;
+- a mixed refund/replacement decision creates separate disputes and complete many-link provenance;
+- the compatibility primary link is deterministic: refund first, then replacement, then lowest dispute UUID;
+- `approved_to_existing_exception` is reached only when every active refund/replacement allocation is linked;
+- remedy rows advance no further than `linked_to_exception`;
+- no retailer acceptance, refund receipt, customer settlement, supplier recovery or replacement completion is written;
+- unproven monetary values are not guessed.
 
-## 4. Application work allowed in Build 2
+Hold/investigate and no-action remain exact in physical triage and do not create legacy disputes at initial decision.
 
-Build 2 may add server actions and read pages for:
+## 5. Application work allowed in Build 2
 
-- importer `Physical Receipt Exceptions` queue/detail;
-- supervisor/internal `Physical Receipt Reviews` queue/detail;
-- calling importer proposal and supervisor initial-decision RPCs;
-- redirecting approved linked cases to the existing exception pages.
+Build 2 may add server actions and read pages for importer Physical Receipt Exceptions, supervisor Physical Receipt Reviews, the importer and supervisor RPCs, and redirects to each linked existing exception.
 
-Build 2 must preserve the current shipper `recordPackageReceiptAction` and normal v1 UI route. The production shipper page cuts over to v2 only in the coordinated application build required by the governing addendum.
+The current shipper v1 action and UI remain preserved until the coordinated production cutover. Storage access may not be weakened.
 
-Evidence upload helpers may be prepared for multiple private storage object paths, but no storage access policy may be weakened and no public URL may become the new authority.
+## 6. Explicit exclusions
 
-## 5. Explicit Build 2 exclusions
+There is no feature flag, pilot account or staged business rollout.
 
-There is no feature flag, pilot account or staged business rollout in Build 2.
+Build 2 does not modify customer-review, shipment or customer-sales functions; create or complete a replacement child; complete a supplier refund or customer settlement; alter AP, VAT or Sage; replace `order_has_open_child_exceptions`; replace `order_reconciliation_vw`; activate the v2 shipper UI; widen legacy quantity columns; or remove global protections without an equivalent compatibility rule.
 
-Build 2 does not:
+## 7. Required regression gates
 
-- modify customer-review candidate or materialisation functions;
-- modify shipment candidate, creation, membership or effective-line functions;
-- modify customer-sales release functions;
-- create a replacement child;
-- complete, cancel or reroute a replacement child;
-- complete supplier refund or customer settlement;
-- alter supplier AP, shipping AP, VAT or Sage posting;
-- replace `order_has_open_child_exceptions`;
-- replace `order_reconciliation_vw`;
-- activate the v2 shipper UI;
-- add a feature flag, pilot account or staged business rollout.
+Regression must prove:
 
-## 6. Required regression gates
+1. original and v1.1 governing documents are present and referenced;
+2. protected receipt, refund, return, replacement, reconciliation and customer-sales objects remain unchanged;
+3. receipt idempotency, exact balance, evidence and correction controls still pass;
+4. importer access and prohibited-write controls still pass;
+5. fractional refund/replacement approval fails closed;
+6. whole-unit physical and dispute quantities are exactly equal;
+7. hold/investigate and no-action create no disputes;
+8. one review can link to separate refund and replacement disputes;
+9. no mixed-outcome dispute is created;
+10. complete review/dispute links and deterministic primary link are recorded;
+11. legacy unresolved-line uniqueness remains effective;
+12. distinct physical remedy allocations for one supplier line may coexist safely;
+13. ambiguous open legacy exceptions block automatic linkage;
+14. replacement approval requires supplier-cost mode;
+15. no retailer outcome, remedy completion or financial settlement is written;
+16. terminal review/remedy/link provenance remains immutable;
+17. no Build 3, Build 4 or unrelated application changes enter the branch;
+18. every production dry run ends in `ROLLBACK` and leaves production unchanged.
 
-Build 2 regression must prove:
+## 8. Stop conditions
 
-1. v1 receipt function fingerprint and execute contract remain unchanged;
-2. identical v2 retries return the same receipt and create no duplicate facts;
-3. changed retries fail closed;
-4. all-clean exact receipt creates no physical review;
-5. mixed clean/affected receipt creates exactly one review;
-6. every allocation balances exactly;
-7. affected quantity requires note and evidence;
-8. evidence cannot cross receipts or shipper users;
-9. importer access is tenant scoped;
-10. importer proposal cannot write approval, dispute, supplier, customer-commercial or replacement facts;
-11. proposal splits cannot exceed affected quantity;
-12. supervisor decision is staff-only and note-required;
-13. approved quantities cannot exceed affected quantity;
-14. replacement approval requires explicit supplier-cost mode;
-15. approval cannot mark retailer outcome or remedy completion;
-16. linked retailer cases use existing disputes and dispute lines;
-17. terminal review/remedy provenance remains immutable;
-18. corrections supersede the old review without rewriting old receipt facts;
-19. no Build 3, Build 4 or unrelated application file changes enter the branch;
-20. all new migrations are additive and ordered after the merged foundation.
+Implementation stops rather than guesses when a protected definition drifts, exact source identity cannot be proven, a fractional quantity is proposed for the integer legacy route, an existing open exception makes linkage ambiguous, storage access would need weakening, or the current role matrix cannot authorise the action.
 
-## 7. Stop conditions
-
-Implementation must stop rather than guess when:
-
-- the live `disputes` or `dispute_lines` shape differs from the reviewed repository authority;
-- no existing function safely creates the required retailer exception identity;
-- current role matrices do not allow the proposed caller to contact the retailer;
-- storage metadata cannot be written without weakening bucket access;
-- a required protected function/view fingerprint has changed;
-- exact source allocation, supplier line or importer identity cannot be proven;
-- an existing open retailer exception makes automatic linkage ambiguous.
-
-Any such conflict requires an explicit additive compatibility migration or a revised governing decision before implementation continues.
+Any conflict requires an explicit additive compatibility migration or a further governing clarification. No quantity may be rounded and no global protection may be removed merely to force the workflow through the legacy model.
