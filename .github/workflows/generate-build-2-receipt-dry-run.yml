@@ -19,6 +19,7 @@ jobs:
         shell: bash
         run: |
           python3 - <<'PY'
+          import re
           from pathlib import Path
 
           sources = [
@@ -28,20 +29,25 @@ jobs:
           ]
 
           def strip_transaction(text: str) -> str:
-            lines = text.splitlines()
-            while lines and not lines[0].strip():
-              lines.pop(0)
-            if lines and lines[0].strip().upper() == 'BEGIN;':
-              lines.pop(0)
-            while lines and not lines[0].strip():
-              lines.pop(0)
-            while lines and not lines[-1].strip():
-              lines.pop()
-            if lines and lines[-1].strip().upper() in {'COMMIT;', 'ROLLBACK;'}:
-              lines.pop()
-            while lines and not lines[-1].strip():
-              lines.pop()
-            return '\n'.join(lines)
+            text, begin_count = re.subn(
+              r'(?mi)^\s*BEGIN;\s*$',
+              '',
+              text,
+              count=1,
+            )
+            if begin_count != 1:
+              raise RuntimeError('Expected exactly one outer BEGIN in source')
+
+            text, end_count = re.subn(
+              r'(?mi)^\s*(?:COMMIT|ROLLBACK);\s*\Z',
+              '',
+              text.rstrip(),
+              count=1,
+            )
+            if end_count != 1:
+              raise RuntimeError('Expected exactly one final COMMIT or ROLLBACK in source')
+
+            return text.strip()
 
           out = [
             '-- GOODCASHBACK BUILD 2 RECEIPT AUTHORITY — PRODUCTION ROLLBACK DRY RUN',
@@ -75,9 +81,10 @@ jobs:
           target.write_text('\n'.join(out), encoding='utf-8')
 
           text = target.read_text(encoding='utf-8')
-          assert text.count('\nBEGIN;') == 1
+          assert len(re.findall(r'(?mi)^\s*BEGIN;\s*$', text)) == 1
+          assert len(re.findall(r'(?mi)^\s*ROLLBACK;\s*$', text)) == 1
+          assert len(re.findall(r'(?mi)^\s*COMMIT;\s*$', text)) == 0
           assert text.rstrip().endswith('ROLLBACK;')
-          assert '\nCOMMIT;' not in text
           assert text.count('CREATE FUNCTION public.shipper_record_package_receipt_v2(') == 1
           print(f'Generated {target} with {len(text.splitlines())} lines')
           PY
