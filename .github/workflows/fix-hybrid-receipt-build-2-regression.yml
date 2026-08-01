@@ -52,6 +52,19 @@ jobs:
           source = source.replace(old_base, new_base, 1)
           source_path.write_text(source, encoding='utf-8')
 
+          impact_path = Path('docs/implementation/20260801_hybrid_physical_receipt_build_2_impact_map_v1.md')
+          impact = impact_path.read_text(encoding='utf-8')
+          anchor = "## 5. Explicit Build 2 exclusions\n\nBuild 2 does not:\n"
+          replacement = (
+            "## 5. Explicit Build 2 exclusions\n\n"
+            "There is no feature flag, pilot account or staged business rollout in Build 2.\n\n"
+            "Build 2 does not:\n"
+          )
+          if impact.count(anchor) != 1:
+            raise RuntimeError(f'Expected one impact exclusion anchor, found {impact.count(anchor)}')
+          impact = impact.replace(anchor, replacement, 1)
+          impact_path.write_text(impact, encoding='utf-8')
+
           Path('.github/workflows/fix-hybrid-receipt-build-2-regression.yml').unlink()
           PY
 
