@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
-const BASE = process.env.BASE_REF || "main";
+const BASE = process.env.BASE_REF || "origin/main";
 
 function run(command, args) {
   return execFileSync(command, args, { encoding: "utf8" }).trim();

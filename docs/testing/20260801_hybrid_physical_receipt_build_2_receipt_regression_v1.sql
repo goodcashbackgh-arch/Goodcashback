@@ -97,7 +97,8 @@ BEGIN
       'public.shipper_package_receipt_v2_terminal_correction_guard_v1()'::regprocedure;
 
   IF v_rpc_definition NOT ILIKE '%SECURITY DEFINER%'
-     OR v_rpc_definition NOT ILIKE '%SET search_path TO public, pg_temp%'
+     OR REPLACE(v_rpc_definition, '''', '') NOT ILIKE
+        '%SET search_path TO public, pg_temp%'
   THEN
     RAISE EXCEPTION 'FAIL: v2 receipt RPC security boundary is wrong';
   END IF;
@@ -110,9 +111,9 @@ BEGIN
   END IF;
 
   IF POSITION('PERFORM 1' IN v_rpc_definition) = 0
-     OR POSITION('SELECT count(*)::integer' IN LOWER(v_rpc_definition)) = 0
+     OR POSITION('select count(*)::integer' IN LOWER(v_rpc_definition)) = 0
      OR POSITION('PERFORM 1' IN v_rpc_definition) >
-        POSITION('SELECT count(*)::integer' IN LOWER(v_rpc_definition))
+        POSITION('select count(*)::integer' IN LOWER(v_rpc_definition))
   THEN
     RAISE EXCEPTION 'FAIL: allocation count is not derived after the locking read';
   END IF;

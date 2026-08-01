@@ -153,6 +153,8 @@ Evidence upload helpers may be prepared for multiple private storage object path
 
 ## 5. Explicit Build 2 exclusions
 
+There is no feature flag, pilot account or staged business rollout in Build 2.
+
 Build 2 does not:
 
 - modify customer-review candidate or materialisation functions;
