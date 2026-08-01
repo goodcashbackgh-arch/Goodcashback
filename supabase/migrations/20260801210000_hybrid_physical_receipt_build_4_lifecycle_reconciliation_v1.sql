@@ -27,25 +27,18 @@ begin
 
   select md5(pg_get_functiondef('public.approve_vat_release(uuid,uuid,jsonb)'::regprocedure)) into v_md5;
   if v_md5 is distinct from '13491a2d250a480ebb1ac607ce7acce5' then raise exception 'Build 4 drift stop: approve_vat_release changed (%).', v_md5; end if;
-
   select md5(pg_get_functiondef('public.mark_order_accounting_release_ready(uuid,uuid)'::regprocedure)) into v_md5;
   if v_md5 is distinct from 'dacaf00c6470a626cfc2d7e7aac2ccb8' then raise exception 'Build 4 drift stop: mark_order_accounting_release_ready changed (%).', v_md5; end if;
-
   select md5(pg_get_functiondef('public.recompute_order_status(uuid)'::regprocedure)) into v_md5;
   if v_md5 is distinct from '110d55541d4f729ff9331e23515fb563' then raise exception 'Build 4 drift stop: recompute_order_status changed (%).', v_md5; end if;
-
   select md5(pg_get_functiondef('public.physical_remedy_allocation_guard_v1()'::regprocedure)) into v_md5;
   if v_md5 is distinct from '32e1d3eb9161cdc3e09114edb8c0d3c0' then raise exception 'Build 4 drift stop: physical_remedy_allocation_guard_v1 changed (%).', v_md5; end if;
-
   select md5(pg_get_functiondef('public.physical_remedy_sequence_guard_v1()'::regprocedure)) into v_md5;
   if v_md5 is distinct from '3c5067f31d4f2112207e02d1f307e233' then raise exception 'Build 4 drift stop: physical_remedy_sequence_guard_v1 changed (%).', v_md5; end if;
-
   select md5(pg_get_functiondef('public.physical_remedy_terminal_immutability_guard_v1()'::regprocedure)) into v_md5;
   if v_md5 is distinct from 'a7aa361f066b454a6f9c4f9b81734834' then raise exception 'Build 4 drift stop: physical_remedy_terminal_immutability_guard_v1 changed (%).', v_md5; end if;
-
   select md5(pg_get_functiondef('public.enforce_status_transition()'::regprocedure)) into v_md5;
   if v_md5 is distinct from '5fc40897ac22a4adae838ecc6a3e1cb9' then raise exception 'Build 4 drift stop: enforce_status_transition changed (%).', v_md5; end if;
-
   select md5(pg_get_functiondef('public.enforce_order_locks()'::regprocedure)) into v_md5;
   if v_md5 is distinct from '497230d0cf04001f37c5e805cdd8da25' then raise exception 'Build 4 drift stop: enforce_order_locks changed (%).', v_md5; end if;
 end
@@ -73,22 +66,15 @@ declare
   v_physical_remedy public.physical_exception_remedy_allocations%rowtype;
   v_review_order_id uuid;
 begin
-  select * into v_parent
-  from public.orders
-  where id = p_parent_order_id
-  for update;
-
+  select * into v_parent from public.orders where id = p_parent_order_id for update;
   if not found then raise exception 'Parent order % not found', p_parent_order_id; end if;
   if v_parent.order_type = 'replacement_child' then raise exception 'Cannot create replacement of a replacement in Phase 1'; end if;
 
   select exists (
-    select 1
-    from public.escalation_events ee
+    select 1 from public.escalation_events ee
     join public.escalation_rules er on er.id = ee.rule_id
-    where ee.entity_type = 'order'
-      and ee.entity_id = p_parent_order_id
-      and ee.resolved_at is null
-      and er.rule_code = 'FUND_LATE_MATCH'
+    where ee.entity_type = 'order' and ee.entity_id = p_parent_order_id
+      and ee.resolved_at is null and er.rule_code = 'FUND_LATE_MATCH'
   ) into v_parent_has_funding_anomaly;
 
   if v_parent.funded_at is null and not v_parent_has_funding_anomaly then
@@ -108,7 +94,6 @@ begin
   if v_dispute_id is null then
     raise exception 'Dispute line % not found or not linked to parent order %', p_dispute_line_id, p_parent_order_id;
   end if;
-
   if exists (select 1 from public.orders o where o.replacement_source_dispute_line_id = p_dispute_line_id) then
     raise exception 'Replacement child order already exists for dispute line %', p_dispute_line_id;
   end if;
@@ -141,9 +126,7 @@ begin
     v_amount := coalesce(v_physical_remedy.customer_commercial_value_gbp, v_amount, 0);
   end if;
 
-  select count(*) + 1 into v_sequence
-  from public.orders o
-  where o.parent_order_id = p_parent_order_id;
+  select count(*) + 1 into v_sequence from public.orders o where o.parent_order_id = p_parent_order_id;
 
   insert into public.orders (
     order_ref, payment_auth_id, importer_id, operator_id, shipper_id, retailer_id,
@@ -175,15 +158,12 @@ begin
 
   if v_physical_remedy_id is not null then
     update public.physical_exception_remedy_allocations
-    set replacement_child_order_id = v_child_id,
-        status = 'in_progress',
-        updated_at = now()
+    set replacement_child_order_id = v_child_id, status = 'in_progress', updated_at = now()
     where id = v_physical_remedy_id;
   end if;
 
   update public.disputes
-  set replacement_child_order_id = v_child_id,
-      resolved_at = coalesce(resolved_at, now())
+  set replacement_child_order_id = v_child_id, resolved_at = coalesce(resolved_at, now())
   where id = v_dispute_id;
 
   update public.dispute_lines
@@ -228,17 +208,13 @@ as $function$
         'retailer_draft_ready','retailer_contacted','retailer_response_received',
         'ai_next_draft_ready','awaiting_retailer_resolution'
       )
-
     union all
-
     select 1
     from public.physical_exception_remedy_allocations remedy
     join public.physical_receipt_reviews review_row on review_row.id = remedy.physical_receipt_review_id
     where review_row.order_id = p_order_id
       and remedy.status not in ('completed','rerouted','closed_no_action')
-
     union all
-
     select 1
     from public.orders child
     where child.parent_order_id = p_order_id
@@ -376,11 +352,12 @@ non_authoritative as (
   from public.supplier_invoices si
   join public.supplier_invoice_lines sil on sil.supplier_invoice_id = si.id
   where sil.eligible_for_invoice_yn = 'Y'
-    and not (
-      si.is_current_for_order = true
-      and si.review_status in ('approved_current','ref_corrected_approved')
-      and si.blocked_from_sage_yn = false
-      and si.superseded_by_supplier_invoice_id is null
+    and (
+      si.is_current_for_order is distinct from true
+      or si.review_status is null
+      or si.review_status not in ('approved_current','ref_corrected_approved')
+      or si.blocked_from_sage_yn is distinct from false
+      or si.superseded_by_supplier_invoice_id is not null
     )
   group by si.order_id
 ),
@@ -397,9 +374,7 @@ select c.order_id,
        now() as last_refreshed_at
 from canonical c
 where c.qty_progressed_invoiceable > c.qty_target
-
 union all
-
 select c.order_id,
        'AUTHORITATIVE_AMOUNT_OVER_PROGRESS',
        c.qty_target::numeric,
@@ -412,9 +387,7 @@ select c.order_id,
        now()
 from canonical c
 where c.amount_progressed_invoiceable_gbp > c.amount_target_gbp
-
 union all
-
 select o.id,
        'NON_AUTHORITATIVE_INVOICEABLE_EVIDENCE',
        o.total_qty_declared::numeric,
@@ -428,9 +401,7 @@ select o.id,
 from public.orders o
 join non_authoritative na on na.order_id = o.id
 where na.non_authoritative_qty <> 0 or na.non_authoritative_amount_gbp <> 0
-
 union all
-
 select o.id,
        'RAW_QTY_OVER_PROGRESS',
        o.total_qty_declared::numeric,
@@ -444,9 +415,7 @@ select o.id,
 from public.orders o
 join raw_eligible raw on raw.order_id = o.id
 where raw.raw_qty > o.total_qty_declared::numeric
-
 union all
-
 select o.id,
        'RAW_AMOUNT_OVER_PROGRESS',
        o.total_qty_declared::numeric,
@@ -462,7 +431,7 @@ join raw_eligible raw on raw.order_id = o.id
 where raw.raw_amount_gbp > o.order_total_gbp_declared;
 
 comment on view public.order_reconciliation_anomalies_v1 is
-  'Read-only Build 4 anomaly model using the same current/approved/unblocked/non-superseded authority predicate as canonical reconciliation.';
+  'Read-only Build 4 anomaly model using a null-safe inverse of the exact current/approved/unblocked/non-superseded canonical authority predicate.';
 
 revoke all on public.order_reconciliation_anomalies_v1 from public;
 revoke all on public.order_reconciliation_anomalies_v1 from anon;
