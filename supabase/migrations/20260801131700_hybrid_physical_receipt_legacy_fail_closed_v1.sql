@@ -3,17 +3,21 @@ BEGIN;
 SET LOCAL lock_timeout = '15s';
 SET LOCAL statement_timeout = '0';
 
--- A legacy package receipt has no exact physical quantity provenance. Where a
--- supplier line on that package also has historical dispute activity, a v2
--- correction must not guess whether that activity belongs to this package.
+-- Additional fail-closed controls:
+--   * every v2 header must match the exact order shipper and active shipper user;
+--   * a legacy receipt correction cannot guess around supplier-line dispute history
+--     that has no exact package provenance.
 
 DO $preflight$
 BEGIN
   IF to_regclass('public.shipper_package_receipts') IS NULL
      OR to_regclass('public.order_tracking_line_allocations') IS NULL
+     OR to_regclass('public.order_tracking_submissions') IS NULL
+     OR to_regclass('public.orders') IS NULL
+     OR to_regclass('public.shipper_users') IS NULL
      OR to_regclass('public.dispute_lines') IS NULL
   THEN
-    RAISE EXCEPTION 'Legacy exception fail-closed prerequisites are missing.';
+    RAISE EXCEPTION 'Hybrid receipt identity/fail-closed prerequisites are missing.';
   END IF;
 
   IF to_regprocedure('public.shipper_package_receipt_v2_integrity_guard_v1()') IS NULL
@@ -22,12 +26,64 @@ BEGIN
     RAISE EXCEPTION 'Hybrid receipt integrity and concurrency guards must be installed first.';
   END IF;
 
-  IF to_regprocedure('public.shipper_package_receipt_legacy_exception_guard_v1()') IS NOT NULL THEN
+  IF to_regprocedure('public.shipper_package_receipt_header_identity_guard_v1()') IS NOT NULL
+     OR to_regprocedure('public.shipper_package_receipt_legacy_exception_guard_v1()') IS NOT NULL
+  THEN
     RAISE EXCEPTION
-      'Legacy exception fail-closed guard already exists; inspect the target rather than guessing.';
+      'One or more hybrid receipt identity/fail-closed guards already exist; inspect the target rather than guessing.';
   END IF;
 END
 $preflight$;
+
+CREATE FUNCTION public.shipper_package_receipt_header_identity_guard_v1()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $function$
+DECLARE
+  v_order_id uuid;
+  v_order_shipper_id uuid;
+BEGIN
+  IF NEW.receipt_model_version <> 2 THEN
+    RETURN NEW;
+  END IF;
+
+  SELECT tracking_row.order_id, order_row.shipper_id
+  INTO v_order_id, v_order_shipper_id
+  FROM public.order_tracking_submissions tracking_row
+  JOIN public.orders order_row ON order_row.id = tracking_row.order_id
+  WHERE tracking_row.id = NEW.tracking_submission_id
+    AND tracking_row.superseded_at IS NULL;
+
+  IF v_order_id IS NULL
+     OR NEW.order_id IS DISTINCT FROM v_order_id
+     OR NEW.shipper_id IS DISTINCT FROM v_order_shipper_id
+  THEN
+    RAISE EXCEPTION
+      'V2 receipt header does not match the current tracking, order and order shipper identity.';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+    FROM public.shipper_users shipper_user
+    WHERE shipper_user.id = NEW.shipper_user_id
+      AND shipper_user.shipper_id = NEW.shipper_id
+      AND shipper_user.active = true
+  ) THEN
+    RAISE EXCEPTION
+      'V2 receipt shipper user is not active for the order shipper.';
+  END IF;
+
+  RETURN NEW;
+END;
+$function$;
+
+CREATE TRIGGER trg_shipper_package_receipt_00b_header_identity_guard_v1
+BEFORE INSERT OR UPDATE
+ON public.shipper_package_receipts
+FOR EACH ROW
+EXECUTE FUNCTION public.shipper_package_receipt_header_identity_guard_v1();
 
 CREATE FUNCTION public.shipper_package_receipt_legacy_exception_guard_v1()
 RETURNS trigger
@@ -77,6 +133,8 @@ FOR EACH ROW
 WHEN (OLD.receipt_state IS DISTINCT FROM NEW.receipt_state)
 EXECUTE FUNCTION public.shipper_package_receipt_legacy_exception_guard_v1();
 
+REVOKE ALL ON FUNCTION public.shipper_package_receipt_header_identity_guard_v1()
+  FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.shipper_package_receipt_legacy_exception_guard_v1()
   FROM PUBLIC, anon, authenticated;
 
