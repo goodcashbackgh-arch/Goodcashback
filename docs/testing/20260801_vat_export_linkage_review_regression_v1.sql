@@ -69,8 +69,8 @@ DECLARE
   v_superseded_count integer;
   v_blocker_count integer;
 BEGIN
-  SELECT b, br.period_end_date
-  INTO v_breach, v_breach_period_end
+  SELECT b.*
+  INTO v_breach
   FROM public.vat_return_run_lines b
   JOIN public.vat_return_runs br
     ON br.id = b.vat_return_run_id
@@ -87,6 +87,11 @@ BEGIN
     RAISE NOTICE 'No suitable locked export breach; duplicate-current-claim fixture skipped.';
     RETURN;
   END IF;
+
+  SELECT br.period_end_date
+  INTO v_breach_period_end
+  FROM public.vat_return_runs br
+  WHERE br.id = v_breach.vat_return_run_id;
 
   SELECT r.*
   INTO v_run
