@@ -16,15 +16,18 @@ jobs:
         with:
           ref: agent/hybrid-receipt-build-2-v1
           fetch-depth: 0
-      - name: Run source regression
+      - name: Remove temporary workflow from working tree
+        shell: bash
+        run: rm .github/workflows/run-build-2-importer-source-regression.yml
+      - name: Run source regression against intended diff
         shell: bash
         run: BASE_REF=origin/main node docs/testing/20260801_hybrid_physical_receipt_build_2_receipt_source_regression_v1.mjs
-      - name: Remove temporary workflow
+      - name: Commit verified workflow removal
         shell: bash
         run: |
-          rm .github/workflows/run-build-2-importer-source-regression.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
+          git diff --cached --check
           git commit -m "Remove temporary Build 2 importer source workflow"
           git push origin HEAD:agent/hybrid-receipt-build-2-v1
