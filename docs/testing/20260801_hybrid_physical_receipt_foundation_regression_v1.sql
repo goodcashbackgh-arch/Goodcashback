@@ -2,9 +2,10 @@
 --   20260801130000_hybrid_physical_receipt_foundation_v1.sql
 --   20260801131000_hybrid_physical_receipt_integrity_v1.sql
 --   20260801131500_hybrid_physical_receipt_concurrency_v1.sql
+--   20260801131700_hybrid_physical_receipt_legacy_fail_closed_v1.sql
 --   20260801132000_hybrid_physical_receipt_position_v1.sql
 --
--- Run after all four migrations. This script leaves no test data.
+-- Run after all five migrations. This script leaves no test data.
 
 BEGIN;
 
@@ -21,6 +22,7 @@ DECLARE
   v_positive_allocations bigint;
   v_position_rows bigint;
   v_legacy_clean_count bigint;
+  v_definition text;
 BEGIN
   IF to_regclass('public.shipper_package_receipt_line_dispositions') IS NULL THEN
     v_missing := array_append(v_missing, 'shipper_package_receipt_line_dispositions');
@@ -40,19 +42,35 @@ BEGIN
   IF to_regclass('public.tracking_allocation_fulfilment_anomalies_v1') IS NULL THEN
     v_missing := array_append(v_missing, 'tracking_allocation_fulfilment_anomalies_v1');
   END IF;
-  IF to_regprocedure(
-    'public.internal_tracking_allocation_fulfilment_position_v1(uuid,uuid,uuid)'
-  ) IS NULL THEN
-    v_missing := array_append(
-      v_missing,
-      'internal_tracking_allocation_fulfilment_position_v1(uuid,uuid,uuid)'
-    );
-  END IF;
 
   IF array_length(v_missing, 1) IS NOT NULL THEN
     RAISE EXCEPTION
       'FAIL: hybrid receipt foundation objects missing: %',
       array_to_string(v_missing, ', ');
+  END IF;
+
+  IF to_regprocedure(
+       'public.internal_tracking_allocation_fulfilment_position_v1(uuid,uuid,uuid)'
+     ) IS NULL
+     OR to_regprocedure('public.shipper_receipt_line_disposition_guard_v1()') IS NULL
+     OR to_regprocedure('public.shipper_receipt_evidence_guard_v1()') IS NULL
+     OR to_regprocedure('public.shipper_package_receipt_v2_integrity_guard_v1()') IS NULL
+     OR to_regprocedure('public.shipper_package_receipt_v2_pending_commit_guard_v1()') IS NULL
+     OR to_regprocedure('public.physical_receipt_review_guard_v1()') IS NULL
+     OR to_regprocedure('public.physical_remedy_allocation_guard_v1()') IS NULL
+     OR to_regprocedure('public.shipper_package_receipt_write_compatibility_guard_v1()') IS NULL
+     OR to_regprocedure('public.shipper_package_receipt_prepare_correction_v1()') IS NULL
+     OR to_regprocedure('public.physical_receipt_review_terminal_guard_v1()') IS NULL
+     OR to_regprocedure('public.physical_remedy_sequence_guard_v1()') IS NULL
+     OR to_regprocedure('public.shipper_package_receipt_header_identity_guard_v1()') IS NULL
+     OR to_regprocedure('public.shipper_package_receipt_legacy_exception_guard_v1()') IS NULL
+  THEN
+    RAISE EXCEPTION 'FAIL: one or more hybrid foundation functions are missing';
+  END IF;
+
+  IF to_regprocedure('public.shipper_package_receipt_v2_supersede_open_review_v1()') IS NOT NULL THEN
+    RAISE EXCEPTION
+      'FAIL: redundant receipt-review supersession function remains installed';
   END IF;
 
   IF NOT EXISTS (
@@ -78,7 +96,7 @@ BEGIN
       AND data_type = 'timestamp with time zone'
   ) THEN
     RAISE EXCEPTION
-      'FAIL: receipt model/state/finalisation columns missing or wrong type';
+      'FAIL: receipt model/state/finalisation columns are missing or wrong type';
   END IF;
 
   IF NOT EXISTS (
@@ -93,9 +111,25 @@ BEGIN
     WHERE table_schema = 'public'
       AND table_name = 'physical_exception_remedy_allocations'
       AND column_name = 'approved_remedy_type'
+  ) OR EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'physical_exception_remedy_allocations'
+      AND column_name IN ('remedy_type','remedy_qty')
   ) THEN
     RAISE EXCEPTION
       'FAIL: importer proposal and supervisor approval are not stored separately';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint constraint_row
+    WHERE constraint_row.conrelid = 'public.physical_receipt_reviews'::regclass
+      AND constraint_row.conname =
+          'physical_receipt_review_supervisor_note_required_v1'
+  ) THEN
+    RAISE EXCEPTION 'FAIL: supervisor decision-note constraint is missing';
   END IF;
 
   IF to_regprocedure('public.shipper_record_package_receipt_v1(uuid,text,text,text)') IS NULL
@@ -182,16 +216,37 @@ BEGIN
   END IF;
 
   IF has_function_privilege(
-    'authenticated',
-    'public.internal_tracking_allocation_fulfilment_position_v1(uuid,uuid,uuid)',
-    'EXECUTE'
-  ) OR NOT has_function_privilege(
-    'service_role',
-    'public.internal_tracking_allocation_fulfilment_position_v1(uuid,uuid,uuid)',
-    'EXECUTE'
-  ) THEN
+       'authenticated',
+       'public.internal_tracking_allocation_fulfilment_position_v1(uuid,uuid,uuid)',
+       'EXECUTE'
+     )
+     OR NOT has_function_privilege(
+       'service_role',
+       'public.internal_tracking_allocation_fulfilment_position_v1(uuid,uuid,uuid)',
+       'EXECUTE'
+     )
+  THEN
     RAISE EXCEPTION
       'FAIL: scoped quantity-position function privilege boundary is wrong';
+  END IF;
+
+  IF has_function_privilege(
+       'authenticated',
+       'public.shipper_package_receipt_v2_pending_commit_guard_v1()',
+       'EXECUTE'
+     )
+     OR has_function_privilege(
+       'authenticated',
+       'public.shipper_package_receipt_header_identity_guard_v1()',
+       'EXECUTE'
+     )
+     OR has_function_privilege(
+       'authenticated',
+       'public.shipper_package_receipt_legacy_exception_guard_v1()',
+       'EXECUTE'
+     )
+  THEN
+    RAISE EXCEPTION 'FAIL: internal trigger function is executable by authenticated';
   END IF;
 
   IF has_table_privilege(
@@ -300,17 +355,48 @@ BEGIN
       'trg_shipper_package_receipt_v2_pending_commit_guard_v1',
       'trg_physical_receipt_review_guard_v1',
       'trg_physical_remedy_allocation_guard_v1',
-      'trg_shipper_package_receipt_v2_supersede_open_review_v1',
       'trg_shipper_package_receipt_00_write_compatibility_guard_v1',
       'trg_shipper_package_receipt_01_prepare_correction_v1',
       'trg_physical_receipt_review_00_terminal_guard_v1',
-      'trg_physical_remedy_00_sequence_guard_v1'
+      'trg_physical_remedy_00_sequence_guard_v1',
+      'trg_shipper_package_receipt_00a_legacy_exception_guard_v1',
+      'trg_shipper_package_receipt_00b_header_identity_guard_v1'
     )
       AND NOT trigger_row.tgisinternal
       AND trigger_row.tgenabled <> 'D'
-  ) <> 11 THEN
+  ) <> 12 THEN
     RAISE EXCEPTION
-      'FAIL: one or more hybrid receipt integrity/concurrency triggers are missing or disabled';
+      'FAIL: one or more hybrid receipt integrity/concurrency triggers are missing or duplicated';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM pg_trigger trigger_row
+    WHERE trigger_row.tgname =
+          'trg_shipper_package_receipt_v2_supersede_open_review_v1'
+      AND NOT trigger_row.tgisinternal
+  ) THEN
+    RAISE EXCEPTION 'FAIL: redundant supersession trigger remains installed';
+  END IF;
+
+  SELECT pg_get_functiondef(
+    'public.shipper_package_receipt_v2_pending_commit_guard_v1()'::regprocedure
+  )
+  INTO v_definition;
+
+  IF position('receipt.id = NEW.id' IN v_definition) = 0
+     OR position('COALESCE(NEW.id, OLD.id)' IN v_definition) > 0
+  THEN
+    RAISE EXCEPTION 'FAIL: deferred pending guard uses unsafe trigger row identity';
+  END IF;
+
+  SELECT pg_get_functiondef(
+    'public.shipper_package_receipt_legacy_exception_guard_v1()'::regprocedure
+  )
+  INTO v_definition;
+
+  IF position('JOIN public.dispute_lines' IN v_definition) = 0 THEN
+    RAISE EXCEPTION 'FAIL: legacy correction does not fail closed on dispute history';
   END IF;
 
   IF EXISTS (
@@ -506,9 +592,11 @@ BEGIN
        OR (
          position_row.position_valid_yn
          AND (
-           position_row.physical_clean_qty
+           ABS(
+             position_row.physical_clean_qty
              + position_row.physical_exception_qty
-             <> position_row.allocated_qty
+             - position_row.allocated_qty
+           ) > 0.0005
            OR position_row.reviewed_qty
              > position_row.physical_clean_qty + 0.0005
            OR position_row.shipped_qty
@@ -517,6 +605,21 @@ BEGIN
              > position_row.shipped_qty + 0.0005
            OR position_row.remedy_assigned_qty
              > position_row.physical_exception_qty + 0.0005
+           OR (
+             position_row.source_receipt_model = 'v2_exact'
+             AND position_row.active_hold_qty
+                 > position_row.reviewed_qty + 0.0005
+           )
+           OR (
+             position_row.source_receipt_model = 'v2_exact'
+             AND position_row.shipped_qty
+                 > position_row.reviewed_qty + 0.0005
+           )
+           OR (
+             position_row.source_receipt_model = 'v2_exact'
+             AND position_row.active_hold_qty + position_row.shipped_qty
+                 > position_row.reviewed_qty + 0.0005
+           )
          )
        )
   ) THEN
@@ -1109,7 +1212,8 @@ BEGIN
     SET status = 'approved_to_existing_exception',
         supervisor_decided_by_staff_id = v_staff_id,
         supervisor_decided_at = now(),
-        approved_liable_party = 'retailer'
+        approved_liable_party = 'retailer',
+        decision_note = 'Rollback-only retailer-route approval attempt.'
     WHERE id = v_review_id;
   EXCEPTION WHEN check_violation THEN
     v_expected_failure := true;
@@ -1369,7 +1473,7 @@ $functional$;
 DO $$
 BEGIN
   RAISE NOTICE
-    'PASS: hybrid physical receipt foundation schema, legacy parity, atomic v2 finalisation, evidence, proposal/approval separation, remedy caps, correction protection, v1 compatibility guard and exact position regressions completed.';
+    'PASS: hybrid physical receipt foundation schema, legacy parity, atomic v2 finalisation, evidence, proposal/approval separation, remedy caps, correction protection, v1 compatibility, header identity, legacy fail-closed and exact position regressions completed.';
 END $$;
 
 ROLLBACK;
