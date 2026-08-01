@@ -20,17 +20,29 @@ begin
     raise exception 'FAIL: canonical supplier invoice authority is incomplete';
   end if;
 
-  if position('is_current_for_order' in v_anomaly) = 0
-     or position('approved_current' in v_anomaly) = 0
-     or position('ref_corrected_approved' in v_anomaly) = 0
-     or position('blocked_from_sage_yn' in v_anomaly) = 0
-     or position('superseded_by_supplier_invoice_id' in v_anomaly) = 0
+  if position('is_current_for_order IS DISTINCT FROM true' in v_anomaly) = 0
+     or position('review_status IS NULL' in v_anomaly) = 0
+     or position('review_status <> ALL' in v_anomaly) = 0
+     or position('blocked_from_sage_yn IS DISTINCT FROM false' in v_anomaly) = 0
+     or position('superseded_by_supplier_invoice_id IS NOT NULL' in v_anomaly) = 0
      or position('NON_AUTHORITATIVE_INVOICEABLE_EVIDENCE' in v_anomaly) = 0
   then
-    raise exception 'FAIL: anomaly supplier invoice authority is incomplete or inconsistent';
+    raise exception 'FAIL: anomaly authority is not the null-safe inverse of canonical authority';
   end if;
 end
 $reconciliation_authority$;
+
+do $null_semantics$
+begin
+  if not (
+    null::boolean is distinct from true
+    and null::boolean is distinct from false
+    and null::text is null
+  ) then
+    raise exception 'FAIL: null-safety assumptions do not hold';
+  end if;
+end
+$null_semantics$;
 
 do $atomic_replacement_authority$
 declare
@@ -53,6 +65,13 @@ begin
   then
     raise exception 'FAIL: replacement provenance branches are incomplete';
   end if;
+
+  if position('status = ''under_review''' in v_definition) = 0
+     or position('status = ''approved_replacement''' in v_definition) = 0
+     or position('status = ''replaced''' in v_definition) = 0
+  then
+    raise exception 'FAIL: atomic status sequence is incomplete';
+  end if;
 end
 $atomic_replacement_authority$;
 
@@ -70,7 +89,7 @@ $application_grants$;
 
 select jsonb_build_object(
   'regression_result', 'PASS',
-  'proof', 'canonical and anomaly views use the same current approved unblocked non-superseded invoice identity; atomic replacement authority separates exact physical provenance from legacy source-set provenance; anon remains blocked'
+  'proof', 'canonical authority is complete; anomaly authority is its null-safe inverse; atomic physical and legacy branches and status sequence are installed; anon remains blocked'
 ) as regression_result;
 
 rollback;
