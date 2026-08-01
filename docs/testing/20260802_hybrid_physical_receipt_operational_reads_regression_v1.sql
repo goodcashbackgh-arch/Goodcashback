@@ -63,9 +63,9 @@ BEGIN
   IF has_function_privilege('anon', 'public.importer_physical_receipt_reviews_v1(uuid)', 'EXECUTE')
      OR has_function_privilege('anon', 'public.staff_physical_receipt_reviews_v1(uuid)', 'EXECUTE')
      OR has_function_privilege('anon', 'public.can_read_physical_receipt_evidence_v1(text)', 'EXECUTE')
-     OR has_function_privilege('public', 'public.importer_physical_receipt_reviews_v1(uuid)', 'EXECUTE')
-     OR has_function_privilege('public', 'public.staff_physical_receipt_reviews_v1(uuid)', 'EXECUTE')
-     OR has_function_privilege('public', 'public.can_read_physical_receipt_evidence_v1(text)', 'EXECUTE')
+     OR COALESCE(array_to_string(v_importer_acl, ','), '') LIKE '%=X/%'
+     OR COALESCE(array_to_string(v_staff_acl, ','), '') LIKE '%=X/%'
+     OR COALESCE(array_to_string(v_evidence_acl, ','), '') LIKE '%=X/%'
   THEN
     RAISE EXCEPTION 'Operational read authority is executable by anon or PUBLIC.';
   END IF;
