@@ -1,21 +1,27 @@
--- Rollback-only catalog regression for terminal physical review/remedy immutability.
--- Run after 20260801131700_hybrid_physical_receipt_legacy_fail_closed_v1.sql.
+-- Rollback-only catalog regression for physical review/remedy decision consistency
+-- and terminal immutability. Run after
+-- 20260801131700_hybrid_physical_receipt_legacy_fail_closed_v1.sql.
 
 BEGIN;
 
 DO $regression$
 DECLARE
   v_review_definition text;
+  v_route_definition text;
   v_remedy_definition text;
 BEGIN
   IF to_regprocedure(
        'public.physical_receipt_review_terminal_immutability_guard_v1()'
      ) IS NULL
      OR to_regprocedure(
+       'public.physical_receipt_review_route_quantity_guard_v1()'
+     ) IS NULL
+     OR to_regprocedure(
        'public.physical_remedy_terminal_immutability_guard_v1()'
      ) IS NULL
   THEN
-    RAISE EXCEPTION 'FAIL: terminal physical provenance guard is missing';
+    RAISE EXCEPTION
+      'FAIL: physical decision-consistency or terminal provenance guard is missing';
   END IF;
 
   IF to_regclass('public.uq_physical_remedy_dispute_line_v1') IS NULL THEN
@@ -46,6 +52,14 @@ BEGIN
   ) OR NOT EXISTS (
     SELECT 1
     FROM pg_trigger trigger_row
+    WHERE trigger_row.tgrelid = 'public.physical_receipt_reviews'::regclass
+      AND trigger_row.tgname =
+          'trg_physical_receipt_review_00b_route_quantity_guard_v1'
+      AND NOT trigger_row.tgisinternal
+      AND trigger_row.tgenabled <> 'D'
+  ) OR NOT EXISTS (
+    SELECT 1
+    FROM pg_trigger trigger_row
     WHERE trigger_row.tgrelid =
           'public.physical_exception_remedy_allocations'::regclass
       AND trigger_row.tgname =
@@ -54,7 +68,7 @@ BEGIN
       AND trigger_row.tgenabled <> 'D'
   ) THEN
     RAISE EXCEPTION
-      'FAIL: terminal physical provenance trigger is missing or disabled';
+      'FAIL: physical decision-consistency or terminal provenance trigger is missing or disabled';
   END IF;
 
   IF has_function_privilege(
@@ -64,12 +78,36 @@ BEGIN
      )
      OR has_function_privilege(
        'authenticated',
+       'public.physical_receipt_review_route_quantity_guard_v1()',
+       'EXECUTE'
+     )
+     OR has_function_privilege(
+       'authenticated',
        'public.physical_remedy_terminal_immutability_guard_v1()',
        'EXECUTE'
      )
   THEN
     RAISE EXCEPTION
-      'FAIL: terminal physical provenance guard is executable by authenticated';
+      'FAIL: internal physical decision/provenance guard is executable by authenticated';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint constraint_row
+    WHERE constraint_row.conrelid =
+          'public.physical_exception_remedy_allocations'::regclass
+      AND constraint_row.conname =
+          'physical_remedy_proposed_state_boundary_v1'
+  ) OR NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint constraint_row
+    WHERE constraint_row.conrelid =
+          'public.physical_exception_remedy_allocations'::regclass
+      AND constraint_row.conname =
+          'physical_remedy_replacement_cost_mode_v1'
+  ) THEN
+    RAISE EXCEPTION
+      'FAIL: proposed-state or replacement-cost consistency constraint is missing';
   END IF;
 
   SELECT pg_get_functiondef(
@@ -87,11 +125,25 @@ BEGIN
   END IF;
 
   SELECT pg_get_functiondef(
+    'public.physical_receipt_review_route_quantity_guard_v1()'::regprocedure
+  )
+  INTO v_route_definition;
+
+  IF position('Investigation approval requires positive exact' IN v_route_definition) = 0
+     OR position('No-action closure requires positive exact' IN v_route_definition) = 0
+     OR position('approved_remedy_qty <= 0' IN v_route_definition) = 0
+  THEN
+    RAISE EXCEPTION
+      'FAIL: investigation/no-action decisions are not tied to positive exact quantity';
+  END IF;
+
+  SELECT pg_get_functiondef(
     'public.physical_remedy_terminal_immutability_guard_v1()'::regprocedure
   )
   INTO v_remedy_definition;
 
-  IF position('Importer remedy proposal cannot invent supplier claim' IN v_remedy_definition) = 0
+  IF position('Importer remedy proposal cannot invent approval' IN v_remedy_definition) = 0
+     OR position('Approved replacement requires an explicit supplier cost mode' IN v_remedy_definition) = 0
      OR position('Terminal physical remedy provenance is immutable' IN v_remedy_definition) = 0
      OR position('dispute-line provenance is immutable once linked' IN v_remedy_definition) = 0
      OR position('replacement-child provenance is immutable once linked' IN v_remedy_definition) = 0
@@ -100,11 +152,11 @@ BEGIN
      OR position('supplier cost evidence remains pending' IN v_remedy_definition) = 0
   THEN
     RAISE EXCEPTION
-      'FAIL: terminal remedy financial/source provenance is not fully frozen';
+      'FAIL: physical remedy decision/source/financial provenance is not fully controlled';
   END IF;
 
   RAISE NOTICE
-    'PASS: one-to-one dispute linkage and terminal physical review/remedy identity, financial and replacement provenance guards are installed and private.';
+    'PASS: one-to-one dispute linkage, positive decision quantity, proposal boundary, replacement cost mode and terminal provenance guards are installed and private.';
 END
 $regression$;
 
