@@ -68,7 +68,7 @@ The exact final signature may be refined only if repository/live type inspection
 - tracking submission identity;
 - idempotent receipt submission identity;
 - complete allocation-disposition payload;
-- evidence metadata payload;
+- evidence metadata payload using the private v2 object prefix `shipper-receipts/<shipper_id>/<tracking_submission_id>/`;
 - optional immediate predecessor for correction;
 - required correction reason when correcting.
 
@@ -107,7 +107,7 @@ Required behaviour:
 - no supervisor approval facts, dispute linkage, supplier claim, customer-commercial amount, supplier-cost mode or replacement-child facts may be supplied by the importer;
 - active proposed quantity per affected disposition cannot exceed the exact affected quantity;
 - split proposals are allowed;
-- prior non-terminal proposal rows are superseded or replaced without deleting history;
+- prior non-terminal proposal rows use only an existing audited cancellation or reroute transition; no invented `superseded` remedy status is allowed;
 - review advances to `awaiting_supervisor_review` atomically.
 
 ### 3.3 Supervisor initial decision RPC

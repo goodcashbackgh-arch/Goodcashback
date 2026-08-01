@@ -73,6 +73,9 @@ DECLARE
   v_receipt_id uuid;
   v_review_id uuid;
   v_prior_receipt_id uuid;
+  v_prior_created_at timestamptz;
+  v_prior_review_status text;
+  v_evidence_prefix text;
   v_existing public.shipper_package_receipts%ROWTYPE;
   v_dispositions jsonb;
   v_evidence jsonb;
@@ -80,7 +83,7 @@ DECLARE
   v_expected_count integer;
   v_payload_count integer;
   v_affected_qty numeric;
-  v_event_at timestamptz := clock_timestamp();
+  v_event_at timestamptz;
 BEGIN
   IF v_auth_uid IS NULL THEN
     RAISE EXCEPTION 'Unauthenticated user: shipper package receipt requires auth.uid()';
@@ -111,13 +114,16 @@ BEGIN
     RAISE EXCEPTION 'Active shipper user account not found.';
   END IF;
 
+  PERFORM pg_advisory_xact_lock(hashtext(p_tracking_submission_id::text));
+
   SELECT ots.order_id, o.shipper_id, o.importer_id
   INTO v_order_id, v_order_shipper_id, v_importer_id
   FROM public.order_tracking_submissions ots
   JOIN public.orders o ON o.id = ots.order_id
   WHERE ots.id = p_tracking_submission_id
     AND ots.superseded_at IS NULL
-  FOR SHARE OF ots, o;
+  FOR UPDATE OF ots
+  FOR SHARE OF o;
 
   IF v_order_id IS NULL THEN
     RAISE EXCEPTION 'Tracking/package record not found or superseded.';
@@ -129,14 +135,9 @@ BEGIN
     RAISE EXCEPTION 'Tracking order importer could not be resolved.';
   END IF;
 
-  PERFORM pg_advisory_xact_lock(hashtext(p_tracking_submission_id::text));
-
-  SELECT COUNT(*)::integer
-  INTO v_expected_count
-  FROM public.order_tracking_line_allocations a
-  WHERE a.order_id = v_order_id
-    AND a.tracking_submission_id = p_tracking_submission_id
-    AND COALESCE(a.qty_allocated, 0) > 0;
+  v_evidence_prefix :=
+    'shipper-receipts/' || v_shipper_id::text || '/'
+    || p_tracking_submission_id::text || '/';
 
   PERFORM 1
   FROM public.order_tracking_line_allocations a
@@ -145,6 +146,13 @@ BEGIN
     AND COALESCE(a.qty_allocated, 0) > 0
   ORDER BY a.id
   FOR UPDATE;
+
+  SELECT COUNT(*)::integer
+  INTO v_expected_count
+  FROM public.order_tracking_line_allocations a
+  WHERE a.order_id = v_order_id
+    AND a.tracking_submission_id = p_tracking_submission_id
+    AND COALESCE(a.qty_allocated, 0) > 0;
 
   IF v_expected_count = 0 THEN
     RAISE EXCEPTION 'Tracking/package has no positive exact allocations.';
@@ -287,6 +295,9 @@ BEGIN
       disposition_type text
     )
     WHERE NULLIF(BTRIM(COALESCE(x.storage_object_path, '')), '') IS NULL
+       OR x.storage_object_path NOT LIKE v_evidence_prefix || '%'
+       OR LENGTH(x.storage_object_path) <= LENGTH(v_evidence_prefix)
+       OR POSITION('..' IN x.storage_object_path) > 0
        OR COALESCE(x.display_order, 0) < 0
        OR (x.tracking_line_allocation_id IS NULL AND x.disposition_type IS NOT NULL)
        OR (x.tracking_line_allocation_id IS NOT NULL
@@ -357,7 +368,10 @@ BEGIN
   FOR SHARE;
 
   IF v_existing.id IS NOT NULL THEN
-    IF v_existing.shipper_user_id IS DISTINCT FROM v_shipper_user_id
+    IF v_existing.receipt_model_version IS DISTINCT FROM 2
+       OR v_existing.receipt_state IS DISTINCT FROM 'finalised'
+       OR v_existing.finalised_at IS NULL
+       OR v_existing.shipper_user_id IS DISTINCT FROM v_shipper_user_id
        OR v_existing.tracking_submission_id IS DISTINCT FROM p_tracking_submission_id
        OR v_existing.payload_fingerprint IS DISTINCT FROM v_fingerprint THEN
       RAISE EXCEPTION 'Receipt submission identity was already used for another context or payload.';
@@ -375,16 +389,15 @@ BEGIN
     );
   END IF;
 
-  SELECT r.id INTO v_prior_receipt_id
+  SELECT r.id, r.created_at
+  INTO v_prior_receipt_id, v_prior_created_at
   FROM public.shipper_package_receipts r
   WHERE r.tracking_submission_id = p_tracking_submission_id
     AND (r.receipt_model_version = 1
          OR (r.receipt_model_version = 2
              AND r.receipt_state = 'finalised'
              AND r.finalised_at IS NOT NULL))
-  ORDER BY COALESCE(r.finalised_at, r.created_at) DESC,
-           r.created_at DESC,
-           r.id DESC
+  ORDER BY r.created_at DESC, r.id DESC
   LIMIT 1
   FOR SHARE;
 
@@ -400,6 +413,30 @@ BEGIN
      AND NULLIF(BTRIM(COALESCE(p_correction_reason, '')), '') IS NULL THEN
     RAISE EXCEPTION 'Correction reason is required.';
   END IF;
+
+  IF p_correction_of_receipt_id IS NOT NULL THEN
+    SELECT pr.status
+    INTO v_prior_review_status
+    FROM public.physical_receipt_reviews pr
+    WHERE pr.receipt_id = p_correction_of_receipt_id
+    FOR SHARE;
+
+    IF v_prior_review_status IN (
+      'approved_to_existing_exception',
+      'rejected',
+      'closed_no_action',
+      'superseded'
+    ) THEN
+      RAISE EXCEPTION
+        'Receipt correction is blocked because predecessor physical review is terminal or retailer-linked (%). Use controlled staff remediation.',
+        v_prior_review_status;
+    END IF;
+  END IF;
+
+  v_event_at := CASE
+    WHEN v_prior_created_at IS NULL THEN clock_timestamp()
+    ELSE GREATEST(clock_timestamp(), v_prior_created_at + INTERVAL '1 microsecond')
+  END;
 
   INSERT INTO public.shipper_package_receipts (
     tracking_submission_id, order_id, shipper_id, shipper_user_id,
@@ -478,9 +515,7 @@ BEGIN
         'awaiting_importer_proposal',
         'awaiting_supervisor_review',
         'returned_for_information',
-        'approved_for_investigation',
-        'rejected',
-        'closed_no_action'
+        'approved_for_investigation'
       );
   END IF;
 

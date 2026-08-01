@@ -69,8 +69,5 @@ EXECUTE FUNCTION public.shipper_package_receipt_v2_terminal_correction_guard_v1(
 REVOKE ALL ON FUNCTION
   public.shipper_package_receipt_v2_terminal_correction_guard_v1()
   FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION
-  public.shipper_package_receipt_v2_terminal_correction_guard_v1()
-  TO service_role;
 
 COMMIT;
