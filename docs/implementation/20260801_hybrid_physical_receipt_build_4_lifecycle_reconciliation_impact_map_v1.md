@@ -11,9 +11,9 @@
 ### Database replacement authorities
 
 1. `create_replacement_child_order(uuid,uuid,uuid,text)`
-   - preserve legacy replacement compatibility;
-   - consume one exact dispute line;
-   - where the dispute line has physical-remedy provenance, verify the approved replacement route, approved quantity, source order and supplier-cost mode;
+   - preserve legacy caller compatibility;
+   - consume one exact source dispute line;
+   - where that line has physical-remedy provenance, verify the approved replacement route, approved quantity, source order and supplier-cost mode;
    - write `orders.replacement_source_dispute_line_id`;
    - link the exact remedy allocation to the child and move it through an existing guarded transition;
    - do not create replacement-of-replacement.
@@ -30,7 +30,7 @@
    - avoid double subtraction of a resolved dispute line whose exact supplier line already progressed;
    - never clear an over-progressed order.
 
-### Additive database read model
+### Additive database authorities
 
 4. `order_reconciliation_anomalies_v1`
    - expose canonical over-progression;
@@ -38,13 +38,21 @@
    - expose raw evidence exceeding declared baselines;
    - include sufficient evidence identity for controlled investigation.
 
+5. `staff_accept_replacement_outcome_v1(uuid,uuid,text)`
+   - perform the existing permitted dispute transitions, child creation, provenance linkage, dispute-line resolution and final `replaced` transition atomically;
+   - require one exact remedy-linked line for a physical replacement;
+   - preserve prior legacy multi-line manual replacement aggregation;
+   - reject mixed physical and legacy lines;
+   - authenticate the supplied active staff identity against `auth.uid()`;
+   - call the hardened `create_replacement_child_order` authority rather than duplicating child creation.
+
 ### Application alignment
 
-5. `app/internal/exceptions/[dispute_id]/actions.ts`
+6. `app/internal/exceptions/[dispute_id]/actions.ts`
    - remove the parallel direct `orders` insertion path from final replacement acceptance;
-   - require one exact final-approved source dispute line;
-   - call `create_replacement_child_order`;
-   - preserve the existing retailer-reply guard and dispute-status transition sequence;
+   - remove separate mutation calls around child creation;
+   - call `staff_accept_replacement_outcome_v1` once;
+   - retain the existing read-only retailer-reply guard for immediate user feedback while the database repeats the authority check;
    - preserve current revalidation destinations and role guard.
 
 ## Protected authorities
@@ -59,6 +67,8 @@ The migration fingerprints and does not replace:
 
 No `status_transitions` row, UI label, navigation item, role grant, parent declared quantity, parent declared amount, customer-review, shipment, Sage, VAT, refund, payout or AP authority is changed.
 
+Legacy aggregation may set the newly created replacement child’s declared quantity and value to the aggregate of its source manual lines. It must never rewrite the parent order.
+
 ## Known regression evidence
 
 `DAY3-TRACK-1d7cfa66`:
@@ -71,9 +81,10 @@ No `status_transitions` row, UI label, navigation item, role grant, parent decla
 
 ## Deployment order
 
-1. review and merge the alignment addendum and migration;
-2. apply the additive/replacement database migration;
-3. run the Build 4 SQL regression;
-4. deploy the application action that calls the hardened RPC;
-5. run source regression and controlled final replacement acceptance;
-6. verify protected fingerprints and role behaviour are unchanged.
+1. review and merge the alignment addendum and both Build 4 migrations;
+2. apply the lifecycle/reconciliation migration;
+3. apply the atomic replacement-acceptance migration;
+4. run the Build 4 SQL regression;
+5. deploy the application action that calls the atomic RPC;
+6. run source regression and controlled final replacement acceptance;
+7. verify protected fingerprints and role behaviour are unchanged.
