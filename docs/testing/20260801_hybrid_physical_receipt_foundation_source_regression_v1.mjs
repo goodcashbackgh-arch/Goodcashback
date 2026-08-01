@@ -219,13 +219,33 @@ requireText(
 )
 requireText(
   hardening,
+  'physical_receipt_review_route_quantity_guard_v1',
+  'positive investigation and no-action route quantity guard',
+)
+requireText(
+  hardening,
+  'Investigation approval requires positive exact supervisor-approved hold/investigate quantity.',
+  'positive investigation quantity requirement',
+)
+requireText(
+  hardening,
+  'No-action closure requires positive exact supervisor-approved no-action quantity.',
+  'positive no-action quantity requirement',
+)
+requireText(
+  hardening,
   'Terminal physical receipt review provenance is immutable.',
   'terminal review immutability',
 )
 requireText(
   hardening,
-  'Importer remedy proposal cannot invent supplier claim or customer commercial outcome amounts.',
-  'proposal financial boundary',
+  'Importer remedy proposal cannot invent approval, supplier claim, customer commercial outcome, dispute or replacement facts.',
+  'proposal authority boundary',
+)
+requireText(
+  hardening,
+  'Approved replacement requires an explicit supplier cost mode.',
+  'replacement cost-mode requirement',
 )
 requireText(
   hardening,
@@ -302,6 +322,11 @@ assert.match(terminalRegression, /^-- Rollback-only catalog regression/i)
 assert.match(terminalRegression, /ROLLBACK;\s*$/i)
 requireText(
   terminalRegression,
+  'physical_receipt_review_route_quantity_guard_v1',
+  'positive route quantity catalog regression',
+)
+requireText(
+  terminalRegression,
   'physical_receipt_review_terminal_immutability_guard_v1',
   'terminal review catalog regression',
 )
@@ -310,7 +335,12 @@ requireText(
   'physical_remedy_terminal_immutability_guard_v1',
   'terminal remedy catalog regression',
 )
+requireText(
+  terminalRegression,
+  'Approved replacement requires an explicit supplier cost mode',
+  'explicit replacement cost-mode catalog regression',
+)
 
 console.log(
-  `PASS: ${relative(root, fileURLToPath(import.meta.url))} verified Build 1 scope, migration order, protected-object preservation, atomic v2 controls, terminal provenance, legacy fail-closed rules and exact quantity authority.`,
+  `PASS: ${relative(root, fileURLToPath(import.meta.url))} verified Build 1 scope, migration order, protected-object preservation, atomic v2 controls, positive route quantities, terminal provenance, legacy fail-closed rules and exact quantity authority.`,
 )
