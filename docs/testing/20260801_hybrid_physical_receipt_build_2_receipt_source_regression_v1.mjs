@@ -26,6 +26,8 @@ const compatibilityPath =
   "supabase/migrations/20260801142000_hybrid_physical_receipt_dispute_compatibility_v1.sql";
 const supervisorRpcPath =
   "supabase/migrations/20260801143000_hybrid_physical_receipt_supervisor_initial_decision_rpc_v1.sql";
+const privilegeFixPath =
+  "supabase/migrations/20260801143100_hybrid_physical_receipt_supervisor_rpc_privilege_fix_v1.sql";
 const receiptRegressionPath =
   "docs/testing/20260801_hybrid_physical_receipt_build_2_receipt_regression_v2.sql";
 const importerRegressionPath =
@@ -41,6 +43,7 @@ const allowed = new Set([
   importerRpcPath,
   compatibilityPath,
   supervisorRpcPath,
+  privilegeFixPath,
   receiptRegressionPath,
   importerRegressionPath,
   supervisorRegressionPath,
@@ -67,6 +70,7 @@ const receiptRpc = readFileSync(receiptRpcPath, "utf8");
 const importerRpc = readFileSync(importerRpcPath, "utf8");
 const compatibility = readFileSync(compatibilityPath, "utf8");
 const supervisorRpc = readFileSync(supervisorRpcPath, "utf8");
+const privilegeFix = readFileSync(privilegeFixPath, "utf8");
 const receiptRegression = readFileSync(receiptRegressionPath, "utf8");
 const importerRegression = readFileSync(importerRegressionPath, "utf8");
 const supervisorRegression = readFileSync(supervisorRegressionPath, "utf8");
@@ -77,6 +81,7 @@ for (const [path, text] of [
   [importerRpcPath, importerRpc],
   [compatibilityPath, compatibility],
   [supervisorRpcPath, supervisorRpc],
+  [privilegeFixPath, privilegeFix],
 ]) {
   const beginCount = (text.match(/^BEGIN;$/gm) || []).length;
   const commitCount = (text.match(/^COMMIT;$/gm) || []).length;
@@ -118,11 +123,12 @@ if (
     guardPath < receiptRpcPath &&
     receiptRpcPath < importerRpcPath &&
     importerRpcPath < compatibilityPath &&
-    compatibilityPath < supervisorRpcPath
+    compatibilityPath < supervisorRpcPath &&
+    supervisorRpcPath < privilegeFixPath
   )
 ) {
   fail(
-    "Build 2 migrations are not ordered guard -> receipt -> importer -> compatibility -> supervisor",
+    "Build 2 migrations are not ordered guard -> receipt -> importer -> compatibility -> supervisor -> privilege fix",
   );
 }
 
@@ -264,6 +270,16 @@ for (const token of [
 ]) {
   if (!supervisorRpc.includes(token)) {
     fail(`supervisor RPC missing required control: ${token}`);
+  }
+}
+
+for (const token of [
+  "staff_decide_physical_receipt_review_v1",
+  "FROM PUBLIC, anon",
+  "TO authenticated",
+]) {
+  if (!privilegeFix.includes(token)) {
+    fail(`supervisor privilege fix missing required control: ${token}`);
   }
 }
 
