@@ -1,0 +1,101 @@
+name: Fix Build 2 regression scope
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.head_ref == 'agent/hybrid-receipt-build-2-v1'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/hybrid-receipt-build-2-v1
+          fetch-depth: 0
+      - name: Patch false-positive assertion
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('docs/testing/20260801_hybrid_physical_receipt_build_2_receipt_regression_v1.sql')
+          text = path.read_text(encoding='utf-8')
+
+          old_decl = "  v_guard_definition text;\n  v_rpc_oid oid;"
+          new_decl = "  v_guard_definition text;\n  v_supersession_update text;\n  v_rpc_oid oid;"
+          if text.count(old_decl) != 1:
+            raise RuntimeError('Declaration anchor mismatch')
+          text = text.replace(old_decl, new_decl, 1)
+
+          old_block = """  IF v_rpc_definition LIKE
+       '%''approved_for_investigation'',%''rejected'',%'
+     OR v_rpc_definition LIKE
+       '%''rejected'',%''closed_no_action''%'
+  THEN
+    RAISE EXCEPTION 'FAIL: terminal review states remain in RPC supersession update';
+  END IF;
+
+  IF v_rpc_definition NOT LIKE
+       '%pr.status IN (%''awaiting_importer_proposal''%''awaiting_supervisor_review''%''returned_for_information''%''approved_for_investigation''%'
+  THEN
+    RAISE EXCEPTION 'FAIL: open-review correction supersession states are incomplete';
+  END IF;
+"""
+
+          new_block = """  v_supersession_update := split_part(
+    split_part(
+      v_rpc_definition,
+      'UPDATE public.physical_receipt_reviews pr',
+      2
+    ),
+    'IF v_affected_qty > 0',
+    1
+  );
+
+  IF NULLIF(BTRIM(v_supersession_update), '') IS NULL THEN
+    RAISE EXCEPTION 'FAIL: RPC supersession update block could not be isolated';
+  END IF;
+
+  IF v_supersession_update LIKE '%''rejected''%'
+     OR v_supersession_update LIKE '%''closed_no_action''%'
+     OR v_supersession_update LIKE '%''approved_to_existing_exception''%'
+     OR v_supersession_update LIKE '%''superseded''%'
+  THEN
+    RAISE EXCEPTION 'FAIL: terminal review states remain in RPC supersession update';
+  END IF;
+
+  IF v_supersession_update NOT LIKE '%''awaiting_importer_proposal''%'
+     OR v_supersession_update NOT LIKE '%''awaiting_supervisor_review''%'
+     OR v_supersession_update NOT LIKE '%''returned_for_information''%'
+     OR v_supersession_update NOT LIKE '%''approved_for_investigation''%'
+  THEN
+    RAISE EXCEPTION 'FAIL: open-review correction supersession states are incomplete';
+  END IF;
+"""
+
+          if text.count(old_block) != 1:
+            raise RuntimeError('Assertion block anchor mismatch')
+          text = text.replace(old_block, new_block, 1)
+          path.write_text(text, encoding='utf-8')
+
+          Path('.github/workflows/fix-build-2-regression-scope.yml').unlink()
+          PY
+      - name: Commit locally
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "Fix Build 2 receipt regression scope"
+      - name: Run source regression
+        shell: bash
+        run: |
+          BASE_REF=origin/main node docs/testing/20260801_hybrid_physical_receipt_build_2_receipt_source_regression_v1.mjs
+      - name: Push verified fix
+        shell: bash
+        run: git push origin HEAD:agent/hybrid-receipt-build-2-v1
