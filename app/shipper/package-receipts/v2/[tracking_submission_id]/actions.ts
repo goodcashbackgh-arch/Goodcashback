@@ -59,20 +59,18 @@ export async function recordExactPackageReceiptV2Action(formData: FormData) {
   for (const allocationId of allocationIds) {
     const lineId = text(formData, `supplier_invoice_line_id_${allocationId}`);
     const allocated = qty(formData, `allocated_qty_${allocationId}`);
-    const clean = qty(formData, `clean_qty_${allocationId}`);
     const affected = qty(formData, `affected_qty_${allocationId}`);
     const affectedType = text(formData, `affected_type_${allocationId}`);
     const note = text(formData, `condition_note_${allocationId}`);
 
-    if (!lineId || !Number.isFinite(allocated) || allocated <= 0) {
-      redirect(destination(trackingId, "error", "One or more allocation identities are invalid."));
+    if (!lineId || !Number.isInteger(allocated) || allocated <= 0) {
+      redirect(destination(trackingId, "error", "Physical receipt allocations must be positive whole units."));
     }
-    if (!Number.isFinite(clean) || clean < 0 || !Number.isFinite(affected) || affected < 0) {
-      redirect(destination(trackingId, "error", "Quantities must be valid non-negative numbers."));
+    if (!Number.isInteger(affected) || affected < 0 || affected > allocated) {
+      redirect(destination(trackingId, "error", "Affected quantity must be a whole number between zero and the allocated quantity."));
     }
-    if (Math.abs(clean + affected - allocated) > 0.0005) {
-      redirect(destination(trackingId, "error", "Each line must balance exactly to its allocated quantity."));
-    }
+
+    const clean = allocated - affected;
 
     if (clean > 0) dispositions.push({
       tracking_line_allocation_id: allocationId,
