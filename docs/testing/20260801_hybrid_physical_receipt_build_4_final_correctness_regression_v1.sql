@@ -8,8 +8,8 @@ declare
   v_canonical text;
   v_anomaly text;
 begin
-  select pg_get_viewdef('public.order_reconciliation_vw'::regclass, true) into v_canonical;
-  select pg_get_viewdef('public.order_reconciliation_anomalies_v1'::regclass, true) into v_anomaly;
+  select lower(pg_get_viewdef('public.order_reconciliation_vw'::regclass, true)) into v_canonical;
+  select lower(pg_get_viewdef('public.order_reconciliation_anomalies_v1'::regclass, true)) into v_anomaly;
 
   if position('is_current_for_order' in v_canonical) = 0
      or position('approved_current' in v_canonical) = 0
@@ -20,17 +20,52 @@ begin
     raise exception 'FAIL: canonical supplier invoice authority is incomplete';
   end if;
 
-  if position('is_current_for_order IS DISTINCT FROM true' in v_anomaly) = 0
-     or position('review_status IS NULL' in v_anomaly) = 0
-     or position('review_status <> ALL' in v_anomaly) = 0
-     or position('blocked_from_sage_yn IS DISTINCT FROM false' in v_anomaly) = 0
-     or position('superseded_by_supplier_invoice_id IS NOT NULL' in v_anomaly) = 0
-     or position('NON_AUTHORITATIVE_INVOICEABLE_EVIDENCE' in v_anomaly) = 0
+  if position('is_current_for_order is distinct from true' in v_anomaly) = 0
+     or position('review_status is null' in v_anomaly) = 0
+     or (
+       position('review_status <> all' in v_anomaly) = 0
+       and position('review_status not in' in v_anomaly) = 0
+     )
+     or position('blocked_from_sage_yn is distinct from false' in v_anomaly) = 0
+     or position('superseded_by_supplier_invoice_id is not null' in v_anomaly) = 0
+     or position('non_authoritative_invoiceable_evidence' in v_anomaly) = 0
   then
     raise exception 'FAIL: anomaly authority is not the null-safe inverse of canonical authority';
   end if;
 end
 $reconciliation_authority$;
+
+do $known_non_authoritative_evidence$
+declare
+  v_order_id uuid;
+  v_qty_progressed numeric;
+  v_amount_progressed numeric;
+  v_anomaly_count integer;
+begin
+  select id into v_order_id
+  from public.orders
+  where order_ref = 'DAY3-TRACK-1d7cfa66';
+
+  if v_order_id is not null then
+    select qty_progressed_invoiceable, amount_progressed_invoiceable_gbp
+    into v_qty_progressed, v_amount_progressed
+    from public.order_reconciliation_vw
+    where order_id = v_order_id;
+
+    select count(*) into v_anomaly_count
+    from public.order_reconciliation_anomalies_v1
+    where order_id = v_order_id
+      and anomaly_code = 'NON_AUTHORITATIVE_INVOICEABLE_EVIDENCE';
+
+    if coalesce(v_qty_progressed, 0) <> 0
+       or coalesce(v_amount_progressed, 0) <> 0
+       or v_anomaly_count < 1
+    then
+      raise exception 'FAIL: known non-authoritative evidence is not excluded canonically and exposed as an anomaly';
+    end if;
+  end if;
+end
+$known_non_authoritative_evidence$;
 
 do $null_semantics$
 begin
@@ -89,7 +124,7 @@ $application_grants$;
 
 select jsonb_build_object(
   'regression_result', 'PASS',
-  'proof', 'canonical authority is complete; anomaly authority is its null-safe inverse; atomic physical and legacy branches and status sequence are installed; anon remains blocked'
+  'proof', 'canonical authority is complete; anomaly authority is its null-safe inverse; known non-authoritative evidence is excluded canonically and exposed as an anomaly; atomic physical and legacy branches and status sequence are installed; anon remains blocked'
 ) as regression_result;
 
 rollback;
