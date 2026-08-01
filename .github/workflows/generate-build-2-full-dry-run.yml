@@ -1,0 +1,115 @@
+name: Generate full Build 2 rollback dry run
+
+on:
+  push:
+    branches:
+      - agent/hybrid-receipt-build-2-v1
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/hybrid-receipt-build-2-v1
+          fetch-depth: 0
+
+      - name: Remove transient workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/generate-build-2-full-dry-run.yml
+          git commit -m "ci: remove transient full dry-run generator"
+          git push origin HEAD:agent/hybrid-receipt-build-2-v1
+
+      - name: Build rollback-only SQL bundle
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          sources = [
+              "supabase/migrations/20260801130000_hybrid_physical_receipt_foundation_v1.sql",
+              "supabase/migrations/20260801131000_hybrid_physical_receipt_integrity_v1.sql",
+              "supabase/migrations/20260801131500_hybrid_physical_receipt_concurrency_v1.sql",
+              "supabase/migrations/20260801131700_hybrid_physical_receipt_legacy_fail_closed_v1.sql",
+              "supabase/migrations/20260801132000_hybrid_physical_receipt_position_v1.sql",
+              "docs/testing/20260801_hybrid_physical_receipt_foundation_regression_v1.sql",
+              "docs/testing/20260801_hybrid_physical_receipt_terminal_immutability_regression_v1.sql",
+              "supabase/migrations/20260801139900_hybrid_physical_receipt_v2_terminal_correction_guard_v1.sql",
+              "supabase/migrations/20260801140000_hybrid_physical_receipt_v2_rpc_v1.sql",
+              "supabase/migrations/20260801141000_hybrid_physical_receipt_importer_proposal_rpc_v1.sql",
+              "supabase/migrations/20260801142000_hybrid_physical_receipt_dispute_compatibility_v1.sql",
+              "supabase/migrations/20260801143000_hybrid_physical_receipt_supervisor_initial_decision_rpc_v1.sql",
+              "docs/testing/20260801_hybrid_physical_receipt_build_2_receipt_regression_v2.sql",
+              "docs/testing/20260801_hybrid_physical_receipt_build_2_importer_proposal_regression_v1.sql",
+              "docs/testing/20260801_hybrid_physical_receipt_build_2_supervisor_decision_regression_v1.sql",
+          ]
+
+          output = [
+              "-- GOODCASHBACK HYBRID PHYSICAL RECEIPT",
+              "-- FOUNDATION + BUILD 2 RECEIPT + IMPORTER + COMPATIBILITY + SUPERVISOR",
+              "-- ROLLBACK-ONLY PRODUCTION DRY RUN",
+              "-- Generated from branch agent/hybrid-receipt-build-2-v1",
+              "",
+              "BEGIN;",
+              "",
+          ]
+
+          for index, source in enumerate(sources, 1):
+              path = Path(source)
+              if not path.exists():
+                  raise SystemExit(f"missing source: {source}")
+              text = path.read_text(encoding="utf-8").replace("\r\n", "\n")
+              begin_count = len(re.findall(r"(?m)^BEGIN;\s*$", text))
+              terminal = re.findall(r"(?m)^(COMMIT|ROLLBACK);\s*$", text)
+              if begin_count != 1 or len(terminal) != 1:
+                  raise SystemExit(
+                      f"unexpected transaction shape in {source}: "
+                      f"BEGIN={begin_count}, terminal={terminal}"
+                  )
+              text = re.sub(r"(?m)^BEGIN;\s*\n?", "", text, count=1)
+              text = re.sub(r"(?m)^(COMMIT|ROLLBACK);\s*$", "", text, count=1).rstrip()
+              output.extend([
+                  f"-- ============================================================",
+                  f"-- SOURCE {index:02d}: {source}",
+                  f"-- ============================================================",
+                  text,
+                  "",
+              ])
+
+          output.extend([
+              "-- ============================================================",
+              "-- FINAL ROLLBACK — PRODUCTION MUST REMAIN UNCHANGED",
+              "-- ============================================================",
+              "ROLLBACK;",
+              "",
+          ])
+
+          bundle = "\n".join(output)
+          if len(re.findall(r"(?m)^BEGIN;\s*$", bundle)) != 1:
+              raise SystemExit("bundle must contain exactly one BEGIN")
+          if len(re.findall(r"(?m)^COMMIT;\s*$", bundle)) != 0:
+              raise SystemExit("bundle must contain zero COMMIT statements")
+          if len(re.findall(r"(?m)^ROLLBACK;\s*$", bundle)) != 1:
+              raise SystemExit("bundle must contain exactly one ROLLBACK")
+
+          out = Path("GOODCASHBACK_FULL_BUILD_2_ROLLBACK_DRY_RUN_COPY_PASTE.txt")
+          out.write_text(bundle, encoding="utf-8")
+          print(f"wrote {out} with {len(bundle.splitlines())} lines from {len(sources)} sources")
+          PY
+
+      - name: Upload rollback-only SQL artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: goodcashback-full-build-2-rollback-dry-run
+          path: GOODCASHBACK_FULL_BUILD_2_ROLLBACK_DRY_RUN_COPY_PASTE.txt
+          if-no-files-found: error
+          retention-days: 7
