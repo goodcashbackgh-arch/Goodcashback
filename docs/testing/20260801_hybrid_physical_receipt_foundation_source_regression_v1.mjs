@@ -16,9 +16,17 @@ const migrations = [
   'supabase/migrations/20260801132000_hybrid_physical_receipt_position_v1.sql',
 ]
 
+const sqlRegressionPath =
+  'docs/testing/20260801_hybrid_physical_receipt_foundation_regression_v1.sql'
+const terminalRegressionPath =
+  'docs/testing/20260801_hybrid_physical_receipt_terminal_immutability_regression_v1.sql'
+const impactMapPath =
+  'docs/implementation/20260801_hybrid_physical_receipt_foundation_impact_map_v1.md'
+
 const expectedChangedFiles = [
-  'docs/implementation/20260801_hybrid_physical_receipt_foundation_impact_map_v1.md',
-  'docs/testing/20260801_hybrid_physical_receipt_foundation_regression_v1.sql',
+  impactMapPath,
+  sqlRegressionPath,
+  terminalRegressionPath,
   'docs/testing/20260801_hybrid_physical_receipt_foundation_source_regression_v1.mjs',
   ...migrations,
 ].sort()
@@ -65,6 +73,16 @@ for (const { file, source } of migrationSources) {
   forbid(source, /\bCREATE\s+OR\s+REPLACE\b/i, file)
   forbid(source, /\bDROP\b[\s\S]{0,120}\bCASCADE\b/i, file)
   forbid(source, /\bfeature[_ -]?flag\b/i, file)
+
+  const dollarTags = [...source.matchAll(/\$[A-Za-z_][A-Za-z0-9_]*\$/g)]
+    .map((match) => match[0])
+  for (const tag of new Set(dollarTags)) {
+    assert.equal(
+      dollarTags.filter((candidate) => candidate === tag).length % 2,
+      0,
+      `${file}: unbalanced PostgreSQL dollar-quote tag ${tag}`,
+    )
+  }
 }
 
 const protectedObjects = [
@@ -106,17 +124,15 @@ const integrity = read(migrations[1])
 const concurrency = read(migrations[2])
 const hardening = read(migrations[3])
 const position = read(migrations[4])
-const regression = read(
-  'docs/testing/20260801_hybrid_physical_receipt_foundation_regression_v1.sql',
-)
-const impactMap = read(
-  'docs/implementation/20260801_hybrid_physical_receipt_foundation_impact_map_v1.md',
-)
+const regression = read(sqlRegressionPath)
+const terminalRegression = read(terminalRegressionPath)
+const impactMap = read(impactMapPath)
 
 for (const requiredFile of migrations) {
   requireText(regression, requiredFile.split('/').at(-1), 'SQL regression migration list')
   requireText(impactMap, requiredFile, 'impact-map migration list')
 }
+requireText(impactMap, terminalRegressionPath, 'impact-map terminal regression')
 
 requireText(
   foundation,
@@ -201,6 +217,26 @@ requireText(
   'physical_receipt_review_supervisor_note_required_v1',
   'supervisor decision-note constraint',
 )
+requireText(
+  hardening,
+  'Terminal physical receipt review provenance is immutable.',
+  'terminal review immutability',
+)
+requireText(
+  hardening,
+  'Importer remedy proposal cannot invent supplier claim or customer commercial outcome amounts.',
+  'proposal financial boundary',
+)
+requireText(
+  hardening,
+  'Terminal physical remedy provenance is immutable.',
+  'terminal remedy immutability',
+)
+requireText(
+  hardening,
+  'Replacement remedy cannot complete while supplier cost evidence remains pending.',
+  'replacement cost completion gate',
+)
 
 const triggerOrder = [
   'trg_shipper_package_receipt_00_write_compatibility_guard_v1',
@@ -262,6 +298,19 @@ requireText(
   'proposal/approval separation regression',
 )
 
+assert.match(terminalRegression, /^-- Rollback-only catalog regression/i)
+assert.match(terminalRegression, /ROLLBACK;\s*$/i)
+requireText(
+  terminalRegression,
+  'physical_receipt_review_terminal_immutability_guard_v1',
+  'terminal review catalog regression',
+)
+requireText(
+  terminalRegression,
+  'physical_remedy_terminal_immutability_guard_v1',
+  'terminal remedy catalog regression',
+)
+
 console.log(
-  `PASS: ${relative(root, fileURLToPath(import.meta.url))} verified Build 1 scope, migration order, protected-object preservation, atomic v2 controls, legacy fail-closed rules and exact quantity authority.`,
+  `PASS: ${relative(root, fileURLToPath(import.meta.url))} verified Build 1 scope, migration order, protected-object preservation, atomic v2 controls, terminal provenance, legacy fail-closed rules and exact quantity authority.`,
 )
