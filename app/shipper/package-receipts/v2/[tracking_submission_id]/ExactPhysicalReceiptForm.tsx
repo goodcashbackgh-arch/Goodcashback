@@ -10,6 +10,12 @@ type EntryRow = {
   qty_allocated: number | string;
 };
 
+type LineState = {
+  affected: number;
+  affectedType: string;
+  note: string;
+};
+
 type AttachmentSummary = {
   count: number;
   originalBytes: number;
@@ -27,10 +33,9 @@ const MIN_FILE_TARGET_BYTES = 300 * 1024;
 const MAX_IMAGE_DIMENSIONS = [1800, 1500, 1200];
 const JPEG_QUALITIES = [0.86, 0.76, 0.66];
 
-function formatQty(value: number | string | null | undefined) {
-  const number = Number(value ?? 0);
-  if (!Number.isFinite(number)) return "0";
-  return number.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+function allocatedUnits(value: number | string) {
+  const number = Number(value);
+  return Number.isInteger(number) && number > 0 ? number : null;
 }
 
 function formatMb(bytes: number) {
@@ -127,6 +132,9 @@ export default function ExactPhysicalReceiptForm({
   const preparedFilesRef = useRef<File[]>([]);
   const selectionVersionRef = useRef(0);
   const [isSubmitting, startSubmitTransition] = useTransition();
+  const [lineState, setLineState] = useState<Record<string, LineState>>(() =>
+    Object.fromEntries(rows.map((row) => [row.tracking_line_allocation_id, { affected: 0, affectedType: "", note: "" }])),
+  );
   const [attachmentSummary, setAttachmentSummary] = useState<AttachmentSummary>({
     count: 0,
     originalBytes: 0,
@@ -135,6 +143,22 @@ export default function ExactPhysicalReceiptForm({
     status: "idle",
     error: "",
   });
+
+  function updateAffected(allocationId: string, affected: number) {
+    setLineState((current) => ({
+      ...current,
+      [allocationId]: affected === 0
+        ? { affected: 0, affectedType: "", note: "" }
+        : { ...(current[allocationId] ?? { affectedType: "", note: "" }), affected },
+    }));
+  }
+
+  function updateLine(allocationId: string, patch: Partial<LineState>) {
+    setLineState((current) => ({
+      ...current,
+      [allocationId]: { ...(current[allocationId] ?? { affected: 0, affectedType: "", note: "" }), ...patch },
+    }));
+  }
 
   async function handleAttachmentChange(event: ChangeEvent<HTMLInputElement>) {
     const input = event.currentTarget;
@@ -150,7 +174,6 @@ export default function ExactPhysicalReceiptForm({
 
     const originalBytes = files.reduce((sum, file) => sum + file.size, 0);
     setAttachmentSummary({ count: files.length, originalBytes, uploadBytes: originalBytes, optimisedCount: 0, status: "optimising", error: "" });
-
     const targetPerFile = Math.max(MIN_FILE_TARGET_BYTES, Math.min(MAX_FILE_TARGET_BYTES, Math.floor(TARGET_ATTACHMENT_BYTES / files.length)));
 
     try {
@@ -193,7 +216,9 @@ export default function ExactPhysicalReceiptForm({
 
   const hasPriorReceipt = Boolean(latestReceiptId);
   const attachmentsBusy = attachmentSummary.status === "optimising";
-  const submitDisabled = (hasPriorReceipt && !correctionAllowed) || attachmentsBusy || Boolean(attachmentSummary.error) || isSubmitting;
+  const hasInvalidAllocation = rows.some((row) => allocatedUnits(row.qty_allocated) === null);
+  const affectedTotal = rows.reduce((sum, row) => sum + (lineState[row.tracking_line_allocation_id]?.affected ?? 0), 0);
+  const submitDisabled = hasInvalidAllocation || (hasPriorReceipt && !correctionAllowed) || attachmentsBusy || Boolean(attachmentSummary.error) || isSubmitting;
 
   return (
     <form action={recordExactPackageReceiptV2Action} onSubmit={handleSubmit} className="space-y-6" encType="multipart/form-data">
@@ -204,24 +229,44 @@ export default function ExactPhysicalReceiptForm({
       <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
         <h2 className="text-xl font-semibold">Package allocation lines</h2>
         <p className="mt-1 text-sm text-slate-600">Tracking package {trackingLabel}</p>
+        {hasInvalidAllocation ? <p className="mt-4 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-900">This package contains a non-whole or invalid physical allocation. Receipt submission is blocked for controlled remediation.</p> : null}
         <div className="mt-5 space-y-4">
           {rows.map((row, index) => {
-            const allocated = formatQty(row.qty_allocated);
+            const allocated = allocatedUnits(row.qty_allocated);
+            const current = lineState[row.tracking_line_allocation_id] ?? { affected: 0, affectedType: "", note: "" };
+            const clean = allocated === null ? 0 : allocated - current.affected;
+            const affected = current.affected > 0;
             return (
               <article key={row.tracking_line_allocation_id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                 <input type="hidden" name="allocation_id" value={row.tracking_line_allocation_id} />
                 <input type="hidden" name={`supplier_invoice_line_id_${row.tracking_line_allocation_id}`} value={row.supplier_invoice_line_id} />
-                <input type="hidden" name={`allocated_qty_${row.tracking_line_allocation_id}`} value={allocated} />
+                <input type="hidden" name={`allocated_qty_${row.tracking_line_allocation_id}`} value={allocated ?? ""} />
+                <input type="hidden" name={`clean_qty_${row.tracking_line_allocation_id}`} value={clean} />
                 <p className="text-xs uppercase tracking-wide text-slate-500">Line {index + 1}</p>
                 <h3 className="mt-1 font-semibold">{row.item_description ?? "Unlabelled supplier invoice line"}</h3>
-                <span className="mt-2 inline-block rounded-full bg-white px-3 py-1 text-sm font-semibold text-slate-900">Allocated {allocated}</span>
-                <div className="mt-4 grid gap-3 md:grid-cols-2">
-                  <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-slate-500">Clean quantity</span><input type="number" name={`clean_qty_${row.tracking_line_allocation_id}`} defaultValue={allocated} min="0" step="0.001" required className="w-full rounded-xl border border-slate-300 px-3 py-2" /></label>
-                  <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-slate-500">Affected quantity</span><input type="number" name={`affected_qty_${row.tracking_line_allocation_id}`} defaultValue="0" min="0" step="0.001" required className="w-full rounded-xl border border-slate-300 px-3 py-2" /></label>
-                  <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-slate-500">Affected disposition</span><select name={`affected_type_${row.tracking_line_allocation_id}`} defaultValue="" className="w-full rounded-xl border border-slate-300 px-3 py-2"><option value="">Not applicable — clean</option><option value="damaged">Damaged</option><option value="missing">Missing</option><option value="wrong">Wrong item</option><option value="held">Held / query</option></select></label>
-                  <label className="space-y-1 text-sm"><span className="text-xs uppercase tracking-wide text-slate-500">Condition note for affected quantity</span><input name={`condition_note_${row.tracking_line_allocation_id}`} className="w-full rounded-xl border border-slate-300 px-3 py-2" placeholder="Required only when affected quantity is above zero" /></label>
+                <div className="mt-3 grid grid-cols-2 gap-3 rounded-xl bg-white p-3 text-sm">
+                  <div><span className="block text-xs uppercase tracking-wide text-slate-500">Allocated</span><strong>{allocated ?? "Invalid"}</strong></div>
+                  <div><span className="block text-xs uppercase tracking-wide text-slate-500">Clean automatically</span><strong>{clean}</strong></div>
                 </div>
-                <p className="mt-3 text-xs text-slate-500">Clean plus affected must equal exactly {allocated}. Choose an affected disposition only when affected quantity is above zero.</p>
+                <div className="mt-4 grid gap-3 md:grid-cols-2">
+                  <label className="space-y-1 text-sm">
+                    <span className="text-xs uppercase tracking-wide text-slate-500">Affected quantity</span>
+                    <select name={`affected_qty_${row.tracking_line_allocation_id}`} value={current.affected} onChange={(event) => updateAffected(row.tracking_line_allocation_id, Number(event.target.value))} disabled={allocated === null} required className="w-full rounded-xl border border-slate-300 px-3 py-2">
+                      {Array.from({ length: (allocated ?? 0) + 1 }, (_, value) => <option key={value} value={value}>{value}</option>)}
+                    </select>
+                  </label>
+                  <label className="space-y-1 text-sm">
+                    <span className="text-xs uppercase tracking-wide text-slate-500">Affected disposition</span>
+                    <select name={`affected_type_${row.tracking_line_allocation_id}`} value={current.affectedType} onChange={(event) => updateLine(row.tracking_line_allocation_id, { affectedType: event.target.value })} disabled={!affected} required={affected} className="w-full rounded-xl border border-slate-300 px-3 py-2 disabled:bg-slate-100">
+                      <option value="">Select issue</option><option value="damaged">Damaged</option><option value="missing">Missing</option><option value="wrong">Wrong item</option><option value="held">Held / query</option>
+                    </select>
+                  </label>
+                  <label className="space-y-1 text-sm md:col-span-2">
+                    <span className="text-xs uppercase tracking-wide text-slate-500">Condition note for affected quantity</span>
+                    <input name={`condition_note_${row.tracking_line_allocation_id}`} value={current.note} onChange={(event) => updateLine(row.tracking_line_allocation_id, { note: event.target.value })} disabled={!affected} required={affected} className="w-full rounded-xl border border-slate-300 px-3 py-2 disabled:bg-slate-100" placeholder={affected ? "State the factual condition" : "Enabled when affected quantity is above zero"} />
+                  </label>
+                </div>
+                <p className="mt-3 text-xs text-slate-500">Choose only the affected whole units. Clean quantity is calculated automatically as allocated minus affected.</p>
               </article>
             );
           })}
@@ -233,12 +278,10 @@ export default function ExactPhysicalReceiptForm({
         <div className="mt-4 grid gap-4 md:grid-cols-2">
           <label className="space-y-1 text-sm md:col-span-2">
             <span className="text-xs uppercase tracking-wide text-slate-500">Receipt evidence files</span>
-            <input name="receipt_evidence_files" type="file" multiple accept=".pdf,image/*,.png,.jpg,.jpeg,.webp" onChange={handleAttachmentChange} className="w-full rounded-xl border border-slate-300 px-3 py-2" />
+            <input name="receipt_evidence_files" type="file" multiple accept=".pdf,image/*,.png,.jpg,.jpeg,.webp" onChange={handleAttachmentChange} required={affectedTotal > 0} className="w-full rounded-xl border border-slate-300 px-3 py-2" />
             <span className="block text-xs text-slate-500">Required when any line has affected quantity. Large images are automatically optimised before upload.</span>
           </label>
-          <p className="text-xs font-semibold text-slate-700 md:col-span-2" aria-live="polite">
-            {attachmentsBusy ? `Optimising ${attachmentSummary.count} file${attachmentSummary.count === 1 ? "" : "s"}…` : attachmentSummary.count > 0 ? `${attachmentSummary.count} file${attachmentSummary.count === 1 ? "" : "s"} · ${formatMb(attachmentSummary.uploadBytes)} MB ready` : "No evidence selected"}
-          </p>
+          <p className="text-xs font-semibold text-slate-700 md:col-span-2" aria-live="polite">{attachmentsBusy ? `Optimising ${attachmentSummary.count} file${attachmentSummary.count === 1 ? "" : "s"}…` : attachmentSummary.count > 0 ? `${attachmentSummary.count} file${attachmentSummary.count === 1 ? "" : "s"} · ${formatMb(attachmentSummary.uploadBytes)} MB ready` : "No evidence selected"}</p>
           {attachmentSummary.optimisedCount > 0 && !attachmentsBusy ? <p className="rounded border border-emerald-200 bg-emerald-50 p-2 text-xs font-medium text-emerald-800 md:col-span-2">Reduced from {formatMb(attachmentSummary.originalBytes)} MB to {formatMb(attachmentSummary.uploadBytes)} MB.</p> : null}
           {attachmentSummary.error ? <p role="alert" className="rounded border border-red-300 bg-red-50 p-2 text-sm font-medium text-red-800 md:col-span-2">{attachmentSummary.error}</p> : null}
           {hasPriorReceipt ? correctionAllowed ? <label className="space-y-1 text-sm md:col-span-2"><span className="text-xs uppercase tracking-wide text-slate-500">Correction reason</span><textarea name="correction_reason" rows={3} required className="w-full rounded-xl border border-slate-300 px-3 py-2" placeholder="Explain the factual correction to the latest receipt" /><span className="block text-xs text-slate-500">This submission will be a complete replacement snapshot of receipt {latestReceiptId}.</span></label> : <p className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-900 md:col-span-2">Correction is blocked because the latest physical review is terminal or retailer-linked.</p> : null}
