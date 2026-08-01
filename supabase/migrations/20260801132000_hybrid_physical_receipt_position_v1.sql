@@ -111,7 +111,10 @@ AS $function$
             AND receipt.finalised_at IS NOT NULL
           )
         )
-      ORDER BY receipt.created_at DESC, receipt.id DESC
+      ORDER BY
+        COALESCE(receipt.finalised_at, receipt.created_at) DESC,
+        receipt.created_at DESC,
+        receipt.id DESC
       LIMIT 1
     ) latest ON true
   ),
