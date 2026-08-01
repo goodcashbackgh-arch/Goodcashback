@@ -1,7 +1,7 @@
 -- VAT adjustment multi-source allocation regression v1
 -- Rollback-only. Creates synthetic VAT workbench rows, makes no Sage request,
--- and leaves no persistent data. Existing unlocked VAT runs are temporarily
--- marked locked inside this transaction so sequence enforcement can admit the fixture.
+-- and leaves no persistent data. Existing open VAT runs are temporarily
+-- marked superseded inside this transaction so sequence enforcement can admit the fixture.
 
 BEGIN;
 
@@ -38,13 +38,12 @@ BEGIN
   PERFORM set_config('request.jwt.claim.sub', v_admin_auth_user_id::text, true);
   PERFORM set_config('request.jwt.claim.role', 'authenticated', true);
 
-  -- Sequence enforcement requires all prior VAT runs to be locked. These
-  -- changes are transaction-local because the script ends with ROLLBACK.
+  -- The sequence trigger ignores locked_at and only treats these two statuses
+  -- as closed. Changes are transaction-local because the script ends ROLLBACK.
   UPDATE public.vat_return_runs
-  SET locked_at = COALESCE(locked_at, now()),
-      locked_by_staff_id = COALESCE(locked_by_staff_id, v_admin_staff_id),
+  SET status = 'superseded',
       updated_at = now()
-  WHERE locked_at IS NULL;
+  WHERE status NOT IN ('matched_to_sage_locked', 'superseded');
 
   INSERT INTO public.vat_return_runs (
     id, run_ref, return_period_label, period_start_date, period_end_date,
