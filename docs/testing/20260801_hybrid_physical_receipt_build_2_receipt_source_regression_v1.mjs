@@ -12,13 +12,29 @@ function fail(message) {
   throw new Error(`FAIL: ${message}`);
 }
 
+const alignmentPath =
+  "docs/governing-pack/architecture/HYBRID_PHYSICAL_RECEIPT_IMPLEMENTATION_ALIGNMENT_ADDENDUM_v1_1.md";
+const impactPath =
+  "docs/implementation/20260801_hybrid_physical_receipt_build_2_impact_map_v1.md";
+const guardPath =
+  "supabase/migrations/20260801139900_hybrid_physical_receipt_v2_terminal_correction_guard_v1.sql";
+const receiptRpcPath =
+  "supabase/migrations/20260801140000_hybrid_physical_receipt_v2_rpc_v1.sql";
+const importerRpcPath =
+  "supabase/migrations/20260801141000_hybrid_physical_receipt_importer_proposal_rpc_v1.sql";
+const receiptRegressionPath =
+  "docs/testing/20260801_hybrid_physical_receipt_build_2_receipt_regression_v2.sql";
+const importerRegressionPath =
+  "docs/testing/20260801_hybrid_physical_receipt_build_2_importer_proposal_regression_v1.sql";
+
 const allowed = new Set([
-  "docs/implementation/20260801_hybrid_physical_receipt_build_2_impact_map_v1.md",
-  "supabase/migrations/20260801139900_hybrid_physical_receipt_v2_terminal_correction_guard_v1.sql",
-  "supabase/migrations/20260801140000_hybrid_physical_receipt_v2_rpc_v1.sql",
-  "supabase/migrations/20260801141000_hybrid_physical_receipt_importer_proposal_rpc_v1.sql",
-  "docs/testing/20260801_hybrid_physical_receipt_build_2_receipt_regression_v2.sql",
-  "docs/testing/20260801_hybrid_physical_receipt_build_2_importer_proposal_regression_v1.sql",
+  alignmentPath,
+  impactPath,
+  guardPath,
+  receiptRpcPath,
+  importerRpcPath,
+  receiptRegressionPath,
+  importerRegressionPath,
   "docs/testing/20260801_hybrid_physical_receipt_build_2_receipt_source_regression_v1.mjs",
 ]);
 
@@ -35,19 +51,13 @@ for (const file of allowed) {
   if (!changed.includes(file)) fail(`required Build 2 file missing from diff: ${file}`);
 }
 
-const guardPath = "supabase/migrations/20260801139900_hybrid_physical_receipt_v2_terminal_correction_guard_v1.sql";
-const receiptRpcPath = "supabase/migrations/20260801140000_hybrid_physical_receipt_v2_rpc_v1.sql";
-const importerRpcPath = "supabase/migrations/20260801141000_hybrid_physical_receipt_importer_proposal_rpc_v1.sql";
-const receiptRegressionPath = "docs/testing/20260801_hybrid_physical_receipt_build_2_receipt_regression_v2.sql";
-const importerRegressionPath = "docs/testing/20260801_hybrid_physical_receipt_build_2_importer_proposal_regression_v1.sql";
-const impactPath = "docs/implementation/20260801_hybrid_physical_receipt_build_2_impact_map_v1.md";
-
+const alignment = readFileSync(alignmentPath, "utf8");
+const impact = readFileSync(impactPath, "utf8");
 const guard = readFileSync(guardPath, "utf8");
 const receiptRpc = readFileSync(receiptRpcPath, "utf8");
 const importerRpc = readFileSync(importerRpcPath, "utf8");
 const receiptRegression = readFileSync(receiptRegressionPath, "utf8");
 const importerRegression = readFileSync(importerRegressionPath, "utf8");
-const impact = readFileSync(impactPath, "utf8");
 
 for (const [path, text] of [
   [guardPath, guard],
@@ -56,9 +66,15 @@ for (const [path, text] of [
 ]) {
   const beginCount = (text.match(/^BEGIN;$/gm) || []).length;
   const commitCount = (text.match(/^COMMIT;$/gm) || []).length;
-  if (beginCount !== 1 || commitCount !== 1) fail(`${path} must contain exactly one outer BEGIN and COMMIT`);
-  if (/\bDROP\s+(TABLE|VIEW|FUNCTION|SCHEMA)\b/i.test(text)) fail(`${path} contains destructive DROP`);
-  if (/CREATE\s+OR\s+REPLACE/i.test(text)) fail(`${path} replaces an existing object`);
+  if (beginCount !== 1 || commitCount !== 1) {
+    fail(`${path} must contain exactly one outer BEGIN and COMMIT`);
+  }
+  if (/\bDROP\s+(TABLE|VIEW|FUNCTION|SCHEMA)\b/i.test(text)) {
+    fail(`${path} contains destructive DROP`);
+  }
+  if (/CREATE\s+OR\s+REPLACE/i.test(text)) {
+    fail(`${path} replaces an existing object`);
+  }
   if (/\bCASCADE\b/i.test(text)) fail(`${path} contains CASCADE`);
 }
 
@@ -89,8 +105,15 @@ const protectedNames = [
 ];
 
 for (const name of protectedNames) {
-  const createPattern = new RegExp(`CREATE\\s+(?:OR\\s+REPLACE\\s+)?(?:FUNCTION|VIEW)\\s+public\\.${name}\\b`, "i");
-  if (createPattern.test(guard) || createPattern.test(receiptRpc) || createPattern.test(importerRpc)) {
+  const createPattern = new RegExp(
+    `CREATE\\s+(?:OR\\s+REPLACE\\s+)?(?:FUNCTION|VIEW)\\s+public\\.${name}\\b`,
+    "i",
+  );
+  if (
+    createPattern.test(guard) ||
+    createPattern.test(receiptRpc) ||
+    createPattern.test(importerRpc)
+  ) {
     fail(`protected existing object is created/replaced: ${name}`);
   }
 }
@@ -110,7 +133,9 @@ for (const token of [
   "approved_for_investigation",
   "idempotent_retry",
 ]) {
-  if (!receiptRpc.includes(token)) fail(`receipt RPC missing required control: ${token}`);
+  if (!receiptRpc.includes(token)) {
+    fail(`receipt RPC missing required control: ${token}`);
+  }
 }
 
 if (receiptRpc.includes("'approved_for_investigation',\n        'rejected'")) {
@@ -124,7 +149,9 @@ for (const token of [
   "superseded",
   "Use controlled staff remediation",
 ]) {
-  if (!guard.includes(token)) fail(`terminal correction guard missing: ${token}`);
+  if (!guard.includes(token)) {
+    fail(`terminal correction guard missing: ${token}`);
+  }
 }
 
 for (const token of [
@@ -141,7 +168,9 @@ for (const token of [
   "proposed_remedy_qty",
   "> disposition.quantity + 0.0005",
 ]) {
-  if (!importerRpc.includes(token)) fail(`importer RPC missing required control: ${token}`);
+  if (!importerRpc.includes(token)) {
+    fail(`importer RPC missing required control: ${token}`);
+  }
 }
 
 for (const prohibited of [
@@ -156,20 +185,53 @@ for (const prohibited of [
   "DELETE FROM public.physical_exception_remedy_allocations",
   "SET status = 'superseded'",
 ]) {
-  if (importerRpc.includes(prohibited)) fail(`importer RPC writes prohibited fact: ${prohibited}`);
+  if (importerRpc.includes(prohibited)) {
+    fail(`importer RPC writes prohibited fact: ${prohibited}`);
+  }
 }
 
 for (const [path, text] of [
   [receiptRegressionPath, receiptRegression],
   [importerRegressionPath, importerRegression],
 ]) {
-  if (!text.trimEnd().endsWith("ROLLBACK;")) fail(`${path} must end with ROLLBACK`);
-  if ((text.match(/^BEGIN;$/gm) || []).length !== 1) fail(`${path} must contain one outer BEGIN`);
+  if (!text.trimEnd().endsWith("ROLLBACK;")) {
+    fail(`${path} must end with ROLLBACK`);
+  }
+  if ((text.match(/^BEGIN;$/gm) || []).length !== 1) {
+    fail(`${path} must contain one outer BEGIN`);
+  }
   if (/^COMMIT;$/m.test(text)) fail(`${path} must not contain COMMIT`);
 }
 
-for (const token of ["no feature flag", "does not activate", "must not create", "Build 3", "Build 4"]) {
-  if (!impact.toLowerCase().includes(token.toLowerCase())) fail(`impact map missing boundary statement: ${token}`);
+for (const token of [
+  "HYBRID_PHYSICAL_RECEIPT_QUANTITY_FULFILMENT_AND_REMEDY_CONTROL_ADDENDUM_v1.md",
+  "HYBRID_PHYSICAL_RECEIPT_IMPLEMENTATION_ALIGNMENT_ADDENDUM_v1_1.md",
+  "does not activate",
+  "no feature flag",
+  "fractional refund/replacement approval fails closed",
+  "separate refund and replacement disputes",
+  "legacy unresolved-line uniqueness remains effective",
+  "must not widen `dispute_lines.qty_impact`",
+]) {
+  if (!impact.toLowerCase().includes(token.toLowerCase())) {
+    fail(`impact map missing aligned boundary statement: ${token}`);
+  }
+}
+
+for (const token of [
+  "Where this document is more specific",
+  "dispute_lines.qty_impact` is `integer",
+  "must reject any such quantity",
+  "must not be combined in one dispute",
+  "many-link structure",
+  "physical_remedy_allocation_id",
+  "legacy unresolved dispute lines",
+  "refund precedes replacement",
+  "No quantity may be rounded",
+]) {
+  if (!alignment.includes(token)) {
+    fail(`alignment addendum missing governing decision: ${token}`);
+  }
 }
 
 console.log(`PASS: Build 2 source regression passed for ${changed.length} files.`);
