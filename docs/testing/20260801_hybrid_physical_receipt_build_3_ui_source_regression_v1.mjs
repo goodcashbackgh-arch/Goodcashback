@@ -21,10 +21,9 @@ const allowed = new Set([
   "docs/testing/20260801_hybrid_physical_receipt_build_3_ui_source_regression_v1.mjs",
   "docs/testing/20260801_hybrid_physical_receipt_build_3_shipper_entry_read_regression_v1.sql",
   "supabase/migrations/20260801150000_hybrid_physical_receipt_shipper_entry_read_v1.sql",
-  "app/shipper/actions.ts",
   "app/shipper/package-receipts/page.tsx",
+  "app/shipper/package-receipts/v2/[tracking_submission_id]/actions.ts",
   "app/shipper/package-receipts/v2/[tracking_submission_id]/page.tsx",
-  "app/shipper/package-receipts/v2/PhysicalReceiptV2Form.tsx",
 ]);
 
 const changed = git(["diff", "--name-only", `${BASE_REF}...HEAD`])
@@ -36,29 +35,56 @@ for (const path of changed) {
   if (!allowed.has(path)) fail(`Build 3 changed file outside the approved first-slice boundary: ${path}`);
 }
 
+const baselineShipperActions = git(["show", `${BASE_REF}:app/shipper/actions.ts`]);
 const shipperActions = read("app/shipper/actions.ts");
+if (shipperActions !== baselineShipperActions) {
+  fail("Legacy app/shipper/actions.ts changed during the additive v2 slice.");
+}
 if (!shipperActions.includes('rpc("shipper_record_package_receipt_v1"')) {
   fail("Legacy shipper receipt action no longer calls shipper_record_package_receipt_v1.");
 }
-if (!shipperActions.includes("recordPackageReceiptAction")) {
-  fail("Legacy recordPackageReceiptAction was removed.");
+if (shipperActions.includes("shipper_record_package_receipt_v2")) {
+  fail("Legacy shipper action file was coupled to the v2 authority.");
+}
+
+const v2Actions = read("app/shipper/package-receipts/v2/[tracking_submission_id]/actions.ts");
+for (const required of [
+  "recordExactPackageReceiptV2Action",
+  'rpc("shipper_record_package_receipt_v2"',
+  "p_tracking_submission_id",
+  "p_receipt_submission_id",
+  "p_dispositions",
+  "p_evidence",
+  "p_correction_of_receipt_id",
+  "p_correction_reason",
+  "tracking_line_allocation_id",
+  "supplier_invoice_line_id",
+  "storage_object_path",
+]) {
+  if (!v2Actions.includes(required)) fail(`V2 shipper action missing required contract: ${required}`);
+}
+if (v2Actions.includes("shipper_record_package_receipt_v1")) {
+  fail("V2 shipper action calls the legacy v1 authority.");
+}
+if (/service_role|SUPABASE_SERVICE_ROLE_KEY/i.test(v2Actions)) {
+  fail("V2 shipper action introduces service-role browser/server bypass access.");
+}
+if (/Math\.(round|floor|ceil|trunc)\s*\(/.test(v2Actions)) {
+  fail("V2 shipper action rounds exact physical quantities.");
 }
 
 const importerPage = git(["show", `${BASE_REF}:app/importer/exceptions/[dispute_id]/page.tsx`]);
-const currentImporterPage = read("app/importer/exceptions/[dispute_id]/page.tsx");
-if (currentImporterPage !== importerPage) {
+if (read("app/importer/exceptions/[dispute_id]/page.tsx") !== importerPage) {
   fail("Existing importer dispute page changed during the protected first shipper slice.");
 }
 
 const importerActions = git(["show", `${BASE_REF}:app/importer/exceptions/[dispute_id]/actions.ts`]);
-const currentImporterActions = read("app/importer/exceptions/[dispute_id]/actions.ts");
-if (currentImporterActions !== importerActions) {
+if (read("app/importer/exceptions/[dispute_id]/actions.ts") !== importerActions) {
   fail("Existing importer dispute actions changed during the protected first shipper slice.");
 }
 
 const internalPage = git(["show", `${BASE_REF}:app/internal/exceptions/[dispute_id]/page.tsx`]);
-const currentInternalPage = read("app/internal/exceptions/[dispute_id]/page.tsx");
-if (currentInternalPage !== internalPage) {
+if (read("app/internal/exceptions/[dispute_id]/page.tsx") !== internalPage) {
   fail("Existing internal dispute page changed during the protected first shipper slice.");
 }
 
