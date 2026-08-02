@@ -92,21 +92,42 @@ async function submitSupervisorDecision(page, reviewId, expectedStatus) {
 async function assertImporterQueue(page, reviewId) {
   await page.goto("/importer/physical-receipts");
   await expectVisible(page, "Affected receipts currently requiring importer action");
+  const cards = page.locator('a[href^="/importer/physical-receipts/"]');
+  const cardCount = await cards.count();
+  if (cardCount === 0) throw new Error("Importer queue rendered no review cards.");
   const target = page.locator(`a[href="/importer/physical-receipts/${reviewId}"]`);
-  await target.first().waitFor({ state: "visible" });
-  const body = (await page.textContent("body")) ?? "";
-  if (/approved to existing exception|closed no action|rejected|superseded/i.test(body)) {
-    throw new Error("Importer default queue displayed a non-actionable lifecycle status.");
+  if ((await target.count()) === 0) throw new Error("Importer queue is missing the controlled review link.");
+  const allowedStatuses = new Set(["awaiting importer proposal", "returned for information"]);
+  for (let index = 0; index < cardCount; index += 1) {
+    const badge = cards.nth(index).locator("span.rounded-full.bg-amber-100.px-3.py-1.text-xs.font-semibold.text-amber-800");
+    const badgeCount = await badge.count();
+    if (badgeCount !== 1) {
+      throw new Error(`Importer queue card ${index + 1} has ${badgeCount} dedicated status badges; expected exactly one.`);
+    }
+    const status = ((await badge.textContent()) ?? "").trim().toLowerCase();
+    if (!allowedStatuses.has(status)) {
+      throw new Error(`Importer queue card ${index + 1} has status "${status}", outside the exact actionable whitelist.`);
+    }
   }
 }
 
 async function assertSupervisorQueue(page, reviewId) {
   await page.goto("/internal/physical-receipts");
+  const cards = page.locator('a[href^="/internal/physical-receipts/"]');
+  const cardCount = await cards.count();
+  if (cardCount === 0) throw new Error("Supervisor queue rendered no review cards.");
   const target = page.locator(`a[href="/internal/physical-receipts/${reviewId}"]`);
-  await target.first().waitFor({ state: "visible" });
-  const body = (await page.textContent("body")) ?? "";
-  if (/approved to existing exception|closed no action|rejected|returned for information|superseded/i.test(body)) {
-    throw new Error("Supervisor default queue displayed a non-actionable lifecycle status.");
+  if ((await target.count()) === 0) throw new Error("Supervisor queue is missing the controlled review link.");
+  for (let index = 0; index < cardCount; index += 1) {
+    const badge = cards.nth(index).locator("span.rounded-full.bg-amber-100.px-3.py-1.text-xs.font-semibold.text-amber-800");
+    const badgeCount = await badge.count();
+    if (badgeCount !== 1) {
+      throw new Error(`Supervisor queue card ${index + 1} has ${badgeCount} dedicated status badges; expected exactly one.`);
+    }
+    const status = ((await badge.textContent()) ?? "").trim().toLowerCase();
+    if (status !== "awaiting supervisor review") {
+      throw new Error(`Supervisor queue card ${index + 1} has status "${status}"; expected exactly "awaiting supervisor review".`);
+    }
   }
 }
 
