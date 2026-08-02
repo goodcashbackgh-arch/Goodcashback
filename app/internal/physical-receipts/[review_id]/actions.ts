@@ -44,27 +44,16 @@ export async function decidePhysicalReceiptReviewAction(formData: FormData) {
   }
 
   const noAllocationDecision = decision === "return_for_information" || decision === "reject";
-  if (noAllocationDecision && allocations.length !== 0) {
-    redirect(destination(reviewId, "Return and reject decisions must not contain allocation approvals."));
-  }
-  if (!noAllocationDecision && allocations.length === 0) {
-    redirect(destination(reviewId, "This decision requires an explicit decision for every importer proposal row."));
-  }
-  if (decision === "close_no_action" && liableParty !== "no_liability") {
-    redirect(destination(reviewId, "Close-no-action requires no liability."));
-  }
-  if (decision === "approve_existing_exception" && liableParty === "no_liability") {
-    redirect(destination(reviewId, "Refund or replacement approval cannot use no liability."));
-  }
+  if (noAllocationDecision && allocations.length !== 0) redirect(destination(reviewId, "Return and reject decisions must not contain allocation approvals."));
+  if (!noAllocationDecision && allocations.length === 0) redirect(destination(reviewId, "This decision requires an explicit decision for every importer proposal row."));
+  if (decision === "close_no_action" && liableParty !== "no_liability") redirect(destination(reviewId, "Close-no-action requires no liability."));
+  if (decision === "approve_existing_exception" && liableParty === "no_liability") redirect(destination(reviewId, "Refund or replacement approval cannot use no liability."));
 
   const invalid = allocations.some((row) => {
     const remedy = String(row.approved_remedy_type ?? "");
     const quantity = row.approved_remedy_qty;
     const costMode = String(row.supplier_cost_mode ?? "");
-    if (typeof row.remedy_allocation_id !== "string"
-        || typeof quantity !== "number"
-        || !Number.isInteger(quantity)
-        || quantity <= 0) return true;
+    if (typeof row.remedy_allocation_id !== "string" || typeof quantity !== "number" || !Number.isInteger(quantity) || quantity <= 0) return true;
     if (decision === "approve_investigation" && remedy !== "hold_investigate") return true;
     if (decision === "close_no_action" && remedy !== "no_action") return true;
     if (decision === "approve_existing_exception" && !["refund", "replacement"].includes(remedy)) return true;
@@ -74,7 +63,7 @@ export async function decidePhysicalReceiptReviewAction(formData: FormData) {
   if (invalid) redirect(destination(reviewId, "One or more supervisor decision rows are incompatible with the selected decision or are not positive whole units."));
 
   const supabase = await createClient();
-  const { data, error } = await (supabase as any).rpc("staff_decide_physical_receipt_review_v1", {
+  const { data, error } = await (supabase as any).rpc("staff_decide_physical_receipt_review_v2", {
     p_review_id: reviewId,
     p_decision: decision,
     p_allocations: allocations,
