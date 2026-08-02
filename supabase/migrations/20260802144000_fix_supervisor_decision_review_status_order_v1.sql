@@ -17,13 +17,18 @@ BEGIN
     RAISE EXCEPTION 'Supervisor decision v1 authority is missing.';
   END IF;
 
+  -- pg_get_functiondef can preserve CRLF from the installed body. Normalise
+  -- line endings before applying the exact single-anchor patch.
+  v_before := replace(v_before, E'\r\n', E'\n');
+  v_before := replace(v_before, E'\r', E'\n');
+
   IF position(v_insert IN v_before) > 0 THEN
     RAISE NOTICE 'Supervisor decision review-status ordering patch is already installed.';
     RETURN;
   END IF;
 
   IF (length(v_before) - length(replace(v_before, v_anchor, ''))) / length(v_anchor) <> 1 THEN
-    RAISE EXCEPTION 'Expected supervisor allocation-update anchor exactly once; refusing unsafe patch.';
+    RAISE EXCEPTION 'Expected supervisor allocation-update anchor exactly once after line-ending normalisation; refusing unsafe patch.';
   END IF;
 
   v_after := replace(v_before, v_anchor, v_insert || v_anchor);
@@ -34,7 +39,7 @@ BEGIN
 
   EXECUTE v_after;
 
-  IF position(v_insert IN pg_get_functiondef(v_oid)) = 0 THEN
+  IF position(v_insert IN replace(replace(pg_get_functiondef(v_oid), E'\r\n', E'\n'), E'\r', E'\n')) = 0 THEN
     RAISE EXCEPTION 'Supervisor decision review-status ordering patch did not persist.';
   END IF;
 END
@@ -43,10 +48,12 @@ $patch$;
 DO $postflight$
 DECLARE
   v_def text;
+  v_security_definer boolean;
 BEGIN
-  SELECT pg_get_functiondef(
+  SELECT replace(replace(pg_get_functiondef(
     'public.staff_decide_physical_receipt_review_v1(uuid,text,jsonb,text,text)'::regprocedure
-  ) INTO v_def;
+  ), E'\r\n', E'\n'), E'\r', E'\n')
+  INTO v_def;
 
   IF v_def NOT ILIKE '%IF v_decision = ''approve_existing_exception'' THEN%approved_to_existing_exception%' THEN
     RAISE EXCEPTION 'Supervisor decision v1 does not pre-authorise the review before remedy progression.';
@@ -60,10 +67,12 @@ BEGIN
     RAISE EXCEPTION 'authenticated unexpectedly gained direct supervisor decision v1 execute.';
   END IF;
 
-  IF NOT prosecdef
-  FROM pg_proc
-  WHERE oid = 'public.staff_decide_physical_receipt_review_v1(uuid,text,jsonb,text,text)'::regprocedure
-  THEN
+  SELECT p.prosecdef
+  INTO v_security_definer
+  FROM pg_proc p
+  WHERE p.oid = 'public.staff_decide_physical_receipt_review_v1(uuid,text,jsonb,text,text)'::regprocedure;
+
+  IF v_security_definer IS DISTINCT FROM true THEN
     RAISE EXCEPTION 'Supervisor decision v1 lost SECURITY DEFINER.';
   END IF;
 END
