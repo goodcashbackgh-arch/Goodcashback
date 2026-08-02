@@ -9,6 +9,10 @@ BEGIN
     RAISE EXCEPTION 'Importer proposal v1 authority is missing.';
   END IF;
 
+  IF NOT has_function_privilege(current_user, 'public.operator_submit_physical_receipt_proposal_v1(uuid,jsonb,text)', 'EXECUTE') THEN
+    RAISE EXCEPTION 'Migration owner cannot invoke importer proposal v1; v2 SECURITY DEFINER chaining would fail.';
+  END IF;
+
   IF to_regprocedure('public.operator_submit_physical_receipt_proposal_v2(uuid,jsonb,text)') IS NOT NULL THEN
     RAISE EXCEPTION 'Importer proposal v2 authority already exists; inspect before replacing.';
   END IF;
@@ -52,11 +56,7 @@ BEGIN
        OR EXISTS (
          SELECT 1
          FROM jsonb_object_keys(proposal_row) key_name
-         WHERE key_name NOT IN (
-           'receipt_line_disposition_id',
-           'proposed_remedy_type',
-           'proposed_remedy_qty'
-         )
+         WHERE key_name NOT IN ('receipt_line_disposition_id','proposed_remedy_type','proposed_remedy_qty')
        )
   ) THEN
     RAISE EXCEPTION 'Importer proposal rows contain unknown fields.';
@@ -70,15 +70,10 @@ BEGIN
       proposed_remedy_qty numeric
     )
     WHERE proposal_row.receipt_line_disposition_id IS NULL
-       OR proposal_row.proposed_remedy_type NOT IN (
-         'refund','replacement','hold_investigate','no_action'
-       )
+       OR proposal_row.proposed_remedy_type NOT IN ('refund','replacement','hold_investigate','no_action')
        OR proposal_row.proposed_remedy_qty IS NULL
        OR proposal_row.proposed_remedy_qty <= 0
-       OR ABS(
-         proposal_row.proposed_remedy_qty
-         - ROUND(proposal_row.proposed_remedy_qty)
-       ) > 0.0005
+       OR proposal_row.proposed_remedy_qty <> TRUNC(proposal_row.proposed_remedy_qty)
   ) THEN
     RAISE EXCEPTION 'Every physical remedy proposal quantity must be a positive whole unit.';
   END IF;
@@ -87,25 +82,18 @@ BEGIN
     p_physical_receipt_review_id,
     p_proposals,
     p_proposal_note
-  )
-  INTO v_result;
+  ) INTO v_result;
 
   RETURN v_result;
 END;
 $function$;
 
 COMMENT ON FUNCTION public.operator_submit_physical_receipt_proposal_v2(uuid,jsonb,text) IS
-'Authenticated whole-unit importer proposal gateway. Validates exact payload and integer quantities before invoking the preserved atomic v1 proposal authority.';
+'Authenticated exact whole-unit importer proposal gateway. Validates payload before invoking the preserved atomic v1 authority.';
 
-REVOKE ALL ON FUNCTION public.operator_submit_physical_receipt_proposal_v2(uuid,jsonb,text)
-FROM PUBLIC, anon;
-GRANT EXECUTE ON FUNCTION public.operator_submit_physical_receipt_proposal_v2(uuid,jsonb,text)
-TO authenticated;
-
-REVOKE EXECUTE ON FUNCTION public.operator_submit_physical_receipt_proposal_v1(uuid,jsonb,text)
-FROM authenticated;
-REVOKE ALL ON FUNCTION public.operator_submit_physical_receipt_proposal_v1(uuid,jsonb,text)
-FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.operator_submit_physical_receipt_proposal_v2(uuid,jsonb,text) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.operator_submit_physical_receipt_proposal_v2(uuid,jsonb,text) TO authenticated;
+REVOKE ALL ON FUNCTION public.operator_submit_physical_receipt_proposal_v1(uuid,jsonb,text) FROM PUBLIC, anon, authenticated;
 
 NOTIFY pgrst, 'reload schema';
 
