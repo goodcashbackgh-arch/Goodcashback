@@ -7,7 +7,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test:physical-receipt-browser": "node docs/testing/20260802_hybrid_physical_receipt_browser_runner_v1.mjs"
+    "typecheck": "tsc --noEmit",
+    "test:physical-receipt-browser": "node docs/testing/20260802_hybrid_physical_receipt_browser_runner_v1.mjs",
+    "test:hybrid-physical-receipt-v1-2": "node docs/testing/20260802_hybrid_physical_receipt_v1_2_source_regression.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.10.2",
