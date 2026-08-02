@@ -18,6 +18,14 @@ begin
     raise exception 'Build 4 drift stop: order_has_open_child_exceptions changed (%).', v_md5;
   end if;
 
+  if to_regprocedure('public.create_replacement_child_order_v2(uuid,uuid,uuid,text)') is not null then
+    raise exception 'Build 4 v2 child authority already exists; migration will not replace it.';
+  end if;
+
+  if to_regprocedure('public.order_has_open_child_exceptions_v2(uuid)') is not null then
+    raise exception 'Build 4 v2 parent blocker already exists; migration will not replace it.';
+  end if;
+
   select md5(definition) into v_md5
   from pg_views
   where schemaname = 'public' and viewname = 'order_reconciliation_vw';
@@ -44,7 +52,7 @@ begin
 end
 $drift$;
 
-create or replace function public.create_replacement_child_order(
+create function public.create_replacement_child_order_v2(
   p_parent_order_id uuid,
   p_dispute_line_id uuid,
   p_staff_id uuid,
@@ -189,10 +197,13 @@ begin
 end;
 $function$;
 
-comment on function public.create_replacement_child_order(uuid,uuid,uuid,text) is
-  'Hardened physical replacement-child authority preserving exact approved physical-remedy provenance.';
+comment on function public.create_replacement_child_order_v2(uuid,uuid,uuid,text) is
+  'Versioned hardened physical replacement-child authority preserving exact approved physical-remedy provenance. The existing v1 authority is unchanged.';
 
-create or replace function public.order_has_open_child_exceptions(p_order_id uuid)
+revoke all on function public.create_replacement_child_order_v2(uuid,uuid,uuid,text) from public, anon;
+grant execute on function public.create_replacement_child_order_v2(uuid,uuid,uuid,text) to authenticated, service_role;
+
+create function public.order_has_open_child_exceptions_v2(p_order_id uuid)
 returns boolean
 language sql
 stable
@@ -234,8 +245,11 @@ as $function$
   )
 $function$;
 
-comment on function public.order_has_open_child_exceptions(uuid) is
-  'Returns true for open legacy exception states, unresolved physical remedies, unfinished replacement children, and cancelled children not rerouted or explicitly closed.';
+comment on function public.order_has_open_child_exceptions_v2(uuid) is
+  'Versioned parent blocker for open legacy exceptions, unresolved physical remedies, unfinished replacement children and unrouted cancellations. The existing v1 authority is unchanged.';
+
+revoke all on function public.order_has_open_child_exceptions_v2(uuid) from public, anon;
+grant execute on function public.order_has_open_child_exceptions_v2(uuid) to authenticated, service_role;
 
 create or replace view public.order_reconciliation_vw as
 with authoritative_supplier_lines as (
