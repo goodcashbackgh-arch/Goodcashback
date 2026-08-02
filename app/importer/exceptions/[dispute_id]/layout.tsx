@@ -9,6 +9,22 @@ type CourierOption = {
   name: string;
 };
 
+type ReturnHistoryRow = {
+  id: string;
+  courier_id: string | null;
+  couriers?: { name?: string | null } | { name?: string | null }[] | null;
+  tracking_ref: string | null;
+  tracking_date: string | null;
+  tracking_evidence_url: string | null;
+  retailer_return_instructions_file_url: string | null;
+  return_label_file_url: string | null;
+  return_proof_file_url: string | null;
+  submitted_at: string | null;
+  is_final_return_yn: boolean | null;
+  review_status: string | null;
+  note: string | null;
+};
+
 export default async function ImporterExceptionLayout({
   children,
   params,
@@ -27,13 +43,32 @@ export default async function ImporterExceptionLayout({
 
   let canSubmitReplacementReturn = false;
   let courierOptions: CourierOption[] = [];
+  let returnHistory: Array<{
+    id: string;
+    courier_name: string | null;
+    tracking_ref: string | null;
+    tracking_date: string | null;
+    tracking_evidence_url: string | null;
+    retailer_return_instructions_file_url: string | null;
+    return_label_file_url: string | null;
+    return_proof_file_url: string | null;
+    submitted_at: string | null;
+    is_final_return_yn: boolean | null;
+    review_status: string | null;
+    note: string | null;
+  }> = [];
 
   if (
     dispute?.desired_outcome === "replacement"
     && !dispute.replacement_child_order_id
     && !dispute.resolved_at
   ) {
-    const [{ data: activeLines }, { count: retailerReplyCount }, { data: couriers }] = await Promise.all([
+    const [
+      { data: activeLines },
+      { count: retailerReplyCount },
+      { data: couriers },
+      { data: returnRows },
+    ] = await Promise.all([
       supabase
         .from("dispute_lines")
         .select("id, intended_remedy, conversation_status, physical_remedy_allocation_id")
@@ -49,14 +84,16 @@ export default async function ImporterExceptionLayout({
         .from("couriers")
         .select("id, name")
         .order("name", { ascending: true }),
+      supabase
+        .from("dispute_return_tracking_submissions")
+        .select("id, courier_id, tracking_ref, tracking_date, tracking_evidence_url, retailer_return_instructions_file_url, return_label_file_url, return_proof_file_url, submitted_at, is_final_return_yn, review_status, note, couriers(name)")
+        .eq("dispute_id", disputeId)
+        .order("submitted_at", { ascending: false }),
     ]);
 
     const lines = activeLines ?? [];
     const singleLine = lines.length === 1 ? lines[0] : null;
 
-    // Keep the page-level visibility check to data the importer role can read.
-    // The governed RPC remains the authority for disposition eligibility and
-    // rejects missing-item or otherwise invalid return submissions.
     canSubmitReplacementReturn = Boolean(
       singleLine
       && singleLine.intended_remedy === "replacement"
@@ -66,6 +103,23 @@ export default async function ImporterExceptionLayout({
     );
 
     courierOptions = (couriers ?? []) as CourierOption[];
+    returnHistory = ((returnRows ?? []) as ReturnHistoryRow[]).map((row) => {
+      const courier = Array.isArray(row.couriers) ? row.couriers[0] : row.couriers;
+      return {
+        id: row.id,
+        courier_name: courier?.name ?? null,
+        tracking_ref: row.tracking_ref,
+        tracking_date: row.tracking_date,
+        tracking_evidence_url: row.tracking_evidence_url,
+        retailer_return_instructions_file_url: row.retailer_return_instructions_file_url,
+        return_label_file_url: row.return_label_file_url,
+        return_proof_file_url: row.return_proof_file_url,
+        submitted_at: row.submitted_at,
+        is_final_return_yn: row.is_final_return_yn,
+        review_status: row.review_status,
+        note: row.note,
+      };
+    });
   }
 
   return (
@@ -77,6 +131,7 @@ export default async function ImporterExceptionLayout({
             <ReplacementOriginalItemReturnForm
               disputeId={disputeId}
               courierOptions={courierOptions}
+              returnHistory={returnHistory}
             />
           </div>
         </div>
