@@ -20,131 +20,150 @@ Database numeric precision remains unchanged for provenance and downstream arith
 
 ## 2. Whole-unit remedy proposals and decisions
 
-Every importer physical-remedy proposal quantity is a whole unit because its source affected quantity is a whole physical unit. This applies to refund, replacement, hold/investigate and no-action proposals.
+Every importer physical-remedy proposal and every supervisor physical-remedy decision quantity is a positive whole unit. This applies to refund, replacement, hold/investigate and no-action rows.
 
-The importer may split several affected units across several remedy rows, but every row quantity must be a positive integer and the sum for one source disposition must not exceed that disposition's affected quantity.
+The importer may split several affected units across several remedy rows, but every row quantity must be an integer and the sum for one source disposition must not exceed that disposition's affected quantity.
 
-The supervisor may reduce an individual proposed quantity but may not invent a different split. Refund and replacement approvals remain explicitly fail-closed against fractional quantities. A changed split must be returned to the importer for a replacement proposal on the same review.
+The supervisor may reduce an individual proposed quantity but may not invent a different split. A changed split must be returned to the importer for a replacement proposal on the same review.
 
-Database numeric columns remain unchanged; the application and write authorities must reject fractional physical-remedy quantities rather than round them.
+Database numeric columns remain unchanged. Browser and server-action checks are usability controls only; the authenticated database write boundary must reject every fractional quantity exactly and must never round it into validity.
 
-### 2.1 Technical write-authority correction
-
-Whole-unit enforcement must exist in the authenticated database write path and must not depend on browser or server-action validation.
+### 2.1 Importer authenticated write boundary
 
 Implementation must:
 
-1. preserve the existing `operator_submit_physical_receipt_proposal_v1(uuid,jsonb,text)` implementation as the internal atomic proposal authority;
-2. add `operator_submit_physical_receipt_proposal_v2(uuid,jsonb,text)` as an authenticated `SECURITY DEFINER` gateway;
-3. make v2 reject any proposal row whose quantity is null, non-positive or differs from its rounded value by more than `0.0005`;
-4. make v2 reject unknown fields and remedy types before invoking v1;
-5. call v1 only after the whole-unit payload has passed validation;
-6. revoke authenticated execution from v1 so an ordinary authenticated caller cannot bypass v2;
-7. retain v1 execution for its owner/internal call path and revoke both versions from `PUBLIC` and `anon`;
-8. update application proposal submission to call v2 only.
+1. preserve `operator_submit_physical_receipt_proposal_v1(uuid,jsonb,text)` as the internal atomic proposal implementation;
+2. expose `operator_submit_physical_receipt_proposal_v2(uuid,jsonb,text)` as the authenticated `SECURITY DEFINER` gateway;
+3. reject unknown fields, unknown remedy types, null quantities, non-positive quantities and every value for which `quantity <> trunc(quantity)`;
+4. invoke v1 only after the full payload passes validation;
+5. revoke direct `authenticated`, `anon` and `PUBLIC` execution of v1;
+6. grant authenticated execution only to v2;
+7. preflight that the v2 owner retains the internal privilege needed to invoke v1;
+8. update application submission to call v2 only.
 
-This correction must not modify or weaken `physical_remedy_allocation_guard_v1`, review guards, lifecycle transitions, dispute authorities or replacement authorities.
+A tolerance comparison such as `abs(quantity - round(quantity)) > 0.0005` is prohibited at this physical whole-unit boundary because it admits fractional `numeric` values.
+
+### 2.2 Supervisor authenticated write boundary
+
+Implementation must not rewrite the large atomic supervisor decision authority merely to add boundary validation.
+
+It must:
+
+1. preserve `staff_decide_physical_receipt_review_v1(uuid,text,jsonb,text,text)` as the internal atomic decision implementation;
+2. add `staff_decide_physical_receipt_review_v2(uuid,text,jsonb,text,text)` as the authenticated `SECURITY DEFINER` gateway;
+3. reject unknown allocation fields, null identities, null or non-positive quantities and every value for which `approved_remedy_qty <> trunc(approved_remedy_qty)` before invoking v1;
+4. apply that exact whole-unit rule to refund, replacement, hold/investigate and no-action decisions alike;
+5. revoke direct `authenticated`, `anon` and `PUBLIC` execution of supervisor v1;
+6. grant authenticated execution only to supervisor v2;
+7. preflight that the v2 owner retains the internal privilege needed to invoke v1;
+8. update the application decision action to call supervisor v2 only.
+
+These gateways must not modify or weaken physical-remedy guards, review guards, status transitions, dispute authorities, replacement authorities, refund authorities or reconciliation authorities.
 
 ## 3. Required operational navigation, queues and workload badges
 
-The importer workspace must expose a visible `Physical Receipt Exceptions` entry point. The internal supervisor workspace must expose a visible `Physical Receipt Reviews` entry point.
+The importer workspace must expose `Physical Receipt Exceptions`. The internal supervisor workspace must expose `Physical Receipt Reviews`.
 
-Each entry point must show a role-scoped count badge for work currently requiring that role's action:
+Each entry point must show a role-scoped action count:
 
 - importer: `awaiting_importer_proposal` and `returned_for_information`;
 - supervisor: `awaiting_supervisor_review`.
 
-The default importer queue must contain only those importer-actionable states. The default supervisor queue must contain only `awaiting_supervisor_review`. Completed, rejected, linked, superseded and otherwise non-actionable reviews may appear only through an explicit history view or filter and must not inflate the action badge.
+Default queues contain only those actionable states. Completed, rejected, linked, superseded and otherwise non-actionable reviews may appear only through an explicit history view or filter and must not inflate action badges.
 
-A route that is reachable only by manually entering a UUID does not satisfy this contract.
+## 4. Role-scoped reads and exact evidence access
 
-## 4. Role-scoped read and evidence authorities
+Narrow `SECURITY DEFINER` read RPCs may be used where ordinary table RLS cannot safely expose the required queue and detail facts.
 
-Where ordinary table RLS does not safely expose all facts required by the importer or supervisor queue/detail pages, implementation must add narrow `SECURITY DEFINER` read RPCs.
-
-Those RPCs must:
+They must:
 
 - require `auth.uid()`;
-- resolve the active operator/importer or active supervisor/admin staff identity;
-- enforce importer tenancy through `operator_importers` for importer reads;
-- expose only the receipt, disposition, evidence, proposal and linked-dispute facts needed by the page;
-- never grant browser service-role access;
+- resolve an active operator/importer or active supervisor/admin identity;
+- enforce importer tenancy through non-revoked `operator_importers` rows;
+- expose only required receipt, disposition, evidence, proposal and linked-dispute facts;
 - revoke execution from `PUBLIC` and `anon` and grant only to `authenticated`;
-- perform no writes and replace no lifecycle, reconciliation, dispute, refund, replacement or shipment authority.
+- perform no writes;
+- introduce no browser service-role client.
 
-Receipt evidence access must be authorised for the same review and role before a signed URL or file response is produced. Existing storage policies may be reused only when they already enforce that scope. Implementation must not broaden the `invoice-evidence` bucket globally or expose raw storage paths as proof of access. If existing storage RLS is insufficient, add a narrow server-side evidence authority that independently rechecks importer tenancy or active supervisor/admin status for the exact review and object path.
-
-### 4.1 Technical evidence and role regression
-
-Rollback-only database regression must create or reuse transaction-local identities for:
-
-- an authorised importer operator;
-- a different importer operator;
-- a revoked importer operator;
-- an active supervisor/admin;
-- an ordinary non-supervisor staff user;
-- one exact physical review and one exact evidence object path.
-
-The regression must set authenticated JWT claims using the repository's established test pattern and prove both positive and negative behavior:
-
-- authorised importer detail and evidence access succeeds;
-- different-importer and revoked-importer access returns no review and no storage object;
-- active supervisor/admin detail and evidence access succeeds;
-- ordinary staff access returns no review and no storage object;
-- unauthenticated and invalid-path access fails closed;
-- default queues include only role-actionable states;
-- the script ends in `ROLLBACK`.
-
-Definition-text and ACL checks may supplement but must not replace those behavioral assertions.
+Evidence access must bind the exact `storage.objects.name` to an evidence row, receipt, review and currently authorised role. The `invoice-evidence` bucket must not be broadened globally, and a raw object path is not proof of access.
 
 ## 5. Importer and supervisor UI completeness
 
-The importer `Physical Receipt Exceptions` section must provide:
+The importer section must provide an actionable queue and badge, exact immutable receipt facts, authorised evidence, whole-unit split proposal rows, return-for-information notes and submission only through `operator_submit_physical_receipt_proposal_v2`.
 
-- a role-scoped actionable queue and count;
-- a detail view with immutable receipt, affected disposition, quantity, condition note and authorised evidence facts;
-- one or more whole-unit proposal rows for refund, replacement, hold/investigate or no action;
-- exact quantity validation and split-proposal support;
-- return-for-information note visibility and resubmission;
-- submission only through `operator_submit_physical_receipt_proposal_v2`.
+The supervisor section must provide an actionable queue and badge, immutable receipt and authorised evidence, every active importer proposal row, explicit decision-specific controls, supplier-cost mode for replacement, every linked dispute and submission only through `staff_decide_physical_receipt_review_v2`.
 
-The supervisor `Physical Receipt Reviews` section must provide:
-
-- a role-scoped actionable queue and count;
-- a detail view with immutable receipt evidence and every active importer proposal row;
-- an explicit decision for every active proposal row;
-- decision-specific controls that cannot submit incompatible remedy types or liable-party values;
-- return for information, reject, close no action, approve investigation and approve existing exception decisions;
-- whole-unit fail-closed handling for every physical remedy quantity and specifically for downstream refund and replacement routes;
-- supplier-cost mode for replacement decisions;
-- display of every linked dispute after linkage;
-- submission only through `staff_decide_physical_receipt_review_v1`.
-
-The supervisor UI must never silently convert an incompatible importer proposal. In particular, `hold_investigate` or `no_action` must not default to refund or replacement when `approve_existing_exception` is selected. `Approve existing exception` is enabled only when every active proposal is already refund or replacement. Investigation and no-action routing must be explicit supervisor choices. A changed split must be returned to the importer.
+The supervisor UI must never silently convert an incompatible proposal. `Approve existing exception` is available only when every active proposal is already refund or replacement. Homogeneous hold proposals may default to investigation, homogeneous no-action proposals may default to close/no-action, and incompatible mixed proposals default to return for information. Selecting investigation or no action must display that every listed proposal will be routed accordingly. A changed split must be returned to the importer.
 
 After linkage, the existing importer and internal dispute routes remain authoritative.
 
-## 6. Required regression coverage
+## 6. Mandatory implementation artefacts
 
-Before merge, source, rollback-only database and browser regression must prove at minimum:
+The implementation is incomplete unless the branch contains all of the following:
 
-1. importer and supervisor navigation entries and count badges are present;
-2. default queues contain only role-actionable reviews and history does not inflate badges;
-3. unauthenticated and wrong-role access fails closed;
-4. importer reads cannot cross importer tenancy or use revoked access;
-5. evidence access is denied outside the exact authorised review and succeeds for authorised importer/supervisor users;
-6. importer proposal payloads contain no supervisor-only fields;
-7. split proposals cannot exceed the exact affected disposition quantity and fractional proposal quantities are rejected without rounding by direct v2 RPC invocation;
-8. authenticated execution of v1 is revoked and direct v1 bypass is unavailable;
-9. supervisor decisions cover every active proposal row and the UI prevents decision-incompatible combinations without silent remedy conversion;
-10. fractional refund or replacement quantities are rejected without rounding;
-11. return-for-information reopens the same review rather than creating another review;
-12. multiple evidence references and all linked disputes are displayed;
-13. existing dispute pages remain the operational route after linkage;
-14. no service-role credential or elevated browser client is introduced;
-15. browser regression signs in as importer, different importer, supervisor and ordinary staff and exercises the real routes;
-16. database regressions end in `ROLLBACK`.
+1. exact importer v2 gateway migration;
+2. exact supervisor v2 gateway migration;
+3. importer application call to importer v2 only;
+4. supervisor application call to supervisor v2 only;
+5. source regression that rejects tolerance-based whole-unit checks and direct application use of either v1 authority;
+6. rollback-only behavioral SQL regression covering gateway privileges, exact quantity rejection, role/tenant reads and real storage RLS;
+7. an executable authenticated browser acceptance harness or a repository-native executable browser specification with explicit required environment variables and fail-closed setup;
+8. PR migration order and acceptance gates aligned with this addendum.
 
-## 7. Documentation precedence correction
+A source-text test does not replace behavioral database or browser proof.
 
-Any earlier Build 3 wording that describes independently editable `numeric(12,3)` clean and affected shipper fields, fractional physical-remedy entry, direct authenticated use of importer proposal v1, silent supervisor remedy conversion or unfiltered combined operational/history queues is superseded by this amendment. Exact numeric database provenance is preserved; physical-entry and physical-remedy UI quantities are whole-unit, clean quantity is derived, v2 is the authenticated importer proposal gateway, and the default queues are action-only.
+## 7. Required behavioral database proof
+
+One rollback-only operational authority regression must use authenticated JWT claims and prove:
+
+- authorised importer detail and exact evidence access succeeds;
+- different-importer and revoked-importer access returns no review and no storage object;
+- active supervisor/admin detail and exact evidence access succeeds;
+- ordinary staff access returns no review and no storage object;
+- unauthenticated, blank and invalid evidence paths fail closed;
+- authenticated direct execution of importer and supervisor v1 is unavailable;
+- authenticated execution of both v2 gateways is available;
+- importer v2 rejects `0`, negative values, `1.0004`, `1.5` and other fractional values without mutation;
+- importer v2 accepts valid integer rows and preserves v1 atomic behavior;
+- supervisor v2 rejects fractional refund, replacement, investigation and no-action allocations without mutation;
+- valid supervisor v2 calls preserve v1 locking, transition, linkage and rollback behavior;
+- default queue results contain only role-actionable states;
+- the script ends in `ROLLBACK`.
+
+Definition, ACL and policy-text checks may supplement but must not replace those assertions.
+
+## 8. Required authenticated browser proof
+
+The executable browser acceptance must use real authenticated role sessions and prove:
+
+1. importer badge and action-only queue;
+2. authorised importer detail and evidence opening;
+3. different-importer direct review denial;
+4. whole-unit split proposal submission through importer v2;
+5. supervisor badge and exact active proposal display;
+6. return-for-information on the same review ID and importer resubmission;
+7. explicit compatible supervisor decision through supervisor v2;
+8. no silent remedy conversion;
+9. linked-dispute display and navigation;
+10. ordinary staff direct supervisor-route denial;
+11. fractional browser input cannot submit successfully.
+
+Credentials, cookies and storage-state files must not be committed. The harness must fail with a clear message when required test accounts or fixture IDs are absent.
+
+## 9. Acceptance order
+
+Acceptance must run in this order:
+
+1. apply the ordered migrations;
+2. run source regressions;
+3. run the rollback-only operational authority behavioral regression;
+4. run existing Build 4 database regressions;
+5. run authenticated browser acceptance;
+6. verify protected authority fingerprints and grants;
+7. perform a final diff review.
+
+No readiness or merge claim is permitted unless every stage passes.
+
+## 10. Documentation precedence correction
+
+Any earlier wording that permits tolerance-based physical whole-unit validation, direct authenticated use of either v1 write authority, silent supervisor remedy conversion, independently editable clean quantity or combined action/history queues is superseded by this amendment. Exact numeric database provenance is preserved; physical-entry and physical-remedy quantities are exact whole units, clean quantity is derived, v2 gateways are the authenticated write boundaries, and default queues are action-only.
