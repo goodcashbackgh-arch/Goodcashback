@@ -393,7 +393,7 @@ END
 $supervisor_existing$;
 ROLLBACK TO SAVEPOINT supervisor_existing;
 
--- Clear the last authenticated identity and prove the runtime fails closed as anon.
+-- Clear the last authenticated identity and prove the runtime blocks anon completely.
 RESET ROLE;
 SELECT set_config('request.jwt.claims', '{}', true);
 SELECT set_config('request.jwt.claim.sub', '', true);
@@ -401,29 +401,33 @@ SET LOCAL ROLE anon;
 
 DO $unauthenticated_fail_closed$
 DECLARE
-  v_importer jsonb;
-  v_supervisor jsonb;
   v_count integer;
   v_denied boolean;
   p text:=current_setting('app.test.evidence_path');
 BEGIN
-  v_importer:=public.importer_physical_receipt_reviews_v1(current_setting('app.test.importer_review_id')::uuid);
-  IF jsonb_array_length(COALESCE(v_importer->'reviews','[]'::jsonb))<>0 THEN
-    RAISE EXCEPTION 'Unauthenticated importer detail did not fail closed.';
-  END IF;
+  v_denied:=false;
+  BEGIN
+    PERFORM public.importer_physical_receipt_reviews_v1(current_setting('app.test.importer_review_id')::uuid);
+  EXCEPTION WHEN insufficient_privilege THEN
+    v_denied:=true;
+  END;
+  IF NOT v_denied THEN RAISE EXCEPTION 'Anon executed importer read RPC.'; END IF;
 
-  v_supervisor:=public.staff_physical_receipt_reviews_v1(current_setting('app.test.existing_review_id')::uuid);
-  IF jsonb_array_length(COALESCE(v_supervisor->'reviews','[]'::jsonb))<>0 THEN
-    RAISE EXCEPTION 'Unauthenticated supervisor detail did not fail closed.';
-  END IF;
+  v_denied:=false;
+  BEGIN
+    PERFORM public.staff_physical_receipt_reviews_v1(current_setting('app.test.existing_review_id')::uuid);
+  EXCEPTION WHEN insufficient_privilege THEN
+    v_denied:=true;
+  END;
+  IF NOT v_denied THEN RAISE EXCEPTION 'Anon executed supervisor read RPC.'; END IF;
 
-  IF public.can_read_physical_receipt_evidence_v1(p) IS DISTINCT FROM false
-     OR public.can_read_physical_receipt_evidence_v1(NULL) IS DISTINCT FROM false
-     OR public.can_read_physical_receipt_evidence_v1('') IS DISTINCT FROM false
-     OR public.can_read_physical_receipt_evidence_v1('not/a/real/object') IS DISTINCT FROM false
-  THEN
-    RAISE EXCEPTION 'Unauthenticated or invalid evidence helper access did not fail closed.';
-  END IF;
+  v_denied:=false;
+  BEGIN
+    PERFORM public.can_read_physical_receipt_evidence_v1(p);
+  EXCEPTION WHEN insufficient_privilege THEN
+    v_denied:=true;
+  END;
+  IF NOT v_denied THEN RAISE EXCEPTION 'Anon executed evidence helper.'; END IF;
 
   SELECT count(*) INTO v_count
   FROM storage.objects
