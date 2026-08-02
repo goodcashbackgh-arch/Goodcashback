@@ -32,6 +32,12 @@ function displayStatus(value: string | null) {
   return (value ?? "pending_review").replaceAll("_", " ");
 }
 
+function safeExternalUrl(value: string | null) {
+  const trimmed = (value ?? "").trim();
+  if (!trimmed) return "";
+  return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+}
+
 export default function ReplacementOriginalItemReturnForm({
   disputeId,
   courierOptions,
@@ -148,7 +154,7 @@ export default function ReplacementOriginalItemReturnForm({
                   <p>Final return / collection: {row.is_final_return_yn ? "Yes" : "No"}</p>
                   <p>Supervisor review: {displayStatus(row.review_status)}</p>
                   <p>Note: {row.note || "No note."}</p>
-                  {row.tracking_evidence_url ? <p><a className="font-semibold text-sky-700 underline" href={row.tracking_evidence_url} target="_blank" rel="noreferrer">Open tracking / evidence link</a></p> : null}
+                  {row.tracking_evidence_url ? <p><a className="font-semibold text-sky-700 underline" href={safeExternalUrl(row.tracking_evidence_url)} target="_blank" rel="noreferrer">Open tracking / evidence link</a></p> : null}
                   {row.retailer_return_instructions_file_url ? <p><a className="font-semibold text-sky-700 underline" href={row.retailer_return_instructions_file_url} target="_blank" rel="noreferrer">Open retailer instructions file</a></p> : null}
                   {row.return_label_file_url ? <p><a className="font-semibold text-sky-700 underline" href={row.return_label_file_url} target="_blank" rel="noreferrer">Open return label</a></p> : null}
                   {row.return_proof_file_url ? <p><a className="font-semibold text-sky-700 underline" href={row.return_proof_file_url} target="_blank" rel="noreferrer">Open return proof</a></p> : null}
