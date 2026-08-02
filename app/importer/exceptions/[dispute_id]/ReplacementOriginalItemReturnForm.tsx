@@ -5,12 +5,41 @@ type CourierOption = {
   name: string;
 };
 
+type ReturnHistoryRow = {
+  id: string;
+  courier_name: string | null;
+  tracking_ref: string | null;
+  tracking_date: string | null;
+  tracking_evidence_url: string | null;
+  retailer_return_instructions_file_url: string | null;
+  return_label_file_url: string | null;
+  return_proof_file_url: string | null;
+  submitted_at: string | null;
+  is_final_return_yn: boolean | null;
+  review_status: string | null;
+  note: string | null;
+};
+
+function formatDateTime(value: string | null) {
+  if (!value) return "—";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? value
+    : date.toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" });
+}
+
+function displayStatus(value: string | null) {
+  return (value ?? "pending_review").replaceAll("_", " ");
+}
+
 export default function ReplacementOriginalItemReturnForm({
   disputeId,
   courierOptions,
+  returnHistory,
 }: {
   disputeId: string;
   courierOptions: CourierOption[];
+  returnHistory: ReturnHistoryRow[];
 }) {
   return (
     <section className="rounded-3xl border border-violet-200 bg-white p-6 shadow-sm">
@@ -96,6 +125,41 @@ export default function ReplacementOriginalItemReturnForm({
           </button>
         </div>
       </form>
+
+      <div className="mt-8 border-t border-violet-100 pt-6">
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="text-lg font-semibold">Replacement return / collection history</h3>
+          <span className="rounded-full bg-violet-50 px-3 py-1 text-xs font-semibold text-violet-800 ring-1 ring-violet-200">
+            {returnHistory.length} record(s)
+          </span>
+        </div>
+
+        {returnHistory.length ? (
+          <div className="mt-4 space-y-3">
+            {returnHistory.map((row) => (
+              <details key={row.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <summary className="cursor-pointer font-semibold text-slate-900">
+                  Return collection record · {formatDateTime(row.submitted_at)}
+                </summary>
+                <div className="mt-3 space-y-1 text-sm text-slate-700">
+                  <p>Courier: {row.courier_name ?? "Not provided"}</p>
+                  <p>Tracking reference: {row.tracking_ref ?? "Not provided"}</p>
+                  <p>Tracking date: {row.tracking_date ?? "Not provided"}</p>
+                  <p>Final return / collection: {row.is_final_return_yn ? "Yes" : "No"}</p>
+                  <p>Supervisor review: {displayStatus(row.review_status)}</p>
+                  <p>Note: {row.note || "No note."}</p>
+                  {row.tracking_evidence_url ? <p><a className="font-semibold text-sky-700 underline" href={row.tracking_evidence_url} target="_blank" rel="noreferrer">Open tracking / evidence link</a></p> : null}
+                  {row.retailer_return_instructions_file_url ? <p><a className="font-semibold text-sky-700 underline" href={row.retailer_return_instructions_file_url} target="_blank" rel="noreferrer">Open retailer instructions file</a></p> : null}
+                  {row.return_label_file_url ? <p><a className="font-semibold text-sky-700 underline" href={row.return_label_file_url} target="_blank" rel="noreferrer">Open return label</a></p> : null}
+                  {row.return_proof_file_url ? <p><a className="font-semibold text-sky-700 underline" href={row.return_proof_file_url} target="_blank" rel="noreferrer">Open return proof</a></p> : null}
+                </div>
+              </details>
+            ))}
+          </div>
+        ) : (
+          <p className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">No replacement return records have been saved yet.</p>
+        )}
+      </div>
     </section>
   );
 }
