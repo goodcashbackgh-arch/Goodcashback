@@ -163,7 +163,7 @@ export async function submitReturnTaskConfirmationAction(formData: FormData) {
     }
   }
 
-  const { error } = await (supabase as any).rpc("shipper_submit_return_task_confirmation_v1", {
+  const { error } = await (supabase as any).rpc("shipper_submit_return_task_confirmation_v2", {
     p_return_tracking_submission_id: returnTrackingSubmissionId,
     p_outcome: outcome,
     p_proof_file_url: proofFileUrl || null,
