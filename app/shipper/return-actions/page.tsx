@@ -87,11 +87,13 @@ function taskIsCustomerHoldReturn(task: ReturnAction, holdRows: HoldRow[]) {
 
   if (heldLineIds.size > 0 && Array.from(lineIds).some((id) => heldLineIds.has(id))) return true;
 
-  // Legacy fallback only. A return courier reference is normally different from
-  // the inbound package reference, so converted dispute identity is authoritative.
   if (heldTrackingRefs.size > 0 && task.tracking_ref && heldTrackingRefs.has(task.tracking_ref)) return true;
 
   return orderHoldRows.some((row) => !row.converted_dispute_id && !row.supplier_invoice_line_id && !row.tracking_ref);
+}
+
+function taskIsReplacementReturn(task: ReturnAction) {
+  return (task.affected_lines ?? []).some((line) => line.intended_remedy === "replacement");
 }
 
 function taskMatchesSource(task: ReturnAction, source: string, holdRows: HoldRow[]) {
@@ -112,7 +114,7 @@ function filterLabel(status: string) {
 
 function sourceLabel(source: string) {
   if (source === "customer_hold") return "Customer hold returns";
-  if (source === "shipper_issue") return "Shipper damage/missing returns";
+  if (source === "shipper_issue") return "Physical issue returns";
   return "All sources";
 }
 
@@ -139,7 +141,7 @@ export default async function ShipperReturnActionsPage({
   if (!shipperUser) redirect("/auth/check");
 
   const [{ data, error }, holdV3] = await Promise.all([
-    (supabase as any).rpc("shipper_return_tasks_v1"),
+    (supabase as any).rpc("shipper_return_tasks_v2"),
     (supabase as any).rpc("shipper_customer_hold_set_aside_v3"),
   ]);
 
@@ -174,7 +176,7 @@ export default async function ShipperReturnActionsPage({
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Goodcashback Shipper</p>
           <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">Return actions</h1>
           <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
-            Return actions come from operator return/collection instructions on approved refund exceptions. Confirm only the physical action: collected, handed to courier, returned, unable to return, or query.
+            Return actions come from operator return or collection instructions for approved refund exceptions and damaged or wrong replacement items. Confirm only the physical action: collected, handed to courier, returned, unable to return, or query.
           </p>
           <p className="mt-3 text-sm text-slate-600">Welcome: <span className="font-semibold text-slate-900">{shipperUser.full_name}</span> · {shipper?.name ?? "Shipper"}</p>
           {params.success ? <p className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">{params.success}</p> : null}
@@ -201,7 +203,7 @@ export default async function ShipperReturnActionsPage({
                 <select name="source" defaultValue={selectedSource} className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-950">
                   <option value="all">All sources</option>
                   <option value="customer_hold">Customer hold returns</option>
-                  <option value="shipper_issue">Shipper damage/missing returns</option>
+                  <option value="shipper_issue">Physical issue returns</option>
                 </select>
               </label>
               <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Status
@@ -225,6 +227,7 @@ export default async function ShipperReturnActionsPage({
               const lines = Array.isArray(task.affected_lines) ? task.affected_lines : [];
               const canSubmit = task.task_status === "ready_to_action" || task.task_status === "held_query";
               const isCustomerHold = taskIsCustomerHoldReturn(task, holdRows);
+              const isReplacementReturn = taskIsReplacementReturn(task);
               return (
                 <article id={`return-action-${task.return_tracking_submission_id}`} key={task.return_tracking_submission_id} className="scroll-mt-6 rounded-2xl border border-slate-200 bg-slate-50 p-4">
                   <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -232,7 +235,9 @@ export default async function ShipperReturnActionsPage({
                       <div className="flex flex-wrap items-center gap-2">
                         <h3 className="text-lg font-semibold">{task.order_ref ?? task.order_id}</h3>
                         <span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusClass(task.task_status)}`}>{friendly(task.task_status)}</span>
-                        <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-700">{isCustomerHold ? "Customer hold return" : "Shipper issue return"}</span>
+                        <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-700">
+                          {isCustomerHold ? "Customer hold return" : isReplacementReturn ? "Original item return for replacement" : "Physical issue return"}
+                        </span>
                       </div>
                       <p className="mt-1 text-sm text-slate-600">{task.importer_name ?? "Importer"} · {task.retailer_name ?? "Retailer"}</p>
                     </div>
