@@ -4,7 +4,19 @@
 
 begin;
 
-create or replace function public.staff_accept_replacement_outcome_v1(
+do $preflight$
+begin
+  if to_regprocedure('public.create_replacement_child_order_v2(uuid,uuid,uuid,text)') is null then
+    raise exception 'Versioned replacement-child authority v2 is missing.';
+  end if;
+
+  if to_regprocedure('public.staff_accept_replacement_outcome_v1(uuid,uuid,text)') is not null then
+    raise exception 'Atomic replacement acceptance v1 already exists; migration will not replace it.';
+  end if;
+end
+$preflight$;
+
+create function public.staff_accept_replacement_outcome_v1(
   p_dispute_id uuid,
   p_staff_id uuid,
   p_notes text default null::text
@@ -144,7 +156,7 @@ begin
   where id = p_dispute_id;
 
   if v_physical_line_count = 1 then
-    v_child_id := public.create_replacement_child_order(
+    v_child_id := public.create_replacement_child_order_v2(
       v_parent.id,
       v_first_line_id,
       p_staff_id,
@@ -249,7 +261,7 @@ end;
 $function$;
 
 comment on function public.staff_accept_replacement_outcome_v1(uuid,uuid,text) is
-  'Atomic final replacement acceptance. Physical replacements use one exact remedy-linked line; legacy multi-line children retain aggregate source-set provenance without falsely claiming one source line.';
+  'New atomic final replacement acceptance. Physical replacements use the versioned v2 child authority; legacy multi-line children retain aggregate source-set provenance.';
 
 revoke all on function public.staff_accept_replacement_outcome_v1(uuid,uuid,text) from public;
 revoke all on function public.staff_accept_replacement_outcome_v1(uuid,uuid,text) from anon;
