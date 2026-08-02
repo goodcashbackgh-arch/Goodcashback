@@ -14,7 +14,7 @@ BEGIN
   END IF;
 
   IF to_regprocedure('public.operator_submit_physical_receipt_proposal_v2(uuid,jsonb,text)') IS NOT NULL THEN
-    RAISE EXCEPTION 'Importer proposal v2 authority already exists; inspect before replacing.';
+    RAISE EXCEPTION 'Importer proposal v2 authority already exists; migration will not replace it.';
   END IF;
 END
 $preflight$;
@@ -70,12 +70,13 @@ BEGIN
       proposed_remedy_qty numeric
     )
     WHERE proposal_row.receipt_line_disposition_id IS NULL
+       OR proposal_row.proposed_remedy_type IS NULL
        OR proposal_row.proposed_remedy_type NOT IN ('refund','replacement','hold_investigate','no_action')
        OR proposal_row.proposed_remedy_qty IS NULL
        OR proposal_row.proposed_remedy_qty <= 0
        OR proposal_row.proposed_remedy_qty <> TRUNC(proposal_row.proposed_remedy_qty)
   ) THEN
-    RAISE EXCEPTION 'Every physical remedy proposal quantity must be a positive whole unit.';
+    RAISE EXCEPTION 'Every importer proposal row requires a valid remedy type and a positive whole-unit quantity.';
   END IF;
 
   SELECT public.operator_submit_physical_receipt_proposal_v1(
