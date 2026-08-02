@@ -8,6 +8,7 @@ function read(path) {
 const addendum = read("docs/governing-pack/architecture/HYBRID_PHYSICAL_RECEIPT_IMPLEMENTATION_ALIGNMENT_ADDENDUM_v1_2.md");
 const shipperActions = read("app/shipper/actions.ts");
 const shipperPage = read("app/shipper/return-actions/page.tsx");
+const replacementOperatorAction = read("app/importer/exceptions/[dispute_id]/replacement-return-actions.ts");
 const replacementReturnMigration = read("supabase/migrations/20260802211500_hybrid_physical_receipt_replacement_return_adapters_v1.sql");
 const exactRepairMigration = read("supabase/migrations/20260802212500_hybrid_physical_receipt_exact_gbp60_repair_v1.sql");
 
@@ -23,6 +24,11 @@ assert.match(shipperPage, /rpc\("shipper_return_tasks_v2"/);
 assert.doesNotMatch(shipperPage, /rpc\("shipper_return_tasks_v1"/);
 assert.match(shipperPage, /Original item return for replacement/);
 assert.match(shipperPage, /refund exceptions and original-item returns for approved physical replacements/i);
+
+assert.match(replacementOperatorAction, /operator_submit_replacement_return_collection_tracking_v1/);
+assert.match(replacementOperatorAction, /Add retailer instructions, a return label, a tracking reference, a tracking URL, or a meaningful note/);
+assert.match(replacementOperatorAction, /Final return\/collection requires courier, tracking reference and tracking date/);
+assert.doesNotMatch(replacementOperatorAction, /operator_submit_return_collection_tracking\b/);
 
 assert.match(replacementReturnMigration, /CREATE FUNCTION public\.operator_submit_replacement_return_collection_tracking_v1/);
 assert.match(replacementReturnMigration, /CREATE FUNCTION public\.shipper_return_tasks_v2/);
