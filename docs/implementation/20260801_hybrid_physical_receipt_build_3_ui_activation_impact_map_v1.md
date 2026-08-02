@@ -5,8 +5,9 @@ Status: implementation boundary and audit record for Build 3
 Governing authorities:
 
 1. `docs/governing-pack/architecture/HYBRID_PHYSICAL_RECEIPT_QUANTITY_FULFILMENT_AND_REMEDY_CONTROL_ADDENDUM_v1.md`
-2. `docs/governing-pack/architecture/HYBRID_PHYSICAL_RECEIPT_IMPLEMENTATION_ALIGNMENT_ADDENDUM_v1_1.md`
-3. `docs/implementation/20260801_hybrid_physical_receipt_build_2_impact_map_v1.md`
+2. `docs/governing-pack/architecture/HYBRID_PHYSICAL_RECEIPT_QUANTITY_FULFILMENT_AND_REMEDY_CONTROL_ADDENDUM_v1_1.md`
+3. `docs/governing-pack/architecture/HYBRID_PHYSICAL_RECEIPT_IMPLEMENTATION_ALIGNMENT_ADDENDUM_v1_1.md`
+4. `docs/implementation/20260801_hybrid_physical_receipt_build_2_impact_map_v1.md`
 
 Verified repository and production baseline:
 
@@ -19,6 +20,21 @@ Production verification result:
 Branch:
 
 `agent/hybrid-receipt-build-3-ui-v1`
+
+## Amendment notice — 2 August 2026
+
+The later governing amendment `HYBRID_PHYSICAL_RECEIPT_QUANTITY_FULFILMENT_AND_REMEDY_CONTROL_ADDENDUM_v1_1.md` supersedes any wording below that implies independently editable fractional physical quantities or combined action/history queues.
+
+The controlling UI contract is:
+
+- shipper affected quantity is a whole-unit integer and clean quantity is derived;
+- every importer physical-remedy proposal quantity is a positive whole unit;
+- every supervisor physical-remedy approval quantity is a positive whole unit and changed splits are returned to the importer;
+- default importer and supervisor queues contain only reviews currently requiring that role's action;
+- evidence access requires exact review- and role-scoped storage authorization;
+- source, rollback-only database and browser regression are all required before merge.
+
+This amendment notice preserves the historical audit record while making the later governing decision explicit for future builders.
 
 ## 1. Purpose
 
@@ -66,6 +82,8 @@ The existing shipper action uploads into the `invoice-evidence` bucket and uses 
 
 Build 3 must reuse that bucket and prefix contract. The v2 RPC remains authoritative for validating evidence object paths. The UI must not treat a public URL as proof of storage provenance when the RPC requires the storage object path.
 
+Importer and supervisor evidence viewing must independently authorize the exact evidence object through the physical review and current role before generating a signed URL. Global bucket broadening and service-role browser access are prohibited.
+
 ## 3. Build 3 scope
 
 ### 3.1 Shipper receipt entry
@@ -74,7 +92,8 @@ Add a v2 receipt form that:
 
 - identifies the exact tracking submission and package;
 - loads the effective supplier invoice lines and remaining receivable quantities;
-- captures exact `numeric(12,3)` clean and affected quantities by line;
+- captures one whole-unit affected quantity from zero through the exact allocated whole-unit quantity by line;
+- derives clean quantity as allocated quantity minus affected quantity and does not expose clean as an independent input;
 - supports governed affected dispositions;
 - requires the line totals to balance before submission;
 - supports multiple evidence files and factual notes;
@@ -88,10 +107,10 @@ The old package-level v1 form must remain available or be explicitly feature-gat
 
 Add an importer physical-review page or panel that:
 
-- lists reviews visible through the importer's existing operator/importer access;
-- shows finalised receipt facts and evidence read-only;
+- defaults to reviews currently requiring importer input through the importer's existing operator/importer access;
+- shows finalised receipt facts and authorized evidence read-only;
 - shows exact affected quantity by disposition and supplier invoice line;
-- accepts one or more proposed remedy rows using the deployed remedy types;
+- accepts one or more positive whole-unit proposed remedy rows using the deployed remedy types;
 - preserves exact quantities and validates proposal totals before submission;
 - captures a factual importer proposal note;
 - calls only `operator_submit_physical_receipt_proposal_v1`;
@@ -102,11 +121,12 @@ Add an importer physical-review page or panel that:
 
 Add an internal staff physical-review page or panel that:
 
-- lists reviews awaiting supervisor review;
-- shows immutable receipt, evidence and importer proposal facts;
+- defaults to reviews awaiting supervisor review;
+- shows immutable receipt, authorized evidence and importer proposal facts;
 - requires an explicit decision for every active proposal row;
 - supports return for information, approve existing exception route, hold/investigate and no-action decisions defined by the deployed RPC;
-- warns that fractional refund or replacement quantities fail closed and must not be rounded;
+- prevents decision-incompatible remedy types and liable-party values in the UI and validates them again server-side;
+- rejects every fractional physical-remedy quantity without rounding;
 - warns that a changed split requires return to the importer rather than creation of an unproposed split row;
 - displays every linked dispute for mixed refund/replacement decisions;
 - treats `physical_receipt_reviews.linked_dispute_id` as compatibility-only and reads the many-link table for the complete set;
@@ -125,9 +145,10 @@ Any such read authority must:
 - avoid service-role browser access;
 - avoid direct ordinary-user writes to foundation tables;
 - preserve existing importer and staff access rules;
+- return only role-actionable rows for a default queue request while allowing an authorized exact-detail request by review ID;
 - be added in a separately audited migration with rollback-only regression coverage.
 
-The implementation must not bypass missing reads by using an elevated client in a browser or by broadening table policies globally.
+Any evidence access policy or authority must bind the storage object path to the exact authorized physical review. The implementation must not bypass missing reads by using an elevated client in a browser or by broadening table or storage policies globally.
 
 ## 5. Files permitted for the first implementation slice
 
@@ -139,7 +160,7 @@ Expected application files, subject to exact route audit:
 - internal staff action file and one additive physical-review route or component;
 - narrowly scoped shared types/validation helpers;
 - Build 3 source and browser regression files;
-- additive read migration only if the audit proves one is required.
+- additive read and exact evidence-authorization migration only if the audit proves one is required.
 
 Files outside those boundaries require an explicit impact-map amendment before modification.
 
@@ -168,14 +189,16 @@ The UI must fail closed when:
 - effective line quantities cannot be loaded;
 - line totals do not balance exactly within the governed tolerance;
 - evidence upload returns no governed object path;
+- evidence viewing cannot prove current role access to the exact review and object path;
 - a receipt is no longer open for submission or correction;
-- an importer proposal exceeds affected quantity;
+- an importer proposal is fractional, non-positive or exceeds affected quantity;
 - a supervisor payload omits an active proposal row;
-- a refund/replacement quantity is fractional;
+- a supervisor decision contains an incompatible remedy type, supplier-cost mode or liable party;
+- any physical-remedy quantity is fractional;
 - the user lacks the required shipper, importer or staff role;
 - an RPC contract differs from the audited signature.
 
-Client-side validation is usability only. The deployed RPCs remain authoritative.
+Client-side validation is usability only. Server-side application validation and deployed RPCs remain authoritative.
 
 ## 8. Regression requirements
 
@@ -186,25 +209,29 @@ Before merge, Build 3 must prove:
 3. pending receipts cannot be presented as successfully recorded;
 4. repeated submissions surface idempotent success or the governed conflict rather than duplicate facts;
 5. importer UI cannot submit supervisor-only fields;
-6. supervisor UI requires decisions for every active proposal row;
-7. fractional refund/replacement input is rejected without rounding;
-8. mixed refund/replacement linkage displays every linked dispute;
-9. hold/investigate and no-action do not redirect into a fabricated dispute;
-10. existing dispute, refund, replacement, return, shipment, customer-sales and reconciliation files are not replaced;
-11. unauthenticated and wrong-role access fails closed;
-12. no service-role credential or elevated browser client is introduced;
-13. all new database regressions end in `ROLLBACK`;
-14. production activation is separately gated after merge.
+6. importer and supervisor default queues contain only role-actionable reviews and badge counts exclude history;
+7. importer proposals and supervisor decisions reject fractional physical quantities without rounding;
+8. supervisor UI requires decisions for every active proposal row and prevents decision-incompatible combinations;
+9. mixed refund/replacement linkage displays every linked dispute;
+10. hold/investigate and no-action do not redirect into a fabricated dispute;
+11. evidence access succeeds only for an authorized exact review/object path and fails for wrong tenant, wrong role or revoked access;
+12. existing dispute, refund, replacement, return, shipment, customer-sales and reconciliation files are not replaced;
+13. unauthenticated and wrong-role access fails closed;
+14. no service-role credential or elevated browser client is introduced;
+15. all new database regressions end in `ROLLBACK`;
+16. source, database and browser regression all pass before production activation;
+17. production activation is separately gated after merge.
 
 ## 9. First implementation sequence
 
-1. Complete exact route and action audit for shipper, importer and internal staff surfaces.
+1. Complete exact route, action, role and evidence-policy audit for shipper, importer and internal staff surfaces.
 2. Add source regression that freezes the permitted file set and protected calls.
 3. Implement the shipper v2 action and form as the first vertical slice.
 4. Prove receipt submission, evidence provenance, exact balance, idempotency and correction behaviour.
-5. Implement importer proposal UI.
-6. Implement supervisor decision UI and complete multi-dispute display.
-7. Run browser, role and rollback-only database regressions.
-8. Merge only after final file-scope and production activation review.
+5. Implement importer proposal UI and role-actionable queue.
+6. Implement supervisor decision UI, decision-specific validation and complete multi-dispute display.
+7. Add exact role-scoped evidence access without global bucket broadening.
+8. Run browser, role and rollback-only database regressions.
+9. Merge only after final file-scope and production activation review.
 
 Any missing contract, route or access fact stops implementation. Build 3 must not guess.

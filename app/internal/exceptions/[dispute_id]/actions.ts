@@ -319,163 +319,36 @@ export async function acceptReplacementOutcomeAction(formData: FormData) {
 
   const { data: dispute, error: disputeError } = await guard.supabase
     .from("disputes")
-    .select("id, order_id, desired_outcome, replacement_child_order_id, status")
+    .select("id, desired_outcome, replacement_child_order_id")
     .eq("id", disputeId)
     .maybeSingle();
 
   if (disputeError || !dispute) redirectWithResult(disputeId, { error: "Dispute not found." });
-  if (dispute.desired_outcome !== "replacement") redirectWithResult(disputeId, { error: "Replacement outcome is only available for replacement disputes." });
-  if (dispute.replacement_child_order_id) redirectWithResult(disputeId, { error: "Replacement child order already exists." });
+  if (dispute.desired_outcome !== "replacement") {
+    redirectWithResult(disputeId, { error: "Replacement outcome is only available for replacement disputes." });
+  }
+  if (dispute.replacement_child_order_id) {
+    redirectWithResult(disputeId, { error: "Replacement child order already exists." });
+  }
 
   const finalOutcomeGuard = await requireRetailerMessageAndAcceptedOutcome(guard.supabase, disputeId);
   if (!finalOutcomeGuard.ok) redirectWithResult(disputeId, { error: finalOutcomeGuard.error });
 
-  const { data: parentOrder, error: parentOrderError } = await guard.supabase
-    .from("orders")
-    .select("id, order_ref, importer_id, operator_id, shipper_id, retailer_id, destination_hub_id, sop_version")
-    .eq("id", dispute.order_id)
-    .maybeSingle();
+  const { data: childOrderId, error: childOrderError } = await guard.supabase.rpc("staff_accept_replacement_outcome_v1", {
+    p_dispute_id: disputeId,
+    p_staff_id: guard.staffId,
+    p_notes: "Final replacement outcome accepted by supervisor",
+  });
 
-  if (parentOrderError || !parentOrder) redirectWithResult(disputeId, { error: "Parent order not found." });
-
-  const { data: replacementLinesRaw, error: replacementLinesError } = await guard.supabase
-    .from("dispute_lines")
-    .select("id, qty_impact, amount_impact_gbp, supplier_invoice_lines(id, line_source, description)")
-    .eq("dispute_id", disputeId)
-    .is("resolved_at", null);
-
-  if (replacementLinesError) redirectWithResult(disputeId, { error: replacementLinesError.message });
-
-  const replacementLines = (replacementLinesRaw ?? []) as Array<{
-    id: string;
-    qty_impact: number | string | null;
-    amount_impact_gbp: number | string | null;
-    supplier_invoice_lines:
-      | { id?: string | null; line_source?: string | null; description?: string | null }
-      | { id?: string | null; line_source?: string | null; description?: string | null }[]
-      | null;
-  }>;
-
-  if (replacementLines.length < 1) {
-    redirectWithResult(disputeId, { error: "No active replacement dispute lines found." });
+  if (childOrderError || !childOrderId) {
+    redirectWithResult(disputeId, {
+      error: childOrderError?.message ?? "Failed to accept replacement outcome atomically.",
+    });
   }
-
-  const sourceLineFor = (line: (typeof replacementLines)[number]) => {
-    const source = line.supplier_invoice_lines;
-    return Array.isArray(source) ? source[0] ?? null : source;
-  };
-
-  const nonManualLine = replacementLines.find((line) => sourceLineFor(line)?.line_source !== "manually_added");
-  if (nonManualLine) {
-    redirectWithResult(disputeId, { error: "Replacement child creation requires manual missing-item lines. Use the refund path for OCR/supplier-issued lines." });
-  }
-
-  const replacementQty = replacementLines.reduce((sum, line) => {
-    const value = Number(line.qty_impact ?? 0);
-    return sum + (Number.isFinite(value) ? Math.abs(value) : 0);
-  }, 0);
-
-  const replacementValue = Math.round(replacementLines.reduce((sum, line) => {
-    const value = Number(line.amount_impact_gbp ?? 0);
-    return sum + (Number.isFinite(value) ? Math.abs(value) : 0);
-  }, 0) * 100) / 100;
-
-  if (!Number.isFinite(replacementQty) || replacementQty <= 0) {
-    redirectWithResult(disputeId, { error: "Replacement child creation requires a positive manual missing-item quantity." });
-  }
-
-  if (!Number.isFinite(replacementValue) || replacementValue <= 0) {
-    redirectWithResult(disputeId, { error: "Replacement child creation requires a positive manual missing-item value." });
-  }
-
-  const { count: childCount, error: childCountError } = await guard.supabase
-    .from("orders")
-    .select("id", { count: "exact", head: true })
-    .eq("parent_order_id", parentOrder.id);
-
-  if (childCountError) redirectWithResult(disputeId, { error: childCountError.message });
-
-  let sequence = Number(childCount ?? 0) + 1;
-  let childOrderRef = `${parentOrder.order_ref}-R${sequence}`;
-
-  while (true) {
-    const { data: existingRef, error: existingRefError } = await guard.supabase
-      .from("orders")
-      .select("id")
-      .eq("order_ref", childOrderRef)
-      .limit(1)
-      .maybeSingle();
-
-    if (existingRefError) redirectWithResult(disputeId, { error: existingRefError.message });
-    if (!existingRef) break;
-
-    sequence += 1;
-    childOrderRef = `${parentOrder.order_ref}-R${sequence}`;
-  }
-
-  const { data: childOrder, error: childInsertError } = await guard.supabase
-    .from("orders")
-    .insert({
-      order_ref: childOrderRef,
-      importer_id: parentOrder.importer_id,
-      operator_id: parentOrder.operator_id,
-      shipper_id: parentOrder.shipper_id,
-      retailer_id: parentOrder.retailer_id,
-      destination_hub_id: parentOrder.destination_hub_id,
-      parent_order_id: parentOrder.id,
-      order_type: "replacement_child",
-      order_total_gbp_declared: replacementValue,
-      total_qty_declared: replacementQty,
-      status: "evidence_collecting",
-      sop_version: parentOrder.sop_version,
-    })
-    .select("id")
-    .single();
-
-  if (childInsertError || !childOrder) redirectWithResult(disputeId, { error: childInsertError?.message ?? "Failed to create replacement child order." });
-
-  let currentStatus = dispute.status;
-  if (currentStatus === "raised") {
-    const underReviewTransition = await transitionDisputeStatus(guard.supabase, disputeId, "raised", "under_review");
-    if (!underReviewTransition.ok) redirectWithResult(disputeId, { error: underReviewTransition.error });
-    currentStatus = "under_review";
-  }
-
-  if (currentStatus !== "under_review") {
-    redirectWithResult(disputeId, { error: `Replacement final acceptance requires dispute status raised or under_review. Current status: ${currentStatus}.` });
-  }
-
-  const approvedReplacementTransition = await transitionDisputeStatus(guard.supabase, disputeId, "under_review", "approved_replacement");
-  if (!approvedReplacementTransition.ok) redirectWithResult(disputeId, { error: approvedReplacementTransition.error });
-
-  const { error: childLinkError } = await guard.supabase
-    .from("disputes")
-    .update({ replacement_child_order_id: childOrder.id })
-    .eq("id", disputeId);
-
-  if (childLinkError) redirectWithResult(disputeId, { error: childLinkError.message });
-
-  const replacedTransition = await transitionDisputeStatus(guard.supabase, disputeId, "approved_replacement", "replaced");
-  if (!replacedTransition.ok) redirectWithResult(disputeId, { error: replacedTransition.error });
-
-  const now = new Date().toISOString();
-
-  const { error: resolveLinesError } = await guard.supabase
-    .from("dispute_lines")
-    .update({
-      resolved_via_child_order_id: childOrder.id,
-      conversation_status: "resolved_replacement",
-      resolution_method: "replacement",
-      resolved_at: now,
-    })
-    .eq("dispute_id", disputeId)
-    .is("resolved_at", null);
-
-  if (resolveLinesError) redirectWithResult(disputeId, { error: resolveLinesError.message });
 
   revalidatePath(`/internal/exceptions/${disputeId}`);
   revalidatePath(`/importer/exceptions/${disputeId}`);
-  revalidatePath(`/importer/orders/${childOrder.id}/operations`);
+  revalidatePath(`/importer/orders/${childOrderId}/operations`);
   revalidatePath("/importer");
-  redirectWithResult(disputeId, { success: `Replacement outcome accepted and child order created with qty ${replacementQty} / value £${replacementValue.toFixed(2)}.` });
+  redirectWithResult(disputeId, { success: "Replacement outcome accepted and provenance-linked child order created." });
 }
