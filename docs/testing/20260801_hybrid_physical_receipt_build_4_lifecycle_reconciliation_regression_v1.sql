@@ -88,11 +88,17 @@ begin
 end
 $known_anomaly$;
 
--- 3. Protected authorities remain unchanged.
+-- 3. Existing functions remain byte-for-byte unchanged.
 do $protected$
 declare
   v_md5 text;
 begin
+  select md5(pg_get_functiondef('public.create_replacement_child_order(uuid,uuid,uuid,text)'::regprocedure)) into v_md5;
+  if v_md5 <> 'fdf1c2e955a34b81fbfc75c6a34a21b4' then raise exception 'FAIL: existing create_replacement_child_order drift %', v_md5; end if;
+
+  select md5(pg_get_functiondef('public.order_has_open_child_exceptions(uuid)'::regprocedure)) into v_md5;
+  if v_md5 <> '8dbf93826e18a04b61d8fbc1d5b1922c' then raise exception 'FAIL: existing order_has_open_child_exceptions drift %', v_md5; end if;
+
   select md5(pg_get_functiondef('public.approve_vat_release(uuid,uuid,jsonb)'::regprocedure)) into v_md5;
   if v_md5 <> '13491a2d250a480ebb1ac607ce7acce5' then raise exception 'FAIL: approve_vat_release drift %', v_md5; end if;
 
@@ -119,15 +125,25 @@ begin
 end
 $protected$;
 
--- 4. Current callers retain their grants and the atomic authority is staff-only.
+-- 4. Versioned authorities exist with narrow grants; atomic acceptance remains staff-only.
 do $grants$
 begin
-  if not has_function_privilege('authenticated', 'public.create_replacement_child_order(uuid,uuid,uuid,text)', 'EXECUTE') then
-    raise exception 'FAIL: authenticated lost create_replacement_child_order execute';
+  if to_regprocedure('public.create_replacement_child_order_v2(uuid,uuid,uuid,text)') is null
+     or to_regprocedure('public.order_has_open_child_exceptions_v2(uuid)') is null then
+    raise exception 'FAIL: one or more versioned Build 4 authorities are missing';
   end if;
 
-  if not has_function_privilege('service_role', 'public.create_replacement_child_order(uuid,uuid,uuid,text)', 'EXECUTE') then
-    raise exception 'FAIL: service_role lost create_replacement_child_order execute';
+  if not has_function_privilege('authenticated', 'public.create_replacement_child_order_v2(uuid,uuid,uuid,text)', 'EXECUTE') then
+    raise exception 'FAIL: authenticated cannot execute create_replacement_child_order_v2';
+  end if;
+
+  if not has_function_privilege('service_role', 'public.create_replacement_child_order_v2(uuid,uuid,uuid,text)', 'EXECUTE') then
+    raise exception 'FAIL: service_role cannot execute create_replacement_child_order_v2';
+  end if;
+
+  if has_function_privilege('anon', 'public.create_replacement_child_order_v2(uuid,uuid,uuid,text)', 'EXECUTE')
+     or has_function_privilege('anon', 'public.order_has_open_child_exceptions_v2(uuid)', 'EXECUTE') then
+    raise exception 'FAIL: anon can execute a versioned Build 4 authority';
   end if;
 
   if not has_function_privilege('authenticated', 'public.staff_accept_replacement_outcome_v1(uuid,uuid,text)', 'EXECUTE') then
@@ -140,7 +156,7 @@ begin
 end
 $grants$;
 
--- 5. Parent blocker must include unfinished and already-cancelled replacement children.
+-- 5. Versioned parent blocker must include unfinished and already-cancelled replacement children.
 do $parent_blocker$
 declare
   v_parent public.orders%rowtype;
@@ -182,7 +198,7 @@ begin
     10, 1, 'evidence_collecting', v_parent.sop_version, now(), now()
   );
 
-  if not public.order_has_open_child_exceptions(v_parent_id) then
+  if not public.order_has_open_child_exceptions_v2(v_parent_id) then
     raise exception 'FAIL: unfinished replacement child did not block parent';
   end if;
 
@@ -200,7 +216,7 @@ begin
     10, 1, 'cancelled', v_parent.sop_version, now(), now()
   );
 
-  if not public.order_has_open_child_exceptions(v_parent_id) then
+  if not public.order_has_open_child_exceptions_v2(v_parent_id) then
     raise exception 'FAIL: cancelled replacement child without reroute did not block parent';
   end if;
 end
@@ -208,7 +224,7 @@ $parent_blocker$;
 
 select jsonb_build_object(
   'regression_result', 'PASS',
-  'proof', 'public reconciliation contract preserved; DAY3 pending-review qty 3 / GBP 155 excluded from canonical qty 1 / GBP 100 order and exposed as anomalies; protected authorities and grants unchanged; atomic replacement authority installed; unfinished and unrouted-cancelled replacement children block the parent'
+  'proof', 'public reconciliation contract preserved; DAY3 non-authoritative evidence excluded and exposed; existing functions unchanged; versioned Build 4 authorities installed; atomic replacement authority installed; versioned blocker catches unfinished and unrouted-cancelled children'
 ) as regression_result;
 
 rollback;
