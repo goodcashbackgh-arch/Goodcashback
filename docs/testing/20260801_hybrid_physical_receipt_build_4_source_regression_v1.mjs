@@ -15,11 +15,16 @@ const replacementActionMatch = action.match(
 );
 const replacementAction = replacementActionMatch?.[0] ?? "";
 
+const noFunctionReplacement = !/create\s+or\s+replace\s+function/i.test(`${lifecycle}\n${atomic}`);
+
 const checks = [
   [addendum.includes("Single supplier-invoice authority rule"), "addendum freezes one invoice-authority rule"],
   [addendum.includes("Build 4 must finish with exactly two migrations"), "addendum freezes two-migration structure"],
-  [lifecycle.includes("Build 4 drift stop: create_replacement_child_order changed"), "lifecycle migration drift-stops replacement authority"],
-  [lifecycle.includes("Build 4 drift stop: order_has_open_child_exceptions changed"), "lifecycle migration drift-stops parent blocker"],
+  [noFunctionReplacement, "Build 4 migrations never replace an existing function"],
+  [lifecycle.includes("Build 4 drift stop: create_replacement_child_order changed"), "lifecycle migration verifies the existing replacement authority without changing it"],
+  [lifecycle.includes("Build 4 drift stop: order_has_open_child_exceptions changed"), "lifecycle migration verifies the existing parent blocker without changing it"],
+  [lifecycle.includes("create function public.create_replacement_child_order_v2"), "lifecycle migration adds a versioned replacement-child authority"],
+  [lifecycle.includes("create function public.order_has_open_child_exceptions_v2"), "lifecycle migration adds a versioned parent blocker"],
   [lifecycle.includes("Build 4 drift stop: order_reconciliation_vw changed"), "lifecycle migration drift-stops reconciliation authority"],
   [lifecycle.includes("si.is_current_for_order = true"), "canonical reconciliation requires explicit current invoice identity"],
   [lifecycle.includes("si.is_current_for_order is distinct from true"), "anomaly classification uses the null-safe inverse of current identity"],
@@ -27,7 +32,9 @@ const checks = [
   [lifecycle.includes("NON_AUTHORITATIVE_INVOICEABLE_EVIDENCE"), "non-authoritative eligible evidence is exposed"],
   [lifecycle.includes("replacement_source_dispute_line_id"), "physical child retains exact source dispute line"],
   [lifecycle.includes("replacement_child_order_id = v_child_id"), "physical remedy links to the child"],
-  [atomic.includes("create or replace function public.staff_accept_replacement_outcome_v1"), "atomic acceptance authority is installed"],
+  [atomic.includes("create function public.staff_accept_replacement_outcome_v1"), "atomic acceptance is created only as a new authority"],
+  [atomic.includes("already exists; migration will not replace it"), "atomic migration fails closed if the function already exists"],
+  [atomic.includes("public.create_replacement_child_order_v2"), "atomic physical path uses the versioned child authority"],
   [atomic.includes("A physical replacement requires exactly one approved remedy-linked dispute line"), "physical replacement requires one exact source line"],
   [atomic.includes("Physical and legacy replacement lines cannot be mixed"), "physical and legacy lines cannot be mixed"],
   [atomic.includes("legacy_source_dispute_line_ids"), "legacy source-line set is retained"],
@@ -42,7 +49,7 @@ const checks = [
 
 const failed = checks.filter(([passed]) => !passed);
 if (failed.length) {
-  for (const [, label] of failed) console.error(`FAIL: ${label}`);
+  for (const [, label]) of failed) console.error(`FAIL: ${label}`);
   process.exit(1);
 }
 
