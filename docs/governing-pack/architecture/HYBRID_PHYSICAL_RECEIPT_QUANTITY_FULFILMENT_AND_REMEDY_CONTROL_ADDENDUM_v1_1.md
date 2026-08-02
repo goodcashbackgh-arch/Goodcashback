@@ -107,7 +107,7 @@ The implementation is incomplete unless the branch contains all of the following
 4. supervisor application call to supervisor v2 only;
 5. source regression that rejects tolerance-based whole-unit checks and direct application use of either v1 authority;
 6. rollback-only behavioral SQL regression covering gateway privileges, exact quantity rejection, role/tenant reads and real storage RLS;
-7. an executable authenticated browser acceptance harness or a repository-native executable browser specification with explicit required environment variables and fail-closed setup;
+7. repository-owned authenticated browser acceptance with a pinned Playwright dependency, package script, disposable run-scoped fixture provisioning and fail-closed cleanup;
 8. PR migration order and acceptance gates aligned with this addendum.
 
 A source-text test does not replace behavioral database or browser proof.
@@ -148,7 +148,42 @@ The executable browser acceptance must use real authenticated role sessions and 
 10. ordinary staff direct supervisor-route denial;
 11. fractional browser input cannot submit successfully.
 
-Credentials, cookies and storage-state files must not be committed. The harness must fail with a clear message when required test accounts or fixture IDs are absent.
+Credentials, cookies and storage-state files must not be committed.
+
+### 8.1 Repository-owned and repeatable browser execution
+
+Browser acceptance is not complete merely because a JavaScript file exists. The repository must own the executable dependency, command, fixture lifecycle and cleanup contract.
+
+Implementation must:
+
+1. pin `@playwright/test` to `1.54.2` in development dependencies and commit the matching lockfile change;
+2. expose `npm run test:physical-receipt-browser`, backed by `docs/testing/20260802_hybrid_physical_receipt_browser_runner_v1.mjs`;
+3. import Chromium directly from `@playwright/test`; dynamic optional imports and unspecified external browser environments are not acceptable;
+4. generate an unpredictable `crypto.randomUUID()` run identity for every execution;
+5. provision one disposable fixture for that run through a direct administrative acceptance-database process, never through a browser service-role client or an application reset endpoint;
+6. create a new marked order, tracking submission, allocation, exact receipt, review and real evidence object for the run; the fixture must start with one affected disposition of quantity two, zero remedy rows, status `awaiting_importer_proposal`, zero linked disputes and one evidence object;
+7. return a machine-readable fixture manifest to the runner and pass the generated review identity to the browser lifecycle rather than accepting a long-lived review ID;
+8. require both `PHYSICAL_RECEIPT_ACCEPTANCE_ALLOW_FIXTURES=true` and `PHYSICAL_RECEIPT_ACCEPTANCE_DB_URL`, and independently verify inside SQL that `app.environment = 'acceptance'` plus the expected database identifier;
+9. resolve and validate the external authenticated importer A, importer B, supervisor and ordinary-staff identities before lifecycle mutation;
+10. retain authentication storage states outside the repository and never commit cookies or credentials;
+11. clean up in a `finally` path on success, assertion failure or browser failure;
+12. prove fixture ownership using the exact run marker before deleting anything;
+13. identify generated disputes only through exact physical-review dispute links, never through broad order matching;
+14. delete the exact run-owned dependency graph and then assert that no marked order, tracking submission, receipt, review, remedy allocation, dispute link, dispute line, dispute or storage object remains;
+15. support a second immediate execution by creating a new run identity and independent fixture.
+
+The required repository artefacts are:
+
+- `docs/testing/20260802_hybrid_physical_receipt_browser_runner_v1.mjs`;
+- `docs/testing/20260802_hybrid_physical_receipt_browser_fixture_seed_v1.sql`;
+- `docs/testing/20260802_hybrid_physical_receipt_browser_fixture_cleanup_v1.sql`;
+- the lifecycle implementation in `docs/testing/20260802_hybrid_physical_receipt_browser_acceptance_v1.mjs`.
+
+The runner must execute in this order:
+
+`environment guard → unique fixture seed → authenticated role preflight → browser lifecycle → linked-dispute verification → exact cleanup → zero-remnant verification`.
+
+No production authority, trigger, constraint, transition guard or storage policy may be disabled or weakened to create or clean up the fixture.
 
 ## 9. Acceptance order
 
@@ -158,7 +193,7 @@ Acceptance must run in this order:
 2. run source regressions;
 3. run the rollback-only operational authority behavioral regression;
 4. run existing Build 4 database regressions;
-5. run authenticated browser acceptance;
+5. run `npm ci`, `npx playwright install chromium` and `npm run test:physical-receipt-browser` with the required acceptance-only environment variables and external storage states;
 6. verify protected authority fingerprints and grants;
 7. perform a final diff review.
 
@@ -166,4 +201,4 @@ No readiness or merge claim is permitted unless every stage passes.
 
 ## 10. Documentation precedence correction
 
-Any earlier wording that permits tolerance-based physical whole-unit validation, direct authenticated use of either v1 write authority, silent supervisor remedy conversion, independently editable clean quantity or combined action/history queues is superseded by this amendment. Exact numeric database provenance is preserved; physical-entry and physical-remedy quantities are exact whole units, clean quantity is derived, v2 gateways are the authenticated write boundaries, and default queues are action-only.
+Any earlier wording that permits tolerance-based physical whole-unit validation, direct authenticated use of either v1 write authority, silent supervisor remedy conversion, independently editable clean quantity, combined action/history queues, a one-shot reused browser fixture or a browser service-role reset path is superseded by this amendment. Exact numeric database provenance is preserved; physical-entry and physical-remedy quantities are exact whole units, clean quantity is derived, v2 gateways are the authenticated write boundaries, default queues are action-only, and browser acceptance uses disposable acceptance-only fixtures.
