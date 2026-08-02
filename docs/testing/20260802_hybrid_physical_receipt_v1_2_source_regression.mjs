@@ -9,6 +9,8 @@ const addendum = read("docs/governing-pack/architecture/HYBRID_PHYSICAL_RECEIPT_
 const shipperActions = read("app/shipper/actions.ts");
 const shipperPage = read("app/shipper/return-actions/page.tsx");
 const replacementOperatorAction = read("app/importer/exceptions/[dispute_id]/replacement-return-actions.ts");
+const replacementOperatorForm = read("app/importer/exceptions/[dispute_id]/ReplacementOriginalItemReturnForm.tsx");
+const replacementSupervisorPanel = read("app/internal/exceptions/[dispute_id]/ReplacementReturnEvidenceReviewPanel.tsx");
 const replacementReturnMigration = read("supabase/migrations/20260802211500_hybrid_physical_receipt_replacement_return_adapters_v1.sql");
 const exactRepairMigration = read("supabase/migrations/20260802212500_hybrid_physical_receipt_exact_gbp60_repair_v1.sql");
 
@@ -29,6 +31,16 @@ assert.match(replacementOperatorAction, /operator_submit_replacement_return_coll
 assert.match(replacementOperatorAction, /Add retailer instructions, a return label, a tracking reference, a tracking URL, or a meaningful note/);
 assert.match(replacementOperatorAction, /Final return\/collection requires courier, tracking reference and tracking date/);
 assert.doesNotMatch(replacementOperatorAction, /operator_submit_return_collection_tracking\b/);
+
+assert.match(replacementOperatorForm, /Original damaged item return \/ collection/);
+assert.match(replacementOperatorForm, /Missing items cannot use this action/);
+assert.match(replacementOperatorForm, /Save the shipper-facing instructions before the replacement child is created/);
+assert.match(replacementOperatorForm, /uploadReplacementReturnCollectionAction/);
+
+assert.match(replacementSupervisorPanel, /Operational return evidence review/);
+assert.match(replacementSupervisorPanel, /does not approve supplier refund value, customer settlement, accounting, or replacement-child funding/);
+assert.match(replacementSupervisorPanel, /reviewReturnCollectionEvidenceAction/);
+assert.match(replacementSupervisorPanel, /return_tracking_submission_id/);
 
 assert.match(replacementReturnMigration, /CREATE FUNCTION public\.operator_submit_replacement_return_collection_tracking_v1/);
 assert.match(replacementReturnMigration, /CREATE FUNCTION public\.shipper_return_tasks_v2/);
