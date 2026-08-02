@@ -9,7 +9,7 @@ declare
   v_md5 text;
 begin
   select md5(pg_get_functiondef('public.create_replacement_child_order(uuid,uuid,uuid,text)'::regprocedure)) into v_md5;
-  if v_md5 is distinct from 'fdf1c2e955a34b81fbfc75c6a34a21b4' then
+  if v_md5 is distinct from '6f2052ac4349ea601aa4a0f5cbad19ea' then
     raise exception 'Build 4 drift stop: create_replacement_child_order changed (%).', v_md5;
   end if;
 
