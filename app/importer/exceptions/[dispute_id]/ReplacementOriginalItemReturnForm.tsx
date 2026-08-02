@@ -47,7 +47,16 @@ export default function ReplacementOriginalItemReturnForm({
 
         <label className="text-sm font-semibold text-slate-800">
           Tracking or evidence URL
-          <input name="tracking_evidence_url" type="url" className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm font-normal" placeholder="https://…" />
+          <input
+            name="tracking_evidence_url"
+            type="text"
+            inputMode="url"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm font-normal"
+            placeholder="www.example.com"
+          />
         </label>
 
         <label className="text-sm font-semibold text-slate-800 md:col-span-2">
