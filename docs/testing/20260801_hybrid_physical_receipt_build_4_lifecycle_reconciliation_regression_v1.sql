@@ -12,7 +12,7 @@ begin
     into v_columns
   from information_schema.columns
   where table_schema = 'public'
-    and table_name = 'order_reconciliation_vw';
+    and table_name = 'order_reconciliation_v2_vw';
 
   if v_columns is distinct from array[
     'order_id',
@@ -32,6 +32,27 @@ begin
   end if;
 end
 $contract$;
+
+-- Legacy authority is restored independently and the anomaly authority reads v2.
+do $authority_views$
+declare v_md5 text;
+begin
+  select md5(definition) into v_md5 from pg_views
+  where schemaname = 'public' and viewname = 'order_reconciliation_vw';
+  if v_md5 is distinct from '89cc95922a2b8ec1fa040ba79f12907a' then
+    raise exception 'FAIL: legacy reconciliation drift %', v_md5;
+  end if;
+  if exists (
+    select 1 from pg_depend d join pg_rewrite r on d.classid = 'pg_rewrite'::regclass and r.oid = d.objid
+    where r.ev_class = 'public.order_reconciliation_anomalies_v1'::regclass
+      and d.refobjid = 'public.order_reconciliation_vw'::regclass
+  ) or not exists (
+    select 1 from pg_depend d join pg_rewrite r on d.classid = 'pg_rewrite'::regclass and r.oid = d.objid
+    where r.ev_class = 'public.order_reconciliation_anomalies_v1'::regclass
+      and d.refobjid = 'public.order_reconciliation_v2_vw'::regclass
+  ) then raise exception 'FAIL: anomaly authority is not based exclusively on v2'; end if;
+end
+$authority_views$;
 
 -- 2. Known non-authoritative evidence must not progress canonical reconciliation.
 do $known_anomaly$
@@ -66,7 +87,7 @@ begin
     v_unresolved_qty,
     v_unresolved_amount,
     v_whole_clear
-  from public.order_reconciliation_vw
+  from public.order_reconciliation_v2_vw
   where order_id = v_order_id;
 
   if v_qty <> 0 or v_amount <> 0 or v_unresolved_qty <> 1 or v_unresolved_amount <> 100 or v_whole_clear then
@@ -108,8 +129,28 @@ begin
   select md5(pg_get_functiondef('public.recompute_order_status(uuid)'::regprocedure)) into v_md5;
   if v_md5 <> '110d55541d4f729ff9331e23515fb563' then raise exception 'FAIL: recompute_order_status drift %', v_md5; end if;
 
-  select md5(pg_get_functiondef('public.physical_remedy_allocation_guard_v1()'::regprocedure)) into v_md5;
-  if v_md5 <> '32e1d3eb9161cdc3e09114edb8c0d3c0' then raise exception 'FAIL: physical_remedy_allocation_guard_v1 drift %', v_md5; end if;
+  if to_regprocedure('public.physical_remedy_allocation_guard_v1()') is null
+     or to_regprocedure('public.physical_remedy_allocation_guard_v2()') is null then
+    raise exception 'FAIL: physical remedy guard v1 or v2 is missing';
+  end if;
+  select md5(concat_ws('|', p.prosrc, l.lanname, p.provolatile, p.prosecdef::text,
+    p.proisstrict::text, p.proparallel, p.proleakproof::text,
+    p.prorettype::regtype::text, p.proargtypes::text,
+    coalesce(array_to_string(p.proconfig, ','), ''))) into v_md5
+  from pg_proc p join pg_language l on l.oid = p.prolang
+  where p.oid = 'public.physical_remedy_allocation_guard_v1()'::regprocedure;
+  if v_md5 <> '404fff52528bbd7d963df8809e6f23a9' then raise exception 'FAIL: foundation guard v1 drift %', v_md5; end if;
+  select md5(concat_ws('|', p.prosrc, l.lanname, p.provolatile, p.prosecdef::text,
+    p.proisstrict::text, p.proparallel, p.proleakproof::text,
+    p.prorettype::regtype::text, p.proargtypes::text,
+    coalesce(array_to_string(p.proconfig, ','), ''))) into v_md5
+  from pg_proc p join pg_language l on l.oid = p.prolang
+  where p.oid = 'public.physical_remedy_allocation_guard_v2()'::regprocedure;
+  if v_md5 <> '821eacb226a9d52b2048228f97b480d4' then raise exception 'FAIL: Build 2 guard v2 drift %', v_md5; end if;
+  if not exists (select 1 from pg_trigger where tgname = 'trg_physical_remedy_allocation_guard_v1'
+      and tgfoid = 'public.physical_remedy_allocation_guard_v2()'::regprocedure and not tgisinternal) then
+    raise exception 'FAIL: physical remedy trigger is not attached to v2';
+  end if;
 
   select md5(pg_get_functiondef('public.physical_remedy_sequence_guard_v1()'::regprocedure)) into v_md5;
   if v_md5 <> '3c5067f31d4f2112207e02d1f307e233' then raise exception 'FAIL: physical_remedy_sequence_guard_v1 drift %', v_md5; end if;

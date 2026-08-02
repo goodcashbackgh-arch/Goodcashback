@@ -1,152 +1,335 @@
+-- Governed by docs/governing-pack/architecture/HYBRID_PHYSICAL_RECEIPT_BUILD_4_AUTHORITY_VERSIONING_CORRECTION_ADDENDUM_v1.md.
 BEGIN;
 
 SET LOCAL lock_timeout = '15s';
 SET LOCAL statement_timeout = '0';
 
 CREATE TEMP TABLE authority_correction_state_v1 (
-  key text PRIMARY KEY,
-  value_text text,
-  value_oid oid
+  singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
+  guard_oid oid NOT NULL,
+  guard_owner oid NOT NULL,
+  guard_acl aclitem[],
+  guard_canonical_md5 text NOT NULL,
+  trigger_oid oid NOT NULL,
+  trigger_function_oid oid NOT NULL,
+  legacy_view_oid oid NOT NULL,
+  legacy_view_owner oid NOT NULL,
+  legacy_view_acl aclitem[]
 ) ON COMMIT DROP;
 
-CREATE TEMP TABLE authority_correction_dependencies_before_v1 (
+CREATE TEMP TABLE authority_correction_columns_before_v1 (
+  ordinal_position integer PRIMARY KEY,
+  column_name name NOT NULL,
+  data_type text NOT NULL
+) ON COMMIT DROP;
+
+CREATE TEMP TABLE b4_legacy_dependents_before (
+  dependent_classid oid NOT NULL,
+  dependent_objid oid NOT NULL,
+  dependent_objsubid integer NOT NULL,
+  referenced_objsubid integer NOT NULL,
   dependent_class text NOT NULL,
+  dependent_schema text,
+  dependent_name text,
   dependent_identity text NOT NULL,
-  dependency_type text NOT NULL,
-  PRIMARY KEY (dependent_class, dependent_identity, dependency_type)
+  dependency_type "char" NOT NULL,
+  PRIMARY KEY (dependent_classid, dependent_objid, dependent_objsubid, referenced_objsubid, dependency_type)
 ) ON COMMIT DROP;
 
-DO $preflight$
-DECLARE
-  v_guard_oid oid;
-  v_guard_owner oid;
-  v_guard_definition_md5 text;
-  v_guard_canonical_md5 text;
-  v_trigger_function_oid oid;
-  v_columns text[];
-  v_anomaly_definition text;
+DO $initial_preflight$
 BEGIN
-  IF to_regprocedure('public.physical_remedy_allocation_guard_v1()') IS NULL THEN
-    RAISE EXCEPTION 'Authority correction preflight: physical_remedy_allocation_guard_v1() is missing.';
+  IF to_regprocedure('public.physical_remedy_allocation_guard_v1()') IS NULL
+     OR to_regclass('public.physical_exception_remedy_allocations') IS NULL
+     OR to_regclass('public.order_reconciliation_vw') IS NULL
+     OR to_regclass('public.order_reconciliation_anomalies_v1') IS NULL THEN
+    RAISE EXCEPTION 'Authority correction preflight: an expected source object is missing.';
   END IF;
-  IF to_regprocedure('public.physical_remedy_allocation_guard_v2()') IS NOT NULL THEN
-    RAISE EXCEPTION 'Authority correction preflight: physical_remedy_allocation_guard_v2() already exists.';
+  IF to_regprocedure('public.physical_remedy_allocation_guard_v2()') IS NOT NULL
+     OR to_regclass('public.order_reconciliation_v2_vw') IS NOT NULL THEN
+    RAISE EXCEPTION 'Authority correction preflight: a v2 target already exists.';
   END IF;
-  IF to_regclass('public.order_reconciliation_vw') IS NULL THEN
-    RAISE EXCEPTION 'Authority correction preflight: order_reconciliation_vw is missing.';
-  END IF;
-  IF to_regclass('public.order_reconciliation_v2_vw') IS NOT NULL THEN
-    RAISE EXCEPTION 'Authority correction preflight: order_reconciliation_v2_vw already exists.';
-  END IF;
-  IF to_regclass('public.order_reconciliation_anomalies_v1') IS NULL THEN
-    RAISE EXCEPTION 'Authority correction preflight: order_reconciliation_anomalies_v1 is missing.';
-  END IF;
+END
+$initial_preflight$;
 
-  SELECT p.oid,
-         p.proowner,
-         md5(pg_get_functiondef(p.oid)),
-         md5(concat_ws('|',
-           p.prosrc,
-           l.lanname,
-           p.provolatile,
-           p.prosecdef::text,
-           p.proisstrict::text,
-           p.proparallel,
-           p.proleakproof::text,
-           p.prorettype::regtype::text,
-           p.proargtypes::text,
-           COALESCE(array_to_string(p.proconfig, ','), '')
-         ))
-  INTO v_guard_oid, v_guard_owner, v_guard_definition_md5, v_guard_canonical_md5
+INSERT INTO authority_correction_columns_before_v1
+SELECT a.attnum, a.attname, format_type(a.atttypid, a.atttypmod)
+FROM pg_attribute a
+WHERE a.attrelid = 'public.order_reconciliation_vw'::regclass
+  AND a.attnum > 0 AND NOT a.attisdropped;
+
+INSERT INTO b4_legacy_dependents_before
+SELECT d.classid, d.objid, d.objsubid, d.refobjsubid,
+       i.type, i.schema, i.name, i.identity, d.deptype
+FROM pg_depend d
+CROSS JOIN LATERAL pg_identify_object(d.classid, d.objid, d.objsubid) i
+WHERE d.refobjid = 'public.order_reconciliation_vw'::regclass
+  AND NOT EXISTS (
+    SELECT 1 FROM pg_rewrite rw
+    WHERE d.classid = 'pg_rewrite'::regclass AND rw.oid = d.objid
+      AND rw.ev_class = 'public.order_reconciliation_anomalies_v1'::regclass
+  );
+
+DO $capture$
+DECLARE
+  v_definition_md5 text;
+  v_trigger_count integer;
+BEGIN
+  SELECT md5(pg_get_functiondef(p.oid))
+  INTO v_definition_md5
   FROM pg_proc p
-  JOIN pg_language l ON l.oid = p.prolang
   WHERE p.oid = 'public.physical_remedy_allocation_guard_v1()'::regprocedure;
-
-  IF v_guard_definition_md5 IS DISTINCT FROM '32e1d3eb9161cdc3e09114edb8c0d3c0' THEN
-    RAISE EXCEPTION 'Authority correction preflight: unexpected Build 2 guard fingerprint %.', v_guard_definition_md5;
+  IF v_definition_md5 IS DISTINCT FROM '32e1d3eb9161cdc3e09114edb8c0d3c0' THEN
+    RAISE EXCEPTION 'Authority correction preflight: unexpected Build 2 guard fingerprint %.', v_definition_md5;
   END IF;
 
-  SELECT t.tgfoid
-  INTO v_trigger_function_oid
+  SELECT count(*) INTO v_trigger_count
   FROM pg_trigger t
   WHERE t.tgrelid = 'public.physical_exception_remedy_allocations'::regclass
-    AND t.tgname = 'trg_physical_remedy_allocation_guard_v1'
-    AND NOT t.tgisinternal;
-
-  IF v_trigger_function_oid IS DISTINCT FROM v_guard_oid THEN
-    RAISE EXCEPTION 'Authority correction preflight: remedy trigger is not bound to the expected guard object.';
+    AND t.tgname = 'trg_physical_remedy_allocation_guard_v1' AND NOT t.tgisinternal;
+  IF v_trigger_count <> 1 THEN
+    RAISE EXCEPTION 'Authority correction preflight: expected exactly one remedy guard trigger, found %.', v_trigger_count;
   END IF;
 
-  SELECT array_agg(column_name ORDER BY ordinal_position)
-  INTO v_columns
-  FROM information_schema.columns
-  WHERE table_schema = 'public'
-    AND table_name = 'order_reconciliation_vw';
+  INSERT INTO authority_correction_state_v1(
+    guard_oid, guard_owner, guard_acl, guard_canonical_md5,
+    trigger_oid, trigger_function_oid, legacy_view_oid, legacy_view_owner, legacy_view_acl
+  )
+  SELECT p.oid, p.proowner, p.proacl,
+         md5(concat_ws('|', p.prosrc, l.lanname, p.provolatile, p.prosecdef::text,
+           p.proisstrict::text, p.proparallel, p.proleakproof::text,
+           p.prorettype::regtype::text, p.proargtypes::text,
+           COALESCE(array_to_string(p.proconfig, ','), ''))),
+         t.oid, t.tgfoid, c.oid, c.relowner, c.relacl
+  FROM pg_proc p
+  JOIN pg_language l ON l.oid = p.prolang
+  JOIN pg_trigger t ON t.tgfoid = p.oid
+    AND t.tgrelid = 'public.physical_exception_remedy_allocations'::regclass
+    AND t.tgname = 'trg_physical_remedy_allocation_guard_v1' AND NOT t.tgisinternal
+  JOIN pg_class c ON c.oid = 'public.order_reconciliation_vw'::regclass
+  WHERE p.oid = 'public.physical_remedy_allocation_guard_v1()'::regprocedure;
 
-  IF v_columns IS DISTINCT FROM ARRAY[
-    'order_id','qty_target','qty_progressed_invoiceable','qty_resolved_noninvoiceable',
-    'qty_unresolved','amount_target_gbp','amount_progressed_invoiceable_gbp',
-    'amount_resolved_noninvoiceable_gbp','amount_unresolved_gbp',
-    'invoiceable_subset_released_yn','whole_order_cleared_yn','last_refreshed_at'
-  ]::text[] THEN
-    RAISE EXCEPTION 'Authority correction preflight: reconciliation columns changed: %', v_columns;
+  IF NOT EXISTS (SELECT 1 FROM authority_correction_state_v1) THEN
+    RAISE EXCEPTION 'Authority correction preflight: failed to capture source authority state.';
   END IF;
-
-  SELECT definition
-  INTO v_anomaly_definition
-  FROM pg_views
-  WHERE schemaname = 'public'
-    AND viewname = 'order_reconciliation_anomalies_v1';
-
-  IF position('order_reconciliation_vw' IN COALESCE(v_anomaly_definition, '')) = 0
-     OR position('NON_AUTHORITATIVE_INVOICEABLE_EVIDENCE' IN COALESCE(v_anomaly_definition, '')) = 0
-     OR position('RAW_QTY_OVER_PROGRESS' IN COALESCE(v_anomaly_definition, '')) = 0
-     OR position('RAW_AMOUNT_OVER_PROGRESS' IN COALESCE(v_anomaly_definition, '')) = 0
-  THEN
-    RAISE EXCEPTION 'Authority correction preflight: anomaly view is not the reviewed Build 4 authority.';
-  END IF;
-
-  INSERT INTO authority_correction_state_v1(key, value_text, value_oid) VALUES
-    ('guard_owner', v_guard_owner::text, v_guard_owner),
-    ('guard_canonical_md5', v_guard_canonical_md5, NULL),
-    ('guard_oid', v_guard_oid::text, v_guard_oid),
-    ('trigger_function_oid', v_trigger_function_oid::text, v_trigger_function_oid),
-    ('legacy_view_owner', (
-      SELECT c.relowner::text
-      FROM pg_class c
-      WHERE c.oid = 'public.order_reconciliation_vw'::regclass
-    ), (
-      SELECT c.relowner
-      FROM pg_class c
-      WHERE c.oid = 'public.order_reconciliation_vw'::regclass
-    )),
-    ('legacy_view_acl', COALESCE((
-      SELECT c.relacl::text
-      FROM pg_class c
-      WHERE c.oid = 'public.order_reconciliation_vw'::regclass
-    ), ''), NULL);
 END
-$preflight$;
+$capture$;
 
-INSERT INTO authority_correction_dependencies_before_v1(
-  dependent_class,
-  dependent_identity,
-  dependency_type
+CREATE TEMP VIEW authority_correction_build4_reference_v1 AS
+with authoritative_supplier_lines as (
+  select si.order_id,
+         sil.id as supplier_invoice_line_id,
+         coalesce(sil.qty_confirmed, 0)::bigint as qty_confirmed,
+         coalesce(sil.amount_confirmed, 0)::numeric as amount_confirmed
+  from public.supplier_invoices si
+  join public.supplier_invoice_lines sil on sil.supplier_invoice_id = si.id
+  where si.is_current_for_order = true
+    and si.review_status in ('approved_current','ref_corrected_approved')
+    and si.blocked_from_sage_yn = false
+    and si.superseded_by_supplier_invoice_id is null
+    and sil.eligible_for_invoice_yn = 'Y'
+),
+supplier_line_totals as (
+  select order_id,
+         coalesce(sum(qty_confirmed), 0::numeric)::bigint as qty_progressed_invoiceable,
+         coalesce(sum(amount_confirmed), 0::numeric) as amount_progressed_invoiceable_gbp
+  from authoritative_supplier_lines
+  group by order_id
+),
+dispute_line_totals as (
+  select d.order_id,
+         coalesce(sum(case when dl.line_status = 'resolved' and asl.supplier_invoice_line_id is null then dl.qty_impact else 0 end), 0::bigint) as qty_resolved_noninvoiceable,
+         coalesce(sum(case when dl.line_status = 'resolved' and asl.supplier_invoice_line_id is null then dl.amount_impact_gbp else 0::numeric end), 0::numeric) as amount_resolved_dispute_gbp
+  from public.disputes d
+  join public.dispute_lines dl on dl.dispute_id = d.id
+  left join authoritative_supplier_lines asl
+    on asl.order_id = d.order_id
+   and asl.supplier_invoice_line_id = dl.supplier_invoice_line_id
+  group by d.order_id
+),
+resolved_nonphysical as (
+  select r.order_id,
+         coalesce(sum(
+           case r.financial_type
+             when 'delivery' then abs(coalesce(r.amount_gbp, 0::numeric))
+             when 'fee' then abs(coalesce(r.amount_gbp, 0::numeric))
+             when 'discount' then -abs(coalesce(r.amount_gbp, 0::numeric))
+             when 'zero_value_delivery' then 0::numeric
+             else 0::numeric
+           end
+         ), 0::numeric) as signed_nonphysical_amount_gbp
+  from public.supplier_invoice_line_resolutions r
+  where r.active = true and r.resolution_type = 'non_physical_financial'
+  group by r.order_id
+),
+reconciled as (
+  select o.id as order_id,
+         o.total_qty_declared as qty_target,
+         coalesce(slt.qty_progressed_invoiceable, 0::bigint) as qty_progressed_invoiceable,
+         coalesce(dlt.qty_resolved_noninvoiceable, 0::bigint) as qty_resolved_noninvoiceable,
+         o.total_qty_declared - coalesce(slt.qty_progressed_invoiceable, 0::bigint) - coalesce(dlt.qty_resolved_noninvoiceable, 0::bigint) as qty_unresolved,
+         o.order_total_gbp_declared as amount_target_gbp,
+         coalesce(slt.amount_progressed_invoiceable_gbp, 0::numeric) as amount_progressed_invoiceable_gbp,
+         coalesce(dlt.amount_resolved_dispute_gbp, 0::numeric) + coalesce(rn.signed_nonphysical_amount_gbp, 0::numeric) as amount_resolved_noninvoiceable_gbp,
+         o.order_total_gbp_declared - coalesce(slt.amount_progressed_invoiceable_gbp, 0::numeric) - coalesce(dlt.amount_resolved_dispute_gbp, 0::numeric) - coalesce(rn.signed_nonphysical_amount_gbp, 0::numeric) as amount_unresolved_gbp,
+         exists (select 1 from authoritative_supplier_lines released where released.order_id = o.id) as invoiceable_subset_released_yn
+  from public.orders o
+  left join supplier_line_totals slt on slt.order_id = o.id
+  left join dispute_line_totals dlt on dlt.order_id = o.id
+  left join resolved_nonphysical rn on rn.order_id = o.id
 )
-SELECT DISTINCT
-  d.classid::regclass::text,
-  pg_describe_object(d.classid, d.objid, d.objsubid),
-  d.deptype::text
-FROM pg_depend d
-WHERE d.refobjid = 'public.order_reconciliation_vw'::regclass
-  AND pg_describe_object(d.classid, d.objid, d.objsubid)
-      NOT ILIKE '%order_reconciliation_anomalies_v1%';
+select r.order_id,
+       r.qty_target,
+       r.qty_progressed_invoiceable,
+       r.qty_resolved_noninvoiceable,
+       r.qty_unresolved,
+       r.amount_target_gbp,
+       r.amount_progressed_invoiceable_gbp,
+       r.amount_resolved_noninvoiceable_gbp,
+       r.amount_unresolved_gbp,
+       r.invoiceable_subset_released_yn,
+       (
+         r.qty_unresolved = 0
+         and r.amount_unresolved_gbp = 0::numeric
+         and r.qty_progressed_invoiceable + r.qty_resolved_noninvoiceable <= r.qty_target
+         and r.amount_progressed_invoiceable_gbp + r.amount_resolved_noninvoiceable_gbp <= r.amount_target_gbp
+       ) as whole_order_cleared_yn,
+       now() as last_refreshed_at
+from reconciled r;
+
+CREATE TEMP VIEW authority_correction_anomaly_reference_v1 AS
+with raw_eligible as (
+  select si.order_id,
+         coalesce(sum(coalesce(sil.qty_confirmed, 0)), 0)::numeric as raw_qty,
+         coalesce(sum(coalesce(sil.amount_confirmed, 0)), 0)::numeric as raw_amount_gbp
+  from public.supplier_invoices si
+  join public.supplier_invoice_lines sil on sil.supplier_invoice_id = si.id
+  where sil.eligible_for_invoice_yn = 'Y'
+  group by si.order_id
+),
+non_authoritative as (
+  select si.order_id,
+         coalesce(sum(coalesce(sil.qty_confirmed, 0)), 0)::numeric as non_authoritative_qty,
+         coalesce(sum(coalesce(sil.amount_confirmed, 0)), 0)::numeric as non_authoritative_amount_gbp,
+         jsonb_agg(
+           jsonb_build_object(
+             'supplier_invoice_id', si.id,
+             'invoice_ref', si.invoice_ref,
+             'review_status', si.review_status,
+             'blocked_from_sage_yn', si.blocked_from_sage_yn,
+             'is_current_for_order', si.is_current_for_order,
+             'superseded_by_supplier_invoice_id', si.superseded_by_supplier_invoice_id,
+             'supplier_invoice_line_id', sil.id,
+             'qty_confirmed', sil.qty_confirmed,
+             'amount_confirmed', sil.amount_confirmed
+           ) order by si.uploaded_at, si.id, sil.line_order, sil.id
+         ) as evidence_json
+  from public.supplier_invoices si
+  join public.supplier_invoice_lines sil on sil.supplier_invoice_id = si.id
+  where sil.eligible_for_invoice_yn = 'Y'
+    and (
+      si.is_current_for_order is distinct from true
+      or si.review_status is null
+      or si.review_status not in ('approved_current','ref_corrected_approved')
+      or si.blocked_from_sage_yn is distinct from false
+      or si.superseded_by_supplier_invoice_id is not null
+    )
+  group by si.order_id
+),
+canonical as (select * from public.order_reconciliation_vw)
+select c.order_id,
+       'AUTHORITATIVE_QTY_OVER_PROGRESS'::text as anomaly_code,
+       c.qty_target::numeric as qty_target,
+       c.qty_progressed_invoiceable::numeric as qty_observed,
+       greatest(c.qty_progressed_invoiceable::numeric - c.qty_target::numeric, 0::numeric) as qty_over,
+       c.amount_target_gbp,
+       c.amount_progressed_invoiceable_gbp as amount_observed_gbp,
+       greatest(c.amount_progressed_invoiceable_gbp - c.amount_target_gbp, 0::numeric) as amount_over_gbp,
+       jsonb_build_object('source','canonical_authoritative_supplier_lines') as detail_json,
+       now() as last_refreshed_at
+from canonical c
+where c.qty_progressed_invoiceable > c.qty_target
+union all
+select c.order_id,
+       'AUTHORITATIVE_AMOUNT_OVER_PROGRESS',
+       c.qty_target::numeric,
+       c.qty_progressed_invoiceable::numeric,
+       greatest(c.qty_progressed_invoiceable::numeric - c.qty_target::numeric, 0::numeric),
+       c.amount_target_gbp,
+       c.amount_progressed_invoiceable_gbp,
+       greatest(c.amount_progressed_invoiceable_gbp - c.amount_target_gbp, 0::numeric),
+       jsonb_build_object('source','canonical_authoritative_supplier_lines'),
+       now()
+from canonical c
+where c.amount_progressed_invoiceable_gbp > c.amount_target_gbp
+union all
+select o.id,
+       'NON_AUTHORITATIVE_INVOICEABLE_EVIDENCE',
+       o.total_qty_declared::numeric,
+       na.non_authoritative_qty,
+       greatest(na.non_authoritative_qty - o.total_qty_declared::numeric, 0::numeric),
+       o.order_total_gbp_declared,
+       na.non_authoritative_amount_gbp,
+       greatest(na.non_authoritative_amount_gbp - o.order_total_gbp_declared, 0::numeric),
+       jsonb_build_object('evidence', na.evidence_json),
+       now()
+from public.orders o
+join non_authoritative na on na.order_id = o.id
+where na.non_authoritative_qty <> 0 or na.non_authoritative_amount_gbp <> 0
+union all
+select o.id,
+       'RAW_QTY_OVER_PROGRESS',
+       o.total_qty_declared::numeric,
+       raw.raw_qty,
+       greatest(raw.raw_qty - o.total_qty_declared::numeric, 0::numeric),
+       o.order_total_gbp_declared,
+       raw.raw_amount_gbp,
+       greatest(raw.raw_amount_gbp - o.order_total_gbp_declared, 0::numeric),
+       jsonb_build_object('source','all_eligible_lines_regardless_of_invoice_authority'),
+       now()
+from public.orders o
+join raw_eligible raw on raw.order_id = o.id
+where raw.raw_qty > o.total_qty_declared::numeric
+union all
+select o.id,
+       'RAW_AMOUNT_OVER_PROGRESS',
+       o.total_qty_declared::numeric,
+       raw.raw_qty,
+       greatest(raw.raw_qty - o.total_qty_declared::numeric, 0::numeric),
+       o.order_total_gbp_declared,
+       raw.raw_amount_gbp,
+       greatest(raw.raw_amount_gbp - o.order_total_gbp_declared, 0::numeric),
+       jsonb_build_object('source','all_eligible_lines_regardless_of_invoice_authority'),
+       now()
+from public.orders o
+join raw_eligible raw on raw.order_id = o.id
+where raw.raw_amount_gbp > o.order_total_gbp_declared;
+
+DO $definition_preflight$
+DECLARE
+  v_installed text;
+  v_frozen text;
+BEGIN
+  SELECT regexp_replace(pg_get_viewdef('public.order_reconciliation_vw'::regclass, true), '\s+', '', 'g'),
+         regexp_replace(pg_get_viewdef('authority_correction_build4_reference_v1'::regclass, true), '\s+', '', 'g')
+    INTO v_installed, v_frozen;
+  IF v_installed IS DISTINCT FROM v_frozen THEN
+    RAISE EXCEPTION 'Authority correction preflight: installed reconciliation is not the frozen Build 4 definition.';
+  END IF;
+
+  SELECT regexp_replace(pg_get_viewdef('public.order_reconciliation_anomalies_v1'::regclass, true), '\s+', '', 'g'),
+         regexp_replace(pg_get_viewdef('authority_correction_anomaly_reference_v1'::regclass, true), '\s+', '', 'g')
+    INTO v_installed, v_frozen;
+  IF v_installed IS DISTINCT FROM v_frozen THEN
+    RAISE EXCEPTION 'Authority correction preflight: installed anomaly view is not the frozen Build 4 definition.';
+  END IF;
+END
+$definition_preflight$;
+
+DROP VIEW authority_correction_anomaly_reference_v1;
+DROP VIEW authority_correction_build4_reference_v1;
 
 ALTER FUNCTION public.physical_remedy_allocation_guard_v1()
-  RENAME TO physical_remedy_allocation_guard_v2;
-
-COMMENT ON FUNCTION public.physical_remedy_allocation_guard_v2() IS
-  'Build 2 outcome-specific multi-dispute physical remedy compatibility guard. Renamed without changing object identity or trigger binding.';
+RENAME TO physical_remedy_allocation_guard_v2;
 
 CREATE FUNCTION public.physical_remedy_allocation_guard_v1()
 RETURNS trigger
@@ -466,89 +649,72 @@ BEGIN
 END;
 $function$;
 
-COMMENT ON FUNCTION public.physical_remedy_allocation_guard_v1() IS
-  'Exact restored foundation physical remedy allocation guard.';
-
-REVOKE ALL ON FUNCTION public.physical_remedy_allocation_guard_v1()
-  FROM PUBLIC, anon, authenticated;
-REVOKE ALL ON FUNCTION public.physical_remedy_allocation_guard_v2()
-  FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.physical_remedy_allocation_guard_v1() FROM PUBLIC, anon, authenticated;
 
 CREATE VIEW public.order_reconciliation_v2_vw AS
-WITH authoritative_supplier_lines AS (
-  SELECT si.order_id,
-         sil.id AS supplier_invoice_line_id,
-         COALESCE(sil.qty_confirmed, 0)::bigint AS qty_confirmed,
-         COALESCE(sil.amount_confirmed, 0)::numeric AS amount_confirmed
-  FROM public.supplier_invoices si
-  JOIN public.supplier_invoice_lines sil ON sil.supplier_invoice_id = si.id
-  WHERE si.is_current_for_order = true
-    AND si.review_status IN ('approved_current','ref_corrected_approved')
-    AND si.blocked_from_sage_yn = false
-    AND si.superseded_by_supplier_invoice_id IS NULL
-    AND sil.eligible_for_invoice_yn = 'Y'
+with authoritative_supplier_lines as (
+  select si.order_id,
+         sil.id as supplier_invoice_line_id,
+         coalesce(sil.qty_confirmed, 0)::bigint as qty_confirmed,
+         coalesce(sil.amount_confirmed, 0)::numeric as amount_confirmed
+  from public.supplier_invoices si
+  join public.supplier_invoice_lines sil on sil.supplier_invoice_id = si.id
+  where si.is_current_for_order = true
+    and si.review_status in ('approved_current','ref_corrected_approved')
+    and si.blocked_from_sage_yn = false
+    and si.superseded_by_supplier_invoice_id is null
+    and sil.eligible_for_invoice_yn = 'Y'
 ),
-supplier_line_totals AS (
-  SELECT order_id,
-         COALESCE(SUM(qty_confirmed), 0::numeric)::bigint AS qty_progressed_invoiceable,
-         COALESCE(SUM(amount_confirmed), 0::numeric) AS amount_progressed_invoiceable_gbp
-  FROM authoritative_supplier_lines
-  GROUP BY order_id
+supplier_line_totals as (
+  select order_id,
+         coalesce(sum(qty_confirmed), 0::numeric)::bigint as qty_progressed_invoiceable,
+         coalesce(sum(amount_confirmed), 0::numeric) as amount_progressed_invoiceable_gbp
+  from authoritative_supplier_lines
+  group by order_id
 ),
-dispute_line_totals AS (
-  SELECT d.order_id,
-         COALESCE(SUM(CASE WHEN dl.line_status = 'resolved' AND asl.supplier_invoice_line_id IS NULL THEN dl.qty_impact ELSE 0 END), 0::bigint) AS qty_resolved_noninvoiceable,
-         COALESCE(SUM(CASE WHEN dl.line_status = 'resolved' AND asl.supplier_invoice_line_id IS NULL THEN dl.amount_impact_gbp ELSE 0::numeric END), 0::numeric) AS amount_resolved_dispute_gbp
-  FROM public.disputes d
-  JOIN public.dispute_lines dl ON dl.dispute_id = d.id
-  LEFT JOIN authoritative_supplier_lines asl
-    ON asl.order_id = d.order_id
-   AND asl.supplier_invoice_line_id = dl.supplier_invoice_line_id
-  GROUP BY d.order_id
+dispute_line_totals as (
+  select d.order_id,
+         coalesce(sum(case when dl.line_status = 'resolved' and asl.supplier_invoice_line_id is null then dl.qty_impact else 0 end), 0::bigint) as qty_resolved_noninvoiceable,
+         coalesce(sum(case when dl.line_status = 'resolved' and asl.supplier_invoice_line_id is null then dl.amount_impact_gbp else 0::numeric end), 0::numeric) as amount_resolved_dispute_gbp
+  from public.disputes d
+  join public.dispute_lines dl on dl.dispute_id = d.id
+  left join authoritative_supplier_lines asl
+    on asl.order_id = d.order_id
+   and asl.supplier_invoice_line_id = dl.supplier_invoice_line_id
+  group by d.order_id
 ),
-resolved_nonphysical AS (
-  SELECT r.order_id,
-         COALESCE(SUM(
-           CASE r.financial_type
-             WHEN 'delivery' THEN ABS(COALESCE(r.amount_gbp, 0::numeric))
-             WHEN 'fee' THEN ABS(COALESCE(r.amount_gbp, 0::numeric))
-             WHEN 'discount' THEN -ABS(COALESCE(r.amount_gbp, 0::numeric))
-             WHEN 'zero_value_delivery' THEN 0::numeric
-             ELSE 0::numeric
-           END
-         ), 0::numeric) AS signed_nonphysical_amount_gbp
-  FROM public.supplier_invoice_line_resolutions r
-  WHERE r.active = true
-    AND r.resolution_type = 'non_physical_financial'
-  GROUP BY r.order_id
+resolved_nonphysical as (
+  select r.order_id,
+         coalesce(sum(
+           case r.financial_type
+             when 'delivery' then abs(coalesce(r.amount_gbp, 0::numeric))
+             when 'fee' then abs(coalesce(r.amount_gbp, 0::numeric))
+             when 'discount' then -abs(coalesce(r.amount_gbp, 0::numeric))
+             when 'zero_value_delivery' then 0::numeric
+             else 0::numeric
+           end
+         ), 0::numeric) as signed_nonphysical_amount_gbp
+  from public.supplier_invoice_line_resolutions r
+  where r.active = true and r.resolution_type = 'non_physical_financial'
+  group by r.order_id
 ),
-reconciled AS (
-  SELECT o.id AS order_id,
-         o.total_qty_declared AS qty_target,
-         COALESCE(slt.qty_progressed_invoiceable, 0::bigint) AS qty_progressed_invoiceable,
-         COALESCE(dlt.qty_resolved_noninvoiceable, 0::bigint) AS qty_resolved_noninvoiceable,
-         o.total_qty_declared
-           - COALESCE(slt.qty_progressed_invoiceable, 0::bigint)
-           - COALESCE(dlt.qty_resolved_noninvoiceable, 0::bigint) AS qty_unresolved,
-         o.order_total_gbp_declared AS amount_target_gbp,
-         COALESCE(slt.amount_progressed_invoiceable_gbp, 0::numeric) AS amount_progressed_invoiceable_gbp,
-         COALESCE(dlt.amount_resolved_dispute_gbp, 0::numeric)
-           + COALESCE(rn.signed_nonphysical_amount_gbp, 0::numeric) AS amount_resolved_noninvoiceable_gbp,
-         o.order_total_gbp_declared
-           - COALESCE(slt.amount_progressed_invoiceable_gbp, 0::numeric)
-           - COALESCE(dlt.amount_resolved_dispute_gbp, 0::numeric)
-           - COALESCE(rn.signed_nonphysical_amount_gbp, 0::numeric) AS amount_unresolved_gbp,
-         EXISTS (
-           SELECT 1
-           FROM authoritative_supplier_lines released
-           WHERE released.order_id = o.id
-         ) AS invoiceable_subset_released_yn
-  FROM public.orders o
-  LEFT JOIN supplier_line_totals slt ON slt.order_id = o.id
-  LEFT JOIN dispute_line_totals dlt ON dlt.order_id = o.id
-  LEFT JOIN resolved_nonphysical rn ON rn.order_id = o.id
+reconciled as (
+  select o.id as order_id,
+         o.total_qty_declared as qty_target,
+         coalesce(slt.qty_progressed_invoiceable, 0::bigint) as qty_progressed_invoiceable,
+         coalesce(dlt.qty_resolved_noninvoiceable, 0::bigint) as qty_resolved_noninvoiceable,
+         o.total_qty_declared - coalesce(slt.qty_progressed_invoiceable, 0::bigint) - coalesce(dlt.qty_resolved_noninvoiceable, 0::bigint) as qty_unresolved,
+         o.order_total_gbp_declared as amount_target_gbp,
+         coalesce(slt.amount_progressed_invoiceable_gbp, 0::numeric) as amount_progressed_invoiceable_gbp,
+         coalesce(dlt.amount_resolved_dispute_gbp, 0::numeric) + coalesce(rn.signed_nonphysical_amount_gbp, 0::numeric) as amount_resolved_noninvoiceable_gbp,
+         o.order_total_gbp_declared - coalesce(slt.amount_progressed_invoiceable_gbp, 0::numeric) - coalesce(dlt.amount_resolved_dispute_gbp, 0::numeric) - coalesce(rn.signed_nonphysical_amount_gbp, 0::numeric) as amount_unresolved_gbp,
+         exists (select 1 from authoritative_supplier_lines released where released.order_id = o.id) as invoiceable_subset_released_yn
+  from public.orders o
+  left join supplier_line_totals slt on slt.order_id = o.id
+  left join dispute_line_totals dlt on dlt.order_id = o.id
+  left join resolved_nonphysical rn on rn.order_id = o.id
 )
-SELECT r.order_id,
+select r.order_id,
        r.qty_target,
        r.qty_progressed_invoiceable,
        r.qty_resolved_noninvoiceable,
@@ -560,38 +726,20 @@ SELECT r.order_id,
        r.invoiceable_subset_released_yn,
        (
          r.qty_unresolved = 0
-         AND r.amount_unresolved_gbp = 0::numeric
-         AND r.qty_progressed_invoiceable + r.qty_resolved_noninvoiceable <= r.qty_target
-         AND r.amount_progressed_invoiceable_gbp + r.amount_resolved_noninvoiceable_gbp <= r.amount_target_gbp
-       ) AS whole_order_cleared_yn,
-       now() AS last_refreshed_at
-FROM reconciled r;
+         and r.amount_unresolved_gbp = 0::numeric
+         and r.qty_progressed_invoiceable + r.qty_resolved_noninvoiceable <= r.qty_target
+         and r.amount_progressed_invoiceable_gbp + r.amount_resolved_noninvoiceable_gbp <= r.amount_target_gbp
+       ) as whole_order_cleared_yn,
+       now() as last_refreshed_at
+from reconciled r;
 
 COMMENT ON VIEW public.order_reconciliation_v2_vw IS
-  'Versioned Build 4 authoritative-supplier reconciliation authority.';
-
-REVOKE ALL ON public.order_reconciliation_v2_vw FROM PUBLIC, anon;
-GRANT SELECT ON public.order_reconciliation_v2_vw TO authenticated, service_role;
-
-DO $build4_exactness$
-DECLARE
-  v_existing text;
-  v_v2 text;
-BEGIN
-  SELECT pg_get_viewdef('public.order_reconciliation_vw'::regclass, false)
-  INTO v_existing;
-  SELECT pg_get_viewdef('public.order_reconciliation_v2_vw'::regclass, false)
-  INTO v_v2;
-
-  IF v_existing IS DISTINCT FROM v_v2 THEN
-    RAISE EXCEPTION 'Authority correction: installed Build 4 reconciliation differs from the frozen v2 definition.';
-  END IF;
-END
-$build4_exactness$;
+  'Build 4 authoritative-supplier reconciliation preserved under an additive versioned authority.';
 
 CREATE OR REPLACE VIEW public.order_reconciliation_vw AS
 WITH resolved_nonphysical AS (
-  SELECT r.order_id,
+  SELECT
+    r.order_id,
     COALESCE(SUM(
       CASE r.financial_type
         WHEN 'delivery' THEN ABS(COALESCE(r.amount_gbp, 0))
@@ -651,22 +799,22 @@ LEFT JOIN resolved_nonphysical rn ON rn.order_id = o.id
 GROUP BY o.id, o.total_qty_declared, o.order_total_gbp_declared;
 
 COMMENT ON VIEW public.order_reconciliation_vw IS
-  'Baseline order reconciliation preserved, with active non-physical financial resolutions added once per order using explicit commercial sign: delivery/fee positive, discount negative and zero-value delivery zero. Ambiguous types remain unresolved.';
+'Baseline order reconciliation preserved, with active non-physical financial resolutions added once per order using explicit commercial sign: delivery/fee positive, discount negative and zero-value delivery zero. Ambiguous types remain unresolved.';
 
-CREATE OR REPLACE VIEW public.order_reconciliation_anomalies_v1 AS
-WITH raw_eligible AS (
-  SELECT si.order_id,
-         COALESCE(SUM(COALESCE(sil.qty_confirmed, 0)), 0)::numeric AS raw_qty,
-         COALESCE(SUM(COALESCE(sil.amount_confirmed, 0)), 0)::numeric AS raw_amount_gbp
-  FROM public.supplier_invoices si
-  JOIN public.supplier_invoice_lines sil ON sil.supplier_invoice_id = si.id
-  WHERE sil.eligible_for_invoice_yn = 'Y'
-  GROUP BY si.order_id
+CREATE OR REPLACE VIEW public.order_reconciliation_anomalies_v1 as
+with raw_eligible as (
+  select si.order_id,
+         coalesce(sum(coalesce(sil.qty_confirmed, 0)), 0)::numeric as raw_qty,
+         coalesce(sum(coalesce(sil.amount_confirmed, 0)), 0)::numeric as raw_amount_gbp
+  from public.supplier_invoices si
+  join public.supplier_invoice_lines sil on sil.supplier_invoice_id = si.id
+  where sil.eligible_for_invoice_yn = 'Y'
+  group by si.order_id
 ),
-non_authoritative AS (
-  SELECT si.order_id,
-         COALESCE(SUM(COALESCE(sil.qty_confirmed, 0)), 0)::numeric AS non_authoritative_qty,
-         COALESCE(SUM(COALESCE(sil.amount_confirmed, 0)), 0)::numeric AS non_authoritative_amount_gbp,
+non_authoritative as (
+  select si.order_id,
+         coalesce(sum(coalesce(sil.qty_confirmed, 0)), 0)::numeric as non_authoritative_qty,
+         coalesce(sum(coalesce(sil.amount_confirmed, 0)), 0)::numeric as non_authoritative_amount_gbp,
          jsonb_agg(
            jsonb_build_object(
              'supplier_invoice_id', si.id,
@@ -678,283 +826,212 @@ non_authoritative AS (
              'supplier_invoice_line_id', sil.id,
              'qty_confirmed', sil.qty_confirmed,
              'amount_confirmed', sil.amount_confirmed
-           ) ORDER BY si.uploaded_at, si.id, sil.line_order, sil.id
-         ) AS evidence_json
-  FROM public.supplier_invoices si
-  JOIN public.supplier_invoice_lines sil ON sil.supplier_invoice_id = si.id
-  WHERE sil.eligible_for_invoice_yn = 'Y'
-    AND (
-      si.is_current_for_order IS DISTINCT FROM true
-      OR si.review_status IS NULL
-      OR si.review_status NOT IN ('approved_current','ref_corrected_approved')
-      OR si.blocked_from_sage_yn IS DISTINCT FROM false
-      OR si.superseded_by_supplier_invoice_id IS NOT NULL
+           ) order by si.uploaded_at, si.id, sil.line_order, sil.id
+         ) as evidence_json
+  from public.supplier_invoices si
+  join public.supplier_invoice_lines sil on sil.supplier_invoice_id = si.id
+  where sil.eligible_for_invoice_yn = 'Y'
+    and (
+      si.is_current_for_order is distinct from true
+      or si.review_status is null
+      or si.review_status not in ('approved_current','ref_corrected_approved')
+      or si.blocked_from_sage_yn is distinct from false
+      or si.superseded_by_supplier_invoice_id is not null
     )
-  GROUP BY si.order_id
+  group by si.order_id
 ),
-canonical AS (
-  SELECT *
-  FROM public.order_reconciliation_v2_vw
-)
-SELECT c.order_id,
-       'AUTHORITATIVE_QTY_OVER_PROGRESS'::text AS anomaly_code,
-       c.qty_target::numeric AS qty_target,
-       c.qty_progressed_invoiceable::numeric AS qty_observed,
-       GREATEST(c.qty_progressed_invoiceable::numeric - c.qty_target::numeric, 0::numeric) AS qty_over,
+canonical as (select * from public.order_reconciliation_v2_vw)
+select c.order_id,
+       'AUTHORITATIVE_QTY_OVER_PROGRESS'::text as anomaly_code,
+       c.qty_target::numeric as qty_target,
+       c.qty_progressed_invoiceable::numeric as qty_observed,
+       greatest(c.qty_progressed_invoiceable::numeric - c.qty_target::numeric, 0::numeric) as qty_over,
        c.amount_target_gbp,
-       c.amount_progressed_invoiceable_gbp AS amount_observed_gbp,
-       GREATEST(c.amount_progressed_invoiceable_gbp - c.amount_target_gbp, 0::numeric) AS amount_over_gbp,
-       jsonb_build_object('source','canonical_authoritative_supplier_lines') AS detail_json,
-       now() AS last_refreshed_at
-FROM canonical c
-WHERE c.qty_progressed_invoiceable > c.qty_target
-UNION ALL
-SELECT c.order_id,
+       c.amount_progressed_invoiceable_gbp as amount_observed_gbp,
+       greatest(c.amount_progressed_invoiceable_gbp - c.amount_target_gbp, 0::numeric) as amount_over_gbp,
+       jsonb_build_object('source','canonical_authoritative_supplier_lines') as detail_json,
+       now() as last_refreshed_at
+from canonical c
+where c.qty_progressed_invoiceable > c.qty_target
+union all
+select c.order_id,
        'AUTHORITATIVE_AMOUNT_OVER_PROGRESS',
        c.qty_target::numeric,
        c.qty_progressed_invoiceable::numeric,
-       GREATEST(c.qty_progressed_invoiceable::numeric - c.qty_target::numeric, 0::numeric),
+       greatest(c.qty_progressed_invoiceable::numeric - c.qty_target::numeric, 0::numeric),
        c.amount_target_gbp,
        c.amount_progressed_invoiceable_gbp,
-       GREATEST(c.amount_progressed_invoiceable_gbp - c.amount_target_gbp, 0::numeric),
+       greatest(c.amount_progressed_invoiceable_gbp - c.amount_target_gbp, 0::numeric),
        jsonb_build_object('source','canonical_authoritative_supplier_lines'),
        now()
-FROM canonical c
-WHERE c.amount_progressed_invoiceable_gbp > c.amount_target_gbp
-UNION ALL
-SELECT o.id,
+from canonical c
+where c.amount_progressed_invoiceable_gbp > c.amount_target_gbp
+union all
+select o.id,
        'NON_AUTHORITATIVE_INVOICEABLE_EVIDENCE',
        o.total_qty_declared::numeric,
        na.non_authoritative_qty,
-       GREATEST(na.non_authoritative_qty - o.total_qty_declared::numeric, 0::numeric),
+       greatest(na.non_authoritative_qty - o.total_qty_declared::numeric, 0::numeric),
        o.order_total_gbp_declared,
        na.non_authoritative_amount_gbp,
-       GREATEST(na.non_authoritative_amount_gbp - o.order_total_gbp_declared, 0::numeric),
+       greatest(na.non_authoritative_amount_gbp - o.order_total_gbp_declared, 0::numeric),
        jsonb_build_object('evidence', na.evidence_json),
        now()
-FROM public.orders o
-JOIN non_authoritative na ON na.order_id = o.id
-WHERE na.non_authoritative_qty <> 0
-   OR na.non_authoritative_amount_gbp <> 0
-UNION ALL
-SELECT o.id,
+from public.orders o
+join non_authoritative na on na.order_id = o.id
+where na.non_authoritative_qty <> 0 or na.non_authoritative_amount_gbp <> 0
+union all
+select o.id,
        'RAW_QTY_OVER_PROGRESS',
        o.total_qty_declared::numeric,
        raw.raw_qty,
-       GREATEST(raw.raw_qty - o.total_qty_declared::numeric, 0::numeric),
+       greatest(raw.raw_qty - o.total_qty_declared::numeric, 0::numeric),
        o.order_total_gbp_declared,
        raw.raw_amount_gbp,
-       GREATEST(raw.raw_amount_gbp - o.order_total_gbp_declared, 0::numeric),
+       greatest(raw.raw_amount_gbp - o.order_total_gbp_declared, 0::numeric),
        jsonb_build_object('source','all_eligible_lines_regardless_of_invoice_authority'),
        now()
-FROM public.orders o
-JOIN raw_eligible raw ON raw.order_id = o.id
-WHERE raw.raw_qty > o.total_qty_declared::numeric
-UNION ALL
-SELECT o.id,
+from public.orders o
+join raw_eligible raw on raw.order_id = o.id
+where raw.raw_qty > o.total_qty_declared::numeric
+union all
+select o.id,
        'RAW_AMOUNT_OVER_PROGRESS',
        o.total_qty_declared::numeric,
        raw.raw_qty,
-       GREATEST(raw.raw_qty - o.total_qty_declared::numeric, 0::numeric),
+       greatest(raw.raw_qty - o.total_qty_declared::numeric, 0::numeric),
        o.order_total_gbp_declared,
        raw.raw_amount_gbp,
-       GREATEST(raw.raw_amount_gbp - o.order_total_gbp_declared, 0::numeric),
+       greatest(raw.raw_amount_gbp - o.order_total_gbp_declared, 0::numeric),
        jsonb_build_object('source','all_eligible_lines_regardless_of_invoice_authority'),
        now()
-FROM public.orders o
-JOIN raw_eligible raw ON raw.order_id = o.id
-WHERE raw.raw_amount_gbp > o.order_total_gbp_declared;
+from public.orders o
+join raw_eligible raw on raw.order_id = o.id
+where raw.raw_amount_gbp > o.order_total_gbp_declared;
 
 COMMENT ON VIEW public.order_reconciliation_anomalies_v1 IS
   'Read-only Build 4 anomaly model using order_reconciliation_v2_vw as its canonical authority.';
 
-REVOKE ALL ON public.order_reconciliation_anomalies_v1 FROM PUBLIC, anon;
-GRANT SELECT ON public.order_reconciliation_anomalies_v1 TO authenticated, service_role;
 
 DO $postflight$
 DECLARE
-  v_expected_guard_oid oid;
-  v_expected_guard_owner oid;
-  v_expected_guard_canonical_md5 text;
-  v_actual_v2_oid oid;
-  v_actual_v2_owner oid;
-  v_actual_v2_canonical_md5 text;
-  v_v1_owner oid;
-  v_trigger_function_oid oid;
+  s authority_correction_state_v1%ROWTYPE;
+  v_v1_hash text;
+  v_v2_hash text;
+  v_public oid := 0;
+  v_anon oid;
+  v_authenticated oid;
   v_legacy_md5 text;
-  v_legacy_owner oid;
-  v_legacy_acl text;
-  v_columns text[];
-  v_missing_dependencies integer;
-  v_extra_dependencies integer;
+  v_mismatch integer;
 BEGIN
-  SELECT value_oid INTO v_expected_guard_oid
-  FROM authority_correction_state_v1 WHERE key = 'guard_oid';
-  SELECT value_oid INTO v_expected_guard_owner
-  FROM authority_correction_state_v1 WHERE key = 'guard_owner';
-  SELECT value_text INTO v_expected_guard_canonical_md5
-  FROM authority_correction_state_v1 WHERE key = 'guard_canonical_md5';
-
-  SELECT p.oid,
-         p.proowner,
-         md5(concat_ws('|',
-           p.prosrc,
-           l.lanname,
-           p.provolatile,
-           p.prosecdef::text,
-           p.proisstrict::text,
-           p.proparallel,
-           p.proleakproof::text,
-           p.prorettype::regtype::text,
-           p.proargtypes::text,
-           COALESCE(array_to_string(p.proconfig, ','), '')
-         ))
-  INTO v_actual_v2_oid, v_actual_v2_owner, v_actual_v2_canonical_md5
-  FROM pg_proc p
-  JOIN pg_language l ON l.oid = p.prolang
-  WHERE p.oid = 'public.physical_remedy_allocation_guard_v2()'::regprocedure;
-
-  IF v_actual_v2_oid IS DISTINCT FROM v_expected_guard_oid
-     OR v_actual_v2_owner IS DISTINCT FROM v_expected_guard_owner
-     OR v_actual_v2_canonical_md5 IS DISTINCT FROM v_expected_guard_canonical_md5
-  THEN
-    RAISE EXCEPTION 'Authority correction postflight: v2 guard identity/body/owner changed.';
+  SELECT * INTO STRICT s FROM authority_correction_state_v1;
+  SELECT oid INTO v_anon FROM pg_roles WHERE rolname = 'anon';
+  SELECT oid INTO v_authenticated FROM pg_roles WHERE rolname = 'authenticated';
+  IF v_anon IS NULL OR v_authenticated IS NULL THEN
+    RAISE EXCEPTION 'Authority correction postflight: expected API roles are missing.';
   END IF;
 
-  SELECT p.proowner INTO v_v1_owner
-  FROM pg_proc p
+  SELECT md5(concat_ws('|', p.prosrc, l.lanname, p.provolatile, p.prosecdef::text,
+           p.proisstrict::text, p.proparallel, p.proleakproof::text,
+           p.prorettype::regtype::text, p.proargtypes::text,
+           COALESCE(array_to_string(p.proconfig, ','), '')))
+    INTO v_v1_hash
+  FROM pg_proc p JOIN pg_language l ON l.oid = p.prolang
   WHERE p.oid = 'public.physical_remedy_allocation_guard_v1()'::regprocedure;
-
-  IF v_v1_owner IS DISTINCT FROM v_expected_guard_owner THEN
-    RAISE EXCEPTION 'Authority correction postflight: restored v1 owner differs from original owner.';
+  IF v_v1_hash IS DISTINCT FROM '404fff52528bbd7d963df8809e6f23a9' THEN
+    RAISE EXCEPTION 'Authority correction postflight: restored foundation v1 body/metadata hash is %.', v_v1_hash;
   END IF;
 
-  SELECT t.tgfoid INTO v_trigger_function_oid
-  FROM pg_trigger t
-  WHERE t.tgrelid = 'public.physical_exception_remedy_allocations'::regclass
-    AND t.tgname = 'trg_physical_remedy_allocation_guard_v1'
-    AND NOT t.tgisinternal;
+  SELECT md5(concat_ws('|', p.prosrc, l.lanname, p.provolatile, p.prosecdef::text,
+           p.proisstrict::text, p.proparallel, p.proleakproof::text,
+           p.prorettype::regtype::text, p.proargtypes::text,
+           COALESCE(array_to_string(p.proconfig, ','), '')))
+    INTO v_v2_hash
+  FROM pg_proc p JOIN pg_language l ON l.oid = p.prolang
+  WHERE p.oid = 'public.physical_remedy_allocation_guard_v2()'::regprocedure;
+  IF 'public.physical_remedy_allocation_guard_v2()'::regprocedure::oid IS DISTINCT FROM s.guard_oid
+     OR (SELECT proowner FROM pg_proc WHERE oid = s.guard_oid) IS DISTINCT FROM s.guard_owner
+     OR (SELECT proacl FROM pg_proc WHERE oid = s.guard_oid) IS DISTINCT FROM s.guard_acl
+     OR v_v2_hash IS DISTINCT FROM s.guard_canonical_md5 THEN
+    RAISE EXCEPTION 'Authority correction postflight: v2 OID, owner, ACL or canonical hash changed.';
+  END IF;
+  IF (SELECT proowner FROM pg_proc WHERE oid = 'public.physical_remedy_allocation_guard_v1()'::regprocedure) IS DISTINCT FROM s.guard_owner THEN
+    RAISE EXCEPTION 'Authority correction postflight: restored v1 owner differs from the privileged owner.';
+  END IF;
 
-  IF v_trigger_function_oid IS DISTINCT FROM v_actual_v2_oid THEN
-    RAISE EXCEPTION 'Authority correction postflight: remedy trigger is not bound to v2 object identity.';
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger t WHERE t.oid = s.trigger_oid AND t.tgfoid = s.guard_oid)
+     OR EXISTS (SELECT 1 FROM pg_trigger t WHERE NOT t.tgisinternal AND t.tgfoid = 'public.physical_remedy_allocation_guard_v1()'::regprocedure) THEN
+    RAISE EXCEPTION 'Authority correction postflight: trigger OID binding was not retained exclusively by v2.';
   END IF;
 
   IF EXISTS (
-    SELECT 1
-    FROM pg_trigger t
-    WHERE t.tgfoid = 'public.physical_remedy_allocation_guard_v1()'::regprocedure
-      AND NOT t.tgisinternal
+    SELECT 1 FROM pg_proc p
+    CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) a
+    WHERE p.oid IN ('public.physical_remedy_allocation_guard_v1()'::regprocedure,
+                    'public.physical_remedy_allocation_guard_v2()'::regprocedure)
+      AND a.grantee IN (v_public, v_anon, v_authenticated) AND a.privilege_type = 'EXECUTE'
   ) THEN
-    RAISE EXCEPTION 'Authority correction postflight: restored v1 has an unexpected trigger binding.';
+    RAISE EXCEPTION 'Authority correction postflight: a guard is executable by PUBLIC, anon or authenticated.';
   END IF;
 
-  IF has_function_privilege('PUBLIC', 'public.physical_remedy_allocation_guard_v1()', 'EXECUTE')
-     OR has_function_privilege('PUBLIC', 'public.physical_remedy_allocation_guard_v2()', 'EXECUTE')
-     OR has_function_privilege('anon', 'public.physical_remedy_allocation_guard_v1()', 'EXECUTE')
-     OR has_function_privilege('anon', 'public.physical_remedy_allocation_guard_v2()', 'EXECUTE')
-     OR has_function_privilege('authenticated', 'public.physical_remedy_allocation_guard_v1()', 'EXECUTE')
-     OR has_function_privilege('authenticated', 'public.physical_remedy_allocation_guard_v2()', 'EXECUTE')
-  THEN
-    RAISE EXCEPTION 'Authority correction postflight: a guard has an unsafe execute grant.';
+  IF 'public.order_reconciliation_vw'::regclass::oid IS DISTINCT FROM s.legacy_view_oid
+     OR (SELECT relowner FROM pg_class WHERE oid = s.legacy_view_oid) IS DISTINCT FROM s.legacy_view_owner
+     OR (SELECT relacl FROM pg_class WHERE oid = s.legacy_view_oid) IS DISTINCT FROM s.legacy_view_acl THEN
+    RAISE EXCEPTION 'Authority correction postflight: legacy view OID, owner or ACL changed.';
   END IF;
-
-  SELECT md5(definition), c.relowner, COALESCE(c.relacl::text, '')
-  INTO v_legacy_md5, v_legacy_owner, v_legacy_acl
-  FROM pg_views v
-  JOIN pg_class c ON c.oid = 'public.order_reconciliation_vw'::regclass
-  WHERE v.schemaname = 'public'
-    AND v.viewname = 'order_reconciliation_vw';
-
+  SELECT md5(definition) INTO v_legacy_md5 FROM pg_views
+  WHERE schemaname = 'public' AND viewname = 'order_reconciliation_vw';
   IF v_legacy_md5 IS DISTINCT FROM '89cc95922a2b8ec1fa040ba79f12907a' THEN
     RAISE EXCEPTION 'Authority correction postflight: legacy reconciliation fingerprint is %.', v_legacy_md5;
   END IF;
 
-  IF v_legacy_owner IS DISTINCT FROM (
-       SELECT value_oid FROM authority_correction_state_v1 WHERE key = 'legacy_view_owner'
-     )
-     OR v_legacy_acl IS DISTINCT FROM (
-       SELECT value_text FROM authority_correction_state_v1 WHERE key = 'legacy_view_acl'
-     )
-  THEN
-    RAISE EXCEPTION 'Authority correction postflight: legacy reconciliation owner or grants changed.';
-  END IF;
-
-  SELECT array_agg(column_name ORDER BY ordinal_position)
-  INTO v_columns
-  FROM information_schema.columns
-  WHERE table_schema = 'public'
-    AND table_name = 'order_reconciliation_vw';
-
-  IF v_columns IS DISTINCT FROM ARRAY[
-    'order_id','qty_target','qty_progressed_invoiceable','qty_resolved_noninvoiceable',
-    'qty_unresolved','amount_target_gbp','amount_progressed_invoiceable_gbp',
-    'amount_resolved_noninvoiceable_gbp','amount_unresolved_gbp',
-    'invoiceable_subset_released_yn','whole_order_cleared_yn','last_refreshed_at'
-  ]::text[] THEN
-    RAISE EXCEPTION 'Authority correction postflight: legacy reconciliation columns changed.';
+  SELECT count(*) INTO v_mismatch FROM (
+    (SELECT ordinal_position, column_name, data_type FROM authority_correction_columns_before_v1
+     EXCEPT
+     SELECT a.attnum, a.attname, format_type(a.atttypid, a.atttypmod)
+     FROM pg_attribute a WHERE a.attrelid = s.legacy_view_oid AND a.attnum > 0 AND NOT a.attisdropped)
+    UNION ALL
+    (SELECT a.attnum, a.attname, format_type(a.atttypid, a.atttypmod)
+     FROM pg_attribute a WHERE a.attrelid = s.legacy_view_oid AND a.attnum > 0 AND NOT a.attisdropped
+     EXCEPT
+     SELECT ordinal_position, column_name, data_type FROM authority_correction_columns_before_v1)
+  ) differences;
+  IF v_mismatch <> 0 THEN
+    RAISE EXCEPTION 'Authority correction postflight: legacy view columns or data types changed.';
   END IF;
 
   WITH dependencies_after AS (
-    SELECT DISTINCT
-      d.classid::regclass::text AS dependent_class,
-      pg_describe_object(d.classid, d.objid, d.objsubid) AS dependent_identity,
-      d.deptype::text AS dependency_type
+    SELECT d.classid AS dependent_classid, d.objid AS dependent_objid,
+           d.objsubid AS dependent_objsubid, d.refobjsubid AS referenced_objsubid,
+           i.type AS dependent_class, i.schema AS dependent_schema,
+           i.name AS dependent_name, i.identity AS dependent_identity,
+           d.deptype AS dependency_type
     FROM pg_depend d
-    WHERE d.refobjid = 'public.order_reconciliation_vw'::regclass
-      AND pg_describe_object(d.classid, d.objid, d.objsubid)
-          NOT ILIKE '%order_reconciliation_anomalies_v1%'
+    CROSS JOIN LATERAL pg_identify_object(d.classid, d.objid, d.objsubid) i
+    WHERE d.refobjid = s.legacy_view_oid
+      AND NOT EXISTS (
+        SELECT 1 FROM pg_rewrite rw
+        WHERE d.classid = 'pg_rewrite'::regclass AND rw.oid = d.objid
+          AND rw.ev_class = 'public.order_reconciliation_anomalies_v1'::regclass)
+  ), differences AS (
+    (SELECT * FROM b4_legacy_dependents_before EXCEPT SELECT * FROM dependencies_after)
+    UNION ALL
+    (SELECT * FROM dependencies_after EXCEPT SELECT * FROM b4_legacy_dependents_before)
   )
-  SELECT COUNT(*) INTO v_missing_dependencies
-  FROM authority_correction_dependencies_before_v1 before_row
-  WHERE NOT EXISTS (
-    SELECT 1 FROM dependencies_after after_row
-    WHERE after_row.dependent_class = before_row.dependent_class
-      AND after_row.dependent_identity = before_row.dependent_identity
-      AND after_row.dependency_type = before_row.dependency_type
-  );
-
-  WITH dependencies_after AS (
-    SELECT DISTINCT
-      d.classid::regclass::text AS dependent_class,
-      pg_describe_object(d.classid, d.objid, d.objsubid) AS dependent_identity,
-      d.deptype::text AS dependency_type
-    FROM pg_depend d
-    WHERE d.refobjid = 'public.order_reconciliation_vw'::regclass
-      AND pg_describe_object(d.classid, d.objid, d.objsubid)
-          NOT ILIKE '%order_reconciliation_anomalies_v1%'
-  )
-  SELECT COUNT(*) INTO v_extra_dependencies
-  FROM dependencies_after after_row
-  WHERE NOT EXISTS (
-    SELECT 1 FROM authority_correction_dependencies_before_v1 before_row
-    WHERE before_row.dependent_class = after_row.dependent_class
-      AND before_row.dependent_identity = after_row.dependent_identity
-      AND before_row.dependency_type = after_row.dependency_type
-  );
-
-  IF v_missing_dependencies <> 0 OR v_extra_dependencies <> 0 THEN
-    RAISE EXCEPTION 'Authority correction postflight: legacy dependency identity set changed (missing %, extra %).',
-      v_missing_dependencies, v_extra_dependencies;
-  END IF;
-
-  IF NOT EXISTS (
-    SELECT 1
-    FROM pg_depend d
-    WHERE d.refobjid = 'public.order_reconciliation_v2_vw'::regclass
-      AND pg_describe_object(d.classid, d.objid, d.objsubid)
-          ILIKE '%order_reconciliation_anomalies_v1%'
-  ) THEN
-    RAISE EXCEPTION 'Authority correction postflight: anomaly view does not depend on reconciliation v2.';
+  SELECT count(*) INTO v_mismatch FROM differences;
+  IF v_mismatch <> 0 THEN
+    RAISE EXCEPTION 'Unexpected legacy reconciliation dependency identity changed (% differences).', v_mismatch;
   END IF;
 
   IF EXISTS (
-    SELECT 1
-    FROM pg_depend d
-    WHERE d.refobjid = 'public.order_reconciliation_vw'::regclass
-      AND pg_describe_object(d.classid, d.objid, d.objsubid)
-          ILIKE '%order_reconciliation_anomalies_v1%'
+    SELECT 1 FROM pg_depend d JOIN pg_rewrite rw ON d.classid = 'pg_rewrite'::regclass AND rw.oid = d.objid
+    WHERE d.refobjid = s.legacy_view_oid AND rw.ev_class = 'public.order_reconciliation_anomalies_v1'::regclass
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_depend d JOIN pg_rewrite rw ON d.classid = 'pg_rewrite'::regclass AND rw.oid = d.objid
+    WHERE d.refobjid = 'public.order_reconciliation_v2_vw'::regclass
+      AND rw.ev_class = 'public.order_reconciliation_anomalies_v1'::regclass
   ) THEN
-    RAISE EXCEPTION 'Authority correction postflight: anomaly view still depends on legacy reconciliation.';
+    RAISE EXCEPTION 'Authority correction postflight: anomaly dependency was not redirected exclusively to v2.';
   END IF;
 END
 $postflight$;
