@@ -20,6 +20,12 @@ function safeFilename(name: string) {
   return name.replace(/[^a-zA-Z0-9._-]+/g, "-").slice(0, 120) || "upload";
 }
 
+function normaliseUrl(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+}
+
 function redirectWithResult(disputeId: string, params: Record<string, string>): never {
   const query = new URLSearchParams(params);
   redirect(`/importer/exceptions/${disputeId}?${query.toString()}`);
@@ -46,7 +52,7 @@ export async function uploadReplacementReturnCollectionAction(formData: FormData
   const courierId = readString(formData, "courier_id");
   const trackingRef = readString(formData, "tracking_ref");
   const trackingDate = readString(formData, "tracking_date");
-  const trackingEvidenceUrl = readString(formData, "tracking_evidence_url");
+  const trackingEvidenceUrl = normaliseUrl(readString(formData, "tracking_evidence_url"));
   const note = readString(formData, "note");
   const isFinalReturn = readString(formData, "is_final_return_yn") === "on";
   const retailerInstructionsFile = readFile(formData, "retailer_return_instructions_file");
