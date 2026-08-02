@@ -42,6 +42,8 @@ if (supervisorAction.includes("staff_decide_physical_receipt_review_v1")) throw 
 
 const supervisorForm = requireText("app/internal/physical-receipts/[review_id]/DecisionForm.tsx", [
   "canApproveExisting", "initialDecision", "rowForDecision", "disabled={!canApproveExisting}",
+  "This decision changes every listed proposal to Hold / investigate.",
+  "This decision closes every listed proposal with no action.",
 ]);
 if (/proposedType[^\n]*:[^\n]*"refund"/.test(supervisorForm)) throw new Error("Supervisor form silently defaults incompatible proposals to refund.");
 
@@ -54,14 +56,25 @@ requireText("docs/governing-pack/architecture/HYBRID_PHYSICAL_RECEIPT_QUANTITY_F
 ]);
 
 const behavior = requireText("docs/testing/20260802_hybrid_physical_receipt_operational_authority_behavior_regression_v1.sql", [
-  "BEGIN;", "operator_submit_physical_receipt_proposal_v2", "staff_decide_physical_receipt_review_v2",
-  "SET LOCAL ROLE authenticated", "storage.objects", "ROLLBACK;",
+  "BEGIN;", "SET LOCAL ROLE authenticated", "ROLLBACK;",
+  "runtime_importer_v1_denial", "runtime_supervisor_v1_denial",
+  "Importer queue is not action-only", "Supervisor queue is not action-only",
+  "ARRAY[0::numeric,-1::numeric,1.0004::numeric,1.5::numeric]",
+  "importer_valid", "supervisor_return", "supervisor_reject",
+  "supervisor_investigation", "supervisor_no_action", "supervisor_existing",
+  "physical_receipt_review_dispute_links", "storage.objects",
 ]);
 if (!behavior.trimEnd().endsWith("ROLLBACK;")) throw new Error("Behavior regression is not rollback-only.");
 
-requireText("docs/testing/20260802_hybrid_physical_receipt_browser_acceptance_v1.mjs", [
+const browser = requireText("docs/testing/20260802_hybrid_physical_receipt_browser_acceptance_v1.mjs", [
   "PLAYWRIGHT_BASE_URL", "IMPORTER_A_STORAGE_STATE", "IMPORTER_B_STORAGE_STATE",
   "SUPERVISOR_STORAGE_STATE", "ORDINARY_STAFF_STORAGE_STATE", "PHYSICAL_REVIEW_ID",
+  "prepareSplitProposal", "submitProposal", "return_for_information",
+  "Browser resubmission", "approve_existing_exception", "Linked disputes",
+  "Expected exactly two linked outcome-specific disputes", "Ordinary staff direct supervisor access",
 ]);
+if (!browser.includes('fill("1.5")') || !browser.includes('fill("1")')) {
+  throw new Error("Browser acceptance does not prove fractional blocking followed by valid whole-unit submission.");
+}
 
 console.log("PASS — physical receipt operational source contracts passed");
