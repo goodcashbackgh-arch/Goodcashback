@@ -1,37 +1,9 @@
-import { access } from "node:fs/promises";
-
-const required = [
-  "PLAYWRIGHT_BASE_URL",
-  "IMPORTER_A_STORAGE_STATE",
-  "IMPORTER_B_STORAGE_STATE",
-  "SUPERVISOR_STORAGE_STATE",
-  "ORDINARY_STAFF_STORAGE_STATE",
-  "PHYSICAL_REVIEW_ID",
-  "PHYSICAL_EVIDENCE_FILENAME",
-];
-for (const key of required) {
-  if (!process.env[key]) throw new Error(`${key} is required for authenticated browser acceptance.`);
-}
-for (const key of required.filter((key) => key.endsWith("STORAGE_STATE"))) {
-  await access(process.env[key]);
+function requireValue(value, label) {
+  if (!value) throw new Error(`${label} is required for authenticated browser acceptance.`);
+  return value;
 }
 
-let chromium;
-try {
-  ({ chromium } = await import("playwright"));
-} catch {
-  throw new Error("The Playwright package is required. Run this harness in the repository browser-test environment.");
-}
-
-const baseURL = process.env.PLAYWRIGHT_BASE_URL.replace(/\/$/, "");
-const reviewId = process.env.PHYSICAL_REVIEW_ID;
-const evidenceName = process.env.PHYSICAL_EVIDENCE_FILENAME;
-const importerFirstNote = `Browser split proposal ${Date.now()}`;
-const returnNote = `Browser return for information ${Date.now()}`;
-const importerSecondNote = `Browser resubmission ${Date.now()}`;
-const approvalNote = `Browser explicit supervisor approval ${Date.now()}`;
-
-async function newContext(browser, storageState) {
+async function newContext(browser, baseURL, storageState) {
   return browser.newContext({ baseURL, storageState });
 }
 
@@ -48,13 +20,20 @@ async function expectDenied(page, path, label) {
   }
 }
 
-async function openEvidence(page) {
+async function openEvidence(page, evidenceName) {
   const link = page.getByRole("link", { name: evidenceName }).first();
   await link.waitFor({ state: "visible" });
   const href = await link.getAttribute("href");
   if (!href) throw new Error("Authorised evidence link has no signed URL.");
   const response = await page.request.get(href);
   if (!response.ok()) throw new Error(`Authorised evidence URL failed with ${response.status()}.`);
+}
+
+function parsePositiveBadge(text, label) {
+  const values = (text ?? "").match(/\d+/g)?.map(Number) ?? [];
+  if (!values.some((value) => value > 0)) {
+    throw new Error(`${label} did not show a positive actionable count.`);
+  }
 }
 
 async function prepareSplitProposal(page, note) {
@@ -71,17 +50,13 @@ async function prepareSplitProposal(page, note) {
       break;
     }
   }
-  if (!target) {
-    throw new Error("Browser acceptance fixture must contain one affected disposition with at least two whole units for split-proposal proof.");
-  }
+  if (!target) throw new Error("Disposable fixture must contain one affected disposition of two whole units.");
 
-  const addSplit = target.getByRole("button", { name: "Add split" });
-  await addSplit.click();
-
+  await target.getByRole("button", { name: "Add split" }).click();
   const quantities = target.locator('input[type="number"]');
   const remedies = target.locator("select");
   if ((await quantities.count()) !== 2 || (await remedies.count()) !== 2) {
-    throw new Error("Split proposal did not produce exactly two editable rows for the controlled fixture.");
+    throw new Error("Split proposal did not produce exactly two editable rows.");
   }
 
   await quantities.nth(0).fill("1.5");
@@ -96,7 +71,7 @@ async function prepareSplitProposal(page, note) {
   if (!(await submit.isEnabled())) throw new Error("Valid whole-unit split proposal did not enable submission.");
 }
 
-async function submitProposal(page) {
+async function submitProposal(page, reviewId) {
   await Promise.all([
     page.waitForURL((url) => url.pathname === `/importer/physical-receipts/${reviewId}` && url.searchParams.has("success")),
     page.getByRole("button", { name: "Submit proposal" }).click(),
@@ -105,7 +80,7 @@ async function submitProposal(page) {
   await expectVisible(page, "awaiting supervisor review");
 }
 
-async function submitSupervisorDecision(page, expectedStatus) {
+async function submitSupervisorDecision(page, reviewId, expectedStatus) {
   await Promise.all([
     page.waitForURL((url) => url.pathname === `/internal/physical-receipts/${reviewId}` && url.searchParams.has("success")),
     page.getByRole("button", { name: "Record supervisor decision" }).click(),
@@ -114,99 +89,129 @@ async function submitSupervisorDecision(page, expectedStatus) {
   await expectVisible(page, expectedStatus);
 }
 
-const browser = await chromium.launch({ headless: true });
-try {
-  const importerA = await newContext(browser, process.env.IMPORTER_A_STORAGE_STATE);
-  const pageA = await importerA.newPage();
-
-  // 1. Importer badge, action queue, exact detail and authorised evidence.
-  await pageA.goto("/importer");
-  await expectVisible(pageA, "Physical Receipt Exceptions");
-  const importerBadgeText = await pageA.getByRole("link", { name: /Physical Receipt Exceptions/i }).textContent();
-  if (!/\d+/.test(importerBadgeText ?? "")) throw new Error("Importer action entry has no numeric badge.");
-  await pageA.goto("/importer/physical-receipts");
-  await expectVisible(pageA, "Affected receipts currently requiring importer action");
-  await pageA.goto(`/importer/physical-receipts/${reviewId}`);
-  await expectVisible(pageA, "Immutable receipt facts");
-  await openEvidence(pageA);
-
-  // 2. Cross-importer direct detail denial before mutation.
-  const importerB = await newContext(browser, process.env.IMPORTER_B_STORAGE_STATE);
-  const pageB = await importerB.newPage();
-  await expectDenied(pageB, `/importer/physical-receipts/${reviewId}`, "Cross-importer direct review access");
-  await importerB.close();
-
-  // 3. Real whole-unit split submission through importer v2.
-  await prepareSplitProposal(pageA, importerFirstNote);
-  await submitProposal(pageA);
-
-  // 4. Supervisor badge, exact proposal rows, explicit return-for-information.
-  const supervisor = await newContext(browser, process.env.SUPERVISOR_STORAGE_STATE);
-  const pageS = await supervisor.newPage();
-  await pageS.goto("/internal");
-  await expectVisible(pageS, "Physical Receipt Reviews");
-  const supervisorBadgeText = await pageS.getByRole("link", { name: /Physical Receipt Reviews/i }).textContent();
-  if (!/\d+/.test(supervisorBadgeText ?? "")) throw new Error("Supervisor action entry has no numeric badge.");
-  await pageS.goto(`/internal/physical-receipts/${reviewId}`);
-  await expectVisible(pageS, "Importer proposal");
-  await expectVisible(pageS, "Proposed refund");
-  await expectVisible(pageS, "Proposed replacement");
-  await openEvidence(pageS);
-
-  const decision = pageS.locator('select[name="decision"]');
-  await decision.selectOption("return_for_information");
-  if (await pageS.locator('input[name="allocations_json"]').inputValue() !== "[]") {
-    throw new Error("Return-for-information carried supervisor allocations.");
+async function assertImporterQueue(page, reviewId) {
+  await page.goto("/importer/physical-receipts");
+  await expectVisible(page, "Affected receipts currently requiring importer action");
+  const target = page.locator(`a[href="/importer/physical-receipts/${reviewId}"]`);
+  await target.first().waitFor({ state: "visible" });
+  const body = (await page.textContent("body")) ?? "";
+  if (/approved to existing exception|closed no action|rejected|superseded/i.test(body)) {
+    throw new Error("Importer default queue displayed a non-actionable lifecycle status.");
   }
-  await pageS.getByLabel("Decision note").fill(returnNote);
-  await submitSupervisorDecision(pageS, "returned for information");
+}
 
-  // 5. Same review ID reopens for importer and supports resubmission.
-  await pageA.goto(`/importer/physical-receipts/${reviewId}`);
-  await expectVisible(pageA, "Returned for information");
-  await expectVisible(pageA, returnNote);
-  await prepareSplitProposal(pageA, importerSecondNote);
-  await submitProposal(pageA);
-
-  // 6. Explicit compatible supervisor approval, no silent conversion.
-  await pageS.goto(`/internal/physical-receipts/${reviewId}`);
-  await expectVisible(pageS, "Proposed refund");
-  await expectVisible(pageS, "Proposed replacement");
-  const existingOption = decision.locator('option[value="approve_existing_exception"]');
-  if (await existingOption.isDisabled()) throw new Error("Compatible refund/replacement proposal incorrectly disabled existing-exception approval.");
-  await decision.selectOption("approve_existing_exception");
-
-  const allocationPayload = JSON.parse(await pageS.locator('input[name="allocations_json"]').inputValue());
-  if (!Array.isArray(allocationPayload) || allocationPayload.length !== 2) throw new Error("Supervisor approval does not cover both importer proposal rows.");
-  const approvedTypes = allocationPayload.map((row) => row.approved_remedy_type).sort();
-  if (approvedTypes.join(",") !== "refund,replacement") throw new Error("Supervisor form silently converted importer remedy types.");
-
-  await pageS.getByLabel("Decision note").fill(approvalNote);
-  await submitSupervisorDecision(pageS, "approved to existing exception");
-
-  // 7. Every outcome-specific linked dispute is displayed and navigable.
-  await expectVisible(pageS, "Linked disputes");
-  const linkedDisputes = pageS.locator('a[href^="/internal/exceptions/"]');
-  if ((await linkedDisputes.count()) !== 2) throw new Error("Expected exactly two linked outcome-specific disputes.");
-  for (let index = 0; index < await linkedDisputes.count(); index += 1) {
-    const href = await linkedDisputes.nth(index).getAttribute("href");
-    if (!href) throw new Error("Linked dispute has no route.");
-    const verify = await supervisor.newPage();
-    const response = await verify.goto(href);
-    if (!response || response.status() >= 400) throw new Error(`Linked dispute route failed: ${href}`);
-    await verify.close();
+async function assertSupervisorQueue(page, reviewId) {
+  await page.goto("/internal/physical-receipts");
+  const target = page.locator(`a[href="/internal/physical-receipts/${reviewId}"]`);
+  await target.first().waitFor({ state: "visible" });
+  const body = (await page.textContent("body")) ?? "";
+  if (/approved to existing exception|closed no action|rejected|returned for information|superseded/i.test(body)) {
+    throw new Error("Supervisor default queue displayed a non-actionable lifecycle status.");
   }
+}
 
-  // 8. Ordinary staff direct supervisor detail denial.
-  const ordinary = await newContext(browser, process.env.ORDINARY_STAFF_STORAGE_STATE);
-  const pageO = await ordinary.newPage();
-  await expectDenied(pageO, `/internal/physical-receipts/${reviewId}`, "Ordinary staff direct supervisor access");
-  await ordinary.close();
+export async function runBrowserAcceptance({ chromium, baseURL, fixture, storageStates }) {
+  requireValue(chromium, "chromium");
+  baseURL = requireValue(baseURL, "PLAYWRIGHT_BASE_URL").replace(/\/$/, "");
+  const reviewId = requireValue(fixture?.review_id, "fixture.review_id");
+  const evidenceName = requireValue(fixture?.evidence_filename, "fixture.evidence_filename");
+  for (const [role, state] of Object.entries(storageStates ?? {})) requireValue(state, `${role} storage state`);
 
-  await supervisor.close();
-  await importerA.close();
+  const importerFirstNote = `Browser split proposal ${fixture.run_id}`;
+  const returnNote = `Browser return for information ${fixture.run_id}`;
+  const importerSecondNote = `Browser resubmission ${fixture.run_id}`;
+  const approvalNote = `Browser explicit supervisor approval ${fixture.run_id}`;
 
-  console.log("PASS — authenticated physical receipt lifecycle browser acceptance passed");
-} finally {
-  await browser.close();
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const importerA = await newContext(browser, baseURL, storageStates.importerA);
+    const pageA = await importerA.newPage();
+
+    await pageA.goto("/importer");
+    await expectVisible(pageA, "Physical Receipt Exceptions");
+    parsePositiveBadge(
+      await pageA.getByRole("link", { name: /Physical Receipt Exceptions/i }).textContent(),
+      "Importer action entry",
+    );
+    await assertImporterQueue(pageA, reviewId);
+    await pageA.goto(`/importer/physical-receipts/${reviewId}`);
+    await expectVisible(pageA, "Immutable receipt facts");
+    await openEvidence(pageA, evidenceName);
+
+    const importerB = await newContext(browser, baseURL, storageStates.importerB);
+    const pageB = await importerB.newPage();
+    await expectDenied(pageB, `/importer/physical-receipts/${reviewId}`, "Cross-importer direct review access");
+    await importerB.close();
+
+    await prepareSplitProposal(pageA, importerFirstNote);
+    await submitProposal(pageA, reviewId);
+
+    const supervisor = await newContext(browser, baseURL, storageStates.supervisor);
+    const pageS = await supervisor.newPage();
+    await pageS.goto("/internal");
+    await expectVisible(pageS, "Physical Receipt Reviews");
+    parsePositiveBadge(
+      await pageS.getByRole("link", { name: /Physical Receipt Reviews/i }).textContent(),
+      "Supervisor action entry",
+    );
+    await assertSupervisorQueue(pageS, reviewId);
+    await pageS.goto(`/internal/physical-receipts/${reviewId}`);
+    await expectVisible(pageS, "Importer proposal");
+    await expectVisible(pageS, "Proposed refund");
+    await expectVisible(pageS, "Proposed replacement");
+    await openEvidence(pageS, evidenceName);
+
+    const decision = pageS.locator('select[name="decision"]');
+    await decision.selectOption("return_for_information");
+    if (await pageS.locator('input[name="allocations_json"]').inputValue() !== "[]") {
+      throw new Error("Return-for-information carried supervisor allocations.");
+    }
+    await pageS.getByLabel("Decision note").fill(returnNote);
+    await submitSupervisorDecision(pageS, reviewId, "returned for information");
+
+    await assertImporterQueue(pageA, reviewId);
+    await pageA.goto(`/importer/physical-receipts/${reviewId}`);
+    await expectVisible(pageA, "Returned for information");
+    await expectVisible(pageA, returnNote);
+    await prepareSplitProposal(pageA, importerSecondNote);
+    await submitProposal(pageA, reviewId);
+
+    await assertSupervisorQueue(pageS, reviewId);
+    await pageS.goto(`/internal/physical-receipts/${reviewId}`);
+    await expectVisible(pageS, "Proposed refund");
+    await expectVisible(pageS, "Proposed replacement");
+    const existingOption = decision.locator('option[value="approve_existing_exception"]');
+    if (await existingOption.isDisabled()) throw new Error("Compatible refund/replacement proposal incorrectly disabled existing-exception approval.");
+    await decision.selectOption("approve_existing_exception");
+
+    const allocationPayload = JSON.parse(await pageS.locator('input[name="allocations_json"]').inputValue());
+    if (!Array.isArray(allocationPayload) || allocationPayload.length !== 2) throw new Error("Supervisor approval does not cover both importer proposal rows.");
+    const approvedTypes = allocationPayload.map((row) => row.approved_remedy_type).sort();
+    if (approvedTypes.join(",") !== "refund,replacement") throw new Error("Supervisor form silently converted importer remedy types.");
+
+    await pageS.getByLabel("Decision note").fill(approvalNote);
+    await submitSupervisorDecision(pageS, reviewId, "approved to existing exception");
+
+    await expectVisible(pageS, "Linked disputes");
+    const linkedDisputes = pageS.locator('a[href^="/internal/exceptions/"]');
+    if ((await linkedDisputes.count()) !== 2) throw new Error("Expected exactly two linked outcome-specific disputes.");
+    for (let index = 0; index < await linkedDisputes.count(); index += 1) {
+      const href = await linkedDisputes.nth(index).getAttribute("href");
+      if (!href) throw new Error("Linked dispute has no route.");
+      const verify = await supervisor.newPage();
+      const response = await verify.goto(href);
+      if (!response || response.status() >= 400) throw new Error(`Linked dispute route failed: ${href}`);
+      await verify.close();
+    }
+
+    const ordinary = await newContext(browser, baseURL, storageStates.ordinaryStaff);
+    const pageO = await ordinary.newPage();
+    await expectDenied(pageO, `/internal/physical-receipts/${reviewId}`, "Ordinary staff direct supervisor access");
+    await ordinary.close();
+
+    await supervisor.close();
+    await importerA.close();
+  } finally {
+    await browser.close();
+  }
 }
