@@ -54,34 +54,16 @@ export default async function ImporterExceptionLayout({
     const lines = activeLines ?? [];
     const singleLine = lines.length === 1 ? lines[0] : null;
 
-    if (
+    // Keep the page-level visibility check to data the importer role can read.
+    // The governed RPC remains the authority for disposition eligibility and
+    // rejects missing-item or otherwise invalid return submissions.
+    canSubmitReplacementReturn = Boolean(
       singleLine
       && singleLine.intended_remedy === "replacement"
       && singleLine.conversation_status === "retailer_response_received"
       && singleLine.physical_remedy_allocation_id
       && Number(retailerReplyCount ?? 0) > 0
-    ) {
-      const { data: remedy } = await supabase
-        .from("physical_exception_remedy_allocations")
-        .select("id, approved_remedy_type, dispute_line_id, receipt_line_disposition_id")
-        .eq("id", singleLine.physical_remedy_allocation_id)
-        .maybeSingle();
-
-      if (
-        remedy?.approved_remedy_type === "replacement"
-        && remedy.dispute_line_id === singleLine.id
-        && remedy.receipt_line_disposition_id
-      ) {
-        const { data: disposition } = await supabase
-          .from("shipper_package_receipt_line_dispositions")
-          .select("disposition_type")
-          .eq("id", remedy.receipt_line_disposition_id)
-          .maybeSingle();
-
-        canSubmitReplacementReturn = disposition?.disposition_type === "damaged"
-          || disposition?.disposition_type === "wrong";
-      }
-    }
+    );
 
     courierOptions = (couriers ?? []) as CourierOption[];
   }
