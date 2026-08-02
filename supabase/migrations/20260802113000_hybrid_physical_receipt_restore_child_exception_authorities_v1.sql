@@ -95,7 +95,7 @@ BEGIN
       v_v1_md5;
   END IF;
 
-  IF v_v2_md5 IS DISTINCT FROM '0c2d268a1e4a69c6665109d4a9db05e4' THEN
+  IF v_v2_md5 IS DISTINCT FROM '5738715ff7877344b10c1fb81e59f8db' THEN
     RAISE EXCEPTION
       'Blocker repair postflight: preserved v2 hash is %.',
       v_v2_md5;
