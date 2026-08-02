@@ -32,11 +32,16 @@ requirePattern(/guard_oid[\s\S]*guard_owner[\s\S]*guard_acl[\s\S]*guard_canonica
 requirePattern(/v2 OID, owner, ACL or canonical hash changed/i, 'v2 metadata preservation assertion');
 requirePattern(/trigger_oid[\s\S]*trigger_function_oid/i, 'trigger OID and function OID capture');
 requirePattern(/t\.oid = s\.trigger_oid AND t\.tgfoid = s\.guard_oid/i, 'trigger binding by OID');
+requirePattern(/EXISTS \(SELECT 1 FROM pg_trigger t WHERE NOT t\.tgisinternal AND t\.tgfoid = 'public\.physical_remedy_allocation_guard_v1\(\)'::regprocedure\)/i, 'postflight proves no trigger is attached to restored v1');
+requirePattern(/proowner[\s\S]*IS DISTINCT FROM s\.guard_owner/i, 'restored v1 privileged-owner verification');
 requirePattern(/CREATE VIEW public\.order_reconciliation_v2_vw AS/i, 'v2 reconciliation creation');
 requirePattern(/canonical as \(select \* from public\.order_reconciliation_v2_vw\)/i, 'anomaly reads v2');
 requirePattern(/b4_legacy_dependents_before[\s\S]*pg_identify_object/i, 'exact dependency identities captured');
 requirePattern(/SELECT \* FROM b4_legacy_dependents_before EXCEPT SELECT \* FROM dependencies_after[\s\S]*SELECT \* FROM dependencies_after EXCEPT SELECT \* FROM b4_legacy_dependents_before/i, 'dependency identity sets compared both ways');
 requirePattern(/89cc95922a2b8ec1fa040ba79f12907a/, 'legacy fingerprint');
+requirePattern(/legacy_view_oid[\s\S]*legacy_view_owner[\s\S]*legacy_view_acl/i, 'legacy view OID, owner and ACL capture');
+requirePattern(/authority_correction_columns_before_v1[\s\S]*format_type\(a\.atttypid, a\.atttypmod\)/i, 'exact legacy column names, order and data types capture');
+requirePattern(/order_reconciliation_vw'::regclass::oid IS DISTINCT FROM s\.legacy_view_oid/i, 'legacy view OID preservation assertion');
 requirePattern(/aclexplode\(COALESCE\(p\.proacl, acldefault\('f', p\.proowner\)\)\)/i, 'catalog-safe PUBLIC ACL verification');
 requirePattern(/^BEGIN;[\s\S]*NOTIFY pgrst, 'reload schema';\s*\n\s*COMMIT;\s*$/im, 'single committed transaction and schema reload');
 
@@ -47,6 +52,8 @@ forbidPattern(/pg_get_functiondef[\s\S]{0,400}\breplace\s*\(/i, 'pg_get_function
 forbidPattern(/\breplace\s*\(\s*pg_get_functiondef/i, 'replace reconstruction');
 forbidPattern(/DROP\s+TRIGGER|CREATE\s+TRIGGER/i, 'trigger drop or recreation');
 forbidPattern(/has_function_privilege\(\s*'PUBLIC'/i, 'PUBLIC treated as a login role');
+forbidPattern(/CREATE\s+OR\s+REPLACE\s+(?!VIEW\s+public\.(?:order_reconciliation_vw|order_reconciliation_anomalies_v1)\b)/i, 'CREATE OR REPLACE outside the two authorized views');
+forbidPattern(/\b(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM|TRUNCATE)\s+public\./i, 'any persistent public-schema data write');
 for (const table of ['orders','disputes','dispute_lines','supplier_invoices','supplier_invoice_lines','customer_sales_releases','shipper_shipment_batches'])
   forbidPattern(new RegExp(`\\b(?:insert\\s+into|update|delete\\s+from|truncate|alter\\s+table)\\s+public\\.${table}\\b`, 'i'), `business write to ${table}`);
 for (const authority of ['approve_vat_release','mark_order_accounting_release_ready','recompute_order_status','enforce_status_transition','enforce_order_locks','staff_accept_replacement_outcome_v1','create_replacement_child_order','order_has_open_child_exceptions','fund','shipment','refund','customer_balance','sage','payout','accounts_payable'])
