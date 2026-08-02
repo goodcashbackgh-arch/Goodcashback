@@ -10,7 +10,9 @@ const shipperActions = read("app/shipper/actions.ts");
 const shipperPage = read("app/shipper/return-actions/page.tsx");
 const replacementOperatorAction = read("app/importer/exceptions/[dispute_id]/replacement-return-actions.ts");
 const replacementOperatorForm = read("app/importer/exceptions/[dispute_id]/ReplacementOriginalItemReturnForm.tsx");
+const importerExceptionLayout = read("app/importer/exceptions/[dispute_id]/layout.tsx");
 const replacementSupervisorPanel = read("app/internal/exceptions/[dispute_id]/ReplacementReturnEvidenceReviewPanel.tsx");
+const internalExceptionLayout = read("app/internal/exceptions/[dispute_id]/layout.tsx");
 const replacementReturnMigration = read("supabase/migrations/20260802211500_hybrid_physical_receipt_replacement_return_adapters_v1.sql");
 const exactRepairMigration = read("supabase/migrations/20260802212500_hybrid_physical_receipt_exact_gbp60_repair_v1.sql");
 
@@ -37,10 +39,22 @@ assert.match(replacementOperatorForm, /Missing items cannot use this action/);
 assert.match(replacementOperatorForm, /Save the shipper-facing instructions before the replacement child is created/);
 assert.match(replacementOperatorForm, /uploadReplacementReturnCollectionAction/);
 
+assert.match(importerExceptionLayout, /replacement_child_order_id/);
+assert.match(importerExceptionLayout, /retailer_response_received/);
+assert.match(importerExceptionLayout, /physical_remedy_allocation_id/);
+assert.match(importerExceptionLayout, /disposition_type === "damaged"/);
+assert.match(importerExceptionLayout, /disposition_type === "wrong"/);
+assert.match(importerExceptionLayout, /ReplacementOriginalItemReturnForm/);
+
 assert.match(replacementSupervisorPanel, /Operational return evidence review/);
 assert.match(replacementSupervisorPanel, /does not approve supplier refund value, customer settlement, accounting, or replacement-child funding/);
 assert.match(replacementSupervisorPanel, /reviewReturnCollectionEvidenceAction/);
 assert.match(replacementSupervisorPanel, /return_tracking_submission_id/);
+
+assert.match(internalExceptionLayout, /desired_outcome === "replacement"/);
+assert.match(internalExceptionLayout, /dispute_return_tracking_submissions/);
+assert.match(internalExceptionLayout, /ReplacementReturnEvidenceReviewPanel/);
+assert.doesNotMatch(internalExceptionLayout, /replacement_child_order_id.*null/);
 
 assert.match(replacementReturnMigration, /CREATE FUNCTION public\.operator_submit_replacement_return_collection_tracking_v1/);
 assert.match(replacementReturnMigration, /CREATE FUNCTION public\.shipper_return_tasks_v2/);
