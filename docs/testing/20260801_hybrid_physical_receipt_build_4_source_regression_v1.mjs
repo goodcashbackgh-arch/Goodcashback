@@ -49,7 +49,7 @@ const checks = [
 
 const failed = checks.filter(([passed]) => !passed);
 if (failed.length) {
-  for (const [, label]) of failed) console.error(`FAIL: ${label}`);
+  for (const [, label] of failed) console.error(`FAIL: ${label}`);
   process.exit(1);
 }
 
