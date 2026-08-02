@@ -3,6 +3,7 @@ import { createClient } from "@/utils/supabase/server";
 import RefundAdjustmentGuidance from "./RefundAdjustmentGuidance";
 import RejectedRefundDocumentAuditOnlyEnhancer from "./RejectedRefundDocumentAuditOnlyEnhancer";
 import ReplacementOriginalItemReturnForm from "./ReplacementOriginalItemReturnForm";
+import ReadableDisputeReferenceEnhancer from "./ReadableDisputeReferenceEnhancer";
 
 type CourierOption = {
   id: string;
@@ -124,6 +125,7 @@ export default async function ImporterExceptionLayout({
 
   return (
     <RefundAdjustmentGuidance>
+      <ReadableDisputeReferenceEnhancer disputeId={disputeId} />
       {children}
       {canSubmitReplacementReturn ? (
         <div className="bg-slate-50 px-6 pb-8 text-slate-950">
