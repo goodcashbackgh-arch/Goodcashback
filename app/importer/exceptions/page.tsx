@@ -1,13 +1,15 @@
 import Link from "next/link";
 import { createClient } from "@/utils/supabase/server";
 
+type OrderRelation = { order_ref: string | null } | { order_ref: string | null }[] | null;
+
 type DisputeRow = {
   id: string;
   order_id: string;
   desired_outcome: string | null;
   status: string | null;
   amount_impact_gbp: number | null;
-  orders: { order_ref: string | null }[] | null;
+  orders: OrderRelation;
 };
 
 type DisputeLineRow = {
@@ -57,6 +59,15 @@ function terminalStatusMessage(status: string | null | undefined) {
   if (status === "replaced") return "Replacement accepted — child order created";
   if (status === "awaiting_refund_credit") return "Refund accepted — awaiting refund credit processing";
   return null;
+}
+
+function orderRef(value: OrderRelation, fallback: string) {
+  const order = Array.isArray(value) ? value[0] : value;
+  return order?.order_ref || fallback;
+}
+
+function disputeRef(id: string) {
+  return `DSP-${id.slice(0, 8).toUpperCase()}`;
 }
 
 export default async function ImporterExceptionsPage() {
@@ -119,6 +130,7 @@ export default async function ImporterExceptionsPage() {
             <table className="min-w-full text-sm">
               <thead className="bg-slate-50 text-left">
                 <tr>
+                  <th className="p-3">Dispute ref</th>
                   <th className="p-3">Order ref</th>
                   <th className="p-3">Outcome</th>
                   <th className="p-3">Retailer position</th>
@@ -136,7 +148,8 @@ export default async function ImporterExceptionsPage() {
 
                   return (
                     <tr key={dispute.id} className="border-t border-slate-200">
-                      <td className="p-3 font-medium">{dispute.orders?.[0]?.order_ref ?? dispute.order_id}</td>
+                      <td className="p-3 font-semibold">{disputeRef(dispute.id)}</td>
+                      <td className="p-3 font-medium">{orderRef(dispute.orders, dispute.order_id)}</td>
                       <td className="p-3">{dispute.desired_outcome ?? "—"}</td>
                       <td className="p-3">{retailerPosition}</td>
                       <td className="p-3">{terminalMessage ?? `${dispute.status ?? "—"} · ${retailerOutcome}`}</td>
