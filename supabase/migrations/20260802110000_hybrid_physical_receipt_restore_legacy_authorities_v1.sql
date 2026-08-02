@@ -938,7 +938,7 @@ BEGIN
     INTO v_v1_hash
   FROM pg_proc p JOIN pg_language l ON l.oid = p.prolang
   WHERE p.oid = 'public.physical_remedy_allocation_guard_v1()'::regprocedure;
-  IF v_v1_hash IS DISTINCT FROM '404fff52528bbd7d963df8809e6f23a9' THEN
+  IF v_v1_hash IS DISTINCT FROM '524d594dd765b73cc52c5713207dcd43' THEN
     RAISE EXCEPTION 'Authority correction postflight: restored foundation v1 body/metadata hash is %.', v_v1_hash;
   END IF;
 
