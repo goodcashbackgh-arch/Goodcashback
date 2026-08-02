@@ -981,7 +981,7 @@ BEGIN
   END IF;
   SELECT md5(definition) INTO v_legacy_md5 FROM pg_views
   WHERE schemaname = 'public' AND viewname = 'order_reconciliation_vw';
-  IF v_legacy_md5 IS DISTINCT FROM '89cc95922a2b8ec1fa040ba79f12907a' THEN
+  IF v_legacy_md5 IS DISTINCT FROM 'ae9bb789b2e536c96029573fa7e312f3' THEN
     RAISE EXCEPTION 'Authority correction postflight: legacy reconciliation fingerprint is %.', v_legacy_md5;
   END IF;
 
