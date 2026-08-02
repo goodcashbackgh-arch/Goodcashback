@@ -393,19 +393,82 @@ END
 $supervisor_existing$;
 ROLLBACK TO SAVEPOINT supervisor_existing;
 
+-- Clear the last authenticated identity and prove the runtime fails closed as anon.
 RESET ROLE;
-DO $invalid_paths$
+SELECT set_config('request.jwt.claims', '{}', true);
+SELECT set_config('request.jwt.claim.sub', '', true);
+SET LOCAL ROLE anon;
+
+DO $unauthenticated_fail_closed$
+DECLARE
+  v_importer jsonb;
+  v_supervisor jsonb;
+  v_count integer;
+  v_denied boolean;
+  p text:=current_setting('app.test.evidence_path');
 BEGIN
-  IF public.can_read_physical_receipt_evidence_v1(NULL) IS DISTINCT FROM false
+  v_importer:=public.importer_physical_receipt_reviews_v1(current_setting('app.test.importer_review_id')::uuid);
+  IF jsonb_array_length(COALESCE(v_importer->'reviews','[]'::jsonb))<>0 THEN
+    RAISE EXCEPTION 'Unauthenticated importer detail did not fail closed.';
+  END IF;
+
+  v_supervisor:=public.staff_physical_receipt_reviews_v1(current_setting('app.test.existing_review_id')::uuid);
+  IF jsonb_array_length(COALESCE(v_supervisor->'reviews','[]'::jsonb))<>0 THEN
+    RAISE EXCEPTION 'Unauthenticated supervisor detail did not fail closed.';
+  END IF;
+
+  IF public.can_read_physical_receipt_evidence_v1(p) IS DISTINCT FROM false
+     OR public.can_read_physical_receipt_evidence_v1(NULL) IS DISTINCT FROM false
      OR public.can_read_physical_receipt_evidence_v1('') IS DISTINCT FROM false
      OR public.can_read_physical_receipt_evidence_v1('not/a/real/object') IS DISTINCT FROM false
-  THEN RAISE EXCEPTION 'Invalid evidence paths did not fail closed.'; END IF;
+  THEN
+    RAISE EXCEPTION 'Unauthenticated or invalid evidence helper access did not fail closed.';
+  END IF;
+
+  SELECT count(*) INTO v_count
+  FROM storage.objects
+  WHERE bucket_id='invoice-evidence' AND name=p;
+  IF v_count<>0 THEN
+    RAISE EXCEPTION 'Unauthenticated storage RLS exposed physical receipt evidence.';
+  END IF;
+
+  v_denied:=false;
+  BEGIN
+    PERFORM public.operator_submit_physical_receipt_proposal_v2(
+      current_setting('app.test.importer_review_id')::uuid,
+      jsonb_build_array(jsonb_build_object(
+        'receipt_line_disposition_id',current_setting('app.test.importer_disposition_id')::uuid,
+        'proposed_remedy_type','replacement',
+        'proposed_remedy_qty',1
+      )),
+      'unauthenticated denial regression'
+    );
+  EXCEPTION WHEN insufficient_privilege THEN
+    v_denied:=true;
+  END;
+  IF NOT v_denied THEN RAISE EXCEPTION 'Anon executed importer v2.'; END IF;
+
+  v_denied:=false;
+  BEGIN
+    PERFORM public.staff_decide_physical_receipt_review_v2(
+      current_setting('app.test.hold_review_id')::uuid,
+      'return_for_information',
+      '[]'::jsonb,
+      'unknown',
+      'unauthenticated denial regression'
+    );
+  EXCEPTION WHEN insufficient_privilege THEN
+    v_denied:=true;
+  END;
+  IF NOT v_denied THEN RAISE EXCEPTION 'Anon executed supervisor v2.'; END IF;
 END
-$invalid_paths$;
+$unauthenticated_fail_closed$;
+
+RESET ROLE;
 
 SELECT jsonb_build_object(
   'regression_result','PASS',
-  'proof','runtime v1 denial; v2 grants; action-only queues; importer isolation; exact storage RLS; importer invalid and valid gateway behavior; all supervisor fractional routes; return, reject, investigation, no-action and mixed existing-exception behavior; all writes rolled back'
+  'proof','runtime v1 denial; v2 grants; action-only queues; importer isolation; exact storage RLS; importer invalid and valid gateway behavior; all supervisor fractional routes; return, reject, investigation, no-action and mixed existing-exception behavior; unauthenticated read, evidence, storage and write denial; all writes rolled back'
 ) AS regression_result;
 
 ROLLBACK;
