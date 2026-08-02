@@ -61,6 +61,8 @@ DECLARE
   v_template_tracking public.order_tracking_submissions%ROWTYPE;
   v_template_receipt public.shipper_package_receipts%ROWTYPE;
   v_template_disposition public.shipper_package_receipt_line_dispositions%ROWTYPE;
+  v_template_evidence public.shipper_package_receipt_evidence%ROWTYPE;
+  v_template_storage storage.objects%ROWTYPE;
   v_template_allocation public.order_tracking_line_allocations%ROWTYPE;
   v_template_line public.supplier_invoice_lines%ROWTYPE;
   v_template_invoice public.supplier_invoices%ROWTYPE;
@@ -76,6 +78,7 @@ DECLARE
   v_receipt_id uuid := gen_random_uuid();
   v_disposition_id uuid := gen_random_uuid();
   v_evidence_id uuid := gen_random_uuid();
+  v_storage_object_id uuid := gen_random_uuid();
   v_review_id uuid := gen_random_uuid();
   v_storage_path text;
   v_filename text;
@@ -95,6 +98,17 @@ BEGIN
     AND d.quantity>=2
   ORDER BY d.created_at, d.id
   LIMIT 1;
+
+  SELECT e.* INTO STRICT v_template_evidence
+  FROM public.shipper_package_receipt_evidence e
+  WHERE e.receipt_id=v_template_review.receipt_id
+  ORDER BY e.display_order, e.created_at, e.id
+  LIMIT 1;
+
+  SELECT o.* INTO STRICT v_template_storage
+  FROM storage.objects o
+  WHERE o.bucket_id='invoice-evidence'
+    AND o.name=v_template_evidence.storage_object_path;
 
   SELECT * INTO STRICT v_template_allocation
   FROM public.order_tracking_line_allocations
@@ -193,6 +207,18 @@ BEGIN
   v_filename := 'physical-receipt-browser-' || :'RUN_ID' || '.png';
   v_storage_path := 'shipper-receipts/' || v_template_order.shipper_id::text || '/' || v_tracking_id::text || '/' || v_filename;
 
+  PERFORM pg_temp.clone_row(
+    'storage.objects', to_jsonb(v_template_storage),
+    jsonb_build_object(
+      'id',v_storage_object_id,
+      'bucket_id','invoice-evidence',
+      'name',v_storage_path,
+      'created_at',now(),
+      'updated_at',now(),
+      'last_accessed_at',now()
+    ), ARRAY[]::text[]
+  );
+
   INSERT INTO public.shipper_package_receipt_evidence(
     id,receipt_id,line_disposition_id,storage_object_path,original_filename,content_type,
     display_order,uploaded_by_shipper_user_id,created_at
@@ -215,6 +241,7 @@ BEGIN
      OR (SELECT count(*) FROM public.physical_receipt_review_dispute_links WHERE physical_receipt_review_id=v_review_id)<>0
      OR (SELECT sum(quantity) FROM public.shipper_package_receipt_line_dispositions WHERE receipt_id=v_receipt_id AND disposition_type<>'clean')<>2
      OR (SELECT count(*) FROM public.shipper_package_receipt_evidence WHERE receipt_id=v_receipt_id)<>1
+     OR (SELECT count(*) FROM storage.objects WHERE id=v_storage_object_id AND bucket_id='invoice-evidence' AND name=v_storage_path)<>1
   THEN
     RAISE EXCEPTION 'Disposable browser fixture does not match its required starting state.';
   END IF;
@@ -226,7 +253,8 @@ BEGIN
     'run_id',:'RUN_ID','marker',v_marker,'review_id',v_review_id,'order_id',v_order_id,
     'tracking_submission_id',v_tracking_id,'receipt_id',v_receipt_id,'disposition_id',v_disposition_id,
     'allocation_id',v_allocation_id,'supplier_invoice_id',v_invoice_id,'supplier_invoice_line_id',v_line_id,
-    'evidence_id',v_evidence_id,'evidence_filename',v_filename,'storage_object_path',v_storage_path
+    'evidence_id',v_evidence_id,'storage_object_id',v_storage_object_id,
+    'evidence_filename',v_filename,'storage_object_path',v_storage_path
   )::text, true);
 END
 $seed$;
