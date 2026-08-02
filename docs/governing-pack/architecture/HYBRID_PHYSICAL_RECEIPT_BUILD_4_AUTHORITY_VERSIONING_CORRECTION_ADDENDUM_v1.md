@@ -32,23 +32,24 @@ It is a corrective migration, not feature scope. It must execute in one transact
 
 ## Guard versioning build
 
-1. Preflight must prove the currently installed `physical_remedy_allocation_guard_v1()` is the reviewed Build 2 body with fingerprint `32e1d3eb9161cdc3e09114edb8c0d3c0`.
+1. Preflight must prove the currently installed `physical_remedy_allocation_guard_v1()` is the reviewed Build 2 body with `pg_get_functiondef` fingerprint `32e1d3eb9161cdc3e09114edb8c0d3c0`.
 2. Preflight must prove `physical_remedy_allocation_guard_v2()` does not exist.
-3. The installed function object must be renamed with:
+3. Before renaming, the migration must capture the installed function OID, owner and a name-independent canonical body/metadata hash covering `prosrc`, language, volatility, security-definer state, strictness, parallel safety, leakproof state, return type, argument types and `proconfig`.
+4. The installed function object must be renamed with:
 
    `ALTER FUNCTION public.physical_remedy_allocation_guard_v1() RENAME TO physical_remedy_allocation_guard_v2;`
 
-4. The trigger must not be dropped or recreated. PostgreSQL object identity must preserve its binding to the renamed v2 function.
-5. `physical_remedy_allocation_guard_v1()` must then be recreated literally from the complete original body in `20260801131000_hybrid_physical_receipt_integrity_v1.sql`.
-6. The migration must contain no `CREATE OR REPLACE FUNCTION`, dynamic `EXECUTE`, function-definition extraction for reconstruction, or text replacement.
-7. The exact foundation body and metadata must be verified against an in-transaction clean-replay reference function created from the same frozen foundation source. The canonical fingerprint must cover `prosrc`, language, volatility, security-definer state and `proconfig`; it must not depend on the temporary reference function name.
-8. The v2 body must retain the known Build 2 `pg_get_functiondef` fingerprint.
-9. Neither guard may be executable by `PUBLIC`, `anon` or `authenticated`.
-10. The expected privileged owner must be preserved for both functions.
+5. The trigger must not be dropped or recreated. PostgreSQL object identity must preserve its binding to the renamed v2 function.
+6. After renaming, the v2 function must retain the captured OID, owner and name-independent canonical hash. A post-rename `pg_get_functiondef` hash is not authoritative because the function name itself has changed.
+7. `physical_remedy_allocation_guard_v1()` must then be recreated literally from the complete original body in `20260801131000_hybrid_physical_receipt_integrity_v1.sql`.
+8. The migration must contain no `CREATE OR REPLACE FUNCTION`, dynamic `EXECUTE`, function-definition extraction for reconstruction, or text replacement.
+9. The exact foundation body and metadata must be verified against an in-transaction clean-replay reference function created from the same frozen foundation source. The comparison must use the same name-independent canonical hash.
+10. Neither guard may be executable by `PUBLIC`, `anon` or `authenticated`.
+11. The expected privileged owner must be preserved for both functions.
 
 ## Reconciliation versioning build
 
-1. Preflight must prove `order_reconciliation_vw` is the reviewed Build 4 definition and has the exact expected public column sequence.
+1. Preflight must prove `order_reconciliation_vw` is the reviewed Build 4 definition and has the exact expected public column sequence. This proof may use an in-transaction reference view created from the frozen Build 4 SQL rather than a guessed fingerprint.
 2. Preflight must prove `order_reconciliation_v2_vw` does not exist.
 3. The complete Build 4 reconciliation body must be copied unchanged into a new `CREATE VIEW public.order_reconciliation_v2_vw` statement.
 4. The Build 4 v2 calculation must retain:
@@ -95,11 +96,11 @@ Preflight must verify the reviewed current anomaly definition before changing it
 Must prove:
 
 - v1 and v2 guard existence;
-- exact independent guard fingerprints;
+- exact independent guard canonical hashes;
 - trigger object identity remains bound to v2;
 - no trigger is attached to restored v1;
 - exact owners and privileges;
-- legacy and v2 reconciliation fingerprints, columns and grants;
+- legacy and v2 reconciliation definitions, columns and grants;
 - exact dependency preservation with only the authorised anomaly redirection;
 - anomaly view dependency on v2.
 
@@ -128,11 +129,11 @@ Must forbid:
 - `pg_get_functiondef` combined with text replacement;
 - unrelated writes or replacements affecting orders, disputes, dispute lines, supplier invoices or lines, VAT, accounting release, Sage, status recomputation, funding, shipment, customer release, payout or AP authorities.
 
-It must require the literal rename, literal v1 creation, both guard fingerprint checks, trigger OID binding proof, v2 view creation, legacy view restoration and anomaly dependency on v2.
+It must require the literal rename, literal v1 creation, both guard canonical-hash checks, trigger OID binding proof, v2 view creation, legacy view restoration and anomaly dependency on v2.
 
 ## Acceptance sequence
 
-1. Run the read-only preflight report for the current guard fingerprint, reconciliation fingerprint, trigger OID binding, anomaly dependency, owners, grants and exact dependents.
+1. Run the read-only preflight report for the current guard fingerprint, canonical hash, reconciliation definition, trigger OID binding, anomaly dependency, owners, grants and exact dependents.
 2. Apply migration 6.
 3. Run the structural regression.
 4. Run the rollback-only behavioural regression.
