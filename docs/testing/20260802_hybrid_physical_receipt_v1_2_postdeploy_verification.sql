@@ -86,7 +86,7 @@ BEGIN
     RAISE EXCEPTION 'A missing-item replacement has a return-tracking submission; governed eligibility is violated.';
   END IF;
 
-  SELECT remedy_row.commercial_value_gbp
+  SELECT remedy_row.customer_commercial_value_gbp
   INTO v_amount
   FROM public.physical_exception_remedy_allocations remedy_row
   WHERE remedy_row.id = '9e7f6c25-e920-4c90-a16a-0ffb6381a3d6'::uuid;
