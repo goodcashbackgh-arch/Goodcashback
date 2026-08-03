@@ -1,6 +1,6 @@
 -- Read-only live dependency probe for physical replacement allocation completion.
--- Identifies triggers and functions that reference the allocation table, especially
--- logic that can move replacement allocations into a terminal completed state.
+-- Identifies triggers and ordinary functions/procedures that reference the allocation table,
+-- especially logic that can move replacement allocations into a terminal completed state.
 
 WITH trigger_rows AS (
   SELECT jsonb_agg(jsonb_build_object(
@@ -18,6 +18,12 @@ WITH trigger_rows AS (
   WHERE NOT t.tgisinternal
     AND n.nspname='public'
     AND c.relname='physical_exception_remedy_allocations'
+), eligible_routines AS (
+  SELECT p.*
+  FROM pg_proc p
+  JOIN pg_namespace n ON n.oid=p.pronamespace
+  WHERE n.nspname='public'
+    AND p.prokind IN ('f','p')
 ), function_rows AS (
   SELECT jsonb_agg(jsonb_build_object(
     'function_name',p.oid::regprocedure::text,
@@ -28,10 +34,8 @@ WITH trigger_rows AS (
     'mentions_replacement_child_order_id',pg_get_functiondef(p.oid) ILIKE '%replacement_child_order_id%',
     'definition',pg_get_functiondef(p.oid)
   ) ORDER BY p.oid::regprocedure::text) AS value
-  FROM pg_proc p
-  JOIN pg_namespace n ON n.oid=p.pronamespace
-  WHERE n.nspname='public'
-    AND pg_get_functiondef(p.oid) ILIKE '%physical_exception_remedy_allocations%'
+  FROM eligible_routines p
+  WHERE pg_get_functiondef(p.oid) ILIKE '%physical_exception_remedy_allocations%'
 ), exact_allocation AS (
   SELECT jsonb_build_object(
     'id',r.id,
