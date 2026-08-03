@@ -8,11 +8,17 @@ SET LOCAL statement_timeout='0';
 
 DO $preflight$
 DECLARE
+  v_grouped_authority text:=pg_get_functiondef('public.staff_decide_physical_outcome_lane_v1(uuid,uuid,jsonb,text)'::regprocedure);
   v_refund_authority text:=pg_get_functiondef('public.staff_close_refund_exception_as_settlement_credit_v1(uuid,text,text)'::regprocedure);
 BEGIN
-  IF md5(pg_get_functiondef('public.staff_decide_physical_outcome_lane_v1(uuid,uuid,jsonb,text)'::regprocedure))<>'1fb2c815df1fc0de5dc22da3e924db07'
-     OR md5(pg_get_functiondef('public.staff_confirm_order_settlement_credit_v1(uuid,text,text)'::regprocedure))<>'1919f05068406545d207adecafba362f'
+  IF md5(pg_get_functiondef('public.staff_confirm_order_settlement_credit_v1(uuid,text,text)'::regprocedure))<>'1919f05068406545d207adecafba362f'
      OR md5(pg_get_functiondef('public.order_funding_total_gbp(uuid)'::regprocedure))<>'7f71d968c6662c1df535a50428797fb4'
+     OR v_grouped_authority NOT ILIKE '%Identical completed requests must replay before mutable-state guards.%'
+     OR v_grouped_authority NOT ILIKE '%WHERE lane_id=p_lane_id AND request_hash=v_request_hash%'
+     OR v_grouped_authority NOT ILIKE '%IF v_existing_result IS NOT NULL THEN RETURN v_existing_result; END IF;%'
+     OR v_grouped_authority NOT ILIKE '%Refund decision must select every unresolved physical item in each affected dispute.%'
+     OR v_grouped_authority NOT ILIKE '%staff_close_refund_exception_as_settlement_credit_v1%'
+     OR v_grouped_authority NOT ILIKE '%staff_accept_same_order_free_replacement_v1%'
      OR v_refund_authority NOT ILIKE '%resolution_method=''refund''%'
      OR v_refund_authority NOT ILIKE '%status=''under_review''%'
      OR v_refund_authority NOT ILIKE '%status=''approved_refund''%'
@@ -129,7 +135,7 @@ BEGIN
       approved_by_staff_id=s.staff_id,approved_at=COALESCE(approved_at,now()),
       dispute_line_id=s.dispute_line_id,customer_commercial_value_gbp=v_credit_due,
       supplier_cost_mode='not_applicable',replacement_child_order_id=NULL,
-      replacement_child_tracking_allocation_id=NULL,
+      replacement_child_tracking_line_allocation_id=NULL,
       rerouted_to_remedy_allocation_id=NULL,status='linked_to_exception',updated_at=now()
   WHERE id=s.id;
 
