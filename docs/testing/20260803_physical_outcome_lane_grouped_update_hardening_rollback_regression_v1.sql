@@ -11,8 +11,10 @@ DECLARE
   v_lane_id uuid:=gen_random_uuid();
   v_clone_line_id uuid:=gen_random_uuid();
   v_clone_allocation_id uuid:=gen_random_uuid();
+  v_clone_supplier_invoice_line_id uuid;
 BEGIN
-  SELECT r.*,pr.order_id,pr.importer_id,dl.dispute_id,op.auth_user_id AS operator_auth_user_id
+  SELECT r.*,pr.order_id,pr.importer_id,dl.dispute_id,dl.supplier_invoice_line_id AS source_supplier_invoice_line_id,
+         op.auth_user_id AS operator_auth_user_id
   INTO s
   FROM public.physical_exception_remedy_allocations r
   JOIN public.physical_receipt_reviews pr ON pr.id=r.physical_receipt_review_id
@@ -23,6 +25,21 @@ BEGIN
   LIMIT 1;
 
   IF s.id IS NULL THEN RAISE EXCEPTION 'FAIL: no structural fixture source'; END IF;
+
+  SELECT sil.id INTO v_clone_supplier_invoice_line_id
+  FROM public.supplier_invoice_lines sil
+  WHERE sil.id<>s.source_supplier_invoice_line_id
+    AND NOT EXISTS (
+      SELECT 1 FROM public.dispute_lines existing
+      WHERE existing.dispute_id=s.dispute_id
+        AND existing.supplier_invoice_line_id=sil.id
+    )
+  ORDER BY sil.id
+  LIMIT 1;
+
+  IF v_clone_supplier_invoice_line_id IS NULL THEN
+    RAISE EXCEPTION 'FAIL: no second supplier invoice line is available for the shared-dispute fixture';
+  END IF;
 
   PERFORM set_config('app.test.lane_id',v_lane_id::text,true);
   PERFORM set_config('app.test.source_allocation_id',s.id::text,true);
@@ -48,7 +65,7 @@ BEGIN
     resolution_method,resolved_at,resolved_via_child_order_id,created_at,
     conversation_status,intended_remedy,physical_remedy_allocation_id
   )
-  SELECT v_clone_line_id,dispute_id,supplier_invoice_line_id,GREATEST(1,qty_impact),GREATEST(0.01,amount_impact_gbp),
+  SELECT v_clone_line_id,dispute_id,v_clone_supplier_invoice_line_id,GREATEST(1,qty_impact),GREATEST(0.01,amount_impact_gbp),
          'affected',NULL,NULL,NULL,now(),'remedy_selected','replacement',v_clone_allocation_id
   FROM public.dispute_lines WHERE id=s.dispute_line_id;
 
@@ -59,7 +76,7 @@ BEGIN
     dispute_line_id,supplier_claim_amount_gbp,customer_commercial_value_gbp,supplier_cost_mode,
     replacement_child_order_id,replacement_child_tracking_allocation_id,status,rerouted_to_remedy_allocation_id,created_at,updated_at
   )
-  SELECT v_clone_allocation_id,physical_receipt_review_id,receipt_line_disposition_id,tracking_line_allocation_id,supplier_invoice_line_id,
+  SELECT v_clone_allocation_id,physical_receipt_review_id,receipt_line_disposition_id,tracking_line_allocation_id,v_clone_supplier_invoice_line_id,
          'replacement',GREATEST(1,trunc(COALESCE(proposed_remedy_qty,1))),proposed_by_operator_id,now(),
          'replacement',GREATEST(1,trunc(COALESCE(approved_remedy_qty,proposed_remedy_qty,1))),approved_by_staff_id,now(),
          v_clone_line_id,supplier_claim_amount_gbp,customer_commercial_value_gbp,'free_replacement',NULL,NULL,
