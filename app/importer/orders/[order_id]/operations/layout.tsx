@@ -5,6 +5,7 @@ import OrderOperationsUxCleanup, {
   type InvoiceTotalPresentation,
 } from "./OrderOperationsUxCleanup";
 import { submitAdditionalInvoiceEvidenceAction } from "./multiInvoiceActions";
+import { submitInvoiceEvidenceAction } from "./actions";
 
 type OrderShape = {
   id: string;
@@ -91,6 +92,33 @@ function AdditionalInvoicePanel({ orderId, invoices }: { orderId: string; invoic
           <div className="flex items-center md:col-span-3">
             <button className="rounded-full bg-sky-700 px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-sky-800">
               Upload another invoice
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
+  );
+}
+
+function ReplacementInvoiceUpload({ orderId }: { orderId: string }) {
+  return (
+    <div id="replacement-invoice-upload" className="px-6 pt-6">
+      <section className="mx-auto max-w-7xl rounded-2xl border border-emerald-200 bg-emerald-50 p-5 shadow-sm">
+        <p className="text-xs font-bold uppercase tracking-[0.18em] text-emerald-700">Replacement child evidence</p>
+        <h2 className="mt-1 text-xl font-semibold text-emerald-950">Upload the replacement supplier invoice</h2>
+        <p className="mt-2 text-sm leading-6 text-emerald-900">
+          This is the existing order-evidence action for the child order. Once uploaded, continue through the normal reconciliation page.
+        </p>
+        <form action={submitInvoiceEvidenceAction} className="mt-5 grid gap-3 md:grid-cols-3">
+          <input type="hidden" name="order_id" value={orderId} />
+          <input name="invoice_ref" required className={inputClass} placeholder="Supplier invoice reference" />
+          <input name="invoice_total_gbp" required type="number" min="0.01" step="0.01" defaultValue="60.00" className={inputClass} placeholder="Invoice total GBP" />
+          <input name="invoice_file" required type="file" accept=".pdf,image/*,.png,.jpg,.jpeg,.webp" className={inputClass} />
+          <input name="retailer_delivery_gbp" type="number" min="0" step="0.01" className={inputClass} placeholder="Optional delivery charge GBP" />
+          <input name="retailer_discount_gbp" type="number" min="0" step="0.01" className={inputClass} placeholder="Optional discount GBP" />
+          <div className="md:col-span-3">
+            <button className="rounded-xl bg-emerald-700 px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-emerald-800">
+              Upload replacement invoice
             </button>
           </div>
         </form>
@@ -234,6 +262,7 @@ export default async function OrderOperationsLayout({
 
   const parentOrder = parent as OrderShape | null;
   const displayRetailer = retailerName(order.retailers) !== "—" ? retailerName(order.retailers) : retailerName(parentOrder?.retailers);
+  const hasActiveInvoice = activeInvoices.length > 0;
 
   return (
     <>
@@ -252,7 +281,7 @@ export default async function OrderOperationsLayout({
                 {order.order_ref ?? order.id} is linked to parent order {parentOrder?.order_ref ?? order.parent_order_id}
               </h2>
               <p className="mt-1 text-sky-900">
-                Use this same operations page for replacement or repurchase evidence: add tracking, upload invoice/evidence, then continue reconciliation. No separate replacement workflow is used.
+                Use this existing operations page for replacement evidence, tracking and reconciliation.
               </p>
               <div className="mt-3 grid gap-2 md:grid-cols-4">
                 <p><span className="font-semibold">Retailer:</span> {displayRetailer}</p>
@@ -267,13 +296,20 @@ export default async function OrderOperationsLayout({
                   Parent exception
                 </Link>
               ) : null}
-              <Link href={`/importer/reconciliation/${order.id}${activeInvoices[0]?.id ? `?supplier_invoice_id=${activeInvoices[0].id}` : ""}`} className="rounded-xl bg-slate-950 px-4 py-2 font-semibold text-white hover:bg-slate-800">
-                Reconcile child invoice
-              </Link>
+              {!hasActiveInvoice ? (
+                <Link href="#replacement-invoice-upload" className="rounded-xl bg-emerald-700 px-4 py-2 font-semibold text-white hover:bg-emerald-800">
+                  Upload replacement invoice
+                </Link>
+              ) : (
+                <Link href={`/importer/reconciliation/${order.id}?supplier_invoice_id=${activeInvoices[0].id}`} className="rounded-xl bg-slate-950 px-4 py-2 font-semibold text-white hover:bg-slate-800">
+                  Reconcile child invoice
+                </Link>
+              )}
             </div>
           </div>
         </section>
       </div>
+      {!hasActiveInvoice ? <ReplacementInvoiceUpload orderId={orderId} /> : null}
       {children}
       <AdditionalInvoicePanel orderId={orderId} invoices={activeInvoices} />
     </>
