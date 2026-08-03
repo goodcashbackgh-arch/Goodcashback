@@ -11,6 +11,7 @@ DECLARE
   v_replacement_lane_id uuid:=gen_random_uuid();
   v_clone_line_id uuid:=gen_random_uuid();
   v_clone_allocation_id uuid:=gen_random_uuid();
+  v_clone_supplier_invoice_line_id uuid;
   v_other_dispute_id uuid;
   v_refund_submission_id uuid:=gen_random_uuid();
   v_return_submission_id uuid:=gen_random_uuid();
@@ -27,6 +28,20 @@ BEGIN
   LIMIT 1;
 
   IF s.id IS NULL THEN RAISE EXCEPTION 'FAIL: no structural fixture source'; END IF;
+
+  SELECT sil.id INTO v_clone_supplier_invoice_line_id
+  FROM public.supplier_invoice_lines sil
+  WHERE sil.id<>s.supplier_invoice_line_id
+    AND NOT EXISTS (
+      SELECT 1 FROM public.dispute_lines existing
+      WHERE existing.dispute_id=s.dispute_id
+        AND existing.supplier_invoice_line_id=sil.id
+    )
+  ORDER BY sil.id
+  LIMIT 1;
+  IF v_clone_supplier_invoice_line_id IS NULL THEN
+    RAISE EXCEPTION 'FAIL: no second supplier invoice line is available for the grouped evidence fixture';
+  END IF;
 
   SELECT d.id INTO v_other_dispute_id
   FROM public.disputes d
@@ -54,7 +69,7 @@ BEGIN
     resolution_method,resolved_at,resolved_via_child_order_id,created_at,
     conversation_status,intended_remedy,physical_remedy_allocation_id
   )
-  SELECT v_clone_line_id,dispute_id,NULL,GREATEST(1,qty_impact),GREATEST(0.01,amount_impact_gbp),
+  SELECT v_clone_line_id,dispute_id,v_clone_supplier_invoice_line_id,GREATEST(1,qty_impact),GREATEST(0.01,amount_impact_gbp),
          'affected',NULL,NULL,NULL,now(),'remedy_selected','refund',v_clone_allocation_id
   FROM public.dispute_lines WHERE id=s.dispute_line_id;
 
@@ -65,7 +80,7 @@ BEGIN
     dispute_line_id,supplier_claim_amount_gbp,customer_commercial_value_gbp,supplier_cost_mode,
     replacement_child_order_id,replacement_child_tracking_allocation_id,status,rerouted_to_remedy_allocation_id,created_at,updated_at
   )
-  SELECT v_clone_allocation_id,physical_receipt_review_id,receipt_line_disposition_id,tracking_line_allocation_id,NULL,
+  SELECT v_clone_allocation_id,physical_receipt_review_id,receipt_line_disposition_id,tracking_line_allocation_id,v_clone_supplier_invoice_line_id,
          'refund',GREATEST(1,trunc(COALESCE(proposed_remedy_qty,1))),proposed_by_operator_id,now(),
          'refund',GREATEST(1,trunc(COALESCE(approved_remedy_qty,proposed_remedy_qty,1))),
          COALESCE(approved_by_staff_id,(SELECT id FROM public.staff WHERE COALESCE(active,true) ORDER BY id LIMIT 1)),now(),
@@ -95,7 +110,6 @@ BEGIN
     v_return_submission_id,s.dispute_id,'ROLLBACK-GROUPED-RETURN',s.operator_id,'Rollback grouped return tracking regression.'
   );
 
-  -- Temporarily point clone item to another dispute for the fail-closed assertion later.
   PERFORM set_config('app.test.other_dispute_id',v_other_dispute_id::text,true);
 
   SET LOCAL session_replication_role=origin;
