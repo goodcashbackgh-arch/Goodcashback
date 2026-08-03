@@ -263,13 +263,16 @@ DO $$ BEGIN
     JOIN public.dispute_lines dl ON dl.id=f.dispute_line_id
     JOIN fixture_remedy m ON true
     JOIN public.physical_exception_remedy_allocations r ON r.id=m.remedy_id
+    JOIN accepted_route ar ON true
+    JOIN public.physical_replacement_same_order_routes sr ON sr.id=ar.route_id
     WHERE d.replacement_child_order_id IS NOT NULL
        OR dl.resolved_via_child_order_id IS NOT NULL
        OR r.replacement_child_order_id IS NOT NULL
        OR r.replacement_child_tracking_allocation_id IS NOT NULL
-       OR r.status<>'in_progress'
+       OR r.status<>'approved'
+       OR sr.route_status<>'approved_waiting_tracking'
   ) THEN
-    RAISE EXCEPTION 'Same-order acceptance created child linkage or wrong remedy state.';
+    RAISE EXCEPTION 'Same-order acceptance created child linkage, changed the protected remedy lifecycle, or failed to create the waiting sidecar route.';
   END IF;
 END $$;
 
@@ -355,7 +358,7 @@ END $$;
 
 SELECT jsonb_build_object(
   'regression_result','PASS',
-  'proof','synthetic journey used existing shipper/importer/supervisor/retailer authorities; same-order acceptance and successor allocation passed; no child order/link; raw history increased while effective quantity/value stayed unchanged; no negative entitlement; Mini Build fingerprints and legacy child population unchanged; all writes now roll back',
+  'proof','synthetic journey used existing shipper/importer/supervisor/retailer authorities; same-order sidecar route owned progress while the protected legacy remedy remained approved; successor allocation passed; no child order/link; raw history increased while effective quantity/value stayed unchanged; no negative entitlement; Mini Build fingerprints and legacy child population unchanged; all writes now roll back',
   'order_id',(SELECT order_id FROM fixture_parent),
   'dispute_id',(SELECT dispute_id FROM fixture_dispute),
   'route_id',(SELECT route_id FROM accepted_route),
