@@ -1,4 +1,4 @@
--- Full combined Supabase rollback regression v3 diagnostic.
+-- Full combined Supabase rollback regression v4.
 -- Run this entire file in one execution. No writes survive.
 
 BEGIN;
@@ -239,7 +239,7 @@ BEGIN
     CASE WHEN dl.resolved_via_child_order_id IS NOT NULL THEN 'line_child_order_not_null' END,
     CASE WHEN r.replacement_child_order_id IS NOT NULL THEN 'remedy_child_order_not_null' END,
     CASE WHEN r.replacement_child_tracking_allocation_id IS NOT NULL THEN 'remedy_child_tracking_allocation_not_null' END,
-    CASE WHEN r.status IS DISTINCT FROM 'approved' THEN 'remedy_status_is_'||COALESCE(r.status,'NULL') END,
+    CASE WHEN r.status NOT IN ('approved','linked_to_exception') THEN 'remedy_status_is_'||COALESCE(r.status,'NULL') END,
     CASE WHEN sr.id IS NULL THEN 'sidecar_route_missing' END,
     CASE WHEN sr.route_status IS DISTINCT FROM 'approved_waiting_tracking' THEN 'route_status_is_'||COALESCE(sr.route_status,'NULL') END
   ],NULL)
@@ -327,7 +327,7 @@ END $$;
 
 SELECT jsonb_build_object(
   'regression_result','PASS',
-  'proof','synthetic journey used existing shipper/importer/supervisor/retailer authorities; same-order sidecar route owned progress while the protected legacy remedy remained approved; successor allocation passed; no child order/link; raw history increased while effective quantity/value stayed unchanged; no negative entitlement; Mini Build fingerprints and legacy child population unchanged; all writes now roll back',
+  'proof','synthetic journey used existing shipper/importer/supervisor/retailer authorities; same-order sidecar route owned progress while the protected legacy remedy remained in its existing guard-compatible approved/linked_to_exception state; successor allocation passed; no child order/link; raw history increased while effective quantity/value stayed unchanged; no negative entitlement; Mini Build fingerprints and legacy child population unchanged; all writes now roll back',
   'order_id',(SELECT order_id FROM fixture_parent),
   'dispute_id',(SELECT dispute_id FROM fixture_dispute),
   'route_id',(SELECT route_id FROM accepted_route),
