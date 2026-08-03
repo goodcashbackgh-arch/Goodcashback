@@ -30,8 +30,8 @@ WITH target AS (
     'adjusted_net_value_gbp',a.adjusted_net_value_gbp,
     'created_at',a.created_at,
     'updated_at',a.updated_at
-  ) ORDER BY a.created_at,a.id),'[]'::jsonb) AS value,
-  COUNT(*) AS allocation_count
+  ) ORDER BY a.created_at,a.id) FILTER (WHERE a.id IS NOT NULL),'[]'::jsonb) AS value,
+  COUNT(a.id) AS allocation_count
   FROM target t
   LEFT JOIN public.order_tracking_line_allocations a ON a.order_id=t.child_order_id
 ), remedy AS (
