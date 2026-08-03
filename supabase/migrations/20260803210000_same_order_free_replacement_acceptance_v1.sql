@@ -175,7 +175,7 @@ BEGIN
   ) RETURNING id INTO v_route_id;
 
   UPDATE public.physical_exception_remedy_allocations
-  SET supplier_cost_mode='free_replacement',status='in_progress',updated_at=v_now
+  SET supplier_cost_mode='free_replacement',updated_at=v_now
   WHERE id=v_remedy.id;
 
   IF v_dispute.status='raised' THEN UPDATE public.disputes SET status='under_review' WHERE id=v_dispute.id; END IF;
@@ -204,7 +204,8 @@ DO $postflight$
 BEGIN
   IF position('staff_accept_replacement_outcome_v1' in pg_get_functiondef('public.staff_accept_same_order_free_replacement_v1(uuid,uuid,text,text)'::regprocedure))>0
      OR position('create_replacement_child_order' in pg_get_functiondef('public.staff_accept_same_order_free_replacement_v1(uuid,uuid,text,text)'::regprocedure))>0
-  THEN RAISE EXCEPTION 'Forbidden child-order invocation found.'; END IF;
+     OR position('status=''in_progress''' in pg_get_functiondef('public.staff_accept_same_order_free_replacement_v1(uuid,uuid,text,text)'::regprocedure))>0
+  THEN RAISE EXCEPTION 'Forbidden child-order or child-only remedy lifecycle invocation found.'; END IF;
 END
 $postflight$;
 
