@@ -64,7 +64,7 @@ WHERE d.desired_outcome='replacement'
     SELECT 1 FROM public.physical_replacement_same_order_routes sr
     WHERE sr.physical_remedy_allocation_id=r.id OR sr.dispute_line_id=dl.id
   )
-ORDER BY d.created_at DESC, d.id
+ORDER BY d.id
 LIMIT 1;
 
 DO $$ BEGIN
