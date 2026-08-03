@@ -39,10 +39,6 @@ BEGIN
   FROM public.supplier_invoice_lines sil
   JOIN public.supplier_invoices si ON si.id=sil.supplier_invoice_id AND si.order_id=s.order_id
   WHERE sil.id<>s.supplier_invoice_line_id
-    AND NOT EXISTS (
-      SELECT 1 FROM public.dispute_lines existing
-      WHERE existing.dispute_id=v_clone_dispute_id AND existing.supplier_invoice_line_id=sil.id
-    )
   ORDER BY sil.id LIMIT 1;
   IF v_clone_supplier_invoice_line_id IS NULL THEN
     RAISE EXCEPTION 'FAIL: no second supplier invoice line on the order for grouped replacement fixture';
@@ -110,8 +106,8 @@ BEGIN
 
   INSERT INTO public.dispute_messages(dispute_id,message_type,counterparty,body,generated_by)
   VALUES
-    (s.dispute_id,'retailer_reply','retailer','Rollback retailer accepted replacement.','operator'),
-    (v_clone_dispute_id,'retailer_reply','retailer','Rollback retailer accepted replacement.','operator');
+    (s.dispute_id,'retailer_reply','retailer','Rollback retailer accepted replacement.','supervisor_review'),
+    (v_clone_dispute_id,'retailer_reply','retailer','Rollback retailer accepted replacement.','supervisor_review');
 
   INSERT INTO public.physical_receipt_outcome_lanes(id,order_id,physical_receipt_review_id,outcome_type,lane_status)
   VALUES(v_lane_id,s.order_id,s.physical_receipt_review_id,'replacement','awaiting_supervisor_decision');
