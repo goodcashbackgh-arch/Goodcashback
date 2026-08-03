@@ -13,6 +13,7 @@ DECLARE
   v_clone_line_id uuid:=gen_random_uuid();
   v_clone_allocation_id uuid:=gen_random_uuid();
   v_clone_supplier_invoice_line_id uuid;
+  v_generated_by text;
 BEGIN
   SELECT r.*,pr.order_id,pr.importer_id,dl.dispute_id,dl.supplier_invoice_line_id,
          d.raised_by_operator_id,op.auth_user_id AS operator_auth_user_id,
@@ -34,6 +35,15 @@ BEGIN
   LIMIT 1;
 
   IF s.id IS NULL THEN RAISE EXCEPTION 'FAIL: no replacement structural fixture source'; END IF;
+
+  SELECT dm.generated_by INTO v_generated_by
+  FROM public.dispute_messages dm
+  WHERE dm.generated_by IS NOT NULL
+  ORDER BY dm.created_at,dm.id
+  LIMIT 1;
+  IF v_generated_by IS NULL THEN
+    RAISE EXCEPTION 'FAIL: no valid dispute_messages.generated_by provenance value is available';
+  END IF;
 
   SELECT sil.id INTO v_clone_supplier_invoice_line_id
   FROM public.supplier_invoice_lines sil
@@ -104,10 +114,10 @@ BEGIN
          'linked_to_exception',NULL,now(),now()
   FROM public.physical_exception_remedy_allocations WHERE id=s.id;
 
-  INSERT INTO public.dispute_messages(dispute_id,message_type,counterparty,body)
+  INSERT INTO public.dispute_messages(dispute_id,message_type,counterparty,body,generated_by)
   VALUES
-    (s.dispute_id,'retailer_reply','retailer','Rollback retailer accepted replacement.'),
-    (v_clone_dispute_id,'retailer_reply','retailer','Rollback retailer accepted replacement.');
+    (s.dispute_id,'retailer_reply','retailer','Rollback retailer accepted replacement.',v_generated_by),
+    (v_clone_dispute_id,'retailer_reply','retailer','Rollback retailer accepted replacement.',v_generated_by);
 
   INSERT INTO public.physical_receipt_outcome_lanes(id,order_id,physical_receipt_review_id,outcome_type,lane_status)
   VALUES(v_lane_id,s.order_id,s.physical_receipt_review_id,'replacement','awaiting_supervisor_decision');
