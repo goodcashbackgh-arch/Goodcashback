@@ -6,6 +6,7 @@ import RefundResubmissionNoteEnhancer from "./RefundResubmissionNoteEnhancer";
 import ReplacementReturnEvidenceReviewPanel from "./ReplacementReturnEvidenceReviewPanel";
 import ReturnEvidenceReviewEnhancer from "./ReturnEvidenceReviewEnhancer";
 import ReturnEvidenceSupervisorDetailsEnhancer from "./ReturnEvidenceSupervisorDetailsEnhancer";
+import SupervisorDisputeSummaryEnhancer from "./SupervisorDisputeSummaryEnhancer";
 
 type ReturnTrackingRow = {
   id: string;
@@ -23,6 +24,18 @@ type ReturnTrackingRow = {
   note: string | null;
 };
 
+type ShipperConfirmationRow = {
+  id: string;
+  return_tracking_submission_id: string;
+  outcome: string | null;
+  proof_file_url: string | null;
+  proof_url: string | null;
+  note: string | null;
+  submitted_at: string | null;
+  review_status: string | null;
+  review_notes: string | null;
+};
+
 export default async function InternalExceptionReviewLayout({
   children,
   params,
@@ -35,9 +48,17 @@ export default async function InternalExceptionReviewLayout({
 
   const { data: dispute } = await supabase
     .from("disputes")
-    .select("id, desired_outcome")
+    .select("id, desired_outcome, amount_impact_gbp")
     .eq("id", disputeId)
     .maybeSingle();
+
+  const { data: disputeLines } = await supabase
+    .from("dispute_lines")
+    .select("id, resolved_at")
+    .eq("dispute_id", disputeId);
+
+  const affectedLineCount = (disputeLines ?? []).length;
+  const unresolvedLineCount = (disputeLines ?? []).filter((line) => line.resolved_at === null).length;
 
   let replacementReturnSubmissions: Array<{
     id: string;
@@ -52,6 +73,14 @@ export default async function InternalExceptionReviewLayout({
     isFinalReturn: boolean | null;
     reviewStatus: string | null;
     note: string | null;
+    latestShipperConfirmation: {
+      outcome: string | null;
+      proofUrl: string | null;
+      note: string | null;
+      submittedAt: string | null;
+      reviewStatus: string | null;
+      reviewNotes: string | null;
+    } | null;
   }> = [];
 
   if (dispute?.desired_outcome === "replacement") {
@@ -61,8 +90,26 @@ export default async function InternalExceptionReviewLayout({
       .eq("dispute_id", disputeId)
       .order("submitted_at", { ascending: false });
 
-    replacementReturnSubmissions = ((data ?? []) as ReturnTrackingRow[]).map((row) => {
+    const trackingRows = (data ?? []) as ReturnTrackingRow[];
+    const trackingIds = trackingRows.map((row) => row.id);
+    const { data: confirmationsRaw } = trackingIds.length
+      ? await supabase
+          .from("shipper_return_task_confirmations")
+          .select("id, return_tracking_submission_id, outcome, proof_file_url, proof_url, note, submitted_at, review_status, review_notes")
+          .in("return_tracking_submission_id", trackingIds)
+          .order("submitted_at", { ascending: false })
+      : { data: [] };
+
+    const latestBySubmission = new Map<string, ShipperConfirmationRow>();
+    for (const row of (confirmationsRaw ?? []) as ShipperConfirmationRow[]) {
+      if (!latestBySubmission.has(row.return_tracking_submission_id)) {
+        latestBySubmission.set(row.return_tracking_submission_id, row);
+      }
+    }
+
+    replacementReturnSubmissions = trackingRows.map((row) => {
       const courier = Array.isArray(row.couriers) ? row.couriers[0] : row.couriers;
+      const confirmation = latestBySubmission.get(row.id) ?? null;
       return {
         id: row.id,
         courierName: courier?.name ?? row.courier_id ?? "Not provided",
@@ -76,6 +123,16 @@ export default async function InternalExceptionReviewLayout({
         isFinalReturn: row.is_final_return_yn,
         reviewStatus: row.review_status,
         note: row.note,
+        latestShipperConfirmation: confirmation
+          ? {
+              outcome: confirmation.outcome,
+              proofUrl: confirmation.proof_file_url ?? confirmation.proof_url,
+              note: confirmation.note,
+              submittedAt: confirmation.submitted_at,
+              reviewStatus: confirmation.review_status,
+              reviewNotes: confirmation.review_notes,
+            }
+          : null,
       };
     });
   }
@@ -83,6 +140,14 @@ export default async function InternalExceptionReviewLayout({
   return (
     <>
       {children}
+      {dispute ? (
+        <SupervisorDisputeSummaryEnhancer
+          disputeId={disputeId}
+          disputeAmount={Number(dispute.amount_impact_gbp ?? 0)}
+          affectedLineCount={affectedLineCount}
+          unresolvedLineCount={unresolvedLineCount}
+        />
+      ) : null}
       {replacementReturnSubmissions.length > 0 ? (
         <div className="bg-slate-50 px-6 pb-8 text-slate-950">
           <div className="mx-auto max-w-6xl">
