@@ -104,10 +104,10 @@ BEGIN
          'linked_to_exception',NULL,now(),now()
   FROM public.physical_exception_remedy_allocations WHERE id=s.id;
 
-  INSERT INTO public.dispute_messages(dispute_id,message_type,counterparty,body,generated_by)
+  INSERT INTO public.dispute_messages(dispute_id,message_type,counterparty,body)
   VALUES
-    (s.dispute_id,'retailer_reply','retailer','Rollback retailer accepted replacement.','supervisor_review'),
-    (v_clone_dispute_id,'retailer_reply','retailer','Rollback retailer accepted replacement.','supervisor_review');
+    (s.dispute_id,'retailer_reply','retailer','Rollback retailer accepted replacement.'),
+    (v_clone_dispute_id,'retailer_reply','retailer','Rollback retailer accepted replacement.');
 
   INSERT INTO public.physical_receipt_outcome_lanes(id,order_id,physical_receipt_review_id,outcome_type,lane_status)
   VALUES(v_lane_id,s.order_id,s.physical_receipt_review_id,'replacement','awaiting_supervisor_decision');
