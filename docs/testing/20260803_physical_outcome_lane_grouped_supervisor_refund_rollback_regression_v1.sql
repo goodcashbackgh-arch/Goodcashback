@@ -8,13 +8,16 @@ SET LOCAL lock_timeout='15s';
 SET LOCAL statement_timeout='0';
 
 DO $preflight$
+DECLARE
+  v_refund_authority text:=pg_get_functiondef('public.staff_close_refund_exception_as_settlement_credit_v1(uuid,text,text)'::regprocedure);
 BEGIN
   IF md5(pg_get_functiondef('public.staff_decide_physical_outcome_lane_v1(uuid,uuid,jsonb,text)'::regprocedure))<>'1fb2c815df1fc0de5dc22da3e924db07'
-     OR md5(pg_get_functiondef('public.staff_close_refund_exception_as_settlement_credit_v1(uuid,text,text)'::regprocedure))<>'0698d2ab2e7301881dac862a18284f52'
      OR md5(pg_get_functiondef('public.staff_confirm_order_settlement_credit_v1(uuid,text,text)'::regprocedure))<>'1919f05068406545d207adecafba362f'
      OR md5(pg_get_functiondef('public.order_funding_total_gbp(uuid)'::regprocedure))<>'7f71d968c6662c1df535a50428797fb4'
+     OR v_refund_authority NOT ILIKE '%resolution_method=''refund''%'
+     OR v_refund_authority ILIKE '%resolution_method=''credit''%'
   THEN
-    RAISE EXCEPTION 'FAIL: refund authority or funding contract fingerprint changed';
+    RAISE EXCEPTION 'FAIL: corrected refund authority or funding contract is not installed';
   END IF;
 END
 $preflight$;
@@ -101,7 +104,7 @@ BEGIN
     AND resolved_at IS NULL;
 
   UPDATE public.dispute_lines
-  SET line_status='resolved',resolution_method='credit',resolved_at=COALESCE(resolved_at,now()),
+  SET line_status='resolved',resolution_method='refund',resolved_at=COALESCE(resolved_at,now()),
       conversation_status='resolved_credit'
   WHERE dispute_id=s.dispute_id AND id<>s.dispute_line_id AND resolved_at IS NULL;
 
@@ -252,9 +255,9 @@ BEGIN
 
   IF NOT EXISTS(
     SELECT 1 FROM public.dispute_lines
-    WHERE id=dl AND line_status='resolved' AND resolution_method='credit'
+    WHERE id=dl AND line_status='resolved' AND resolution_method='refund'
       AND conversation_status='resolved_credit' AND resolved_at IS NOT NULL
-  ) THEN RAISE EXCEPTION 'FAIL: refund dispute line was not resolved as credit'; END IF;
+  ) THEN RAISE EXCEPTION 'FAIL: refund dispute line was not resolved through the refund method'; END IF;
 
   SELECT COUNT(*) INTO decision_count
   FROM public.physical_receipt_outcome_lane_decisions
