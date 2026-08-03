@@ -9,6 +9,10 @@ function gbp(value: number | null | undefined) {
   }).format(Number(value ?? 0));
 }
 
+function disputeRef(id: string) {
+  return `DSP-${id.replaceAll("-", "").slice(0, 8).toUpperCase()}`;
+}
+
 type DisputeRow = {
   id: string;
   order_id: string;
@@ -16,13 +20,18 @@ type DisputeRow = {
   status: string;
   amount_impact_gbp: number | null;
   replacement_child_order_id: string | null;
-  orders: { order_ref: string | null }[] | null;
+  orders: { order_ref: string | null } | { order_ref: string | null }[] | null;
 };
 
 function terminalStatusMessage(status: string | null | undefined) {
   if (status === "replaced") return "Replacement accepted — child order created";
   if (status === "awaiting_refund_credit") return "Refund accepted — awaiting refund credit processing";
   return status ?? "—";
+}
+
+function orderRef(dispute: DisputeRow) {
+  const order = Array.isArray(dispute.orders) ? dispute.orders[0] : dispute.orders;
+  return order?.order_ref ?? dispute.order_id;
 }
 
 export default async function InternalExceptionsPage() {
@@ -46,7 +55,7 @@ export default async function InternalExceptionsPage() {
         <div className="mt-6 space-y-3">
           {((disputes ?? []) as DisputeRow[]).map((dispute) => (
             <article key={dispute.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
-              <p className="font-semibold">{dispute.orders?.[0]?.order_ref ?? dispute.order_id} · {dispute.desired_outcome} · {terminalStatusMessage(dispute.status)}</p>
+              <p className="font-semibold">{disputeRef(dispute.id)} · {orderRef(dispute)} · {dispute.desired_outcome} · {terminalStatusMessage(dispute.status)}</p>
               <p className="mt-1">Impact: {gbp(dispute.amount_impact_gbp)}</p>
               {dispute.replacement_child_order_id ? <p className="mt-1">Child order: {dispute.replacement_child_order_id}</p> : null}
               <Link href={`/internal/exceptions/${dispute.id}`} className="mt-2 inline-block font-semibold text-sky-700 underline">Open exception review</Link>
