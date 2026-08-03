@@ -43,7 +43,7 @@ DECLARE
   v_clone_dispute_line_id uuid := gen_random_uuid();
   v_clone_allocation_id uuid := gen_random_uuid();
   v_idempotency_key uuid := gen_random_uuid();
-  v_child_order_count integer;
+  v_total_order_count integer;
 BEGIN
   SELECT
     r.*,
@@ -73,14 +73,7 @@ BEGIN
   ORDER BY r.created_at, r.id
   LIMIT 1;
 
-  SELECT COUNT(*) INTO v_child_order_count
-  FROM public.orders o
-  WHERE o.id IN (
-    SELECT replacement_child_order_id
-    FROM public.physical_exception_remedy_allocations
-    WHERE physical_receipt_review_id = v_source.physical_receipt_review_id
-      AND replacement_child_order_id IS NOT NULL
-  );
+  SELECT COUNT(*) INTO v_total_order_count FROM public.orders;
 
   PERFORM set_config('app.test.review_id', v_source.physical_receipt_review_id::text, true);
   PERFORM set_config('app.test.order_id', v_source.order_id::text, true);
@@ -91,7 +84,7 @@ BEGIN
   PERFORM set_config('app.test.clone_dispute_line_id', v_clone_dispute_line_id::text, true);
   PERFORM set_config('app.test.clone_dispute_id', v_clone_dispute_id::text, true);
   PERFORM set_config('app.test.idempotency_key', v_idempotency_key::text, true);
-  PERFORM set_config('app.test.child_order_count_before', v_child_order_count::text, true);
+  PERFORM set_config('app.test.total_order_count_before', v_total_order_count::text, true);
 
   SET LOCAL session_replication_role = replica;
 
@@ -346,19 +339,24 @@ RESET ROLE;
 
 DO $final_assertions$
 DECLARE
-  v_child_order_count integer;
+  v_total_order_count integer;
 BEGIN
-  SELECT COUNT(*) INTO v_child_order_count
-  FROM public.orders o
-  WHERE o.id IN (
-    SELECT replacement_child_order_id
-    FROM public.physical_exception_remedy_allocations
-    WHERE physical_receipt_review_id=current_setting('app.test.review_id')::uuid
-      AND replacement_child_order_id IS NOT NULL
-  );
+  SELECT COUNT(*) INTO v_total_order_count FROM public.orders;
 
-  IF v_child_order_count <> current_setting('app.test.child_order_count_before')::integer THEN
-    RAISE EXCEPTION 'FAIL: replacement child-order count changed';
+  IF v_total_order_count <> current_setting('app.test.total_order_count_before')::integer THEN
+    RAISE EXCEPTION 'FAIL: grouped lane workflow created or deleted an order';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM public.physical_exception_remedy_allocations
+    WHERE id IN (
+      current_setting('app.test.source_allocation_id')::uuid,
+      current_setting('app.test.clone_allocation_id')::uuid
+    )
+      AND replacement_child_order_id IS NOT NULL
+  ) THEN
+    RAISE EXCEPTION 'FAIL: a test replacement allocation has a child-order link';
   END IF;
 
   IF md5(pg_get_functiondef('public.physical_remedy_allocation_guard_v2()'::regprocedure)) <> 'f82d15d2de1199f9ab841d8c1ad44738'
