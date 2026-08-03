@@ -59,7 +59,6 @@ WITH expected_relations(name) AS (
     JOIN pg_namespace n ON n.oid=c.relnamespace
     WHERE n.nspname='public' AND c.relname=e.name
   ) x ON true
-  GROUP BY true
 ), blockers AS (
   SELECT array_remove(ARRAY[
     CASE WHEN EXISTS(SELECT 1 FROM relation_state WHERE NOT installed) THEN 'missing_lane_relation' END,
