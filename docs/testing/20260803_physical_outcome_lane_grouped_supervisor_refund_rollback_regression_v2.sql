@@ -135,7 +135,7 @@ BEGIN
       approved_by_staff_id=s.staff_id,approved_at=COALESCE(approved_at,now()),
       dispute_line_id=s.dispute_line_id,customer_commercial_value_gbp=v_credit_due,
       supplier_cost_mode='not_applicable',replacement_child_order_id=NULL,
-      replacement_child_tracking_line_allocation_id=NULL,
+      replacement_child_tracking_allocation_id=NULL,
       rerouted_to_remedy_allocation_id=NULL,status='linked_to_exception',updated_at=now()
   WHERE id=s.id;
 
