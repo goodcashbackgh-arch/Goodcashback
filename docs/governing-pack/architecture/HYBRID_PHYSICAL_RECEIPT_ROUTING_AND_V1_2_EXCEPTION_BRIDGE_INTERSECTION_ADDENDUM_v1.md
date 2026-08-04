@@ -1,6 +1,6 @@
 # Hybrid Physical Receipt Routing and v1.2 Exception Bridge Intersection Addendum v1
 
-Status: Locked integration, ownership and non-interference specification  
+Status: Corrected locked integration and non-interference specification  
 Date: 4 August 2026
 
 This addendum must be read with:
@@ -10,52 +10,77 @@ This addendum must be read with:
 - `HYBRID_PHYSICAL_RECEIPT_QUANTITY_FULFILMENT_AND_REMEDY_CONTROL_ADDENDUM_v1.md`;
 - the current customer-review, customer-hold, shipment, refund and replacement authorities on `main`.
 
-Its purpose is to define the exact intersection between the routing correction and the locked v1.2 physical-receipt-to-exception bridge so that either build can be implemented without silently changing the other.
+## 1. Correction to the earlier intersection statement
 
-## 1. Separation of responsibility
+The earlier statement that v1.2 owns a replacement-child lifecycle was wrong and is superseded.
 
-The v1.2 exception-bridge addendum owns the affected-quantity remedy lane:
+The v1.2 addendum does not introduce or govern a child lifecycle. It repairs the physical-receipt-to-exception bridge and preserves the already established downstream refund and replacement authorities unchanged.
+
+Its governed scope is:
 
 ```text
 exact affected receipt quantity
 → importer proposal
 → supervisor decision
-→ exact commercial value
-→ refund dispute partition or one-line replacement dispute
-→ replacement/refund operational path
+→ exact customer commercial value
+→ downstream-compatible refund dispute partition
+   or one-line replacement dispute shape
+→ optional original-item return/collection action where applicable
 ```
 
-The routing addendum owns continuation and shipment eligibility:
+For replacement, v1.2 stops at producing the exact dispute/remedy shape required by the existing replacement acceptance and child-creation authorities. It does not create a new parent/child lifecycle, terminal progression model or child-status authority.
 
-```text
-originally clean quantity
-or supervisor-released quantity
-→ existing customer review
-→ exact hold treatment
-→ exact shipment-ready quantity
-→ shipment membership
-```
+## 2. Correct separation of responsibility
 
-The routing build does not create, partition, value, accept or close refund/replacement disputes. The v1.2 build does not determine customer-review timing or shipment-ready quantity.
+### v1.2 exception-bridge addendum owns
 
-## 2. Exact handoff event
+- exact affected-quantity bridge from receipt review into existing disputes;
+- supervisor-approved remedy allocation shape;
+- deterministic customer commercial value on the physical remedy and dispute;
+- refund partitioning by downstream-compatible supplier-invoice and issue grouping;
+- one physical replacement allocation per replacement dispute line;
+- compatibility links between the physical review and its disputes;
+- additive original-item return/collection adapters for damaged or wrong replacement items where the retailer requires return;
+- preservation of all existing downstream replacement, refund, settlement and accounting authorities.
 
-The handoff is the final committed physical-review and remedy-allocation state.
+### Routing addendum owns
 
-The v1.2 bridge writes and owns:
+- originally clean quantity continuing independently;
+- supervisor-released `rejected` quantity entering customer review;
+- approved `no_action` quantity entering customer review;
+- refund, replacement and investigation quantity remaining diverted;
+- exact customer-review timing and memberships;
+- exact customer holds;
+- exact shipment eligibility and shipment quantity;
+- package-routing and immutable receipt displays.
 
-- `physical_receipt_reviews.status`;
-- `physical_receipt_reviews.supervisor_decided_at`;
-- `physical_receipt_reviews.linked_dispute_id` compatibility link;
-- `physical_receipt_review_dispute_links`;
-- `physical_exception_remedy_allocations` route, quantity, value and lifecycle state;
-- exact refund/replacement dispute lines and headers.
+### Existing downstream replacement authorities own
 
-After that state is complete, the routing authority may read it as follows:
+These are outside both addenda and remain protected:
+
+- `staff_accept_replacement_outcome_v1`;
+- `create_replacement_child_order_v2`;
+- whatever existing parent/child linkage those authorities already perform;
+- child invoice, tracking and reconciliation through existing order routes.
+
+Neither addendum is authority to add a child lifecycle or terminal lifecycle that does not already exist.
+
+## 3. Exact intersection and handoff
+
+The intersection is the final committed physical-review and remedy-allocation state.
+
+The v1.2 bridge writes:
+
+- `physical_receipt_reviews.status` and supervisor decision provenance;
+- exact `physical_exception_remedy_allocations` route, quantity and commercial value;
+- exact refund/replacement dispute headers and lines;
+- `physical_receipt_review_dispute_links` and the compatibility primary dispute link.
+
+The routing authority then reads only the exact final outcome:
 
 ```text
 review status rejected
-→ release the exact affected quantity into customer review
+→ release exact affected quantity into customer review
 
 review status closed_no_action
 → release only exact approved no_action quantity into customer review
@@ -66,76 +91,51 @@ approved refund allocation
 approved replacement allocation
 → remain diverted
 
-approved investigation/hold route
+approved investigation or unresolved quantity
 → remain diverted
 ```
 
-The routing build must not infer a remedy from a dispute header, UI label or compatibility primary link. It must read the exact review and remedy-allocation records created by the v1.2 authority.
+The routing build must not infer a route from a child order, dispute status, UI label or later replacement activity. Its handoff source is the exact physical review and remedy-allocation state.
 
-## 3. Shared objects and ownership matrix
+## 4. Shared objects and permitted access
 
-### 3.1 `shipper_package_receipts`
+### `shipper_package_receipts`
 
-- v1.2 ownership: read source receipt identity and provenance.
-- routing ownership: read finalised receipt and add a narrow post-finalisation materialisation trigger.
-- prohibited routing write: no receipt status, evidence, correction or disposition mutation.
+- v1.2: reads receipt identity and provenance.
+- routing: reads finalised receipt and may attach a narrow finalisation materialisation trigger.
+- routing must not rewrite receipt facts.
 
-### 3.2 `shipper_package_receipt_line_dispositions`
+### `shipper_package_receipt_line_dispositions`
 
-- v1.2 ownership: source evidence for affected quantity and issue type.
-- routing ownership: read exact clean/affected quantities.
-- prohibited routing write: no insert, update or delete.
+- v1.2: reads affected issue type and exact source.
+- routing: reads exact clean and affected quantities.
+- neither build may mutate stored dispositions.
 
-### 3.3 `physical_receipt_reviews`
+### `physical_receipt_reviews`
 
-- v1.2 ownership: all importer/supervisor workflow writes, terminal status, decision note, liability and dispute linkage.
-- routing ownership: read terminal status and `supervisor_decided_at`; optionally attach a deferred post-decision materialisation trigger.
-- prohibited routing write: no status, liability, linked dispute, decision-note or sequence change.
+- v1.2: owns importer/supervisor workflow writes, final decision and dispute linkage.
+- routing: reads final status and `supervisor_decided_at`; may attach only a deferred post-decision materialisation trigger.
+- routing must not alter status, liability, notes, linked dispute or decision sequence.
 
-### 3.4 `physical_exception_remedy_allocations`
+### `physical_exception_remedy_allocations`
 
-- v1.2 ownership: proposal, approval, exact quantity, commercial value, dispute linkage and lifecycle progression.
-- routing ownership: read exact approved route and quantity when deriving released versus diverted quantity.
-- prohibited routing write: no remedy status, quantity, value, dispute-line link or lifecycle mutation.
+- v1.2: owns proposal, approval, exact route, quantity, commercial value and dispute-line linkage.
+- routing: read-only for deriving released versus diverted quantity.
+- routing must not change remedy status, quantity, value or links.
 
-### 3.5 Disputes and dispute lines
+### Disputes and dispute lines
 
-- v1.2 ownership: grouping, partitioning, amount, desired outcome, one-line replacement shape and compatibility links.
-- routing ownership: none beyond optional diagnostic provenance.
-- prohibited routing write: all dispute and dispute-line writes.
+- v1.2: owns bridge-created grouping, values and line shape.
+- routing: no write ownership.
 
-### 3.6 Customer-review tables
+### Customer-review, hold and shipment authorities
 
-- v1.2 ownership: none.
-- routing ownership: candidate derivation, exact membership timing, materialisation and completion state used by shipment.
+- routing owns the corrections described in its governing addendum.
+- v1.2 has no write ownership over those routes.
 
-### 3.7 Customer-hold tables
+## 5. Protected authorities
 
-- v1.2 ownership: none.
-- routing ownership: read existing exact hold memberships and preserve existing hold write authorities unchanged.
-
-### 3.8 Shipment tables and RPCs
-
-- v1.2 ownership: none.
-- routing ownership: exact candidate quantity, exact shipment creation quantity and package-routing display.
-
-### 3.9 Replacement child and return infrastructure
-
-The following remain exclusively owned by v1.2 and established replacement authorities:
-
-- `staff_accept_replacement_outcome_v1`;
-- `create_replacement_child_order_v2`;
-- replacement child parent linkage;
-- replacement return adapters;
-- `dispute_return_tracking_submissions`;
-- `shipper_return_task_confirmations`;
-- replacement child invoice, tracking and reconciliation routes.
-
-The routing build must not replace, wrap or call these authorities.
-
-## 4. Protected v1.2 authorities
-
-Before applying any routing migration, capture exact definitions, owners, ACLs and trigger bindings for at least:
+The routing build must capture and preserve the exact current definitions, owners, ACLs and trigger bindings of:
 
 ```text
 staff_decide_physical_receipt_review_v1(uuid,text,jsonb,text,text)
@@ -147,145 +147,94 @@ staff_accept_replacement_outcome_v1(uuid,uuid,text)
 create_replacement_child_order_v2(uuid,uuid,uuid,text)
 ```
 
-The routing migration must fail before any write if a captured authority differs from the approved current-main baseline.
+The last two are protected existing downstream authorities, not v1.2-owned lifecycle functions.
 
-After the routing migration, the exact definitions, owners, ACLs and trigger bindings must remain unchanged.
+The routing migration must fail before writing if the approved current-main baseline differs.
 
-## 5. Safe supervisor integration
+## 6. Safe supervisor integration
 
 The routing build must not rewrite either supervisor-decision RPC.
 
-Customer-review materialisation after `rejected` or `closed_no_action` must use a separate deferred post-decision mechanism that runs only after the v1.2 transaction has completed all review, remedy, dispute and link writes.
+Materialisation after `rejected` or `closed_no_action` must use a deferred post-decision mechanism that runs only after the v1.2 review, remedy, dispute and link writes are complete.
 
-The integration mechanism must:
+It must:
 
-- execute after the final state is internally consistent;
 - call only the existing customer-review materialiser;
 - do nothing for refund, replacement or investigation outcomes;
 - be idempotent;
-- fail closed if exact released quantity cannot be proven;
-- never alter the supervisor transaction's chosen dispute, value, line shape or remedy lifecycle.
+- create no membership after a failed or rolled-back supervisor transaction;
+- never change dispute partitioning, commercial value, replacement line shape or remedy state.
 
-A normal immediate row trigger that runs before the v1.2 sequence is complete is prohibited.
-
-## 6. Routing derivation from v1.2 state
-
-For each allocation, the routing v2 authority must distinguish:
-
-```text
-source clean quantity
-source affected quantity
-approved no_action quantity
-approved refund quantity
-approved replacement quantity
-approved investigation/hold quantity
-```
-
-The following balance must hold:
-
-```text
-released_to_clean_qty
-+ remaining_diverted_affected_qty
-= source_affected_qty
-```
-
-Where:
-
-```text
-released_to_clean_qty =
-  source affected quantity when the review is rejected
-  + exact approved no_action quantity when closed_no_action
-
-remaining_diverted_affected_qty =
-  approved refund quantity
-  + approved replacement quantity
-  + approved investigation/hold quantity
-  + any unresolved or unproven remainder
-```
-
-Any overlap, over-allocation, missing exact route or inconsistent lifecycle must make the routing position invalid and shipment quantity zero.
-
-## 7. End-to-end journey
+## 7. Correct journey
 
 ```text
 Shipper finalises mixed receipt
         |
         +-- Product B clean qty 1
-        |       |
-        |       +-- routing addendum owns
-        |               → customer-review membership
-        |               → exact 24-hour timing
-        |               → hold or completion
-        |               → shipment-ready qty 1
+        |       → routing addendum
+        |       → customer review
+        |       → hold or completion
+        |       → exact shipment eligibility
         |
         +-- Product A damaged qty 1
-                |
-                +-- v1.2 exception bridge owns
-                        → importer proposal
-                        → supervisor approves replacement
-                        → exact commercial value
-                        → one-line replacement dispute
-                        → replacement acceptance/child path
-                |
-                +-- routing addendum reads final outcome only
-                        → replacement qty remains diverted
-                        → shipment-ready qty 0
+                → v1.2 bridge
+                → importer proposal
+                → supervisor approves replacement
+                → exact commercial value
+                → one-line replacement dispute/remedy shape
+                → remains diverted under routing
+                → existing replacement acceptance/child-creation authorities may act later
 ```
 
-If the supervisor instead rejects Product A's affected classification:
+No child lifecycle is created or governed by this intersection.
+
+If the supervisor rejects the damage classification:
 
 ```text
-v1.2 owns and commits the rejected review state
+v1.2 commits rejected review state
         ↓
-routing deferred hook materialises Product A into customer review
+routing deferred hook materialises exact quantity into customer review
         ↓
-Product A receives its own review period
-        ↓
-only after completion and no hold may it enter shipment
+normal review/hold/shipment rules apply
 ```
 
 ## 8. Non-interference regressions
 
 The routing regression must prove:
 
-1. v1.2 supervisor bridge fingerprints are identical before and after.
-2. Physical guard OIDs, owners, ACLs and trigger bindings are unchanged.
+1. v1.2 supervisor bridge definitions and bindings are unchanged.
+2. Physical guards are unchanged.
 3. Refund grouping and supplier-invoice partitioning remain unchanged.
-4. One physical replacement allocation still creates exactly one replacement dispute line.
-5. Customer commercial value on remedy, dispute and replacement child remains unchanged.
-6. `staff_accept_replacement_outcome_v1` still accepts the proven one-line shape.
-7. Replacement child creation, parent linkage and terminal progression remain unchanged.
-8. Replacement return records and shipper confirmations remain unchanged.
-9. Routing reads replacement/refund allocations but never mutates them.
+4. One physical replacement allocation still produces exactly one replacement dispute line.
+5. Customer commercial value remains unchanged.
+6. Existing replacement acceptance and child-creation authorities remain byte-for-byte unchanged.
+7. No new child lifecycle, parent terminal rule or child-status authority is introduced.
+8. Replacement-return records and shipper confirmations remain unchanged.
+9. Routing reads refund/replacement allocations but never mutates them.
 10. Replacement quantity produces shipment-ready quantity zero.
-11. Originally clean quantity continues independently through customer review and shipment.
-12. A rejected/no-action quantity is materialised only after the final supervisor state is complete.
-13. A failed or rolled-back supervisor transaction creates no customer-review membership.
-14. No routing trigger fires for replacement/refund outcomes.
+11. Originally clean quantity continues independently.
+12. Rejected/no-action quantity is materialised only after final supervisor state.
+13. A rolled-back supervisor decision creates no review membership.
+14. No routing trigger fires for refund or replacement outcomes.
 
-The v1.2 regression suite must also be run unchanged after the routing build. Any failure blocks merge.
+The unchanged v1.2 regression suite must pass after the routing build.
 
 ## 9. Build order
 
-The routing implementation must proceed from current `main`, where v1.2 and its restoration commits are already present.
-
-Required order:
-
-1. Create a fresh routing implementation branch from current `main`.
-2. Capture v1.2 protected fingerprints and bindings.
-3. Implement private routing reads and customer-review timing first.
-4. Add the deferred supervisor handoff without changing the supervisor RPCs.
-5. Implement shipment candidate and creation corrections.
+1. Start from current `main` containing the locked v1.2 bridge repair.
+2. Capture protected definitions, ACLs and trigger bindings.
+3. Implement private routing reads and customer-review timing.
+4. Add the deferred supervisor handoff without changing supervisor RPCs.
+5. Correct shipment candidate and creation authorities.
 6. Run routing regressions.
-7. Run the complete unchanged v1.2 regression suite.
-8. Compare protected definitions and ACLs before and after.
-9. Merge only when both suites pass and the diff contains no replacement/refund authority changes.
+7. Run the unchanged v1.2 regression suite.
+8. Prove no downstream replacement authority or lifecycle rule was added or changed.
 
 ## 10. Final ownership rule
 
 ```text
-The v1.2 addendum decides what the affected quantity becomes and builds its remedy path.
-The routing addendum decides whether exact quantity is awaiting review, diverted or shipment-ready.
+v1.2 repairs the affected-quantity bridge into existing refund/replacement routes.
+Routing decides whether exact quantity is awaiting review, diverted or shipment-ready.
+Existing downstream authorities handle replacement acceptance and child creation.
+No addendum here creates a child lifecycle.
 ```
-
-Neither build may silently assume ownership of the other's writes.
