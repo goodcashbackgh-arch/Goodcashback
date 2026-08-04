@@ -79,3 +79,51 @@ export async function decidePhysicalReceiptReviewAction(formData: FormData) {
   const status = data?.status ? ` Review status: ${data.status}.` : "";
   redirect(`/internal/physical-receipts/${reviewId}?success=${encodeURIComponent(`Supervisor decision recorded.${status}`)}`);
 }
+
+export async function decidePhysicalOutcomeLaneAction(formData: FormData) {
+  const reviewId = text(formData, "review_id");
+  const laneId = text(formData, "lane_id");
+  const staffId = text(formData, "staff_id");
+  const outcomeType = text(formData, "outcome_type");
+  const note = text(formData, "note");
+  const raw = text(formData, "allocation_ids_json") || "[]";
+
+  if (!reviewId) redirect("/internal/physical-receipts?error=Missing%20review%20identity.");
+  if (!laneId || !staffId) redirect(destination(reviewId, "Missing grouped outcome lane authority identity."));
+  if (!["refund", "replacement"].includes(outcomeType)) redirect(destination(reviewId, "Unsupported grouped outcome lane type."));
+  if (!note) redirect(destination(reviewId, "A factual supervisor note is required."));
+
+  let allocationIds: string[];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed) || parsed.length === 0 || parsed.some((value) => typeof value !== "string")) throw new Error("shape");
+    allocationIds = parsed as string[];
+  } catch {
+    redirect(destination(reviewId, "Grouped outcome lane items are invalid."));
+  }
+
+  if (new Set(allocationIds).size !== allocationIds.length) redirect(destination(reviewId, "Grouped outcome lane items contain duplicates."));
+
+  const decision = outcomeType === "refund" ? "refund_settlement_credit" : "replacement_accept";
+  const itemDecisions = allocationIds.map((physicalRemedyAllocationId) => ({
+    physical_remedy_allocation_id: physicalRemedyAllocationId,
+    decision,
+    ...(outcomeType === "refund" ? { reason: "supervisor_confirmed_credit" } : {}),
+  }));
+
+  const supabase = await createClient();
+  const { data, error } = await (supabase as any).rpc("staff_decide_physical_outcome_lane_v1", {
+    p_lane_id: laneId,
+    p_staff_id: staffId,
+    p_item_decisions: itemDecisions,
+    p_note: note,
+  });
+
+  if (error) redirect(destination(reviewId, error.message));
+
+  revalidatePath("/internal");
+  revalidatePath("/internal/physical-receipts");
+  revalidatePath(`/internal/physical-receipts/${reviewId}`);
+  const status = data?.lane_status ? ` Lane status: ${String(data.lane_status).replaceAll("_", " ")}.` : "";
+  redirect(`/internal/physical-receipts/${reviewId}?success=${encodeURIComponent(`Grouped ${outcomeType} decision recorded.${status}`)}`);
+}
