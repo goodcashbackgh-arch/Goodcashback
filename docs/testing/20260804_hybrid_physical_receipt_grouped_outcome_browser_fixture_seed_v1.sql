@@ -93,6 +93,10 @@ BEGIN
   SELECT * INTO STRICT v_template_order
   FROM public.orders WHERE id=v_template_review.order_id;
 
+  IF v_template_order.order_type='replacement_child' THEN
+    RAISE EXCEPTION 'Selected structural template is a replacement child; refusing to clone it.';
+  END IF;
+
   SELECT * INTO STRICT v_template_tracking
   FROM public.order_tracking_submissions
   WHERE id=v_template_review.tracking_submission_id;
@@ -135,9 +139,10 @@ BEGIN
     jsonb_build_object(
       'id',v_order_id,
       'order_ref','PW-GROUPED-'||replace(v_run_id::text,'-',''),
-      'order_type','standard',
+      'order_type',v_template_order.order_type,
       'parent_order_id',NULL,
       'replacement_source_dispute_line_id',NULL,
+      'total_qty_declared',5,
       'created_at',now(),
       'updated_at',now()
     )
@@ -167,8 +172,6 @@ BEGIN
     )
   );
 
-  -- Insert the v2 receipt in its required pending state. After exact lines and
-  -- evidence exist, the normal integrity trigger finalises it below.
   PERFORM pg_temp.clone_row(
     'public.shipper_package_receipts',to_jsonb(v_template_receipt),
     jsonb_build_object(
@@ -335,6 +338,7 @@ BEGIN
     'marker',v_marker,
     'order_id',v_order_id,
     'order_ref','PW-GROUPED-'||replace(v_run_id::text,'-',''),
+    'order_type',v_template_order.order_type,
     'supplier_invoice_id',v_invoice_id,
     'tracking_submission_id',v_tracking_id,
     'receipt_id',v_receipt_id,
