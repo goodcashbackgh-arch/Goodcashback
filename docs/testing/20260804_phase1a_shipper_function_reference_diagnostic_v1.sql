@@ -16,7 +16,7 @@ WITH target_functions AS (
     'public.shipper_tracking_review_state_v1(uuid,uuid)'::regprocedure,
     'public.shipper_dashboard_tracking_review_states_v1()'::regprocedure
   )
-), references AS (
+), function_details AS (
   SELECT
     identity,
     definition_md5,
@@ -44,8 +44,8 @@ WITH target_functions AS (
 )
 SELECT jsonb_build_object(
   'functions', COALESCE((
-    SELECT jsonb_agg(to_jsonb(references) ORDER BY identity)
-    FROM references
+    SELECT jsonb_agg(to_jsonb(function_details) ORDER BY identity)
+    FROM function_details
   ), '[]'::jsonb),
   'call_graph', COALESCE((
     SELECT jsonb_agg(to_jsonb(call_graph) ORDER BY caller_identity, callee_identity)
