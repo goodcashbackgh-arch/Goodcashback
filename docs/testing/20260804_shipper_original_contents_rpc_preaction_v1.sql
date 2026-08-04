@@ -4,9 +4,7 @@
 -- This checks the exact RPC used by app/shipper/OriginalPackageContentsPreview.tsx.
 -- It does not modify data or functions.
 
-WITH constants AS (
-  SELECT '8d6fbf0f-4d1f-4aa7-9f0a-000000000000'::uuid AS placeholder_tracking_id
-), function_match AS (
+WITH function_match AS (
   SELECT
     p.oid,
     n.nspname AS schema_name,
@@ -19,13 +17,6 @@ WITH constants AS (
   JOIN pg_namespace n ON n.oid = p.pronamespace
   WHERE n.nspname = 'public'
     AND p.proname = 'shipper_package_original_contents_preview_v1'
-), migration_presence AS (
-  SELECT EXISTS (
-    SELECT 1
-    FROM public.supabase_migrations_schema_migrations sm
-    WHERE sm.version LIKE '%shipper%original%contents%'
-       OR sm.name ILIKE '%shipper%original%contents%'
-  ) AS matching_migration_record
 ), blockers AS (
   SELECT array_remove(ARRAY[
     CASE WHEN (SELECT count(*) FROM function_match) = 0 THEN 'rpc_missing' END,
@@ -38,8 +29,6 @@ SELECT jsonb_build_object(
   'probe', 'shipper_original_contents_rpc_preaction_v1',
   'result', CASE WHEN COALESCE(array_length(blockers, 1), 0) = 0 THEN 'PASS' ELSE 'FAIL' END,
   'blockers', blockers,
-  'functions', COALESCE((SELECT jsonb_agg(to_jsonb(function_match)) FROM function_match), '[]'::jsonb),
-  'migration_record', to_jsonb(migration_presence)
+  'functions', COALESCE((SELECT jsonb_agg(to_jsonb(function_match)) FROM function_match), '[]'::jsonb)
 ) AS result
-FROM blockers
-CROSS JOIN migration_presence;
+FROM blockers;
