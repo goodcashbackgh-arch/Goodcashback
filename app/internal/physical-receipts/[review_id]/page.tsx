@@ -75,6 +75,7 @@ export default async function StaffPhysicalReceiptDetail({ params, searchParams 
   }));
   const activeProposals = (review.proposals ?? []).filter((row) => row.status === "proposed");
   const canDecideInitialReview = review.status === "awaiting_supervisor_review";
+  const initialDecisionComplete = !canDecideInitialReview && Boolean(review.decision_note);
   const lanes = review.outcome_lanes ?? [];
 
   return <main className="min-h-screen space-y-5 bg-slate-50 p-4 md:p-6">
@@ -88,7 +89,11 @@ export default async function StaffPhysicalReceiptDetail({ params, searchParams 
 
     {review.linked_disputes?.length ? <section className="rounded-3xl border border-emerald-200 bg-emerald-50 p-5"><h2 className="font-semibold text-emerald-950">Linked disputes</h2><div className="mt-3 flex flex-wrap gap-2">{review.linked_disputes.map((link) => <Link key={`${link.dispute_id}-${link.remedy_type}`} href={`/internal/exceptions/${link.dispute_id}`} className="rounded-full bg-white px-3 py-1.5 text-sm font-semibold text-emerald-900 shadow-sm">{link.remedy_type}: {link.dispute_id}</Link>)}</div></section> : null}
 
-    <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="text-lg font-semibold text-slate-950">Initial supervisor decision</h2>{review.decision_note && !canDecideInitialReview ? <p className="mt-2 text-sm text-slate-700">{review.decision_note}</p> : null}<div className="mt-4"><DecisionForm reviewId={review.id} proposals={activeProposals} disabled={!canDecideInitialReview} /></div></section>
+    {canDecideInitialReview ? <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="text-lg font-semibold text-slate-950">Initial supervisor decision</h2><div className="mt-4"><DecisionForm reviewId={review.id} proposals={activeProposals} disabled={false} /></div></section> : null}
+
+    {initialDecisionComplete ? <section className="rounded-3xl border border-emerald-200 bg-emerald-50 p-5 shadow-sm"><div className="text-xs font-semibold uppercase tracking-[0.2em] text-emerald-700">Initial review complete</div><h2 className="mt-1 text-lg font-semibold text-emerald-950">Supervisor decision recorded</h2><p className="mt-2 text-sm text-emerald-900">{review.decision_note}</p></section> : null}
+
+    {initialDecisionComplete && !lanes.length ? <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 shadow-sm"><div className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-700">Grouped outcomes pending</div><h2 className="mt-1 text-lg font-semibold text-amber-950">Waiting for retailer outcomes</h2><p className="mt-2 text-sm text-amber-900">The initial receipt decision is complete. Grouped refund and same-order replacement lanes will appear on this page when the linked disputes have compatible retailer outcomes. Do not use the legacy child-order replacement action on the individual exception pages.</p></section> : null}
 
     {lanes.length ? <section className="space-y-4">
       <div><h2 className="text-xl font-semibold text-slate-950">Grouped outcome lanes</h2><p className="mt-1 text-sm text-slate-600">Later refund and replacement outcomes are completed here as one supervisor action per lane.</p></div>
