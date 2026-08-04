@@ -1,5 +1,6 @@
 -- READ-ONLY live-schema probe for the grouped physical receipt browser fixture.
 -- No DML. No temp table. No function creation. Safe to run repeatedly.
+-- This probe deliberately avoids naming application-table columns beyond proven join keys.
 
 WITH target_tables AS (
   SELECT unnest(ARRAY[
@@ -15,7 +16,7 @@ WITH target_tables AS (
   ]) AS table_name
 ), constraints AS (
   SELECT
-    c.conrelid::regclass::text AS table_name,
+    r.relname AS table_name,
     c.conname AS constraint_name,
     c.contype AS constraint_type,
     pg_get_constraintdef(c.oid,true) AS definition
@@ -53,6 +54,7 @@ WITH target_tables AS (
     table_name,
     column_name,
     data_type,
+    udt_name,
     is_nullable,
     column_default,
     is_identity,
@@ -61,37 +63,9 @@ WITH target_tables AS (
   FROM information_schema.columns
   JOIN target_tables USING(table_name)
   WHERE table_schema='public'
-), template AS (
-  SELECT
-    review.id AS template_review_id,
-    review.order_id,
-    review.receipt_id,
-    review.tracking_submission_id,
-    o.order_ref,
-    o.payment_auth_id,
-    o.order_type,
-    o.status AS order_status,
-    o.funded_at,
-    o.total_qty_declared,
-    o.parent_order_id,
-    o.replacement_source_dispute_line_id,
-    si.id AS supplier_invoice_id,
-    si.invoice_number,
-    si.supplier_invoice_number,
-    ots.tracking_ref,
-    spr.receipt_submission_id,
-    spr.payload_fingerprint
+), template_review AS (
+  SELECT review.*
   FROM public.physical_receipt_reviews review
-  JOIN public.orders o ON o.id=review.order_id
-  JOIN public.order_tracking_submissions ots ON ots.id=review.tracking_submission_id
-  JOIN public.shipper_package_receipts spr ON spr.id=review.receipt_id
-  LEFT JOIN LATERAL (
-    SELECT si.*
-    FROM public.supplier_invoices si
-    WHERE si.order_id=review.order_id
-    ORDER BY si.id
-    LIMIT 1
-  ) si ON true
   WHERE EXISTS (
     SELECT 1
     FROM public.shipper_package_receipt_line_dispositions d
@@ -100,28 +74,46 @@ WITH target_tables AS (
   )
   ORDER BY review.created_at DESC,review.id DESC
   LIMIT 1
+), template_rows AS (
+  SELECT jsonb_build_object(
+    'physical_receipt_review',to_jsonb(r),
+    'order',(SELECT to_jsonb(o) FROM public.orders o WHERE o.id=r.order_id),
+    'tracking_submission',(SELECT to_jsonb(t) FROM public.order_tracking_submissions t WHERE t.id=r.tracking_submission_id),
+    'receipt',(SELECT to_jsonb(p) FROM public.shipper_package_receipts p WHERE p.id=r.receipt_id),
+    'supplier_invoices',COALESCE((
+      SELECT jsonb_agg(to_jsonb(si) ORDER BY si.id)
+      FROM public.supplier_invoices si
+      WHERE si.order_id=r.order_id
+    ),'[]'::jsonb),
+    'receipt_dispositions',COALESCE((
+      SELECT jsonb_agg(to_jsonb(d) ORDER BY d.id)
+      FROM public.shipper_package_receipt_line_dispositions d
+      WHERE d.receipt_id=r.receipt_id
+    ),'[]'::jsonb),
+    'receipt_evidence',COALESCE((
+      SELECT jsonb_agg(to_jsonb(e) ORDER BY e.id)
+      FROM public.shipper_package_receipt_evidence e
+      WHERE e.receipt_id=r.receipt_id
+    ),'[]'::jsonb),
+    'tracking_allocations',COALESCE((
+      SELECT jsonb_agg(to_jsonb(a) ORDER BY a.id)
+      FROM public.order_tracking_line_allocations a
+      WHERE a.tracking_submission_id=r.tracking_submission_id
+    ),'[]'::jsonb)
+  ) AS payload
+  FROM template_review r
 ), enum_like_checks AS (
-  SELECT
-    table_name,
-    constraint_name,
-    definition
+  SELECT table_name,constraint_name,definition
   FROM constraints
   WHERE constraint_type='c'
-    AND (
-      definition ILIKE '%order_type%'
-      OR definition ILIKE '%status%'
-      OR definition ILIKE '%receipt_state%'
-      OR definition ILIKE '%receipt_status%'
-      OR definition ILIKE '%disposition_type%'
-    )
 )
 SELECT jsonb_build_object(
-  'probe','grouped_fixture_live_schema_probe_v1',
+  'probe','grouped_fixture_live_schema_probe_v2',
   'result','READY',
-  'template_row',(SELECT to_jsonb(template) FROM template),
-  'constraints',COALESCE((SELECT jsonb_agg(to_jsonb(constraints) ORDER BY table_name,constraint_name) FROM constraints),'[]'::jsonb),
-  'unique_indexes',COALESCE((SELECT jsonb_agg(to_jsonb(unique_indexes) ORDER BY table_name,index_name) FROM unique_indexes),'[]'::jsonb),
-  'triggers',COALESCE((SELECT jsonb_agg(to_jsonb(triggers) ORDER BY table_name,trigger_name,event_manipulation) FROM triggers),'[]'::jsonb),
-  'columns',COALESCE((SELECT jsonb_agg(to_jsonb(columns) ORDER BY table_name,ordinal_position) FROM columns),'[]'::jsonb),
-  'enum_like_checks',COALESCE((SELECT jsonb_agg(to_jsonb(enum_like_checks) ORDER BY table_name,constraint_name) FROM enum_like_checks),'[]'::jsonb)
+  'template_rows',(SELECT payload FROM template_rows),
+  'constraints',COALESCE((SELECT jsonb_agg(to_jsonb(c) ORDER BY table_name,constraint_name) FROM constraints c),'[]'::jsonb),
+  'unique_indexes',COALESCE((SELECT jsonb_agg(to_jsonb(u) ORDER BY table_name,index_name) FROM unique_indexes u),'[]'::jsonb),
+  'triggers',COALESCE((SELECT jsonb_agg(to_jsonb(t) ORDER BY table_name,trigger_name,event_manipulation) FROM triggers t),'[]'::jsonb),
+  'columns',COALESCE((SELECT jsonb_agg(to_jsonb(c) ORDER BY table_name,ordinal_position) FROM columns c),'[]'::jsonb),
+  'check_constraints',COALESCE((SELECT jsonb_agg(to_jsonb(e) ORDER BY table_name,constraint_name) FROM enum_like_checks e),'[]'::jsonb)
 ) AS result;
