@@ -1,6 +1,6 @@
--- Acceptance-only persistent browser fixture for grouped physical receipt outcomes.
+-- Persistent browser fixture for grouped physical receipt outcomes.
 -- Creates one fresh five-line order and leaves its physical review at
--- awaiting_importer_proposal so the importer and supervisor actions are exercised in UI.
+-- awaiting_importer_proposal so importer and supervisor actions are exercised in UI.
 --
 -- Lines:
 --   A clean control
@@ -9,16 +9,10 @@
 --   D missing  -> propose refund in UI
 --   E wrong    -> propose refund in UI
 --
--- No dispute, outcome lane, same-order route, refund credit, or replacement child is
--- created by this seed. Those must be produced by the real application workflow.
-
-DO $guard$
-BEGIN
-  IF current_setting('app.environment', true) IS DISTINCT FROM 'acceptance' THEN
-    RAISE EXCEPTION 'Grouped browser fixture provisioning is acceptance-only.';
-  END IF;
-END
-$guard$;
+-- The script uses fresh UUIDs and a unique PW-GROUPED-* marker. It does not
+-- modify an existing order. Any failed invariant rolls back the entire fixture.
+-- It creates no dispute, outcome lane, same-order route, refund credit, or
+-- replacement child. Those must be produced by the real application workflow.
 
 BEGIN;
 
@@ -173,6 +167,27 @@ BEGIN
     )
   );
 
+  -- Insert the v2 receipt in its required pending state. After exact lines and
+  -- evidence exist, the normal integrity trigger finalises it below.
+  PERFORM pg_temp.clone_row(
+    'public.shipper_package_receipts',to_jsonb(v_template_receipt),
+    jsonb_build_object(
+      'id',v_receipt_id,
+      'order_id',v_order_id,
+      'tracking_submission_id',v_tracking_id,
+      'receipt_submission_id',gen_random_uuid(),
+      'payload_fingerprint',md5(v_marker),
+      'receipt_model_version',2,
+      'receipt_state','pending',
+      'receipt_status','held_query',
+      'finalised_at',NULL,
+      'correction_of_receipt_id',NULL,
+      'correction_reason',NULL,
+      'created_at',now(),
+      'updated_at',now()
+    )
+  );
+
   FOREACH v_code IN ARRAY ARRAY['A','B','C','D','E'] LOOP
     v_line_id:=gen_random_uuid();
     v_allocation_id:=gen_random_uuid();
@@ -265,24 +280,14 @@ BEGIN
     );
   END LOOP;
 
-  PERFORM pg_temp.clone_row(
-    'public.shipper_package_receipts',to_jsonb(v_template_receipt),
-    jsonb_build_object(
-      'id',v_receipt_id,
-      'order_id',v_order_id,
-      'tracking_submission_id',v_tracking_id,
-      'receipt_submission_id',gen_random_uuid(),
-      'payload_fingerprint',md5(v_marker),
-      'receipt_model_version',2,
-      'receipt_state','finalised',
-      'receipt_status','received_damaged',
-      'finalised_at',now(),
-      'correction_of_receipt_id',NULL,
-      'correction_reason',NULL,
-      'created_at',now(),
-      'updated_at',now()
-    )
-  );
+  UPDATE public.shipper_package_receipts
+  SET receipt_state='finalised',updated_at=now()
+  WHERE id=v_receipt_id
+    AND receipt_state='pending';
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Pending fixture receipt could not be finalised.';
+  END IF;
 
   INSERT INTO public.physical_receipt_reviews(
     id,receipt_id,order_id,importer_id,tracking_submission_id,source_stage,status,
@@ -307,6 +312,15 @@ BEGIN
   END IF;
   IF (SELECT COUNT(*) FROM public.shipper_package_receipt_evidence WHERE receipt_id=v_receipt_id)<>4 THEN
     RAISE EXCEPTION 'Each affected line must have evidence.';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM public.shipper_package_receipts
+    WHERE id=v_receipt_id
+      AND receipt_model_version=2
+      AND receipt_state='finalised'
+      AND finalised_at IS NOT NULL
+  ) THEN
+    RAISE EXCEPTION 'Fixture receipt did not pass normal v2 finalisation.';
   END IF;
   IF EXISTS (SELECT 1 FROM public.orders WHERE parent_order_id=v_order_id) THEN
     RAISE EXCEPTION 'Fixture unexpectedly created a replacement child order.';
