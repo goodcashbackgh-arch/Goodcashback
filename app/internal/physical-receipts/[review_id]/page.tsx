@@ -142,7 +142,7 @@ export default async function StaffPhysicalReceiptDetail({ params, searchParams 
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <div className="text-xs font-semibold uppercase tracking-[0.18em] text-violet-700">{lane.outcome_type} lane</div>
-                <h3 className="mt-1 text-lg font-semibold text-slate-950">{lane.outcome_type === "refund" ? "Credit-balance settlement" : "Same-order free replacement"}</h3>
+                <h3 className="mt-1 text-lg font-semibold text-slate-950">{lane.outcome_type === "refund" ? "Refund evidence pending" : "Same-order free replacement"}</h3>
               </div>
               <span className={`rounded-full px-3 py-1 text-xs font-semibold ${lane.can_decide ? "bg-amber-100 text-amber-800" : "bg-slate-100 text-slate-700"}`}>{words(lane.lane_status)}</span>
             </div>
