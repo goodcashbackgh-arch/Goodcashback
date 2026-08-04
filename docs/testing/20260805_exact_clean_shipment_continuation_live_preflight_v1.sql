@@ -1,6 +1,35 @@
+BEGIN;
+
+SET LOCAL lock_timeout = '15s';
+SET LOCAL statement_timeout = '0';
+
 -- Read-only preflight for the exact clean shipment-continuation build.
 -- Governed by HYBRID_PHYSICAL_RECEIPT_EXACT_ROUTING_AND_SHIPMENT_CONTINUATION_CORRECTION_ADDENDUM_v1 and v1.1.
--- No DDL, DML, temporary objects or persistent changes.
+-- No persistent changes. The transaction rolls back after the read.
+
+DO $auth_context$
+DECLARE
+  v_auth_user_id uuid;
+BEGIN
+  SELECT shipper_user.auth_user_id
+  INTO v_auth_user_id
+  FROM public.orders order_row
+  JOIN public.shipper_users shipper_user
+    ON shipper_user.shipper_id = order_row.shipper_id
+   AND shipper_user.active = true
+   AND shipper_user.auth_user_id IS NOT NULL
+  WHERE order_row.id = '1b4a2a43-5ddd-41ef-aef5-45e621eb5819'::uuid
+     OR order_row.order_ref LIKE 'PW-GROUPED-%'
+  ORDER BY order_row.created_at DESC, shipper_user.created_at DESC
+  LIMIT 1;
+
+  IF v_auth_user_id IS NULL THEN
+    RAISE EXCEPTION 'No active shipper auth context exists for the grouped fixture.';
+  END IF;
+
+  PERFORM set_config('request.jwt.claim.sub', v_auth_user_id::text, true);
+END;
+$auth_context$;
 
 WITH target_functions(identity) AS (
   VALUES
@@ -112,3 +141,5 @@ SELECT jsonb_build_object(
     FROM membership_table
   ), '[]'::jsonb)
 ) AS exact_clean_shipment_continuation_live_preflight;
+
+ROLLBACK;
