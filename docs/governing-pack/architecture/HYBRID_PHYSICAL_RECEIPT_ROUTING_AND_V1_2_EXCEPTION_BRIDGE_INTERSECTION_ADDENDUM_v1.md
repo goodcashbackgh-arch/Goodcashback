@@ -1,240 +1,326 @@
-# Hybrid Physical Receipt Routing and v1.2 Exception Bridge Intersection Addendum v1
+# Hybrid Physical Receipt Routing, Exception Bridge and Same-Order Outcome Intersection Addendum v1
 
-Status: Corrected locked integration and non-interference specification  
-Date: 4 August 2026
+**Status:** governing integration and non-interference specification  
+**Effective date:** 4 August 2026
 
 This addendum must be read with:
 
 - `HYBRID_PHYSICAL_RECEIPT_EXACT_ROUTING_AND_SHIPMENT_CONTINUATION_CORRECTION_ADDENDUM_v1.md`;
+- `HYBRID_PHYSICAL_RECEIPT_EXACT_ROUTING_AND_SHIPMENT_CONTINUATION_CORRECTION_ADDENDUM_v1_1.md`;
 - `HYBRID_PHYSICAL_RECEIPT_IMPLEMENTATION_ALIGNMENT_ADDENDUM_v1_2.md`;
-- `HYBRID_PHYSICAL_RECEIPT_QUANTITY_FULFILMENT_AND_REMEDY_CONTROL_ADDENDUM_v1.md`;
-- the current customer-review, customer-hold, shipment, refund and replacement authorities on `main`.
+- `HYBRID_PHYSICAL_RECEIPT_SAME_ORDER_FREE_REPLACEMENT_ROUTING_ADDENDUM_v1.md`;
+- `HYBRID_PHYSICAL_RECEIPT_SAME_ORDER_FREE_REPLACEMENT_ROUTING_ADDENDUM_v1_1.md`;
+- `HYBRID_PHYSICAL_RECEIPT_OUTCOME_LANE_GROUPING_ADDENDUM_v1.md`.
 
-## 1. Correction to the earlier intersection statement
+Where this document is more specific about the integration boundary, it controls.
 
-The earlier statement that v1.2 owns a replacement-child lifecycle was wrong and is superseded.
+## 1. Governing model
 
-The v1.2 addendum does not introduce or govern a child lifecycle. It repairs the physical-receipt-to-exception bridge and preserves the already established downstream refund and replacement authorities unchanged.
-
-Its governed scope is:
+New governed free physical replacements do not use replacement child orders.
 
 ```text
-exact affected receipt quantity
-→ importer proposal
-→ supervisor decision
-→ exact customer commercial value
-→ downstream-compatible refund dispute partition
-   or one-line replacement dispute shape
-→ optional original-item return/collection action where applicable
+original order remains the operational order;
+original supplier-invoice line remains authoritative;
+failed source allocation remains immutable history;
+exact failed quantity and value are superseded in the effective position;
+same-order successor tracking allocation carries the replacement attempt;
+no new child order or child invoice route is used.
 ```
 
-For replacement, v1.2 stops at producing the exact dispute/remedy shape required by the existing replacement acceptance and child-creation authorities. It does not create a new parent/child lifecycle, terminal progression model or child-status authority.
+Child-order terminology, status, lifecycle, invoice, tracking and blocker logic are not part of this routing specification.
 
-## 2. Correct separation of responsibility
+Legacy child-related records and functions may remain installed for historical cases, but routing must not read them as current truth and must not alter them.
 
-### v1.2 exception-bridge addendum owns
+## 2. Separation of responsibility
 
-- exact affected-quantity bridge from receipt review into existing disputes;
-- supervisor-approved remedy allocation shape;
-- deterministic customer commercial value on the physical remedy and dispute;
-- refund partitioning by downstream-compatible supplier-invoice and issue grouping;
-- one physical replacement allocation per replacement dispute line;
-- compatibility links between the physical review and its disputes;
-- additive original-item return/collection adapters for damaged or wrong replacement items where the retailer requires return;
-- preservation of all existing downstream replacement, refund, settlement and accounting authorities.
+### Physical-receipt exception bridge owns
 
-### Routing addendum owns
+- exact affected quantity from the final receipt;
+- importer proposal and supervisor decision;
+- exact approved remedy allocation;
+- exact customer commercial value;
+- refund dispute partitioning;
+- exact replacement dispute/remedy shape;
+- physical review and dispute compatibility links;
+- original-item return or collection records where applicable.
 
-- originally clean quantity continuing independently;
-- supervisor-released `rejected` quantity entering customer review;
+### Outcome-lane and same-order replacement build owns
+
+- separate refund and replacement lanes;
+- grouped operator and supervisor actions over exact lane items;
+- refund continuation through existing refund and settlement authorities;
+- same-order replacement route creation;
+- quantity/value supersession of the failed source allocation;
+- successor tracking allocation on the original order and supplier-invoice line.
+
+### Exact routing build owns
+
+- originally clean quantity entering customer review;
+- `rejected` quantity entering customer review;
 - approved `no_action` quantity entering customer review;
-- refund, replacement and investigation quantity remaining diverted;
-- exact customer-review timing and memberships;
-- exact customer holds;
-- exact shipment eligibility and shipment quantity;
-- package-routing and immutable receipt displays.
+- failed refund/replacement/investigation source quantity remaining diverted;
+- per-allocation review timing;
+- exact hold subtraction;
+- exact shipment-ready quantity;
+- normal routing of a later same-order successor allocation after its own receipt finalises.
 
-### Existing downstream replacement authorities own
+## 3. Exact handoffs
 
-These are outside both addenda and remain protected:
+### 3.1 Supervisor outcome handoff
 
-- `staff_accept_replacement_outcome_v1`;
-- `create_replacement_child_order_v2`;
-- whatever existing parent/child linkage those authorities already perform;
-- child invoice, tracking and reconciliation through existing order routes.
-
-Neither addendum is authority to add a child lifecycle or terminal lifecycle that does not already exist.
-
-## 3. Exact intersection and handoff
-
-The intersection is the final committed physical-review and remedy-allocation state.
-
-The v1.2 bridge writes:
-
-- `physical_receipt_reviews.status` and supervisor decision provenance;
-- exact `physical_exception_remedy_allocations` route, quantity and commercial value;
-- exact refund/replacement dispute headers and lines;
-- `physical_receipt_review_dispute_links` and the compatibility primary dispute link.
-
-The routing authority then reads only the exact final outcome:
+The routing build reads the final committed physical review and remedy-allocation state:
 
 ```text
 review status rejected
-→ release exact affected quantity into customer review
+→ exact affected source quantity becomes customer-review eligible
 
 review status closed_no_action
-→ release only exact approved no_action quantity into customer review
+→ exact approved no_action quantity becomes customer-review eligible
 
 approved refund allocation
-→ remain diverted
+→ source quantity remains in refund lane and outside shipment
 
 approved replacement allocation
-→ remain diverted
+→ failed source quantity remains diverted
+→ no source customer-review membership
+→ no source shipment membership
 
-approved investigation or unresolved quantity
-→ remain diverted
+approved investigation or unresolved state
+→ source quantity remains diverted
 ```
 
-The routing build must not infer a route from a child order, dispute status, UI label or later replacement activity. Its handoff source is the exact physical review and remedy-allocation state.
+The routing build must not infer the remedy from a dispute header, compatibility link, UI label or later evidence record.
 
-## 4. Shared objects and permitted access
+### 3.2 Same-order replacement handoff
 
-### `shipper_package_receipts`
+The replacement build provides an exact same-order route and, later, an exact successor tracking allocation.
 
-- v1.2: reads receipt identity and provenance.
-- routing: reads finalised receipt and may attach a narrow finalisation materialisation trigger.
-- routing must not rewrite receipt facts.
-
-### `shipper_package_receipt_line_dispositions`
-
-- v1.2: reads affected issue type and exact source.
-- routing: reads exact clean and affected quantities.
-- neither build may mutate stored dispositions.
-
-### `physical_receipt_reviews`
-
-- v1.2: owns importer/supervisor workflow writes, final decision and dispute linkage.
-- routing: reads final status and `supervisor_decided_at`; may attach only a deferred post-decision materialisation trigger.
-- routing must not alter status, liability, notes, linked dispute or decision sequence.
-
-### `physical_exception_remedy_allocations`
-
-- v1.2: owns proposal, approval, exact route, quantity, commercial value and dispute-line linkage.
-- routing: read-only for deriving released versus diverted quantity.
-- routing must not change remedy status, quantity, value or links.
-
-### Disputes and dispute lines
-
-- v1.2: owns bridge-created grouping, values and line shape.
-- routing: no write ownership.
-
-### Customer-review, hold and shipment authorities
-
-- routing owns the corrections described in its governing addendum.
-- v1.2 has no write ownership over those routes.
-
-## 5. Protected authorities
-
-The routing build must capture and preserve the exact current definitions, owners, ACLs and trigger bindings of:
+The routing build reads:
 
 ```text
-staff_decide_physical_receipt_review_v1(uuid,text,jsonb,text,text)
-staff_decide_physical_receipt_review_v2(...current exact signature...)
-physical_remedy_allocation_guard_v2()
-physical_remedy_sequence_guard_v1()
-physical_receipt_review_guard_v1()
-staff_accept_replacement_outcome_v1(uuid,uuid,text)
-create_replacement_child_order_v2(uuid,uuid,uuid,text)
+same-order route id
+physical remedy allocation id
+source tracking-line allocation id
+successor tracking-line allocation id
+order id
+supplier-invoice line id
+transferred quantity
+transferred value
+route status
 ```
 
-The last two are protected existing downstream authorities, not v1.2-owned lifecycle functions.
-
-The routing migration must fail before writing if the approved current-main baseline differs.
-
-## 6. Safe supervisor integration
-
-The routing build must not rewrite either supervisor-decision RPC.
-
-Materialisation after `rejected` or `closed_no_action` must use a deferred post-decision mechanism that runs only after the v1.2 review, remedy, dispute and link writes are complete.
-
-It must:
-
-- call only the existing customer-review materialiser;
-- do nothing for refund, replacement or investigation outcomes;
-- be idempotent;
-- create no membership after a failed or rolled-back supervisor transaction;
-- never change dispute partitioning, commercial value, replacement line shape or remedy state.
-
-## 7. Correct journey
+Required behavior:
 
 ```text
-Shipper finalises mixed receipt
-        |
-        +-- Product B clean qty 1
-        |       → routing addendum
-        |       → customer review
-        |       → hold or completion
-        |       → exact shipment eligibility
-        |
-        +-- Product A damaged qty 1
-                → v1.2 bridge
-                → importer proposal
-                → supervisor approves replacement
-                → exact commercial value
-                → one-line replacement dispute/remedy shape
-                → remains diverted under routing
-                → existing replacement acceptance/child-creation authorities may act later
+route unresolved or no successor allocation
+→ failed source quantity remains diverted
+
+valid successor tracking allocation exists
+→ successor is treated as a new physical attempt
+→ successor must receive its own final receipt
+→ successor clean quantity enters normal customer review
+→ successor affected quantity follows the normal exception bridge
 ```
 
-No child lifecycle is created or governed by this intersection.
+Acceptance of replacement alone does not create customer-review or shipment eligibility.
 
-If the supervisor rejects the damage classification:
+## 4. Shared-object access
+
+### Receipt and disposition records
+
+- Exception bridge: reads exact affected source and issue type.
+- Routing: reads exact clean and affected quantity.
+- Same-order replacement: retains source identity for supersession and successor provenance.
+- No build may rewrite final receipt facts or dispositions.
+
+### Physical reviews and remedy allocations
+
+- Exception bridge owns all workflow writes, route, quantity, value and dispute linkage.
+- Routing reads exact final state only.
+- Same-order outcome authorities consume exact approved replacement or refund items.
+- Routing must not mutate review or remedy records.
+
+### Refund records
+
+- Existing refund, evidence, settlement-credit, accounting, VAT and reconciliation authorities remain authoritative.
+- Routing has read-only visibility sufficient to prove refund quantity remains outside shipment.
+
+### Same-order replacement routes
+
+- Same-order replacement authorities own route, supersession, transferred quantity/value and successor-allocation writes.
+- Routing reads the effective result and successor identity only.
+- Routing must not reproduce or mutate supersession calculations.
+
+### Customer review, hold and shipment
+
+- Routing owns the exact corrections specified in the routing addenda.
+- Successor allocations use these existing authorities without a replacement-specific parallel workflow.
+
+## 5. Trigger and materialisation specification
+
+### Receipt finalisation
+
+Use one narrow trigger:
 
 ```text
-v1.2 commits rejected review state
-        ↓
-routing deferred hook materialises exact quantity into customer review
-        ↓
-normal review/hold/shipment rules apply
+AFTER a v2 receipt changes to finalised
+→ call the existing customer-review materialiser
 ```
 
-## 8. Non-interference regressions
+This applies to any exact allocation, including a same-order replacement successor.
 
-The routing regression must prove:
+For a successor allocation, this trigger is the only automatic entry into customer review. Replacement acceptance or route creation must not materialise customer review.
 
-1. v1.2 supervisor bridge definitions and bindings are unchanged.
-2. Physical guards are unchanged.
-3. Refund grouping and supplier-invoice partitioning remain unchanged.
-4. One physical replacement allocation still produces exactly one replacement dispute line.
-5. Customer commercial value remains unchanged.
-6. Existing replacement acceptance and child-creation authorities remain byte-for-byte unchanged.
-7. No new child lifecycle, parent terminal rule or child-status authority is introduced.
-8. Replacement-return records and shipper confirmations remain unchanged.
-9. Routing reads refund/replacement allocations but never mutates them.
-10. Replacement quantity produces shipment-ready quantity zero.
-11. Originally clean quantity continues independently.
-12. Rejected/no-action quantity is materialised only after final supervisor state.
-13. A rolled-back supervisor decision creates no review membership.
-14. No routing trigger fires for refund or replacement outcomes.
+### Supervisor release
 
-The unchanged v1.2 regression suite must pass after the routing build.
+Use a separate deferred post-decision mechanism after the full physical review/remedy/dispute transaction is consistent.
 
-## 9. Build order
-
-1. Start from current `main` containing the locked v1.2 bridge repair.
-2. Capture protected definitions, ACLs and trigger bindings.
-3. Implement private routing reads and customer-review timing.
-4. Add the deferred supervisor handoff without changing supervisor RPCs.
-5. Correct shipment candidate and creation authorities.
-6. Run routing regressions.
-7. Run the unchanged v1.2 regression suite.
-8. Prove no downstream replacement authority or lifecycle rule was added or changed.
-
-## 10. Final ownership rule
+It calls the existing materialiser only for:
 
 ```text
-v1.2 repairs the affected-quantity bridge into existing refund/replacement routes.
-Routing decides whether exact quantity is awaiting review, diverted or shipment-ready.
-Existing downstream authorities handle replacement acceptance and child creation.
-No addendum here creates a child lifecycle.
+rejected
+closed_no_action with exact approved no_action quantity
+```
+
+It does nothing for refund, replacement or investigation outcomes.
+
+The supervisor RPCs must not be rewritten for this routing build.
+
+## 6. Effective quantity and shipment boundary
+
+Routing and shipment must use the approved effective position, not raw historical allocation totals.
+
+Example:
+
+```text
+original allocation quantity = 4
+failed/superseded source quantity = 1
+effective source quantity = 3
+successor allocation quantity = 1
+effective line quantity = 4
+```
+
+Shipment conditions for any exact allocation are:
+
+```text
+position is valid;
+quantity is effective clean quantity on that allocation;
+that allocation's customer review is complete;
+active holds do not consume it;
+it has not already been shipped;
+it is not superseded source quantity.
+```
+
+The failed source replacement quantity can never satisfy these conditions. A later successor allocation may satisfy them after its own receipt and review.
+
+## 7. End-to-end example
+
+```text
+Package contains:
+Product B clean qty 1
+Product A damaged qty 1
+```
+
+Product B:
+
+```text
+final receipt clean
+→ customer review
+→ hold or review completion
+→ shipment-ready when valid
+```
+
+Product A approved refund:
+
+```text
+exception bridge creates exact refund item
+→ refund lane
+→ existing refund/evidence/settlement path
+→ no customer review or shipment
+```
+
+Product A approved free replacement:
+
+```text
+exception bridge creates exact replacement item
+→ replacement lane
+→ same-order route
+→ source qty/value superseded in effective position
+→ successor tracking allocation on original order and supplier line
+→ successor receipt finalises
+→ successor clean qty enters normal customer review
+→ hold or review completion
+→ shipment-ready when valid
+```
+
+Product A rejected by supervisor:
+
+```text
+final rejected review state
+→ deferred routing materialisation
+→ original affected quantity enters customer review
+```
+
+## 8. Prohibited implementation
+
+The routing implementation must not depend on or introduce:
+
+```text
+replacement child order identity;
+child-order status;
+child invoice upload;
+child tracking allocation;
+child lifecycle completion;
+child blocker;
+child-specific order recompute;
+parallel replacement customer-review workflow.
+```
+
+It must also not:
+
+- mutate refund settlement records;
+- mutate same-order route or supersession records;
+- infer successor readiness from lane or dispute status;
+- release the failed source allocation because a successor exists.
+
+## 9. Mandatory non-interference regressions
+
+Prove:
+
+1. exception-bridge definitions, guards, owners, ACLs and bindings are unchanged;
+2. refund grouping, values and settlement path remain unchanged;
+3. same-order route, supersession and successor-allocation authorities remain unchanged;
+4. no new child order or child dependency is created;
+5. originally clean quantity continues independently;
+6. rejected and approved no-action quantity materialises exactly once;
+7. refund source quantity remains outside review and shipment;
+8. replacement failed source quantity remains outside source review and shipment;
+9. replacement acceptance alone creates no customer-review membership;
+10. successor allocation enters customer review only after its own receipt finalises;
+11. superseded source quantity never enters shipment;
+12. source plus successor effective quantity and value equal original entitlement;
+13. successor review, hold and shipment behavior matches an ordinary allocation;
+14. a failed or rolled-back transaction creates no partial membership or route effect;
+15. Mini Builds 1–4 remain unchanged.
+
+## 10. Build order
+
+1. Start from a fresh branch containing the approved exception-bridge and same-order outcome work.
+2. Capture exact protected definitions, ACLs, owners and trigger bindings.
+3. Identify and consume the approved effective-position and successor-allocation reads.
+4. Implement exact routing position and per-membership review timing.
+5. Add receipt-finalisation materialisation.
+6. Add the deferred rejected/no-action materialisation hook.
+7. Correct shipment candidates and shipment creation.
+8. Run routing, refund-lane, replacement-lane and same-order regressions unchanged.
+9. Verify no protected authority changed.
+
+## 11. Final ownership rule
+
+```text
+The exception bridge decides the exact approved remedy.
+The refund lane continues through the existing refund core path.
+The same-order replacement build supersedes the failed source and creates the successor allocation.
+The routing build routes clean or released source quantity and later routes the successor allocation through normal fulfilment.
+No new governed replacement uses a child order.
 ```
