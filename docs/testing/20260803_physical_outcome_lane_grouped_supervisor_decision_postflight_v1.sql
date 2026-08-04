@@ -1,4 +1,6 @@
 -- Read-only installation and security postflight for grouped supervisor decisions.
+-- Corrected after the refund lane was changed from settlement-credit creation to
+-- final refund-outcome acceptance followed by importer refund evidence.
 
 WITH fn AS (
   SELECT
@@ -25,8 +27,18 @@ WITH fn AS (
     CASE WHEN EXISTS (
       SELECT 1 FROM fn
       WHERE definition NOT LIKE '%staff_accept_same_order_free_replacement_v1(%'
-         OR definition NOT LIKE '%staff_close_refund_exception_as_settlement_credit_v1(%'
-    ) THEN 'delegation_missing' END,
+    ) THEN 'replacement_delegation_missing' END,
+    CASE WHEN EXISTS (
+      SELECT 1 FROM fn
+      WHERE definition LIKE '%staff_close_refund_exception_as_settlement_credit_v1(%'
+    ) THEN 'obsolete_refund_settlement_delegation_present' END,
+    CASE WHEN EXISTS (
+      SELECT 1 FROM fn
+      WHERE definition NOT LIKE '%refund_final_outcome_accept%'
+         OR definition NOT LIKE '%awaiting_refund_credit%'
+         OR definition NOT LIKE '%operator_submit_refund_document_evidence%'
+         OR definition NOT LIKE '%settlement_credit_created%'
+    ) THEN 'refund_evidence_flow_contract_missing' END,
     CASE WHEN EXISTS (
       SELECT 1 FROM fn
       WHERE definition NOT LIKE '%Refund decision must select every unresolved physical item in each affected dispute.%'
@@ -54,7 +66,7 @@ WITH fn AS (
          OR definition NOT LIKE '%resolved%'
     ) THEN 'lane_status_recompute_missing' END,
     CASE WHEN md5(pg_get_functiondef('public.staff_accept_same_order_free_replacement_v1(uuid,uuid,text,text)'::regprocedure)) <> '78e94d6d76bf1c160068a3fd97ae4a87' THEN 'replacement_authority_drift' END,
-    CASE WHEN md5(pg_get_functiondef('public.staff_close_refund_exception_as_settlement_credit_v1(uuid,text,text)'::regprocedure)) <> '0698d2ab2e7301881dac862a18284f52' THEN 'refund_authority_drift' END,
+    CASE WHEN md5(pg_get_functiondef('public.staff_close_refund_exception_as_settlement_credit_v1(uuid,text,text)'::regprocedure)) <> '76f73302471a902612c01d74c3cceb72' THEN 'corrected_refund_authority_drift' END,
     CASE WHEN md5(pg_get_functiondef('public.physical_remedy_allocation_guard_v2()'::regprocedure)) <> 'f82d15d2de1199f9ab841d8c1ad44738' THEN 'remedy_guard_drift' END,
     CASE WHEN md5(pg_get_functiondef('public.physical_remedy_sequence_guard_v1()'::regprocedure)) <> '3c5067f31d4f2112207e02d1f307e233' THEN 'remedy_sequence_guard_drift' END,
     CASE WHEN md5(pg_get_functiondef('public.physical_receipt_review_guard_v1()'::regprocedure)) <> 'eaaf737e29580feb56272c55e6f1f679' THEN 'review_guard_drift' END
@@ -73,7 +85,10 @@ SELECT jsonb_build_object(
       'authenticated_execute',has_function_privilege('authenticated',signature,'EXECUTE'),
       'anon_execute',has_function_privilege('anon',signature,'EXECUTE'),
       'contains_replacement_delegation',definition LIKE '%staff_accept_same_order_free_replacement_v1(%',
-      'contains_refund_delegation',definition LIKE '%staff_close_refund_exception_as_settlement_credit_v1(%',
+      'contains_obsolete_refund_settlement_delegation',definition LIKE '%staff_close_refund_exception_as_settlement_credit_v1(%',
+      'contains_refund_final_outcome_acceptance',definition LIKE '%refund_final_outcome_accept%',
+      'contains_refund_evidence_next_action',definition LIKE '%operator_submit_refund_document_evidence%',
+      'contains_no_settlement_credit_result',definition LIKE '%settlement_credit_created%',
       'contains_refund_exact_coverage_guard',definition LIKE '%Refund decision must select every unresolved physical item in each affected dispute.%',
       'contains_lane_status_recompute',definition LIKE '%partially_resolved%' AND definition LIKE '%resolved%'
     ) FROM fn
@@ -84,7 +99,7 @@ SELECT jsonb_build_object(
   ),
   'delegated_authority_fingerprints',jsonb_build_object(
     'staff_accept_same_order_free_replacement_v1',md5(pg_get_functiondef('public.staff_accept_same_order_free_replacement_v1(uuid,uuid,text,text)'::regprocedure)),
-    'staff_close_refund_exception_as_settlement_credit_v1',md5(pg_get_functiondef('public.staff_close_refund_exception_as_settlement_credit_v1(uuid,text,text)'::regprocedure))
+    'staff_close_refund_exception_as_settlement_credit_v1_corrected',md5(pg_get_functiondef('public.staff_close_refund_exception_as_settlement_credit_v1(uuid,text,text)'::regprocedure))
   ),
   'protected_guard_fingerprints',jsonb_build_object(
     'physical_remedy_allocation_guard_v2',md5(pg_get_functiondef('public.physical_remedy_allocation_guard_v2()'::regprocedure)),
