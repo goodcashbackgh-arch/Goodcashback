@@ -61,6 +61,7 @@ BEGIN
     FROM pg_proc p
     JOIN pg_namespace n ON n.oid = p.pronamespace
     WHERE n.nspname = 'public'
+      AND p.prokind = 'f'
       AND (
         position('membership.review_eligible_at' in pg_get_functiondef(p.oid)) > 0
         OR position('membership.review_expires_at' in pg_get_functiondef(p.oid)) > 0
