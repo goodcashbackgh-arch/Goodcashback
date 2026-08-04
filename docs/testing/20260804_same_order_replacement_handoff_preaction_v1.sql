@@ -13,7 +13,7 @@ WITH constants AS (
     '1b4a2a43-5ddd-41ef-aef5-45e621eb5819'::uuid AS order_id
 ), routes AS (
   SELECT r.*
-  FROM public.same_order_replacement_routes r
+  FROM public.physical_replacement_same_order_routes r
   JOIN constants c ON c.review_id = r.physical_receipt_review_id
 ), route_summary AS (
   SELECT
