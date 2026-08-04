@@ -127,6 +127,7 @@ BEGIN
       'order_ref','PW-GROUPED-'||v_token,
       'payment_auth_id',NULL,
       'order_type','original',
+      'status','evidence_collecting',
       'parent_order_id',NULL,
       'replacement_source_dispute_line_id',NULL,
       'total_qty_declared',5,
