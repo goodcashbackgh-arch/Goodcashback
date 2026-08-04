@@ -56,7 +56,8 @@ WITH target_tables AS (
     is_nullable,
     column_default,
     is_identity,
-    is_generated
+    is_generated,
+    ordinal_position
   FROM information_schema.columns
   JOIN target_tables USING(table_name)
   WHERE table_schema='public'
@@ -88,7 +89,7 @@ WITH target_tables AS (
     SELECT si.*
     FROM public.supplier_invoices si
     WHERE si.order_id=review.order_id
-    ORDER BY si.created_at,si.id
+    ORDER BY si.id
     LIMIT 1
   ) si ON true
   WHERE EXISTS (
@@ -121,13 +122,6 @@ SELECT jsonb_build_object(
   'constraints',COALESCE((SELECT jsonb_agg(to_jsonb(constraints) ORDER BY table_name,constraint_name) FROM constraints),'[]'::jsonb),
   'unique_indexes',COALESCE((SELECT jsonb_agg(to_jsonb(unique_indexes) ORDER BY table_name,index_name) FROM unique_indexes),'[]'::jsonb),
   'triggers',COALESCE((SELECT jsonb_agg(to_jsonb(triggers) ORDER BY table_name,trigger_name,event_manipulation) FROM triggers),'[]'::jsonb),
-  'columns',COALESCE((SELECT jsonb_agg(to_jsonb(columns) ORDER BY table_name,ordinal_position) FROM (
-    SELECT c.*,ic.ordinal_position
-    FROM columns c
-    JOIN information_schema.columns ic
-      ON ic.table_schema='public'
-     AND ic.table_name=c.table_name
-     AND ic.column_name=c.column_name
-  ) columns),'[]'::jsonb),
+  'columns',COALESCE((SELECT jsonb_agg(to_jsonb(columns) ORDER BY table_name,ordinal_position) FROM columns),'[]'::jsonb),
   'enum_like_checks',COALESCE((SELECT jsonb_agg(to_jsonb(enum_like_checks) ORDER BY table_name,constraint_name) FROM enum_like_checks),'[]'::jsonb)
 ) AS result;
