@@ -63,6 +63,20 @@ function isFixtureRef(value: string | null | undefined) {
   return Boolean(value?.startsWith("PW-GROUPED-"));
 }
 
+function laneStatusLabel(lane: OutcomeLane) {
+  if (lane.outcome_type === "refund" && lane.lane_status === "partially_resolved") {
+    return "awaiting importer refund evidence";
+  }
+  return words(lane.lane_status);
+}
+
+function decisionLabel(lane: OutcomeLane) {
+  if (lane.latest_decision?.decision_type === "refund_final_outcome_accept") {
+    return "Final refund outcome accepted";
+  }
+  return words(lane.latest_decision?.decision_type);
+}
+
 export default async function StaffPhysicalReceiptDetail({ params, searchParams }: { params: Promise<{ review_id: string }>; searchParams: Promise<{ error?: string; success?: string }> }) {
   const { review_id: reviewId } = await params;
   const query = await searchParams;
@@ -125,7 +139,7 @@ export default async function StaffPhysicalReceiptDetail({ params, searchParams 
       {lanes.length ? <section className="space-y-4">
         <div className="px-1">
           <h2 className="text-xl font-semibold text-slate-950">Grouped outcome lanes</h2>
-          <p className="mt-1 text-sm text-slate-600">One supervisor action settles every item in each lane.</p>
+          <p className="mt-1 text-sm text-slate-600">One supervisor action advances every item into its established downstream route.</p>
         </div>
 
         {lanes.map((lane) => {
@@ -142,9 +156,9 @@ export default async function StaffPhysicalReceiptDetail({ params, searchParams 
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <div className="text-xs font-semibold uppercase tracking-[0.18em] text-violet-700">{lane.outcome_type} lane</div>
-                <h3 className="mt-1 text-lg font-semibold text-slate-950">{lane.outcome_type === "refund" ? "Credit-balance settlement" : "Same-order free replacement"}</h3>
+                <h3 className="mt-1 text-lg font-semibold text-slate-950">{lane.outcome_type === "refund" ? "Final refund outcome" : "Same-order free replacement"}</h3>
               </div>
-              <span className={`rounded-full px-3 py-1 text-xs font-semibold ${lane.can_decide ? "bg-amber-100 text-amber-800" : "bg-slate-100 text-slate-700"}`}>{words(lane.lane_status)}</span>
+              <span className={`rounded-full px-3 py-1 text-xs font-semibold ${lane.can_decide ? "bg-amber-100 text-amber-800" : "bg-slate-100 text-slate-700"}`}>{laneStatusLabel(lane)}</span>
             </div>
 
             <div className="mt-4 grid grid-cols-3 gap-2 rounded-2xl bg-slate-50 p-3 text-center text-sm">
@@ -171,8 +185,13 @@ export default async function StaffPhysicalReceiptDetail({ params, searchParams 
               </div>)}
             </div>
 
+            {lane.outcome_type === "refund" && lane.lane_status === "partially_resolved" ? <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+              <div className="font-semibold">Importer evidence required next</div>
+              <p className="mt-1">The final retailer refund outcome is accepted. The importer must now submit the credit note, refund proof, or governed no-document evidence. Customer credit remains pending the existing downstream controls.</p>
+            </div> : null}
+
             {lane.latest_decision ? <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-950">
-              <div className="font-semibold">Decision recorded: {words(lane.latest_decision.decision_type)}</div>
+              <div className="font-semibold">Decision recorded: {decisionLabel(lane)}</div>
               {lane.latest_decision.note ? <p className="mt-1">{lane.latest_decision.note}</p> : null}
               <p className="mt-1 text-xs text-emerald-800">{new Date(lane.latest_decision.decided_at).toLocaleString("en-GB")}</p>
             </div> : null}

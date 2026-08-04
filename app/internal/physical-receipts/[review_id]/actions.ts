@@ -104,11 +104,10 @@ export async function decidePhysicalOutcomeLaneAction(formData: FormData) {
 
   if (new Set(allocationIds).size !== allocationIds.length) redirect(destination(reviewId, "Grouped outcome lane items contain duplicates."));
 
-  const decision = outcomeType === "refund" ? "refund_settlement_credit" : "replacement_accept";
+  const decision = outcomeType === "refund" ? "refund_final_outcome_accept" : "replacement_accept";
   const itemDecisions = allocationIds.map((physicalRemedyAllocationId) => ({
     physical_remedy_allocation_id: physicalRemedyAllocationId,
     decision,
-    ...(outcomeType === "refund" ? { reason: "supervisor_confirmed_credit" } : {}),
   }));
 
   const supabase = await createClient();
@@ -125,5 +124,8 @@ export async function decidePhysicalOutcomeLaneAction(formData: FormData) {
   revalidatePath("/internal/physical-receipts");
   revalidatePath(`/internal/physical-receipts/${reviewId}`);
   const status = data?.lane_status ? ` Lane status: ${String(data.lane_status).replaceAll("_", " ")}.` : "";
-  redirect(`/internal/physical-receipts/${reviewId}?success=${encodeURIComponent(`Grouped ${outcomeType} decision recorded.${status}`)}`);
+  const message = outcomeType === "refund"
+    ? `Final grouped refund outcome accepted.${status} Importer refund evidence is required next.`
+    : `Grouped replacement decision recorded.${status}`;
+  redirect(`/internal/physical-receipts/${reviewId}?success=${encodeURIComponent(message)}`);
 }

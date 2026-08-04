@@ -36,7 +36,7 @@ export default function OutcomeLaneDecisionForm({
   const totalQuantity = items.reduce((sum, item) => sum + Number(item.approved_remedy_qty ?? 0), 0);
   const totalValue = items.reduce((sum, item) => sum + Number(item.customer_commercial_value_gbp ?? 0), 0);
   const label = outcomeType === "refund"
-    ? "Settle grouped refund to credit balance"
+    ? "Accept final refund outcome"
     : "Accept grouped same-order free replacement";
 
   return <form action={decidePhysicalOutcomeLaneAction} className="space-y-4">
@@ -48,7 +48,7 @@ export default function OutcomeLaneDecisionForm({
 
     <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
       <div><strong>{items.length}</strong> grouped item{items.length === 1 ? "" : "s"} · quantity <strong>{totalQuantity}</strong></div>
-      {outcomeType === "refund" ? <div className="mt-1">Recorded customer value: <strong>£{totalValue.toFixed(2)}</strong>. Final settlement remains controlled by the existing credit-balance authority.</div> : <div className="mt-1">Replacement remains on the original order through the existing free-replacement authority.</div>}
+      {outcomeType === "refund" ? <div className="mt-1">Customer value: <strong>£{totalValue.toFixed(2)}</strong>. This accepts the final retailer outcome and moves every refund dispute to awaiting refund evidence. It does not create customer credit or close the disputes.</div> : <div className="mt-1">Replacement remains on the original order through the existing free-replacement authority.</div>}
     </div>
 
     <label className="block">
