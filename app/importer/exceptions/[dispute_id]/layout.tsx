@@ -27,6 +27,11 @@ type ReturnHistoryRow = {
   note: string | null;
 };
 
+type ReplacementProgressRow = {
+  progress_status: string;
+  active_shipment_booking_ref: string | null;
+};
+
 export default async function ImporterExceptionLayout({
   children,
   params,
@@ -59,24 +64,14 @@ export default async function ImporterExceptionLayout({
     && replacementRoute.successor_tracking_submission_id
     && replacementRoute.successor_tracking_line_allocation_id
   ) {
-    const [{ data: latestReceipt }, { count: activeMembershipCount }] = await Promise.all([
-      supabase
-        .from("shipper_package_receipts")
-        .select("receipt_status")
-        .eq("tracking_submission_id", replacementRoute.successor_tracking_submission_id)
-        .order("recorded_at", { ascending: false })
-        .limit(1)
-        .maybeSingle(),
-      supabase
-        .from("shipper_shipment_batch_line_memberships")
-        .select("id", { count: "exact", head: true })
-        .eq("tracking_line_allocation_id", replacementRoute.successor_tracking_line_allocation_id)
-        .eq("active", true),
-    ]);
+    const { data: progressRows } = await supabase.rpc("importer_same_order_replacement_progress_v1", {
+      p_dispute_ids: [disputeId],
+    });
+    const progress = ((progressRows ?? []) as ReplacementProgressRow[])[0] ?? null;
 
-    if (Number(activeMembershipCount ?? 0) > 0) {
-      replacementStatusLabel = "Replacement received clean — added to shipment";
-    } else if (latestReceipt?.receipt_status === "received_clean") {
+    if (progress?.progress_status === "added_to_shipment") {
+      replacementStatusLabel = `Replacement received clean — added to ${progress.active_shipment_booking_ref ?? "shipment"}`;
+    } else if (progress?.progress_status === "shipment_eligible") {
       replacementStatusLabel = "Replacement received clean — shipment eligible";
     } else {
       replacementStatusLabel = "Successor tracking allocated — awaiting replacement receipt";
