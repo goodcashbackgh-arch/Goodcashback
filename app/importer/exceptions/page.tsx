@@ -9,6 +9,7 @@ type DisputeRow = {
   desired_outcome: string | null;
   status: string | null;
   amount_impact_gbp: number | null;
+  replacement_child_order_id: string | null;
   orders: OrderRelation;
 };
 
@@ -55,9 +56,13 @@ function previewText(value: string | null | undefined, max = 84) {
   return `${text.slice(0, max - 1)}…`;
 }
 
-function terminalStatusMessage(status: string | null | undefined) {
-  if (status === "replaced") return "Replacement accepted — child order created";
-  if (status === "awaiting_refund_credit") return "Refund accepted — awaiting refund credit processing";
+function terminalStatusMessage(dispute: Pick<DisputeRow, "status" | "replacement_child_order_id">) {
+  if (dispute.status === "replaced") {
+    return dispute.replacement_child_order_id
+      ? "Replacement accepted — child order created"
+      : "Replacement accepted — awaiting successor tracking";
+  }
+  if (dispute.status === "awaiting_refund_credit") return "Refund accepted — awaiting refund credit processing";
   return null;
 }
 
@@ -75,7 +80,7 @@ export default async function ImporterExceptionsPage() {
 
   const { data: disputes, error } = await supabase
     .from("disputes")
-    .select("id, order_id, desired_outcome, status, amount_impact_gbp, orders!disputes_order_id_fkey(order_ref)")
+    .select("id, order_id, desired_outcome, status, amount_impact_gbp, replacement_child_order_id, orders!disputes_order_id_fkey(order_ref)")
     .in("desired_outcome", ["refund", "replacement"])
     .neq("status", "closed")
     .order("raised_at", { ascending: false });
@@ -144,7 +149,7 @@ export default async function ImporterExceptionsPage() {
                   const lineStatus = activeLineStatusByDispute.get(dispute.id) ?? null;
                   const retailerOutcome = retailerOutcomeFromStatus(lineStatus);
                   const retailerPosition = latestRetailerReplyByDispute.get(dispute.id) ?? "No retailer reply yet";
-                  const terminalMessage = terminalStatusMessage(dispute.status);
+                  const terminalMessage = terminalStatusMessage(dispute);
 
                   return (
                     <tr key={dispute.id} className="border-t border-slate-200">
