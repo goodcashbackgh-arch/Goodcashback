@@ -4,26 +4,50 @@ SET LOCAL lock_timeout = '15s';
 SET LOCAL statement_timeout = '0';
 
 -- Rollback-only regression for the exact customer-review enrolment bridge.
--- Proves the clean allocation is enrolled exactly once into the existing Mini Build 4 tables.
--- All writes are rolled back.
+-- Uses procedural sequencing because sibling CTEs do not guarantee observation order
+-- for side-effecting function calls. All writes are rolled back.
+
+CREATE TEMP TABLE pg_temp.exact_review_bridge_regression_v1 (
+  before_membership_count integer,
+  before_review_qty numeric,
+  first_inserted_count integer,
+  second_inserted_count integer
+) ON COMMIT DROP;
+
+INSERT INTO pg_temp.exact_review_bridge_regression_v1 (
+  before_membership_count,
+  before_review_qty,
+  first_inserted_count,
+  second_inserted_count
+)
+SELECT
+  COUNT(*)::integer,
+  COALESCE(SUM(m.review_qty),0)::numeric,
+  NULL::integer,
+  NULL::integer
+FROM public.customer_review_cycle_memberships m
+WHERE m.order_id = '1b4a2a43-5ddd-41ef-aef5-45e621eb5819'::uuid
+  AND m.tracking_line_allocation_id = '9dd8c47c-9dd9-4191-910b-41095f15feee'::uuid;
+
+UPDATE pg_temp.exact_review_bridge_regression_v1
+SET first_inserted_count = public.internal_bridge_exact_customer_review_candidates_v1(
+  '1b4a2a43-5ddd-41ef-aef5-45e621eb5819'::uuid,
+  NULL
+);
+
+UPDATE pg_temp.exact_review_bridge_regression_v1
+SET second_inserted_count = public.internal_bridge_exact_customer_review_candidates_v1(
+  '1b4a2a43-5ddd-41ef-aef5-45e621eb5819'::uuid,
+  NULL
+);
 
 WITH before_state AS (
   SELECT
-    COUNT(*)::integer AS membership_count,
-    COALESCE(SUM(m.review_qty),0)::numeric AS review_qty
-  FROM public.customer_review_cycle_memberships m
-  WHERE m.order_id = '1b4a2a43-5ddd-41ef-aef5-45e621eb5819'::uuid
-    AND m.tracking_line_allocation_id = '9dd8c47c-9dd9-4191-910b-41095f15feee'::uuid
-), bridge_call AS (
-  SELECT public.internal_bridge_exact_customer_review_candidates_v1(
-    '1b4a2a43-5ddd-41ef-aef5-45e621eb5819'::uuid,
-    NULL
-  ) AS inserted_count
-), bridge_call_again AS (
-  SELECT public.internal_bridge_exact_customer_review_candidates_v1(
-    '1b4a2a43-5ddd-41ef-aef5-45e621eb5819'::uuid,
-    NULL
-  ) AS inserted_count
+    before_membership_count AS membership_count,
+    before_review_qty AS review_qty,
+    first_inserted_count,
+    second_inserted_count
+  FROM pg_temp.exact_review_bridge_regression_v1
 ), after_state AS (
   SELECT
     COUNT(*)::integer AS membership_count,
@@ -57,9 +81,12 @@ WITH before_state AS (
   )
 )
 SELECT jsonb_build_object(
-  'before_state', (SELECT to_jsonb(before_state) FROM before_state),
-  'first_bridge_inserted_count', (SELECT inserted_count FROM bridge_call),
-  'second_bridge_inserted_count', (SELECT inserted_count FROM bridge_call_again),
+  'before_state', jsonb_build_object(
+    'membership_count', before_state.membership_count,
+    'review_qty', before_state.review_qty
+  ),
+  'first_bridge_inserted_count', before_state.first_inserted_count,
+  'second_bridge_inserted_count', before_state.second_inserted_count,
   'after_state', (SELECT to_jsonb(after_state) FROM after_state),
   'review_state_after', (SELECT to_jsonb(review_state_after) FROM review_state_after),
   'protected_fingerprints', COALESCE((
@@ -68,8 +95,8 @@ SELECT jsonb_build_object(
   ), '[]'::jsonb),
   'regression_passed', (
     SELECT
-      (SELECT inserted_count FROM bridge_call) = 1
-      AND (SELECT inserted_count FROM bridge_call_again) = 0
+      before_state.first_inserted_count = 1
+      AND before_state.second_inserted_count = 0
       AND after_state.membership_count = before_state.membership_count + 1
       AND after_state.review_qty = before_state.review_qty + 1
       AND after_state.distinct_allocation_count = 1
@@ -81,6 +108,7 @@ SELECT jsonb_build_object(
       AND review_state_after.review_available_qty = 0
     FROM before_state, after_state, review_state_after
   )
-) AS exact_customer_review_enrolment_bridge_rollback_regression;
+) AS exact_customer_review_enrolment_bridge_rollback_regression
+FROM before_state;
 
 ROLLBACK;
