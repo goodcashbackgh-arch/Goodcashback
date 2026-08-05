@@ -2,18 +2,23 @@
 
 import { useEffect } from "react";
 
-const STALE_STATUS = "Replacement accepted — awaiting successor tracking";
+const STALE_STATUSES = [
+  "Replacement accepted — awaiting successor tracking",
+  "Replacement accepted — child order created",
+];
 
 export default function ReplacementStatusEnhancer({ statusLabel }: { statusLabel: string | null }) {
   useEffect(() => {
-    if (!statusLabel || statusLabel === STALE_STATUS) return;
+    if (!statusLabel || STALE_STATUSES.includes(statusLabel)) return;
 
     const replaceStatus = () => {
       const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
       let node = walker.nextNode();
       while (node) {
-        if (node.textContent?.includes(STALE_STATUS)) {
-          node.textContent = node.textContent.replace(STALE_STATUS, statusLabel);
+        const current = node.textContent;
+        if (current) {
+          const staleStatus = STALE_STATUSES.find((candidate) => current.includes(candidate));
+          if (staleStatus) node.textContent = current.replace(staleStatus, statusLabel);
         }
         node = walker.nextNode();
       }
