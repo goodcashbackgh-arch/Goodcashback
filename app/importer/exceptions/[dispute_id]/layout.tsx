@@ -50,13 +50,38 @@ export default async function ImporterExceptionLayout({
       .maybeSingle(),
   ]);
 
-  const replacementStatusLabel = dispute?.desired_outcome === "replacement"
+  let replacementStatusLabel: string | null = null;
+
+  if (
+    dispute?.desired_outcome === "replacement"
     && !dispute.replacement_child_order_id
     && replacementRoute?.route_status === "tracking_allocated"
     && replacementRoute.successor_tracking_submission_id
     && replacementRoute.successor_tracking_line_allocation_id
-      ? "Successor tracking allocated — awaiting replacement receipt"
-      : null;
+  ) {
+    const [{ data: latestReceipt }, { count: activeMembershipCount }] = await Promise.all([
+      supabase
+        .from("shipper_package_receipts")
+        .select("receipt_status")
+        .eq("tracking_submission_id", replacementRoute.successor_tracking_submission_id)
+        .order("recorded_at", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+      supabase
+        .from("shipper_shipment_batch_line_memberships")
+        .select("id", { count: "exact", head: true })
+        .eq("tracking_line_allocation_id", replacementRoute.successor_tracking_line_allocation_id)
+        .eq("active", true),
+    ]);
+
+    if (Number(activeMembershipCount ?? 0) > 0) {
+      replacementStatusLabel = "Replacement received clean — added to shipment";
+    } else if (latestReceipt?.receipt_status === "received_clean") {
+      replacementStatusLabel = "Replacement received clean — shipment eligible";
+    } else {
+      replacementStatusLabel = "Successor tracking allocated — awaiting replacement receipt";
+    }
+  }
 
   let canSubmitReplacementReturn = false;
   let courierOptions: CourierOption[] = [];
