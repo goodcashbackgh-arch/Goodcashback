@@ -91,14 +91,14 @@ export default function ReplacementOrdersPanel() {
       const routes = json.same_order_routes ?? [];
       setRows(json.rows ?? []);
       setSameOrderRoutes(routes);
-      setSelectedByOrder((current) => {
-        const next = { ...current };
-        for (const route of routes) {
-          if (route.route_status !== "approved_waiting_tracking") continue;
-          next[route.order_id] = [...new Set([...(next[route.order_id] ?? []), route.id])];
-        }
-        return next;
-      });
+
+      const waitingByOrder: Record<string, string[]> = {};
+      for (const route of routes) {
+        if (route.route_status !== "approved_waiting_tracking") continue;
+        waitingByOrder[route.order_id] = [...(waitingByOrder[route.order_id] ?? []), route.id];
+      }
+      setSelectedByOrder(waitingByOrder);
+
       setTrackingByOrder((current) => {
         const next = { ...current };
         for (const route of routes) {
@@ -143,7 +143,12 @@ export default function ReplacementOrdersPanel() {
   }
 
   async function allocate(orderId: string) {
-    const routeIds = selectedByOrder[orderId] ?? [];
+    const currentlyWaiting = new Set(
+      sameOrderRoutes
+        .filter((route) => route.order_id === orderId && route.route_status === "approved_waiting_tracking")
+        .map((route) => route.id),
+    );
+    const routeIds = (selectedByOrder[orderId] ?? []).filter((routeId) => currentlyWaiting.has(routeId));
     const trackingSubmissionId = trackingByOrder[orderId] ?? "";
     if (!routeIds.length || !trackingSubmissionId) return;
 
@@ -231,7 +236,7 @@ export default function ReplacementOrdersPanel() {
                           type="checkbox"
                           className="mt-1 h-4 w-4"
                           disabled={!canSelect}
-                          checked={selected.includes(route.id)}
+                          checked={canSelect && selected.includes(route.id)}
                           onChange={() => toggleRoute(orderId, route.id)}
                         />
                         <span className="min-w-0">
