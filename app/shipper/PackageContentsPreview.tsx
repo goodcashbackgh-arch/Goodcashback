@@ -33,7 +33,7 @@ export async function PackageContentsPreview({
   if (!trackingSubmissionId) return null;
 
   const supabase = await createClient();
-  const { data, error } = await (supabase as any).rpc("shipper_package_contents_preview_v1", {
+  const { data, error } = await (supabase as any).rpc("shipper_package_contents_preview_v2", {
     p_tracking_submission_id: trackingSubmissionId,
   });
 
