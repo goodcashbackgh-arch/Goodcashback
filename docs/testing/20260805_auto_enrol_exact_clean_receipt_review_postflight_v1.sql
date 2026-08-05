@@ -60,5 +60,5 @@ SELECT jsonb_build_object(
          OR (identity = 'customer_review_cycle_membership_immutable_guard_v1()' AND definition_md5 <> 'f08154042118c35eb4428af24623ae90')
          OR (identity = 'shipper_shipment_batch_candidates_v1()' AND definition_md5 <> '952f24084fed0dffcdebbfae988e7400')
          OR (identity = 'shipper_create_shipment_batch_v1(uuid,uuid[],text,timestamp with time zone,timestamp with time zone,integer,text,text,text)' AND definition_md5 <> '4e4b86b0121a85523fe95c1530a41658')
-    END
+    )
 ) AS auto_enrol_exact_clean_receipt_review_postflight;
