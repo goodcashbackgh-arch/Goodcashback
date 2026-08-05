@@ -4,6 +4,7 @@ import RefundAdjustmentGuidance from "./RefundAdjustmentGuidance";
 import RejectedRefundDocumentAuditOnlyEnhancer from "./RejectedRefundDocumentAuditOnlyEnhancer";
 import ReplacementOriginalItemReturnForm from "./ReplacementOriginalItemReturnForm";
 import ReadableDisputeReferenceEnhancer from "./ReadableDisputeReferenceEnhancer";
+import ReplacementStatusEnhancer from "./ReplacementStatusEnhancer";
 
 type CourierOption = {
   id: string;
@@ -36,11 +37,26 @@ export default async function ImporterExceptionLayout({
   const { dispute_id: disputeId } = await params;
   const supabase = await createClient();
 
-  const { data: dispute } = await supabase
-    .from("disputes")
-    .select("id, desired_outcome, replacement_child_order_id, resolved_at")
-    .eq("id", disputeId)
-    .maybeSingle();
+  const [{ data: dispute }, { data: replacementRoute }] = await Promise.all([
+    supabase
+      .from("disputes")
+      .select("id, desired_outcome, replacement_child_order_id, resolved_at")
+      .eq("id", disputeId)
+      .maybeSingle(),
+    supabase
+      .from("physical_replacement_same_order_routes")
+      .select("route_status, successor_tracking_submission_id, successor_tracking_line_allocation_id")
+      .eq("dispute_id", disputeId)
+      .maybeSingle(),
+  ]);
+
+  const replacementStatusLabel = dispute?.desired_outcome === "replacement"
+    && !dispute.replacement_child_order_id
+    && replacementRoute?.route_status === "tracking_allocated"
+    && replacementRoute.successor_tracking_submission_id
+    && replacementRoute.successor_tracking_line_allocation_id
+      ? "Successor tracking allocated — awaiting replacement receipt"
+      : null;
 
   let canSubmitReplacementReturn = false;
   let courierOptions: CourierOption[] = [];
@@ -126,6 +142,7 @@ export default async function ImporterExceptionLayout({
   return (
     <RefundAdjustmentGuidance>
       <ReadableDisputeReferenceEnhancer disputeId={disputeId} />
+      <ReplacementStatusEnhancer statusLabel={replacementStatusLabel} />
       {children}
       {canSubmitReplacementReturn ? (
         <div className="bg-slate-50 px-6 pb-8 text-slate-950">
