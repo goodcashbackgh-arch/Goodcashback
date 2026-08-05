@@ -15,6 +15,16 @@ type PackageContentsRow = {
   allocation_status: string | null;
 };
 
+type SavedSplitRow = {
+  receipt_id: string;
+  tracking_line_allocation_id: string;
+  supplier_invoice_line_id: string;
+  item_description: string | null;
+  qty_allocated: number | string | null;
+  clean_qty: number | string | null;
+  diverted_qty: number | string | null;
+};
+
 function qtyNumber(value: number | string | null | undefined) {
   const n = Number(value ?? 0);
   return Number.isFinite(n) ? n : 0;
@@ -53,27 +63,77 @@ export default async function ShipperPackageContentsPage({
 
   if (!shipperUser) redirect("/auth/check");
 
-  const [originalResult, eligibleResult] = await Promise.all([
+  const [originalResult, authorityEligibleResult, savedSplitResult] = await Promise.all([
     (supabase as any).rpc("shipper_package_original_contents_preview_v1", {
       p_tracking_submission_id: trackingSubmissionId,
     }),
     (supabase as any).rpc("shipper_package_contents_preview_v2", {
       p_tracking_submission_id: trackingSubmissionId,
     }),
+    (supabase as any).rpc("shipper_saved_physical_receipt_split_v1", {
+      p_tracking_submission_id: trackingSubmissionId,
+    }),
   ]);
 
   const originalRows = (originalResult.data ?? []) as PackageContentsRow[];
-  const eligibleRows = (eligibleResult.data ?? []) as PackageContentsRow[];
-  const first = originalRows[0] ?? eligibleRows[0] ?? null;
+  const authorityEligibleRows = (authorityEligibleResult.data ?? []) as PackageContentsRow[];
+  const savedSplitRows = (savedSplitResult.data ?? []) as SavedSplitRow[];
+  const hasSavedSplit = savedSplitRows.length > 0;
+
+  const originalByLine = new Map(originalRows.map((row) => [row.supplier_invoice_line_id, row]));
+
+  // The saved receipt split is display-only. It does not mutate or replace the
+  // existing Mini Build 1-4 shipment authority. Packages without a finalised v2
+  // receipt continue to display the existing authority result unchanged.
+  const eligibleRows: PackageContentsRow[] = hasSavedSplit
+    ? savedSplitRows
+        .filter((row) => qtyNumber(row.clean_qty) > 0)
+        .map((row) => ({
+          ...(originalByLine.get(row.supplier_invoice_line_id) ?? {
+            tracking_submission_id: trackingSubmissionId,
+            order_id: "",
+            order_ref: null,
+            retailer_name: null,
+            courier_name: null,
+            tracking_ref: null,
+            supplier_invoice_line_id: row.supplier_invoice_line_id,
+            item_description: row.item_description,
+            allocation_status: "allocated",
+          }),
+          qty_allocated: row.clean_qty,
+        }))
+    : authorityEligibleRows;
+
+  const divertedRows: PackageContentsRow[] = hasSavedSplit
+    ? savedSplitRows
+        .filter((row) => qtyNumber(row.diverted_qty) > 0)
+        .map((row) => ({
+          ...(originalByLine.get(row.supplier_invoice_line_id) ?? {
+            tracking_submission_id: trackingSubmissionId,
+            order_id: "",
+            order_ref: null,
+            retailer_name: null,
+            courier_name: null,
+            tracking_ref: null,
+            supplier_invoice_line_id: row.supplier_invoice_line_id,
+            item_description: row.item_description,
+            allocation_status: "diverted",
+          }),
+          qty_allocated: row.diverted_qty,
+        }))
+    : (() => {
+        const eligibleByLine = new Map(authorityEligibleRows.map((row) => [row.supplier_invoice_line_id, qtyNumber(row.qty_allocated)]));
+        return originalRows
+          .map((row) => ({ ...row, qty_allocated: Math.max(qtyNumber(row.qty_allocated) - (eligibleByLine.get(row.supplier_invoice_line_id) ?? 0), 0) }))
+          .filter((row) => qtyNumber(row.qty_allocated) > 0);
+      })();
+
+  const first = originalRows[0] ?? eligibleRows[0] ?? divertedRows[0] ?? null;
   const originalQty = originalRows.reduce((sum, row) => sum + qtyNumber(row.qty_allocated), 0);
   const eligibleQty = eligibleRows.reduce((sum, row) => sum + qtyNumber(row.qty_allocated), 0);
-  const divertedQty = Math.max(originalQty - eligibleQty, 0);
-  const eligibleByLine = new Map(eligibleRows.map((row) => [row.supplier_invoice_line_id, qtyNumber(row.qty_allocated)]));
-  const divertedRows = originalRows
-    .map((row) => ({ ...row, qty_allocated: Math.max(qtyNumber(row.qty_allocated) - (eligibleByLine.get(row.supplier_invoice_line_id) ?? 0), 0) }))
-    .filter((row) => qtyNumber(row.qty_allocated) > 0);
+  const divertedQty = divertedRows.reduce((sum, row) => sum + qtyNumber(row.qty_allocated), 0);
   const shipper = Array.isArray((shipperUser as any).shippers) ? (shipperUser as any).shippers[0] : (shipperUser as any).shippers;
-  const error = originalResult.error ?? eligibleResult.error;
+  const error = originalResult.error ?? authorityEligibleResult.error ?? savedSplitResult.error;
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-6 text-slate-950 sm:px-6 sm:py-8">
@@ -88,9 +148,9 @@ export default async function ShipperPackageContentsPage({
           <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">Package contents and current routing</h1>
           <p className="mt-2 text-sm text-slate-600">{(shipperUser as any).full_name} · {shipper?.name ?? "Shipper"}</p>
           <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-600">
-            Original package allocation remains visible as receipt history. Current routing separately shows what remains shipment eligible and what has moved to a hold, return or refund path. Commercial values and payment data are hidden.
+            Original package allocation remains visible as receipt history. Current routing separately shows the saved clean and diverted package truth. Commercial values and payment data are hidden.
           </p>
-          {error ? <p className="mt-4 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-900">{error.message}</p> : null}
+          {error ? <p className="mt-4 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-900">Package routing could not be loaded.</p> : null}
         </section>
 
         <section className="grid gap-4 md:grid-cols-3 lg:grid-cols-6">
@@ -136,13 +196,13 @@ export default async function ShipperPackageContentsPage({
         <section className="grid gap-6 lg:grid-cols-2">
           <div className="rounded-3xl border border-emerald-200 bg-emerald-50 p-5 shadow-sm sm:p-6">
             <h2 className="text-xl font-semibold text-emerald-950">Shipment-eligible contents</h2>
-            <p className="mt-1 text-sm text-emerald-900">These lines continue through shipment membership, freight and AP/recharge.</p>
+            <p className="mt-1 text-sm text-emerald-900">These clean units remain available to the existing shipment flow.</p>
             {eligibleRows.length === 0 ? <p className="mt-4 rounded-2xl bg-white p-4 text-sm text-emerald-900">No units are currently shipment eligible.</p> : <div className="mt-4 space-y-2">{eligibleRows.map((row) => <div key={`eligible-${row.supplier_invoice_line_id}`} className="rounded-2xl bg-white p-3 text-sm"><p className="font-semibold">{row.item_description ?? "Unlabelled item"}</p><p className="text-slate-600">Qty {formatQty(row.qty_allocated)}</p></div>)}</div>}
           </div>
 
           <div className="rounded-3xl border border-amber-200 bg-amber-50 p-5 shadow-sm sm:p-6">
             <h2 className="text-xl font-semibold text-amber-950">Diverted from shipment</h2>
-            <p className="mt-1 text-sm text-amber-900">These units remain visible here and continue through their existing hold, return, exception or refund workflow.</p>
+            <p className="mt-1 text-sm text-amber-900">These units remain outside the clean shipment flow while their existing review outcome is resolved.</p>
             {divertedRows.length === 0 ? <p className="mt-4 rounded-2xl bg-white p-4 text-sm text-amber-900">No units are currently diverted.</p> : <div className="mt-4 space-y-2">{divertedRows.map((row) => <div key={`diverted-${row.supplier_invoice_line_id}`} className="rounded-2xl bg-white p-3 text-sm"><p className="font-semibold">{row.item_description ?? "Unlabelled item"}</p><p className="text-slate-600">Qty {formatQty(row.qty_allocated)}</p></div>)}</div>}
           </div>
         </section>

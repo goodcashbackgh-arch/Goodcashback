@@ -35,9 +35,9 @@ export async function OriginalPackageContentsPreview({
 
   if (error) {
     return (
-      <Link href={href} className={compact ? "block rounded-xl border border-amber-200 bg-amber-50 p-2 text-xs hover:bg-amber-100" : "block rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm hover:bg-amber-100"}>
-        <span className="font-semibold text-amber-950">View original contents</span>
-        <span className="mt-1 block text-amber-900">Unavailable until latest migration is applied</span>
+      <Link href={href} className={compact ? "block rounded-xl border border-rose-200 bg-rose-50 p-2 text-xs hover:bg-rose-100" : "block rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm hover:bg-rose-100"}>
+        <span className="font-semibold text-rose-950">View original contents</span>
+        <span className="mt-1 block text-rose-900">{error.message || "Original contents could not be loaded"}</span>
       </Link>
     );
   }
