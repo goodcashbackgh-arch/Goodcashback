@@ -9,6 +9,7 @@ type DisputeRow = {
   desired_outcome: string | null;
   status: string | null;
   amount_impact_gbp: number | null;
+  replacement_child_order_id: string | null;
   orders: OrderRelation;
 };
 
@@ -24,6 +25,19 @@ type DisputeMessageRow = {
   counterparty: string | null;
   body: string | null;
   created_at: string | null;
+};
+
+type ReplacementRouteRow = {
+  dispute_id: string;
+  route_status: string;
+  successor_tracking_submission_id: string | null;
+  successor_tracking_line_allocation_id: string | null;
+};
+
+type ReplacementProgressRow = {
+  dispute_id: string;
+  progress_status: string;
+  active_shipment_booking_ref: string | null;
 };
 
 function gbp(value: number | null | undefined) {
@@ -55,9 +69,36 @@ function previewText(value: string | null | undefined, max = 84) {
   return `${text.slice(0, max - 1)}…`;
 }
 
-function terminalStatusMessage(status: string | null | undefined) {
-  if (status === "replaced") return "Replacement accepted — child order created";
-  if (status === "awaiting_refund_credit") return "Refund accepted — awaiting refund credit processing";
+function terminalStatusMessage(
+  dispute: Pick<DisputeRow, "id" | "status" | "replacement_child_order_id">,
+  routeByDisputeId: Map<string, ReplacementRouteRow>,
+  progressByDisputeId: Map<string, ReplacementProgressRow>,
+) {
+  if (dispute.status === "replaced") {
+    if (dispute.replacement_child_order_id) return "Replacement accepted — child order created";
+
+    const progress = progressByDisputeId.get(dispute.id);
+    if (progress?.progress_status === "added_to_shipment") {
+      return `Replacement received clean — added to ${progress.active_shipment_booking_ref ?? "shipment"}`;
+    }
+    if (progress?.progress_status === "shipment_eligible") {
+      return "Replacement received clean — shipment eligible";
+    }
+    if (progress?.progress_status === "awaiting_replacement_receipt") {
+      return "Successor tracking allocated — awaiting replacement receipt";
+    }
+
+    const route = routeByDisputeId.get(dispute.id);
+    if (
+      route?.route_status === "tracking_allocated"
+      && route.successor_tracking_submission_id
+      && route.successor_tracking_line_allocation_id
+    ) {
+      return "Successor tracking allocated — awaiting replacement receipt";
+    }
+    return "Replacement accepted — awaiting successor tracking";
+  }
+  if (dispute.status === "awaiting_refund_credit") return "Refund accepted — awaiting refund credit processing";
   return null;
 }
 
@@ -75,7 +116,7 @@ export default async function ImporterExceptionsPage() {
 
   const { data: disputes, error } = await supabase
     .from("disputes")
-    .select("id, order_id, desired_outcome, status, amount_impact_gbp, orders!disputes_order_id_fkey(order_ref)")
+    .select("id, order_id, desired_outcome, status, amount_impact_gbp, replacement_child_order_id, orders!disputes_order_id_fkey(order_ref)")
     .in("desired_outcome", ["refund", "replacement"])
     .neq("status", "closed")
     .order("raised_at", { ascending: false });
@@ -83,7 +124,7 @@ export default async function ImporterExceptionsPage() {
   const disputeRows = (disputes ?? []) as DisputeRow[];
   const disputeIds = disputeRows.map((row) => row.id);
 
-  const [{ data: disputeLines }, { data: retailerReplies }] = disputeIds.length
+  const [{ data: disputeLines }, { data: retailerReplies }, { data: replacementRoutes }, { data: replacementProgress }] = disputeIds.length
     ? await Promise.all([
         supabase
           .from("dispute_lines")
@@ -96,8 +137,15 @@ export default async function ImporterExceptionsPage() {
           .eq("message_type", "retailer_reply")
           .eq("counterparty", "retailer")
           .order("created_at", { ascending: false }),
+        supabase
+          .from("physical_replacement_same_order_routes")
+          .select("dispute_id, route_status, successor_tracking_submission_id, successor_tracking_line_allocation_id")
+          .in("dispute_id", disputeIds),
+        supabase.rpc("importer_same_order_replacement_progress_v1", {
+          p_dispute_ids: disputeIds,
+        }),
       ])
-    : [{ data: [] }, { data: [] }];
+    : [{ data: [] }, { data: [] }, { data: [] }, { data: [] }];
 
   const activeLineStatusByDispute = new Map<string, string | null>();
   for (const line of (disputeLines ?? []) as DisputeLineRow[]) {
@@ -111,6 +159,18 @@ export default async function ImporterExceptionsPage() {
   for (const message of (retailerReplies ?? []) as DisputeMessageRow[]) {
     if (!latestRetailerReplyByDispute.has(message.dispute_id)) {
       latestRetailerReplyByDispute.set(message.dispute_id, previewText(message.body));
+    }
+  }
+
+  const routeByDisputeId = new Map<string, ReplacementRouteRow>();
+  for (const route of (replacementRoutes ?? []) as ReplacementRouteRow[]) {
+    routeByDisputeId.set(route.dispute_id, route);
+  }
+
+  const progressByDisputeId = new Map<string, ReplacementProgressRow>();
+  for (const progress of (replacementProgress ?? []) as ReplacementProgressRow[]) {
+    if (!progressByDisputeId.has(progress.dispute_id)) {
+      progressByDisputeId.set(progress.dispute_id, progress);
     }
   }
 
@@ -144,7 +204,7 @@ export default async function ImporterExceptionsPage() {
                   const lineStatus = activeLineStatusByDispute.get(dispute.id) ?? null;
                   const retailerOutcome = retailerOutcomeFromStatus(lineStatus);
                   const retailerPosition = latestRetailerReplyByDispute.get(dispute.id) ?? "No retailer reply yet";
-                  const terminalMessage = terminalStatusMessage(dispute.status);
+                  const terminalMessage = terminalStatusMessage(dispute, routeByDisputeId, progressByDisputeId);
 
                   return (
                     <tr key={dispute.id} className="border-t border-slate-200">

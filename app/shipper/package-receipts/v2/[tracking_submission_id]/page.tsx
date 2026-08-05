@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 import ExactPhysicalReceiptForm from "./ExactPhysicalReceiptForm";
+import SavedPhysicalReceiptSplit from "./SavedPhysicalReceiptSplit";
 
 type EntryRow = {
   tracking_line_allocation_id: string;
@@ -14,6 +15,21 @@ type EntryRow = {
   latest_receipt_state: string | null;
   latest_review_status: string | null;
   correction_allowed: boolean | null;
+};
+
+type SavedSplitRow = {
+  receipt_id: string;
+  tracking_line_allocation_id: string;
+  supplier_invoice_line_id: string;
+  item_description: string | null;
+  qty_allocated: number | string;
+  clean_qty: number | string;
+  diverted_qty: number | string;
+  diverted_segments: Array<{
+    disposition_type?: string | null;
+    quantity?: number | string | null;
+    condition_note?: string | null;
+  }> | null;
 };
 
 type DashboardRow = {
@@ -71,6 +87,19 @@ export default async function ExactPhysicalReceiptPage({
   const latestReceiptId = first?.latest_receipt_id ?? null;
   const latestReviewStatus = first?.latest_review_status ?? null;
   const correctionAllowed = Boolean(first?.correction_allowed);
+  const lockedSavedReceipt = Boolean(latestReceiptId && !correctionAllowed);
+
+  let savedSplitRows: SavedSplitRow[] = [];
+  let savedSplitError: string | null = null;
+  if (lockedSavedReceipt) {
+    const { data: savedData, error: savedError } = await (supabase as any).rpc(
+      "shipper_saved_physical_receipt_split_v1",
+      { p_tracking_submission_id: trackingSubmissionId },
+    );
+    savedSplitRows = (savedData ?? []) as SavedSplitRow[];
+    savedSplitError = savedError?.message ?? null;
+  }
+
   const submissionId = randomUUID();
   const shipper = Array.isArray((shipperUser as any).shippers)
     ? (shipperUser as any).shippers[0]
@@ -100,6 +129,18 @@ export default async function ExactPhysicalReceiptPage({
           <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-950 shadow-sm sm:p-6">
             No exact positive allocations are available for this package, or this package is not visible to your shipper account. No receipt can be submitted.
           </section>
+        ) : lockedSavedReceipt ? (
+          savedSplitError ? (
+            <section className="rounded-3xl border border-rose-200 bg-rose-50 p-5 text-sm text-rose-950 shadow-sm sm:p-6">
+              The saved receipt split could not be loaded. The page will not substitute blank quantities. {savedSplitError}
+            </section>
+          ) : savedSplitRows.length > 0 ? (
+            <SavedPhysicalReceiptSplit rows={savedSplitRows} />
+          ) : (
+            <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-950 shadow-sm sm:p-6">
+              A finalised receipt exists, but no saved line split was returned. The page will not display every line as clean.
+            </section>
+          )
         ) : (
           <ExactPhysicalReceiptForm
             rows={rows.map((row) => ({

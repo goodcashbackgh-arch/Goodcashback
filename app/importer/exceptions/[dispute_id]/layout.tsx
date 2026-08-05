@@ -4,6 +4,8 @@ import RefundAdjustmentGuidance from "./RefundAdjustmentGuidance";
 import RejectedRefundDocumentAuditOnlyEnhancer from "./RejectedRefundDocumentAuditOnlyEnhancer";
 import ReplacementOriginalItemReturnForm from "./ReplacementOriginalItemReturnForm";
 import ReadableDisputeReferenceEnhancer from "./ReadableDisputeReferenceEnhancer";
+import ReplacementStatusEnhancer from "./ReplacementStatusEnhancer";
+import ReplacementSuccessorTrackingSummary from "./ReplacementSuccessorTrackingSummary";
 
 type CourierOption = {
   id: string;
@@ -26,6 +28,18 @@ type ReturnHistoryRow = {
   note: string | null;
 };
 
+type ReplacementProgressRow = {
+  progress_status: string;
+  latest_receipt_status: string | null;
+  active_shipment_booking_ref: string | null;
+};
+
+type SuccessorTrackingRow = {
+  tracking_ref: string | null;
+  tracking_date: string | null;
+  couriers?: { name?: string | null } | { name?: string | null }[] | null;
+};
+
 export default async function ImporterExceptionLayout({
   children,
   params,
@@ -36,11 +50,54 @@ export default async function ImporterExceptionLayout({
   const { dispute_id: disputeId } = await params;
   const supabase = await createClient();
 
-  const { data: dispute } = await supabase
-    .from("disputes")
-    .select("id, desired_outcome, replacement_child_order_id, resolved_at")
-    .eq("id", disputeId)
-    .maybeSingle();
+  const [{ data: dispute }, { data: replacementRoute }] = await Promise.all([
+    supabase
+      .from("disputes")
+      .select("id, desired_outcome, replacement_child_order_id, resolved_at")
+      .eq("id", disputeId)
+      .maybeSingle(),
+    supabase
+      .from("physical_replacement_same_order_routes")
+      .select("route_status, successor_tracking_submission_id, successor_tracking_line_allocation_id, tracking_allocated_at")
+      .eq("dispute_id", disputeId)
+      .maybeSingle(),
+  ]);
+
+  let replacementStatusLabel: string | null = null;
+  let replacementProgress: ReplacementProgressRow | null = null;
+  let successorTracking: SuccessorTrackingRow | null = null;
+
+  const hasVerifiedSuccessorTracking = Boolean(
+    dispute?.desired_outcome === "replacement"
+    && !dispute.replacement_child_order_id
+    && replacementRoute?.route_status === "tracking_allocated"
+    && replacementRoute.successor_tracking_submission_id
+    && replacementRoute.successor_tracking_line_allocation_id
+  );
+
+  if (hasVerifiedSuccessorTracking) {
+    const [{ data: progressRows }, { data: trackingRow }] = await Promise.all([
+      supabase.rpc("importer_same_order_replacement_progress_v1", {
+        p_dispute_ids: [disputeId],
+      }),
+      supabase
+        .from("order_tracking_submissions")
+        .select("tracking_ref, tracking_date, couriers(name)")
+        .eq("id", replacementRoute!.successor_tracking_submission_id)
+        .maybeSingle(),
+    ]);
+
+    replacementProgress = ((progressRows ?? []) as ReplacementProgressRow[])[0] ?? null;
+    successorTracking = (trackingRow as SuccessorTrackingRow | null) ?? null;
+
+    if (replacementProgress?.progress_status === "added_to_shipment") {
+      replacementStatusLabel = `Replacement received clean — added to ${replacementProgress.active_shipment_booking_ref ?? "shipment"}`;
+    } else if (replacementProgress?.progress_status === "shipment_eligible") {
+      replacementStatusLabel = "Replacement received clean — shipment eligible";
+    } else {
+      replacementStatusLabel = "Successor tracking allocated — awaiting replacement receipt";
+    }
+  }
 
   let canSubmitReplacementReturn = false;
   let courierOptions: CourierOption[] = [];
@@ -123,10 +180,25 @@ export default async function ImporterExceptionLayout({
     });
   }
 
+  const successorCourier = Array.isArray(successorTracking?.couriers)
+    ? successorTracking?.couriers[0]
+    : successorTracking?.couriers;
+
   return (
     <RefundAdjustmentGuidance>
       <ReadableDisputeReferenceEnhancer disputeId={disputeId} />
+      <ReplacementStatusEnhancer statusLabel={replacementStatusLabel} />
       {children}
+      {hasVerifiedSuccessorTracking ? (
+        <ReplacementSuccessorTrackingSummary
+          courierName={successorCourier?.name ?? null}
+          trackingRef={successorTracking?.tracking_ref ?? null}
+          trackingDate={successorTracking?.tracking_date ?? null}
+          trackingAllocatedAt={replacementRoute?.tracking_allocated_at ?? null}
+          receiptStatus={replacementProgress?.latest_receipt_status ?? null}
+          bookingRef={replacementProgress?.active_shipment_booking_ref ?? null}
+        />
+      ) : null}
       {canSubmitReplacementReturn ? (
         <div className="bg-slate-50 px-6 pb-8 text-slate-950">
           <div className="mx-auto max-w-6xl">
