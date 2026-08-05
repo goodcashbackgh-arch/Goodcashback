@@ -57,7 +57,7 @@ export default async function ShipperPackageContentsPage({
     (supabase as any).rpc("shipper_package_original_contents_preview_v1", {
       p_tracking_submission_id: trackingSubmissionId,
     }),
-    (supabase as any).rpc("shipper_package_contents_preview_v1", {
+    (supabase as any).rpc("shipper_package_contents_preview_v2", {
       p_tracking_submission_id: trackingSubmissionId,
     }),
   ]);

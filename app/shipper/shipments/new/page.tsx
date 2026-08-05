@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
-import { createShipmentBatchAction } from "../actions";
+import { createExactShipmentBatchAction } from "./exact-actions";
 import { PackageContentsPreview } from "../../PackageContentsPreview";
 
 type CandidateRow = {
@@ -52,7 +52,7 @@ export default async function NewShipperShipmentPage({
 
   if (!shipperUser) redirect("/auth/check");
 
-  const { data: rpcRows, error: rpcError } = await (supabase as any).rpc("shipper_shipment_batch_candidates_v1");
+  const { data: rpcRows, error: rpcError } = await (supabase as any).rpc("shipper_shipment_batch_candidates_v2");
   const candidates = (rpcRows ?? []) as CandidateRow[];
   const groups = groupByImporter(candidates);
   const activeGroup = groups.find((group) => group.importerId === selectedImporter) ?? groups[0] ?? null;
@@ -83,9 +83,9 @@ export default async function NewShipperShipmentPage({
               </p>
             </div>
             <form action="/shipper/shipments/new" className="flex flex-wrap items-end gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
-              <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+              <label className="min-w-0 text-xs font-semibold uppercase tracking-wide text-slate-500">
                 Importer
-                <select name="importer" defaultValue={activeGroup?.importerId ?? ""} className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-950">
+                <select name="importer" defaultValue={activeGroup?.importerId ?? ""} className="mt-1 w-full min-w-0 max-w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-950">
                   {groups.length === 0 ? <option value="">No eligible importers</option> : null}
                   {groups.map((group) => (
                     <option key={group.importerId} value={group.importerId}>{group.importerName}</option>
@@ -101,35 +101,78 @@ export default async function NewShipperShipmentPage({
               No received-clean packages are available for shipment batch selection yet.
             </p>
           ) : (
-            <form action={createShipmentBatchAction} className="mt-5 space-y-5">
+            <form action={createExactShipmentBatchAction} className="mt-5 space-y-5">
               <input type="hidden" name="importer_id" value={activeGroup.importerId} />
-              <div className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
-                <h3 className="text-lg font-semibold">{activeGroup.importerName}</h3>
-                <div className="mt-4 grid gap-3 md:grid-cols-3">
-                  <label className="space-y-1 text-sm">
+              <div className="min-w-0 overflow-hidden rounded-3xl border border-slate-200 bg-slate-50 p-4">
+                <h3 className="break-words text-lg font-semibold">{activeGroup.importerName}</h3>
+                <div className="mt-4 grid min-w-0 gap-3 md:grid-cols-2 xl:grid-cols-3">
+                  <label className="min-w-0 space-y-1 text-sm">
                     <span className="text-xs uppercase tracking-wide text-slate-500">Booking ref</span>
-                    <input name="booking_ref" required className="w-full rounded-xl border border-slate-300 px-3 py-2" placeholder="Booking/reference" />
+                    <input name="booking_ref" required className="block w-full min-w-0 max-w-full rounded-xl border border-slate-300 px-3 py-2" placeholder="Booking/reference" />
                   </label>
-                  <label className="space-y-1 text-sm">
+                  <label className="min-w-0 space-y-1 text-sm">
                     <span className="text-xs uppercase tracking-wide text-slate-500">Shipment cut-off</span>
-                    <input name="shipment_cutoff_at" type="datetime-local" className="w-full rounded-xl border border-slate-300 px-3 py-2" />
+                    <input name="shipment_cutoff_at" type="datetime-local" className="block w-full min-w-0 max-w-full rounded-xl border border-slate-300 px-3 py-2" />
                   </label>
-                  <label className="space-y-1 text-sm">
+                  <label className="min-w-0 space-y-1 text-sm">
                     <span className="text-xs uppercase tracking-wide text-slate-500">Dispatch date/time</span>
-                    <input name="dispatched_at" type="datetime-local" className="w-full rounded-xl border border-slate-300 px-3 py-2" />
+                    <input name="dispatched_at" type="datetime-local" className="block w-full min-w-0 max-w-full rounded-xl border border-slate-300 px-3 py-2" />
                   </label>
-                  <label className="space-y-1 text-sm">
+                  <label className="min-w-0 space-y-1 text-sm">
                     <span className="text-xs uppercase tracking-wide text-slate-500">Box/carton count</span>
-                    <input name="box_count" type="number" min="0" step="1" className="w-full rounded-xl border border-slate-300 px-3 py-2" />
+                    <input name="box_count" type="number" min="0" step="1" className="block w-full min-w-0 max-w-full rounded-xl border border-slate-300 px-3 py-2" />
                   </label>
-                  <label className="space-y-1 text-sm md:col-span-2">
+                  <label className="min-w-0 space-y-1 text-sm md:col-span-2 xl:col-span-2">
                     <span className="text-xs uppercase tracking-wide text-slate-500">Notes</span>
-                    <input name="notes" className="w-full rounded-xl border border-slate-300 px-3 py-2" placeholder="Optional package/shipment note" />
+                    <input name="notes" className="block w-full min-w-0 max-w-full rounded-xl border border-slate-300 px-3 py-2" placeholder="Optional package/shipment note" />
                   </label>
                 </div>
               </div>
 
-              <div className="overflow-x-auto rounded-3xl border border-slate-200 bg-white">
+              <div className="space-y-3 md:hidden">
+                {activeGroup.rows.map((row) => (
+                  <article key={row.tracking_submission_id} className="min-w-0 overflow-hidden rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+                    <label className="flex min-w-0 items-start gap-3">
+                      <input
+                        type="checkbox"
+                        name="tracking_submission_ids"
+                        value={row.tracking_submission_id}
+                        className="mt-1 h-5 w-5 shrink-0"
+                      />
+                      <span className="min-w-0">
+                        <span className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Order</span>
+                        <span className="mt-1 block break-all font-semibold text-slate-950">{row.order_ref ?? row.order_id}</span>
+                      </span>
+                    </label>
+
+                    <dl className="mt-4 grid min-w-0 grid-cols-2 gap-x-4 gap-y-3 text-sm">
+                      <div className="min-w-0">
+                        <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">Retailer</dt>
+                        <dd className="mt-1 break-words text-slate-900">{row.retailer_name ?? "—"}</dd>
+                      </div>
+                      <div className="min-w-0">
+                        <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">Eligible qty</dt>
+                        <dd className="mt-1 font-semibold text-slate-950">{Number(row.allocated_qty ?? 0)}</dd>
+                      </div>
+                      <div className="col-span-2 min-w-0">
+                        <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">Tracking/package</dt>
+                        <dd className="mt-1 break-all text-slate-900">{row.courier_name ?? "Courier"} · {row.tracking_ref}</dd>
+                      </div>
+                      <div className="min-w-0">
+                        <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">Date</dt>
+                        <dd className="mt-1 text-slate-900">{row.tracking_date ?? "—"}</dd>
+                      </div>
+                    </dl>
+
+                    <div className="mt-4 min-w-0 overflow-hidden border-t border-slate-200 pt-4">
+                      <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Shipment-eligible contents</p>
+                      <PackageContentsPreview trackingSubmissionId={row.tracking_submission_id} compact />
+                    </div>
+                  </article>
+                ))}
+              </div>
+
+              <div className="hidden overflow-x-auto rounded-3xl border border-slate-200 bg-white md:block">
                 <table className="min-w-full divide-y divide-slate-200 text-sm">
                   <thead className="bg-slate-100 text-xs uppercase tracking-wide text-slate-500">
                     <tr>
@@ -160,7 +203,7 @@ export default async function NewShipperShipmentPage({
                 </table>
               </div>
 
-              <button type="submit" className="rounded-xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-800">
+              <button type="submit" className="w-full rounded-xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-800 sm:w-auto">
                 Create shipment batch
               </button>
             </form>
