@@ -3,8 +3,7 @@ WITH protected_functions(identity, expected_md5) AS (
     ('public.internal_tracking_allocation_fulfilment_position_v1(uuid,uuid,uuid)'::text, 'ae13557433f5e8500985b00266347807'::text),
     ('public.shipper_shipment_batch_candidates_v1()'::text, '952f24084fed0dffcdebbfae988e7400'::text),
     ('public.shipper_create_shipment_batch_v1(uuid,uuid[],text,timestamptz,timestamptz,integer,text,text,text)'::text, '4e4b86b0121a85523fe95c1530a41658'::text),
-    ('public.shipper_package_contents_preview_v1(uuid)'::text, 'a312af874648f50547270c2fcb7f7c6d'::text),
-    ('public.tracking_allocation_effective_entitlement_v1(uuid)'::text, '00d5450bb95b75d2bd2150914689250f'::text)
+    ('public.shipper_package_contents_preview_v1(uuid)'::text, 'a312af874648f50547270c2fcb7f7c6d'::text)
 ), protected_results AS (
   SELECT
     identity,
@@ -61,6 +60,11 @@ WITH protected_functions(identity, expected_md5) AS (
       SELECT 1 FROM protected_results
       WHERE NOT exists OR actual_md5 IS DISTINCT FROM expected_md5
     ),
+    'effective_entitlement_view_exists', to_regclass('public.tracking_allocation_effective_entitlement_v1') IS NOT NULL,
+    'effective_entitlement_view_definition_md5', CASE
+      WHEN to_regclass('public.tracking_allocation_effective_entitlement_v1') IS NULL THEN NULL
+      ELSE md5(pg_get_viewdef('public.tracking_allocation_effective_entitlement_v1'::regclass, true))
+    END,
     'same_order_route_table_exists', to_regclass('public.physical_replacement_same_order_routes') IS NOT NULL,
     'same_order_route_count_for_order', CASE
       WHEN to_regclass('public.physical_replacement_same_order_routes') IS NULL THEN NULL
@@ -93,6 +97,7 @@ WITH protected_functions(identity, expected_md5) AS (
         SELECT 1 FROM protected_results
         WHERE NOT exists OR actual_md5 IS DISTINCT FROM expected_md5
       )
+      AND to_regclass('public.tracking_allocation_effective_entitlement_v1') IS NOT NULL
       AND to_regclass('public.physical_replacement_same_order_routes') IS NOT NULL
       AND EXISTS (SELECT 1 FROM target_batch)
       AND (SELECT COUNT(*) FROM package_rows) = 1
