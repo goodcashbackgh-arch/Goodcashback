@@ -247,7 +247,7 @@ export default function ReplacementOrdersPanel() {
                             </span>
                           </span>
                           <span className="mt-1 block text-sm text-slate-600">Transferred value: {gbp(route.transferred_adjusted_net_value_gbp)}</span>
-                          <span className="mt-1 block text-xs text-slate-500">Route {route.id} · Exception {route.dispute_id}</span>
+                          <span className="mt-1 block text-xs text-slate-500">Same-order replacement · Exception DSP-{route.dispute_id.replaceAll("-", "").slice(0, 8).toUpperCase()}</span>
                         </span>
                       </label>
                     );
