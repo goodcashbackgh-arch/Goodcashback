@@ -129,7 +129,50 @@ export default async function NewShipperShipmentPage({
                 </div>
               </div>
 
-              <div className="overflow-x-auto rounded-3xl border border-slate-200 bg-white">
+              <div className="space-y-3 md:hidden">
+                {activeGroup.rows.map((row) => (
+                  <article key={row.tracking_submission_id} className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+                    <label className="flex items-start gap-3">
+                      <input
+                        type="checkbox"
+                        name="tracking_submission_ids"
+                        value={row.tracking_submission_id}
+                        className="mt-1 h-5 w-5 shrink-0"
+                      />
+                      <span className="min-w-0">
+                        <span className="block text-xs font-semibold uppercase tracking-wide text-slate-500">Order</span>
+                        <span className="mt-1 block break-words font-semibold text-slate-950">{row.order_ref ?? row.order_id}</span>
+                      </span>
+                    </label>
+
+                    <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
+                      <div>
+                        <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">Retailer</dt>
+                        <dd className="mt-1 text-slate-900">{row.retailer_name ?? "—"}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">Eligible qty</dt>
+                        <dd className="mt-1 font-semibold text-slate-950">{Number(row.allocated_qty ?? 0)}</dd>
+                      </div>
+                      <div className="col-span-2">
+                        <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">Tracking/package</dt>
+                        <dd className="mt-1 break-words text-slate-900">{row.courier_name ?? "Courier"} · {row.tracking_ref}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">Date</dt>
+                        <dd className="mt-1 text-slate-900">{row.tracking_date ?? "—"}</dd>
+                      </div>
+                    </dl>
+
+                    <div className="mt-4 border-t border-slate-200 pt-4">
+                      <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Shipment-eligible contents</p>
+                      <PackageContentsPreview trackingSubmissionId={row.tracking_submission_id} compact />
+                    </div>
+                  </article>
+                ))}
+              </div>
+
+              <div className="hidden overflow-x-auto rounded-3xl border border-slate-200 bg-white md:block">
                 <table className="min-w-full divide-y divide-slate-200 text-sm">
                   <thead className="bg-slate-100 text-xs uppercase tracking-wide text-slate-500">
                     <tr>
@@ -160,7 +203,7 @@ export default async function NewShipperShipmentPage({
                 </table>
               </div>
 
-              <button type="submit" className="rounded-xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-800">
+              <button type="submit" className="w-full rounded-xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-800 sm:w-auto">
                 Create shipment batch
               </button>
             </form>
