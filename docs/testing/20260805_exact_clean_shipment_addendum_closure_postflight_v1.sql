@@ -60,11 +60,6 @@ WITH protected_functions(identity, expected_md5) AS (
       SELECT 1 FROM protected_results
       WHERE NOT exists OR actual_md5 IS DISTINCT FROM expected_md5
     ),
-    'effective_entitlement_view_exists', to_regclass('public.tracking_allocation_effective_entitlement_v1') IS NOT NULL,
-    'effective_entitlement_view_definition_md5', CASE
-      WHEN to_regclass('public.tracking_allocation_effective_entitlement_v1') IS NULL THEN NULL
-      ELSE md5(pg_get_viewdef('public.tracking_allocation_effective_entitlement_v1'::regclass, true))
-    END,
     'same_order_route_table_exists', to_regclass('public.physical_replacement_same_order_routes') IS NOT NULL,
     'same_order_route_count_for_order', CASE
       WHEN to_regclass('public.physical_replacement_same_order_routes') IS NULL THEN NULL
@@ -97,7 +92,6 @@ WITH protected_functions(identity, expected_md5) AS (
         SELECT 1 FROM protected_results
         WHERE NOT exists OR actual_md5 IS DISTINCT FROM expected_md5
       )
-      AND to_regclass('public.tracking_allocation_effective_entitlement_v1') IS NOT NULL
       AND to_regclass('public.physical_replacement_same_order_routes') IS NOT NULL
       AND EXISTS (SELECT 1 FROM target_batch)
       AND (SELECT COUNT(*) FROM package_rows) = 1
