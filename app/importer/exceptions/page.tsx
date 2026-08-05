@@ -34,6 +34,15 @@ type ReplacementRouteRow = {
   successor_tracking_line_allocation_id: string | null;
 };
 
+type ReceiptRow = {
+  tracking_submission_id: string;
+  receipt_status: string;
+};
+
+type MembershipRow = {
+  tracking_line_allocation_id: string;
+};
+
 function gbp(value: number | null | undefined) {
   return new Intl.NumberFormat("en-GB", {
     style: "currency",
@@ -66,6 +75,8 @@ function previewText(value: string | null | undefined, max = 84) {
 function terminalStatusMessage(
   dispute: Pick<DisputeRow, "id" | "status" | "replacement_child_order_id">,
   routeByDisputeId: Map<string, ReplacementRouteRow>,
+  latestReceiptByTrackingId: Map<string, string>,
+  allocationIdsInShipment: Set<string>,
 ) {
   if (dispute.status === "replaced") {
     if (dispute.replacement_child_order_id) return "Replacement accepted — child order created";
@@ -75,6 +86,12 @@ function terminalStatusMessage(
       && route.successor_tracking_submission_id
       && route.successor_tracking_line_allocation_id
     ) {
+      if (allocationIdsInShipment.has(route.successor_tracking_line_allocation_id)) {
+        return "Replacement received clean — added to shipment";
+      }
+      if (latestReceiptByTrackingId.get(route.successor_tracking_submission_id) === "received_clean") {
+        return "Replacement received clean — shipment eligible";
+      }
       return "Successor tracking allocated — awaiting replacement receipt";
     }
     return "Replacement accepted — awaiting successor tracking";
@@ -125,6 +142,27 @@ export default async function ImporterExceptionsPage() {
       ])
     : [{ data: [] }, { data: [] }, { data: [] }];
 
+  const routeRows = (replacementRoutes ?? []) as ReplacementRouteRow[];
+  const successorTrackingIds = [...new Set(routeRows.map((route) => route.successor_tracking_submission_id).filter((id): id is string => Boolean(id)))];
+  const successorAllocationIds = [...new Set(routeRows.map((route) => route.successor_tracking_line_allocation_id).filter((id): id is string => Boolean(id)))];
+
+  const [{ data: receiptRows }, { data: membershipRows }] = await Promise.all([
+    successorTrackingIds.length
+      ? supabase
+          .from("shipper_package_receipts")
+          .select("tracking_submission_id, receipt_status, recorded_at")
+          .in("tracking_submission_id", successorTrackingIds)
+          .order("recorded_at", { ascending: false })
+      : Promise.resolve({ data: [] }),
+    successorAllocationIds.length
+      ? supabase
+          .from("shipper_shipment_batch_line_memberships")
+          .select("tracking_line_allocation_id")
+          .in("tracking_line_allocation_id", successorAllocationIds)
+          .eq("active", true)
+      : Promise.resolve({ data: [] }),
+  ]);
+
   const activeLineStatusByDispute = new Map<string, string | null>();
   for (const line of (disputeLines ?? []) as DisputeLineRow[]) {
     if (line.resolved_at !== null) continue;
@@ -141,9 +179,18 @@ export default async function ImporterExceptionsPage() {
   }
 
   const routeByDisputeId = new Map<string, ReplacementRouteRow>();
-  for (const route of (replacementRoutes ?? []) as ReplacementRouteRow[]) {
-    routeByDisputeId.set(route.dispute_id, route);
+  for (const route of routeRows) routeByDisputeId.set(route.dispute_id, route);
+
+  const latestReceiptByTrackingId = new Map<string, string>();
+  for (const receipt of (receiptRows ?? []) as ReceiptRow[]) {
+    if (!latestReceiptByTrackingId.has(receipt.tracking_submission_id)) {
+      latestReceiptByTrackingId.set(receipt.tracking_submission_id, receipt.receipt_status);
+    }
   }
+
+  const allocationIdsInShipment = new Set(
+    ((membershipRows ?? []) as MembershipRow[]).map((row) => row.tracking_line_allocation_id),
+  );
 
   return (
     <main className="min-h-screen bg-slate-50 p-6 text-slate-950">
@@ -175,7 +222,7 @@ export default async function ImporterExceptionsPage() {
                   const lineStatus = activeLineStatusByDispute.get(dispute.id) ?? null;
                   const retailerOutcome = retailerOutcomeFromStatus(lineStatus);
                   const retailerPosition = latestRetailerReplyByDispute.get(dispute.id) ?? "No retailer reply yet";
-                  const terminalMessage = terminalStatusMessage(dispute, routeByDisputeId);
+                  const terminalMessage = terminalStatusMessage(dispute, routeByDisputeId, latestReceiptByTrackingId, allocationIdsInShipment);
 
                   return (
                     <tr key={dispute.id} className="border-t border-slate-200">
