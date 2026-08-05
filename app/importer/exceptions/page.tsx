@@ -34,13 +34,10 @@ type ReplacementRouteRow = {
   successor_tracking_line_allocation_id: string | null;
 };
 
-type ReceiptRow = {
-  tracking_submission_id: string;
-  receipt_status: string;
-};
-
-type MembershipRow = {
-  tracking_line_allocation_id: string;
+type ReplacementProgressRow = {
+  dispute_id: string;
+  progress_status: string;
+  active_shipment_booking_ref: string | null;
 };
 
 function gbp(value: number | null | undefined) {
@@ -75,23 +72,28 @@ function previewText(value: string | null | undefined, max = 84) {
 function terminalStatusMessage(
   dispute: Pick<DisputeRow, "id" | "status" | "replacement_child_order_id">,
   routeByDisputeId: Map<string, ReplacementRouteRow>,
-  latestReceiptByTrackingId: Map<string, string>,
-  allocationIdsInShipment: Set<string>,
+  progressByDisputeId: Map<string, ReplacementProgressRow>,
 ) {
   if (dispute.status === "replaced") {
     if (dispute.replacement_child_order_id) return "Replacement accepted — child order created";
+
+    const progress = progressByDisputeId.get(dispute.id);
+    if (progress?.progress_status === "added_to_shipment") {
+      return `Replacement received clean — added to ${progress.active_shipment_booking_ref ?? "shipment"}`;
+    }
+    if (progress?.progress_status === "shipment_eligible") {
+      return "Replacement received clean — shipment eligible";
+    }
+    if (progress?.progress_status === "awaiting_replacement_receipt") {
+      return "Successor tracking allocated — awaiting replacement receipt";
+    }
+
     const route = routeByDisputeId.get(dispute.id);
     if (
       route?.route_status === "tracking_allocated"
       && route.successor_tracking_submission_id
       && route.successor_tracking_line_allocation_id
     ) {
-      if (allocationIdsInShipment.has(route.successor_tracking_line_allocation_id)) {
-        return "Replacement received clean — added to shipment";
-      }
-      if (latestReceiptByTrackingId.get(route.successor_tracking_submission_id) === "received_clean") {
-        return "Replacement received clean — shipment eligible";
-      }
       return "Successor tracking allocated — awaiting replacement receipt";
     }
     return "Replacement accepted — awaiting successor tracking";
@@ -122,7 +124,7 @@ export default async function ImporterExceptionsPage() {
   const disputeRows = (disputes ?? []) as DisputeRow[];
   const disputeIds = disputeRows.map((row) => row.id);
 
-  const [{ data: disputeLines }, { data: retailerReplies }, { data: replacementRoutes }] = disputeIds.length
+  const [{ data: disputeLines }, { data: retailerReplies }, { data: replacementRoutes }, { data: replacementProgress }] = disputeIds.length
     ? await Promise.all([
         supabase
           .from("dispute_lines")
@@ -139,29 +141,11 @@ export default async function ImporterExceptionsPage() {
           .from("physical_replacement_same_order_routes")
           .select("dispute_id, route_status, successor_tracking_submission_id, successor_tracking_line_allocation_id")
           .in("dispute_id", disputeIds),
+        supabase.rpc("importer_same_order_replacement_progress_v1", {
+          p_dispute_ids: disputeIds,
+        }),
       ])
-    : [{ data: [] }, { data: [] }, { data: [] }];
-
-  const routeRows = (replacementRoutes ?? []) as ReplacementRouteRow[];
-  const successorTrackingIds = [...new Set(routeRows.map((route) => route.successor_tracking_submission_id).filter((id): id is string => Boolean(id)))];
-  const successorAllocationIds = [...new Set(routeRows.map((route) => route.successor_tracking_line_allocation_id).filter((id): id is string => Boolean(id)))];
-
-  const [{ data: receiptRows }, { data: membershipRows }] = await Promise.all([
-    successorTrackingIds.length
-      ? supabase
-          .from("shipper_package_receipts")
-          .select("tracking_submission_id, receipt_status, recorded_at")
-          .in("tracking_submission_id", successorTrackingIds)
-          .order("recorded_at", { ascending: false })
-      : Promise.resolve({ data: [] }),
-    successorAllocationIds.length
-      ? supabase
-          .from("shipper_shipment_batch_line_memberships")
-          .select("tracking_line_allocation_id")
-          .in("tracking_line_allocation_id", successorAllocationIds)
-          .eq("active", true)
-      : Promise.resolve({ data: [] }),
-  ]);
+    : [{ data: [] }, { data: [] }, { data: [] }, { data: [] }];
 
   const activeLineStatusByDispute = new Map<string, string | null>();
   for (const line of (disputeLines ?? []) as DisputeLineRow[]) {
@@ -179,18 +163,16 @@ export default async function ImporterExceptionsPage() {
   }
 
   const routeByDisputeId = new Map<string, ReplacementRouteRow>();
-  for (const route of routeRows) routeByDisputeId.set(route.dispute_id, route);
-
-  const latestReceiptByTrackingId = new Map<string, string>();
-  for (const receipt of (receiptRows ?? []) as ReceiptRow[]) {
-    if (!latestReceiptByTrackingId.has(receipt.tracking_submission_id)) {
-      latestReceiptByTrackingId.set(receipt.tracking_submission_id, receipt.receipt_status);
-    }
+  for (const route of (replacementRoutes ?? []) as ReplacementRouteRow[]) {
+    routeByDisputeId.set(route.dispute_id, route);
   }
 
-  const allocationIdsInShipment = new Set(
-    ((membershipRows ?? []) as MembershipRow[]).map((row) => row.tracking_line_allocation_id),
-  );
+  const progressByDisputeId = new Map<string, ReplacementProgressRow>();
+  for (const progress of (replacementProgress ?? []) as ReplacementProgressRow[]) {
+    if (!progressByDisputeId.has(progress.dispute_id)) {
+      progressByDisputeId.set(progress.dispute_id, progress);
+    }
+  }
 
   return (
     <main className="min-h-screen bg-slate-50 p-6 text-slate-950">
@@ -222,7 +204,7 @@ export default async function ImporterExceptionsPage() {
                   const lineStatus = activeLineStatusByDispute.get(dispute.id) ?? null;
                   const retailerOutcome = retailerOutcomeFromStatus(lineStatus);
                   const retailerPosition = latestRetailerReplyByDispute.get(dispute.id) ?? "No retailer reply yet";
-                  const terminalMessage = terminalStatusMessage(dispute, routeByDisputeId, latestReceiptByTrackingId, allocationIdsInShipment);
+                  const terminalMessage = terminalStatusMessage(dispute, routeByDisputeId, progressByDisputeId);
 
                   return (
                     <tr key={dispute.id} className="border-t border-slate-200">
