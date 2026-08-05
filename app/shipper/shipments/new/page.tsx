@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
-import { createShipmentBatchAction } from "../actions";
+import { createExactShipmentBatchAction } from "./exact-actions";
 import { PackageContentsPreview } from "../../PackageContentsPreview";
 
 type CandidateRow = {
@@ -52,7 +52,7 @@ export default async function NewShipperShipmentPage({
 
   if (!shipperUser) redirect("/auth/check");
 
-  const { data: rpcRows, error: rpcError } = await (supabase as any).rpc("shipper_shipment_batch_candidates_v1");
+  const { data: rpcRows, error: rpcError } = await (supabase as any).rpc("shipper_shipment_batch_candidates_v2");
   const candidates = (rpcRows ?? []) as CandidateRow[];
   const groups = groupByImporter(candidates);
   const activeGroup = groups.find((group) => group.importerId === selectedImporter) ?? groups[0] ?? null;
@@ -101,7 +101,7 @@ export default async function NewShipperShipmentPage({
               No received-clean packages are available for shipment batch selection yet.
             </p>
           ) : (
-            <form action={createShipmentBatchAction} className="mt-5 space-y-5">
+            <form action={createExactShipmentBatchAction} className="mt-5 space-y-5">
               <input type="hidden" name="importer_id" value={activeGroup.importerId} />
               <div className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
                 <h3 className="text-lg font-semibold">{activeGroup.importerName}</h3>
