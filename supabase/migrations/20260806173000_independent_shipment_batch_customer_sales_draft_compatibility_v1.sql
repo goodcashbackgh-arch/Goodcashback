@@ -155,12 +155,12 @@ DECLARE
         FROM public.customer_sales_release_lines active_membership
         JOIN public.sales_invoices existing_draft
           ON existing_draft.id = active_membership.sales_invoice_id
-        WHERE active_membership.source_shipment_batch_id = b.id
+        WHERE active_membership.source_shipment_batch_id = batch_row.id
           AND active_membership.release_status = 'active'
           AND existing_draft.order_id = CASE
-            WHEN o.order_type = 'replacement_child' AND o.parent_order_id IS NOT NULL
-              THEN o.parent_order_id
-            ELSE o.id
+            WHEN order_row.order_type = 'replacement_child' AND order_row.parent_order_id IS NOT NULL
+              THEN order_row.parent_order_id
+            ELSE order_row.id
           END
           AND existing_draft.invoice_type IN ('main', 'supplementary')
           AND existing_draft.sage_status = 'draft'
@@ -188,7 +188,8 @@ BEGIN
     'gis'
   );
 
-  IF strpos(v_definition, 'active_membership.source_shipment_batch_id = b.id') = 0
+  IF strpos(v_definition, 'active_membership.source_shipment_batch_id = batch_row.id') = 0
+     OR strpos(v_definition, 'WHEN order_row.order_type = ''replacement_child''') = 0
      OR strpos(v_definition, 'internal_customer_sales_release_exact_clean_proof_v1') = 0
      OR strpos(v_definition, 'AS has_active_draft') = 0
   THEN
@@ -382,7 +383,8 @@ BEGIN
   SELECT pg_get_functiondef(
     'public.internal_customer_sales_release_sources_v1(uuid)'::regprocedure
   ) INTO v_definition;
-  IF strpos(v_definition, 'active_membership.source_shipment_batch_id = b.id') = 0
+  IF strpos(v_definition, 'active_membership.source_shipment_batch_id = batch_row.id') = 0
+     OR strpos(v_definition, 'WHEN order_row.order_type = ''replacement_child''') = 0
      OR strpos(v_definition, 'internal_customer_sales_release_exact_clean_proof_v1') = 0
      OR strpos(v_definition, 'released_shipping_exceeds_current_approved_allocation') = 0
      OR strpos(v_definition, 'shipping_only_main_not_permitted') = 0
