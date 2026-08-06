@@ -89,26 +89,20 @@ BEGIN
       'Exact shipment-batch queue predicates are not installed exactly twice.';
   END IF;
 
-  SELECT count(*)
-  INTO v_count
-  FROM regexp_matches(
-    v_definition_before,
-    regexp_replace(v_new_draft, '([\\.\\(\\)\\[\\]\\{\\}\\*\\+\\?\\^\\$\\|])', '\\\1', 'g'),
-    'g'
-  );
+  v_count := (
+    length(v_definition_before)
+    - length(replace(v_definition_before, v_new_draft, ''))
+  ) / NULLIF(length(v_new_draft), 0);
   IF v_count IS DISTINCT FROM 1 THEN
     RAISE EXCEPTION
       'Installed exact draft-count expression expected once, found %.',
       v_count;
   END IF;
 
-  SELECT count(*)
-  INTO v_count
-  FROM regexp_matches(
-    v_definition_before,
-    regexp_replace(v_new_posted, '([\\.\\(\\)\\[\\]\\{\\}\\*\\+\\?\\^\\$\\|])', '\\\1', 'g'),
-    'g'
-  );
+  v_count := (
+    length(v_definition_before)
+    - length(replace(v_definition_before, v_new_posted, ''))
+  ) / NULLIF(length(v_new_posted), 0);
   IF v_count IS DISTINCT FROM 1 THEN
     RAISE EXCEPTION
       'Installed exact posted-count expression expected once, found %.',
