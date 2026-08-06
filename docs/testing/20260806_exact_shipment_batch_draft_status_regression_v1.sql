@@ -39,21 +39,31 @@ DECLARE
   v_definition text;
   v_restored_definition text;
   v_compact text;
-  v_count integer;
 
   v_j040826_batch uuid;
   v_j040826v1_batch uuid;
 
-  v_j040826_status text;
-  v_j040826_action text;
-  v_j040826_draft_count integer;
-  v_j040826_posted_count integer;
+  v_status text;
+  v_action text;
+  v_draft_count integer;
+  v_posted_count integer;
+  v_amount numeric;
+  v_goods numeric;
+  v_shipping numeric;
+  v_order_count integer;
+  v_line_count integer;
+  v_ready_count integer;
+  v_blocker_count integer;
 
-  v_j040826v1_status text;
-  v_j040826v1_action text;
-  v_j040826v1_draft_count integer;
-  v_j040826v1_posted_count integer;
-  v_j040826v1_blocker_count integer;
+  v_expected_amount numeric;
+  v_expected_goods numeric;
+  v_expected_shipping numeric;
+  v_expected_order_count integer;
+  v_expected_line_count integer;
+  v_expected_ready_count integer;
+  v_expected_blocker_count integer;
+
+  v_membership_count integer;
 
   v_old_draft text :=
     $old$COUNT(DISTINCT invoice.id) FILTER (WHERE invoice.sage_status = 'draft')::integer AS draft_count$old$;
@@ -112,16 +122,32 @@ BEGIN
     RAISE EXCEPTION 'FAIL: target shipment batches are missing or changed';
   END IF;
 
+  -- J040826: compare every unaffected queue aggregate with an independent
+  -- aggregation of the unchanged readiness preview.
   SELECT
     queue_row.readiness_status,
     queue_row.queue_action,
     queue_row.created_draft_count,
-    queue_row.posted_invoice_count
+    queue_row.posted_invoice_count,
+    queue_row.proposed_amount_gbp,
+    queue_row.proposed_goods_amount_gbp,
+    queue_row.proposed_shipping_amount_gbp,
+    queue_row.order_count,
+    queue_row.line_count,
+    queue_row.ready_line_count,
+    queue_row.blocker_count
   INTO
-    v_j040826_status,
-    v_j040826_action,
-    v_j040826_draft_count,
-    v_j040826_posted_count
+    v_status,
+    v_action,
+    v_draft_count,
+    v_posted_count,
+    v_amount,
+    v_goods,
+    v_shipping,
+    v_order_count,
+    v_line_count,
+    v_ready_count,
+    v_blocker_count
   FROM public.internal_customer_invoice_release_queue_v1() queue_row
   WHERE queue_row.shipment_batch_id = v_j040826_batch;
 
@@ -130,17 +156,71 @@ BEGIN
   END IF;
 
   SELECT
+    MAX(preview.proposed_amount_gbp)::numeric,
+    MAX(preview.proposed_goods_amount_gbp)::numeric,
+    MAX(preview.proposed_shipping_amount_gbp)::numeric,
+    COUNT(DISTINCT preview.order_id)::integer,
+    COUNT(*)::integer,
+    COUNT(*) FILTER (
+      WHERE preview.blocker IS NULL
+        AND ROUND(COALESCE(preview.total_line_amount_gbp, 0), 2) > 0
+    )::integer,
+    COUNT(*) FILTER (WHERE preview.blocker IS NOT NULL)::integer
+  INTO
+    v_expected_amount,
+    v_expected_goods,
+    v_expected_shipping,
+    v_expected_order_count,
+    v_expected_line_count,
+    v_expected_ready_count,
+    v_expected_blocker_count
+  FROM public.internal_shipping_customer_invoice_readiness_preview_v1(
+    v_j040826_batch
+  ) preview;
+
+  IF v_status IS DISTINCT FROM 'draft_exists'
+     OR v_action IS DISTINCT FROM 'review_existing_draft'
+     OR v_draft_count IS DISTINCT FROM 1
+     OR v_posted_count IS DISTINCT FROM 0
+     OR v_amount IS DISTINCT FROM v_expected_amount
+     OR v_goods IS DISTINCT FROM v_expected_goods
+     OR v_shipping IS DISTINCT FROM v_expected_shipping
+     OR v_order_count IS DISTINCT FROM v_expected_order_count
+     OR v_line_count IS DISTINCT FROM v_expected_line_count
+     OR v_ready_count IS DISTINCT FROM v_expected_ready_count
+     OR v_blocker_count IS DISTINCT FROM v_expected_blocker_count
+  THEN
+    RAISE EXCEPTION
+      'FAIL: J040826 queue output differs from governed preview aggregates';
+  END IF;
+
+  -- J040826v1: only draft/posted classification may differ from the historical
+  -- order-level result. Amounts and all other counts must still equal the
+  -- unchanged readiness preview aggregation exactly.
+  SELECT
     queue_row.readiness_status,
     queue_row.queue_action,
     queue_row.created_draft_count,
     queue_row.posted_invoice_count,
+    queue_row.proposed_amount_gbp,
+    queue_row.proposed_goods_amount_gbp,
+    queue_row.proposed_shipping_amount_gbp,
+    queue_row.order_count,
+    queue_row.line_count,
+    queue_row.ready_line_count,
     queue_row.blocker_count
   INTO
-    v_j040826v1_status,
-    v_j040826v1_action,
-    v_j040826v1_draft_count,
-    v_j040826v1_posted_count,
-    v_j040826v1_blocker_count
+    v_status,
+    v_action,
+    v_draft_count,
+    v_posted_count,
+    v_amount,
+    v_goods,
+    v_shipping,
+    v_order_count,
+    v_line_count,
+    v_ready_count,
+    v_blocker_count
   FROM public.internal_customer_invoice_release_queue_v1() queue_row
   WHERE queue_row.shipment_batch_id = v_j040826v1_batch;
 
@@ -148,45 +228,57 @@ BEGIN
     RAISE EXCEPTION 'FAIL: J040826v1 is missing from the release queue';
   END IF;
 
-  IF v_j040826_status IS DISTINCT FROM 'draft_exists'
-     OR v_j040826_action IS DISTINCT FROM 'review_existing_draft'
-     OR v_j040826_draft_count IS DISTINCT FROM 1
-     OR v_j040826_posted_count IS DISTINCT FROM 0
-  THEN
-    RAISE EXCEPTION
-      'FAIL: J040826 queue result is %, %, draft %, posted %',
-      v_j040826_status,
-      v_j040826_action,
-      v_j040826_draft_count,
-      v_j040826_posted_count;
-  END IF;
+  SELECT
+    MAX(preview.proposed_amount_gbp)::numeric,
+    MAX(preview.proposed_goods_amount_gbp)::numeric,
+    MAX(preview.proposed_shipping_amount_gbp)::numeric,
+    COUNT(DISTINCT preview.order_id)::integer,
+    COUNT(*)::integer,
+    COUNT(*) FILTER (
+      WHERE preview.blocker IS NULL
+        AND ROUND(COALESCE(preview.total_line_amount_gbp, 0), 2) > 0
+    )::integer,
+    COUNT(*) FILTER (WHERE preview.blocker IS NOT NULL)::integer
+  INTO
+    v_expected_amount,
+    v_expected_goods,
+    v_expected_shipping,
+    v_expected_order_count,
+    v_expected_line_count,
+    v_expected_ready_count,
+    v_expected_blocker_count
+  FROM public.internal_shipping_customer_invoice_readiness_preview_v1(
+    v_j040826v1_batch
+  ) preview;
 
-  IF v_j040826v1_status IS DISTINCT FROM 'blocked'
-     OR v_j040826v1_action IS DISTINCT FROM 'resolve_blockers'
-     OR v_j040826v1_draft_count IS DISTINCT FROM 0
-     OR v_j040826v1_posted_count IS DISTINCT FROM 0
-     OR COALESCE(v_j040826v1_blocker_count, 0) <= 0
+  IF v_status IS DISTINCT FROM 'blocked'
+     OR v_action IS DISTINCT FROM 'resolve_blockers'
+     OR v_draft_count IS DISTINCT FROM 0
+     OR v_posted_count IS DISTINCT FROM 0
+     OR v_amount IS DISTINCT FROM v_expected_amount
+     OR v_goods IS DISTINCT FROM v_expected_goods
+     OR v_shipping IS DISTINCT FROM v_expected_shipping
+     OR v_order_count IS DISTINCT FROM v_expected_order_count
+     OR v_line_count IS DISTINCT FROM v_expected_line_count
+     OR v_ready_count IS DISTINCT FROM v_expected_ready_count
+     OR v_blocker_count IS DISTINCT FROM v_expected_blocker_count
+     OR v_expected_blocker_count <= 0
   THEN
     RAISE EXCEPTION
-      'FAIL: J040826v1 queue result is %, %, draft %, posted %, blockers %',
-      v_j040826v1_status,
-      v_j040826v1_action,
-      v_j040826v1_draft_count,
-      v_j040826v1_posted_count,
-      v_j040826v1_blocker_count;
+      'FAIL: J040826v1 queue output differs from governed preview aggregates';
   END IF;
 
   SELECT count(*)
-  INTO v_count
+  INTO v_membership_count
   FROM public.customer_sales_release_lines release_line
   WHERE release_line.sales_invoice_id =
         'a3c939e4-0abb-4047-b828-cdc137130fd4'::uuid
     AND release_line.release_status = 'active';
 
-  IF v_count IS DISTINCT FROM 1 THEN
+  IF v_membership_count IS DISTINCT FROM 1 THEN
     RAISE EXCEPTION
       'FAIL: target draft active membership count is %, expected 1',
-      v_count;
+      v_membership_count;
   END IF;
 
   IF NOT EXISTS (
@@ -380,6 +472,7 @@ SELECT jsonb_build_object(
     'created_draft_count', 0,
     'active_membership_count', 0
   ),
+  'queue_amounts_and_counts_match_preview', true,
   'protected_mini_builds_1_to_3', true,
   'operational_rows_changed', false,
   'note',
