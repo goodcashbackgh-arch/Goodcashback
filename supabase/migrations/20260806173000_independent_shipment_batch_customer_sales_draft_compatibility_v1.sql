@@ -149,20 +149,8 @@ VALUES
 DO $replace_resolver$
 DECLARE
   v_definition text;
-  v_old text := $old$
-      EXISTS (
-        SELECT 1
-        FROM public.sales_invoices existing_draft
-        WHERE existing_draft.order_id = CASE
-          WHEN o.order_type = 'replacement_child' AND o.parent_order_id IS NOT NULL
-            THEN o.parent_order_id
-          ELSE o.id
-        END
-          AND existing_draft.invoice_type IN ('main', 'supplementary')
-          AND existing_draft.sage_status = 'draft'
-      ) AS has_active_draft$old$;
-  v_new text := $new$
-      EXISTS (
+  v_pattern text := $pattern$EXISTS[[:space:]]*\([[:space:]]*SELECT[[:space:]]+1[[:space:]]+FROM[[:space:]]+public\.sales_invoices[[:space:]]+existing_draft[[:space:]]+WHERE.*?existing_draft\.sage_status[[:space:]]*=[[:space:]]*'draft'[[:space:]]*\)[[:space:]]+AS[[:space:]]+has_active_draft$pattern$;
+  v_replacement text := $replacement$EXISTS (
         SELECT 1
         FROM public.customer_sales_release_lines active_membership
         JOIN public.sales_invoices existing_draft
@@ -176,22 +164,33 @@ DECLARE
           END
           AND existing_draft.invoice_type IN ('main', 'supplementary')
           AND existing_draft.sage_status = 'draft'
-      ) AS has_active_draft$new$;
+      ) AS has_active_draft$replacement$;
+  v_match_count integer;
 BEGIN
   SELECT pg_get_functiondef(
     'public.internal_customer_sales_release_sources_v1(uuid)'::regprocedure
   ) INTO v_definition;
 
-  IF strpos(v_definition, v_old) = 0
-     OR strpos(substr(v_definition, strpos(v_definition, v_old) + length(v_old)), v_old) > 0
-  THEN
-    RAISE EXCEPTION 'Parent-wide resolver draft block was not found exactly once.';
+  SELECT COUNT(*)::integer
+  INTO v_match_count
+  FROM regexp_matches(v_definition, v_pattern, 'gis');
+
+  IF v_match_count IS DISTINCT FROM 1 THEN
+    RAISE EXCEPTION
+      'Parent-wide resolver draft expression match count was %, expected 1.',
+      COALESCE(v_match_count, 0);
   END IF;
 
-  v_definition := replace(v_definition, v_old, v_new);
+  v_definition := regexp_replace(
+    v_definition,
+    v_pattern,
+    v_replacement,
+    'gis'
+  );
 
   IF strpos(v_definition, 'active_membership.source_shipment_batch_id = b.id') = 0
      OR strpos(v_definition, 'internal_customer_sales_release_exact_clean_proof_v1') = 0
+     OR strpos(v_definition, 'AS has_active_draft') = 0
   THEN
     RAISE EXCEPTION 'Resolver exact-batch replacement failed closed.';
   END IF;
