@@ -65,6 +65,8 @@ Each distinct selected shipment batch must be processed independently. Two sibli
 
 The existing parent advisory transaction lock and parent order row lock remain. They serialise main/supplementary decisions and overlapping release attempts but must not prohibit disjoint sibling drafts.
 
+Where one invocation contains batches from more than one commercial parent, processing must be deterministically ordered by `commercial_parent_order_id`, then `shipment_batch_id`, before taking parent locks. This preserves batch-level creation while preventing inconsistent multi-parent lock ordering.
+
 ### 4.4 Main and supplementary routing retained
 
 `uq_sales_invoices_nonvoid_main_v1` remains unchanged.
@@ -123,7 +125,7 @@ The creator must:
 
 1. retain the current input and return contract;
 2. load only submitted shipment batches through the current resolver;
-3. iterate by distinct `shipment_batch_id`, not commercial parent;
+3. iterate by distinct `shipment_batch_id`, not commercial parent, while ordering work by `commercial_parent_order_id`, then `shipment_batch_id`;
 4. prove each batch maps to exactly one commercial parent;
 5. retain the parent advisory and row locks;
 6. detect an existing draft only through active membership for that exact batch;
@@ -187,6 +189,8 @@ Before DDL, fail closed unless:
 - `uq_sales_invoices_nonvoid_main_v1` is unchanged;
 - `uq_sales_invoices_active_release_draft_v1` has the expected parent-wide definition;
 - no duplicate active membership fingerprint exists.
+
+Index validation must use PostgreSQL catalogue structure and parsed predicates, not formatting-sensitive comparisons against `pg_get_indexdef()` output.
 
 ## 12. Required rollback-only regression
 
