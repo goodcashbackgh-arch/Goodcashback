@@ -241,7 +241,7 @@ BEGIN$new$;
     SELECT rs.shipment_batch_id
     FROM _release_src rs
     GROUP BY rs.shipment_batch_id
-    ORDER BY MIN(rs.commercial_parent_order_id), rs.shipment_batch_id
+    ORDER BY MIN(rs.commercial_parent_order_id::text), rs.shipment_batch_id
   LOOP
     SELECT
       (ARRAY_AGG(DISTINCT rs.commercial_parent_order_id
@@ -335,7 +335,7 @@ $old$;
   );
 
   IF strpos(v_definition, 'FOR v_batch IN') = 0
-     OR strpos(v_definition, 'ORDER BY MIN(rs.commercial_parent_order_id), rs.shipment_batch_id') = 0
+     OR strpos(v_definition, 'ORDER BY MIN(rs.commercial_parent_order_id::text), rs.shipment_batch_id') = 0
      OR strpos(v_definition, 'active_membership.source_shipment_batch_id = v_batch') = 0
      OR strpos(v_definition, 'WHERE rs.shipment_batch_id = v_batch') = 0
      OR strpos(v_definition, 'pg_advisory_xact_lock') = 0
@@ -395,7 +395,7 @@ BEGIN
     'public.internal_customer_invoice_release_create_drafts_v1(uuid[])'::regprocedure
   ) INTO v_definition;
   IF strpos(v_definition, 'FOR v_batch IN') = 0
-     OR strpos(v_definition, 'ORDER BY MIN(rs.commercial_parent_order_id), rs.shipment_batch_id') = 0
+     OR strpos(v_definition, 'ORDER BY MIN(rs.commercial_parent_order_id::text), rs.shipment_batch_id') = 0
      OR strpos(v_definition, 'active_membership.source_shipment_batch_id = v_batch') = 0
      OR strpos(v_definition, 'WHERE rs.shipment_batch_id = v_batch') = 0
      OR strpos(v_definition, 'pg_advisory_xact_lock') = 0
