@@ -8,84 +8,108 @@ WITH target_batch AS (
   SELECT e.*
   FROM target_batch b
   CROSS JOIN LATERAL public.shipper_shipment_batch_effective_lines_v1(b.id) e
-), latest_receipt AS (
-  SELECT DISTINCT ON (spr.tracking_submission_id)
-    spr.tracking_submission_id,
-    spr.receipt_status,
-    spr.recorded_at,
-    spr.created_at,
-    spr.id AS receipt_id
-  FROM public.shipper_package_receipts spr
-  JOIN effective e ON e.tracking_submission_id = spr.tracking_submission_id
-  ORDER BY spr.tracking_submission_id,
-           spr.recorded_at DESC NULLS LAST,
-           spr.created_at DESC,
-           spr.id DESC
-), release_source AS (
-  SELECT src.*
-  FROM target_batch b
-  CROSS JOIN LATERAL public.internal_customer_sales_release_sources_v1(b.id) src
-), release_ledger AS (
+), facts AS (
   SELECT
-    csl.tracking_line_allocation_id,
-    csl.sales_invoice_id,
-    csl.release_status,
-    csl.released_qty,
-    csl.goods_amount_gbp,
-    csl.shipping_amount_gbp,
-    csl.customer_charge_amount_gbp,
-    csl.source_shipment_batch_id
-  FROM public.customer_sales_release_lines csl
-  JOIN target_batch b ON b.id = csl.source_shipment_batch_id
-), invoice_rows AS (
+    e.*,
+    ots.tracking_ref,
+    sil.description AS item_description,
+    si.review_status AS supplier_invoice_review_status,
+    COALESCE(si.blocked_from_sage_yn, false) AS supplier_invoice_blocked_from_sage,
+    sil.eligible_for_invoice_yn,
+    receipt.receipt_status AS package_receipt_status,
+    receipt.recorded_at AS package_receipt_recorded_at,
+    EXISTS (
+      SELECT 1
+      FROM public.dispute_lines dl
+      JOIN public.disputes d ON d.id = dl.dispute_id
+      WHERE dl.supplier_invoice_line_id = e.supplier_invoice_line_id
+        AND dl.resolved_at IS NULL
+        AND d.resolved_at IS NULL
+    ) AS has_unresolved_exception,
+    COALESCE(released.released_qty, 0) AS already_released_qty,
+    COALESCE(released.released_goods, 0) AS already_released_goods,
+    COALESCE(released.released_shipping, 0) AS already_released_shipping,
+    EXISTS (
+      SELECT 1
+      FROM public.sales_invoices s
+      WHERE s.order_id = e.order_id
+        AND s.invoice_type IN ('main', 'supplementary')
+        AND s.sage_status = 'draft'
+    ) AS has_active_sales_draft
+  FROM effective e
+  JOIN public.order_tracking_submissions ots
+    ON ots.id = e.tracking_submission_id
+  JOIN public.supplier_invoice_lines sil
+    ON sil.id = e.supplier_invoice_line_id
+  JOIN public.supplier_invoices si
+    ON si.id = sil.supplier_invoice_id
+  LEFT JOIN LATERAL (
+    SELECT spr.receipt_status, spr.recorded_at
+    FROM public.shipper_package_receipts spr
+    WHERE spr.tracking_submission_id = e.tracking_submission_id
+    ORDER BY spr.recorded_at DESC NULLS LAST,
+             spr.created_at DESC,
+             spr.id DESC
+    LIMIT 1
+  ) receipt ON true
+  LEFT JOIN LATERAL (
+    SELECT
+      SUM(csl.released_qty)::numeric AS released_qty,
+      SUM(csl.goods_amount_gbp)::numeric AS released_goods,
+      SUM(csl.shipping_amount_gbp)::numeric AS released_shipping
+    FROM public.customer_sales_release_lines csl
+    WHERE csl.tracking_line_allocation_id = e.tracking_line_allocation_id
+      AND csl.release_status = 'active'
+  ) released ON true
+), result_rows AS (
   SELECT
-    si.id,
-    si.order_id,
-    si.invoice_type,
-    si.sage_status,
-    si.amount_gbp,
-    si.created_at
-  FROM public.sales_invoices si
-  WHERE si.order_id IN (SELECT DISTINCT order_id FROM effective)
+    f.*,
+    CASE
+      WHEN f.has_active_sales_draft
+        THEN 'customer_sales_release_draft_already_exists'
+      WHEN f.supplier_invoice_review_status NOT IN ('approved_current', 'ref_corrected_approved')
+        OR f.supplier_invoice_blocked_from_sage
+        THEN 'supplier_invoice_not_approved_current'
+      WHEN lower(COALESCE(f.eligible_for_invoice_yn::text, '')) NOT IN ('y', 'yes', 'true', '1')
+        THEN 'supplier_line_not_progressed'
+      WHEN f.package_receipt_status IS DISTINCT FROM 'received_clean'
+        THEN 'package_not_received_clean'
+      WHEN f.has_unresolved_exception
+        THEN 'unresolved_exception'
+      WHEN f.already_released_qty >= f.qty_in_shipment
+        AND f.already_released_goods >= f.adjusted_net_value_gbp
+        THEN 'source_fully_released'
+      ELSE NULL
+    END AS inferred_release_blocker
+  FROM facts f
 )
 SELECT jsonb_build_object(
-  'probe', 'j040826_sales_release_line_diagnostic_v1',
+  'probe', 'j040826_sales_release_line_diagnostic_v2_no_staff_rpc',
   'batch', (SELECT to_jsonb(target_batch) FROM target_batch),
-  'effective_lines', COALESCE((
+  'lines', COALESCE((
     SELECT jsonb_agg(
       jsonb_build_object(
-        'tracking_submission_id', e.tracking_submission_id,
-        'tracking_line_allocation_id', e.tracking_line_allocation_id,
-        'order_id', e.order_id,
-        'supplier_invoice_line_id', e.supplier_invoice_line_id,
-        'qty_in_shipment', e.qty_in_shipment,
-        'adjusted_net_value_gbp', e.adjusted_net_value_gbp,
-        'source_mode', e.source_mode,
-        'package_receipt_status', lr.receipt_status,
-        'package_receipt_recorded_at', lr.recorded_at
-      ) ORDER BY e.tracking_line_allocation_id
+        'tracking_ref', r.tracking_ref,
+        'tracking_submission_id', r.tracking_submission_id,
+        'tracking_line_allocation_id', r.tracking_line_allocation_id,
+        'order_id', r.order_id,
+        'supplier_invoice_line_id', r.supplier_invoice_line_id,
+        'item_description', r.item_description,
+        'qty_in_shipment', r.qty_in_shipment,
+        'adjusted_net_value_gbp', r.adjusted_net_value_gbp,
+        'source_mode', r.source_mode,
+        'package_receipt_status', r.package_receipt_status,
+        'supplier_invoice_review_status', r.supplier_invoice_review_status,
+        'supplier_invoice_blocked_from_sage', r.supplier_invoice_blocked_from_sage,
+        'eligible_for_invoice_yn', r.eligible_for_invoice_yn,
+        'has_unresolved_exception', r.has_unresolved_exception,
+        'has_active_sales_draft', r.has_active_sales_draft,
+        'already_released_qty', r.already_released_qty,
+        'already_released_goods', r.already_released_goods,
+        'already_released_shipping', r.already_released_shipping,
+        'inferred_release_blocker', r.inferred_release_blocker
+      ) ORDER BY r.tracking_line_allocation_id
     )
-    FROM effective e
-    LEFT JOIN latest_receipt lr
-      ON lr.tracking_submission_id = e.tracking_submission_id
-  ), '[]'::jsonb),
-  'release_sources', COALESCE((
-    SELECT jsonb_agg(
-      jsonb_build_object(
-        'tracking_submission_id', rs.tracking_submission_id,
-        'tracking_line_allocation_id', rs.tracking_line_allocation_id,
-        'supplier_invoice_line_id', rs.supplier_invoice_line_id,
-        'release_qty', rs.release_qty,
-        'goods_amount_gbp', rs.goods_amount_gbp,
-        'shipping_amount_gbp', rs.shipping_amount_gbp,
-        'customer_charge_amount_gbp', rs.customer_charge_amount_gbp,
-        'proposed_invoice_type', rs.proposed_invoice_type,
-        'sales_invoice_state', rs.sales_invoice_state,
-        'blocker', rs.blocker
-      ) ORDER BY rs.tracking_line_allocation_id
-    )
-    FROM release_source rs
-  ), '[]'::jsonb),
-  'release_ledger', COALESCE((SELECT jsonb_agg(to_jsonb(release_ledger)) FROM release_ledger), '[]'::jsonb),
-  'sales_invoices', COALESCE((SELECT jsonb_agg(to_jsonb(invoice_rows) ORDER BY created_at) FROM invoice_rows), '[]'::jsonb)
+    FROM result_rows r
+  ), '[]'::jsonb)
 ) AS result;
