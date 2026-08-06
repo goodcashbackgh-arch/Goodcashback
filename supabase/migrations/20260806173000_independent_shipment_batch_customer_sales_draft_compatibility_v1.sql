@@ -12,7 +12,10 @@ SET LOCAL statement_timeout = '0';
 DO $preflight$
 DECLARE
   v_definition text;
-  v_index_definition text;
+  v_index_key text;
+  v_index_predicate text;
+  v_index_unique boolean;
+  v_index_key_count integer;
   v_duplicate_count integer;
 BEGIN
   IF to_regprocedure('public.internal_customer_sales_release_sources_v1(uuid)') IS NULL
@@ -32,24 +35,62 @@ BEGIN
     RAISE EXCEPTION 'Required customer-sales invoice indexes are missing.';
   END IF;
 
-  SELECT pg_get_indexdef('public.uq_sales_invoices_nonvoid_main_v1'::regclass)
-  INTO v_index_definition;
-  IF v_index_definition NOT ILIKE '%UNIQUE INDEX uq_sales_invoices_nonvoid_main_v1%'
-     OR v_index_definition NOT ILIKE '%(order_id)%'
-     OR v_index_definition NOT ILIKE '%invoice_type = ''main''%'
-     OR v_index_definition NOT ILIKE '%sage_status <> ''void''%'
+  SELECT
+    index_row.indisunique,
+    index_row.indnkeyatts,
+    pg_get_indexdef(index_row.indexrelid, 1, true),
+    lower(regexp_replace(pg_get_expr(index_row.indpred, index_row.indrelid), '\s+', '', 'g'))
+  INTO
+    v_index_unique,
+    v_index_key_count,
+    v_index_key,
+    v_index_predicate
+  FROM pg_index index_row
+  WHERE index_row.indexrelid = 'public.uq_sales_invoices_nonvoid_main_v1'::regclass
+    AND index_row.indrelid = 'public.sales_invoices'::regclass;
+
+  IF v_index_unique IS DISTINCT FROM true
+     OR v_index_key_count IS DISTINCT FROM 1
+     OR v_index_key IS DISTINCT FROM 'order_id'
+     OR v_index_predicate NOT LIKE '%invoice_type%'
+     OR v_index_predicate NOT LIKE '%''main''%'
+     OR v_index_predicate NOT LIKE '%sage_status%'
+     OR v_index_predicate NOT LIKE '%''void''%'
+     OR (v_index_predicate NOT LIKE '%<>%' AND v_index_predicate NOT LIKE '%!=%')
   THEN
-    RAISE EXCEPTION 'One-non-void-main index is not the governed starting shape.';
+    RAISE EXCEPTION
+      'One-non-void-main index is not the governed starting shape. key=%, predicate=%',
+      v_index_key,
+      v_index_predicate;
   END IF;
 
-  SELECT pg_get_indexdef('public.uq_sales_invoices_active_release_draft_v1'::regclass)
-  INTO v_index_definition;
-  IF v_index_definition NOT ILIKE '%UNIQUE INDEX uq_sales_invoices_active_release_draft_v1%'
-     OR v_index_definition NOT ILIKE '%(order_id)%'
-     OR v_index_definition NOT ILIKE '%invoice_type = ANY%'
-     OR v_index_definition NOT ILIKE '%sage_status = ''draft''%'
+  SELECT
+    index_row.indisunique,
+    index_row.indnkeyatts,
+    pg_get_indexdef(index_row.indexrelid, 1, true),
+    lower(regexp_replace(pg_get_expr(index_row.indpred, index_row.indrelid), '\s+', '', 'g'))
+  INTO
+    v_index_unique,
+    v_index_key_count,
+    v_index_key,
+    v_index_predicate
+  FROM pg_index index_row
+  WHERE index_row.indexrelid = 'public.uq_sales_invoices_active_release_draft_v1'::regclass
+    AND index_row.indrelid = 'public.sales_invoices'::regclass;
+
+  IF v_index_unique IS DISTINCT FROM true
+     OR v_index_key_count IS DISTINCT FROM 1
+     OR v_index_key IS DISTINCT FROM 'order_id'
+     OR v_index_predicate NOT LIKE '%invoice_type%'
+     OR v_index_predicate NOT LIKE '%''main''%'
+     OR v_index_predicate NOT LIKE '%''supplementary''%'
+     OR v_index_predicate NOT LIKE '%sage_status%'
+     OR v_index_predicate NOT LIKE '%''draft''%'
   THEN
-    RAISE EXCEPTION 'Parent-wide active-draft index is not the governed starting shape.';
+    RAISE EXCEPTION
+      'Parent-wide active-draft index is not the governed starting shape. key=%, predicate=%',
+      v_index_key,
+      v_index_predicate;
   END IF;
 
   IF md5(pg_get_functiondef(
@@ -332,6 +373,10 @@ WHERE release_status = 'active';
 DO $postflight$
 DECLARE
   v_definition text;
+  v_index_predicate text;
+  v_index_key text;
+  v_index_unique boolean;
+  v_index_key_count integer;
 BEGIN
   SELECT pg_get_functiondef(
     'public.internal_customer_sales_release_sources_v1(uuid)'::regprocedure
@@ -361,6 +406,31 @@ BEGIN
      OR to_regclass('public.uq_sales_invoices_nonvoid_main_v1') IS NULL
   THEN
     RAISE EXCEPTION 'Index replacement postflight failed.';
+  END IF;
+
+  SELECT
+    index_row.indisunique,
+    index_row.indnkeyatts,
+    pg_get_indexdef(index_row.indexrelid, 1, true),
+    lower(regexp_replace(pg_get_expr(index_row.indpred, index_row.indrelid), '\s+', '', 'g'))
+  INTO
+    v_index_unique,
+    v_index_key_count,
+    v_index_key,
+    v_index_predicate
+  FROM pg_index index_row
+  WHERE index_row.indexrelid = 'public.uq_sales_invoices_nonvoid_main_v1'::regclass
+    AND index_row.indrelid = 'public.sales_invoices'::regclass;
+
+  IF v_index_unique IS DISTINCT FROM true
+     OR v_index_key_count IS DISTINCT FROM 1
+     OR v_index_key IS DISTINCT FROM 'order_id'
+     OR v_index_predicate NOT LIKE '%invoice_type%'
+     OR v_index_predicate NOT LIKE '%''main''%'
+     OR v_index_predicate NOT LIKE '%sage_status%'
+     OR v_index_predicate NOT LIKE '%''void''%'
+  THEN
+    RAISE EXCEPTION 'One-non-void-main authority changed during migration.';
   END IF;
 
   IF EXISTS (
