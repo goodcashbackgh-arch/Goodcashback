@@ -5,15 +5,12 @@ SET LOCAL statement_timeout = '0';
 
 -- Narrow corrective migration for the resolver alias defect introduced by
 -- 20260806173000_independent_shipment_batch_customer_sales_draft_compatibility_v1.sql.
--- Changes only invalid aliases inside the exact-batch has_active_draft expression.
+-- Changes only the five invalid alias tokens introduced inside has_active_draft.
 
 DO $fix_resolver_aliases$
 DECLARE
   v_definition text;
-  v_before_normalised text;
-  v_after_normalised text;
-  v_expected_before text;
-  v_expected_after text;
+  v_count integer;
 BEGIN
   IF to_regprocedure('public.internal_customer_sales_release_sources_v1(uuid)') IS NULL THEN
     RAISE EXCEPTION 'Resolver function is missing.';
@@ -23,88 +20,79 @@ BEGIN
     'public.internal_customer_sales_release_sources_v1(uuid)'::regprocedure
   ) INTO v_definition;
 
-  IF strpos(v_definition, 'active_membership.source_shipment_batch_id = b.id') = 0
-     OR strpos(v_definition, 'WHEN o.order_type = ''replacement_child''') = 0
-     OR strpos(v_definition, 'AND o.parent_order_id IS NOT NULL') = 0
-     OR strpos(v_definition, 'THEN o.parent_order_id') = 0
-     OR strpos(v_definition, 'ELSE o.id') = 0
-  THEN
-    RAISE EXCEPTION 'Expected invalid resolver aliases were not all present.';
+  SELECT COUNT(*)::integer INTO v_count
+  FROM regexp_matches(
+    v_definition,
+    'active_membership\.source_shipment_batch_id[[:space:]]*=[[:space:]]*b\.id',
+    'g'
+  );
+  IF v_count IS DISTINCT FROM 1 THEN
+    RAISE EXCEPTION 'Invalid batch alias count was %, expected 1.', COALESCE(v_count, 0);
   END IF;
 
-  IF strpos(v_definition, 'active_membership.source_shipment_batch_id = batch_row.id') > 0
-     OR strpos(v_definition, 'WHEN order_row.order_type = ''replacement_child''') > 0
-  THEN
-    RAISE EXCEPTION 'Resolver appears partially corrected; refusing ambiguous rewrite.';
+  SELECT COUNT(*)::integer INTO v_count
+  FROM regexp_matches(v_definition, 'WHEN[[:space:]]+o\.order_type[[:space:]]*=', 'g');
+  IF v_count IS DISTINCT FROM 1 THEN
+    RAISE EXCEPTION 'Invalid order_type alias count was %, expected 1.', COALESCE(v_count, 0);
   END IF;
 
-  v_before_normalised := regexp_replace(v_definition, '\s+', ' ', 'g');
+  SELECT COUNT(*)::integer INTO v_count
+  FROM regexp_matches(v_definition, 'AND[[:space:]]+o\.parent_order_id[[:space:]]+IS[[:space:]]+NOT[[:space:]]+NULL', 'g');
+  IF v_count IS DISTINCT FROM 1 THEN
+    RAISE EXCEPTION 'Invalid parent null-check alias count was %, expected 1.', COALESCE(v_count, 0);
+  END IF;
 
-  v_definition := replace(
+  SELECT COUNT(*)::integer INTO v_count
+  FROM regexp_matches(v_definition, 'THEN[[:space:]]+o\.parent_order_id', 'g');
+  IF v_count IS DISTINCT FROM 1 THEN
+    RAISE EXCEPTION 'Invalid parent result alias count was %, expected 1.', COALESCE(v_count, 0);
+  END IF;
+
+  SELECT COUNT(*)::integer INTO v_count
+  FROM regexp_matches(v_definition, 'ELSE[[:space:]]+o\.id', 'g');
+  IF v_count IS DISTINCT FROM 1 THEN
+    RAISE EXCEPTION 'Invalid order id alias count was %, expected 1.', COALESCE(v_count, 0);
+  END IF;
+
+  v_definition := regexp_replace(
     v_definition,
-    'active_membership.source_shipment_batch_id = b.id',
-    'active_membership.source_shipment_batch_id = batch_row.id'
+    'active_membership\.source_shipment_batch_id([[:space:]]*=[[:space:]]*)b\.id',
+    'active_membership.source_shipment_batch_id\1batch_row.id',
+    'g'
   );
-  v_definition := replace(
+  v_definition := regexp_replace(
     v_definition,
-    'WHEN o.order_type = ''replacement_child''',
-    'WHEN order_row.order_type = ''replacement_child'''
+    'WHEN([[:space:]]+)o\.order_type',
+    'WHEN\1order_row.order_type',
+    'g'
   );
-  v_definition := replace(
+  v_definition := regexp_replace(
     v_definition,
-    'AND o.parent_order_id IS NOT NULL',
-    'AND order_row.parent_order_id IS NOT NULL'
+    'AND([[:space:]]+)o\.parent_order_id([[:space:]]+IS[[:space:]]+NOT[[:space:]]+NULL)',
+    'AND\1order_row.parent_order_id\2',
+    'g'
   );
-  v_definition := replace(
+  v_definition := regexp_replace(
     v_definition,
-    'THEN o.parent_order_id',
-    'THEN order_row.parent_order_id'
+    'THEN([[:space:]]+)o\.parent_order_id',
+    'THEN\1order_row.parent_order_id',
+    'g'
   );
-  v_definition := replace(
+  v_definition := regexp_replace(
     v_definition,
-    'ELSE o.id',
-    'ELSE order_row.id'
+    'ELSE([[:space:]]+)o\.id',
+    'ELSE\1order_row.id',
+    'g'
   );
 
   IF strpos(v_definition, 'active_membership.source_shipment_batch_id = b.id') > 0
-     OR strpos(v_definition, 'WHEN o.order_type = ''replacement_child''') > 0
-     OR strpos(v_definition, 'AND o.parent_order_id IS NOT NULL') > 0
+     OR strpos(v_definition, 'WHEN o.order_type') > 0
+     OR strpos(v_definition, 'AND o.parent_order_id') > 0
      OR strpos(v_definition, 'THEN o.parent_order_id') > 0
      OR strpos(v_definition, 'ELSE o.id') > 0
      OR strpos(v_definition, 'active_membership.source_shipment_batch_id = batch_row.id') = 0
-     OR strpos(v_definition, 'WHEN order_row.order_type = ''replacement_child''') = 0
-     OR strpos(v_definition, 'AND order_row.parent_order_id IS NOT NULL') = 0
-     OR strpos(v_definition, 'THEN order_row.parent_order_id') = 0
-     OR strpos(v_definition, 'ELSE order_row.id') = 0
   THEN
     RAISE EXCEPTION 'Resolver alias correction failed closed.';
-  END IF;
-
-  v_after_normalised := regexp_replace(v_definition, '\s+', ' ', 'g');
-  v_expected_before := replace(
-    replace(
-      replace(
-        replace(
-          replace(
-            v_after_normalised,
-            'active_membership.source_shipment_batch_id = batch_row.id',
-            'active_membership.source_shipment_batch_id = b.id'
-          ),
-          'WHEN order_row.order_type = ''replacement_child''',
-          'WHEN o.order_type = ''replacement_child'''
-        ),
-        'AND order_row.parent_order_id IS NOT NULL',
-        'AND o.parent_order_id IS NOT NULL'
-      ),
-      'THEN order_row.parent_order_id',
-      'THEN o.parent_order_id'
-    ),
-    'ELSE order_row.id',
-    'ELSE o.id'
-  );
-
-  IF v_expected_before IS DISTINCT FROM v_before_normalised THEN
-    RAISE EXCEPTION 'Resolver correction would change more than the governed aliases.';
   END IF;
 
   EXECUTE v_definition;
