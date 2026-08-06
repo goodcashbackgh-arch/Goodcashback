@@ -3,14 +3,19 @@ BEGIN;
 SET LOCAL lock_timeout = '15s';
 SET LOCAL statement_timeout = '0';
 
--- Narrow corrective migration for the resolver alias defect introduced by
--- 20260806173000_independent_shipment_batch_customer_sales_draft_compatibility_v1.sql.
--- Changes only the five invalid alias tokens introduced inside has_active_draft.
+-- Narrow corrective migration for the resolver alias defect introduced by the
+-- first installed form of 20260806173000. On a clean install the earlier
+-- migration is already correct, so this migration safely no-ops.
 
 DO $fix_resolver_aliases$
 DECLARE
   v_definition text;
-  v_count integer;
+  v_invalid_batch_count integer;
+  v_invalid_order_type_count integer;
+  v_invalid_parent_check_count integer;
+  v_invalid_parent_result_count integer;
+  v_invalid_order_id_count integer;
+  v_correct_batch_count integer;
 BEGIN
   IF to_regprocedure('public.internal_customer_sales_release_sources_v1(uuid)') IS NULL THEN
     RAISE EXCEPTION 'Resolver function is missing.';
@@ -20,82 +25,94 @@ BEGIN
     'public.internal_customer_sales_release_sources_v1(uuid)'::regprocedure
   ) INTO v_definition;
 
-  SELECT COUNT(*)::integer INTO v_count
+  SELECT COUNT(*)::integer INTO v_invalid_batch_count
   FROM regexp_matches(
     v_definition,
     'active_membership\.source_shipment_batch_id[[:space:]]*=[[:space:]]*b\.id',
     'g'
   );
-  IF v_count IS DISTINCT FROM 1 THEN
-    RAISE EXCEPTION 'Invalid batch alias count was %, expected 1.', COALESCE(v_count, 0);
-  END IF;
 
-  SELECT COUNT(*)::integer INTO v_count
+  SELECT COUNT(*)::integer INTO v_invalid_order_type_count
   FROM regexp_matches(v_definition, 'WHEN[[:space:]]+o\.order_type[[:space:]]*=', 'g');
-  IF v_count IS DISTINCT FROM 1 THEN
-    RAISE EXCEPTION 'Invalid order_type alias count was %, expected 1.', COALESCE(v_count, 0);
-  END IF;
 
-  SELECT COUNT(*)::integer INTO v_count
-  FROM regexp_matches(v_definition, 'AND[[:space:]]+o\.parent_order_id[[:space:]]+IS[[:space:]]+NOT[[:space:]]+NULL', 'g');
-  IF v_count IS DISTINCT FROM 1 THEN
-    RAISE EXCEPTION 'Invalid parent null-check alias count was %, expected 1.', COALESCE(v_count, 0);
-  END IF;
+  SELECT COUNT(*)::integer INTO v_invalid_parent_check_count
+  FROM regexp_matches(
+    v_definition,
+    'AND[[:space:]]+o\.parent_order_id[[:space:]]+IS[[:space:]]+NOT[[:space:]]+NULL',
+    'g'
+  );
 
-  SELECT COUNT(*)::integer INTO v_count
+  SELECT COUNT(*)::integer INTO v_invalid_parent_result_count
   FROM regexp_matches(v_definition, 'THEN[[:space:]]+o\.parent_order_id', 'g');
-  IF v_count IS DISTINCT FROM 1 THEN
-    RAISE EXCEPTION 'Invalid parent result alias count was %, expected 1.', COALESCE(v_count, 0);
-  END IF;
 
-  SELECT COUNT(*)::integer INTO v_count
+  SELECT COUNT(*)::integer INTO v_invalid_order_id_count
   FROM regexp_matches(v_definition, 'ELSE[[:space:]]+o\.id', 'g');
-  IF v_count IS DISTINCT FROM 1 THEN
-    RAISE EXCEPTION 'Invalid order id alias count was %, expected 1.', COALESCE(v_count, 0);
-  END IF;
 
-  v_definition := regexp_replace(
+  SELECT COUNT(*)::integer INTO v_correct_batch_count
+  FROM regexp_matches(
     v_definition,
-    'active_membership\.source_shipment_batch_id([[:space:]]*=[[:space:]]*)b\.id',
-    'active_membership.source_shipment_batch_id\1batch_row.id',
-    'g'
-  );
-  v_definition := regexp_replace(
-    v_definition,
-    'WHEN([[:space:]]+)o\.order_type',
-    'WHEN\1order_row.order_type',
-    'g'
-  );
-  v_definition := regexp_replace(
-    v_definition,
-    'AND([[:space:]]+)o\.parent_order_id([[:space:]]+IS[[:space:]]+NOT[[:space:]]+NULL)',
-    'AND\1order_row.parent_order_id\2',
-    'g'
-  );
-  v_definition := regexp_replace(
-    v_definition,
-    'THEN([[:space:]]+)o\.parent_order_id',
-    'THEN\1order_row.parent_order_id',
-    'g'
-  );
-  v_definition := regexp_replace(
-    v_definition,
-    'ELSE([[:space:]]+)o\.id',
-    'ELSE\1order_row.id',
+    'active_membership\.source_shipment_batch_id[[:space:]]*=[[:space:]]*batch_row\.id',
     'g'
   );
 
-  IF strpos(v_definition, 'active_membership.source_shipment_batch_id = b.id') > 0
-     OR strpos(v_definition, 'WHEN o.order_type') > 0
-     OR strpos(v_definition, 'AND o.parent_order_id') > 0
-     OR strpos(v_definition, 'THEN o.parent_order_id') > 0
-     OR strpos(v_definition, 'ELSE o.id') > 0
-     OR strpos(v_definition, 'active_membership.source_shipment_batch_id = batch_row.id') = 0
+  IF v_invalid_batch_count = 0
+     AND v_invalid_order_type_count = 0
+     AND v_invalid_parent_check_count = 0
+     AND v_invalid_parent_result_count = 0
+     AND v_invalid_order_id_count = 0
+     AND v_correct_batch_count = 1
   THEN
-    RAISE EXCEPTION 'Resolver alias correction failed closed.';
-  END IF;
+    -- Clean-install shape: no repair required.
+    NULL;
+  ELSIF v_invalid_batch_count = 1
+     AND v_invalid_order_type_count = 1
+     AND v_invalid_parent_check_count = 1
+     AND v_invalid_parent_result_count = 1
+     AND v_invalid_order_id_count = 1
+     AND v_correct_batch_count = 0
+  THEN
+    v_definition := regexp_replace(
+      v_definition,
+      'active_membership\.source_shipment_batch_id([[:space:]]*=[[:space:]]*)b\.id',
+      'active_membership.source_shipment_batch_id\1batch_row.id',
+      'g'
+    );
+    v_definition := regexp_replace(
+      v_definition,
+      'WHEN([[:space:]]+)o\.order_type',
+      'WHEN\1order_row.order_type',
+      'g'
+    );
+    v_definition := regexp_replace(
+      v_definition,
+      'AND([[:space:]]+)o\.parent_order_id([[:space:]]+IS[[:space:]]+NOT[[:space:]]+NULL)',
+      'AND\1order_row.parent_order_id\2',
+      'g'
+    );
+    v_definition := regexp_replace(
+      v_definition,
+      'THEN([[:space:]]+)o\.parent_order_id',
+      'THEN\1order_row.parent_order_id',
+      'g'
+    );
+    v_definition := regexp_replace(
+      v_definition,
+      'ELSE([[:space:]]+)o\.id',
+      'ELSE\1order_row.id',
+      'g'
+    );
 
-  EXECUTE v_definition;
+    EXECUTE v_definition;
+  ELSE
+    RAISE EXCEPTION
+      'Resolver alias state is unknown. invalid counts=(%,%,%,%,%), correct batch count=%',
+      v_invalid_batch_count,
+      v_invalid_order_type_count,
+      v_invalid_parent_check_count,
+      v_invalid_parent_result_count,
+      v_invalid_order_id_count,
+      v_correct_batch_count;
+  END IF;
 END
 $fix_resolver_aliases$;
 
