@@ -208,7 +208,7 @@ export async function confirmSettlementSurplusCreditAction(formData: FormData) {
     redirectWithSurplusResult({ settlement_error: "Missing order id." });
   }
 
-  const { error } = await supabase.rpc("staff_confirm_surplus_from_evidence_min_v1", {
+  const { error } = await supabase.rpc("staff_confirm_pending_receipt_surplus_credit_v1", {
     p_order_id: orderId,
     p_reason: reason,
     p_notes: notes,
