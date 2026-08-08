@@ -182,6 +182,31 @@ BEGIN
     RAISE EXCEPTION 'FAIL: a genuine final-balance blocker was cleared by the loyalty integration.';
   END IF;
 
+  -- Estate-wide corrected-settlement contract: whenever v2 says an order is
+  -- complete with no final balance due, no final_balance_due blocker may survive
+  -- anywhere in the current completion-loyalty chain.
+  IF EXISTS (
+    SELECT 1
+    FROM public.internal_order_final_sale_settlement_v2(NULL) s
+    JOIN public.internal_order_qualifying_net_spend_v1(NULL) q USING (order_id)
+    JOIN public.internal_completion_loyalty_reward_proposals_v1(NULL) p USING (order_id)
+    JOIN public.internal_completion_loyalty_reward_funding_workbench_v1(NULL) w USING (order_id)
+    WHERE ROUND(COALESCE(s.final_balance_due_gbp, 0), 2) = 0.00
+      AND s.completion_state = 'complete'
+      AND (
+        q.completion_blocker = 'final_balance_due'
+        OR q.basis_blocker = 'final_balance_due'
+        OR p.completion_blocker = 'final_balance_due'
+        OR p.basis_blocker = 'final_balance_due'
+        OR p.approval_blocker = 'final_balance_due'
+        OR w.completion_blocker = 'final_balance_due'
+        OR w.basis_blocker = 'final_balance_due'
+        OR w.approval_blocker = 'final_balance_due'
+      )
+  ) THEN
+    RAISE EXCEPTION 'FAIL: a v2-complete zero-balance order still carries final_balance_due in the loyalty chain.';
+  END IF;
+
   -- Partial/no-final-sale states must not become reward-ready.
   IF EXISTS (
     SELECT 1
