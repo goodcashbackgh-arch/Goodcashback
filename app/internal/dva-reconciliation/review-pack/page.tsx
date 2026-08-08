@@ -780,7 +780,7 @@ export default async function DvaAccountingReviewPackPage({
                     <p className="mt-1 text-sm text-amber-900">Impact {gbp(dispute.amount_impact_gbp)} · Order {order?.order_ref || "—"} · {retailer?.name || "No retailer"}</p>
                     <div className="mt-3 flex flex-wrap gap-2">
                       <Link href={`/internal/exceptions/${dispute.id}`} className="rounded-xl bg-white px-3 py-2 text-xs font-bold text-amber-900 ring-1 ring-amber-200">Open supervisor review</Link>
-                      <Link href={exceptionActionsHref(requestedImporterId)} className="rounded-xl bg-amber-700 px-3 py-1 text-xs font-bold text-white">Action centre</Link>
+                      <Link href={exceptionActionsHref(requestedImporterId)} className="rounded-xl bg-amber-700 px-3 py-2 text-xs font-bold text-white">Action centre</Link>
                     </div>
                   </div>
                 );
