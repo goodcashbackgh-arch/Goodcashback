@@ -448,7 +448,7 @@ BEGIN
   END IF;
 
   v_tail_original := substring(v_definition FROM v_end + length(v_end_anchor));
-  v_patched := substring(v_definition FROM 1 FOR v_start - 1) || v_new || v_tail_original;
+  v_patched := substring(v_definition FROM 1 FOR v_start - 1) || rtrim(v_new) || v_tail_original;
 
   -- Hard scope guard: everything after the settlement_actions boundary is unchanged.
   v_tail_patched := substring(v_patched FROM position('blockers as (' IN lower(v_patched)) + length('blockers as ('));
