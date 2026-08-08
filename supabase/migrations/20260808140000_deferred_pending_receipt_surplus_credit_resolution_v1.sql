@@ -288,6 +288,7 @@ DO $settlement_patch$
 DECLARE
   v_definition text;
   v_lower text;
+  v_current_settlement text;
   v_patched text;
   v_start integer;
   v_end integer;
@@ -420,12 +421,6 @@ BEGIN
   INTO v_definition;
   v_lower := lower(v_definition);
 
-  IF position('supplier_order.order_id' IN v_lower) = 0
-     OR position('fx.allocation_type = ''fx_card_difference''::text' IN v_lower) = 0
-     OR position('dsl.direction = ''out''::text' IN v_lower) = 0 THEN
-    RAISE EXCEPTION 'Established supplier-OUT FX settlement inference has drifted. Stop before patching.';
-  END IF;
-
   v_start_count := (length(v_lower) - length(replace(v_lower, v_start_anchor, ''))) / length(v_start_anchor);
   v_end_count := (length(v_lower) - length(replace(v_lower, v_end_anchor, ''))) / length(v_end_anchor);
   IF v_start_count <> 1 OR v_end_count <> 1 THEN
@@ -436,6 +431,20 @@ BEGIN
   v_end := position(v_end_anchor IN v_lower);
   IF v_start <= 0 OR v_end <= v_start THEN
     RAISE EXCEPTION 'Canonical settlement CTE order has drifted. Stop before patching.';
+  END IF;
+
+  -- Match the July migration's deparser-safe approach: prove the existing
+  -- settlement_actions CTE semantically, not through brittle alias/whitespace text.
+  v_current_settlement := substring(v_lower FROM v_start FOR v_end - v_start);
+  IF position('fx_card_difference' IN v_current_settlement) = 0
+     OR position('supplier_invoice' IN v_current_settlement) = 0
+     OR position('supplier_order' IN v_current_settlement) = 0
+     OR position('supplier_alloc' IN v_current_settlement) = 0
+     OR position('direction' IN v_current_settlement) = 0
+     OR position('''out''' IN v_current_settlement) = 0
+     OR position('statement_account_context' IN v_current_settlement) = 0
+     OR position('settlement_fx_card_difference_gbp' IN v_current_settlement) = 0 THEN
+    RAISE EXCEPTION 'Established supplier-OUT FX settlement inference is not semantically present inside settlement_actions. Stop before patching.';
   END IF;
 
   v_tail_original := substring(v_definition FROM v_end + length(v_end_anchor));
