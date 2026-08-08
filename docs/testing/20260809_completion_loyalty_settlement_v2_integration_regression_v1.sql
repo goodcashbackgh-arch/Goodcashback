@@ -184,7 +184,8 @@ BEGIN
 
   -- Estate-wide corrected-settlement contract: whenever v2 says an order is
   -- complete with no final balance due, no final_balance_due blocker may survive
-  -- anywhere in the current completion-loyalty chain.
+  -- anywhere in the current completion-loyalty chain. Approval blocker belongs
+  -- to the proposal contract; workbench exposes completion/basis blockers only.
   IF EXISTS (
     SELECT 1
     FROM public.internal_order_final_sale_settlement_v2(NULL) s
@@ -201,7 +202,6 @@ BEGIN
         OR p.approval_blocker = 'final_balance_due'
         OR w.completion_blocker = 'final_balance_due'
         OR w.basis_blocker = 'final_balance_due'
-        OR w.approval_blocker = 'final_balance_due'
       )
   ) THEN
     RAISE EXCEPTION 'FAIL: a v2-complete zero-balance order still carries final_balance_due in the loyalty chain.';
@@ -283,8 +283,7 @@ BEGIN
     END IF;
 
     IF v_w.completion_blocker = 'final_balance_due'
-       OR v_w.basis_blocker = 'final_balance_due'
-       OR v_w.approval_blocker = 'final_balance_due' THEN
+       OR v_w.basis_blocker = 'final_balance_due' THEN
       RAISE EXCEPTION 'FAIL: false final-balance blocker remains in loyalty workbench for %: %', v_order.order_ref, to_jsonb(v_w);
     END IF;
   END LOOP;
