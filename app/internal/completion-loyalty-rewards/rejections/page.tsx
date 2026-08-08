@@ -163,7 +163,7 @@ export default async function CompletionLoyaltyRejectionsPage({ searchParams }: 
   const [workbenchResult, proposalsResult, settlementResult] = await Promise.all([
     (supabase as any).rpc("internal_completion_loyalty_reward_funding_workbench_v1", { p_order_id: null }),
     (supabase as any).rpc("internal_completion_loyalty_reward_proposals_v1", { p_order_id: null }),
-    (supabase as any).rpc("internal_order_final_sale_settlement_v1", { p_order_id: null }),
+    (supabase as any).rpc("internal_order_final_sale_settlement_v2", { p_order_id: null }),
   ]);
 
   const proposalByOrderId = new Map<string, ProposalRow>();
