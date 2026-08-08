@@ -281,8 +281,9 @@ GRANT EXECUTE ON FUNCTION public.staff_confirm_pending_receipt_surplus_credit_v1
 COMMENT ON FUNCTION public.staff_confirm_pending_receipt_surplus_credit_v1(uuid,text,text) IS
 'Atomic future-only wrapper around staff_confirm_surplus_from_evidence_min_v1. It locks order then pending receipt, calls the established accounting RPC unchanged, then records exact pending-to-credit provenance. Historical credit_confirmed rows are not backfilled.';
 
--- 4. Patch ONLY settlement input CTEs. From blockers/base onward, the installed
---    canonical view text is preserved verbatim.
+-- 4. Restore the proven narrow July patch pattern: replace ONLY settlement_actions.
+--    All provenance lookup and overlap maths stay inside this CTE. The installed
+--    blockers/base/calculated/resolved/final SQL is preserved verbatim.
 DO $settlement_patch$
 DECLARE
   v_definition text;
@@ -297,102 +298,121 @@ DECLARE
   v_start_anchor text := 'settlement_actions as (';
   v_end_anchor text := '), blockers as (';
   v_new text := $new$
-provenance_credit AS (
-   SELECT pr.order_id,
-      round(COALESCE(sum(abs(c.amount_gbp)), (0)::numeric), 2) AS pending_resolution_credit_gbp
-     FROM public.order_pending_surplus_credit_resolution_provenance_v1 pr
-     JOIN public.importer_credit_ledger c ON c.id = pr.confirmed_credit_ledger_id
-    WHERE c.direction = 'credit'::text
-      AND c.lock_reason IS NULL
-    GROUP BY pr.order_id
-), explicit_action_fx AS (
-   SELECT a.order_id,
-      COALESCE(sum(a.fx_card_difference_gbp) FILTER (WHERE a.status = 'active'::text), (0)::numeric) AS active_action_fx_gbp,
-      count(*) FILTER (WHERE a.status = 'active'::text)::integer AS active_resolution_action_count,
-      count(*) FILTER (WHERE a.status = 'reversed'::text)::integer AS reversed_resolution_action_count
-     FROM public.order_settlement_resolution_actions a
-    GROUP BY a.order_id
-), raw_supplier_fx AS (
-   SELECT supplier_order.order_id,
-      COALESCE(sum(abs(COALESCE(NULLIF(fx.fx_or_card_diff_gbp, (0)::numeric), fx.allocated_gbp_amount, (0)::numeric))), (0)::numeric) AS raw_supplier_fx_gbp
-     FROM public.dva_statement_line_allocations fx
-     JOIN public.dva_statement_lines dsl ON dsl.id = fx.dva_statement_line_id
-     JOIN public.dva_statements ds ON ds.id = dsl.dva_statement_id
-     JOIN LATERAL (
-       WITH supplier_orders AS (
-         SELECT DISTINCT COALESCE(si.order_id, supplier_alloc.order_id) AS order_id
-           FROM public.dva_statement_line_allocations supplier_alloc
-           LEFT JOIN public.supplier_invoices si ON si.id = supplier_alloc.supplier_invoice_id
-          WHERE supplier_alloc.dva_statement_line_id = fx.dva_statement_line_id
-            AND supplier_alloc.allocation_status = 'confirmed'::text
-            AND supplier_alloc.allocation_type = 'supplier_invoice'::text
-            AND COALESCE(si.order_id, supplier_alloc.order_id) IS NOT NULL
-       )
-       SELECT so.order_id FROM supplier_orders so
-       WHERE (SELECT count(*) FROM supplier_orders) = 1
-     ) supplier_order ON true
-    WHERE fx.allocation_type = 'fx_card_difference'::text
-      AND fx.allocation_status = 'confirmed'::text
-      AND dsl.direction = 'out'::text
-      AND COALESCE(ds.statement_account_context, 'importer_dva_card_account'::text) = 'importer_dva_card_account'::text
-    GROUP BY supplier_order.order_id
-), settlement_input_orders AS (
-   SELECT order_id FROM explicit_action_fx
-   UNION
-   SELECT order_id FROM raw_supplier_fx
-), settlement_actions AS (
-   SELECT i.order_id,
-      round((
-        COALESCE(eaf.active_action_fx_gbp, (0)::numeric)
-        + GREATEST(
-            COALESCE(rsf.raw_supplier_fx_gbp, (0)::numeric)
+settlement_actions AS (
+   SELECT x.order_id,
+      round(COALESCE(sum(x.fx_card_difference_gbp), (0)::numeric), 2) AS settlement_fx_card_difference_gbp,
+      COALESCE(sum(x.active_resolution_action_count), (0)::bigint)::integer AS active_resolution_action_count,
+      COALESCE(sum(x.reversed_resolution_action_count), (0)::bigint)::integer AS reversed_resolution_action_count
+     FROM (
+       SELECT a.order_id,
+          COALESCE(sum(a.fx_card_difference_gbp) FILTER (WHERE a.status = 'active'::text), (0)::numeric) AS fx_card_difference_gbp,
+          count(*) FILTER (WHERE a.status = 'active'::text) AS active_resolution_action_count,
+          count(*) FILTER (WHERE a.status = 'reversed'::text) AS reversed_resolution_action_count
+         FROM public.order_settlement_resolution_actions a
+        GROUP BY a.order_id
+       UNION ALL
+       SELECT supplier_input.order_id,
+          GREATEST(
+            supplier_input.raw_supplier_fx_gbp
             - GREATEST(
-                overlap.supplier_needed_before_pending_credit_gbp
-                - overlap.supplier_needed_after_pending_credit_gbp,
+                supplier_input.supplier_needed_before_pending_credit_gbp
+                - supplier_input.supplier_needed_after_pending_credit_gbp,
                 (0)::numeric
               ),
             (0)::numeric
-          )
-      )::numeric, 2) AS settlement_fx_card_difference_gbp,
-      COALESCE(eaf.active_resolution_action_count, 0)::integer AS active_resolution_action_count,
-      COALESCE(eaf.reversed_resolution_action_count, 0)::integer AS reversed_resolution_action_count
-     FROM settlement_input_orders i
-     LEFT JOIN explicit_action_fx eaf ON eaf.order_id = i.order_id
-     LEFT JOIN raw_supplier_fx rsf ON rsf.order_id = i.order_id
-     LEFT JOIN funding f ON f.order_id = i.order_id
-     LEFT JOIN pending_receipt pr ON pr.order_id = i.order_id
-     LEFT JOIN inbound_fx_receipt ifx ON ifx.order_id = i.order_id
-     LEFT JOIN final_balance fb ON fb.order_id = i.order_id
-     LEFT JOIN sales sa ON sa.order_id = i.order_id
-     LEFT JOIN order_credit oc ON oc.order_id = i.order_id
-     LEFT JOIN provenance_credit pc ON pc.order_id = i.order_id
-     LEFT JOIN LATERAL (
-       SELECT
-         round(GREATEST(
-           COALESCE(f.funding_total_gbp, (0)::numeric)
-           + COALESCE(fb.final_balance_payment_gbp, (0)::numeric)
-           + COALESCE(pr.pending_receipt_residual_gbp, (0)::numeric)
-           + COALESCE(ifx.inbound_fx_receipt_residual_gbp, (0)::numeric)
-           - COALESCE(sa.final_order_value_gbp, (0)::numeric),
-           (0)::numeric
-         )::numeric, 2) AS gross_positive_difference_gbp,
-         round((
-           GREATEST(COALESCE(oc.confirmed_customer_credit_gbp, (0)::numeric) - COALESCE(pc.pending_resolution_credit_gbp, (0)::numeric), (0)::numeric)
-           + COALESCE(ifx.inbound_fx_receipt_residual_gbp, (0)::numeric)
-           + COALESCE(eaf.active_action_fx_gbp, (0)::numeric)
-         )::numeric, 2) AS explicit_before_pending_credit_gbp
-     ) inputs ON true
-     LEFT JOIN LATERAL (
-       SELECT
-         round(LEAST(
-           COALESCE(rsf.raw_supplier_fx_gbp, (0)::numeric),
-           GREATEST(inputs.gross_positive_difference_gbp - inputs.explicit_before_pending_credit_gbp, (0)::numeric)
-         )::numeric, 2) AS supplier_needed_before_pending_credit_gbp,
-         round(LEAST(
-           COALESCE(rsf.raw_supplier_fx_gbp, (0)::numeric),
-           GREATEST(inputs.gross_positive_difference_gbp - (inputs.explicit_before_pending_credit_gbp + COALESCE(pc.pending_resolution_credit_gbp, (0)::numeric)), (0)::numeric)
-         )::numeric, 2) AS supplier_needed_after_pending_credit_gbp
-     ) overlap ON true
+          ) AS fx_card_difference_gbp,
+          (0)::bigint AS active_resolution_action_count,
+          (0)::bigint AS reversed_resolution_action_count
+         FROM (
+           SELECT supplier_raw.order_id,
+              supplier_raw.raw_supplier_fx_gbp,
+              round(LEAST(
+                supplier_raw.raw_supplier_fx_gbp,
+                GREATEST(
+                  inputs.gross_positive_difference_gbp
+                  - inputs.explicit_before_pending_credit_gbp,
+                  (0)::numeric
+                )
+              )::numeric, 2) AS supplier_needed_before_pending_credit_gbp,
+              round(LEAST(
+                supplier_raw.raw_supplier_fx_gbp,
+                GREATEST(
+                  inputs.gross_positive_difference_gbp
+                  - (
+                      inputs.explicit_before_pending_credit_gbp
+                      + COALESCE(pc.pending_resolution_credit_gbp, (0)::numeric)
+                    ),
+                  (0)::numeric
+                )
+              )::numeric, 2) AS supplier_needed_after_pending_credit_gbp
+             FROM (
+               SELECT supplier_order.order_id,
+                  COALESCE(sum(abs(COALESCE(NULLIF(fx.fx_or_card_diff_gbp, (0)::numeric), fx.allocated_gbp_amount, (0)::numeric))), (0)::numeric) AS raw_supplier_fx_gbp
+                 FROM public.dva_statement_line_allocations fx
+                 JOIN public.dva_statement_lines dsl ON dsl.id = fx.dva_statement_line_id
+                 JOIN public.dva_statements ds ON ds.id = dsl.dva_statement_id
+                 JOIN LATERAL (
+                   WITH supplier_orders AS (
+                     SELECT DISTINCT COALESCE(si.order_id, supplier_alloc.order_id) AS order_id
+                       FROM public.dva_statement_line_allocations supplier_alloc
+                       LEFT JOIN public.supplier_invoices si ON si.id = supplier_alloc.supplier_invoice_id
+                      WHERE supplier_alloc.dva_statement_line_id = fx.dva_statement_line_id
+                        AND supplier_alloc.allocation_status = 'confirmed'::text
+                        AND supplier_alloc.allocation_type = 'supplier_invoice'::text
+                        AND COALESCE(si.order_id, supplier_alloc.order_id) IS NOT NULL
+                   )
+                   SELECT so.order_id
+                     FROM supplier_orders so
+                    WHERE (SELECT count(*) FROM supplier_orders) = 1
+                 ) supplier_order ON true
+                WHERE fx.allocation_type = 'fx_card_difference'::text
+                  AND fx.allocation_status = 'confirmed'::text
+                  AND dsl.direction = 'out'::text
+                  AND COALESCE(ds.statement_account_context, 'importer_dva_card_account'::text) = 'importer_dva_card_account'::text
+                GROUP BY supplier_order.order_id
+             ) supplier_raw
+             LEFT JOIN funding f ON f.order_id = supplier_raw.order_id
+             LEFT JOIN pending_receipt pr ON pr.order_id = supplier_raw.order_id
+             LEFT JOIN inbound_fx_receipt ifx ON ifx.order_id = supplier_raw.order_id
+             LEFT JOIN final_balance fb ON fb.order_id = supplier_raw.order_id
+             LEFT JOIN sales sa ON sa.order_id = supplier_raw.order_id
+             LEFT JOIN order_credit oc ON oc.order_id = supplier_raw.order_id
+             LEFT JOIN LATERAL (
+               SELECT round(COALESCE(sum(abs(c.amount_gbp)), (0)::numeric), 2) AS pending_resolution_credit_gbp
+                 FROM public.order_pending_surplus_credit_resolution_provenance_v1 provenance
+                 JOIN public.importer_credit_ledger c ON c.id = provenance.confirmed_credit_ledger_id
+                WHERE provenance.order_id = supplier_raw.order_id
+                  AND c.direction = 'credit'::text
+                  AND c.lock_reason IS NULL
+             ) pc ON true
+             LEFT JOIN LATERAL (
+               SELECT COALESCE(sum(a.fx_card_difference_gbp) FILTER (WHERE a.status = 'active'::text), (0)::numeric) AS active_action_fx_gbp
+                 FROM public.order_settlement_resolution_actions a
+                WHERE a.order_id = supplier_raw.order_id
+             ) explicit_fx ON true
+             LEFT JOIN LATERAL (
+               SELECT
+                 round(GREATEST(
+                   COALESCE(f.funding_total_gbp, (0)::numeric)
+                   + COALESCE(fb.final_balance_payment_gbp, (0)::numeric)
+                   + COALESCE(pr.pending_receipt_residual_gbp, (0)::numeric)
+                   + COALESCE(ifx.inbound_fx_receipt_residual_gbp, (0)::numeric)
+                   - COALESCE(sa.final_order_value_gbp, (0)::numeric),
+                   (0)::numeric
+                 )::numeric, 2) AS gross_positive_difference_gbp,
+                 round((
+                   GREATEST(
+                     COALESCE(oc.confirmed_customer_credit_gbp, (0)::numeric)
+                     - COALESCE(pc.pending_resolution_credit_gbp, (0)::numeric),
+                     (0)::numeric
+                   )
+                   + COALESCE(ifx.inbound_fx_receipt_residual_gbp, (0)::numeric)
+                   + COALESCE(explicit_fx.active_action_fx_gbp, (0)::numeric)
+                 )::numeric, 2) AS explicit_before_pending_credit_gbp
+             ) inputs ON true
+         ) supplier_input
+     ) x
+    GROUP BY x.order_id
 ), blockers AS (
 $new$;
 BEGIN
@@ -421,7 +441,7 @@ BEGIN
   v_tail_original := substring(v_definition FROM v_end + length(v_end_anchor));
   v_patched := substring(v_definition FROM 1 FOR v_start - 1) || v_new || v_tail_original;
 
-  -- Hard scope guard: everything after the blockers boundary is unchanged.
+  -- Hard scope guard: everything after the settlement_actions boundary is unchanged.
   v_tail_patched := substring(v_patched FROM position('blockers as (' IN lower(v_patched)) + length('blockers as ('));
   IF v_tail_patched IS DISTINCT FROM v_tail_original THEN
     RAISE EXCEPTION 'Scope violation: blockers/base/calculated/resolved/final settlement SQL changed. Stop before patching.';
