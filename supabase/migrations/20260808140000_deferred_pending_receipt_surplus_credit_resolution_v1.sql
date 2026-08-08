@@ -281,9 +281,9 @@ GRANT EXECUTE ON FUNCTION public.staff_confirm_pending_receipt_surplus_credit_v1
 COMMENT ON FUNCTION public.staff_confirm_pending_receipt_surplus_credit_v1(uuid,text,text) IS
 'Atomic future-only wrapper around staff_confirm_surplus_from_evidence_min_v1. It locks order then pending receipt, calls the established accounting RPC unchanged, then records exact pending-to-credit provenance. Historical credit_confirmed rows are not backfilled.';
 
--- 4. Restore the proven narrow July patch pattern: replace ONLY settlement_actions.
---    All provenance lookup and overlap maths stay inside this CTE. The installed
---    blockers/base/calculated/resolved/final SQL is preserved verbatim.
+-- 4. Replace ONLY settlement_actions. The original live suffix beginning with the
+--    comma before blockers is appended verbatim, so blockers/base/calculated/
+--    resolved/final SQL is never reconstructed by this migration.
 DO $settlement_patch$
 DECLARE
   v_definition text;
@@ -294,8 +294,9 @@ DECLARE
   v_end integer;
   v_start_count integer;
   v_end_count integer;
-  v_tail_original text;
-  v_tail_patched text;
+  v_suffix_original text;
+  v_downstream_original text;
+  v_downstream_patched text;
   v_start_anchor text := 'settlement_actions as (';
   v_end_anchor text := '), blockers as (';
   v_new text := $new$
@@ -414,7 +415,7 @@ settlement_actions AS (
          ) supplier_input
      ) x
     GROUP BY x.order_id
-), blockers AS (
+)
 $new$;
 BEGIN
   SELECT pg_get_viewdef('public.order_settlement_resolution_position_v1'::regclass, true)
@@ -433,8 +434,6 @@ BEGIN
     RAISE EXCEPTION 'Canonical settlement CTE order has drifted. Stop before patching.';
   END IF;
 
-  -- Match the July migration's deparser-safe approach: prove the existing
-  -- settlement_actions CTE semantically, not through brittle alias/whitespace text.
   v_current_settlement := substring(v_lower FROM v_start FOR v_end - v_start);
   IF position('fx_card_difference' IN v_current_settlement) = 0
      OR position('supplier_invoice' IN v_current_settlement) = 0
@@ -447,12 +446,17 @@ BEGIN
     RAISE EXCEPTION 'Established supplier-OUT FX settlement inference is not semantically present inside settlement_actions. Stop before patching.';
   END IF;
 
-  v_tail_original := substring(v_definition FROM v_end + length(v_end_anchor));
-  v_patched := substring(v_definition FROM 1 FOR v_start - 1) || rtrim(v_new) || v_tail_original;
+  -- v_end points at the closing ')' of the installed settlement_actions CTE.
+  -- Preserve the installed comma before blockers and every byte after it.
+  v_suffix_original := substring(v_definition FROM v_end + 1);
+  v_downstream_original := substring(v_definition FROM position('blockers as (' IN v_lower));
 
-  -- Hard scope guard: everything after the settlement_actions boundary is unchanged.
-  v_tail_patched := substring(v_patched FROM position('blockers as (' IN lower(v_patched)) + length('blockers as ('));
-  IF v_tail_patched IS DISTINCT FROM v_tail_original THEN
+  v_patched := substring(v_definition FROM 1 FOR v_start - 1)
+    || regexp_replace(v_new, '[[:space:]]+$', '', 'g')
+    || v_suffix_original;
+
+  v_downstream_patched := substring(v_patched FROM position('blockers as (' IN lower(v_patched)));
+  IF v_downstream_patched IS DISTINCT FROM v_downstream_original THEN
     RAISE EXCEPTION 'Scope violation: blockers/base/calculated/resolved/final settlement SQL changed. Stop before patching.';
   END IF;
 
