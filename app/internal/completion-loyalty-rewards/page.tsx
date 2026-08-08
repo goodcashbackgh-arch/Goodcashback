@@ -459,7 +459,7 @@ export default async function CompletionLoyaltyRewardsPage({ searchParams }: { s
     (supabase as any).rpc("internal_completion_loyalty_reward_proposals_v1", {
       p_order_id: null,
     }),
-    (supabase as any).rpc("internal_order_final_sale_settlement_v1", {
+    (supabase as any).rpc("internal_order_final_sale_settlement_v2", {
       p_order_id: null,
     }),
   ]);
