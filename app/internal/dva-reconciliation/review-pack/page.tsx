@@ -54,6 +54,27 @@ type AllocationRow = {
   created_at: string | null;
 };
 
+type ShipperAllocationRow = {
+  id: string;
+  dva_statement_line_id: string;
+  shipping_document_id: string;
+  sage_purchase_invoice_id: string | null;
+  allocated_gbp_amount: number | string | null;
+  allocation_status: string | null;
+  notes: string | null;
+  created_at: string | null;
+};
+
+type StatementControlRow = {
+  statement_line_id: string;
+  active_consumed_gbp: number | string | null;
+  active_reserved_gbp: number | string | null;
+  remaining_unconsumed_gbp: number | string | null;
+  overconsumed_gbp: number | string | null;
+  active_economic_lanes: string[] | null;
+  principal_lane_count: number | string | null;
+};
+
 type FundingRow = {
   dva_statement_line_id: string;
   importer_id: string | null;
@@ -230,23 +251,90 @@ function readiness(row: StatementLineRow, allocations: AllocationRow[], funding?
   };
 }
 
+function applyStructuredShipperReadiness(
+  row: StatementLineRow,
+  base: ReadinessState,
+  control: StatementControlRow,
+  hasConfirmedShipperEvidence: boolean,
+): ReadinessState {
+  const lanes = control.active_economic_lanes ?? [];
+  if (!lanes.includes("main_bank_shipper_ap")) return base;
+
+  const directionContextValid =
+    text(row.statement_account_context) === "main_company_bank_account" &&
+    text(row.direction).toLowerCase() === "out";
+  const open = num(control.remaining_unconsumed_gbp);
+  const reserved = num(control.active_reserved_gbp);
+  const over = num(control.overconsumed_gbp);
+  const principalLaneCount = num(control.principal_lane_count);
+  const balanced = directionContextValid && open <= 0.01 && over <= 0.01;
+  const ready = balanced && reserved <= 0.01 && principalLaneCount === 1 && hasConfirmedShipperEvidence;
+  const blockers: string[] = [];
+
+  if (!directionContextValid) blockers.push("shipper lane is not on a main-company-bank OUT statement line");
+  if (!hasConfirmedShipperEvidence) blockers.push("confirmed shipper invoice detail could not be verified");
+  if (open > 0.01) blockers.push(`${gbp(open)} still open`);
+  if (reserved > 0.01) blockers.push(`${gbp(reserved)} still reserved`);
+  if (over > 0.01) blockers.push(`${gbp(over)} overconsumed`);
+  if (principalLaneCount !== 1) blockers.push(`${principalLaneCount} principal economic lanes active`);
+
+  return {
+    ...base,
+    ready,
+    balanced,
+    open: open <= 0.01 ? 0 : open,
+    allocationCount: Math.max(base.allocationCount, hasConfirmedShipperEvidence ? 1 : 0),
+    explanation: ready
+      ? "Matched to confirmed shipper invoice evidence. Canonical statement control shows the source is fully consumed with nothing reserved or open."
+      : blockers.join(" · ") || "Shipper match requires control review.",
+  };
+}
+
 function readinessTone(ready: boolean, balanced: boolean) {
   if (ready) return "border-emerald-200 bg-emerald-50 text-emerald-800";
   if (balanced) return "border-sky-200 bg-sky-50 text-sky-800";
   return "border-amber-200 bg-amber-50 text-amber-800";
 }
 
-function controlClassification(row: StatementLineRow, state: ReadinessState, allocations: AllocationRow[]) {
+function controlClassification(
+  row: StatementLineRow,
+  state: ReadinessState,
+  allocations: AllocationRow[],
+  shipperAllocations: ShipperAllocationRow[],
+  statementControl?: StatementControlRow,
+  shipperAllocationReadFailed = false,
+) {
   const direction = text(row.direction).toLowerCase();
   const accountContext = text(row.statement_account_context);
   const controlReason = text(row.control_match_reason);
-  const rawReference = text(row.reference_raw).toLowerCase();
-  const authReference = text(row.auth_id_ref).toLowerCase();
   const loyaltyOut = num(row.loyalty_internal_transfer_out_gbp);
   const loyaltyIn = num(row.loyalty_internal_transfer_in_gbp);
   const loyaltyInCount = num(row.loyalty_internal_transfer_in_count);
   const loyaltyMatches = num(row.main_bank_loyalty_match_count);
   const hasHeld = allocations.some((allocation) => text(allocation.allocation_status) === "held");
+  const canonicalLanes = statementControl?.active_economic_lanes ?? [];
+  const principalLaneCount = num(statementControl?.principal_lane_count);
+  const overconsumed = num(statementControl?.overconsumed_gbp);
+  const hasCanonicalShipperLane = canonicalLanes.includes("main_bank_shipper_ap");
+
+  if (hasCanonicalShipperLane) {
+    const directionContextValid = accountContext === "main_company_bank_account" && direction === "out";
+    if (!directionContextValid || principalLaneCount !== 1 || overconsumed > 0.01 || (!shipperAllocationReadFailed && shipperAllocations.length === 0)) {
+      return {
+        label: "Shipper match control review",
+        tone: "border-rose-200 bg-rose-50 text-rose-800",
+        boundary: "Canonical control contains a shipper/AP economic lane, but the statement context or confirmed invoice evidence does not agree cleanly. Treat this as an integrity review; do not infer from bank narration.",
+      };
+    }
+
+    return {
+      label: "Main-bank shipper/AP payment OUT",
+      tone: "border-indigo-200 bg-indigo-50 text-indigo-800",
+      boundary: shipperAllocationReadFailed
+        ? "Canonical control proves a confirmed shipper/AP allocation exists, but invoice-detail readback is unavailable. Readiness is withheld until that evidence can be displayed."
+        : "Confirmed shipper invoice match. Classification comes from the canonical economic lane and stored shipper allocation, never from words in the bank narration.",
+    };
+  }
 
   if (controlReason === "loyalty_internal_transfer_out" || loyaltyOut > 0) {
     return {
@@ -301,19 +389,6 @@ function controlClassification(row: StatementLineRow, state: ReadinessState, all
       label: "FX/card/bank-fee residual",
       tone: "border-amber-200 bg-amber-50 text-amber-800",
       boundary: "Residual classification only. Needs deliberate accounting treatment before Sage payload readiness.",
-    };
-  }
-
-  if (
-    direction === "out" &&
-    accountContext === "main_company_bank_account" &&
-    (rawReference.includes("shipper") || rawReference.includes("joinv") || authReference.includes("joinv"))
-  ) {
-    return {
-      label: "Main-bank shipper/AP payment OUT",
-      tone: "border-indigo-200 bg-indigo-50 text-indigo-800",
-      boundary:
-        "Main-bank outbound shipper/AP control. Match to shipper invoice, shipment/payment evidence, or approved residual before Sage readiness; do not treat as customer funding or retailer supplier spend.",
     };
   }
 
@@ -397,6 +472,7 @@ export default async function DvaAccountingReviewPackPage({
   ]);
 
   const statementLines = (statementResult.data ?? []) as unknown as StatementLineRow[];
+  const statementLineIds = statementLines.map((line) => line.dva_statement_line_id).filter(Boolean);
   const importers = (importersResult.data ?? []) as unknown as ImporterRow[];
   const selectedImporter = importers.find((importer) => importer.id === requestedImporterId);
   const allocationRows = ((allocationResult.data ?? []) as unknown as AllocationRow[]).filter((allocation) => {
@@ -408,6 +484,41 @@ export default async function DvaAccountingReviewPackPage({
     return !requestedImporterId || funding.importer_id === requestedImporterId;
   });
   const fundingByLineId = groupBy(fundingRows, (funding) => funding.dva_statement_line_id);
+
+  let statementControlRows: StatementControlRow[] = [];
+  let statementControlError: { message: string } | null = null;
+  let shipperAllocationRows: ShipperAllocationRow[] = [];
+  let shipperAllocationError: { message: string } | null = null;
+
+  if (statementLineIds.length > 0) {
+    const controlResult = await supabase
+      .from("statement_line_control_position_v1")
+      .select("statement_line_id, active_consumed_gbp, active_reserved_gbp, remaining_unconsumed_gbp, overconsumed_gbp, active_economic_lanes, principal_lane_count")
+      .in("statement_line_id", statementLineIds)
+      .limit(500);
+
+    statementControlRows = (controlResult.data ?? []) as StatementControlRow[];
+    statementControlError = controlResult.error;
+
+    const canonicalShipperLineIds = statementControlRows
+      .filter((row) => (row.active_economic_lanes ?? []).includes("main_bank_shipper_ap"))
+      .map((row) => row.statement_line_id);
+
+    if (!statementControlError && canonicalShipperLineIds.length > 0) {
+      const shipperResult = await supabase
+        .from("main_bank_shipper_ap_allocations")
+        .select("id, dva_statement_line_id, shipping_document_id, sage_purchase_invoice_id, allocated_gbp_amount, allocation_status, notes, created_at")
+        .eq("allocation_status", "confirmed")
+        .in("dva_statement_line_id", canonicalShipperLineIds)
+        .limit(1000);
+
+      shipperAllocationRows = (shipperResult.data ?? []) as ShipperAllocationRow[];
+      shipperAllocationError = shipperResult.error;
+    }
+  }
+
+  const statementControlByLineId = new Map(statementControlRows.map((row) => [row.statement_line_id, row]));
+  const shipperAllocationsByLineId = groupBy(shipperAllocationRows, (allocation) => allocation.dva_statement_line_id);
 
   let ordersQuery = supabase
     .from("orders")
@@ -435,10 +546,41 @@ export default async function DvaAccountingReviewPackPage({
 
   const enrichedLines = statementLines.map((line) => {
     const allocations = allocationsByLineId.get(line.dva_statement_line_id) ?? [];
+    const shipperAllocations = shipperAllocationsByLineId.get(line.dva_statement_line_id) ?? [];
+    const statementControl = statementControlByLineId.get(line.dva_statement_line_id);
     const funding = fundingByLineId.get(line.dva_statement_line_id)?.[0];
-    const state = readiness(line, allocations, funding);
-    const control = controlClassification(line, state, allocations);
-    return { line, allocations, state, control };
+    const baseState = readiness(line, allocations, funding);
+    const isMainBankOut =
+      text(line.statement_account_context) === "main_company_bank_account" &&
+      text(line.direction).toLowerCase() === "out";
+    const hasCanonicalShipperLane = Boolean(statementControl?.active_economic_lanes?.includes("main_bank_shipper_ap"));
+
+    let state = baseState;
+    if (statementControlError && isMainBankOut) {
+      state = {
+        ...baseState,
+        ready: false,
+        balanced: false,
+        explanation: "Canonical main-bank statement control could not be loaded. Readiness is withheld rather than estimated from legacy allocation totals.",
+      };
+    } else if (statementControl && hasCanonicalShipperLane) {
+      state = applyStructuredShipperReadiness(
+        line,
+        baseState,
+        statementControl,
+        !shipperAllocationError && shipperAllocations.length > 0,
+      );
+    }
+
+    const control = controlClassification(
+      line,
+      state,
+      allocations,
+      shipperAllocations,
+      statementControlError ? undefined : statementControl,
+      Boolean(shipperAllocationError),
+    );
+    return { line, allocations, shipperAllocations, state, control };
   });
 
   const visibleLines = enrichedLines.filter(({ state }) => {
@@ -529,6 +671,8 @@ export default async function DvaAccountingReviewPackPage({
         {statementResult.error ? <section className="rounded-3xl border border-rose-200 bg-rose-50 p-5 text-sm font-semibold text-rose-800">{statementResult.error.message}</section> : null}
         {allocationResult.error ? <section className="rounded-3xl border border-rose-200 bg-rose-50 p-5 text-sm font-semibold text-rose-800">{allocationResult.error.message}</section> : null}
         {fundingResult.error ? <section className="rounded-3xl border border-rose-200 bg-rose-50 p-5 text-sm font-semibold text-rose-800">{fundingResult.error.message}</section> : null}
+        {statementControlError ? <section className="rounded-3xl border border-rose-200 bg-rose-50 p-5 text-sm font-semibold text-rose-800">Canonical statement control could not be loaded. Main-bank OUT readiness is withheld rather than estimated. {statementControlError.message}</section> : null}
+        {shipperAllocationError ? <section className="rounded-3xl border border-rose-200 bg-rose-50 p-5 text-sm font-semibold text-rose-800">Confirmed shipper invoice details could not be loaded. Canonical shipper classification remains visible, but readiness is withheld. {shipperAllocationError.message}</section> : null}
         {disputeError ? <section className="rounded-3xl border border-rose-200 bg-rose-50 p-5 text-sm font-semibold text-rose-800">{disputeError.message}</section> : null}
 
         <section className="rounded-3xl border border-slate-200 bg-white shadow-sm">
@@ -539,8 +683,9 @@ export default async function DvaAccountingReviewPackPage({
             <div className="p-8 text-center text-sm text-slate-500">No statement lines match this filter.</div>
           ) : (
             <div className="divide-y divide-slate-100">
-              {visibleLines.map(({ line, allocations, state, control }) => {
+              {visibleLines.map(({ line, allocations, shipperAllocations, state, control }) => {
                 const fundedOrder = state.fundingOrderId ? ordersById.get(state.fundingOrderId) : undefined;
+                const shipperMatchedAmount = shipperAllocations.reduce((sum, allocation) => sum + num(allocation.allocated_gbp_amount), 0);
                 return (
                   <article key={line.dva_statement_line_id} className="p-4">
                     <div className="grid gap-4 lg:grid-cols-[1.25fr_1fr]">
@@ -562,8 +707,8 @@ export default async function DvaAccountingReviewPackPage({
 
                         <div className="mt-4 grid gap-3 sm:grid-cols-5">
                           <div className="rounded-xl bg-slate-50 p-3 ring-1 ring-slate-200">
-                            <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">{state.fundingAmount > 0 ? "Funding" : "Supplier"}</p>
-                            <p className="mt-1 font-extrabold text-slate-950">{gbp(state.fundingAmount > 0 ? state.fundingAmount : state.supplier)}</p>
+                            <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">{state.fundingAmount > 0 ? "Funding" : shipperAllocations.length > 0 ? "Shipper AP" : "Supplier"}</p>
+                            <p className="mt-1 font-extrabold text-slate-950">{gbp(state.fundingAmount > 0 ? state.fundingAmount : shipperAllocations.length > 0 ? shipperMatchedAmount : state.supplier)}</p>
                           </div>
                           <div className="rounded-xl bg-slate-50 p-3 ring-1 ring-slate-200"><p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Refund</p><p className="mt-1 font-extrabold text-slate-950">{gbp(state.refund)}</p></div>
                           <div className="rounded-xl bg-slate-50 p-3 ring-1 ring-slate-200"><p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">FX/fee</p><p className="mt-1 font-extrabold text-slate-950">{gbp(state.fxOrFee)}</p></div>
@@ -585,8 +730,8 @@ export default async function DvaAccountingReviewPackPage({
 
                       <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                         <div className="flex items-center justify-between gap-3">
-                          <h2 className="text-sm font-bold text-slate-950">{state.fundingAmount > 0 ? "Funding trail" : "Allocation trail"}</h2>
-                          <span className="rounded-full bg-white px-2 py-1 text-xs font-bold text-slate-700 ring-1 ring-slate-200">{state.fundingAmount > 0 ? 1 : allocations.length} row(s)</span>
+                          <h2 className="text-sm font-bold text-slate-950">{state.fundingAmount > 0 ? "Funding trail" : shipperAllocations.length > 0 ? "Shipper invoice match" : "Allocation trail"}</h2>
+                          <span className="rounded-full bg-white px-2 py-1 text-xs font-bold text-slate-700 ring-1 ring-slate-200">{state.fundingAmount > 0 ? 1 : shipperAllocations.length > 0 ? shipperAllocations.length : allocations.length} row(s)</span>
                         </div>
                         {state.fundingAmount > 0 ? (
                           <div className="mt-4 rounded-xl bg-white p-3 text-sm ring-1 ring-slate-200">
@@ -597,6 +742,19 @@ export default async function DvaAccountingReviewPackPage({
                             <p className="mt-1 text-xs text-slate-500">
                               Order {fundedOrder?.order_ref || state.fundingOrderId || "—"} · Reconciled {state.fundingAt || "—"}
                             </p>
+                          </div>
+                        ) : shipperAllocations.length > 0 ? (
+                          <div className="mt-4 space-y-2">
+                            {shipperAllocations.map((allocation) => (
+                              <div key={allocation.id} className="rounded-xl bg-white p-3 text-sm ring-1 ring-slate-200">
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <p className="font-bold text-slate-950">{gbp(allocation.allocated_gbp_amount)} → Shipper AP invoice</p>
+                                  <span className="rounded-full bg-emerald-50 px-2 py-1 text-[11px] font-bold text-emerald-700 ring-1 ring-emerald-200">{pretty(allocation.allocation_status)}</span>
+                                </div>
+                                <p className="mt-1 break-all text-xs text-slate-500">Shipping document {allocation.shipping_document_id} · Sage purchase invoice {allocation.sage_purchase_invoice_id || "—"}</p>
+                                {allocation.notes ? <p className="mt-2 text-xs text-slate-600">{allocation.notes}</p> : null}
+                              </div>
+                            ))}
                           </div>
                         ) : allocations.length === 0 ? (
                           <p className="mt-4 text-sm text-slate-500">No active confirmed or held allocations for this statement line.</p>
