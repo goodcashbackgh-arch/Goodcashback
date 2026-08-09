@@ -596,3 +596,238 @@ leave every working Main Bank, DVA, release, customer and accounting control unc
 ```
 
 The existing working functions and controls remain the system of record.
+
+## 11. Follow-on customer pending-and-ready presentation correction
+
+This section is a narrow follow-on correction under this same addendum. It does not reopen the completed Main Bank handoff correction above.
+
+For this section only, it supersedes the earlier prohibition in section 3.2 against changing customer-dashboard presentation and the section 8.2 prohibition against changing a customer runtime file. It does not supersede the prohibition on changing customer pending/ready projection logic, because this correction changes presentation only and leaves the projection logic unchanged.
+
+### 11.1 Proven customer-display defect
+
+The existing customer dashboard already calls:
+
+```text
+customer_completion_loyalty_reward_balance_v1()
+```
+
+and already receives two independent balances:
+
+```text
+pending_activation_gbp
+ready_to_use_gbp
+```
+
+The page already reduces those values independently into:
+
+```text
+pendingLoyaltyGbp
+readyLoyaltyGbp
+```
+
+The defect is only that the current display is mutually exclusive: any positive `readyLoyaltyGbp` is shown first and suppresses a simultaneously positive `pendingLoyaltyGbp`.
+
+Live read-only proof established:
+
+```text
+pending_activation_gbp = £852.77
+ready_to_use_gbp = £9,572.69
+```
+
+The target order `ORD-1786093662671` contributes £50.00 to pending activation through `approved_pending_funding` with no active rejection.
+
+The traced £9,572.69 ready balance is the remaining available total of released `completion_loyalty_reward` ledger lots. The traced released lots use the established:
+
+```text
+Main Bank OUT
+→ same-importer DVA/card IN
+→ paired_released
+→ released_available_dashboard_credit
+→ completion-loyalty ledger lot
+```
+
+flow.
+
+No backend defect is authorised for correction here.
+
+### 11.2 Governing customer presentation
+
+Keep the existing single customer credit card and existing single loyalty line.
+
+Required rendering is:
+
+```text
+ready > 0 AND pending > 0
+→ Loyalty reward: £X ready to use · £Y pending activation
+
+ready > 0 AND pending = 0
+→ Loyalty reward: £X ready to use
+
+ready = 0 AND pending > 0
+→ Loyalty reward: £Y pending activation
+
+ready = 0 AND pending = 0
+→ Loyalty reward: No loyalty reward active yet
+```
+
+For the proven live state, the expected display is:
+
+```text
+Loyalty reward: £9,572.69 ready to use · £852.77 pending activation
+```
+
+Pending loyalty remains non-spendable. Ready loyalty remains the remaining available balance of released completion-loyalty lots. Normal available account credit remains separate.
+
+### 11.3 Existing lifecycle remains unchanged
+
+The existing lifecycle remains exactly:
+
+```text
+approved_pending_funding
+→ contributes to pending_activation_gbp
+
+Main Bank OUT staged/reserved
+→ remains pending
+→ no available loyalty credit
+
+same-importer destination DVA/card IN paired
+→ existing paired release
+→ approval_status = released_available_dashboard_credit
+→ released completion-loyalty ledger lot created
+→ amount leaves pending projection
+→ remaining available amount joins ready_to_use_gbp
+```
+
+For the current £50 target, assuming no simultaneous loyalty use or other balance change:
+
+```text
+before release:
+pending = £852.77
+ready   = £9,572.69
+
+after paired release of £50:
+pending = £802.77
+ready   = £9,622.69
+```
+
+The customer page must only reflect those existing balances.
+
+### 11.4 Exact runtime scope
+
+The follow-on runtime scope is exactly:
+
+```text
+app/customer/page.tsx
+```
+
+No other runtime file is authorised by this section.
+
+Keep unchanged:
+
+```text
+customer_completion_loyalty_reward_balance_v1
+pendingLoyaltyGbp reduction
+readyLoyaltyGbp reduction
+customer card layout
+customer card styling
+surrounding customer copy
+normal account-credit calculation
+order rendering
+navigation
+authentication
+all unrelated helpers
+```
+
+Only the mutually exclusive `loyaltyStatusText` construction may change.
+
+Required implementation shape:
+
+```ts
+const loyaltyStatusParts: string[] = [];
+
+if (readyLoyaltyGbp > 0.01) {
+  loyaltyStatusParts.push(`${gbp(readyLoyaltyGbp)} ready to use`);
+}
+
+if (pendingLoyaltyGbp > 0.01) {
+  loyaltyStatusParts.push(`${gbp(pendingLoyaltyGbp)} pending activation`);
+}
+
+const loyaltyStatusText =
+  loyaltyStatusParts.length > 0
+    ? loyaltyStatusParts.join(" · ")
+    : "No loyalty reward active yet";
+```
+
+Do not introduce a helper extraction, component refactor, new state abstraction, styling change, RPC wrapper, data-model change or alternative display structure.
+
+### 11.5 Forbidden follow-on scope
+
+Do not change:
+
+```text
+customer_completion_loyalty_reward_balance_v1
+internal_importer_available_completion_loyalty_lots_v1
+completion_loyalty_reward_approvals
+completion_loyalty_reward_funding_confirmations
+importer_credit_ledger
+staff_approve_completion_loyalty_reward_v1
+staff_stage_main_bank_line_to_completion_loyalty_v2
+staff_pair_loyalty_destination_in_and_release_v1
+internal_release_paired_loyalty_v2
+/internal/dva-reconciliation/main-bank
+target=completion_loyalty&q=<order_ref>
+DVA/card reconciliation
+pairing suggestions
+loyalty application to order
+order_funding_events
+accounting
+VAT
+Sage
+settlement
+historical data
+```
+
+Do not add or modify migration SQL. Do not backfill or mutate business data. Do not manually release the target £50 as part of this corrective build.
+
+### 11.6 Regression requirement
+
+Add exactly one dedicated static-assurance file for this follow-on correction.
+
+It must prove the customer page retains the existing RPC and independent balance reductions, contains the authorized independent ready/pending rendering, and no longer contains the old mutually exclusive ready-over-pending `loyaltyStatusText` construction.
+
+It must cover exactly these four rendering cases:
+
+```text
+ready = 0, pending = 0
+→ No loyalty reward active yet
+
+ready = 0, pending = 50
+→ £50.00 pending activation
+
+ready = 100, pending = 0
+→ £100.00 ready to use
+
+ready = 100, pending = 50
+→ £100.00 ready to use · £50.00 pending activation
+```
+
+No regression may mutate financial data.
+
+### 11.7 Acceptance and rollback
+
+The follow-on correction is acceptable only when:
+
+```text
+- app/customer/page.tsx is the only runtime file changed;
+- exactly one dedicated static-assurance file is added;
+- this existing addendum is the only governing document changed;
+- no migration is added or changed;
+- both ready and pending are visible when both are positive;
+- no Main Bank, DVA/card, approval, release, accounting, VAT, Sage, settlement or historical behaviour changes;
+- no financial state changes merely by rendering or testing the customer page.
+```
+
+Rollback for this follow-on correction is application-only: revert the `app/customer/page.tsx` loyalty-status block and its dedicated static-assurance file. Do not use a financial mutation or manual loyalty release as rollback.
+
+This section is the governing authority for the follow-on customer-display correction. Change nothing else.

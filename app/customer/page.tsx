@@ -242,10 +242,19 @@ export default async function CustomerDashboardPage() {
   const loyaltyRows = (loyaltyBalanceRows ?? []) as LoyaltyBalanceRow[];
   const pendingLoyaltyGbp = loyaltyRows.reduce((sum, row) => sum + Number(row.pending_activation_gbp ?? 0), 0);
   const readyLoyaltyGbp = loyaltyRows.reduce((sum, row) => sum + Number(row.ready_to_use_gbp ?? 0), 0);
-  const loyaltyStatusText = readyLoyaltyGbp > 0.01
-    ? `${gbp(readyLoyaltyGbp)} ready to use`
-    : pendingLoyaltyGbp > 0.01
-      ? `${gbp(pendingLoyaltyGbp)} pending activation`
+  const loyaltyStatusParts: string[] = [];
+
+  if (readyLoyaltyGbp > 0.01) {
+    loyaltyStatusParts.push(`${gbp(readyLoyaltyGbp)} ready to use`);
+  }
+
+  if (pendingLoyaltyGbp > 0.01) {
+    loyaltyStatusParts.push(`${gbp(pendingLoyaltyGbp)} pending activation`);
+  }
+
+  const loyaltyStatusText =
+    loyaltyStatusParts.length > 0
+      ? loyaltyStatusParts.join(" · ")
       : "No loyalty reward active yet";
   const rate = Number(fxRate?.quote_rate ?? 0);
   const markup = Number(fxRate?.quote_card_markup_pct ?? 0);
