@@ -6,6 +6,7 @@ import {
   acceptFinalRefundOutcomeAction,
   acceptReplacementOutcomeAction,
   approveRefundPursuitAction,
+  rejectReconciliationReplacementAction,
   reviewRefundEvidenceAction,
   reviewReturnCollectionEvidenceAction,
 } from "./actions";
@@ -181,7 +182,7 @@ export default async function InternalExceptionDetailPage({
 
   const { data: dispute, error: disputeError } = await supabase
     .from("disputes")
-    .select("id, order_id, desired_outcome, status, amount_impact_gbp, refund_approved_at, replacement_child_order_id, resolved_at")
+    .select("id, order_id, desired_outcome, stage_detected, status, amount_impact_gbp, refund_approved_at, replacement_child_order_id, resolved_at")
     .eq("id", disputeId)
     .maybeSingle();
 
@@ -212,15 +213,15 @@ export default async function InternalExceptionDetailPage({
   ]);
 
   const activeDisputeLine =
-  (disputeLines ?? []).find(
-    (line) => line.resolved_at === null && line.supplier_invoice_line_id
-  ) ?? null;
+    (disputeLines ?? []).find(
+      (line) => line.resolved_at === null && line.supplier_invoice_line_id
+    ) ?? null;
 
-const { data: linkedInvoiceLine } =
-  activeDisputeLine?.supplier_invoice_line_id
-    ? await supabase
-        .from("supplier_invoice_lines")
-       .select(`
+  const { data: linkedInvoiceLine } =
+    activeDisputeLine?.supplier_invoice_line_id
+      ? await supabase
+          .from("supplier_invoice_lines")
+          .select(`
   id,
   description,
   supplier_invoices (
@@ -231,17 +232,16 @@ const { data: linkedInvoiceLine } =
     review_status
   )
 `)
-        .eq("id", activeDisputeLine.supplier_invoice_line_id)
-        .maybeSingle()
-    : { data: null };
+          .eq("id", activeDisputeLine.supplier_invoice_line_id)
+          .maybeSingle()
+      : { data: null };
 
-const linkedInvoice = Array.isArray(linkedInvoiceLine?.supplier_invoices)
-  ? linkedInvoiceLine.supplier_invoices[0]
-  : linkedInvoiceLine?.supplier_invoices;
+  const linkedInvoice = Array.isArray(linkedInvoiceLine?.supplier_invoices)
+    ? linkedInvoiceLine.supplier_invoices[0]
+    : linkedInvoiceLine?.supplier_invoices;
 
-const invoiceOptions = (supplierInvoices ?? []) as SupplierInvoiceOption[];
-
-const invoice = linkedInvoice ?? invoiceOptions[0] ?? null;
+  const invoiceOptions = (supplierInvoices ?? []) as SupplierInvoiceOption[];
+  const invoice = linkedInvoice ?? invoiceOptions[0] ?? null;
   const { data: allInvoiceLines } = invoice
     ? await supabase
         .from("supplier_invoice_lines")
@@ -270,6 +270,7 @@ const invoice = linkedInvoice ?? invoiceOptions[0] ?? null;
   const canAcceptOutcome = hasRetailerReply && retailerOutcomeLabel === "retailer_accepted";
   const isFinalOutcome = FINAL_OUTCOME_STATUSES.has(dispute.status ?? "");
   const isTerminalAcceptedState = dispute.status === "replaced" || dispute.status === "awaiting_refund_credit";
+  const isReconciliationReplacement = dispute.stage_detected === "at_reconciliation" && dispute.desired_outcome === "replacement";
   const hasAnyRefundEvidence = Boolean(latestStructuredRefundEvidence || latestRefundEvidence);
   const refundEvidenceBadgeLabel = latestStructuredRefundEvidence ? structuredRefundEvidenceStatus(latestStructuredRefundEvidence) : latestRefundEvidence ? evidenceStatusLabel(latestRefundEvidence.body) : "Waiting for operator evidence";
 
@@ -306,29 +307,15 @@ const invoice = linkedInvoice ?? invoiceOptions[0] ?? null;
             <p className="mt-2 text-sm text-slate-600">Parent order and supplier invoice context.</p>
             <div className="mt-4 space-y-2 text-sm">
               <p>
-  <span className="font-semibold">
-    Exception-linked supplier invoice:
-  </span>{" "}
-  {invoice?.invoice_ref ?? "—"}
-</p>
-
-{linkedInvoiceLine?.description ? (
-  <p>
-    <span className="font-semibold">Affected item:</span>{" "}
-    {linkedInvoiceLine.description}
-  </p>
-) : null}
-
-{invoice?.invoice_pdf_url ? (
-  <a
-    href={invoice.invoice_pdf_url}
-    target="_blank"
-    rel="noopener noreferrer"
-    className="text-sky-700 underline"
-  >
-    Open exception-linked supplier invoice PDF
-  </a>
-) : null}
+                <span className="font-semibold">Exception-linked supplier invoice:</span>{" "}
+                {invoice?.invoice_ref ?? "—"}
+              </p>
+              {linkedInvoiceLine?.description ? (
+                <p><span className="font-semibold">Affected item:</span>{" "}{linkedInvoiceLine.description}</p>
+              ) : null}
+              {invoice?.invoice_pdf_url ? (
+                <a href={invoice.invoice_pdf_url} target="_blank" rel="noopener noreferrer" className="text-sky-700 underline">Open exception-linked supplier invoice PDF</a>
+              ) : null}
               <p className="text-xs text-slate-500">Supplier invoice records available for this order: {invoiceOptions.length}</p>
             </div>
           </article>
@@ -350,6 +337,16 @@ const invoice = linkedInvoice ?? invoiceOptions[0] ?? null;
                 <form action={acceptFinalRefundOutcomeAction}>
                   <input type="hidden" name="dispute_id" value={dispute.id} />
                   <button type="submit" disabled={!canAcceptOutcome} className="rounded-xl bg-emerald-700 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">Accept final refund outcome</button>
+                </form>
+              </div>
+            ) : isReconciliationReplacement ? (
+              <div className="mt-4 space-y-3">
+                <p className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                  This replacement was raised from invoice reconciliation. It cannot enter the replacement fulfilment path.
+                </p>
+                <form action={rejectReconciliationReplacementAction}>
+                  <input type="hidden" name="dispute_id" value={dispute.id} />
+                  <button type="submit" className="rounded-xl bg-rose-700 px-4 py-2 text-sm font-semibold text-white">Reject replacement — return to invoice reconciliation</button>
                 </form>
               </div>
             ) : (

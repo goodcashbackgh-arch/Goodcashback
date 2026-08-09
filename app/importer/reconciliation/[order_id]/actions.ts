@@ -918,13 +918,20 @@ export async function createExceptionCaseAction(formData: FormData) {
 
   const conversationStatus = remedy === "refund" ? "refund_pending_approval" : "remedy_selected";
 
-  const { data: existingDispute, error: existingDisputeError } = await guard.supabase
+  const existingDisputeBaseQuery = guard.supabase
     .from("disputes")
     .select("id, amount_impact_gbp, replacement_child_order_id")
     .eq("order_id", orderId)
     .eq("desired_outcome", remedy)
     .eq("status", "raised")
-    .is("resolved_at", null)
+    .is("resolved_at", null);
+
+  const existingDisputeQuery =
+    remedy === "replacement"
+      ? existingDisputeBaseQuery.eq("stage_detected", "at_reconciliation")
+      : existingDisputeBaseQuery;
+
+  const { data: existingDispute, error: existingDisputeError } = await existingDisputeQuery
     .order("raised_at", { ascending: false })
     .limit(1)
     .maybeSingle();
