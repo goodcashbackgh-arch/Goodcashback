@@ -831,3 +831,194 @@ The follow-on correction is acceptable only when:
 Rollback for this follow-on correction is application-only: revert the `app/customer/page.tsx` loyalty-status block and its dedicated static-assurance file. Do not use a financial mutation or manual loyalty release as rollback.
 
 This section is the governing authority for the follow-on customer-display correction. Change nothing else.
+
+## 12. Follow-on collapsible customer loyalty-credit presentation
+
+This section is a presentation-only refinement under the same governing addendum. It does not reopen the Main Bank handoff correction, the pending/ready projection correction, or any financial workflow.
+
+For this section only, it supersedes section 11.2's required single-line loyalty rendering and the section 11.4 restrictions on changing the customer credit-card layout, styling and surrounding copy, but only to the minimum extent required to render the same existing loyalty balances in the collapsible presentation specified below. All section 11 backend, lifecycle, projection and financial restrictions remain in force.
+
+### 12.1 Frozen data and behaviour
+
+Keep unchanged:
+
+```text
+customer_completion_loyalty_reward_balance_v1
+pending_activation_gbp
+ready_to_use_gbp
+pendingLoyaltyGbp reduction
+readyLoyaltyGbp reduction
+creditBalanceGbp calculation
+normal account-credit eligibility and application
+completion-loyalty eligibility
+approval state
+Main Bank staging
+DVA/card pairing
+paired release
+loyalty application to order
+order_funding_events
+accounting
+VAT
+Sage
+settlement
+historical data
+```
+
+The existing `> 0.01` display threshold for each loyalty balance must retain the same meaning. This correction must not create, consume, release, reserve, pair, apply or reclassify any credit.
+
+### 12.2 Exact runtime scope
+
+The only runtime file authorised by this section is:
+
+```text
+app/customer/page.tsx
+```
+
+Within that file, change only the existing `Your credit` presentation and any directly associated presentation-only loyalty-status text needed by that card. Do not modify the RPC calls, balance reductions, order calculations, header, navigation, authentication, order rendering, responsive order summaries, or unrelated helpers.
+
+Do not add:
+
+```text
+"use client"
+React state
+useState
+new component files
+new RPC wrappers
+new data models
+new CSS files
+new financial actions
+```
+
+Use the browser-native:
+
+```html
+<details>
+<summary>
+```
+
+interaction. It must be closed by default. Reuse the repository's existing `group` / `group-open:` Tailwind pattern for open-state presentation.
+
+### 12.3 Required collapsed presentation
+
+The main normal account credit remains visually primary and large:
+
+```text
+£X available account credit
+```
+
+Below it, show one compact collapsed control headed:
+
+```text
+Additional loyalty credit
+```
+
+When both existing loyalty balances are positive, the collapsed summary is:
+
+```text
+£X available · £Y pending activation                     Show details ⌄
+```
+
+Presentation rules:
+
+```text
+amounts → neutral/dark text
+available → green text
+pending activation → orange/amber text
+```
+
+Do not colour the monetary amounts green or orange.
+
+If only one loyalty balance is positive, show only that balance and classification. If neither balance exceeds the existing threshold, show a compact no-active-loyalty-credit message rather than inventing a monetary amount.
+
+### 12.4 Required expanded presentation
+
+Opening the native details control must not repeat the collapsed balance/classification line.
+
+The expanded header remains:
+
+```text
+Additional loyalty credit                               Hide details ⌃
+```
+
+Under it, render the existing balances as separate, larger rows:
+
+```text
+Loyalty credit       Available now           £X
+Loyalty credit       Pending activation      £Y
+```
+
+Only rows whose existing balance exceeds the existing threshold are rendered.
+
+Expanded presentation rules:
+
+```text
+monetary amounts → larger, bold, neutral/dark text
+Available now → green status treatment
+Pending activation → orange/amber status treatment
+```
+
+Do not duplicate the collapsed balance summary while expanded.
+
+### 12.5 Explanatory copy
+
+The compact explanatory panel remains inside the existing `Your credit` card and may be corrected only to clarify the unchanged distinction:
+
+```text
+Account credit can be used on orders.
+Loyalty credit is shown separately.
+Pending activation cannot yet be used.
+```
+
+Do not imply that pending loyalty is spendable. Do not imply that normal account credit is loyalty credit.
+
+### 12.6 Regression requirement
+
+Do not add a second regression file.
+
+Update only the existing:
+
+```text
+docs/testing/20260809_customer_completion_loyalty_pending_ready_display_static_regression_v1.mjs
+```
+
+The regression must continue to prove that the existing RPC and independent balance reductions remain, and must additionally prove:
+
+```text
+native details/summary presentation exists;
+details is not default-open;
+no "use client" is introduced;
+no useState is introduced;
+collapsed and expanded loyalty presentation use readyLoyaltyGbp and pendingLoyaltyGbp;
+collapsed summary uses neutral monetary amounts with green available and orange/amber pending classification;
+expanded rows use neutral monetary amounts with green Available now and orange/amber Pending activation;
+collapsed balance/classification content is hidden while details is open;
+no financial mutation is performed by the regression.
+```
+
+### 12.7 Exact changed-file boundary and acceptance
+
+For this follow-on build, the entire diff must contain exactly these three existing files:
+
+```text
+docs/governing-pack/ui/COMPLETION_LOYALTY_MAIN_BANK_HANDOFF_CORRECTIVE_ADDENDUM_v1.md
+app/customer/page.tsx
+docs/testing/20260809_customer_completion_loyalty_pending_ready_display_static_regression_v1.mjs
+```
+
+No new file is authorised.
+
+Acceptance requires:
+
+```text
+- the governing addendum is committed before any runtime or regression change;
+- the normal account-credit figure remains the dominant credit figure;
+- the loyalty control is closed by default;
+- collapsed view is compact and does not duplicate expanded details;
+- expanded amounts remain neutral/dark and status wording alone carries green/orange classification;
+- no RPC, reduction, financial workflow, DB object, migration, accounting, VAT, Sage, settlement or historical-data behaviour changes;
+- opening or closing the disclosure performs no financial mutation.
+```
+
+Rollback is presentation-only: revert the section-12 customer-card presentation and matching regression update. No database or financial rollback is authorised.
+
+This section is the governing authority for the collapsible customer loyalty-credit presentation. Change nothing else.
