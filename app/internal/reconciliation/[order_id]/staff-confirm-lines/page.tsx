@@ -1,15 +1,7 @@
-import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
-import { supervisorProgressSupplierInvoiceLinesAction } from "../actions";
 
-function isDone(v: string | null | undefined) {
-  return ["y", "yes", "true", "1"].includes(String(v ?? "").toLowerCase());
-}
-
-function gbp(v: unknown) {
-  return new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" }).format(Number(v ?? 0));
-}
+const retiredStatuses = new Set(["rejected_resubmit_required", "duplicate_blocked", "superseded"]);
 
 export default async function Page({ params }: { params: Promise<{ order_id: string }> }) {
   const { order_id: orderId } = await params;
@@ -19,7 +11,7 @@ export default async function Page({ params }: { params: Promise<{ order_id: str
 
   const { data: staff } = await supabase
     .from("staff")
-    .select("id, role_type, full_name")
+    .select("id, role_type")
     .eq("auth_user_id", user.id)
     .eq("active", true)
     .maybeSingle();
@@ -27,84 +19,26 @@ export default async function Page({ params }: { params: Promise<{ order_id: str
 
   const { data: order } = await supabase
     .from("orders")
-    .select("id, order_ref, total_qty_declared, order_total_gbp_declared")
+    .select("id")
     .eq("id", orderId)
     .maybeSingle();
   if (!order) redirect("/internal/supplier-draft-ready?error=Order+not+found");
 
-  const { data: invoice } = await supabase
+  const { data: invoices } = await supabase
     .from("supplier_invoices")
-    .select("id, invoice_ref, is_current_for_order, uploaded_at")
+    .select("id, review_status, uploaded_at")
     .eq("order_id", orderId)
-    .order("uploaded_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .order("uploaded_at", { ascending: true });
 
-  const { data: lines } = invoice?.id
-    ? await supabase
-        .from("supplier_invoice_lines")
-        .select("id, line_order, line_source, retailer_sku, description, qty, size, amount_inc_vat_gbp, eligible_for_invoice_yn")
-        .eq("supplier_invoice_id", invoice.id)
-        .order("line_order", { ascending: true })
-    : { data: [] };
+  const activeInvoices = (invoices ?? []).filter((invoice) => !retiredStatuses.has(String(invoice.review_status ?? "pending_review")));
 
-  const lineIds = (lines ?? []).map((line) => line.id);
-  const { data: nonPhysicalRows } = invoice?.id && lineIds.length > 0
-    ? await supabase
-        .from("supplier_invoice_line_resolutions")
-        .select("supplier_invoice_line_id")
-        .eq("supplier_invoice_id", invoice.id)
-        .eq("resolution_type", "non_physical_financial")
-        .eq("active", true)
-        .in("supplier_invoice_line_id", lineIds)
-    : { data: [] as Array<{ supplier_invoice_line_id: string }> };
+  if (activeInvoices.length === 0) {
+    redirect(`/internal/reconciliation/${orderId}?error=No+active+supplier+invoice+available+for+staff+confirmation`);
+  }
 
-  const nonPhysicalLineIds = new Set((nonPhysicalRows ?? []).map((row) => row.supplier_invoice_line_id));
-  const candidates = (lines ?? []).filter((line) => !isDone(line.eligible_for_invoice_yn) && !nonPhysicalLineIds.has(line.id));
-  const parkedCount = (lines ?? []).filter((line) => nonPhysicalLineIds.has(line.id)).length;
+  if (activeInvoices.length === 1) {
+    redirect(`/internal/reconciliation/${orderId}/invoice-bundle/${activeInvoices[0].id}`);
+  }
 
-  return (
-    <main className="min-h-screen bg-slate-50 px-6 py-8 text-slate-950">
-      <div className="mx-auto max-w-4xl space-y-6">
-        <section className="rounded-3xl border bg-white p-6 shadow-sm">
-          <Link href={`/internal/reconciliation/${orderId}`} className="text-sm font-semibold text-sky-700">← Back to reconciliation</Link>
-          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-amber-600">Staff takeover</p>
-          <h1 className="mt-2 text-3xl font-semibold">{order.order_ref ?? orderId}</h1>
-          <p className="mt-2 text-sm text-slate-600">Invoice {invoice?.invoice_ref ?? "—"} · Declared {order.total_qty_declared ?? 0} / {gbp(order.order_total_gbp_declared)}</p>
-          <p className="mt-1 text-sm text-slate-600">{staff.full_name} · {staff.role_type}</p>
-        </section>
-
-        <section className="rounded-3xl border border-amber-200 bg-amber-50 p-6 shadow-sm">
-          <h2 className="text-xl font-semibold">Confirm clean invoice lines</h2>
-          <p className="mt-2 text-sm text-amber-900">Use this only after checking physical goods lines against order evidence. Parked delivery, discount, fee, and other non-physical rows are excluded so they cannot be accidentally confirmed as shipper-trackable goods.</p>
-
-          {!invoice ? <p className="mt-4 rounded-xl bg-white p-4 text-sm">No supplier invoice found.</p> : null}
-          {invoice?.is_current_for_order ? <p className="mt-4 rounded-xl bg-white p-4 text-sm">This invoice is already current.</p> : null}
-          {parkedCount > 0 ? <p className="mt-4 rounded-xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-900">{parkedCount} parked non-physical line(s) excluded from staff confirmation.</p> : null}
-          {invoice && !invoice.is_current_for_order && candidates.length === 0 ? <p className="mt-4 rounded-xl bg-white p-4 text-sm">No unconfirmed physical lines remain.</p> : null}
-
-          {invoice && !invoice.is_current_for_order && candidates.length > 0 ? (
-            <form action={supervisorProgressSupplierInvoiceLinesAction} className="mt-5 space-y-4">
-              <input type="hidden" name="order_id" value={orderId} />
-              <input type="hidden" name="supplier_invoice_id" value={invoice.id} />
-              <div className="space-y-3">
-                {candidates.map((line) => (
-                  <label key={line.id} className="flex gap-3 rounded-2xl border bg-white p-4 text-sm">
-                    <input type="checkbox" name="line_ids" value={line.id} className="mt-1" />
-                    <span>
-                      <span className="block font-semibold">Line {line.line_order ?? "—"} · {line.line_source ?? "—"}</span>
-                      <span className="block">{line.description || "No description"}</span>
-                      <span className="block text-slate-600">Qty {line.qty ?? 0} · {gbp(line.amount_inc_vat_gbp)}{line.retailer_sku ? ` · SKU ${line.retailer_sku}` : ""}{line.size ? ` · Size ${line.size}` : ""}</span>
-                    </span>
-                  </label>
-                ))}
-              </div>
-              <textarea name="progress_notes" rows={3} className="w-full rounded-xl border px-3 py-2 text-sm" placeholder="Staff confirmation note" />
-              <button className="rounded-xl bg-amber-700 px-4 py-2 text-sm font-semibold text-white">Confirm selected lines</button>
-            </form>
-          ) : null}
-        </section>
-      </div>
-    </main>
-  );
+  redirect(`/internal/reconciliation/${orderId}/invoice-bundle`);
 }
