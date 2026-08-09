@@ -161,7 +161,7 @@ function returnTrackingLabel(row: ReturnTrackingSubmissionRow | null) {
   if (!row) return "No return evidence yet";
   if (row.is_final_return_yn) return "Final return/collection submitted";
   if (row.tracking_ref || row.return_label_file_url || row.return_proof_file_url) return "Return/collection evidence submitted";
-  return "No return evidence yet";
+  return "Return instructions / note only";
 }
 
 function courierName(row: ReturnTrackingSubmissionRow) {
