@@ -1,0 +1,30 @@
+name: Reconciliation replacement proof
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Focused source regression
+        run: node docs/testing/20260809_reconciliation_replacement_supervisor_reject_source_regression_v1.mjs
+      - name: Targeted lint
+        run: >-
+          npx eslint
+          'app/importer/reconciliation/[order_id]/actions.ts'
+          'app/importer/exceptions/[dispute_id]/actions.ts'
+          'app/importer/exceptions/[dispute_id]/page.tsx'
+          'app/internal/exceptions/[dispute_id]/actions.ts'
+          'app/internal/exceptions/[dispute_id]/page.tsx'
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Build
+        run: npm run build
