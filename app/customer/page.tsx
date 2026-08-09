@@ -302,17 +302,17 @@ export default async function CustomerDashboardPage() {
             <h2 className="mt-1 text-2xl font-black text-slate-950">{gbp(creditBalanceGbp)} available account credit</h2>
             <details className="group mt-2 rounded-xl border border-slate-200 bg-white">
               <summary className="cursor-pointer list-none px-3 py-2.5">
-                <span className="flex items-start justify-between gap-3">
-                  <span className="min-w-0">
-                    <span className="block text-sm font-black text-slate-700">Additional loyalty credit</span>
-                    <span className="mt-0.5 flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-sm font-semibold group-open:hidden">
+                <span className="flex flex-wrap items-start justify-between gap-x-3 gap-y-0.5">
+                  <span className="contents">
+                    <span className="order-1 block text-sm font-black text-slate-700">Additional loyalty credit</span>
+                    <span className="order-3 mt-0.5 flex basis-full flex-nowrap items-baseline gap-x-1 gap-y-0.5 whitespace-nowrap text-[13px] font-semibold group-open:hidden sm:text-sm">
                       {hasReadyLoyalty ? <><span className="text-slate-950">{gbp(readyLoyaltyGbp)}</span><span className="text-emerald-700">available</span></> : null}
                       {hasReadyLoyalty && hasPendingLoyalty ? <span className="text-slate-400">·</span> : null}
                       {hasPendingLoyalty ? <><span className="text-slate-950">{gbp(pendingLoyaltyGbp)}</span><span className="text-amber-700">pending activation</span></> : null}
                       {!hasReadyLoyalty && !hasPendingLoyalty ? <span className="text-slate-600">No loyalty credit active yet</span> : null}
                     </span>
                   </span>
-                  <span className="shrink-0 pt-0.5 text-sm font-black text-sky-600">
+                  <span className="order-2 shrink-0 pt-0.5 text-sm font-black text-sky-600">
                     <span className="group-open:hidden">Show details <span aria-hidden="true">⌄</span></span>
                     <span className="hidden group-open:inline">Hide details <span aria-hidden="true">⌃</span></span>
                   </span>
