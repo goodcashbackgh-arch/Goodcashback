@@ -51,7 +51,7 @@ async function requireActiveOperator() {
 async function requireDisputeAccess(supabase: Awaited<ReturnType<typeof createClient>>, operatorId: string, disputeId: string) {
   const { data: dispute, error: disputeError } = await supabase
     .from("disputes")
-    .select("id, order_id, desired_outcome, status, refund_approved_at, amount_impact_gbp")
+    .select("id, order_id, desired_outcome, stage_detected, status, refund_approved_at, amount_impact_gbp")
     .eq("id", disputeId)
     .maybeSingle();
 
@@ -162,6 +162,10 @@ export async function saveRetailerUpdateAction(formData: FormData) {
 
   const accessGuard = await requireDisputeAccess(guard.supabase, guard.operatorId, disputeId);
   if (!accessGuard.ok) redirectWithResult(disputeId, { error: accessGuard.error });
+
+  if (accessGuard.dispute.stage_detected === "at_reconciliation" && accessGuard.dispute.desired_outcome === "replacement") {
+    redirectWithResult(disputeId, { error: "Retailer updates are not available for reconciliation-stage replacement exceptions. Await supervisor review and return to invoice reconciliation if rejected." });
+  }
 
   const { data, error } = await guard.supabase.rpc("operator_update_dispute_retailer_update", {
     p_dispute_id: disputeId,
