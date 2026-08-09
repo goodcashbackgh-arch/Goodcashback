@@ -310,6 +310,77 @@ export async function reviewReturnCollectionEvidenceAction(formData: FormData) {
   redirectWithResult(disputeId, { success: `Return/collection evidence review saved: ${reviewDecision}.` });
 }
 
+export async function rejectReconciliationReplacementAction(formData: FormData) {
+  const disputeId = readString(formData, "dispute_id");
+  if (!disputeId) redirect("/internal/exceptions");
+
+  const guard = await requireActiveStaff();
+  if (!guard.ok) redirectWithResult(disputeId, { error: guard.error });
+
+  const { data: dispute, error: disputeError } = await guard.supabase
+    .from("disputes")
+    .select("id, order_id, desired_outcome, stage_detected, replacement_child_order_id, customer_credit_note_sales_invoice_id, resolved_at")
+    .eq("id", disputeId)
+    .is("resolved_at", null)
+    .maybeSingle();
+
+  if (disputeError || !dispute) redirectWithResult(disputeId, { error: "Open exception case not found." });
+  if (dispute.stage_detected !== "at_reconciliation" || dispute.desired_outcome !== "replacement") {
+    redirectWithResult(disputeId, { error: "This rejection action is only available for reconciliation-stage replacement exceptions." });
+  }
+  if (dispute.replacement_child_order_id) {
+    redirectWithResult(disputeId, { error: "Cannot reject this reconciliation replacement because a replacement child order already exists." });
+  }
+
+  const { count: messageCount, error: messageCountError } = await guard.supabase
+    .from("dispute_messages")
+    .select("id", { count: "exact", head: true })
+    .eq("dispute_id", disputeId);
+
+  if (messageCountError) redirectWithResult(disputeId, { error: messageCountError.message });
+
+  if (Number(messageCount ?? 0) > 0 || dispute.customer_credit_note_sales_invoice_id) {
+    redirectWithResult(disputeId, { error: "Cannot reject this reconciliation replacement after protected downstream activity has started." });
+  }
+
+  const { error: deleteDisputeLinesError } = await guard.supabase
+    .from("dispute_lines")
+    .delete()
+    .eq("dispute_id", disputeId)
+    .is("resolved_at", null);
+
+  if (deleteDisputeLinesError) redirectWithResult(disputeId, { error: deleteDisputeLinesError.message });
+
+  const { data: remainingLines, error: remainingLinesError } = await guard.supabase
+    .from("dispute_lines")
+    .select("id, amount_impact_gbp")
+    .eq("dispute_id", disputeId);
+
+  if (remainingLinesError) redirectWithResult(disputeId, { error: remainingLinesError.message });
+
+  if ((remainingLines ?? []).length === 0) {
+    const { error: deleteDisputeError } = await guard.supabase.from("disputes").delete().eq("id", disputeId);
+    if (deleteDisputeError) redirectWithResult(disputeId, { error: deleteDisputeError.message });
+  } else {
+    const updatedAmount = (remainingLines ?? []).reduce((sum, line) => sum + Number(line.amount_impact_gbp ?? 0), 0);
+    const { error: updateDisputeError } = await guard.supabase
+      .from("disputes")
+      .update({ amount_impact_gbp: updatedAmount })
+      .eq("id", disputeId);
+
+    if (updateDisputeError) redirectWithResult(disputeId, { error: updateDisputeError.message });
+  }
+
+  revalidatePath(`/internal/exceptions/${disputeId}`);
+  revalidatePath(`/importer/exceptions/${disputeId}`);
+  revalidatePath(`/internal/reconciliation/${dispute.order_id}`);
+  revalidatePath(`/importer/reconciliation/${dispute.order_id}`);
+  revalidatePath("/internal/exceptions");
+
+  const query = new URLSearchParams({ success: "Replacement rejected. Return to invoice reconciliation to correct the supplier line." });
+  redirect(`/internal/exceptions?${query.toString()}`);
+}
+
 export async function acceptReplacementOutcomeAction(formData: FormData) {
   const disputeId = readString(formData, "dispute_id");
   if (!disputeId) redirect("/internal/exceptions");
@@ -319,13 +390,16 @@ export async function acceptReplacementOutcomeAction(formData: FormData) {
 
   const { data: dispute, error: disputeError } = await guard.supabase
     .from("disputes")
-    .select("id, desired_outcome, replacement_child_order_id")
+    .select("id, desired_outcome, stage_detected, replacement_child_order_id")
     .eq("id", disputeId)
     .maybeSingle();
 
   if (disputeError || !dispute) redirectWithResult(disputeId, { error: "Dispute not found." });
   if (dispute.desired_outcome !== "replacement") {
     redirectWithResult(disputeId, { error: "Replacement outcome is only available for replacement disputes." });
+  }
+  if (dispute.stage_detected === "at_reconciliation") {
+    redirectWithResult(disputeId, { error: "Reconciliation-stage replacement exceptions cannot be accepted. Reject the exception and return it to invoice reconciliation." });
   }
   if (dispute.replacement_child_order_id) {
     redirectWithResult(disputeId, { error: "Replacement child order already exists." });
