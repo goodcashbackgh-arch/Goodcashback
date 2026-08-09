@@ -5,7 +5,6 @@ import { createClient } from "@/utils/supabase/server";
 import {
   approveCompletionLoyaltyRewardAction,
   applyCompletionLoyaltyToOrderAction,
-  confirmCompletionLoyaltyRewardFundingAction,
 } from "./actions";
 import { WorkbenchClientEnhancements } from "./WorkbenchClientEnhancements";
 
@@ -259,21 +258,6 @@ function field(label: string, value: ReactNode) {
   );
 }
 
-function TextInput({ name, label, defaultValue, required, placeholder }: { name: string; label: string; defaultValue?: string; required?: boolean; placeholder?: string }) {
-  return (
-    <label className="block text-sm font-medium text-slate-700">
-      {label}
-      <input
-        name={name}
-        defaultValue={defaultValue}
-        required={required}
-        placeholder={placeholder}
-        className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900"
-      />
-    </label>
-  );
-}
-
 function AmountInput({
   name,
   label,
@@ -339,26 +323,6 @@ function ApprovalForm({ row }: { row: WorkbenchRow }) {
       </div>
       <button className="mt-4 rounded-lg bg-amber-900 px-4 py-2 text-sm font-semibold text-white hover:bg-amber-800">
         Approve in principle
-      </button>
-    </form>
-  );
-}
-
-function FundingForm({ row }: { row: WorkbenchRow }) {
-  return (
-    <form action={confirmCompletionLoyaltyRewardFundingAction} data-funding-proof-form="true" className="mt-5 rounded-2xl border border-sky-200 bg-sky-50 p-4">
-      <input type="hidden" name="approval_id" value={row.approval_id ?? ""} />
-      <h3 className="text-sm font-semibold text-sky-950">Confirm customer DVA/account top-up</h3>
-      <p className="mt-1 text-xs text-sky-900">Funding proof required before dashboard credit released.</p>
-      <div className="mt-3 grid gap-3 md:grid-cols-2">
-        <AmountInput name="amount_funded_gbp" label="Funded amount GBP" defaultValue={formatInputNumber(row.approved_amount_gbp)} />
-        <AmountInput name="amount_released_gbp" label="Released amount GBP" defaultValue={formatInputNumber(row.approved_amount_gbp)} />
-        <TextInput name="dva_statement_line_id" label="DVA statement line ID" placeholder="Optional when evidence reference is supplied" />
-        <TextInput name="funding_evidence_ref" label="Funding evidence reference" placeholder="Optional when DVA statement line ID is supplied" />
-        <NotesInput />
-      </div>
-      <button className="mt-4 rounded-lg bg-sky-900 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-800">
-        Confirm funding proof and release dashboard credit
       </button>
     </form>
   );
@@ -537,7 +501,7 @@ export default async function CompletionLoyaltyRewardsPage({ searchParams }: { s
     {
       label: "Approved pending funding",
       count: rows.filter(canConfirmFunding).length,
-      detail: "Funding proof required for customer DVA/account top-up.",
+      detail: "Use the existing Main Bank completion-loyalty workflow when funding is required.",
       tone: "sky",
     },
     {
@@ -562,7 +526,7 @@ export default async function CompletionLoyaltyRewardsPage({ searchParams }: { s
           <Link href="/internal" className="text-sm font-medium text-slate-600 hover:text-slate-950">← Internal tools</Link>
           <h1 className="mt-3 text-3xl font-bold tracking-tight text-slate-950">Completion loyalty rewards</h1>
           <p className="mt-2 max-w-3xl text-sm text-slate-600">
-            Supervisor lane for completion reward proposals, approval-in-principle, DVA/account funding proof, released dashboard credit, and staff-only application to an order balance.
+            Supervisor lane for completion reward proposals, approval-in-principle, existing Main Bank loyalty funding handoff, released dashboard credit, and staff-only application to an order balance.
           </p>
           <p className="mt-2 text-sm text-slate-500">Signed in as {staff.full_name ?? "staff"} · {staff.role_type}</p>
         </div>
@@ -664,7 +628,14 @@ export default async function CompletionLoyaltyRewardsPage({ searchParams }: { s
 
             {isProposed(row) ? <ApprovalForm row={row} /> : null}
             {isPendingFunding(row) && currentBasisBlocked ? <FundingBlockedNotice row={row} /> : null}
-            {canConfirmFunding(row) ? <FundingForm row={row} /> : null}
+            {canConfirmFunding(row) ? (
+              <Link
+                href={`/internal/dva-reconciliation/main-bank?target=completion_loyalty&q=${encodeURIComponent(row.order_ref ?? "")}`}
+                className="mt-5 inline-flex rounded-lg bg-sky-900 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-800"
+              >
+                Open Main Bank loyalty funding →
+              </Link>
+            ) : null}
             {isReleased(row) ? <ReleasedWithBlockerNotice row={row} /> : null}
             {isReleased(row) ? <ApplyLoyaltyForm row={row} targetOrders={targetOrders} /> : null}
           </article>

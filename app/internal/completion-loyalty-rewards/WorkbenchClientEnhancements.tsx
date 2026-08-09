@@ -124,27 +124,6 @@ function syncApprovalForm(form: HTMLFormElement, changedName: string) {
   form.dataset.syncingApproval = "false";
 }
 
-function clearFundingProofValidity(form: HTMLFormElement) {
-  const evidence = form.querySelector<HTMLInputElement>('[name="funding_evidence_ref"]');
-  if (evidence) evidence.setCustomValidity("");
-}
-
-function validateFundingProof(form: HTMLFormElement, event: Event) {
-  const dva = form.querySelector<HTMLInputElement>('[name="dva_statement_line_id"]');
-  const evidence = form.querySelector<HTMLInputElement>('[name="funding_evidence_ref"]');
-
-  if ((dva && dva.value.trim()) || (evidence && evidence.value.trim())) {
-    if (evidence) evidence.setCustomValidity("");
-    return;
-  }
-
-  event.preventDefault();
-  if (evidence) {
-    evidence.setCustomValidity("Funding proof required: enter a DVA statement line ID or funding evidence reference.");
-    evidence.reportValidity();
-  }
-}
-
 export function WorkbenchClientEnhancements() {
   useEffect(() => {
     adoptInternalDashboardShell();
@@ -159,9 +138,6 @@ export function WorkbenchClientEnhancements() {
         approvalForm.dataset.lastEditedLoyaltyField = target.name;
         syncApprovalForm(approvalForm, target.name);
       }
-
-      const fundingForm = target.closest('[data-funding-proof-form="true"]') as HTMLFormElement | null;
-      if (fundingForm) clearFundingProofValidity(fundingForm);
     };
 
     const onSubmit = (event: Event) => {
@@ -170,10 +146,6 @@ export function WorkbenchClientEnhancements() {
 
       if (form.matches('[data-loyalty-approval-form="true"]')) {
         syncApprovalForm(form, form.dataset.lastEditedLoyaltyField || "reward_rate_pct");
-      }
-
-      if (form.matches('[data-funding-proof-form="true"]')) {
-        validateFundingProof(form, event);
       }
     };
 

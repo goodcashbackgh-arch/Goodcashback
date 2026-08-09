@@ -89,41 +89,6 @@ export async function approveCompletionLoyaltyRewardAction(formData: FormData) {
   redirectWithResult({ success: "Completion loyalty reward approval-in-principle recorded." }, path);
 }
 
-export async function confirmCompletionLoyaltyRewardFundingAction(formData: FormData) {
-  const path = await returnPath();
-  const supabase = await requireSupervisorOrAdmin();
-
-  const approvalId = readString(formData, "approval_id");
-  const amountFunded = readPositiveAmount(formData, "amount_funded_gbp", "Funded amount");
-  const amountReleasedRaw = readString(formData, "amount_released_gbp");
-  const amountReleased = amountReleasedRaw ? Number(amountReleasedRaw) : null;
-  const dvaStatementLineId = readString(formData, "dva_statement_line_id") || null;
-  const fundingEvidenceRef = readString(formData, "funding_evidence_ref") || null;
-  const notes = readString(formData, "notes") || null;
-
-  if (!approvalId) redirectWithResult({ error: "Missing approval reference for funding confirmation." }, path);
-  if (amountReleased !== null && (!Number.isFinite(amountReleased) || amountReleased <= 0)) {
-    redirectWithResult({ error: "Released amount must be greater than zero when provided." }, path);
-  }
-  if (!dvaStatementLineId && !fundingEvidenceRef) {
-    redirectWithResult({ error: "Funding proof required: enter a DVA statement line ID or a funding evidence reference." }, path);
-  }
-
-  const { error } = await supabase.rpc("staff_confirm_completion_loyalty_reward_funding_v1", {
-    p_approval_id: approvalId,
-    p_amount_funded_gbp: amountFunded,
-    p_amount_released_gbp: amountReleased,
-    p_dva_statement_line_id: dvaStatementLineId,
-    p_funding_evidence_ref: fundingEvidenceRef,
-    p_notes: notes,
-  });
-
-  if (error) redirectWithResult({ error: error.message }, path);
-
-  revalidatePath(PAGE_PATH);
-  redirectWithResult({ success: "Funding proof accepted and dashboard credit released." }, path);
-}
-
 export async function applyCompletionLoyaltyToOrderAction(formData: FormData) {
   const path = await returnPath();
   const supabase = await requireSupervisorOrAdmin();
