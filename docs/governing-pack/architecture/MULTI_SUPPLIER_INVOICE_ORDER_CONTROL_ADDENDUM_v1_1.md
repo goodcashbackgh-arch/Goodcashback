@@ -34,6 +34,8 @@ Current application behaviour has two independent escalation paths that make an 
 
 The existing reconciliation `Rescind` safety correctly refuses to rescind a replacement after downstream dispute messages or other protected activity exists. Therefore merely blocking final supervisor acceptance is insufficient: the importer retailer-update lane can create downstream activity first and leave the accidental reconciliation replacement stuck.
 
+A further identity defect exists at reconciliation exception creation. The existing-dispute reuse lookup can reuse any open `raised` dispute for the same order and desired outcome without requiring the existing dispute itself to have `stage_detected = at_reconciliation`. For replacement only, that can attach a reconciliation fallback line to a replacement dispute created by another stage and prevent the four reconciliation-replacement guards below from recognising the fallback by its persisted identity.
+
 ## 2. Governing business rule
 
 For exactly:
@@ -65,9 +67,30 @@ The importer can then delete/correct the manual reconciliation line and upload t
 
 This correction must not alter the existing importer `rescindExceptionCaseAction`; it reuses its proven mutation semantics for the exact supervisor-controlled case.
 
-## 3. Four-part layered guard
+A reconciliation replacement must also remain identity-isolated at creation. If the reconciliation action reuses an existing replacement dispute, that existing dispute must itself be an unresolved `raised` dispute with:
 
-The implementation requires all four controls below. Two controls are not sufficient.
+```text
+stage_detected = at_reconciliation
+desired_outcome = replacement
+```
+
+An open replacement from any other stage must not be reused by the reconciliation replacement fallback. This stage-isolation rule applies only when `remedy === "replacement"`; the existing refund reuse lookup remains unchanged.
+
+## 3. Layered guard and identity isolation
+
+The implementation requires all controls below. The four UI/server deadbolts are not sufficient unless the reconciliation replacement remains correctly identified at creation.
+
+### 3.0 Reconciliation creation identity guard
+
+On `app/importer/reconciliation/[order_id]/actions.ts`, inside `createExceptionCaseAction`:
+
+- retain the existing order, desired-outcome, `raised`, unresolved and latest-first reuse conditions;
+- when and only when `remedy === "replacement"`, require the existing dispute selected for reuse to also satisfy `stage_detected = at_reconciliation`;
+- if no such reconciliation-stage replacement exists, create the existing new reconciliation dispute exactly as today;
+- do not alter the existing refund reuse lookup;
+- do not alter line progression, manual-line creation/edit/delete, baseline checks, or `rescindExceptionCaseAction`.
+
+This is an identity-isolation correction only. It must not introduce a new exception workflow or status.
 
 ### 3.1 Supervisor UI guard
 
@@ -119,16 +142,17 @@ This server guard is mandatory even though the form is hidden, because stale tab
 
 ## 4. Exact implementation scope
 
-The authorised production change is exactly four existing application files:
+The authorised production change is exactly five existing application files:
 
 ```text
+app/importer/reconciliation/[order_id]/actions.ts
 app/internal/exceptions/[dispute_id]/page.tsx
 app/internal/exceptions/[dispute_id]/actions.ts
 app/importer/exceptions/[dispute_id]/page.tsx
 app/importer/exceptions/[dispute_id]/actions.ts
 ```
 
-No production file outside those four is authorised by this correction without new evidence.
+The reconciliation actions file is authorised only for the replacement-stage isolation in section 3.0. No other production file outside these five is authorised by this correction without new evidence.
 
 ## 5. Explicit non-impact boundary
 
@@ -140,6 +164,7 @@ This correction must not add or modify:
 - `staff_accept_replacement_outcome_v1`;
 - `operator_update_dispute_retailer_update`;
 - `rescindExceptionCaseAction` in importer reconciliation;
+- refund dispute reuse behaviour in `createExceptionCaseAction`;
 - physical replacement or same-order free-replacement authorities;
 - shipper behaviour;
 - tracking or delivery allocation;
@@ -152,24 +177,26 @@ This correction must not add or modify:
 - normal replacement cases originating outside reconciliation;
 - normal reconciliation refunds.
 
-The guard predicate must not be broadened beyond the exact persisted pair `at_reconciliation` + `replacement`.
+The guard predicate must not be broadened beyond the exact persisted pair `at_reconciliation` + `replacement`. The creation-stage isolation condition must be applied only to replacement reuse and must not change refund reuse.
 
 ## 6. Required behavioural regression
 
 Before release, prove at minimum:
 
-1. a reconciliation-stage replacement does not render the supervisor Accept replacement control;
-2. the same case renders only the supervisor Reject/return-to-reconciliation control;
-3. direct invocation of `acceptReplacementOutcomeAction` for that case is server-blocked before retailer-outcome checks/RPC execution;
-4. the importer retailer-update form is not rendered for that case;
-5. direct/stale invocation of `saveRetailerUpdateAction` for that case is server-blocked before `operator_update_dispute_retailer_update`;
-6. supervisor rejection applies the same safe mutation result as the existing reconciliation Rescind path and leaves the supplier invoice/manual line available for correction;
-7. no retailer message or replacement child is created by the protected path;
-8. reconciliation refunds remain unchanged;
-9. replacements whose `stage_detected` is not `at_reconciliation` retain the existing retailer-update and supervisor-acceptance paths;
-10. all four production changes are conditional on both parts of the exact identity;
-11. no migration or protected backend authority changes;
-12. lint/build and focused source regression pass.
+1. reconciliation replacement reuse can select only an unresolved `raised` replacement dispute whose `stage_detected` is `at_reconciliation`;
+2. an open replacement dispute from another stage is not reused by reconciliation and a new reconciliation-stage replacement is created instead;
+3. refund existing-dispute reuse remains unchanged;
+4. a reconciliation-stage replacement does not render the supervisor Accept replacement control;
+5. the same case renders only the supervisor Reject/return-to-reconciliation control;
+6. direct invocation of `acceptReplacementOutcomeAction` for that case is server-blocked before retailer-outcome checks/RPC execution;
+7. the importer retailer-update form is not rendered for that case;
+8. direct/stale invocation of `saveRetailerUpdateAction` for that case is server-blocked before `operator_update_dispute_retailer_update`;
+9. supervisor rejection applies the same safe mutation result as the existing reconciliation Rescind path and leaves the supplier invoice/manual line available for correction;
+10. no retailer message or replacement child is created by the protected path;
+11. reconciliation refunds remain unchanged;
+12. replacements whose `stage_detected` is not `at_reconciliation` retain the existing retailer-update and supervisor-acceptance paths;
+13. no migration or protected backend authority changes;
+14. lint/build and focused source regression pass.
 
 ## 7. Acceptance rule
 
@@ -177,6 +204,8 @@ The correction is complete only when the following path is deterministic:
 
 ```text
 accidental reconciliation Replacement
+→ replacement reuse is limited to an existing reconciliation-stage replacement
+→ otherwise a new reconciliation-stage replacement is created
 → importer retailer-update workflow unavailable and server-blocked
 → supervisor replacement acceptance unavailable and server-blocked
 → supervisor Reject replacement — return to invoice reconciliation
@@ -188,7 +217,8 @@ accidental reconciliation Replacement
 The protection is intentionally layered:
 
 ```text
-importer UI guard
+reconciliation creation identity guard
++ importer UI guard
 + importer server guard
 + supervisor UI guard
 + supervisor server guard
