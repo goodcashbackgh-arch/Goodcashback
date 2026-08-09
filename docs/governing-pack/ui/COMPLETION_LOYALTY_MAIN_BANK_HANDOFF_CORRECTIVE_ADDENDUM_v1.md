@@ -2,7 +2,7 @@
 
 Status: governing corrective integration addendum.
 
-This addendum corrects one stale application handoff in the completion-loyalty workbench. It does not create a new loyalty workflow, funding route, release route, accounting treatment, customer state, or database function.
+This addendum corrects one stale application release path in the completion-loyalty workbench. It does not create a new loyalty workflow, funding route, release route, accounting treatment, customer state, search behaviour, or database function.
 
 It must be read with:
 
@@ -12,11 +12,11 @@ It must be read with:
 4. `docs/governing-pack/ui/COMPLETION_LOYALTY_MAIN_BANK_DVA_PAIRING_ACCOUNTING_CONTRACT_v1.md`
 5. `supabase/migrations/20260722a_completion_loyalty_manual_release_lockdown_v1.sql`
 
-This addendum is additive. It does not rewrite or supersede the working main-bank/DVA pairing implementation. It supersedes only any remaining application behaviour that exposes the disabled direct/manual completion-loyalty funding confirmation path.
+This addendum is additive. It does not rewrite or supersede the working main-bank/DVA pairing implementation. It supersedes only remaining application behaviour that exposes the direct/manual completion-loyalty funding confirmation path.
 
 ## 1. Proven defect
 
-The current completion-loyalty workbench still renders a legacy manual funding form for a clean reward in:
+The completion-loyalty workbench still renders a manual funding/release form for a clean reward in:
 
 ```text
 approved_pending_funding
@@ -28,22 +28,33 @@ That form submits to the application action:
 confirmCompletionLoyaltyRewardFundingAction
 ```
 
-which calls:
+which directly calls:
 
 ```text
 staff_confirm_completion_loyalty_reward_funding_v1(...)
 ```
 
-The July 22 lockdown migration deliberately retained that RPC name only for dependency stability and changed it to fail closed.
-
-Its required behaviour is:
+Production history proves that, after the paired Main Bank workflow was established, normal surviving releases use:
 
 ```text
-Direct completion-loyalty funding confirmation is disabled.
-Use the paired main-bank OUT and same-importer destination-IN release workflow.
+main-bank OUT reserved
+→ same-importer DVA/card IN paired
+→ funding confirmation created
+→ completion-loyalty credit released
 ```
 
-Therefore the defect is not missing funding logic. The defect is a stale UI/application caller that was not removed when the correct paired route became authoritative.
+Historical pre-pairing/manual and legacy OUT-only evidence may remain in business history and must not be rewritten.
+
+The July 22 lockdown migration is the repository authority for preventing direct/manual release while preserving the established paired workflow. Production deployment alignment of that existing migration is a separate operational step and is not implemented by changing or adding migration SQL in this corrective application PR.
+
+Therefore the application defect is narrow:
+
+```text
+the workbench still exposes a direct/manual funding/release caller
+that bypasses the established Main Bank paired operational route
+```
+
+No other working navigation, search, funding, pairing, release, accounting, or customer behaviour is defective under this addendum.
 
 ## 2. Correct integration boundary
 
@@ -54,6 +65,8 @@ Do not create a new loyalty state.
 Do not create a new RPC.
 
 Do not create a new funding or release action on the completion-loyalty page.
+
+Do not alter the established Main Bank handoff URL behaviour.
 
 The existing authoritative route is:
 
@@ -83,7 +96,7 @@ released_available_dashboard_credit
 customer sees loyalty reward ready to use
 ```
 
-This addendum changes only the application handoff into that existing route.
+This addendum changes only removal of the direct/manual application caller. The existing handoff into the Main Bank workspace must be preserved exactly.
 
 ## 3. Existing working parts that must remain unchanged
 
@@ -127,7 +140,7 @@ Pending loyalty must remain non-spendable.
 
 Released loyalty must remain separate from normal account credit presentation and customer self-service rules.
 
-### 3.3 Main-bank loyalty funding
+### 3.3 Main-bank loyalty funding and existing handoff/search behaviour
 
 Do not modify:
 
@@ -142,6 +155,7 @@ FX/card residual logic
 bank-fee residual logic
 hold/residual logic
 bulk loyalty funding-pot logic
+Main Bank search/query semantics
 ```
 
 The existing completion-loyalty target mode remains:
@@ -149,6 +163,14 @@ The existing completion-loyalty target mode remains:
 ```text
 target=completion_loyalty
 ```
+
+The existing workbench-to-Main-Bank handoff may include the existing order-reference query exactly as already implemented:
+
+```text
+/internal/dva-reconciliation/main-bank?target=completion_loyalty&q=<order_ref>
+```
+
+This corrective work must not remove, reinterpret, replace, optimise, or otherwise change that `q=<order_ref>` behaviour.
 
 The existing main-bank action remains responsible for validating the selected main-bank OUT, reward target, importer, available amount, and reservation.
 
@@ -168,7 +190,7 @@ pair-status transitions
 loyalty-specific reversal
 ```
 
-Only the existing paired OUT/IN release may make the reward available.
+Only the established paired OUT/IN release route is authoritative for new operational releases under the locked contract.
 
 ### 3.5 Loyalty usage
 
@@ -230,21 +252,16 @@ app/internal/completion-loyalty-rewards/page.tsx
 Required changes only:
 
 1. Remove the import of `confirmCompletionLoyaltyRewardFundingAction`.
-2. Remove the legacy `FundingForm` that submits manual funded/released amounts and manual DVA/evidence fields.
-3. At the existing clean `approved_pending_funding` render point, hand staff into the already-built Main Bank completion-loyalty workspace.
-4. Reuse the existing route:
-
-```text
-/internal/dva-reconciliation/main-bank?target=completion_loyalty
-```
-
-5. Where practical, pass the existing order reference through the existing `q` search parameter:
+2. Remove the manual `FundingForm` that submits funded/released amounts and manual DVA/evidence fields.
+3. At the existing clean `approved_pending_funding` render point, preserve the existing navigation into the already-built Main Bank completion-loyalty workspace.
+4. Preserve the established handoff URL exactly:
 
 ```text
 /internal/dva-reconciliation/main-bank?target=completion_loyalty&q=<order_ref>
 ```
 
-6. Update only stale explanatory copy that says the completion-loyalty workbench itself confirms DVA/account funding proof.
+5. Do not remove or alter the existing `q=<order_ref>` parameter as part of this correction.
+6. Update only explanatory copy that incorrectly instructs staff to confirm/release funding directly from the completion-loyalty workbench.
 
 The handoff is navigation only. It must not perform a funding write, reserve a bank line, release credit, or change loyalty state.
 
@@ -314,27 +331,23 @@ all unrelated client behaviour
 
 ## 5. Database scope
 
-No migration is required.
+No new migration is authorised by this corrective PR.
 
-Do not alter any database object as part of this correction.
+Do not alter any database object in this branch.
 
-In particular, retain:
+Do not add, edit, replace, or re-version a migration file under this correction.
+
+Repository authority remains:
 
 ```text
-staff_confirm_completion_loyalty_reward_funding_v1
+supabase/migrations/20260722a_completion_loyalty_manual_release_lockdown_v1.sql
 ```
 
-as the fail-closed legacy/dependency-stability barrier installed by the July 22 lockdown migration.
+That existing migration is the separate deployment-alignment control for making direct manual release fail closed while preserving the established paired Main Bank OUT + same-importer destination-IN release workflow.
 
-Do not drop it.
+Applying that already-existing migration to a live environment, where required, is an operational deployment step outside this application diff. This addendum does not authorise inventing replacement SQL.
 
-Do not re-enable it.
-
-Do not grant it back to authenticated users.
-
-Do not change its exception behaviour.
-
-The existing paired functions remain authoritative and unchanged.
+Historical business rows created under earlier logic remain immutable.
 
 ## 6. Required user journey after correction
 
@@ -357,11 +370,15 @@ no Sage posting
 customer sees pending activation
 ```
 
-### 6.2 Customer requests use operationally
+### 6.2 Existing handoff
 
-The customer request may be handled outside the platform, including by WhatsApp. This addendum does not create a customer request button or request table.
+For a clean approved reward, retain the already-established navigation:
 
-The staff funding action begins in the already-built Main Bank completion-loyalty workspace.
+```text
+/internal/dva-reconciliation/main-bank?target=completion_loyalty&q=<order_ref>
+```
+
+Opening that route is navigation only and must not itself mutate financial state.
 
 ### 6.3 Reserve main-bank OUT
 
@@ -420,6 +437,8 @@ No change under this addendum.
 Do not:
 
 ```text
+- change or remove q=<order_ref> from the existing Main Bank handoff;
+- change Main Bank query/search semantics;
 - add a new loyalty activation state;
 - add a new loyalty funding RPC;
 - add a new paired-release RPC;
@@ -441,6 +460,7 @@ Do not:
 - change accounting classifications;
 - change historical data;
 - backfill anything;
+- add or modify migration SQL in this PR;
 - manually release the target reward for testing.
 ```
 
@@ -453,10 +473,10 @@ The correction is acceptable only if all of the following pass.
 Prove:
 
 ```text
-- no active application code calls staff_confirm_completion_loyalty_reward_funding_v1;
-- no active application code references confirmCompletionLoyaltyRewardFundingAction;
-- no active application code contains data-funding-proof-form;
-- completion-loyalty pending-funding handoff points to the existing Main Bank completion-loyalty route;
+- no active completion-loyalty application code calls staff_confirm_completion_loyalty_reward_funding_v1;
+- no active completion-loyalty application code references confirmCompletionLoyaltyRewardFundingAction;
+- no active completion-loyalty application code contains data-funding-proof-form;
+- completion-loyalty pending-funding handoff retains target=completion_loyalty&q=<order_ref>;
 - no new funding/release RPC call is introduced on the completion-loyalty page.
 ```
 
@@ -475,6 +495,8 @@ app/internal/completion-loyalty-rewards/WorkbenchClientEnhancements.tsx
 Additional changed files may only be this governing addendum and one dedicated regression/static-assurance file.
 
 No migration file may be added or changed.
+
+No Main Bank, DVA, accounting, customer, settlement, or Sage runtime file may be changed.
 
 ### 8.3 Upstream read-only proof
 
@@ -503,13 +525,15 @@ This correction must not modify those implementations.
 
 ### 8.5 Legacy safety proof
 
-Confirm the July 22 fail-closed guard remains installed in repository SQL:
+Repository SQL must continue to contain the July 22 direct-manual-release lockdown authority:
 
 ```text
 staff_confirm_completion_loyalty_reward_funding_v1
-→ direct call disabled
-→ paired OUT + same-importer destination IN required
+→ direct call disabled by the existing July lockdown migration
+→ paired OUT + same-importer destination IN required for new operational release
 ```
+
+Live deployment status of that existing migration must be verified separately before relying on the database barrier.
 
 ### 8.6 Build proof
 
@@ -527,13 +551,12 @@ exact changed-file scope is reviewed
 For an existing `approved_pending_funding` reward:
 
 ```text
-- obsolete blue manual funding form is absent;
+- obsolete blue manual funding/release form is absent;
 - approved amount remains visible;
 - pending-funding status remains visible;
-- staff can open the existing Main Bank completion-loyalty workspace;
-- target mode is completion_loyalty;
-- supplied order-reference query narrows/facilitates the existing workspace where supported;
-- no financial mutation occurs merely by opening the workspace.
+- existing Main Bank handoff remains target=completion_loyalty&q=<order_ref>;
+- no financial mutation occurs merely by opening the workspace;
+- existing Main Bank reserve/pair/release behaviour is otherwise unchanged.
 ```
 
 Do not manufacture a new bank/DVA transaction solely to validate this UI correction.
@@ -542,13 +565,13 @@ The next genuine customer-requested loyalty activation should use the existing M
 
 ## 9. Rollback
 
-Rollback is application-only.
+Rollback is application-only for this PR.
 
-If this UI handoff must be reverted before merge/deployment, revert the three application-file changes.
+If this UI correction must be reverted before merge/deployment, revert the three application-file changes.
 
 No business-data rollback exists because this correction must not mutate business data or database objects.
 
-Do not re-enable the disabled manual RPC as a rollback mechanism.
+Do not use direct/manual release as a rollback mechanism.
 
 ## 10. Final implementation principle
 
@@ -558,17 +581,18 @@ This is not a new activation workflow.
 
 This is not a new funding route.
 
-This is not a database change.
+This is not a Main Bank search change.
 
-The correction is:
+This is not new database SQL.
+
+The correction is exactly:
 
 ```text
-remove the stale manual application caller
+preserve the existing target=completion_loyalty&q=<order_ref> handoff
         ↓
-hand approved_pending_funding into the already-built
-Main Bank completion-loyalty workflow
+remove the direct/manual funding/release UI caller
         ↓
-leave every working upstream and downstream control unchanged
+leave every working Main Bank, DVA, release, customer and accounting control unchanged
 ```
 
 The existing working functions and controls remain the system of record.
