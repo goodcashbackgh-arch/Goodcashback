@@ -30,8 +30,13 @@ const lockdownMigration = read("supabase/migrations/20260722a_completion_loyalty
 // Completion-loyalty workbench must hand into the already-built main-bank route.
 requireIncludes(
   loyaltyPage,
-  "/internal/dva-reconciliation/main-bank?target=completion_loyalty&q=",
+  "/internal/dva-reconciliation/main-bank?target=completion_loyalty",
   "Main Bank completion-loyalty handoff"
+);
+requireExcludes(
+  loyaltyPage,
+  "target=completion_loyalty&q=",
+  "unsupported Main Bank loyalty order-ref search handoff"
 );
 requireIncludes(loyaltyPage, "Open Main Bank loyalty funding", "existing-route navigation label");
 requireIncludes(loyaltyPage, 'row.workbench_status === "approved_pending_funding"', "existing pending-funding state");
