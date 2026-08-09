@@ -242,20 +242,8 @@ export default async function CustomerDashboardPage() {
   const loyaltyRows = (loyaltyBalanceRows ?? []) as LoyaltyBalanceRow[];
   const pendingLoyaltyGbp = loyaltyRows.reduce((sum, row) => sum + Number(row.pending_activation_gbp ?? 0), 0);
   const readyLoyaltyGbp = loyaltyRows.reduce((sum, row) => sum + Number(row.ready_to_use_gbp ?? 0), 0);
-  const loyaltyStatusParts: string[] = [];
-
-  if (readyLoyaltyGbp > 0.01) {
-    loyaltyStatusParts.push(`${gbp(readyLoyaltyGbp)} ready to use`);
-  }
-
-  if (pendingLoyaltyGbp > 0.01) {
-    loyaltyStatusParts.push(`${gbp(pendingLoyaltyGbp)} pending activation`);
-  }
-
-  const loyaltyStatusText =
-    loyaltyStatusParts.length > 0
-      ? loyaltyStatusParts.join(" · ")
-      : "No loyalty reward active yet";
+  const hasReadyLoyalty = readyLoyaltyGbp > 0.01;
+  const hasPendingLoyalty = pendingLoyaltyGbp > 0.01;
   const rate = Number(fxRate?.quote_rate ?? 0);
   const markup = Number(fxRate?.quote_card_markup_pct ?? 0);
   const effectiveRate = rate ? rate * (1 + markup / 100) : 0;
@@ -309,13 +297,52 @@ export default async function CustomerDashboardPage() {
 
       <section className="mt-5 rounded-[1.5rem] border border-cyan-100 bg-white p-4 shadow-sm">
         <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-          <div>
+          <div className="min-w-0 flex-1">
             <p className="text-xs font-black uppercase tracking-wide text-cyan-700">Your credit</p>
             <h2 className="mt-1 text-2xl font-black text-slate-950">{gbp(creditBalanceGbp)} available account credit</h2>
-            <p className="mt-1 text-sm font-semibold text-slate-600">Loyalty reward: {loyaltyStatusText}</p>
+            <details className="group mt-2 rounded-xl border border-slate-200 bg-white">
+              <summary className="cursor-pointer list-none px-3 py-2.5">
+                <span className="flex items-start justify-between gap-3">
+                  <span className="min-w-0">
+                    <span className="block text-sm font-black text-slate-700">Additional loyalty credit</span>
+                    <span className="mt-0.5 flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-sm font-semibold group-open:hidden">
+                      {hasReadyLoyalty ? <><span className="text-slate-950">{gbp(readyLoyaltyGbp)}</span><span className="text-emerald-700">available</span></> : null}
+                      {hasReadyLoyalty && hasPendingLoyalty ? <span className="text-slate-400">·</span> : null}
+                      {hasPendingLoyalty ? <><span className="text-slate-950">{gbp(pendingLoyaltyGbp)}</span><span className="text-amber-700">pending activation</span></> : null}
+                      {!hasReadyLoyalty && !hasPendingLoyalty ? <span className="text-slate-600">No loyalty credit active yet</span> : null}
+                    </span>
+                  </span>
+                  <span className="shrink-0 pt-0.5 text-sm font-black text-sky-600">
+                    <span className="group-open:hidden">Show details <span aria-hidden="true">⌄</span></span>
+                    <span className="hidden group-open:inline">Hide details <span aria-hidden="true">⌃</span></span>
+                  </span>
+                </span>
+              </summary>
+              <div className="border-t border-slate-200 px-3 py-1">
+                {hasReadyLoyalty ? (
+                  <div className="flex items-center justify-between gap-3 border-b border-slate-100 py-2.5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm font-semibold text-slate-700">Loyalty credit</span>
+                      <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-700 ring-1 ring-emerald-200">Available now</span>
+                    </div>
+                    <span className="shrink-0 text-xl font-black text-slate-950">{gbp(readyLoyaltyGbp)}</span>
+                  </div>
+                ) : null}
+                {hasPendingLoyalty ? (
+                  <div className="flex items-center justify-between gap-3 py-2.5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm font-semibold text-slate-700">Loyalty credit</span>
+                      <span className="rounded-full bg-amber-50 px-2.5 py-1 text-xs font-bold text-amber-700 ring-1 ring-amber-200">Pending activation</span>
+                    </div>
+                    <span className="shrink-0 text-xl font-black text-slate-950">{gbp(pendingLoyaltyGbp)}</span>
+                  </div>
+                ) : null}
+                {!hasReadyLoyalty && !hasPendingLoyalty ? <p className="py-2.5 text-sm font-semibold text-slate-600">No loyalty credit active yet</p> : null}
+              </div>
+            </details>
           </div>
           <div className="rounded-2xl bg-cyan-50 px-4 py-3 text-sm font-semibold leading-6 text-cyan-900 ring-1 ring-cyan-100">
-            Account credit can be used on orders. Loyalty rewards become usable only after activation.
+            Account credit can be used on orders. Loyalty credit is shown separately. Pending activation cannot yet be used.
           </div>
         </div>
       </section>
