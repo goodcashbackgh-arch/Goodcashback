@@ -1,0 +1,43 @@
+name: Reconciliation replacement rejection validation
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/reconciliation-replacement-supervisor-reject.yml"
+      - "app/internal/exceptions/[dispute_id]/page.tsx"
+      - "app/internal/exceptions/[dispute_id]/actions.ts"
+      - "app/importer/exceptions/[dispute_id]/page.tsx"
+      - "app/importer/exceptions/[dispute_id]/actions.ts"
+      - "docs/governing-pack/architecture/MULTI_SUPPLIER_INVOICE_ORDER_CONTROL_ADDENDUM_v1_1.md"
+      - "docs/testing/20260809_reconciliation_replacement_supervisor_reject_source_regression_v1.mjs"
+
+permissions:
+  contents: read
+
+jobs:
+  governed-source-and-build:
+    name: Governed source, TypeScript and build gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out pull request
+        uses: actions/checkout@v4
+
+      - name: Run focused source regression
+        run: node docs/testing/20260809_reconciliation_replacement_supervisor_reject_source_regression_v1.mjs
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies without changing lockfile
+        run: npm install --no-package-lock --ignore-scripts --no-audit --no-fund
+
+      - name: Run TypeScript validation
+        run: npm run typecheck
+
+      - name: Run production build
+        run: npm run build
