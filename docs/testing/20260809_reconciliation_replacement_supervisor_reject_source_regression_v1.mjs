@@ -3,6 +3,7 @@ import path from "node:path";
 
 const root = process.cwd();
 const files = {
+  reconciliationActions: path.join(root, "app/importer/reconciliation/[order_id]/actions.ts"),
   supervisorPage: path.join(root, "app/internal/exceptions/[dispute_id]/page.tsx"),
   supervisorActions: path.join(root, "app/internal/exceptions/[dispute_id]/actions.ts"),
   importerPage: path.join(root, "app/importer/exceptions/[dispute_id]/page.tsx"),
@@ -14,6 +15,7 @@ for (const file of Object.values(files)) {
   if (!fs.existsSync(file)) throw new Error(`Missing governed file: ${path.relative(root, file)}`);
 }
 
+const reconciliationActions = fs.readFileSync(files.reconciliationActions, "utf8");
 const supervisorPage = fs.readFileSync(files.supervisorPage, "utf8");
 const supervisorActions = fs.readFileSync(files.supervisorActions, "utf8");
 const importerPage = fs.readFileSync(files.importerPage, "utf8");
@@ -28,11 +30,31 @@ function forbidText(source, text, label = text) {
   if (source.includes(text)) throw new Error(`Forbidden source scope found: ${label}`);
 }
 
-const predicate = 'stage_detected === "at_reconciliation" && dispute.desired_outcome === "replacement"';
 const importerPredicate = 'accessGuard.dispute.stage_detected === "at_reconciliation" && accessGuard.dispute.desired_outcome === "replacement"';
 
-requireText(governingAddendum, "## 3. Four-part layered guard");
+requireText(governingAddendum, "## 3. Layered guard and identity isolation");
+requireText(governingAddendum, "### 3.0 Reconciliation creation identity guard");
 requireText(governingAddendum, "No broader redesign is authorised.");
+
+const createExceptionStart = reconciliationActions.indexOf("export async function createExceptionCaseAction");
+const rescindStart = reconciliationActions.indexOf("export async function rescindExceptionCaseAction");
+if (createExceptionStart < 0 || rescindStart < 0 || rescindStart <= createExceptionStart) {
+  throw new Error("Could not isolate reconciliation exception creation source.");
+}
+const createExceptionSource = reconciliationActions.slice(createExceptionStart, rescindStart);
+requireText(createExceptionSource, 'const existingDisputeBaseQuery = guard.supabase');
+requireText(createExceptionSource, '.eq("desired_outcome", remedy)');
+requireText(createExceptionSource, '.eq("status", "raised")');
+requireText(createExceptionSource, '.is("resolved_at", null);');
+requireText(createExceptionSource, 'remedy === "replacement"');
+requireText(createExceptionSource, 'existingDisputeBaseQuery.eq("stage_detected", "at_reconciliation")');
+requireText(createExceptionSource, ': existingDisputeBaseQuery;', "refund reuse keeps the pre-existing base query without a stage filter");
+requireText(createExceptionSource, 'stage_detected: "at_reconciliation"', "new reconciliation disputes retain reconciliation identity");
+
+const stageFilterCount = (createExceptionSource.match(/\.eq\("stage_detected", "at_reconciliation"\)/g) ?? []).length;
+if (stageFilterCount !== 1) {
+  throw new Error(`Expected exactly one replacement-only reconciliation stage reuse filter; found ${stageFilterCount}.`);
+}
 
 requireText(supervisorPage, 'const isReconciliationReplacement = dispute.stage_detected === "at_reconciliation" && dispute.desired_outcome === "replacement";');
 requireText(supervisorPage, "rejectReconciliationReplacementAction");
@@ -72,7 +94,7 @@ if (saveFunctionStart < 0 || importerGuardIndex < 0 || retailerRpcIndex < 0 || i
   throw new Error("Importer reconciliation-replacement guard must run before retailer-update RPC.");
 }
 
-for (const source of [supervisorPage, supervisorActions, importerPage, importerActions]) {
+for (const source of [reconciliationActions, supervisorPage, supervisorActions, importerPage, importerActions]) {
   forbidText(source, "CREATE TABLE", "no schema creation in application patch");
   forbidText(source, "ALTER TABLE", "no schema alteration in application patch");
 }
@@ -82,7 +104,7 @@ for (const forbidden of [
   "operator_allocate_same_order_replacement_tracking_v1",
   "staff_accept_same_order_free_replacement_v1",
 ]) {
-  forbidText(`${supervisorPage}\n${supervisorActions}\n${importerPage}\n${importerActions}`, forbidden, `no physical replacement scope: ${forbidden}`);
+  forbidText(`${reconciliationActions}\n${supervisorPage}\n${supervisorActions}\n${importerPage}\n${importerActions}`, forbidden, `no physical replacement scope: ${forbidden}`);
 }
 
 const supervisorAcceptRpcCount = (supervisorActions.match(/staff_accept_replacement_outcome_v1/g) ?? []).length;
@@ -92,5 +114,5 @@ if (supervisorAcceptRpcCount !== 1) {
 
 console.log(JSON.stringify({
   result: "PASS",
-  proof: "reconciliation-stage replacement is four-layer guarded while refunds and non-reconciliation replacements retain existing paths",
+  proof: "reconciliation replacement identity is isolated at creation and four-layer guarded while refund reuse and non-reconciliation replacement paths remain unchanged",
 }, null, 2));
