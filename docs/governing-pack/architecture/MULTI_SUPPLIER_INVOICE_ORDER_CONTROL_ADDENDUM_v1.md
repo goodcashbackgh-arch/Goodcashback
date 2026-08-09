@@ -473,7 +473,7 @@ The existing unprogressed route and the progressed customer-review route must co
 
 ## 16. Existing refund route must be reused
 
-Once the approved hold creates or links a refund dispute, the route is:
+Once the approved hold creates or links the refund dispute, the route is:
 
 ```text
 supervisor-approved customer hold
@@ -852,3 +852,213 @@ No status, total, release, refund, or posting may be inferred solely from “lat
 One physical OUT may cover supplier invoices A, B and C plus a final FX/card residual. Each invoice allocation is capped at `min(statement remaining, invoice remaining)`, and the same OUT remains available in the main importer-matching workspace until its balance is exhausted. Every supplier and residual allocation remains an individually auditable and reversible economic-use row, while the final invariant is strict: total confirmed uses must not exceed the physical OUT.
 
 Existing atomic bundle routines remain available for a one-click, multi-leg database commit. They are transaction guarantees and are not a separate normal operator workbench.
+
+## 30. Supervisor clean-line takeover compatibility correction
+
+This section is the controlling corrective amendment for supervisor clean-line takeover under Mini-build 1. It narrows and clarifies Sections 5, 7, 23, 24, 26 and 28 wherever an older implementation still treats `supplier_invoices.is_current_for_order` as approval or line-progression authority.
+
+### 30.1 Proven live incompatibility
+
+Mini-build 1 deliberately changed supplier-invoice identity from an order-wide single-current model to reference-family identity. The live column comment for `supplier_invoices.is_current_for_order` now defines it as a legacy compatibility marker and states that active reference-family truth is determined by non-retired `review_status`.
+
+The supervisor takeover path still contains two stale pre-Mini-build-1 assumptions:
+
+1. `/internal/reconciliation/[order_id]/staff-confirm-lines` blocks the supervisor when `is_current_for_order = true` even where physical supplier lines remain unprogressed.
+2. `public.staff_progress_supplier_invoice_lines(uuid,uuid,uuid[],text)` independently rejects the same otherwise-active invoice when `is_current_for_order = true`.
+
+A newly uploaded active invoice may therefore legitimately have:
+
+```text
+review_status = pending_review
+is_current_for_order = true
+eligible_for_invoice_yn = N on clean physical lines
+```
+
+That combination must not prevent supervisor takeover.
+
+### 30.2 Canonical active-invoice authority
+
+For supplier-line progression and supervisor takeover, an invoice is active unless its `review_status` is:
+
+```text
+rejected_resubmit_required
+duplicate_blocked
+superseded
+```
+
+`is_current_for_order` must not be used as a gate for whether clean physical lines may be progressed.
+
+This correction does not change the stored value, compatibility purpose or other consumers of `is_current_for_order`. It removes that legacy marker only from supervisor-progression authority.
+
+### 30.3 Existing exact-invoice lane must be reused
+
+No new confirmation page or progression workflow may be created.
+
+The legacy route:
+
+```text
+/internal/reconciliation/[order_id]/staff-confirm-lines
+```
+
+must become routing-only and must not contain supplier-line progression business logic, line checkboxes, line-state authority, or a direct call to the progression action.
+
+It must preserve existing staff authentication and order access controls, then route using the active supplier-invoice set:
+
+```text
+0 active invoices
+→ fail closed and return safely to reconciliation
+
+1 active invoice
+→ /internal/reconciliation/[order_id]/invoice-bundle/[supplier_invoice_id]
+
+more than 1 active invoice
+→ /internal/reconciliation/[order_id]/invoice-bundle
+```
+
+The existing bundle page remains the multi-invoice selection authority. Each existing exact-invoice page remains the per-document supervisor progression authority and must continue to show only that invoice's own unprogressed physical candidates while excluding parked non-physical financial lines.
+
+For multiple active supplier invoices:
+
+```text
+Invoice A → exact Invoice A page → progress Invoice A lines only
+Invoice B → exact Invoice B page → progress Invoice B lines only
+```
+
+Progressing one invoice must not implicitly progress, approve, reject, supersede or alter a sibling invoice.
+
+### 30.4 Supervisor progression RPC compatibility correction
+
+A new forward migration must `CREATE OR REPLACE`:
+
+```text
+public.staff_progress_supplier_invoice_lines(
+  p_order_id uuid,
+  p_supplier_invoice_id uuid,
+  p_line_ids uuid[],
+  p_progress_notes text
+)
+returns integer
+```
+
+using the current live definition and removing only the obsolete rejection:
+
+```sql
+if coalesce(v_invoice.is_current_for_order, false) then
+  raise exception
+    'Cannot progress lines after supplier invoice is already approved current.';
+end if;
+```
+
+For maximum surgicality, the existing `SELECT` may continue to read `si.is_current_for_order`; removing the unused selected field is not required by this correction.
+
+Every other existing RPC control must remain unchanged, including:
+
+- active `admin` or `supervisor` authority;
+- required exact `order_id` and `supplier_invoice_id`;
+- proof that the selected invoice belongs to the order;
+- rejection of `rejected_resubmit_required`, `superseded` and `duplicate_blocked` invoices;
+- proof that every selected line belongs to the exact supplier invoice;
+- rejection of unresolved exception-linked lines;
+- calculation of already-progressed physical quantity and value across all active supplier invoices on the order;
+- original order quantity ceiling;
+- original order value ceiling and existing tolerance;
+- update of only currently unprogressed selected lines;
+- existing `eligible_for_invoice_yn`, `qty_confirmed` and `amount_confirmed` progression semantics;
+- existing integer return value;
+- existing `SECURITY DEFINER`, `search_path` and grants.
+
+No historical migration may be edited. This correction must be a new forward migration.
+
+### 30.5 Dependency and downstream impact boundary
+
+The live dependency preflight established:
+
+```text
+database routine callers of staff_progress_supplier_invoice_lines = 0
+database view callers = 0
+trigger usage of the RPC = 0
+routines containing the same obsolete rejection = 1
+```
+
+The sole routine containing that exact obsolete supervisor-progression rejection is `staff_progress_supplier_invoice_lines` itself.
+
+The existing `supplier_invoice_lines` triggers remain unchanged:
+
+```text
+audit_supplier_invoice_lines
+trg_customer_review_supplier_line_materialize_v1
+trg_prevent_ocr_supplier_invoice_line_delete
+trg_recompute_order_status_from_invoice_line
+```
+
+A valid supervisor progression must continue to produce the same downstream effects as any legitimate progression of the same fields: audit logging, customer-review candidate materialisation when eligibility changes, order-status recomputation, accounting readiness and all existing downstream consumers of progression state.
+
+The existence of other routines or views that read `is_current_for_order` does not broaden this patch. This correction does not alter the flag or its other consumers.
+
+### 30.6 Explicit non-impact boundary
+
+This correction must not modify:
+
+- the invoice-bundle page;
+- the exact-invoice page;
+- `supervisorProgressSupplierInvoiceLinesAction`;
+- operator/importer progression routines;
+- supplier-invoice approval or rejection semantics;
+- `supplier_invoice_lines` schema or constraints;
+- accounting coding views or save routines;
+- non-physical resolution;
+- customer review semantics;
+- customer holds;
+- refund or replacement routes;
+- delivery/tracking allocation;
+- shipment batching;
+- supplier AP or payment allocation;
+- customer sales release;
+- Sage payload/posting logic;
+- VAT;
+- funding;
+- loyalty;
+- settlement credit;
+- tenant isolation or RLS;
+- any other `is_current_for_order` consumer.
+
+The accounting grid must continue to treat an unprogressed physical line as blocked and a legitimately progressed line as codable through the existing accounting path. The existing Save All coding authority remains unchanged.
+
+### 30.7 Required corrective regression
+
+Before release, the correction must prove at minimum:
+
+1. One active pending-review invoice with unprogressed physical lines routes directly to its existing exact-invoice page and allows supervisor progression.
+2. Two or more active supplier invoices route first to the existing bundle; each exact page progresses only its own selected lines.
+3. An already-progressed line is not progressed twice.
+4. A retired invoice remains blocked.
+5. An unresolved exception-linked line remains blocked.
+6. Cross-invoice progressed quantity cannot exceed the original order quantity baseline.
+7. Cross-invoice progressed value cannot exceed the original order value baseline.
+8. Parked non-physical financial lines remain outside physical-line takeover.
+9. Valid progression continues to fire the existing audit, customer-review materialisation and order-status triggers.
+10. Validly progressed lines become codable through the unchanged accounting grid and existing Save All path.
+11. The postflight function identity, signature, security mode, search path and grants remain unchanged.
+12. The postflight definition differs from the preflight only by removal of the obsolete `is_current_for_order` supervisor-progression rejection, except for immaterial formatting generated by PostgreSQL.
+
+### 30.8 Corrective acceptance rule
+
+The compatibility repair is complete only when:
+
+```text
+staff-confirm-lines is routing-only;
+one active invoice routes directly to its existing exact-invoice page;
+multiple active invoices route through the existing invoice bundle;
+each exact invoice page remains the confirmation/progression authority for that invoice;
+staff_progress_supplier_invoice_lines no longer rejects a valid active invoice merely because is_current_for_order = true;
+and every other existing progression, baseline, exception, accounting and downstream control remains unchanged.
+```
+
+The authorised implementation scope for this correction is therefore exactly:
+
+```text
+1 existing application routing file
++ 1 forward database migration
+```
+
+No new lane. No new confirmation page. No duplicated business logic. No redesign of Mini-builds 1–4.
