@@ -119,4 +119,4 @@ begin
 
   return v_updated_count;
 end;
-$function$
+$function$;
