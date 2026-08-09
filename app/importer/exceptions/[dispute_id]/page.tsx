@@ -185,7 +185,7 @@ export default async function ImporterExceptionDetailPage({
 
   const { data: dispute, error: disputeError } = await supabase
     .from("disputes")
-    .select("id, order_id, desired_outcome, status, amount_impact_gbp, refund_approved_at, replacement_child_order_id")
+    .select("id, order_id, desired_outcome, stage_detected, status, amount_impact_gbp, refund_approved_at, replacement_child_order_id")
     .eq("id", disputeId)
     .maybeSingle();
 
@@ -254,6 +254,7 @@ export default async function ImporterExceptionDetailPage({
   const retailerOutcome = retailerOutcomeFromStatus(activeStatus);
   const isFinalOutcome = FINAL_OUTCOME_STATUSES.has(dispute.status ?? "");
   const isTerminalAcceptedState = dispute.status === "replaced" || dispute.status === "awaiting_refund_credit" || TERMINAL_REFUND_STATUSES.has(dispute.status ?? "");
+  const isReconciliationReplacement = dispute.stage_detected === "at_reconciliation" && dispute.desired_outcome === "replacement";
   const canUploadRefundEvidence = dispute.desired_outcome === "refund" && dispute.status === "awaiting_refund_credit";
   const isTerminalRefundState = dispute.desired_outcome === "refund" && TERMINAL_REFUND_STATUSES.has(dispute.status ?? "");
   const legacyRefundEvidenceExists = messages.some((message) => ["credit_note_evidence", "refund_evidence"].includes(message.message_type ?? ""));
@@ -331,29 +332,37 @@ export default async function ImporterExceptionDetailPage({
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold">Retailer update</h2>
-          <p className="mt-2 text-sm text-slate-600">Paste the retailer response first. If the retailer accepts the refund/replacement, mark the outcome as accepted so the approved workflow can continue.</p>
-          {!isTerminalAcceptedState ? <p className="mt-3 text-sm text-slate-700"><span className="font-semibold">Current retailer outcome:</span> {retailerOutcome.replaceAll("_", " ")}</p> : null}
-          {isTerminalAcceptedState ? <p className="mt-3 text-sm text-slate-700"><span className="font-semibold">Active terminal state:</span> {finalOutcomeMessage(dispute)}</p> : null}
-          {isFinalOutcome ? (
-            <p className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">Retailer update is locked because the final outcome has already been accepted or processed.</p>
+          {isReconciliationReplacement ? (
+            <p className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+              Replacement was raised from invoice reconciliation and is awaiting supervisor review. Continue through invoice reconciliation if rejected.
+            </p>
           ) : (
-            <form action={saveRetailerUpdateAction} className="mt-4 space-y-3">
-              <input type="hidden" name="dispute_id" value={dispute.id} />
-              <label className="block space-y-1">
-                <span className="text-sm font-medium text-slate-700">Retailer response</span>
-                <textarea name="retailer_response" rows={5} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
-              </label>
-              <label className="block space-y-1">
-                <span className="text-sm font-medium text-slate-700">Retailer outcome</span>
-                <select name="retailer_outcome" defaultValue={retailerOutcome} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm">
-                  <option value="still_waiting">Still waiting</option>
-                  <option value="retailer_accepted">Retailer accepted refund / remedy</option>
-                  <option value="retailer_disputed">Retailer disputed / rejected</option>
-                  <option value="more_info_requested">More information requested</option>
-                </select>
-              </label>
-              <button type="submit" className="rounded-xl bg-sky-700 px-4 py-2 text-sm font-semibold text-white">Save retailer update</button>
-            </form>
+            <>
+              <p className="mt-2 text-sm text-slate-600">Paste the retailer response first. If the retailer accepts the refund/replacement, mark the outcome as accepted so the approved workflow can continue.</p>
+              {!isTerminalAcceptedState ? <p className="mt-3 text-sm text-slate-700"><span className="font-semibold">Current retailer outcome:</span> {retailerOutcome.replaceAll("_", " ")}</p> : null}
+              {isTerminalAcceptedState ? <p className="mt-3 text-sm text-slate-700"><span className="font-semibold">Active terminal state:</span> {finalOutcomeMessage(dispute)}</p> : null}
+              {isFinalOutcome ? (
+                <p className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">Retailer update is locked because the final outcome has already been accepted or processed.</p>
+              ) : (
+                <form action={saveRetailerUpdateAction} className="mt-4 space-y-3">
+                  <input type="hidden" name="dispute_id" value={dispute.id} />
+                  <label className="block space-y-1">
+                    <span className="text-sm font-medium text-slate-700">Retailer response</span>
+                    <textarea name="retailer_response" rows={5} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
+                  </label>
+                  <label className="block space-y-1">
+                    <span className="text-sm font-medium text-slate-700">Retailer outcome</span>
+                    <select name="retailer_outcome" defaultValue={retailerOutcome} className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm">
+                      <option value="still_waiting">Still waiting</option>
+                      <option value="retailer_accepted">Retailer accepted refund / remedy</option>
+                      <option value="retailer_disputed">Retailer disputed / rejected</option>
+                      <option value="more_info_requested">More information requested</option>
+                    </select>
+                  </label>
+                  <button type="submit" className="rounded-xl bg-sky-700 px-4 py-2 text-sm font-semibold text-white">Save retailer update</button>
+                </form>
+              )}
+            </>
           )}
 
           <div className="mt-6 border-t border-slate-200 pt-5">
