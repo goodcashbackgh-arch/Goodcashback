@@ -630,7 +630,7 @@ export default async function CompletionLoyaltyRewardsPage({ searchParams }: { s
             {isPendingFunding(row) && currentBasisBlocked ? <FundingBlockedNotice row={row} /> : null}
             {canConfirmFunding(row) ? (
               <Link
-                href={`/internal/dva-reconciliation/main-bank?target=completion_loyalty&q=${encodeURIComponent(row.order_ref ?? "")}`}
+                href="/internal/dva-reconciliation/main-bank?target=completion_loyalty"
                 className="mt-5 inline-flex rounded-lg bg-sky-900 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-800"
               >
                 Open Main Bank loyalty funding →
