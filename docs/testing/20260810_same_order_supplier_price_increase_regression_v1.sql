@@ -6,24 +6,25 @@ SET LOCAL statement_timeout = '0';
 DO $regression$
 DECLARE
   v_definition text;
-  v_view_definition text;
   v_trigger_definition text;
   v_count integer;
   v_md5 text;
   v_security_definer boolean;
   v_config text[];
+  v_args text;
 BEGIN
   -- -------------------------------------------------------------------------
-  -- 1. Freeze explicitly untouched established authorities.
+  -- 1. Freeze established authorities this build must not change.
   -- -------------------------------------------------------------------------
-  IF to_regprocedure('public.staff_save_supplier_invoice_header_review(uuid,text,text,text,date,numeric,numeric,numeric,text)') IS NULL THEN
-    RAISE EXCEPTION 'FAIL: established supplier header-review RPC is missing.';
-  END IF;
-
   SELECT md5(pg_get_functiondef('public.staff_save_supplier_invoice_header_review(uuid,text,text,text,date,numeric,numeric,numeric,text)'::regprocedure))
   INTO v_md5;
   IF v_md5 IS DISTINCT FROM '44719b0f9a435f01ea138e1cca6a034e' THEN
     RAISE EXCEPTION 'FAIL: supplier header-review RPC fingerprint changed: %.', v_md5;
+  END IF;
+
+  SELECT md5(pg_get_functiondef('public.flag_order_bundle_limit_after_summary_v1()'::regprocedure)) INTO v_md5;
+  IF v_md5 IS DISTINCT FROM '9227a2afe69a79b745f7934534325125' THEN
+    RAISE EXCEPTION 'FAIL: existing bundle-limit INSERT authority changed: %.', v_md5;
   END IF;
 
   SELECT md5(pg_get_functiondef('public.enforce_order_locks()'::regprocedure)) INTO v_md5;
@@ -83,113 +84,124 @@ BEGIN
 
   SELECT md5(pg_get_viewdef('public.order_supplier_invoice_bundle_summary_v1'::regclass, true)) INTO v_md5;
   IF v_md5 IS DISTINCT FROM '124ff92c4bb40582012109e7835e83ec' THEN
-    RAISE EXCEPTION 'FAIL: supplier invoice bundle summary fingerprint changed: %.', v_md5;
+    RAISE EXCEPTION 'FAIL: established supplier bundle summary changed: %.', v_md5;
   END IF;
 
   -- -------------------------------------------------------------------------
-  -- 2. New live read model contract.
+  -- 2. Explicitly prove the discarded scope-creep authorities are absent.
   -- -------------------------------------------------------------------------
-  IF to_regclass('public.order_supplier_price_position_v1') IS NULL THEN
-    RAISE EXCEPTION 'FAIL: order_supplier_price_position_v1 is missing.';
+  IF to_regclass('public.order_supplier_price_position_v1') IS NOT NULL THEN
+    RAISE EXCEPTION 'FAIL: discarded order_supplier_price_position_v1 still exists.';
   END IF;
-
-  SELECT pg_get_viewdef('public.order_supplier_price_position_v1'::regclass, true)
-  INTO v_view_definition;
-
-  FOR v_definition IN
-    SELECT unnest(ARRAY[
-      'accepted_invoice_gross_gbp',
-      'rejected_resubmit_required',
-      'duplicate_blocked',
-      'superseded',
-      'order_bundle_limit_breach',
-      'retailer_match_yn',
-      'invoice_ref_match_yn',
-      'total_match_yn',
-      'ocr_line_count',
-      'pending_adjustment_yn',
-      'unverified_invoice_count',
-      'missing_accepted_total_count',
-      'review_anchor_supplier_invoice_id'
-    ])
-  LOOP
-    IF position(v_definition in v_view_definition) = 0 THEN
-      RAISE EXCEPTION 'FAIL: live supplier price position is missing required token %.', v_definition;
-    END IF;
-  END LOOP;
-
-  SELECT count(*)::integer
-  INTO v_count
-  FROM information_schema.columns
-  WHERE table_schema = 'public'
-    AND table_name = 'order_supplier_price_position_v1'
-    AND column_name IN (
-      'order_id','order_type','current_order_value_gbp','accepted_supplier_bundle_gbp',
-      'price_increase_required_gbp','over_limit_yn','active_invoice_count',
-      'missing_accepted_total_count','unverified_invoice_count','review_anchor_supplier_invoice_id'
-    );
-  IF v_count <> 10 THEN
-    RAISE EXCEPTION 'FAIL: live supplier price position shape incomplete; found % required columns.', v_count;
+  IF to_regprocedure('public.enforce_supplier_invoice_order_price_limit_v1()') IS NOT NULL THEN
+    RAISE EXCEPTION 'FAIL: discarded global supplier approval price guard still exists.';
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM pg_trigger t
+    WHERE t.tgname = 'trg_enforce_supplier_invoice_order_price_limit_v1'
+      AND NOT t.tgisinternal
+  ) THEN
+    RAISE EXCEPTION 'FAIL: discarded global supplier approval transition trigger still exists.';
   END IF;
 
   -- -------------------------------------------------------------------------
-  -- 3. New approval-state backstop protects every existing approval caller.
+  -- 3. Narrow protection: generic Save cannot clear a genuine live breach.
   -- -------------------------------------------------------------------------
-  IF to_regprocedure('public.enforce_supplier_invoice_order_price_limit_v1()') IS NULL THEN
-    RAISE EXCEPTION 'FAIL: supplier approval price-limit guard is missing.';
+  IF to_regprocedure('public.protect_order_bundle_limit_breach_resolution_v1()') IS NULL THEN
+    RAISE EXCEPTION 'FAIL: bundle breach resolution protector is missing.';
+  END IF;
+
+  SELECT lower(pg_get_functiondef('public.protect_order_bundle_limit_breach_resolution_v1()'::regprocedure))
+  INTO v_definition;
+
+  IF position('old.flag_type is distinct from ''order_bundle_limit_breach''' in v_definition) = 0
+     OR position('old.status not in (''open'', ''under_review'')' in v_definition) = 0
+     OR position('new.status is distinct from ''resolved''' in v_definition) = 0
+     OR position('sum(fs.invoice_total_gbp)' in v_definition) = 0
+     OR position('new.status := old.status' in v_definition) = 0
+     OR position('new.resolved_by_staff_id := old.resolved_by_staff_id' in v_definition) = 0
+     OR position('new.resolved_at := old.resolved_at' in v_definition) = 0
+     OR position('new.resolution_notes := old.resolution_notes' in v_definition) = 0 THEN
+    RAISE EXCEPTION 'FAIL: bundle breach resolution protector is broader or weaker than governed.';
   END IF;
 
   SELECT count(*)::integer, min(pg_get_triggerdef(t.oid, true))
   INTO v_count, v_trigger_definition
   FROM pg_trigger t
-  WHERE t.tgrelid = 'public.supplier_invoices'::regclass
-    AND t.tgname = 'trg_enforce_supplier_invoice_order_price_limit_v1'
+  WHERE t.tgrelid = 'public.supplier_invoice_review_flags'::regclass
+    AND t.tgname = 'trg_protect_order_bundle_limit_breach_resolution_v1'
     AND NOT t.tgisinternal;
 
-  IF v_count <> 1 THEN
-    RAISE EXCEPTION 'FAIL: expected exactly one supplier price-limit approval trigger, found %.', v_count;
-  END IF;
-  IF position('AFTER INSERT OR UPDATE' in upper(v_trigger_definition)) = 0
-     OR position('enforce_supplier_invoice_order_price_limit_v1' in v_trigger_definition) = 0 THEN
-    RAISE EXCEPTION 'FAIL: supplier approval transition trigger definition is wrong: %.', v_trigger_definition;
+  IF v_count <> 1
+     OR position('BEFORE UPDATE OF status, resolved_by_staff_id, resolved_at, resolution_notes' in v_trigger_definition) = 0 THEN
+    RAISE EXCEPTION 'FAIL: bundle breach resolution trigger definition is wrong: %.', v_trigger_definition;
   END IF;
 
-  SELECT lower(pg_get_functiondef('public.enforce_supplier_invoice_order_price_limit_v1()'::regprocedure))
+  -- -------------------------------------------------------------------------
+  -- 4. Narrow UPDATE coverage: existing INSERT trigger stays untouched.
+  -- -------------------------------------------------------------------------
+  IF to_regprocedure('public.flag_order_bundle_limit_after_summary_update_v1()') IS NULL THEN
+    RAISE EXCEPTION 'FAIL: financial-summary UPDATE breach function is missing.';
+  END IF;
+
+  SELECT lower(pg_get_functiondef('public.flag_order_bundle_limit_after_summary_update_v1()'::regprocedure))
   INTO v_definition;
-  IF position('order_type <> ''original''' in v_definition) = 0
-     OR position('unverified_invoice_count' in v_definition) = 0
-     OR position('missing_accepted_total_count' in v_definition) = 0
-     OR position('accepted_supplier_bundle_gbp' in v_definition) = 0
-     OR position('order_total_gbp_declared + 0.01' in v_definition) = 0 THEN
-    RAISE EXCEPTION 'FAIL: supplier approval backstop lost an original-order/verified-bundle control.';
+
+  IF position('new.invoice_total_gbp is not distinct from old.invoice_total_gbp' in v_definition) = 0
+     OR position('v_order_type <> ''original''' in v_definition) = 0
+     OR position('sum(fs.invoice_total_gbp)' in v_definition) = 0
+     OR position('order_bundle_limit:' in v_definition) = 0
+     OR position('flag_type = ''order_bundle_limit_breach''' in v_definition) = 0 THEN
+    RAISE EXCEPTION 'FAIL: summary UPDATE breach function lost governed scope.';
+  END IF;
+
+  SELECT count(*)::integer, min(pg_get_triggerdef(t.oid, true))
+  INTO v_count, v_trigger_definition
+  FROM pg_trigger t
+  WHERE t.tgrelid = 'public.supplier_invoice_financial_summary'::regclass
+    AND t.tgname = 'trg_flag_order_bundle_limit_after_summary_update_v1'
+    AND NOT t.tgisinternal;
+
+  IF v_count <> 1
+     OR position('AFTER UPDATE OF invoice_total_gbp' in v_trigger_definition) = 0 THEN
+    RAISE EXCEPTION 'FAIL: summary UPDATE trigger definition is wrong: %.', v_trigger_definition;
   END IF;
 
   -- -------------------------------------------------------------------------
-  -- 4. Dedicated write RPC contract and security boundary.
+  -- 5. Dedicated provenance-bound write RPC.
   -- -------------------------------------------------------------------------
-  IF to_regprocedure('public.staff_approve_order_supplier_price_increase_v1(uuid,text)') IS NULL THEN
+  IF to_regprocedure('public.staff_approve_order_supplier_price_increase_v1(uuid,uuid,text)') IS NULL THEN
     RAISE EXCEPTION 'FAIL: dedicated price-increase RPC is missing.';
   END IF;
 
-  SELECT p.prosecdef, p.proconfig, lower(pg_get_functiondef(p.oid))
-  INTO v_security_definer, v_config, v_definition
+  SELECT p.prosecdef, p.proconfig, lower(pg_get_functiondef(p.oid)), pg_get_function_arguments(p.oid)
+  INTO v_security_definer, v_config, v_definition, v_args
   FROM pg_proc p
-  WHERE p.oid = 'public.staff_approve_order_supplier_price_increase_v1(uuid,text)'::regprocedure;
+  WHERE p.oid = 'public.staff_approve_order_supplier_price_increase_v1(uuid,uuid,text)'::regprocedure;
 
   IF NOT COALESCE(v_security_definer, false) THEN
     RAISE EXCEPTION 'FAIL: dedicated price-increase RPC is not SECURITY DEFINER.';
   END IF;
   IF NOT COALESCE(v_config, ARRAY[]::text[]) @> ARRAY['search_path=public, pg_temp']::text[] THEN
-    RAISE EXCEPTION 'FAIL: dedicated price-increase RPC search_path boundary changed: %.', v_config;
+    RAISE EXCEPTION 'FAIL: dedicated RPC search_path boundary changed: %.', v_config;
   END IF;
-  IF NOT has_function_privilege('authenticated', 'public.staff_approve_order_supplier_price_increase_v1(uuid,text)', 'EXECUTE') THEN
-    RAISE EXCEPTION 'FAIL: authenticated role lacks price-increase RPC EXECUTE.';
+  IF NOT has_function_privilege('authenticated', 'public.staff_approve_order_supplier_price_increase_v1(uuid,uuid,text)', 'EXECUTE') THEN
+    RAISE EXCEPTION 'FAIL: authenticated role lacks dedicated price-increase EXECUTE.';
   END IF;
-  IF has_function_privilege('anon', 'public.staff_approve_order_supplier_price_increase_v1(uuid,text)', 'EXECUTE') THEN
-    RAISE EXCEPTION 'FAIL: anon unexpectedly has price-increase RPC EXECUTE.';
+  IF has_function_privilege('anon', 'public.staff_approve_order_supplier_price_increase_v1(uuid,uuid,text)', 'EXECUTE') THEN
+    RAISE EXCEPTION 'FAIL: anon unexpectedly has dedicated price-increase EXECUTE.';
   END IF;
 
-  FOR v_view_definition IN
+  IF lower(v_args) NOT LIKE '%p_order_id uuid%'
+     OR lower(v_args) NOT LIKE '%p_supplier_invoice_id uuid%'
+     OR lower(v_args) NOT LIKE '%p_review_notes text%'
+     OR lower(v_args) LIKE '%amount%'
+     OR lower(v_args) LIKE '%new_total%'
+     OR lower(v_args) LIKE '%new_order%' THEN
+    RAISE EXCEPTION 'FAIL: dedicated RPC argument boundary is wrong: %.', v_args;
+  END IF;
+
+  FOR v_trigger_definition IN
     SELECT unnest(ARRAY[
       'pg_advisory_xact_lock',
       'order_bundle_limit:',
@@ -200,9 +212,10 @@ BEGIN
       'vat_release_approved_at is not null',
       'vat_return_period is not null',
       'markup_applied_gbp',
-      'review_anchor_supplier_invoice_id is null',
-      'missing_accepted_total_count',
-      'unverified_invoice_count',
+      'supplier_invoice_id = p_supplier_invoice_id',
+      'flag_type = ''order_bundle_limit_breach''',
+      'status in (''open'', ''under_review'')',
+      'sum(fs.invoice_total_gbp)',
       'event_type = ''funding_reversed''',
       'source_type = ''overfunding''',
       'order_pending_funding_surplus',
@@ -210,36 +223,25 @@ BEGIN
       'order_funding_position_vw',
       'quote_total_ghs / v_old_total',
       'recompute_order_platform_funded',
-      'sync_order_overfunding_credit',
-      'v_event_count_after <> v_event_count_before',
-      'flag_type = ''order_bundle_limit_breach'''
+      'v_event_count_after <> v_event_count_before'
     ])
   LOOP
-    IF position(v_view_definition in v_definition) = 0 THEN
-      RAISE EXCEPTION 'FAIL: dedicated price-increase RPC lost required guard/action token %.', v_view_definition;
+    IF position(v_trigger_definition in v_definition) = 0 THEN
+      RAISE EXCEPTION 'FAIL: dedicated RPC lost required governed token %.', v_trigger_definition;
     END IF;
   END LOOP;
 
-  IF position('p_new_order' in v_definition) > 0
-     OR position('p_new_total' in v_definition) > 0
-     OR position('p_amount' in v_definition) > 0 THEN
-    RAISE EXCEPTION 'FAIL: dedicated price-increase RPC accepts a browser-supplied amount.';
-  END IF;
-
-  IF position('bundled_quote_gbp' in v_definition) > 0
+  IF position('accepted_invoice_gross_gbp' in v_definition) > 0
+     OR position('order_supplier_price_position_v1' in v_definition) > 0
+     OR position('bundled_quote_gbp' in v_definition) > 0
      OR position('bundled_final_gbp' in v_definition) > 0 THEN
-    RAISE EXCEPTION 'FAIL: dedicated price-increase RPC touches separate bundled quote/final fields.';
-  END IF;
-
-  -- Only bundle-limit flags may be resolved by the dedicated RPC.
-  IF position('flag_type = ''order_bundle_limit_breach''' in v_definition) = 0 THEN
-    RAISE EXCEPTION 'FAIL: dedicated RPC does not scope flag resolution to bundle-limit flags.';
+    RAISE EXCEPTION 'FAIL: dedicated RPC reintroduced a discarded or out-of-scope value authority.';
   END IF;
 END
 $regression$;
 
 SELECT
   'PASS'::text AS regression_result,
-  'Same-order supplier price increase adds only a verified live bundle read model, an additive approval-state backstop and a dedicated server-derived order-price RPC while protected funding, DVA, supplier-payment, bundle-summary and Build 4 authorities retain their reviewed fingerprints.'::text AS details;
+  'Existing breach flag remains authoritative; generic header Save is untouched but cannot clear a genuine live bundle breach; summary total UPDATE receives the same narrow breach control; the dedicated RPC derives the new order value from the existing financial-summary bundle while protected funding, DVA, supplier-payment and Build 4 authorities retain their reviewed fingerprints.'::text AS details;
 
 ROLLBACK;
