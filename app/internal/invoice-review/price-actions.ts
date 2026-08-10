@@ -21,9 +21,12 @@ function money(value: unknown) {
 
 export async function approveOrderSupplierPriceIncreaseAction(formData: FormData) {
   const orderId = readString(formData, "order_id");
+  const supplierInvoiceId = readString(formData, "supplier_invoice_id");
   const reviewNotes = readString(formData, "review_notes") || null;
 
-  if (!orderId) redirectWithResult({ error: "Missing order reference." });
+  if (!orderId || !supplierInvoiceId) {
+    redirectWithResult({ error: "Missing order or supplier invoice reference." });
+  }
 
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -45,6 +48,7 @@ export async function approveOrderSupplierPriceIncreaseAction(formData: FormData
 
   const { data, error } = await supabase.rpc("staff_approve_order_supplier_price_increase_v1", {
     p_order_id: orderId,
+    p_supplier_invoice_id: supplierInvoiceId,
     p_review_notes: reviewNotes,
   });
 
@@ -53,14 +57,12 @@ export async function approveOrderSupplierPriceIncreaseAction(formData: FormData
   const row = Array.isArray(data) ? data[0] : data;
 
   revalidatePath("/internal/invoice-review");
-  revalidatePath("/internal/supplier-draft-ready");
   revalidatePath("/internal/funding");
   revalidatePath("/internal");
   revalidatePath("/customer");
   revalidatePath("/importer");
   revalidatePath(`/internal/evidence/${orderId}`);
   revalidatePath(`/importer/orders/${orderId}/operations`);
-  revalidatePath(`/importer/reconciliation/${orderId}`);
 
   redirectWithResult({
     success: row
