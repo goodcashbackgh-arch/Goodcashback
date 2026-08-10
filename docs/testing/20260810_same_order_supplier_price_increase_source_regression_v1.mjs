@@ -107,7 +107,7 @@ assert(primaryMigration.includes("v_order_type <> 'original'"), "summary UPDATE 
 assert(primaryMigration.includes("COALESCE(NEW.entered_by_operator_id, OLD.entered_by_operator_id)"), "summary UPDATE breach does not preserve real operator provenance");
 assert(primaryMigration.includes("f.raised_by_operator_id"), "summary UPDATE breach lacks existing-flag provenance fallback");
 assert(primaryMigration.includes("no review flag was falsely attributed"), "missing operator provenance does not fail closed explicitly");
-assert(!primaryMigration.includes("raised_by_operator_id\n    ) VALUES"), "source sanity placeholder");
+assert(primaryMigration.includes("'open',\n      v_raised_by_operator_id"), "new UPDATE breach flag does not use the resolved genuine operator provenance");
 
 // Narrow DB seam 3: dedicated server-derived same-order amendment.
 assert(primaryMigration.includes("staff_approve_order_supplier_price_increase_v1(\n  p_order_id uuid,\n  p_supplier_invoice_id uuid,"), "dedicated RPC signature is not provenance-bound");
@@ -119,12 +119,13 @@ assert(!primaryMigration.includes("accepted_invoice_gross_gbp"), "RPC reintroduc
 assert(!primaryMigration.includes("order_supplier_price_position_v1"), "RPC reintroduces discarded live-price read authority");
 assert(!primaryMigration.includes("enforce_supplier_invoice_order_price_limit_v1"), "global supplier-approval transition guard remains");
 
-const summaryLock = primaryMigration.indexOf("FOR UPDATE OF fs;", primaryMigration.indexOf("CREATE OR REPLACE FUNCTION public.staff_approve_order_supplier_price_increase_v1"));
+const priceRpcStart = primaryMigration.indexOf("CREATE OR REPLACE FUNCTION public.staff_approve_order_supplier_price_increase_v1");
+const summaryLock = primaryMigration.indexOf("FOR UPDATE OF fs;", priceRpcStart);
 const invoiceLock = primaryMigration.indexOf("FOR UPDATE OF si;", summaryLock + 1);
 const advisoryLock = primaryMigration.indexOf("pg_advisory_xact_lock(hashtext('order_bundle_limit:' || p_order_id::text))", invoiceLock + 1);
 const orderLock = primaryMigration.indexOf("WHERE o.id = p_order_id\n  FOR UPDATE;", advisoryLock + 1);
 const breachFlagLock = primaryMigration.indexOf("FOR UPDATE OF f;", orderLock + 1);
-assert(summaryLock >= 0 && invoiceLock > summaryLock && advisoryLock > invoiceLock && orderLock > advisoryLock && breachFlagLock > orderLock,
+assert(priceRpcStart >= 0 && summaryLock > priceRpcStart && invoiceLock > summaryLock && advisoryLock > invoiceLock && orderLock > advisoryLock && breachFlagLock > orderLock,
   "price RPC lock order must remain summary rows -> invoice rows -> advisory lock -> order -> breach flag");
 
 assert(primaryMigration.includes("v_order.content_locked_at IS NOT NULL"), "content lock is not respected");
