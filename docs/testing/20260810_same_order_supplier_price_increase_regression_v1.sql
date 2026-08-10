@@ -21,7 +21,6 @@ DECLARE
   v_summary_id uuid;
   v_summary_invoice_id uuid;
   v_summary_old_total numeric;
-  v_summary_operator_id uuid;
   v_other_bundle numeric;
   v_target_summary_total numeric;
   v_created_flag_count integer;
@@ -34,10 +33,8 @@ BEGIN
     RAISE EXCEPTION 'FAIL: supplier header-review RPC changed: %.', v_md5;
   END IF;
 
-  SELECT md5(pg_get_functiondef('public.staff_approve_supplier_invoice_current(uuid,text,text,text,date,numeric,text)'::regprocedure))
-  INTO v_md5;
-  IF v_md5 IS DISTINCT FROM md5(pg_get_functiondef('public.staff_approve_supplier_invoice_current(uuid,text,text,text,date,numeric,text)'::regprocedure)) THEN
-    RAISE EXCEPTION 'FAIL: impossible supplier approval fingerprint check.';
+  IF to_regprocedure('public.staff_approve_supplier_invoice_current(uuid,text,text,text,date,numeric,text)') IS NULL THEN
+    RAISE EXCEPTION 'FAIL: established supplier-approval RPC is missing.';
   END IF;
 
   SELECT md5(pg_get_functiondef('public.flag_order_bundle_limit_after_summary_v1()'::regprocedure))
@@ -66,7 +63,6 @@ BEGIN
     RAISE EXCEPTION 'FAIL: sync_order_overfunding_credit changed: %.', v_md5;
   END IF;
 
-  -- New objects exist and discarded broad authorities do not.
   IF to_regprocedure('public.protect_order_bundle_limit_breach_resolution_v1()') IS NULL
      OR to_regprocedure('public.flag_order_bundle_limit_after_summary_update_v1()') IS NULL
      OR to_regprocedure('public.staff_approve_order_supplier_price_increase_v1(uuid,uuid,text)') IS NULL THEN
@@ -115,11 +111,7 @@ BEGIN
     RAISE EXCEPTION 'FAIL: price RPC reintroduced funding-row locks / DVA lock-order scope.';
   END IF;
 
-  -- -----------------------------------------------------------------------
-  -- Behavioural fixture 1: use an existing genuine live breach if available.
-  -- Prove Save-style resolution preserves it, then prove approval-style state
-  -- cannot resolve it and the subtransaction rolls back.
-  -- -----------------------------------------------------------------------
+  -- Behavioural fixture 1: genuine live breach, if present.
   SELECT
     f.id,
     f.order_id,
@@ -200,16 +192,13 @@ BEGIN
     RAISE NOTICE 'SKIP behavioural live-breach fixture: no current genuine open original-order bundle breach exists.';
   END IF;
 
-  -- -----------------------------------------------------------------------
-  -- Behavioural fixture 2: use a current non-breaching original summary with
-  -- real operator provenance, raise it inside this outer rollback transaction,
-  -- and prove the UPDATE companion creates the existing breach flag.
-  -- -----------------------------------------------------------------------
+  -- Behavioural fixture 2: current non-breaching original summary with genuine
+  -- operator provenance. Raise it inside this outer rollback and prove UPDATE
+  -- creates exactly one existing bundle breach.
   SELECT
     fs.id,
     fs.supplier_invoice_id,
     fs.invoice_total_gbp,
-    fs.entered_by_operator_id,
     si.order_id,
     round(COALESCE(o.order_total_gbp_declared, 0)::numeric, 2),
     round(COALESCE((
@@ -224,7 +213,6 @@ BEGIN
     v_summary_id,
     v_summary_invoice_id,
     v_summary_old_total,
-    v_summary_operator_id,
     v_order_id,
     v_order_total,
     v_other_bundle
@@ -234,6 +222,13 @@ BEGIN
   WHERE o.order_type = 'original'
     AND fs.entered_by_operator_id IS NOT NULL
     AND COALESCE(si.review_status, 'pending_review') NOT IN ('rejected_resubmit_required','duplicate_blocked','superseded')
+    AND (
+      SELECT round(COALESCE(sum(fs3.invoice_total_gbp), 0)::numeric, 2)
+      FROM public.supplier_invoice_financial_summary fs3
+      JOIN public.supplier_invoices si3 ON si3.id = fs3.supplier_invoice_id
+      WHERE si3.order_id = si.order_id
+        AND COALESCE(si3.review_status, 'pending_review') NOT IN ('rejected_resubmit_required','duplicate_blocked','superseded')
+    ) <= round(COALESCE(o.order_total_gbp_declared, 0)::numeric, 2) + 0.01
     AND NOT EXISTS (
       SELECT 1 FROM public.supplier_invoice_review_flags f
       WHERE f.supplier_invoice_id = si.id
@@ -244,7 +239,7 @@ BEGIN
   LIMIT 1;
 
   IF v_summary_id IS NOT NULL THEN
-    v_target_summary_total := GREATEST(v_summary_old_total, v_order_total - v_other_bundle + 1.00);
+    v_target_summary_total := GREATEST(v_summary_old_total + 0.02, v_order_total - v_other_bundle + 1.00);
 
     UPDATE public.supplier_invoice_financial_summary
     SET invoice_total_gbp = v_target_summary_total
@@ -262,13 +257,13 @@ BEGIN
       RAISE EXCEPTION 'FAIL: summary total UPDATE did not create exactly one open bundle breach; count %.', v_created_flag_count;
     END IF;
   ELSE
-    RAISE NOTICE 'SKIP behavioural summary-UPDATE fixture: no safe original summary with operator provenance found.';
+    RAISE NOTICE 'SKIP behavioural summary-UPDATE fixture: no safe non-breaching original summary with operator provenance found.';
   END IF;
 END
 $regression$;
 
 SELECT
   'PASS'::text AS regression_result,
-  'Rollback-only structural and behavioural controls passed. Existing authorities remain unchanged; Save-style resolution preserves a live bundle breach; approval-style resolution is transactionally rejected; summary-total UPDATE creates the same breach when a safe fixture exists.'::text AS details;
+  'Rollback-only structural and behavioural controls passed. Save-style resolution preserves a live bundle breach; approval-style resolution is transactionally rejected; summary-total UPDATE creates the same breach when safe fixtures exist.'::text AS details;
 
 ROLLBACK;
