@@ -4,80 +4,68 @@ Status: governing corrective addendum
 
 ## Purpose
 
-Allow a supervisor/admin to increase the accepted GBP value of an existing **original** order when the live accepted supplier-invoice bundle has genuinely risen above the order value, without creating a new order or changing the established supplier-invoice header correction, funding, supplier-payment, reconciliation, VAT, Sage, replacement or shipment workflows.
+Allow a supervisor/admin to increase the accepted GBP value of an existing **original** order when the platform's existing `order_bundle_limit_breach` control proves that active supplier invoice totals exceed the accepted order value.
 
 Example:
 
 ```text
-accepted order value                         £720.00
-already funded                               £720.00
-already purchased / supplier OUT             £600.00
-live accepted supplier invoice bundle        £740.00
-additional customer funding required          £20.00
+accepted order value                 £720.00
+customer funding                     £720.00
+supplier purchases already made      £600.00
+active supplier invoice bundle       £740.00
+extra customer funding required       £20.00
 ```
 
-The controlled result is:
+Controlled result:
 
 ```text
 order value £720.00 -> £740.00
 customer becomes genuinely £20.00 underfunded
-ordinary DVA top-up supplies the £20.00
+ordinary DVA top-up supplies £20.00
 existing supplier-payment proof then permits the remaining £140.00
 ```
 
-## Non-negotiable preservation rule
+## Authority stack and preservation rule
 
-This build must **not modify** the existing supplier invoice header-review RPC:
+This addendum is subordinate to the locked platform architecture, schema, orchestration, technical-resource, Sage and UI-wiring controls except where it explicitly adds this narrow same-order amendment.
+
+The build must preserve all established working paths unless this addendum expressly says otherwise.
+
+In particular, **do not modify**:
 
 ```text
 public.staff_save_supplier_invoice_header_review(...)
-```
-
-Its current behaviour, including its existing review-flag resolution behaviour, remains untouched.
-
-This build must also **not rewrite or narrow** the existing supplier-invoice approval RPC:
-
-```text
 public.staff_approve_supplier_invoice_current(...)
+public.order_funding_total_gbp(...)
+public.order_funding_gap_gbp(...)
+public.recompute_order_platform_funded(...)
+public.sync_order_overfunding_credit(...)
+public.internal_supplier_payment_readiness_v1(...)
+public.internal_supplier_payment_bundle_source_v1(...)
+public.staff_reconcile_dva_line_to_order(...)
+public.staff_progress_supplier_invoice_lines(...)
 ```
 
-Existing approval/finalisation callers remain unchanged. A new additive database guard protects their final approval state transition instead.
+Do not modify Build 4 reconciliation views, DVA, supplier-payment allocation, Sage, VAT, shipping, tracking, replacement-child or customer-review architecture.
 
-## Governing authority: live accepted numbers, not review flags
+## Existing breach flag remains authoritative
 
-`order_bundle_limit_breach` remains useful review/routing evidence, but it is **not** the financial authority for this build.
-
-The authoritative question is always recalculated from live accepted supplier invoice values:
+The existing control remains the entitlement to this new action:
 
 ```text
-live accepted supplier bundle > orders.order_total_gbp_declared + £0.01
+supplier_invoice_review_flags.flag_type = 'order_bundle_limit_breach'
+status IN ('open','under_review')
 ```
 
-A cleared, missing or stale review flag must never make a real over-limit position approvable.
+A raw numerical condition `supplier bundle > order value` is **not enough on its own** to expose or execute the price-increase action. This prevents historical/raw anomalies and replacement-child economics from becoming new amendment entitlements.
 
-Likewise, a historical flag must not force a price increase after the live accepted bundle no longer exceeds the order value.
-
-## Accepted supplier gross source
-
-Do not invent a second supplier-total hierarchy.
-
-Reuse the existing accepted gross authority already exposed by:
+The existing bundle arithmetic remains authoritative for this control:
 
 ```text
-public.supplier_invoice_accounting_coding_totals_vw.accepted_invoice_gross_gbp
+SUM(supplier_invoice_financial_summary.invoice_total_gbp)
 ```
 
-That existing hierarchy is:
-
-```text
-supplier_invoices.ocr_invoice_total_gbp
--> raw OCR total_amount
--> supplier_invoice_financial_summary.invoice_total_gbp
-```
-
-Therefore a legitimate supervisor header correction automatically changes the live order price position without changing the operator-entered financial-summary row.
-
-Only live supplier invoices participate. Exclude existing retired statuses:
+for supplier invoices on the same order whose `review_status` is not:
 
 ```text
 rejected_resubmit_required
@@ -85,264 +73,211 @@ duplicate_blocked
 superseded
 ```
 
-## New read-only order price position
-
-Add one read-only order-level position source that exposes at least:
-
-```text
-order_id
-order_type
-current_order_value_gbp
-accepted_supplier_bundle_gbp
-price_increase_required_gbp
-over_limit_yn
-active_invoice_count
-missing_accepted_total_count
-review_anchor_supplier_invoice_id
-```
-
-Rules:
-
-1. `over_limit_yn` is true only when the accepted live bundle is more than the order value by greater than £0.01.
-2. Null/missing accepted totals must be counted explicitly; they must not be silently treated as proven zero for the write action.
-3. The review anchor is the newest live `pending_review` supplier invoice for that order, using deterministic `uploaded_at DESC, id DESC` ordering.
-4. Replacement-child orders may appear read-only for diagnostics, but cannot use the price-increase write action.
+The new feature must not substitute `accepted_invoice_gross_gbp`, OCR totals, accounting coding totals or any new commercial-total hierarchy for this existing bundle authority.
 
 ## Supplier Invoice Review queue behaviour
 
 `/internal/invoice-review` remains an exceptions queue.
 
-Its established normal behaviour remains:
+No new queue-retention model is authorised.
+
+The existing open `order_bundle_limit_breach` flag already makes the invoice a serious review exception through the existing `supplier_invoice_match_decision_vw`. Therefore the invoice naturally remains on Supplier Invoice Review while that flag remains open.
+
+The existing three-variable routing remains unchanged:
 
 ```text
-retailer match + reference match + total match + usable OCR lines + no blocker
--> invoice routes away from Supplier Invoice Review
+retailer match + invoice-reference match + total match + existing blockers
 ```
 
-The only new exception is:
+No custom order-level anchor or new live-price routing authority is required.
+
+## Save correction remains untouched
+
+The existing header-save RPC must remain byte-for-byte unchanged.
+
+It may continue to attempt its established broad review-flag resolution.
+
+However, `order_bundle_limit_breach` is a persistent financial control and must not be allowed to disappear while its underlying existing bundle arithmetic still exceeds the order value.
+
+Add one narrow **BEFORE UPDATE** protection on `supplier_invoice_review_flags`:
+
+1. It acts only when the existing row is `flag_type = 'order_bundle_limit_breach'` and an update attempts to move an open/under-review flag to `resolved`.
+2. It recalculates the same existing active supplier-summary bundle for that flag's order.
+3. If the bundle is still above `orders.order_total_gbp_declared + £0.01`, the trigger preserves the flag's existing open/under-review state and existing resolution fields.
+4. It does nothing to any other flag type.
+5. If the bundle no longer exceeds the order value, normal resolution is allowed.
+
+Consequences:
+
+- Save correction continues to save header/OCR corrections normally.
+- Unrelated review flags continue to resolve exactly as the existing RPC intends.
+- The bundle breach alone survives while the financial breach still exists.
+- The existing match-decision view therefore continues to keep the invoice in the exceptions queue and block normal supplier approval.
+- The header-save RPC itself is not narrowed, replaced or rewritten.
+
+## Financial-summary update hole
+
+The existing `flag_order_bundle_limit_after_summary_v1()` trigger runs after an operator financial-summary **insert**.
+
+A later established workflow can change the existing `supplier_invoice_financial_summary.invoice_total_gbp` row. The same bundle breach must not be bypassed merely because the row was updated rather than inserted.
+
+Add one narrow **AFTER UPDATE OF invoice_total_gbp** trigger on `supplier_invoice_financial_summary` that:
+
+1. recalculates the same existing active bundle;
+2. acts only for an `original` order;
+3. if the bundle exceeds the current order value by more than £0.01, ensures an open `order_bundle_limit_breach` exists for the changed supplier invoice;
+4. does not alter other review flags;
+5. does not change invoice values, order values, funding, progression or approval state.
+
+The existing insert trigger remains unchanged.
+
+## Dedicated price-increase action
+
+The price-increase control belongs on the Supplier Invoice Review card that already has the genuine open `order_bundle_limit_breach`.
+
+Show only:
 
 ```text
-original order has a live over-limit price position
-AND this invoice is that order's review anchor
--> keep that invoice visible in Supplier Invoice Review
-```
-
-This is required even if ordinary header review has resolved every review flag and the normal three-variable matching has become clean.
-
-Do not keep every sibling invoice visible. Keep one deterministic anchor so the queue is not duplicated or cluttered.
-
-On the anchor card show a dedicated section:
-
-```text
-Current order value:             £720.00
-Current accepted supplier bundle £740.00
-Additional funding required:      £20.00
+Current order value
+Current active supplier bundle
+Additional funding required
 [Approve order price increase]
 ```
 
-Do not place this action on the separate delivery/discount adjustments page.
+The UI may calculate/display the active bundle from the same existing financial-summary rows, but the browser never supplies the new order amount to the write RPC.
 
-Do not disable or change `Save correction`, `Reject`, `Exclude`, OCR controls, invoice evidence links or reconciliation links.
-
-If the live price-position query itself fails, the page must fail safe for visibility: do not offer the price-increase write action from an unknown position, and do not silently treat the order as within limit.
-
-## Existing approval UI readiness
-
-The existing shared supplier-invoice readiness helper may consume the new read-only position and return an additional blocker only when:
-
-```text
-order_type = original
-AND live accepted supplier bundle > current order value + £0.01
-```
-
-Normal invoices at or below the accepted order value must return exactly their previous readiness result.
-
-This keeps Supplier Draft Ready and reconciliation approval screens consistent before a user clicks an action.
-
-## Database approval backstop
-
-Add one additive database trigger/guard on the supplier-invoice transition into an approved/current unblocked state.
-
-Do **not** edit the existing approval RPC.
-
-When an original-order supplier invoice is being left in:
-
-```text
-review_status IN ('approved_current','ref_corrected_approved')
-AND blocked_from_sage_yn = false
-```
-
-and that update creates or retains a live accepted supplier bundle above the current order value by more than £0.01, the transaction must fail closed.
-
-The guard must calculate against the post-update accepted invoice value, so an approval call that supplies a corrected accepted total cannot approve using a stale pre-update bundle.
-
-Replacement-child orders are excluded from this guard because their commercial/funding architecture is separate and their raw supplier bundle can legitimately exceed their own declared commercial value.
-
-This backstop protects existing single-invoice approval, reconciliation approval and any order-level finaliser that uses the established approved/current transition, without changing those working functions.
+Do not modify Save, Reject, Exclude, OCR, reconciliation or invoice-evidence actions.
 
 ## Dedicated price-increase RPC
 
-Add one new RPC only, for example:
+Add one new RPC:
 
 ```text
 public.staff_approve_order_supplier_price_increase_v1(
   p_order_id uuid,
+  p_supplier_invoice_id uuid,
   p_review_notes text default null
 )
 ```
 
 It must:
 
-1. Require an authenticated active `admin` or `supervisor`.
-2. Lock the active supplier-invoice rows deterministically before locking the order row, so it does not invert the existing invoice-approval lock order.
-3. Require `orders.order_type = 'original'`.
-4. Require `orders.content_locked_at IS NULL`. Never bypass `public.enforce_order_locks()`.
-5. Reject archived/cancelled/completed orders and any established hard terminal boundary already represented on the order.
-6. Recalculate the live accepted supplier bundle server-side. The browser never supplies the new order value.
-7. Require `missing_accepted_total_count = 0`.
-8. Require the recalculated bundle to exceed the current order value by more than £0.01. Never decrease and never perform a no-op.
-9. Fail closed if the target order's established funding-event position and live funding-position view materially disagree before amendment; do not repair historical drift in this build.
-10. Fail closed if non-zero order markup would make the two established funding-threshold authorities diverge. This v1 does not redesign markup funding semantics.
-11. Fail closed if existing order-sourced overfunding credit, consumed credit or pending-surplus state would be invalidated by the amendment. Do not invent credit reversal logic.
-12. Set the new GBP order value to the exact server-recalculated accepted supplier bundle.
-13. Preserve the stored quote economics. If both the old GBP order value and `quote_total_ghs` are positive, derive the new `quote_total_ghs` proportionately from the existing stored effective local quote rate:
+1. require an authenticated active `admin` or `supervisor`;
+2. take the supplier invoice id only as the genuine breach provenance / review-card anchor, never as a monetary authority;
+3. acquire the existing `order_bundle_limit:<order_id>` advisory lock and deterministic row locks needed to serialise concurrent supplier-summary changes;
+4. require `orders.order_type = 'original'`;
+5. require `orders.content_locked_at IS NULL` and never bypass `public.enforce_order_locks()`;
+6. fail after established terminal boundaries: completed/terminal order, accounting release ready, or VAT release/reporting already approved;
+7. require an open/under-review `order_bundle_limit_breach` for exactly `p_supplier_invoice_id` and `p_order_id`;
+8. recalculate the current active bundle server-side from `supplier_invoice_financial_summary.invoice_total_gbp` using the existing retired-status exclusions;
+9. require the recalculated bundle to exceed the current order value by more than £0.01;
+10. set the new GBP order value to that exact recalculated bundle; never decrease and never no-op;
+11. accept **no browser-supplied new amount**;
+12. fail closed for non-zero `markup_applied_gbp` in v1 because the established funding authorities use different markup thresholds;
+13. fail closed if the target order's event-ledger funding and `order_funding_position_vw` materially disagree before amendment; do not repair historical drift;
+14. fail closed if the order has any `funding_reversed` history;
+15. fail closed if existing order-sourced overfunding credit or active pending/confirmed funding-surplus state could be invalidated;
+16. preserve quote economics: when old GBP total and `quote_total_ghs` are positive, calculate `new quote_total_ghs = round((old quote_total_ghs / old GBP total) * new GBP total, 2)`;
+17. fetch no new FX rate and leave locked FX/card-markup fields untouched;
+18. update only `orders.order_total_gbp_declared`, the proportionately derived `quote_total_ghs`, and normal update timestamp/audit effects;
+19. create no funding event;
+20. call the existing `recompute_order_platform_funded(order_id)` so the genuine new funding gap and `funded_at` become truthful;
+21. call the existing overfunding synchroniser only after the fail-closed preconditions above make it safe;
+22. verify the amendment did not create/remove a funding event and that the resulting funding position matches the expected new gap;
+23. resolve only open/under-review `order_bundle_limit_breach` flags for that order **after** the order value has been increased; the self-protection trigger will then allow resolution because the breach no longer exists;
+24. return old total, new total, increase, funding total, resulting funding gap, funded_at and derived `quote_total_ghs`.
 
-```text
-existing effective quote rate = old quote_total_ghs / old order_total_gbp_declared
-new quote_total_ghs = round(new order total * existing effective quote rate, 2)
-```
-
-14. Do not fetch a new FX rate and do not change existing locked FX/card-markup fields.
-15. Update `orders.order_total_gbp_declared` and the derived `quote_total_ghs` in the same transaction.
-16. Do not create an order funding event merely because the accepted order value changed.
-17. Call the existing `recompute_order_platform_funded(order_id)` so `funded_at` and the event-ledger gap become truthful immediately.
-18. Call the existing overfunding synchronisation only when the preconditions prove that doing so cannot invalidate consumed credit history.
-19. Resolve any still-open `order_bundle_limit_breach` flags for the order after the new baseline covers the current bundle. Do not resolve unrelated review flags.
-20. Return old value, new value, increase amount, resulting funding gap and derived local quote total for UI confirmation.
-
-## Expected funding behaviour
+## Funding and supplier-payment result
 
 For the clean example:
 
 ```text
 before amendment
-order value                 £720.00
-funding                     £720.00
-funding gap                   £0.00
-funded_at                    populated
+order value      £720
+funding          £720
+funding gap        £0
+funded_at        populated
 
 immediately after amendment
-order value                 £740.00
-funding                     £720.00
-funding gap                  £20.00
-funded_at                    NULL
+order value      £740
+funding          £720
+funding gap       £20
+funded_at        NULL
 
 ordinary DVA top-up
-+£20.00 funding contribution
++£20
 
 then
-funding                     £740.00
-funding gap                   £0.00
-funded_at                    restored by existing funding logic
+funding          £740
+funding gap        £0
+funded_at        restored by existing logic
 ```
 
-The £20 top-up remains ordinary DVA order funding. No new funding lane is introduced.
+No new funding mechanism is created.
 
-## Supplier payment and reconciliation
-
-Do not modify supplier-payment source resolution or allocation logic.
-
-Existing provenance should naturally move from:
+Existing supplier-payment provenance naturally moves from:
 
 ```text
-£720 funding - £600 prior supplier OUT = £120 available
+£720 funding - £600 previous supplier OUT = £120 available
 ```
 
 to:
 
 ```text
-£740 funding - £600 prior supplier OUT = £140 available
+£740 funding - £600 previous supplier OUT = £140 available
 ```
 
-after the customer's ordinary £20 top-up.
+after the ordinary £20 top-up.
 
-Do not modify Build 4 reconciliation. Its target already follows `orders.order_total_gbp_declared`, so the target naturally becomes £740 after the governed amendment.
+## Build 4 / VAT / downstream behaviour
 
-## VAT, Sage, shipping, tracking and replacement boundaries
+Build 4 already targets `orders.order_total_gbp_declared`; it therefore naturally follows the amended £740 target. No Build 4 patch is authorised.
 
-The order-value amendment itself is not a VAT funding event or sales tax point.
+The order-value edit itself is not a VAT funding event or sales tax point. The later genuine £20 funding event follows existing VAT/funding treatment.
 
-Do not change:
+Existing downstream `funded_at` gates may block while the customer genuinely owes £20. That is truthful and must not be bypassed.
 
-- VAT timing/source generation
-- Sage supplier or customer posting primitives
-- supplier payment allocation
-- DVA reconciliation
-- customer/importer funding machinery
-- Build 4 reconciliation
-- Mini-builds 1-4
-- shipping
-- tracking
-- physical receipt/remedy controls
-- replacement-child funding architecture
-- customer review/hold architecture
-- final-sale settlement governance
+## Sequential later increase
 
-Existing downstream guards that depend on genuine `funded_at` may block while the customer owes the extra amount. That is truthful and must not be bypassed.
+After £720 -> £740, a later supplier-summary change that takes the active bundle to £750 must create/retain a fresh genuine `order_bundle_limit_breach`. The same governed action may then approve £740 -> £750.
 
-## Sequential increases
+## Regression requirements
 
-A later supplier total increase must work naturally.
+At minimum prove:
 
-Example:
-
-```text
-order amended £720 -> £740
-later accepted supplier bundle becomes £750
-```
-
-The live position becomes over-limit again, the newest pending review anchor remains visible, approval is blocked again, and a fresh governed £740 -> £750 amendment can be approved.
-
-## Required regression checks
-
-1. Original order £720, accepted supplier bundle £740 -> live position shows £20 increase required.
-2. Same raw position on `replacement_child` -> no price-increase write action and no new approval guard block.
-3. Header Save remains byte-for-byte/function-definition unchanged by this build.
-4. Existing supplier approval RPC remains byte-for-byte/function-definition unchanged by this build.
-5. Normal clean invoice at/below order value has identical routing/readiness/approval behaviour.
-6. Three normal match variables becoming clean does **not** remove the review anchor while the live order remains over-limit.
-7. Saving a header correction may resolve flags, but the live over-limit anchor remains visible.
-8. A corrected accepted invoice gross immediately changes the live order price position through the existing accepted-gross hierarchy.
-9. Supplier Draft Ready and reconciliation approval show the live over-limit blocker before action.
-10. Direct/canonical transition to approved/current while over-limit is rejected by the database backstop.
-11. Automatic/order-level finalisation cannot bypass the backstop.
-12. Price-increase RPC ignores browser-supplied amounts because no amount parameter exists.
-13. Content-locked order fails without mutation.
-14. Non-original order fails without mutation.
-15. Missing accepted supplier total fails without mutation.
-16. No-op/decrease fails without mutation.
-17. Funding-authority mismatch fails without mutation.
-18. Non-zero markup fails closed in v1.
-19. Incompatible overfunding/consumed-credit/pending-surplus state fails without mutation.
-20. £720 -> £740 proportionately updates `quote_total_ghs` while leaving locked FX/card-markup fields unchanged.
-21. Amendment creates no funding event.
-22. Existing recompute changes funded state to genuine £20 underfunding.
-23. Ordinary £20 DVA funding restores the established funding state.
-24. Existing supplier-payment provenance then permits £140 after prior £600 supplier payment.
-25. Build 4 target follows £740 without a Build 4 code change.
-26. A later £750 accepted bundle creates a fresh live breach and can be governed sequentially.
-27. Existing Mini-build/Build 4 protected function/view fingerprints remain unchanged.
+1. existing header-save RPC fingerprint is unchanged;
+2. existing supplier-approval RPC definition is unchanged;
+3. existing bundle INSERT trigger/function is unchanged;
+4. existing readiness helper behaviour is unchanged;
+5. normal non-breach invoice routing/approval is unchanged;
+6. £720 order / £740 active summary bundle creates or has an open breach flag;
+7. Save correction may resolve other flags but cannot resolve that breach while £740 > £720;
+8. because the breach remains open, existing match-decision routing keeps the invoice on Supplier Invoice Review and existing supplier approval remains blocked;
+9. a financial-summary UPDATE that newly creates a breach raises the same flag;
+10. raw over-limit data without a genuine open breach flag cannot call the price RPC;
+11. replacement-child order cannot call the price RPC;
+12. browser cannot supply the new total;
+13. content-locked / terminal / accounting/VAT-released order fails without mutation;
+14. funding-authority mismatch, non-zero markup, funding reversal, incompatible overfunding or active surplus fails without mutation;
+15. clean £720 -> £740 update proportionately preserves `quote_total_ghs` economics and leaves locked FX/card fields untouched;
+16. amendment creates no funding event;
+17. existing recompute produces £20 gap and clears `funded_at`;
+18. only bundle-breach flags resolve after the new £740 baseline is committed; unrelated flags remain;
+19. ordinary £20 DVA top-up restores £740 funded state;
+20. existing supplier-payment source permits £140 after the prior £600 allocation;
+21. Build 4 target becomes £740 with no Build 4 code change;
+22. later £750 summary update creates a fresh governed breach;
+23. protected funding, DVA, supplier-payment, Build 4, Sage, VAT, shipping, tracking, replacement and Mini-build fingerprints remain unchanged.
 
 ## Scope lock
 
-Implementation is limited to:
+Authorised implementation is limited to:
 
-- this governing addendum;
-- one additive read-only live order supplier-price position;
-- one additive supplier-approval transition backstop;
-- one new dedicated price-increase RPC;
-- the smallest invoice-review UI/action wiring required to retain the anchor and expose the dedicated approval;
-- the smallest shared readiness addition required to present the same live blocker before existing approval actions;
+- this corrected governing addendum;
+- one self-protecting bundle-breach flag trigger/function;
+- one financial-summary UPDATE breach trigger/function;
+- one dedicated server-derived price-increase RPC;
+- one small Supplier Invoice Review price card/action wired only from the existing open breach flag;
 - focused regression coverage.
 
-No other existing RPC, view, trigger, workflow or page is authorised to change unless a failing regression proves an unavoidable dependency and the governing addendum is updated first.
+No new order-level commercial authority, no custom queue-retention model, no global supplier-approval transition trigger, no accepted-gross replacement hierarchy, and no shared approval-readiness rewrite are authorised.
