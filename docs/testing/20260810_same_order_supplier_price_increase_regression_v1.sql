@@ -12,6 +12,11 @@ DECLARE
   v_security_definer boolean;
   v_config text[];
   v_args text;
+  v_summary_lock_pos integer;
+  v_invoice_lock_pos integer;
+  v_advisory_lock_pos integer;
+  v_order_lock_pos integer;
+  v_breach_lock_pos integer;
 BEGIN
   -- -------------------------------------------------------------------------
   -- 1. Freeze established authorities this build must not change.
@@ -125,6 +130,10 @@ BEGIN
     RAISE EXCEPTION 'FAIL: bundle breach resolution protector is broader or weaker than governed.';
   END IF;
 
+  IF position('pg_advisory_xact_lock' in v_definition) > 0 THEN
+    RAISE EXCEPTION 'FAIL: flag-resolution protector takes the bundle advisory lock and can invert summary UPDATE lock order.';
+  END IF;
+
   SELECT count(*)::integer, min(pg_get_triggerdef(t.oid, true))
   INTO v_count, v_trigger_definition
   FROM pg_trigger t
@@ -151,8 +160,12 @@ BEGIN
      OR position('v_order_type <> ''original''' in v_definition) = 0
      OR position('sum(fs.invoice_total_gbp)' in v_definition) = 0
      OR position('order_bundle_limit:' in v_definition) = 0
-     OR position('flag_type = ''order_bundle_limit_breach''' in v_definition) = 0 THEN
-    RAISE EXCEPTION 'FAIL: summary UPDATE breach function lost governed scope.';
+     OR position('flag_type = ''order_bundle_limit_breach''' in v_definition) = 0
+     OR position('coalesce(new.entered_by_operator_id, old.entered_by_operator_id)' in v_definition) = 0
+     OR position('f.raised_by_operator_id' in v_definition) = 0
+     OR position('no review flag was falsely attributed' in v_definition) = 0
+     OR position('v_raised_by_operator_id' in v_definition) = 0 THEN
+    RAISE EXCEPTION 'FAIL: summary UPDATE breach function lost governed scope/provenance.';
   END IF;
 
   SELECT count(*)::integer, min(pg_get_triggerdef(t.oid, true))
@@ -223,6 +236,7 @@ BEGIN
       'order_funding_position_vw',
       'quote_total_ghs / v_old_total',
       'recompute_order_platform_funded',
+      'sync_order_overfunding_credit',
       'v_event_count_after <> v_event_count_before'
     ])
   LOOP
@@ -230,6 +244,25 @@ BEGIN
       RAISE EXCEPTION 'FAIL: dedicated RPC lost required governed token %.', v_trigger_definition;
     END IF;
   END LOOP;
+
+  -- Lock order: summary rows -> invoice rows -> advisory -> order -> exact breach.
+  v_summary_lock_pos := position('for update of fs' in v_definition);
+  v_invoice_lock_pos := position('for update of si' in substring(v_definition from v_summary_lock_pos + 1));
+  IF v_invoice_lock_pos > 0 THEN
+    v_invoice_lock_pos := v_invoice_lock_pos + v_summary_lock_pos;
+  END IF;
+  v_advisory_lock_pos := position('pg_advisory_xact_lock(hashtext(''order_bundle_limit:'' || p_order_id::text))' in v_definition);
+  v_order_lock_pos := position('where o.id = p_order_id' in v_definition);
+  v_breach_lock_pos := position('for update of f' in v_definition);
+
+  IF v_summary_lock_pos = 0
+     OR v_invoice_lock_pos <= v_summary_lock_pos
+     OR v_advisory_lock_pos <= v_invoice_lock_pos
+     OR v_order_lock_pos <= v_advisory_lock_pos
+     OR v_breach_lock_pos <= v_order_lock_pos THEN
+    RAISE EXCEPTION 'FAIL: price RPC lock order drifted: summary %, invoice %, advisory %, order %, breach %.',
+      v_summary_lock_pos, v_invoice_lock_pos, v_advisory_lock_pos, v_order_lock_pos, v_breach_lock_pos;
+  END IF;
 
   IF position('accepted_invoice_gross_gbp' in v_definition) > 0
      OR position('order_supplier_price_position_v1' in v_definition) > 0
@@ -242,6 +275,6 @@ $regression$;
 
 SELECT
   'PASS'::text AS regression_result,
-  'Existing breach flag remains authoritative; generic header Save is untouched but cannot clear a genuine live bundle breach; summary total UPDATE receives the same narrow breach control; the dedicated RPC derives the new order value from the existing financial-summary bundle while protected funding, DVA, supplier-payment and Build 4 authorities retain their reviewed fingerprints.'::text AS details;
+  'Existing breach flag remains authoritative; generic header Save is untouched but cannot clear a genuine live bundle breach; summary total UPDATE receives the same narrow breach control with genuine operator provenance; the dedicated RPC uses the governed lock order and existing funding synchronisation while protected DVA, supplier-payment and Build 4 authorities retain their reviewed fingerprints.'::text AS details;
 
 ROLLBACK;
