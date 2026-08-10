@@ -42,10 +42,6 @@ BEGIN
 END
 $preflight$;
 
--- ---------------------------------------------------------------------------
--- 1. Preserve the existing bundle breach, and hard-stop approval if the
---    canonical approval transaction attempts to resolve it while still live.
--- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.protect_order_bundle_limit_breach_resolution_v1()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -70,9 +66,6 @@ BEGIN
     RETURN NEW;
   END IF;
 
-  -- Shared with the established bundle INSERT trigger and the UPDATE companion
-  -- below. This serialises Save-vs-summary-update decisions so a live breach
-  -- cannot be lost between concurrent transactions.
   PERFORM pg_advisory_xact_lock(hashtext('order_bundle_limit:' || v_order_id::text));
 
   SELECT round(COALESCE(o.order_total_gbp_declared, 0)::numeric, 2)
@@ -101,11 +94,6 @@ BEGIN
     FROM public.supplier_invoices si
     WHERE si.id = OLD.supplier_invoice_id;
 
-    -- Save correction leaves the invoice pending/blocked, so it is allowed and
-    -- only this flag stays open. The canonical supplier-approval RPC changes the
-    -- invoice to approved/current and unblocks Sage before resolving flags. In
-    -- that context raise, rolling the entire approval transaction back without
-    -- modifying the approval RPC itself.
     IF v_invoice_status IN ('approved_current','ref_corrected_approved')
        OR v_blocked_from_sage IS FALSE THEN
       RAISE EXCEPTION
@@ -133,10 +121,6 @@ EXECUTE FUNCTION public.protect_order_bundle_limit_breach_resolution_v1();
 REVOKE ALL ON FUNCTION public.protect_order_bundle_limit_breach_resolution_v1()
 FROM PUBLIC, anon, authenticated;
 
--- ---------------------------------------------------------------------------
--- 2. Existing operator-upload INSERT trigger remains untouched. Cover only the
---    established later UPDATE of invoice_total_gbp on the unique summary row.
--- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.flag_order_bundle_limit_after_summary_update_v1()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -206,10 +190,6 @@ BEGIN
          AND f.flag_type = 'order_bundle_limit_breach'
          AND f.status IN ('open','under_review')
      ) THEN
-
-    -- Normal current workflow created this unique summary row during operator
-    -- upload, so the later supervisor upsert retains the real operator id. Use
-    -- existing provenance only; never attribute staff as the operator raiser.
     v_raised_by_operator_id := COALESCE(NEW.entered_by_operator_id, OLD.entered_by_operator_id);
 
     IF v_raised_by_operator_id IS NULL THEN
@@ -269,9 +249,6 @@ EXECUTE FUNCTION public.flag_order_bundle_limit_after_summary_update_v1();
 REVOKE ALL ON FUNCTION public.flag_order_bundle_limit_after_summary_update_v1()
 FROM PUBLIC, anon, authenticated;
 
--- ---------------------------------------------------------------------------
--- 3. Dedicated same-order amendment. No client monetary parameter exists.
--- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.staff_approve_order_supplier_price_increase_v1(
   p_order_id uuid,
   p_supplier_invoice_id uuid,
@@ -328,10 +305,9 @@ BEGIN
     RAISE EXCEPTION 'Order and supplier invoice are required.';
   END IF;
 
-  -- Serialize the existing supplier bundle deterministically before deriving a
-  -- new order value. This does not lock funding rows; if funding changes during
-  -- this transaction the before/after postconditions fail and the amendment is
-  -- safely retried rather than risking a DVA lock-order conflict.
+  -- Lock order is aligned with existing Save and summary-update paths:
+  -- summary rows -> invoice rows -> exact breach flag -> bundle advisory lock -> order.
+  -- Funding rows are deliberately not locked by this feature.
   PERFORM 1
   FROM public.supplier_invoice_financial_summary fs
   JOIN public.supplier_invoices si ON si.id = fs.supplier_invoice_id
@@ -344,6 +320,18 @@ BEGIN
   WHERE si.order_id = p_order_id
   ORDER BY si.id
   FOR UPDATE OF si;
+
+  PERFORM 1
+  FROM public.supplier_invoice_review_flags f
+  WHERE f.order_id = p_order_id
+    AND f.supplier_invoice_id = p_supplier_invoice_id
+    AND f.flag_type = 'order_bundle_limit_breach'
+    AND f.status IN ('open','under_review')
+  FOR UPDATE OF f;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'No open order bundle limit breach exists for this supplier invoice.';
+  END IF;
 
   PERFORM pg_advisory_xact_lock(hashtext('order_bundle_limit:' || p_order_id::text));
 
@@ -375,18 +363,6 @@ BEGIN
   END IF;
   IF ABS(COALESCE(v_order.markup_applied_gbp, 0)) > 0.005 THEN
     RAISE EXCEPTION 'Price increase v1 requires zero order markup.';
-  END IF;
-
-  PERFORM 1
-  FROM public.supplier_invoice_review_flags f
-  WHERE f.order_id = p_order_id
-    AND f.supplier_invoice_id = p_supplier_invoice_id
-    AND f.flag_type = 'order_bundle_limit_breach'
-    AND f.status IN ('open','under_review')
-  FOR UPDATE OF f;
-
-  IF NOT FOUND THEN
-    RAISE EXCEPTION 'No open order bundle limit breach exists for this supplier invoice.';
   END IF;
 
   IF NOT EXISTS (
