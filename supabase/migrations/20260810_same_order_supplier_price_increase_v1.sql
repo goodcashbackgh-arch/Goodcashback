@@ -38,7 +38,8 @@ BEGIN
      OR to_regprocedure('public.enforce_order_locks()') IS NULL
      OR to_regprocedure('public.order_funding_total_gbp(uuid)') IS NULL
      OR to_regprocedure('public.order_funding_gap_gbp(uuid)') IS NULL
-     OR to_regprocedure('public.recompute_order_platform_funded(uuid)') IS NULL THEN
+     OR to_regprocedure('public.recompute_order_platform_funded(uuid)') IS NULL
+     OR to_regprocedure('public.sync_order_overfunding_credit(uuid)') IS NULL THEN
     RAISE EXCEPTION 'Expected established supplier/funding/order authority is missing.';
   END IF;
 
@@ -75,6 +76,11 @@ BEGIN
     RAISE EXCEPTION 'Drift stop: recompute_order_platform_funded changed (%).', v_md5;
   END IF;
 
+  SELECT md5(pg_get_functiondef('public.sync_order_overfunding_credit(uuid)'::regprocedure)) INTO v_md5;
+  IF v_md5 IS DISTINCT FROM 'f2dcd920585c696b59c80b8baab220b8' THEN
+    RAISE EXCEPTION 'Drift stop: sync_order_overfunding_credit changed (%).', v_md5;
+  END IF;
+
   IF NOT EXISTS (
     SELECT 1
     FROM information_schema.columns
@@ -95,6 +101,29 @@ BEGIN
     HAVING COUNT(*) = 9
   ) THEN
     RAISE EXCEPTION 'Expected reviewed order boundary columns are missing.';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'supplier_invoice_financial_summary'
+      AND column_name IN ('invoice_total_gbp','entered_by_operator_id')
+    GROUP BY table_schema, table_name
+    HAVING COUNT(*) = 2
+  ) THEN
+    RAISE EXCEPTION 'Expected financial-summary amount/operator provenance columns are missing.';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'supplier_invoice_review_flags'
+      AND column_name = 'raised_by_operator_id'
+      AND is_nullable = 'NO'
+  ) THEN
+    RAISE EXCEPTION 'Review-flag operator provenance contract changed; inspect before applying.';
   END IF;
 END
 $preflight$;
@@ -147,6 +176,9 @@ BEGIN
   IF v_active_total > v_order_total + 0.01 THEN
     -- Preserve the existing flag state only. The surrounding UPDATE may still
     -- save ordinary invoice/header review work and may resolve unrelated flags.
+    -- Deliberately do not take the bundle advisory lock here: summary UPDATE
+    -- holds its row before that lock, so taking the lock here would invert the
+    -- established order and create a deadlock opportunity.
     NEW.status := OLD.status;
     NEW.resolved_by_staff_id := OLD.resolved_by_staff_id;
     NEW.resolved_at := OLD.resolved_at;
@@ -183,6 +215,7 @@ DECLARE
   v_active_total numeric(12,2);
   v_breach numeric(12,2);
   v_invoice_ref text;
+  v_raised_by_operator_id uuid;
 BEGIN
   IF NEW.invoice_total_gbp IS NOT DISTINCT FROM OLD.invoice_total_gbp THEN
     RETURN NEW;
@@ -204,7 +237,9 @@ BEGIN
     RETURN NEW;
   END IF;
 
-  -- Reuse the exact advisory-lock family of the established INSERT trigger.
+  -- This AFTER UPDATE trigger already holds the changed summary row. Reuse the
+  -- same advisory-lock family as the established INSERT trigger after that row
+  -- lock, and keep the price RPC in the same lock order.
   PERFORM pg_advisory_xact_lock(hashtext('order_bundle_limit:' || v_order_id::text));
 
   SELECT round(COALESCE(sum(fs.invoice_total_gbp), 0)::numeric, 2)
@@ -229,6 +264,32 @@ BEGIN
          AND f.flag_type = 'order_bundle_limit_breach'
          AND f.status IN ('open','under_review')
      ) THEN
+
+    -- The flag table requires real operator provenance. Normal operator upload
+    -- creates this unique summary row with entered_by_operator_id and a later
+    -- supervisor upsert updates that row without inventing a new operator. Use
+    -- only genuine existing provenance; never attribute a supervisor as operator.
+    v_raised_by_operator_id := COALESCE(NEW.entered_by_operator_id, OLD.entered_by_operator_id);
+
+    IF v_raised_by_operator_id IS NULL THEN
+      SELECT f.raised_by_operator_id
+      INTO v_raised_by_operator_id
+      FROM public.supplier_invoice_review_flags f
+      WHERE f.supplier_invoice_id = NEW.supplier_invoice_id
+        AND f.order_id = v_order_id
+        AND f.raised_by_operator_id IS NOT NULL
+      ORDER BY
+        (f.flag_type = 'order_bundle_limit_breach') DESC,
+        f.created_at DESC,
+        f.id DESC
+      LIMIT 1;
+    END IF;
+
+    IF v_raised_by_operator_id IS NULL THEN
+      RAISE EXCEPTION
+        'Supplier invoice total update would create an order bundle limit breach, but genuine operator provenance is missing. Update rolled back; no review flag was falsely attributed.';
+    END IF;
+
     INSERT INTO public.supplier_invoice_review_flags (
       order_id,
       supplier_invoice_id,
@@ -248,7 +309,7 @@ BEGIN
         to_char(v_breach, 'FM999999990.00')
       ),
       'open',
-      NEW.entered_by_operator_id
+      v_raised_by_operator_id
     );
   END IF;
 
@@ -325,8 +386,23 @@ BEGIN
     RAISE EXCEPTION 'Order and supplier invoice are required.';
   END IF;
 
-  -- Same lock family as the existing bundle-limit trigger. This serialises a
-  -- concurrent supplier summary INSERT/UPDATE without changing those workflows.
+  -- Lock order is deliberate and matches existing write-path realities:
+  -- summary rows -> invoice rows -> bundle advisory lock -> order -> breach flag.
+  -- The supervisor adjustment upsert holds the summary row before its AFTER UPDATE
+  -- breach trigger requests the advisory lock, so the inverse order would deadlock.
+  PERFORM 1
+  FROM public.supplier_invoice_financial_summary fs
+  JOIN public.supplier_invoices si ON si.id = fs.supplier_invoice_id
+  WHERE si.order_id = p_order_id
+  ORDER BY fs.id
+  FOR UPDATE OF fs;
+
+  PERFORM 1
+  FROM public.supplier_invoices si
+  WHERE si.order_id = p_order_id
+  ORDER BY si.id
+  FOR UPDATE OF si;
+
   PERFORM pg_advisory_xact_lock(hashtext('order_bundle_limit:' || p_order_id::text));
 
   SELECT *
@@ -359,16 +435,16 @@ BEGIN
     RAISE EXCEPTION 'Price increase v1 requires zero order markup because established funding authorities use different markup thresholds.';
   END IF;
 
-  -- A raw over-limit number is not entitlement. Require the exact genuine open
-  -- breach represented by the review card from which this action is called.
-  IF NOT EXISTS (
-    SELECT 1
-    FROM public.supplier_invoice_review_flags f
-    WHERE f.order_id = p_order_id
-      AND f.supplier_invoice_id = p_supplier_invoice_id
-      AND f.flag_type = 'order_bundle_limit_breach'
-      AND f.status IN ('open','under_review')
-  ) THEN
+  -- Lock and require the exact genuine breach represented by the review card.
+  PERFORM 1
+  FROM public.supplier_invoice_review_flags f
+  WHERE f.order_id = p_order_id
+    AND f.supplier_invoice_id = p_supplier_invoice_id
+    AND f.flag_type = 'order_bundle_limit_breach'
+    AND f.status IN ('open','under_review')
+  FOR UPDATE OF f;
+
+  IF NOT FOUND THEN
     RAISE EXCEPTION 'No open order bundle limit breach exists for this supplier invoice.';
   END IF;
 
@@ -403,6 +479,36 @@ BEGIN
   IF v_new_total <= v_old_total + 0.01 OR v_increase <= 0.01 THEN
     RAISE EXCEPTION 'No active supplier bundle price increase is currently required. Order GBP %, bundle GBP %.', v_old_total, v_new_total;
   END IF;
+
+  -- Lock funding-side rows after the order lock. Existing funding wrappers use
+  -- the order as their parent serialisation point, so this does not invert them.
+  PERFORM 1
+  FROM public.order_funding_events ofe
+  WHERE ofe.order_id = p_order_id
+  ORDER BY ofe.created_at, ofe.id
+  FOR UPDATE OF ofe;
+
+  PERFORM 1
+  FROM public.importer_credit_ledger icl
+  WHERE icl.importer_id = v_order.importer_id
+    AND (
+      icl.linked_order_id = p_order_id
+      OR icl.applied_to_order_id = p_order_id
+      OR (
+        icl.source_type = 'overfunding'
+        AND icl.source_entity_type = 'order'
+        AND icl.source_entity_id = p_order_id
+      )
+    )
+  ORDER BY icl.id
+  FOR UPDATE OF icl;
+
+  PERFORM 1
+  FROM public.order_pending_funding_surplus ps
+  WHERE ps.order_id = p_order_id
+    AND ps.status IN ('pending_evidence','credit_confirmed')
+  ORDER BY ps.created_at, ps.id
+  FOR UPDATE OF ps;
 
   -- V1 fails closed around funding histories whose existing authorities have
   -- known different historical semantics. Do not repair those authorities here.
@@ -487,8 +593,9 @@ BEGIN
     updated_at = now()
   WHERE o.id = p_order_id;
 
-  -- Existing funding authority. The price amendment itself creates no funding row.
+  -- Existing authorities. The price amendment itself creates no funding row.
   PERFORM public.recompute_order_platform_funded(p_order_id);
+  PERFORM public.sync_order_overfunding_credit(p_order_id);
 
   v_expected_gap_after := round(GREATEST(v_new_total - v_event_total, 0)::numeric, 2);
   v_expected_threshold_after := v_event_total >= v_new_total - 0.01;
