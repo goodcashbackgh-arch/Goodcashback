@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 import { rejectSupplierInvoiceRequireResubmissionAction, runMindeeOcrForSupplierInvoiceAction, saveSupplierInvoiceHeaderReviewAction } from "./actions";
+import { approveOrderSupplierPriceIncreaseAction } from "./price-actions";
 import { excludeSupplierInvoiceNoResubmissionAction } from "./rejection-actions";
 import { assertInvoiceReadyForCurrentApproval } from "./readiness";
 
@@ -63,6 +64,19 @@ type OcrHeaderTotalsRow = {
   ocr_invoice_vat_gbp: number | null;
 };
 
+type OrderSupplierPricePositionRow = {
+  order_id: string;
+  order_type: string;
+  current_order_value_gbp: number | null;
+  accepted_supplier_bundle_gbp: number | null;
+  price_increase_required_gbp: number | null;
+  over_limit_yn: boolean | null;
+  active_invoice_count: number | null;
+  missing_accepted_total_count: number | null;
+  unverified_invoice_count: number | null;
+  review_anchor_supplier_invoice_id: string | null;
+};
+
 function first<T>(value: MaybeArray<T>): T | null {
   if (!value) return null;
   return Array.isArray(value) ? value[0] ?? null : value;
@@ -84,8 +98,23 @@ function decisionLabel(decision: string | undefined) {
   if (!decision) return "decision unavailable";
   return decision.replaceAll("_", " ");
 }
-function shouldShowInInvoiceReview(invoice: InvoiceRow, decision: MatchDecisionRow | undefined) {
+function isPriceReviewAnchor(invoice: InvoiceRow, position: OrderSupplierPricePositionRow | undefined) {
+  return Boolean(
+    position
+    && position.order_type === "original"
+    && position.over_limit_yn
+    && position.review_anchor_supplier_invoice_id === invoice.id
+  );
+}
+function shouldShowInInvoiceReview(
+  invoice: InvoiceRow,
+  decision: MatchDecisionRow | undefined,
+  pricePosition: OrderSupplierPricePositionRow | undefined,
+  pricePositionUnavailable: boolean,
+) {
   if (invoice.review_status === "duplicate_blocked") return true;
+  if (isPriceReviewAnchor(invoice, pricePosition)) return true;
+  if (pricePositionUnavailable && invoice.review_status === "pending_review") return true;
   if (!decision) {
     return hasMindeeJob(invoice) || openFlags(invoice).length > 0;
   }
@@ -129,6 +158,7 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
 
   const invoices = (data ?? []) as unknown as InvoiceRow[];
   const invoiceIds = invoices.map((invoice) => invoice.id);
+  const orderIds = [...new Set(invoices.map((invoice) => invoice.order_id).filter(Boolean))];
   const { data: matchData, error: matchError } = invoiceIds.length > 0
     ? await supabase
         .from("supplier_invoice_match_decision_vw")
@@ -143,6 +173,13 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
         .in("supplier_invoice_id", invoiceIds)
     : { data: [] as OcrHeaderTotalsRow[], error: null };
 
+  const { data: pricePositionData, error: pricePositionError } = orderIds.length > 0
+    ? await supabase
+        .from("order_supplier_price_position_v1")
+        .select("order_id, order_type, current_order_value_gbp, accepted_supplier_bundle_gbp, price_increase_required_gbp, over_limit_yn, active_invoice_count, missing_accepted_total_count, unverified_invoice_count, review_anchor_supplier_invoice_id")
+        .in("order_id", orderIds)
+    : { data: [] as OrderSupplierPricePositionRow[], error: null };
+
   const matchByInvoiceId = new Map<string, MatchDecisionRow>();
   for (const row of (matchData ?? []) as MatchDecisionRow[]) {
     matchByInvoiceId.set(row.supplier_invoice_id, row);
@@ -153,8 +190,18 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
     ocrHeaderTotalsByInvoiceId.set(row.supplier_invoice_id, row);
   }
 
+  const pricePositionByOrderId = new Map<string, OrderSupplierPricePositionRow>();
+  for (const row of (pricePositionData ?? []) as OrderSupplierPricePositionRow[]) {
+    pricePositionByOrderId.set(row.order_id, row);
+  }
+
   const readiness = new Map(await Promise.all(invoices.map(async (invoice) => [invoice.id, await assertInvoiceReadyForCurrentApproval(supabase, invoice.id)] as const)));
-  const visible = invoices.filter((invoice) => shouldShowInInvoiceReview(invoice, matchByInvoiceId.get(invoice.id)));
+  const visible = invoices.filter((invoice) => shouldShowInInvoiceReview(
+    invoice,
+    matchByInvoiceId.get(invoice.id),
+    pricePositionByOrderId.get(invoice.order_id),
+    Boolean(pricePositionError),
+  ));
 
   return (
     <main
@@ -196,12 +243,13 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
             </div>
           </div>
 
-          {(qp.success || qp.error || matchError || ocrHeaderTotalsError) ? (
+          {(qp.success || qp.error || matchError || ocrHeaderTotalsError || pricePositionError) ? (
             <div className="space-y-3 border-t border-slate-100 px-5 py-4 sm:px-7">
               {qp.success ? <p className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-medium text-emerald-800">{qp.success}</p> : null}
               {qp.error ? <p className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-medium text-rose-800">{qp.error}</p> : null}
               {matchError ? <p className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-medium text-amber-800">Match decision view not available yet. Fallback filtering is active.</p> : null}
               {ocrHeaderTotalsError ? <p className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-medium text-rose-800">Invoice Net/VAT OCR values are temporarily unavailable. Do not save a header correction until this is resolved.</p> : null}
+              {pricePositionError ? <p className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-medium text-rose-800">Live supplier price position is temporarily unavailable. Pending invoices are being retained for safe review and price increase approval is unavailable.</p> : null}
             </div>
           ) : null}
         </section>
@@ -244,6 +292,13 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
             const acceptedNet = invoice.reviewed_invoice_net_gbp ?? ocrHeaderTotals?.ocr_invoice_net_gbp ?? null;
             const acceptedVat = invoice.reviewed_invoice_vat_gbp ?? ocrHeaderTotals?.ocr_invoice_vat_gbp ?? null;
             const match = matchByInvoiceId.get(invoice.id);
+            const pricePosition = pricePositionByOrderId.get(invoice.order_id);
+            const priceAnchor = isPriceReviewAnchor(invoice, pricePosition);
+            const priceVerified = Boolean(
+              priceAnchor
+              && Number(pricePosition?.missing_accepted_total_count ?? 0) === 0
+              && Number(pricePosition?.unverified_invoice_count ?? 0) === 0
+            );
             return (
               <article key={invoice.id} className="overflow-hidden rounded-[2rem] border border-slate-200 bg-white shadow-sm">
                 <div className="border-b border-slate-100 px-5 py-5 sm:px-7">
@@ -345,6 +400,27 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
 
                       {match?.pending_adjustment_yn ? <p className="mt-4 rounded-2xl border border-amber-300/40 bg-amber-300/10 p-3 text-sm text-amber-100">Delivery/discount approval is pending. This blocks supplier approval/accounting readiness, not operator line reconciliation.</p> : null}
                     </div>
+
+                    {priceAnchor ? (
+                      <div className="rounded-3xl border border-sky-200 bg-sky-50 p-5">
+                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-700">Order price increase required</p>
+                        <h3 className="mt-2 text-lg font-semibold text-slate-950">Accepted supplier invoices now exceed this order</h3>
+                        <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-3">
+                          <div className="rounded-2xl bg-white p-3"><dt className="text-slate-500">Current order value</dt><dd className="mt-1 font-semibold text-slate-950">{money(pricePosition?.current_order_value_gbp)}</dd></div>
+                          <div className="rounded-2xl bg-white p-3"><dt className="text-slate-500">Accepted supplier bundle</dt><dd className="mt-1 font-semibold text-slate-950">{money(pricePosition?.accepted_supplier_bundle_gbp)}</dd></div>
+                          <div className="rounded-2xl bg-white p-3"><dt className="text-slate-500">Additional funding required</dt><dd className="mt-1 font-semibold text-slate-950">{money(pricePosition?.price_increase_required_gbp)}</dd></div>
+                        </dl>
+                        {priceVerified ? (
+                          <form action={approveOrderSupplierPriceIncreaseAction} className="mt-4">
+                            <input type="hidden" name="order_id" value={invoice.order_id} />
+                            <input name="review_notes" className="w-full rounded-2xl border border-sky-200 bg-white p-3 text-sm outline-none transition focus:border-sky-300" placeholder="Optional approval note" />
+                            <button className="mt-3 rounded-full px-5 py-3 text-sm font-semibold text-slate-950 shadow-sm transition hover:opacity-90" style={{ backgroundColor: BRAND_COLOUR }}>Approve order price increase</button>
+                          </form>
+                        ) : (
+                          <p className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">Finish the ordinary invoice/header or delivery/discount verification first. The order value cannot be increased from unverified supplier evidence.</p>
+                        )}
+                      </div>
+                    ) : null}
 
                     <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
                       <form action={saveSupplierInvoiceHeaderReviewAction} className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
