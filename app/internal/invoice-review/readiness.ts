@@ -36,6 +36,34 @@ function hasPostingAccount(row: any) {
   return String(row?.nominal_code ?? "").trim().length > 0 || String(row?.sage_ledger_account_id ?? "").trim().length > 0;
 }
 
+async function assertVerifiedSupplierBundleWithinOrderValue(
+  supabase: SupabaseLike,
+  orderId: string,
+) {
+  const { data: position, error } = await supabase
+    .from("order_supplier_price_position_v1")
+    .select("order_id, order_type, current_order_value_gbp, accepted_supplier_bundle_gbp, over_limit_yn, missing_accepted_total_count, unverified_invoice_count")
+    .eq("order_id", orderId)
+    .maybeSingle();
+
+  if (error) {
+    return `Cannot approve current invoice yet. Live supplier price position is unavailable: ${error.message}`;
+  }
+  if (!position) {
+    return "Cannot approve current invoice yet. Live supplier price position is missing.";
+  }
+  if (String(position.order_type) !== "original" || !position.over_limit_yn) return null;
+
+  // Existing document/header/adjustment controls remain authoritative until the
+  // whole live supplier bundle is price-verified. The database transition guard
+  // independently protects the approved/current state after the invoice update.
+  if (Number(position.missing_accepted_total_count ?? 0) > 0 || Number(position.unverified_invoice_count ?? 0) > 0) {
+    return null;
+  }
+
+  return `Cannot approve current invoice yet. Verified supplier bundle £${asNumber(position.accepted_supplier_bundle_gbp).toFixed(2)} exceeds accepted order value £${asNumber(position.current_order_value_gbp).toFixed(2)}. Approve the order price increase first.`;
+}
+
 export async function assertInvoiceReadyForCurrentApproval(
   supabase: SupabaseLike,
   supplierInvoiceId: string,
@@ -132,7 +160,9 @@ export async function assertInvoiceReadyForCurrentApproval(
     .filter((line: any) => !isProgressedLine(line))
     .map((line: any) => String(line.id));
 
-  if (unsettledLineIds.length === 0) return null;
+  if (unsettledLineIds.length === 0) {
+    return assertVerifiedSupplierBundleWithinOrderValue(supabase, String(invoice.order_id));
+  }
 
   const { data: disputeLines, error: disputeError } = await supabase
     .from("dispute_lines")
@@ -171,7 +201,7 @@ export async function assertInvoiceReadyForCurrentApproval(
     return `Cannot approve current invoice yet. ${unbranchedCount} invoice line(s) are not progressed, not branched into refund/replacement exception handling, and not parked as non-physical financial lines.`;
   }
 
-  return null;
+  return assertVerifiedSupplierBundleWithinOrderValue(supabase, String(invoice.order_id));
 }
 
 export async function assertSupplierInvoiceAccountingCodingReady(
