@@ -5,15 +5,8 @@ SET LOCAL statement_timeout = '0';
 
 -- Governed by:
 -- docs/governing-pack/architecture/SAME_ORDER_SUPPLIER_PRICE_INCREASE_ADDENDUM_v1.md
---
--- Narrow scope only:
--- 1) keep the existing order_bundle_limit_breach open while the existing
---    financial-summary bundle still breaches the order value;
--- 2) prevent the existing supplier-approval transaction from committing while
---    that same live breach remains;
--- 3) close only the proven financial-summary UPDATE breach hole;
--- 4) add one supervisor/admin same-order price-increase RPC deriving the new
---    order value server-side from the existing bundle arithmetic.
+-- Existing completed platform sections are frozen outside the four expressly
+-- authorised interception points in that addendum.
 
 DO $preflight$
 BEGIN
@@ -21,6 +14,7 @@ BEGIN
      OR to_regclass('public.supplier_invoices') IS NULL
      OR to_regclass('public.supplier_invoice_financial_summary') IS NULL
      OR to_regclass('public.supplier_invoice_review_flags') IS NULL
+     OR to_regclass('public.supplier_invoice_accounting_coding_totals_vw') IS NULL
      OR to_regclass('public.order_funding_events') IS NULL
      OR to_regclass('public.order_funding_position_vw') IS NULL
      OR to_regclass('public.importer_credit_ledger') IS NULL
@@ -42,6 +36,9 @@ BEGIN
 END
 $preflight$;
 
+-- 1) Preserve the existing breach only for literal original orders. For every
+-- other order type this trigger returns NEW immediately and existing behaviour
+-- remains untouched.
 CREATE OR REPLACE FUNCTION public.protect_order_bundle_limit_breach_resolution_v1()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -50,6 +47,7 @@ SET search_path = public, pg_temp
 AS $$
 DECLARE
   v_order_id uuid;
+  v_order_type text;
   v_order_total numeric(12,2);
   v_active_total numeric(12,2);
   v_invoice_status text;
@@ -63,6 +61,15 @@ BEGIN
 
   v_order_id := OLD.order_id;
   IF v_order_id IS NULL THEN
+    RETURN NEW;
+  END IF;
+
+  SELECT o.order_type::text
+  INTO v_order_type
+  FROM public.orders o
+  WHERE o.id = v_order_id;
+
+  IF v_order_type IS DISTINCT FROM 'original' THEN
     RETURN NEW;
   END IF;
 
@@ -121,7 +128,9 @@ EXECUTE FUNCTION public.protect_order_bundle_limit_breach_resolution_v1();
 REVOKE ALL ON FUNCTION public.protect_order_bundle_limit_breach_resolution_v1()
 FROM PUBLIC, anon, authenticated;
 
-CREATE OR REPLACE FUNCTION public.flag_order_bundle_limit_after_summary_update_v1()
+-- 2) Close only the supervisor-entered summary upsert seam. The established
+-- operator-entered INSERT trigger remains unchanged.
+CREATE OR REPLACE FUNCTION public.flag_order_bundle_limit_after_supervisor_summary_change_v1()
 RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -137,7 +146,18 @@ DECLARE
   v_invoice_review_status text;
   v_raised_by_operator_id uuid;
 BEGIN
-  IF NEW.invoice_total_gbp IS NOT DISTINCT FROM OLD.invoice_total_gbp THEN
+  IF TG_OP = 'INSERT' THEN
+    IF NEW.source IS DISTINCT FROM 'supervisor_entered' THEN
+      RETURN NEW;
+    END IF;
+    v_raised_by_operator_id := NEW.entered_by_operator_id;
+  ELSIF TG_OP = 'UPDATE' THEN
+    IF NEW.source IS DISTINCT FROM 'supervisor_entered'
+       OR NEW.invoice_total_gbp IS NOT DISTINCT FROM OLD.invoice_total_gbp THEN
+      RETURN NEW;
+    END IF;
+    v_raised_by_operator_id := COALESCE(NEW.entered_by_operator_id, OLD.entered_by_operator_id);
+  ELSE
     RETURN NEW;
   END IF;
 
@@ -181,58 +201,61 @@ BEGIN
 
   v_breach := round((v_active_total - v_order_total)::numeric, 2);
 
-  IF v_breach > 0.01
-     AND NOT EXISTS (
-       SELECT 1
-       FROM public.supplier_invoice_review_flags f
-       WHERE f.supplier_invoice_id = NEW.supplier_invoice_id
-         AND f.order_id = v_order_id
-         AND f.flag_type = 'order_bundle_limit_breach'
-         AND f.status IN ('open','under_review')
-     ) THEN
-    v_raised_by_operator_id := COALESCE(NEW.entered_by_operator_id, OLD.entered_by_operator_id);
-
-    IF v_raised_by_operator_id IS NULL THEN
-      SELECT f.raised_by_operator_id
-      INTO v_raised_by_operator_id
-      FROM public.supplier_invoice_review_flags f
-      WHERE f.supplier_invoice_id = NEW.supplier_invoice_id
-        AND f.order_id = v_order_id
-        AND f.raised_by_operator_id IS NOT NULL
-      ORDER BY
-        (f.flag_type = 'order_bundle_limit_breach') DESC,
-        f.created_at DESC,
-        f.id DESC
-      LIMIT 1;
-    END IF;
-
-    IF v_raised_by_operator_id IS NULL THEN
-      RAISE EXCEPTION
-        'Supplier invoice total update would create an order bundle limit breach, but genuine operator provenance is missing. Update rolled back.';
-    END IF;
-
-    INSERT INTO public.supplier_invoice_review_flags (
-      order_id,
-      supplier_invoice_id,
-      flag_type,
-      message,
-      status,
-      raised_by_operator_id
-    ) VALUES (
-      v_order_id,
-      NEW.supplier_invoice_id,
-      'order_bundle_limit_breach',
-      format(
-        'Updating %s takes active gross supplier invoices to GBP %s against the accepted estimate of GBP %s. The order exceeds the accepted estimate by GBP %s and requires supervisor review.',
-        COALESCE(v_invoice_ref, NEW.supplier_invoice_id::text),
-        to_char(v_active_total, 'FM999999990.00'),
-        to_char(v_order_total, 'FM999999990.00'),
-        to_char(v_breach, 'FM999999990.00')
-      ),
-      'open',
-      v_raised_by_operator_id
-    );
+  IF v_breach <= 0.01 THEN
+    RETURN NEW;
   END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM public.supplier_invoice_review_flags f
+    WHERE f.supplier_invoice_id = NEW.supplier_invoice_id
+      AND f.order_id = v_order_id
+      AND f.flag_type = 'order_bundle_limit_breach'
+      AND f.status IN ('open','under_review')
+  ) THEN
+    RETURN NEW;
+  END IF;
+
+  IF v_raised_by_operator_id IS NULL THEN
+    SELECT f.raised_by_operator_id
+    INTO v_raised_by_operator_id
+    FROM public.supplier_invoice_review_flags f
+    WHERE f.supplier_invoice_id = NEW.supplier_invoice_id
+      AND f.order_id = v_order_id
+      AND f.raised_by_operator_id IS NOT NULL
+    ORDER BY
+      (f.flag_type = 'order_bundle_limit_breach') DESC,
+      f.created_at DESC,
+      f.id DESC
+    LIMIT 1;
+  END IF;
+
+  IF v_raised_by_operator_id IS NULL THEN
+    RAISE EXCEPTION
+      'Supervisor supplier-invoice summary change would create an order bundle limit breach, but genuine operator provenance is missing. Summary change rolled back.';
+  END IF;
+
+  INSERT INTO public.supplier_invoice_review_flags (
+    order_id,
+    supplier_invoice_id,
+    flag_type,
+    message,
+    status,
+    raised_by_operator_id
+  ) VALUES (
+    v_order_id,
+    NEW.supplier_invoice_id,
+    'order_bundle_limit_breach',
+    format(
+      'Updating %s takes active gross supplier invoices to GBP %s against the accepted estimate of GBP %s. The order exceeds the accepted estimate by GBP %s and requires supervisor review.',
+      COALESCE(v_invoice_ref, NEW.supplier_invoice_id::text),
+      to_char(v_active_total, 'FM999999990.00'),
+      to_char(v_order_total, 'FM999999990.00'),
+      to_char(v_breach, 'FM999999990.00')
+    ),
+    'open',
+    v_raised_by_operator_id
+  );
 
   RETURN NEW;
 END;
@@ -240,14 +263,20 @@ $$;
 
 DROP TRIGGER IF EXISTS trg_flag_order_bundle_limit_after_summary_update_v1
   ON public.supplier_invoice_financial_summary;
-CREATE TRIGGER trg_flag_order_bundle_limit_after_summary_update_v1
-AFTER UPDATE OF invoice_total_gbp
+DROP TRIGGER IF EXISTS trg_flag_order_bundle_limit_after_supervisor_summary_change_v1
+  ON public.supplier_invoice_financial_summary;
+CREATE TRIGGER trg_flag_order_bundle_limit_after_supervisor_summary_change_v1
+AFTER INSERT OR UPDATE OF invoice_total_gbp
 ON public.supplier_invoice_financial_summary
 FOR EACH ROW
-EXECUTE FUNCTION public.flag_order_bundle_limit_after_summary_update_v1();
+EXECUTE FUNCTION public.flag_order_bundle_limit_after_supervisor_summary_change_v1();
 
-REVOKE ALL ON FUNCTION public.flag_order_bundle_limit_after_summary_update_v1()
+REVOKE ALL ON FUNCTION public.flag_order_bundle_limit_after_supervisor_summary_change_v1()
 FROM PUBLIC, anon, authenticated;
+
+-- Remove the earlier branch-only UPDATE companion name if this migration is
+-- reapplied in a disposable/pre-merge environment. It has never been merged.
+DROP FUNCTION IF EXISTS public.flag_order_bundle_limit_after_summary_update_v1();
 
 CREATE OR REPLACE FUNCTION public.staff_approve_order_supplier_price_increase_v1(
   p_order_id uuid,
@@ -284,6 +313,9 @@ DECLARE
   v_event_count_after bigint;
   v_expected_threshold_before boolean;
   v_expected_threshold_after boolean;
+  v_mismatch_invoice_ref text;
+  v_mismatch_summary numeric(12,2);
+  v_mismatch_accepted numeric(12,2);
   v_notes text := NULLIF(btrim(COALESCE(p_review_notes, '')), '');
 BEGIN
   IF auth.uid() IS NULL THEN
@@ -305,9 +337,6 @@ BEGIN
     RAISE EXCEPTION 'Order and supplier invoice are required.';
   END IF;
 
-  -- Lock order is aligned with existing Save and summary-update paths:
-  -- summary rows -> invoice rows -> exact breach flag -> bundle advisory lock -> order.
-  -- Funding rows are deliberately not locked by this feature.
   PERFORM 1
   FROM public.supplier_invoice_financial_summary fs
   JOIN public.supplier_invoices si ON si.id = fs.supplier_invoice_id
@@ -375,6 +404,37 @@ BEGIN
       )
   ) THEN
     RAISE EXCEPTION 'The breach supplier invoice is not an active invoice on this order.';
+  END IF;
+
+  -- Accepted gross is a consistency validator only. The financial-summary bundle
+  -- remains the sole monetary authority for the amendment.
+  SELECT
+    COALESCE(si.invoice_ref, si.id::text),
+    round(fs.invoice_total_gbp::numeric, 2),
+    round(t.accepted_invoice_gross_gbp::numeric, 2)
+  INTO
+    v_mismatch_invoice_ref,
+    v_mismatch_summary,
+    v_mismatch_accepted
+  FROM public.supplier_invoice_financial_summary fs
+  JOIN public.supplier_invoices si ON si.id = fs.supplier_invoice_id
+  JOIN public.supplier_invoice_accounting_coding_totals_vw t
+    ON t.supplier_invoice_id = si.id
+  WHERE si.order_id = p_order_id
+    AND COALESCE(si.review_status, 'pending_review') NOT IN (
+      'rejected_resubmit_required','duplicate_blocked','superseded'
+    )
+    AND t.accepted_invoice_gross_gbp IS NOT NULL
+    AND abs(fs.invoice_total_gbp - t.accepted_invoice_gross_gbp) > 0.01
+  ORDER BY si.id
+  LIMIT 1;
+
+  IF FOUND THEN
+    RAISE EXCEPTION
+      'Order price increase blocked: supplier invoice % financial-summary total GBP % does not agree with current accepted invoice total GBP %. Reconcile the supplier invoice total first.',
+      v_mismatch_invoice_ref,
+      to_char(v_mismatch_summary, 'FM999999990.00'),
+      to_char(v_mismatch_accepted, 'FM999999990.00');
   END IF;
 
   SELECT round(COALESCE(sum(fs.invoice_total_gbp), 0)::numeric, 2)
@@ -523,7 +583,7 @@ END;
 $$;
 
 COMMENT ON FUNCTION public.staff_approve_order_supplier_price_increase_v1(uuid, uuid, text) IS
-'Admin/supervisor-only same-order supplier price increase for original orders with a genuine open order_bundle_limit_breach. New total is derived server-side from the existing active supplier financial-summary bundle; no client amount is accepted.';
+'Admin/supervisor-only same-order supplier price increase for original orders with a genuine open order_bundle_limit_breach. The active financial-summary bundle remains the monetary authority; existing accepted invoice gross is used only as a per-invoice stale-summary consistency check.';
 
 REVOKE ALL ON FUNCTION public.staff_approve_order_supplier_price_increase_v1(uuid, uuid, text)
 FROM PUBLIC, anon;
