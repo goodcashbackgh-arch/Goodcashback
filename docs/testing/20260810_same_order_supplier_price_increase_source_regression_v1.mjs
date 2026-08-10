@@ -104,6 +104,10 @@ assert(primaryMigration.includes("flag_order_bundle_limit_after_summary_update_v
 assert(primaryMigration.includes("AFTER UPDATE OF invoice_total_gbp"), "summary UPDATE guard is broader than the proven total-update hole");
 assert(primaryMigration.includes("pg_advisory_xact_lock(hashtext('order_bundle_limit:' || v_order_id::text))"), "summary UPDATE guard does not reuse the existing bundle lock family");
 assert(primaryMigration.includes("v_order_type <> 'original'"), "summary UPDATE guard is not original-order scoped");
+assert(primaryMigration.includes("COALESCE(NEW.entered_by_operator_id, OLD.entered_by_operator_id)"), "summary UPDATE breach does not preserve real operator provenance");
+assert(primaryMigration.includes("f.raised_by_operator_id"), "summary UPDATE breach lacks existing-flag provenance fallback");
+assert(primaryMigration.includes("no review flag was falsely attributed"), "missing operator provenance does not fail closed explicitly");
+assert(!primaryMigration.includes("raised_by_operator_id\n    ) VALUES"), "source sanity placeholder");
 
 // Narrow DB seam 3: dedicated server-derived same-order amendment.
 assert(primaryMigration.includes("staff_approve_order_supplier_price_increase_v1(\n  p_order_id uuid,\n  p_supplier_invoice_id uuid,"), "dedicated RPC signature is not provenance-bound");
@@ -114,6 +118,15 @@ assert(primaryMigration.includes("sum(fs.invoice_total_gbp)"), "RPC does not der
 assert(!primaryMigration.includes("accepted_invoice_gross_gbp"), "RPC reintroduces discarded accepted-gross authority");
 assert(!primaryMigration.includes("order_supplier_price_position_v1"), "RPC reintroduces discarded live-price read authority");
 assert(!primaryMigration.includes("enforce_supplier_invoice_order_price_limit_v1"), "global supplier-approval transition guard remains");
+
+const summaryLock = primaryMigration.indexOf("FOR UPDATE OF fs;", primaryMigration.indexOf("CREATE OR REPLACE FUNCTION public.staff_approve_order_supplier_price_increase_v1"));
+const invoiceLock = primaryMigration.indexOf("FOR UPDATE OF si;", summaryLock + 1);
+const advisoryLock = primaryMigration.indexOf("pg_advisory_xact_lock(hashtext('order_bundle_limit:' || p_order_id::text))", invoiceLock + 1);
+const orderLock = primaryMigration.indexOf("WHERE o.id = p_order_id\n  FOR UPDATE;", advisoryLock + 1);
+const breachFlagLock = primaryMigration.indexOf("FOR UPDATE OF f;", orderLock + 1);
+assert(summaryLock >= 0 && invoiceLock > summaryLock && advisoryLock > invoiceLock && orderLock > advisoryLock && breachFlagLock > orderLock,
+  "price RPC lock order must remain summary rows -> invoice rows -> advisory lock -> order -> breach flag");
+
 assert(primaryMigration.includes("v_order.content_locked_at IS NOT NULL"), "content lock is not respected");
 assert(primaryMigration.includes("v_order.accounting_release_ready_at IS NOT NULL"), "accounting release boundary is missing");
 assert(primaryMigration.includes("v_order.vat_release_approved_at IS NOT NULL"), "VAT release boundary is missing");
@@ -125,6 +138,7 @@ assert(primaryMigration.includes("ABS(COALESCE(v_order.markup_applied_gbp, 0)) >
 assert(primaryMigration.includes("public.order_funding_total_gbp(p_order_id)"), "canonical funding event total is not checked");
 assert(primaryMigration.includes("public.order_funding_position_vw"), "live funding position is not checked");
 assert(primaryMigration.includes("public.recompute_order_platform_funded(p_order_id)"), "funded_at is not recomputed");
+assert(primaryMigration.includes("public.sync_order_overfunding_credit(p_order_id)"), "safe existing overfunding synchroniser is not retained");
 assert(primaryMigration.includes("v_event_count_after <> v_event_count_before"), "amendment does not prove it created no funding event");
 assert(primaryMigration.includes("v_order.quote_total_ghs / v_old_total"), "stored effective local quote rate is not preserved");
 assert(!/set\s+bundled_quote_gbp\s*=/i.test(primaryMigration), "price build improperly rewrites bundled_quote_gbp");
