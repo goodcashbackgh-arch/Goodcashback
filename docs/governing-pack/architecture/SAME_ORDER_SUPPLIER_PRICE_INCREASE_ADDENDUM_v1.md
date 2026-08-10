@@ -106,6 +106,7 @@ Add one narrow **BEFORE UPDATE** protection on `supplier_invoice_review_flags`:
 3. If the bundle is still above `orders.order_total_gbp_declared + £0.01`, the trigger preserves the flag's existing open/under-review state and existing resolution fields.
 4. It does nothing to any other flag type.
 5. If the bundle no longer exceeds the order value, normal resolution is allowed.
+6. It does not take the bundle advisory lock. This avoids inverting the established summary-row -> advisory-lock order. A concurrent summary change that creates/recreates a breach is governed by the INSERT/UPDATE breach triggers below.
 
 Consequences:
 
@@ -126,8 +127,13 @@ Add one narrow **AFTER UPDATE OF invoice_total_gbp** trigger on `supplier_invoic
 1. recalculates the same existing active bundle;
 2. acts only for an `original` order;
 3. if the bundle exceeds the current order value by more than £0.01, ensures an open `order_bundle_limit_breach` exists for the changed supplier invoice;
-4. does not alter other review flags;
-5. does not change invoice values, order values, funding, progression or approval state.
+4. uses genuine existing operator provenance only: first the updated/previous summary's `entered_by_operator_id`, then an existing review flag's real `raised_by_operator_id` for that same supplier invoice;
+5. never invents or substitutes a staff user as the operator raiser;
+6. if a new breach must be created but no genuine operator provenance exists, fails closed and rolls the summary total update back with an explicit error rather than violating the review-flag audit contract;
+7. does not alter other review flags;
+8. does not change invoice values, order values, funding, progression or approval state.
+
+The normal operator-upload path already creates the financial-summary row with `entered_by_operator_id`; the established supervisor adjustment upsert updates that same unique row. Therefore ordinary current workflow retains real operator provenance. The fail-closed branch exists only for anomalous/historical rows that lack it.
 
 The existing insert trigger remains unchanged.
 
@@ -164,7 +170,7 @@ It must:
 
 1. require an authenticated active `admin` or `supervisor`;
 2. take the supplier invoice id only as the genuine breach provenance / review-card anchor, never as a monetary authority;
-3. acquire the existing `order_bundle_limit:<order_id>` advisory lock and deterministic row locks needed to serialise concurrent supplier-summary changes;
+3. use the following lock order to avoid deadlock with the existing adjustment upsert and supplier-invoice review paths: lock existing financial-summary rows for the order deterministically, then active supplier-invoice rows deterministically, then acquire the existing `order_bundle_limit:<order_id>` advisory lock, then lock the order row, then lock the exact open breach flag;
 4. require `orders.order_type = 'original'`;
 5. require `orders.content_locked_at IS NULL` and never bypass `public.enforce_order_locks()`;
 6. fail after established terminal boundaries: completed/terminal order, accounting release ready, or VAT release/reporting already approved;
@@ -182,7 +188,7 @@ It must:
 18. update only `orders.order_total_gbp_declared`, the proportionately derived `quote_total_ghs`, and normal update timestamp/audit effects;
 19. create no funding event;
 20. call the existing `recompute_order_platform_funded(order_id)` so the genuine new funding gap and `funded_at` become truthful;
-21. call the existing overfunding synchroniser only after the fail-closed preconditions above make it safe;
+21. call the existing `sync_order_overfunding_credit(order_id)` only after the fail-closed reversal/overfunding/surplus preconditions prove it is safe; with the new order value higher than the old value and no order-sourced overfunding credit, this is expected to be a no-op but keeps the established synchronisation authority intact;
 22. verify the amendment did not create/remove a funding event and that the resulting funding position matches the expected new gap;
 23. resolve only open/under-review `order_bundle_limit_breach` flags for that order **after** the order value has been increased; the self-protection trigger will then allow resolution because the breach no longer exists;
 24. return old total, new total, increase, funding total, resulting funding gap, funded_at and derived `quote_total_ghs`.
@@ -253,21 +259,24 @@ At minimum prove:
 6. £720 order / £740 active summary bundle creates or has an open breach flag;
 7. Save correction may resolve other flags but cannot resolve that breach while £740 > £720;
 8. because the breach remains open, existing match-decision routing keeps the invoice on Supplier Invoice Review and existing supplier approval remains blocked;
-9. a financial-summary UPDATE that newly creates a breach raises the same flag;
-10. raw over-limit data without a genuine open breach flag cannot call the price RPC;
-11. replacement-child order cannot call the price RPC;
-12. browser cannot supply the new total;
-13. content-locked / terminal / accounting/VAT-released order fails without mutation;
-14. funding-authority mismatch, non-zero markup, funding reversal, incompatible overfunding or active surplus fails without mutation;
-15. clean £720 -> £740 update proportionately preserves `quote_total_ghs` economics and leaves locked FX/card fields untouched;
-16. amendment creates no funding event;
-17. existing recompute produces £20 gap and clears `funded_at`;
-18. only bundle-breach flags resolve after the new £740 baseline is committed; unrelated flags remain;
-19. ordinary £20 DVA top-up restores £740 funded state;
-20. existing supplier-payment source permits £140 after the prior £600 allocation;
-21. Build 4 target becomes £740 with no Build 4 code change;
-22. later £750 summary update creates a fresh governed breach;
-23. protected funding, DVA, supplier-payment, Build 4, Sage, VAT, shipping, tracking, replacement and Mini-build fingerprints remain unchanged.
+9. a financial-summary UPDATE that newly creates a breach raises the same flag using genuine operator provenance;
+10. a breach-creating summary UPDATE with no genuine operator provenance fails closed rather than inserting a falsely attributed flag;
+11. raw over-limit data without a genuine open breach flag cannot call the price RPC;
+12. replacement-child order cannot call the price RPC;
+13. browser cannot supply the new total;
+14. price RPC lock order is summary rows -> supplier invoice rows -> bundle advisory lock -> order -> exact breach flag;
+15. content-locked / terminal / accounting/VAT-released order fails without mutation;
+16. funding-authority mismatch, non-zero markup, funding reversal, incompatible overfunding or active surplus fails without mutation;
+17. clean £720 -> £740 update proportionately preserves `quote_total_ghs` economics and leaves locked FX/card fields untouched;
+18. amendment creates no funding event;
+19. existing recompute produces £20 gap and clears `funded_at`;
+20. safe existing overfunding synchronisation does not create a credit in this increased-baseline case;
+21. only bundle-breach flags resolve after the new £740 baseline is committed; unrelated flags remain;
+22. ordinary £20 DVA top-up restores £740 funded state;
+23. existing supplier-payment source permits £140 after the prior £600 allocation;
+24. Build 4 target becomes £740 with no Build 4 code change;
+25. later £750 summary update creates a fresh governed breach;
+26. protected funding, DVA, supplier-payment, Build 4, Sage, VAT, shipping, tracking, replacement and Mini-build fingerprints remain unchanged.
 
 ## Scope lock
 
