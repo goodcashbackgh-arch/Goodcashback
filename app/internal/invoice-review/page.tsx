@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 import { rejectSupplierInvoiceRequireResubmissionAction, runMindeeOcrForSupplierInvoiceAction, saveSupplierInvoiceHeaderReviewAction } from "./actions";
+import { approveOrderSupplierPriceIncreaseAction } from "./price-actions";
 import { excludeSupplierInvoiceNoResubmissionAction } from "./rejection-actions";
 import { assertInvoiceReadyForCurrentApproval } from "./readiness";
 
@@ -35,6 +36,7 @@ type InvoiceRow = {
   mindee_error_message: string | null;
   orders: MaybeArray<{
     order_ref: string | null;
+    order_type: string | null;
     order_total_gbp_declared: number | null;
     total_qty_declared: number | null;
     retailers: MaybeArray<{ name: string | null }>;
@@ -63,6 +65,12 @@ type OcrHeaderTotalsRow = {
   ocr_invoice_vat_gbp: number | null;
 };
 
+type BundleInvoiceRow = {
+  order_id: string;
+  review_status: string | null;
+  supplier_invoice_financial_summary: MaybeArray<{ invoice_total_gbp: number | null }>;
+};
+
 function first<T>(value: MaybeArray<T>): T | null {
   if (!value) return null;
   return Array.isArray(value) ? value[0] ?? null : value;
@@ -75,6 +83,7 @@ function orderRetailer(invoice: InvoiceRow) { return first(orderOf(invoice)?.ret
 function importer(invoice: InvoiceRow) { return first(orderOf(invoice)?.importers)?.company_name ?? "—"; }
 function enteredTotal(invoice: InvoiceRow) { return first(invoice.supplier_invoice_financial_summary)?.invoice_total_gbp ?? null; }
 function openFlags(invoice: InvoiceRow) { return (invoice.supplier_invoice_review_flags ?? []).filter((f) => ["open", "under_review"].includes(f.status)); }
+function hasOpenBundleBreach(invoice: InvoiceRow) { return openFlags(invoice).some((f) => f.flag_type === "order_bundle_limit_breach"); }
 function hasMindeeJob(invoice: InvoiceRow) { return Boolean(invoice.mindee_job_id); }
 function mindeeCompleted(invoice: InvoiceRow) { return invoice.mindee_ocr_status === "completed" || Boolean(invoice.mindee_result_saved_at); }
 function canStartMindee(invoice: InvoiceRow) { return invoice.review_status !== "duplicate_blocked" && !hasMindeeJob(invoice) && !mindeeCompleted(invoice); }
@@ -122,13 +131,15 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
 
   const { data, error } = await supabase
     .from("supplier_invoices")
-    .select(`id, order_id, invoice_ref, invoice_pdf_url, uploaded_at, ocr_invoice_ref, ocr_invoice_total_gbp, ocr_retailer_name, ocr_invoice_date, reviewed_invoice_net_gbp, reviewed_invoice_vat_gbp, review_status, blocked_from_sage_yn, review_notes, mindee_job_id, mindee_inference_id, mindee_model_id, mindee_ocr_status, mindee_enqueued_at, mindee_result_saved_at, mindee_pages_consumed, mindee_error_message, orders(order_ref, order_total_gbp_declared, total_qty_declared, retailers(name), importers(company_name)), supplier_invoice_financial_summary(invoice_total_gbp), supplier_invoice_review_flags(flag_type, message, status)`)
+    .select(`id, order_id, invoice_ref, invoice_pdf_url, uploaded_at, ocr_invoice_ref, ocr_invoice_total_gbp, ocr_retailer_name, ocr_invoice_date, reviewed_invoice_net_gbp, reviewed_invoice_vat_gbp, review_status, blocked_from_sage_yn, review_notes, mindee_job_id, mindee_inference_id, mindee_model_id, mindee_ocr_status, mindee_enqueued_at, mindee_result_saved_at, mindee_pages_consumed, mindee_error_message, orders(order_ref, order_type, order_total_gbp_declared, total_qty_declared, retailers(name), importers(company_name)), supplier_invoice_financial_summary(invoice_total_gbp), supplier_invoice_review_flags(flag_type, message, status)`)
     .in("review_status", ["pending_review", "duplicate_blocked"])
     .order("uploaded_at", { ascending: false })
     .limit(100);
 
   const invoices = (data ?? []) as unknown as InvoiceRow[];
   const invoiceIds = invoices.map((invoice) => invoice.id);
+  const breachOrderIds = [...new Set(invoices.filter(hasOpenBundleBreach).map((invoice) => invoice.order_id))];
+
   const { data: matchData, error: matchError } = invoiceIds.length > 0
     ? await supabase
         .from("supplier_invoice_match_decision_vw")
@@ -143,6 +154,13 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
         .in("supplier_invoice_id", invoiceIds)
     : { data: [] as OcrHeaderTotalsRow[], error: null };
 
+  const { data: bundleInvoiceData, error: bundleInvoiceError } = breachOrderIds.length > 0
+    ? await supabase
+        .from("supplier_invoices")
+        .select("order_id, review_status, supplier_invoice_financial_summary(invoice_total_gbp)")
+        .in("order_id", breachOrderIds)
+    : { data: [] as BundleInvoiceRow[], error: null };
+
   const matchByInvoiceId = new Map<string, MatchDecisionRow>();
   for (const row of (matchData ?? []) as MatchDecisionRow[]) {
     matchByInvoiceId.set(row.supplier_invoice_id, row);
@@ -151,6 +169,16 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
   const ocrHeaderTotalsByInvoiceId = new Map<string, OcrHeaderTotalsRow>();
   for (const row of (ocrHeaderTotalsData ?? []) as OcrHeaderTotalsRow[]) {
     ocrHeaderTotalsByInvoiceId.set(row.supplier_invoice_id, row);
+  }
+
+  const activeBundleByOrderId = new Map<string, number>();
+  if (!bundleInvoiceError) {
+    for (const row of (bundleInvoiceData ?? []) as unknown as BundleInvoiceRow[]) {
+      if (["rejected_resubmit_required", "duplicate_blocked", "superseded"].includes(String(row.review_status ?? "pending_review"))) continue;
+      const amount = Number(first(row.supplier_invoice_financial_summary)?.invoice_total_gbp);
+      if (!Number.isFinite(amount)) continue;
+      activeBundleByOrderId.set(row.order_id, (activeBundleByOrderId.get(row.order_id) ?? 0) + amount);
+    }
   }
 
   const readiness = new Map(await Promise.all(invoices.map(async (invoice) => [invoice.id, await assertInvoiceReadyForCurrentApproval(supabase, invoice.id)] as const)));
@@ -196,12 +224,13 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
             </div>
           </div>
 
-          {(qp.success || qp.error || matchError || ocrHeaderTotalsError) ? (
+          {(qp.success || qp.error || matchError || ocrHeaderTotalsError || bundleInvoiceError) ? (
             <div className="space-y-3 border-t border-slate-100 px-5 py-4 sm:px-7">
               {qp.success ? <p className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-medium text-emerald-800">{qp.success}</p> : null}
               {qp.error ? <p className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-medium text-rose-800">{qp.error}</p> : null}
               {matchError ? <p className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-medium text-amber-800">Match decision view not available yet. Fallback filtering is active.</p> : null}
               {ocrHeaderTotalsError ? <p className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-medium text-rose-800">Invoice Net/VAT OCR values are temporarily unavailable. Do not save a header correction until this is resolved.</p> : null}
+              {bundleInvoiceError ? <p className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-medium text-rose-800">Active supplier bundle total is temporarily unavailable. Price increase approval is disabled; the existing breach flag remains in control.</p> : null}
             </div>
           ) : null}
         </section>
@@ -238,6 +267,16 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
             const order = orderOf(invoice);
             const retailerName = orderRetailer(invoice);
             const flags = openFlags(invoice);
+            const bundleBreachOpen = flags.some((flag) => flag.flag_type === "order_bundle_limit_breach");
+            const orderValue = Number(order?.order_total_gbp_declared ?? 0);
+            const bundleValue = activeBundleByOrderId.get(invoice.order_id);
+            const canApprovePriceIncrease = Boolean(
+              bundleBreachOpen
+              && order?.order_type === "original"
+              && bundleValue !== undefined
+              && bundleValue > orderValue + 0.01
+            );
+            const additionalFundingRequired = canApprovePriceIncrease ? Number(bundleValue) - orderValue : 0;
             const block = readiness.get(invoice.id);
             const total = enteredTotal(invoice);
             const ocrHeaderTotals = ocrHeaderTotalsByInvoiceId.get(invoice.id);
@@ -345,6 +384,25 @@ export default async function InternalInvoiceReviewPage({ searchParams }: { sear
 
                       {match?.pending_adjustment_yn ? <p className="mt-4 rounded-2xl border border-amber-300/40 bg-amber-300/10 p-3 text-sm text-amber-100">Delivery/discount approval is pending. This blocks supplier approval/accounting readiness, not operator line reconciliation.</p> : null}
                     </div>
+
+                    {canApprovePriceIncrease ? (
+                      <div className="rounded-3xl border border-sky-200 bg-sky-50 p-5">
+                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-700">Order bundle limit breach</p>
+                        <h3 className="mt-2 text-lg font-semibold text-slate-950">Approve order price increase</h3>
+                        <p className="mt-1 text-sm text-slate-600">The existing supplier bundle breach remains open. The server will recalculate the bundle again before changing the order.</p>
+                        <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-3">
+                          <div className="rounded-2xl bg-white p-3"><dt className="text-slate-500">Current order value</dt><dd className="mt-1 font-semibold text-slate-950">{money(orderValue)}</dd></div>
+                          <div className="rounded-2xl bg-white p-3"><dt className="text-slate-500">Active supplier bundle</dt><dd className="mt-1 font-semibold text-slate-950">{money(bundleValue)}</dd></div>
+                          <div className="rounded-2xl bg-white p-3"><dt className="text-slate-500">Additional funding required</dt><dd className="mt-1 font-semibold text-slate-950">{money(additionalFundingRequired)}</dd></div>
+                        </dl>
+                        <form action={approveOrderSupplierPriceIncreaseAction} className="mt-4">
+                          <input type="hidden" name="order_id" value={invoice.order_id} />
+                          <input type="hidden" name="supplier_invoice_id" value={invoice.id} />
+                          <input name="review_notes" className="w-full rounded-2xl border border-sky-200 bg-white p-3 text-sm outline-none transition focus:border-sky-300" placeholder="Optional approval note" />
+                          <button className="mt-3 rounded-full bg-slate-950 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-800">Approve order price increase</button>
+                        </form>
+                      </div>
+                    ) : null}
 
                     <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
                       <form action={saveSupplierInvoiceHeaderReviewAction} className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
