@@ -167,7 +167,7 @@ It must:
 2. require literal `orders.order_type = 'original'` — NULL or any other type fails closed;
 3. require the exact open/under-review `order_bundle_limit_breach` for the supplied invoice/order;
 4. require that invoice to remain an active invoice on that order;
-5. lock existing summary rows and invoice rows for that order deterministically, then acquire the existing bundle advisory lock, then lock the order and exact breach flag;
+5. use this lock order: existing summary rows for the order deterministically → supplier-invoice rows deterministically → exact open breach flag → existing `order_bundle_limit:<order_id>` advisory lock → order row. This matches the existing Save/summary-update paths and avoids the flag/advisory inversion deadlock;
 6. derive the new amount server-side from the same active `supplier_invoice_financial_summary.invoice_total_gbp` bundle;
 7. accept no browser-supplied amount;
 8. only increase; no decrease or no-op;
