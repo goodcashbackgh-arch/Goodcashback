@@ -55,13 +55,7 @@ export async function saveDeliveryAllocationAction(formData: FormData) {
     p_actor_mode: mode,
     p_request_kind: "single",
     p_tracking_submission_id: trackingSubmissionId,
-    p_items: [
-      {
-        supplier_invoice_line_id: lineId,
-        quantity_mode: "exact",
-        qty: qtyAllocated,
-      },
-    ],
+    p_items: [{ supplier_invoice_line_id: lineId, quantity_mode: "exact", qty: qtyAllocated }],
     p_content_state: contentState,
     p_allocation_basis: allocationBasis,
     p_evidence_url: evidenceUrl,
@@ -104,10 +98,7 @@ export async function saveBulkDeliveryAllocationAction(formData: FormData) {
     p_actor_mode: mode,
     p_request_kind: "bulk",
     p_tracking_submission_id: trackingSubmissionId,
-    p_items: lineIds.map((lineId) => ({
-      supplier_invoice_line_id: lineId,
-      quantity_mode: "remaining",
-    })),
+    p_items: lineIds.map((lineId) => ({ supplier_invoice_line_id: lineId, quantity_mode: "remaining" })),
     p_content_state: "confirmed",
     p_allocation_basis: mode === "staff" ? "supervisor_estimate" : "operator_declaration",
     p_evidence_url: null,
@@ -127,32 +118,82 @@ export async function saveBulkDeliveryAllocationAction(formData: FormData) {
   });
 }
 
+// Existing ordinary clear/rework path intentionally preserved by the bulk patch.
+function isProgressedFlag(value: string | null | undefined) {
+  return ["y", "yes", "true", "1"].includes((value ?? "").trim().toLowerCase());
+}
+
+function money(value: unknown) {
+  const n = Number(value ?? 0);
+  return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0;
+}
+
+async function refreshInvoiceAdjustmentLedger(params: {
+  supabase: Awaited<ReturnType<typeof createClient>>;
+  supplierInvoiceId: string | null | undefined;
+}) {
+  if (!params.supplierInvoiceId) return { ok: true as const };
+  const { error } = await (params.supabase as any).rpc("recalculate_invoice_adjustment_consumption_v1", {
+    p_supplier_invoice_id: params.supplierInvoiceId,
+  });
+  if (error) return { ok: false as const, error: error.message };
+  return { ok: true as const };
+}
+
+async function getOperatorActor(supabase: Awaited<ReturnType<typeof createClient>>, orderId: string) {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { ok: false as const, error: "Please sign in again." };
+  const { data: operator, error: operatorError } = await supabase.from("operators").select("id").eq("auth_user_id", user.id).eq("active", true).maybeSingle();
+  if (operatorError || !operator) return { ok: false as const, error: "Active operator account not found." };
+  const { data: order, error: orderError } = await supabase.from("orders").select("id, importer_id").eq("id", orderId).maybeSingle();
+  if (orderError || !order) return { ok: false as const, error: "Order not found." };
+  const { data: access, error: accessError } = await supabase.from("operator_importers").select("id").eq("operator_id", operator.id).eq("importer_id", order.importer_id).is("revoked_at", null).limit(1).maybeSingle();
+  if (accessError || !access) return { ok: false as const, error: "You are not authorised for this order." };
+  return { ok: true as const };
+}
+
+async function getStaffActor(supabase: Awaited<ReturnType<typeof createClient>>) {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { ok: false as const, error: "Please sign in again." };
+  const { data: staff, error } = await supabase.from("staff").select("id, role_type").eq("auth_user_id", user.id).eq("active", true).maybeSingle();
+  if (error || !staff) return { ok: false as const, error: "Active staff account not found." };
+  if (!["admin", "supervisor"].includes(String(staff.role_type))) return { ok: false as const, error: "Only supervisor/admin staff can use the internal allocation workspace." };
+  return { ok: true as const };
+}
+
+async function requireActor(params: { supabase: Awaited<ReturnType<typeof createClient>>; mode: "operator" | "staff"; orderId: string }) {
+  return params.mode === "staff" ? getStaffActor(params.supabase) : getOperatorActor(params.supabase, params.orderId);
+}
+
 export async function clearDeliveryAllocationForLineAction(formData: FormData) {
   const supabase = await createClient();
   const mode = readString(formData, "mode") === "staff" ? "staff" : "operator";
   const orderId = readString(formData, "order_id");
   const lineId = readString(formData, "supplier_invoice_line_id");
-
   if (!orderId || !lineId) redirect("/importer");
 
-  const { data, error } = await (supabase as any).rpc("delivery_clear_tracking_allocations_v1", {
-    p_order_id: orderId,
-    p_actor_mode: mode,
-    p_supplier_invoice_line_id: lineId,
-  });
+  const actor = await requireActor({ supabase, mode, orderId });
+  if (!actor.ok) redirectBack(mode, orderId, { error: actor.error });
 
-  if (error) {
-    redirectBack(mode, orderId, {
-      error: rpcErrorMessage(
-        error,
-        "This allocation has downstream history and cannot be cleared here. Use the controlled correction route.",
-      ),
-    });
-  }
+  const { data: lineBeforeClear, error: lineBeforeClearError } = await (supabase as any)
+    .from("supplier_invoice_lines")
+    .select("supplier_invoice_id")
+    .eq("id", lineId)
+    .maybeSingle();
+  if (lineBeforeClearError) redirectBack(mode, orderId, { error: lineBeforeClearError.message });
 
-  const deletedCount = Number(data?.deleted_allocation_count ?? 0);
-  revalidateDeliveryAllocation(orderId);
-  redirectBack(mode, orderId, {
-    success: `${deletedCount} editable package allocation${deletedCount === 1 ? "" : "s"} cleared and the invoice adjustment ledger refreshed atomically.`,
-  });
+  const { error } = await (supabase as any)
+    .from("order_tracking_line_allocations")
+    .delete()
+    .eq("order_id", orderId)
+    .eq("supplier_invoice_line_id", lineId)
+    .is("locked_for_export_pack_at", null);
+  if (error) redirectBack(mode, orderId, { error: error.message });
+
+  const refresh = await refreshInvoiceAdjustmentLedger({ supabase, supplierInvoiceId: lineBeforeClear?.supplier_invoice_id });
+  if (!refresh.ok) redirectBack(mode, orderId, { error: refresh.error });
+
+  revalidatePath(`/importer/delivery-allocation/${orderId}`);
+  revalidatePath(`/internal/delivery-allocation/${orderId}`);
+  redirectBack(mode, orderId, { success: "Unlocked package allocations cleared and invoice adjustment ledger refreshed." });
 }
