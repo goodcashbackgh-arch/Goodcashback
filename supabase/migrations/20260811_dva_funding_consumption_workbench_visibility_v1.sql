@@ -7,13 +7,14 @@ SET LOCAL statement_timeout = '0';
 -- Governing authority:
 -- docs/governing-pack/ui/DVA_FUNDING_CONSUMPTION_WORKBENCH_VISIBILITY_ADDENDUM_v1.md
 --
--- Exact scope:
---   1. compatibility-summary aggregate calculation only;
+-- Exact runtime scope only:
+--   1. compatibility-summary aggregate calculation;
 --   2. final-balance canonical amount guard;
---   3. retailer-refund/IN canonical amount guard only;
+--   3. retailer-refund/IN canonical amount guard;
 --   4. customer-funding + FX split canonical amount guard.
 --
--- No data repair. No new trigger/table/column. No UI change. No canonical-control rewrite.
+-- No data repair. No generic trigger. No new table/column. No UI change.
+-- No canonical-control, supplier, loyalty, shipper, Sage, VAT or funding rewrite.
 
 DO $preflight$
 DECLARE
@@ -93,9 +94,7 @@ END
 $preflight$;
 
 -- ---------------------------------------------------------------------------
--- 1. Compatibility view: patch only the three aggregate availability fields.
---    The exact deployed definition is carried forward, including loyalty source/
---    destination handling and the outer voided-import filter.
+-- 1. Compatibility view: only three existing aggregate availability fields.
 -- ---------------------------------------------------------------------------
 DO $patch_view$
 DECLARE
@@ -103,6 +102,7 @@ DECLARE
   v_patched text;
   v_old text;
   v_new text;
+  v_hits integer;
 BEGIN
   SELECT pg_get_viewdef('public.dva_statement_line_allocation_summary_vw'::regclass, true)
     INTO v_def;
@@ -110,35 +110,34 @@ BEGIN
 
   v_old := 'base.normal_confirmed_allocated_gbp + base.loyalty_credit_funding_allocated_gbp AS confirmed_allocated_gbp';
   v_new := 'base.normal_confirmed_allocated_gbp + base.loyalty_credit_funding_allocated_gbp + COALESCE((SELECT sum(abs(dr.reconciled_gbp_amount)) FROM public.dva_reconciliation dr WHERE dr.dva_statement_line_id = base.dva_statement_line_id AND dr.reconciliation_type::text = ''order_funding''::text), 0::numeric) AS confirmed_allocated_gbp';
-  IF position(v_old IN v_patched) = 0 THEN
-    RAISE EXCEPTION 'Compatibility-view patch anchor missing: confirmed_allocated_gbp.';
+  v_hits := (length(v_patched) - length(replace(v_patched, v_old, ''))) / length(v_old);
+  IF v_hits <> 1 THEN
+    RAISE EXCEPTION 'Compatibility-view patch anchor count invalid for confirmed_allocated_gbp: %.', v_hits;
   END IF;
   v_patched := replace(v_patched, v_old, v_new);
 
   v_old := 'base.statement_gbp_amount - base.normal_confirmed_allocated_gbp - base.loyalty_credit_funding_allocated_gbp AS confirmed_unallocated_gbp';
   v_new := 'base.statement_gbp_amount - base.normal_confirmed_allocated_gbp - base.loyalty_credit_funding_allocated_gbp - COALESCE((SELECT sum(abs(dr.reconciled_gbp_amount)) FROM public.dva_reconciliation dr WHERE dr.dva_statement_line_id = base.dva_statement_line_id AND dr.reconciliation_type::text = ''order_funding''::text), 0::numeric) AS confirmed_unallocated_gbp';
-  IF position(v_old IN v_patched) = 0 THEN
-    RAISE EXCEPTION 'Compatibility-view patch anchor missing: confirmed_unallocated_gbp.';
+  v_hits := (length(v_patched) - length(replace(v_patched, v_old, ''))) / length(v_old);
+  IF v_hits <> 1 THEN
+    RAISE EXCEPTION 'Compatibility-view patch anchor count invalid for confirmed_unallocated_gbp: %.', v_hits;
   END IF;
   v_patched := replace(v_patched, v_old, v_new);
 
   v_old := 'abs(base.statement_gbp_amount - base.normal_confirmed_allocated_gbp - base.loyalty_credit_funding_allocated_gbp) < 0.01 AS confirmed_balanced_yn';
   v_new := 'abs(base.statement_gbp_amount - base.normal_confirmed_allocated_gbp - base.loyalty_credit_funding_allocated_gbp - COALESCE((SELECT sum(abs(dr.reconciled_gbp_amount)) FROM public.dva_reconciliation dr WHERE dr.dva_statement_line_id = base.dva_statement_line_id AND dr.reconciliation_type::text = ''order_funding''::text), 0::numeric)) < 0.01 AS confirmed_balanced_yn';
-  IF position(v_old IN v_patched) = 0 THEN
-    RAISE EXCEPTION 'Compatibility-view patch anchor missing: confirmed_balanced_yn.';
+  v_hits := (length(v_patched) - length(replace(v_patched, v_old, ''))) / length(v_old);
+  IF v_hits <> 1 THEN
+    RAISE EXCEPTION 'Compatibility-view patch anchor count invalid for confirmed_balanced_yn: %.', v_hits;
   END IF;
   v_patched := replace(v_patched, v_old, v_new);
-
-  IF v_patched = v_def THEN
-    RAISE EXCEPTION 'Compatibility-view patch produced no change.';
-  END IF;
 
   EXECUTE 'CREATE OR REPLACE VIEW public.dva_statement_line_allocation_summary_vw AS ' || v_patched;
 END
 $patch_view$;
 
 -- ---------------------------------------------------------------------------
--- 2. Final-balance writer: canonical availability guard only.
+-- 2. Final-balance writer: canonical amount guard only.
 -- ---------------------------------------------------------------------------
 DO $patch_final_balance$
 DECLARE
@@ -147,14 +146,16 @@ DECLARE
   v_patched text;
   v_old text;
   v_new text;
+  v_hits integer;
 BEGIN
   SELECT pg_get_functiondef(v_reg) INTO v_def;
   v_patched := v_def;
 
   v_old := '  v_settlement record;';
   v_new := '  v_settlement record;' || E'\n' || '  v_statement_control record;';
-  IF position(v_old IN v_patched) = 0 THEN
-    RAISE EXCEPTION 'Final-balance patch anchor missing: declaration.';
+  v_hits := (length(v_patched) - length(replace(v_patched, v_old, ''))) / length(v_old);
+  IF v_hits <> 1 THEN
+    RAISE EXCEPTION 'Final-balance declaration anchor count invalid: %.', v_hits;
   END IF;
   v_patched := replace(v_patched, v_old, v_new);
 
@@ -173,8 +174,9 @@ BEGIN
 
   v_line_remaining_before := ROUND(COALESCE(v_statement_control.remaining_unconsumed_gbp, 0)::numeric, 2);
 $guard$;
-  IF position(v_old IN v_patched) = 0 THEN
-    RAISE EXCEPTION 'Final-balance patch anchor missing: remaining calculation.';
+  v_hits := (length(v_patched) - length(replace(v_patched, v_old, ''))) / length(v_old);
+  IF v_hits <> 1 THEN
+    RAISE EXCEPTION 'Final-balance remaining anchor count invalid: %.', v_hits;
   END IF;
   v_patched := replace(v_patched, v_old, rtrim(v_new, E'\n'));
 
@@ -192,8 +194,9 @@ $guard$;
     RAISE EXCEPTION 'Final-balance allocation violates canonical statement-line control for %', p_dva_statement_line_id;
   END IF;
 $postcheck$;
-  IF position(v_old IN v_patched) = 0 THEN
-    RAISE EXCEPTION 'Final-balance patch anchor missing: postcondition.';
+  v_hits := (length(v_patched) - length(replace(v_patched, v_old, ''))) / length(v_old);
+  IF v_hits <> 1 THEN
+    RAISE EXCEPTION 'Final-balance postcondition anchor count invalid: %.', v_hits;
   END IF;
   v_patched := replace(v_patched, v_old, rtrim(v_new, E'\n'));
 
@@ -203,7 +206,7 @@ $patch_final_balance$;
 
 -- ---------------------------------------------------------------------------
 -- 3. Operational writer: retailer_refund / IN branch only.
---    OUT exception/hold branches retain their exact existing calculation.
+--    OUT exception/hold branches retain their existing amount calculation.
 -- ---------------------------------------------------------------------------
 DO $patch_retailer_refund$
 DECLARE
@@ -212,27 +215,24 @@ DECLARE
   v_patched text;
   v_old text;
   v_new text;
+  v_hits integer;
 BEGIN
   SELECT pg_get_functiondef(v_reg) INTO v_def;
   v_patched := v_def;
 
   v_old := '  v_order record;';
   v_new := '  v_order record;' || E'\n' || '  v_statement_control record;';
-  IF position(v_old IN v_patched) = 0 THEN
-    RAISE EXCEPTION 'Retailer-refund patch anchor missing: declaration.';
+  v_hits := (length(v_patched) - length(replace(v_patched, v_old, ''))) / length(v_old);
+  IF v_hits <> 1 THEN
+    RAISE EXCEPTION 'Retailer-refund declaration anchor count invalid: %.', v_hits;
   END IF;
   v_patched := replace(v_patched, v_old, v_new);
 
-  v_old := $anchor$
-  if p_allocation_type in ('exception_hold', 'not_charged_closure', 'unmatched_hold') and v_line.direction <> 'out' then
-    raise exception 'Exception/hold allocation requires an OUT statement line. Line % has direction %', p_dva_statement_line_id, v_line.direction;
-  end if;
-$anchor$;
-  v_new := $guard$
-  if p_allocation_type in ('exception_hold', 'not_charged_closure', 'unmatched_hold') and v_line.direction <> 'out' then
-    raise exception 'Exception/hold allocation requires an OUT statement line. Line % has direction %', p_dva_statement_line_id, v_line.direction;
-  end if;
-
+  -- Single-line anchor only. Canonical guard is inserted at the exact point where
+  -- the existing function derives its available amount. OUT branches retain the
+  -- original allocation-table calculation unchanged.
+  v_old := '  v_unallocated_before := round(v_line.amount_gbp_equivalent::numeric - v_existing_confirmed_total, 2);';
+  v_new := $remaining$
   if p_allocation_type = 'retailer_refund' then
     select p.* into v_statement_control
     from public.statement_line_control_position_v1 p
@@ -247,23 +247,15 @@ $anchor$;
     if coalesce(v_statement_control.remaining_unconsumed_gbp, 0) <= 0.005 then
       raise exception 'Statement line % has no canonical remaining amount available for retailer refund allocation', p_dva_statement_line_id;
     end if;
-  end if;
-$guard$;
-  IF position(rtrim(v_old, E'\n') IN v_patched) = 0 THEN
-    RAISE EXCEPTION 'Retailer-refund patch anchor missing: direction guard.';
-  END IF;
-  v_patched := replace(v_patched, rtrim(v_old, E'\n'), rtrim(v_new, E'\n'));
 
-  v_old := '  v_unallocated_before := round(v_line.amount_gbp_equivalent::numeric - v_existing_confirmed_total, 2);';
-  v_new := $remaining$
-  if p_allocation_type = 'retailer_refund' then
     v_unallocated_before := round(coalesce(v_statement_control.remaining_unconsumed_gbp, 0)::numeric, 2);
   else
     v_unallocated_before := round(v_line.amount_gbp_equivalent::numeric - v_existing_confirmed_total, 2);
   end if;
 $remaining$;
-  IF position(v_old IN v_patched) = 0 THEN
-    RAISE EXCEPTION 'Retailer-refund patch anchor missing: remaining calculation.';
+  v_hits := (length(v_patched) - length(replace(v_patched, v_old, ''))) / length(v_old);
+  IF v_hits <> 1 THEN
+    RAISE EXCEPTION 'Retailer-refund remaining anchor count invalid: %.', v_hits;
   END IF;
   v_patched := replace(v_patched, v_old, rtrim(v_new, E'\n'));
 
@@ -283,8 +275,9 @@ $remaining$;
     end if;
   end if;
 $postcheck$;
-  IF position(v_old IN v_patched) = 0 THEN
-    RAISE EXCEPTION 'Retailer-refund patch anchor missing: postcondition.';
+  v_hits := (length(v_patched) - length(replace(v_patched, v_old, ''))) / length(v_old);
+  IF v_hits <> 1 THEN
+    RAISE EXCEPTION 'Retailer-refund postcondition anchor count invalid: %.', v_hits;
   END IF;
   v_patched := replace(v_patched, v_old, rtrim(v_new, E'\n'));
 
@@ -302,27 +295,22 @@ DECLARE
   v_patched text;
   v_old text;
   v_new text;
+  v_hits integer;
 BEGIN
   SELECT pg_get_functiondef(v_reg) INTO v_def;
   v_patched := v_def;
 
   v_old := '  v_order record;';
   v_new := '  v_order record;' || E'\n' || '  v_statement_control record;';
-  IF position(v_old IN v_patched) = 0 THEN
-    RAISE EXCEPTION 'Customer-FX patch anchor missing: declaration.';
+  v_hits := (length(v_patched) - length(replace(v_patched, v_old, ''))) / length(v_old);
+  IF v_hits <> 1 THEN
+    RAISE EXCEPTION 'Customer-FX declaration anchor count invalid: %.', v_hits;
   END IF;
   v_patched := replace(v_patched, v_old, v_new);
 
-  v_old := $anchor$
-  IF v_requested_amount <= 0 THEN
-    RAISE EXCEPTION 'Reconciled GBP amount must be greater than zero. Received: %', v_requested_amount;
-  END IF;
-$anchor$;
+  -- Single-line anchor immediately before the existing funding-gap split.
+  v_old := '  v_gap_before := ROUND(COALESCE(public.order_funding_gap_gbp(p_order_id), 0)::numeric, 2);';
   v_new := $guard$
-  IF v_requested_amount <= 0 THEN
-    RAISE EXCEPTION 'Reconciled GBP amount must be greater than zero. Received: %', v_requested_amount;
-  END IF;
-
   SELECT p.* INTO v_statement_control
   FROM public.statement_line_control_position_v1 p
   WHERE p.statement_line_id = p_dva_statement_line_id;
@@ -336,11 +324,14 @@ $anchor$;
   IF v_requested_amount > COALESCE(v_statement_control.remaining_unconsumed_gbp, 0) + 0.005 THEN
     RAISE EXCEPTION 'Requested receipt amount % exceeds canonical statement-line remaining amount %', v_requested_amount, v_statement_control.remaining_unconsumed_gbp;
   END IF;
+
+  v_gap_before := ROUND(COALESCE(public.order_funding_gap_gbp(p_order_id), 0)::numeric, 2);
 $guard$;
-  IF position(rtrim(v_old, E'\n') IN v_patched) = 0 THEN
-    RAISE EXCEPTION 'Customer-FX patch anchor missing: pre-split guard.';
+  v_hits := (length(v_patched) - length(replace(v_patched, v_old, ''))) / length(v_old);
+  IF v_hits <> 1 THEN
+    RAISE EXCEPTION 'Customer-FX funding-gap anchor count invalid: %.', v_hits;
   END IF;
-  v_patched := replace(v_patched, rtrim(v_old, E'\n'), rtrim(v_new, E'\n'));
+  v_patched := replace(v_patched, v_old, rtrim(v_new, E'\n'));
 
   v_old := '  INSERT INTO public.dva_statement_line_allocations (';
   v_new := $residual$
@@ -358,8 +349,9 @@ $guard$;
 
   INSERT INTO public.dva_statement_line_allocations (
 $residual$;
-  IF position(v_old IN v_patched) = 0 THEN
-    RAISE EXCEPTION 'Customer-FX patch anchor missing: FX allocation.';
+  v_hits := (length(v_patched) - length(replace(v_patched, v_old, ''))) / length(v_old);
+  IF v_hits <> 1 THEN
+    RAISE EXCEPTION 'Customer-FX allocation anchor count invalid: %.', v_hits;
   END IF;
   v_patched := replace(v_patched, v_old, rtrim(v_new, E'\n'));
 
@@ -376,8 +368,9 @@ $residual$;
 
   RETURN v_result || jsonb_build_object(
 $postcheck$;
-  IF position(v_old IN v_patched) = 0 THEN
-    RAISE EXCEPTION 'Customer-FX patch anchor missing: postcondition.';
+  v_hits := (length(v_patched) - length(replace(v_patched, v_old, ''))) / length(v_old);
+  IF v_hits <> 1 THEN
+    RAISE EXCEPTION 'Customer-FX postcondition anchor count invalid: %.', v_hits;
   END IF;
   v_patched := replace(v_patched, v_old, rtrim(v_new, E'\n'));
 
@@ -386,7 +379,7 @@ END
 $patch_customer_fx$;
 
 -- ---------------------------------------------------------------------------
--- Postflight: every frozen authority must be bit-for-bit definition-stable.
+-- Postflight: every frozen authority must remain definition-stable.
 -- ---------------------------------------------------------------------------
 DO $postflight$
 DECLARE
@@ -467,6 +460,7 @@ BEGIN
   SELECT lower(pg_get_functiondef('public.staff_allocate_statement_line_to_final_balance_payment_v1(uuid,uuid,boolean,text)'::regprocedure))
     INTO v_function_def;
   IF position('statement_line_control_position_v1' IN v_function_def) = 0
+     OR position('remaining_unconsumed_gbp' IN v_function_def) = 0
      OR position('overconsumed_gbp' IN v_function_def) = 0
      OR position('principal_lane_count' IN v_function_def) = 0 THEN
     RAISE EXCEPTION 'Postflight failed: final-balance canonical guard missing.';
@@ -476,16 +470,21 @@ BEGIN
     INTO v_function_def;
   IF position('statement_line_control_position_v1' IN v_function_def) = 0
      OR position('retailer_refund' IN v_function_def) = 0
+     OR position('exception_hold' IN v_function_def) = 0
+     OR position('not_charged_closure' IN v_function_def) = 0
+     OR position('unmatched_hold' IN v_function_def) = 0
      OR position('principal_lane_count' IN v_function_def) = 0 THEN
-    RAISE EXCEPTION 'Postflight failed: retailer-refund canonical guard missing.';
+    RAISE EXCEPTION 'Postflight failed: retailer-refund canonical guard or frozen OUT branch missing.';
   END IF;
 
   SELECT lower(pg_get_functiondef('public.staff_reconcile_dva_line_to_order_customer_fx_gain_v1(uuid,uuid,numeric,uuid,text)'::regprocedure))
     INTO v_function_def;
   IF position('statement_line_control_position_v1' IN v_function_def) = 0
      OR position('staff_reconcile_dva_line_to_order(' IN v_function_def) = 0
-     OR position('fx residual' IN v_function_def) = 0 THEN
-    RAISE EXCEPTION 'Postflight failed: customer-FX canonical split guard missing.';
+     OR position('requested receipt amount' IN v_function_def) = 0
+     OR position('canonical post-funding remaining amount' IN v_function_def) = 0
+     OR position('credit_created_yn' IN v_function_def) = 0 THEN
+    RAISE EXCEPTION 'Postflight failed: customer-FX canonical split guard or existing contract missing.';
   END IF;
 END
 $postflight$;
