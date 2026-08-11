@@ -192,11 +192,24 @@ export async function loadDeliveryAllocationData(
     return { data: null, error: allocationError.message };
   }
 
-  const { data: controlState, error: controlError } = await db.rpc("delivery_allocation_control_state_v1", {
+  let controlMode: "operator" | "staff" = mode;
+  let controlResponse = await db.rpc("delivery_allocation_control_state_v1", {
     p_order_id: orderId,
-    p_actor_mode: mode,
+    p_actor_mode: controlMode,
   });
 
+  // Preserve both existing page callers unchanged: the internal page historically
+  // calls this loader with two arguments. If the default operator authority fails,
+  // retry only as staff; the RPC independently authenticates supervisor/admin role.
+  if (controlResponse.error && mode === "operator") {
+    controlMode = "staff";
+    controlResponse = await db.rpc("delivery_allocation_control_state_v1", {
+      p_order_id: orderId,
+      p_actor_mode: controlMode,
+    });
+  }
+
+  const { data: controlState, error: controlError } = controlResponse;
   if (controlError) {
     return { data: null, error: controlError.message };
   }
