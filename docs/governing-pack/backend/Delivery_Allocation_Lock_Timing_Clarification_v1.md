@@ -97,347 +97,365 @@ Shipper actions move package/shipment truth forward, but they do not lock item-c
 
 ---
 
-# Governing amendment v1.1 — atomic bulk allocation and exact-provenance rework
+# Governing amendment v1.2 — narrow atomic bulk ordinary allocation
 
-**Status:** additive governing amendment to this clarification  
+**Status:** governing correction and replacement for the branch-only v1.1 bulk specification  
 **Effective date:** 11 August 2026  
-**Implementation rule:** this section is the governing authority for the bulk delivery-allocation patch. Where this v1.1 section is more specific than sections 2–6 above, this v1.1 section controls. Existing working allocation, replacement, physical-receipt, shipment, customer-sales, Sage, VAT and export-evidence behaviour remains unchanged unless this section explicitly says otherwise.
+**Implementation rule:** this v1.2 amendment is the sole governing authority for the bulk delivery-allocation patch. It replaces the earlier branch-only v1.1 bulk/rework expansion in full. Sections 1–6 above remain unchanged. Existing working replacement, rework, physical-receipt, shipment, customer-review/release, Sage, VAT and export-evidence behaviour must remain unchanged.
 
-## 7. Purpose and non-regression boundary
+## 7. Purpose
 
-This amendment adds a surgical operator/supervisor convenience flow:
+Add one surgical convenience to the existing ordinary delivery-allocation workflow:
 
 ```text
-choose one tracking ref/package
+choose one existing tracking ref/package
 -> select several progressed physical supplier-invoice lines
--> explicitly confirm the selected items belong to that package
--> allocate the full current remaining quantity of every selected line atomically
+-> explicitly confirm that the selected items are in that package
+-> allocate the full current ordinary remaining quantity of every selected line atomically
 ```
 
-The patch must reuse the existing `order_tracking_line_allocations` model. It must not create a second allocation ledger, package model, tracking model, shipper allocation workflow, modal/wizard workflow, or replacement-allocation authority.
+This is not a redesign of delivery allocation. It is a bulk submit layer over the existing ordinary allocation ledger.
 
-The following are protected and must not be redesigned or weakened:
+The existing individual line form remains authoritative for partial quantities, unknown contents, evidence, notes, unusual basis and supervisor-estimate cases.
 
-- original supplier-invoice lines;
-- partial-quantity allocation through the existing individual line form;
-- existing allocation value/apportionment rules;
-- same-order free-replacement routing and successor allocation;
-- exact shipper physical-receipt workflow;
-- exact shipment-batch membership workflow;
-- customer review/release, Sage, VAT and export-evidence authorities;
-- role boundaries: operator/supervisor owns item-to-tracking truth; shipper owns physical receipt/package-to-shipment truth.
+## 8. Absolute non-regression boundary
 
-No existing table, column, trigger, constraint, working function, permission, UI label or downstream route may be changed merely to implement bulk selection unless this amendment explicitly requires that change.
+The patch must not change, replace, broaden or reinterpret:
 
-## 8. Precise lock and provenance rule
+- same-order free-replacement route creation;
+- the replacement tracking handoff UI;
+- `operator_allocate_same_order_replacement_tracking_v1`;
+- `physical_replacement_same_order_routes`;
+- `tracking_allocation_effective_entitlement_v1`;
+- physical receipt or receipt correction;
+- shipment candidates, package membership or exact line membership;
+- customer review, customer hold or customer sales release;
+- supplier invoice source facts;
+- invoice-adjustment monetary rules or the existing recalculation authority;
+- Sage, VAT, COS or export-evidence authorities;
+- existing ordinary clear/rework behaviour;
+- existing permissions, RLS policies, shared components or unrelated UI routes.
 
-The earlier package-level rule remains valid only for package-level events that do not durably consume one exact `order_tracking_line_allocations.id`.
+No new package model, allocation ledger, replacement authority, rework authority, control-state read authority, package-freeze rule, shipper workflow, modal or wizard may be introduced by this patch.
 
-Correct precedence is:
+The shared `app/_components/FloatingActionBar.tsx` must be reused unchanged.
+
+## 9. Replacement lane boundary
+
+Same-order free replacement is a separate physical retry lane.
+
+The replacement lane already works as:
 
 ```text
-package/header event without exact allocation provenance
-!= exact allocation hard lock
-
-immutable downstream row that references order_tracking_line_allocations.id
-= that exact allocation identity is no longer eligible for ordinary delete/reassignment
+failed original physical attempt remains raw immutable history
+-> approved replacement route carries exact replacement quantity/value
+-> importer selects one or more waiting replacement routes in the replacement handoff
+-> dedicated replacement RPC assigns successor tracking
+-> successor allocation is created on the same original order and supplier-invoice line
+-> effective entitlement remains unchanged
 ```
 
-Therefore a legacy/header-level shipper receipt, package status, quote, booking reference or other package-level fact does not by itself make every allocation row immutable.
+A replacement successor allocation is therefore a physical retry, not another unit of ordinary commercial allocation capacity.
 
-However, ordinary clear/rework must not delete or reassign an exact allocation row once durable downstream provenance references that allocation identity, including as applicable:
+This bulk patch must not expose replacement routes on the ordinary delivery-allocation bulk selector and must not submit replacement route IDs to the ordinary allocation RPC.
 
-1. finalised v2 shipper receipt line disposition;
-2. exact shipment-batch line membership;
-3. customer-sales release membership;
-4. durable customer-review membership that preserves exact allocation provenance;
-5. physical-remedy or same-order replacement source/successor provenance;
-6. explicit `locked_for_export_pack_at` or `allocation_status = 'locked_for_export_pack'`;
-7. another current `ON DELETE RESTRICT` downstream provenance control whose purpose is to preserve exact allocation history.
+The only replacement awareness required by ordinary delivery allocation is current-position arithmetic and writer serialization:
 
-Do not delete downstream history merely to make allocation deletion succeed.
+1. replacement **successor** allocations must not consume ordinary remaining quantity a second time;
+2. failed/source allocations remain ordinary historical allocations and continue to count toward ordinary allocated quantity;
+3. ordinary allocation and replacement successor allocation must share the existing order advisory-lock family so the two writers cannot race.
 
-A supplier-invoice line may contain both immutable existing allocation rows and genuine unallocated quantity. Immutable allocation rows must remain untouched while genuinely unallocated quantity remains eligible for a new ordinary allocation when all other controls permit it.
+Do not delete, reopen, rewrite or reclassify replacement rows to achieve this result.
 
-## 9. Bulk UX contract
+## 10. Ordinary remaining quantity
 
-The delivery-allocation page must preserve the existing individual forms and running-ledger presentation. Add only a thin bulk-selection layer over progressed physical lines.
-
-Required interaction:
+For delivery-allocation display and ordinary allocation validation:
 
 ```text
-Tracking ref / package
-[ existing active tracking ref dropdown ]
+effective supplier-line quantity
+= COALESCE(qty_confirmed, qty, 0)
 
-[ Select all available ]  [ Clear ]
-N of M selected
+ordinary allocated quantity
+= SUM(qty_allocated)
+  for allocation rows on the supplier line
+  excluding rows that are successor_tracking_line_allocation_id
+  of a committed same-order replacement route
 
-[checkbox] progressed line A — remaining quantity
-[checkbox] progressed line B — remaining quantity
-...
+ordinary remaining quantity
+= effective supplier-line quantity - ordinary allocated quantity
 ```
 
-When at least one eligible line is selected, reuse the existing `FloatingActionBar` pattern. The bar must show:
+The exclusion applies only to committed replacement successor rows. Raw allocation history remains visible in the allocation-history table.
 
-- selected line count;
-- total currently displayed remaining units selected;
-- selected tracking/package label;
-- explicit confirmation checkbox with wording materially equivalent to: `I confirm these selected items are in this tracking package.`;
-- one submit action materially equivalent to `Apply tracking ref`.
+Example:
 
-Changing the selected tracking ref or changing the selected line set must clear the confirmation checkbox. Submit must be disabled unless at least one line is selected, a tracking ref is selected and the explicit confirmation is checked.
+```text
+supplier line effective qty = 2
+original ordinary allocation = 2
+one unit fails
+replacement successor allocation = 1
 
-`Select all available` means every progressed physical line with current remaining quantity greater than zero. It may include a partially allocated line with a genuine unallocated remainder. It must not include complete lines or non-physical/non-progressed lines.
+raw physical attempts = 3
+ordinary allocated quantity = 2
+ordinary remaining quantity = 0
+```
 
-Bulk allocation always means the full **current server-authoritative remaining quantity** for each selected line. Bulk must not expose quantity inputs. Partial quantity remains exclusively on the existing individual line allocation path.
+If the original ordinary allocation had been only 1 before the retry:
 
-## 10. Authoritative write boundary
+```text
+supplier line effective qty = 2
+original ordinary allocation = 1
+replacement successor allocation = 1
 
-Create one narrow authenticated database authority, named:
+raw physical attempts = 2
+ordinary allocated quantity = 1
+ordinary remaining quantity = 1
+```
+
+The normal delivery-allocation page must still show that genuine ordinary remainder of 1.
+
+## 11. Authoritative ordinary allocation RPC
+
+Create one narrow authenticated database authority:
 
 ```text
 public.delivery_allocate_tracking_lines_v1
 ```
 
-Both the existing single-line allocation action and the new bulk action must use this same database authority. The application must not retain a competing direct-insert write path for ordinary delivery allocation.
+Both the existing single-line ordinary allocation action and the new bulk action must use this same authority. This removes the existing application-level read-then-insert race between ordinary writers.
 
-The authority may use a JSON payload so one transaction can support either:
+The function supports exactly two request kinds:
 
 ```text
-single: one line + explicit exact quantity
-bulk: several lines + server-derived full remaining quantity
+single
+bulk
 ```
 
-The exact function signature may be chosen to fit current repository conventions, but must include enough information to distinguish actor mode, request kind, order, tracking submission, selected lines, exact-vs-remaining quantity mode, current content/allocation metadata used by the existing single form, and the explicit bulk same-package confirmation.
+`single` contract:
 
-Bulk requires:
+- exactly one item;
+- `quantity_mode = 'exact'` is mandatory;
+- positive explicit quantity is mandatory;
+- preserves the existing content-state, basis, evidence and notes semantics;
+- tracking may remain nullable only for the existing unknown/needs-evidence states.
 
-- non-empty unique selected line IDs;
-- one non-superseded tracking submission belonging to the same order;
-- same-package confirmation = true;
-- every selected row using server-derived remaining quantity;
-- ordinary confirmed package-content allocation semantics.
+`bulk` contract:
 
-One invalid selected row must abort the entire transaction with zero new allocation rows.
+- at least one unique item;
+- every item must use `quantity_mode = 'remaining'`;
+- no browser quantity is accepted as authoritative;
+- one non-superseded tracking submission belonging to the order is mandatory;
+- `content_state = 'confirmed'`;
+- explicit `p_confirm_same_package = true` is mandatory;
+- every selected line receives its full current server-derived ordinary remaining quantity.
 
-## 11. Concurrency and transaction rule
+One invalid selected item aborts the entire transaction with zero new allocation rows.
 
-The new ordinary allocation authority must use the same order-level serialization family already used by the same-order free-replacement allocation authority so the two allocation writers cannot race each other.
+## 12. Transaction and concurrency contract
 
-Required sequence, in one PostgreSQL transaction:
+The ordinary allocation RPC must execute one transaction with this order:
 
 ```text
 authenticate actor
--> validate actor/order tenancy or staff role
+-> validate operator/importer access or active supervisor/admin staff
 -> lock order
 -> acquire pg_advisory_xact_lock(hashtext(order_id::text))
--> validate/lock tracking submission when required
+-> validate and lock tracking submission when supplied
 -> lock selected supplier-invoice lines in deterministic order
 -> lock relevant existing allocation rows in deterministic order
--> derive current remaining quantities under lock
--> validate every selected line
--> build every allocation row
--> insert all allocation rows
--> recalculate affected invoice-adjustment consumption using existing authority
--> return
+-> derive committed replacement successor identities for the selected lines
+-> calculate server-authoritative ordinary remaining quantity
+-> validate every selected line and request mode
+-> insert every ordinary allocation row
+-> call the existing recalculate_invoice_adjustment_consumption_v1 for each affected supplier invoice
+-> return result
 -> commit
 ```
 
-The browser must never be authoritative for remaining quantity. If the page was stale, the database recomputes current remaining quantity under the transaction lock.
+The same order advisory lock is already used by `operator_allocate_same_order_replacement_tracking_v1`; this is coordination only. The replacement function itself must remain byte-for-byte unchanged.
 
-No generic table-wide trigger enforcing raw `SUM(qty_allocated) <= supplier line qty` may be added. Same-order free-replacement successor allocations intentionally retain separate raw provenance and must continue to rely on the existing effective-entitlement controls.
+Do not add a generic table trigger or constraint based on raw `SUM(qty_allocated) <= supplier line qty`. Raw allocation history may legitimately exceed supplier-line quantity because same-order replacement successors are retained as physical-attempt history.
 
-## 12. Exact package mutation gate
+## 13. Existing monetary behaviour
 
-Ordinary package-content allocation must not silently mutate a package after an exact downstream snapshot has captured the package allocation set.
-
-For ordinary allocation to a tracking submission, block new allocation rows when the tracking package has already been consumed by either:
-
-1. a finalised receipt-model-v2 exact physical receipt for that tracking submission; or
-2. exact shipment-batch line membership for that tracking submission.
-
-Legacy/header-level package receipt alone must not be treated as this exact mutation gate unless it has exact allocation provenance.
-
-This gate is package-set integrity. It is separate from line-level reworkability and does not change the controlled exact receipt-correction or shipment-correction authorities.
-
-## 13. Effective quantity/value rule
-
-The read UI and authoritative write path must use the same effective supplier-line basis:
+For ordinary allocation, preserve the existing basis:
 
 ```text
-effective quantity = COALESCE(qty_confirmed, qty, 0)
 effective line value = COALESCE(amount_confirmed, amount_inc_vat_gbp, 0)
+base value for the new ordinary allocation
+= proportional effective line value for the quantity being allocated
 ```
 
-The delivery-allocation loader must therefore include confirmed quantity/value fields needed to calculate displayed original, allocated and remaining positions consistently with the database write authority.
+Do not create a new monetary algorithm for bulk.
 
-For ordinary allocation, preserve the existing value rule and existing adjustment-recalculation authority. Do not create a new monetary apportionment algorithm for bulk.
+After successful inserts, call the existing `recalculate_invoice_adjustment_consumption_v1` inside the same RPC transaction for every unique affected supplier invoice.
 
-## 14. Rework authority
+This amendment does not authorise replacement or redesign of that recalculation function. Any separate concern in that downstream authority must be handled independently under its own governing change.
 
-Create one narrow authenticated ordinary-rework authority, named:
+## 14. Loader/read changes
+
+The delivery-allocation loader may be changed only as required to make the existing page agree with the authoritative ordinary allocation RPC.
+
+Required additions:
+
+- load `qty_confirmed` and `amount_confirmed`;
+- derive effective line quantity/value from confirmed values when present;
+- identify committed same-order replacement successor allocation IDs for the current order;
+- expose a narrow boolean such as `counts_toward_ordinary_remaining` on loaded allocation rows.
+
+No new general-purpose control-state RPC is required.
+
+The page must calculate:
+
+- ordinary allocated quantity;
+- ordinary remaining quantity;
+- bulk selectability;
+- individual form `max` and default remaining quantity;
+
+using only allocation rows where `counts_toward_ordinary_remaining = true`.
+
+The raw allocation-history table continues to display every allocation row, including replacement successors.
+
+## 15. Bulk UI contract
+
+Add one small client component on the existing delivery-allocation page.
+
+Required interaction:
 
 ```text
-public.delivery_clear_tracking_allocations_v1
+Tracking ref / package
+[ active tracking dropdown ]
+
+[ Select all available ] [ Clear ]
+N of M selected
+
+[checkbox] line A — Remaining X
+[checkbox] line B — Remaining Y
 ```
 
-The existing `clearDeliveryAllocationForLineAction` must call this authority rather than directly deleting rows.
+When one or more lines are selected, reuse `FloatingActionBar` unchanged to show:
 
-The clear authority must use the same actor validation and order advisory transaction lock as ordinary allocation. It must delete only allocation rows that are currently eligible for ordinary clear and must leave immutable sibling allocation rows on the same supplier line untouched.
+- selected item count;
+- total currently displayed ordinary remaining units selected;
+- selected tracking/package label;
+- confirmation checkbox materially equivalent to `I confirm these selected items are in this tracking package.`;
+- `Apply tracking ref` submit button.
 
-A row is not eligible for ordinary clear when exact/durable downstream provenance blocks deletion as described in section 8. The function must not delete or alter downstream provenance to manufacture eligibility.
+Changing the tracking selection or selected line set must reset confirmation.
 
-After deleting eligible rows, the same transaction must invoke the existing invoice-adjustment recalculation for every affected supplier invoice. Recalculation failure must roll back the deletion.
+Submit is disabled unless:
 
-If no editable allocation rows remain, return a controlled error suitable for user display rather than a raw foreign-key error.
+- at least one line is selected;
+- a tracking ref is selected;
+- confirmation is checked.
 
-## 15. Control-state read
+Bulk has no quantity input. Partial allocation remains on the existing individual form.
 
-Add one narrow role-scoped read authority, named:
-
-```text
-public.delivery_allocation_control_state_v1
-```
-
-It must expose only operational facts required by the delivery-allocation page, including:
-
-- whether a tracking package currently accepts ordinary new allocations under the exact-package mutation gate;
-- whether an existing allocation row is eligible for ordinary simple clear;
-- a stable blocker code suitable for UI explanation.
-
-It must authenticate the current operator/order tenancy or active supervisor/admin staff and must not broaden shipper or cross-tenant access.
-
-Blocked tracking packages should remain visible in the tracking selector but disabled with an operational explanation rather than silently disappearing.
+`Select all available` selects every progressed physical line whose current ordinary remaining quantity is greater than zero.
 
 ## 16. Application wiring
 
-Required application changes are limited to the existing delivery-allocation surface:
+Permitted application changes are limited to:
 
 ```text
 app/delivery-allocation/actions.ts
 app/delivery-allocation/data.ts
 app/delivery-allocation/DeliveryAllocationWorkspace.tsx
-app/delivery-allocation/DeliveryAllocationBulkControls.tsx   -- new, small client component
+app/delivery-allocation/DeliveryAllocationBulkControls.tsx
 ```
 
-Reuse the existing shared `app/_components/FloatingActionBar.tsx` unchanged.
+The existing `saveDeliveryAllocationAction` becomes a thin wrapper around `delivery_allocate_tracking_lines_v1` with one `exact` item.
 
-The existing `saveDeliveryAllocationAction` remains as the form-facing server action but becomes a thin wrapper around `delivery_allocate_tracking_lines_v1` using one exact-quantity item payload.
+Add `saveBulkDeliveryAllocationAction` as a thin wrapper around the same RPC with selected line IDs in `remaining` mode.
 
-Add `saveBulkDeliveryAllocationAction` as a thin wrapper around the same RPC using unique selected line IDs and `remaining` quantity mode. It must not calculate values or remaining quantities in TypeScript and must not loop one database write per line.
+The browser must not calculate allocation values and must not loop one write per selected line.
 
-The existing clear action becomes a thin wrapper around `delivery_clear_tracking_allocations_v1`.
+The existing `clearDeliveryAllocationForLineAction` remains on its pre-patch implementation. No clear/rework authority is added by this patch.
 
-Do not convert the whole workspace into a client component. The new client component owns only temporary selection, selected count/unit summary, tracking choice interaction required for the bulk bar, confirmation state, Select All and Clear.
+Do not convert the whole workspace to a client component.
 
-## 17. UI allocation/rework state refinement
+## 17. Migration contract
 
-Do not equate `one existing allocation row is immutable` with `the entire supplier line has no allocatable remainder`.
+Use one additive, later migration. Do not edit any deployed migration.
 
-The UI must distinguish conceptually:
+The migration must:
 
-```text
-canAllocateRemaining
-hasReworkableAllocations
-hasImmutableAllocations
-```
+1. `BEGIN`;
+2. use repository-standard finite `lock_timeout` and statement timeout;
+3. preflight required tables, columns and `recalculate_invoice_adjustment_consumption_v1`;
+4. preflight `physical_replacement_same_order_routes` and its successor allocation column because ordinary remaining depends on that established architecture;
+5. install **only** `delivery_allocate_tracking_lines_v1` and its exact grants;
+6. not alter `order_tracking_line_allocations`, replacement functions/tables, receipt, shipment, customer, Sage, VAT or export authorities;
+7. revoke execution from `PUBLIC` and `anon` and grant authenticated execution consistent with current application use;
+8. `NOTIFY pgrst, 'reload schema'`;
+9. commit only after postflight confirms the authority exists.
 
-A partially allocated line may therefore keep an immutable existing allocation and still permit allocation of a genuine remaining quantity.
+No data repair, cleanup, reclassification or trigger installation is part of this migration.
 
-The old broad sentence that package receipt/selection never locks contents must be rendered more precisely on the delivery-allocation page. User-facing wording should state materially:
+## 18. Mandatory regression proof
 
-```text
-Editable allocations can be cleared and redone until the exact allocation has been captured by immutable receipt, shipment, customer-release or export/accounting history.
-```
+Before merge, prove at least:
 
-Blocked ordinary clear should state materially:
-
-```text
-This allocation has downstream history and cannot be cleared here. Use the controlled correction route.
-```
-
-## 18. Database migration contract
-
-Implementation must be additive. Do not edit deployed migrations.
-
-Create one later migration that:
-
-1. starts with `BEGIN`;
-2. sets finite `lock_timeout` and the repository-standard statement timeout;
-3. preflights required tables/functions/columns and aborts on missing prerequisites;
-4. installs only the three narrow authorities in sections 10, 14 and 15 plus their exact grants;
-5. revokes `PUBLIC`/`anon` execution and grants only the roles consistent with current authenticated application use;
-6. does not replace same-order replacement, physical receipt, shipment, customer-sales, Sage, VAT or export-evidence authorities;
-7. issues `NOTIFY pgrst, 'reload schema'`;
-8. commits only after postflight checks succeed.
-
-No destructive data repair is part of this migration.
-
-## 19. Mandatory regression proof
-
-The implementation is incomplete unless tests prove at least:
-
-### Existing single path
-- existing exact single allocation still succeeds;
-- partial quantity remains supported;
-- existing unknown/needs-evidence semantics remain supported;
-- wrong-order tracking and ordinary over-allocation fail closed.
+### Existing single ordinary allocation
+- exact single allocation succeeds;
+- partial quantity still succeeds;
+- unknown/needs-evidence semantics remain available;
+- wrong-order tracking fails;
+- non-progressed and active non-physical financial lines fail;
+- over-allocation fails;
+- a direct `single` RPC call using `quantity_mode = 'remaining'` fails.
 
 ### Bulk
-- one and several selected lines succeed;
-- partially allocated line receives only current remaining quantity;
+- one selected line succeeds;
+- several selected lines succeed atomically;
+- partially allocated line receives only current ordinary remainder;
 - duplicate line IDs fail;
-- missing confirmation fails;
-- one invalid selected row causes zero writes;
-- stale browser remainder cannot cause an over-allocation;
-- affected invoice-adjustment recalculation succeeds inside the same transaction;
-- recalculation failure causes complete rollback.
-
-### Exact package mutation
-- package with no exact snapshot accepts allocation;
-- legacy/header package activity alone does not incorrectly block;
-- finalised v2 exact receipt blocks ordinary new contents;
-- exact shipment membership blocks ordinary new contents.
-
-### Rework
-- editable allocation clears;
-- exact-receipt/shipment/customer-release/remedy/replacement-linked allocation is not silently deleted;
-- line containing immutable and editable allocations clears only editable rows;
-- recalculation is atomic with clear.
+- missing same-package confirmation fails;
+- stale browser quantity cannot over-allocate;
+- one invalid selected line leaves zero new allocation rows;
+- multiple affected invoices are recalculated inside the same transaction;
+- recalculation failure rolls back all inserted rows.
 
 ### Replacement non-regression
-- existing same-order free-replacement regressions pass unchanged;
-- successor allocation still succeeds;
-- no new raw cumulative trigger blocks it;
-- effective quantity/value conservation remains authoritative.
-
-### Shipper/downstream non-regression
-- bulk-created rows appear under the existing tracking package;
-- existing exact shipper receipt sees every positive allocation for that package;
-- exact receipt balancing remains unchanged;
-- no new supplier/customer/VAT/Sage values are exposed to shipper.
+- existing replacement panel and replacement RPC files are unchanged;
+- existing same-order replacement regressions still pass;
+- replacement successor creation still succeeds;
+- no new raw cumulative trigger exists;
+- a replacement successor does not consume ordinary remaining a second time;
+- raw allocation history still includes the successor row;
+- effective-entitlement quantity/value conservation remains unchanged.
 
 ### UI
-- tracking/selection changes reset confirmation;
+- confirmed quantity/value drives displayed effective quantity/value;
+- ordinary remaining excludes replacement successor rows;
+- raw history still displays replacement successor rows;
+- Select all includes every line with positive ordinary remainder;
+- tracking change resets confirmation;
+- line-selection change resets confirmation;
 - submit requires selection + tracking + confirmation;
-- bulk has no quantity inputs;
-- partial quantity remains on the existing individual form;
-- blocked tracking package is visible but disabled/explained;
-- success navigation clears temporary client selection state.
+- bulk exposes no quantity field;
+- existing individual partial form remains available.
 
-## 20. Locked acceptance example
+### Downstream smoke
+- bulk-created ordinary rows appear under the selected tracking submission exactly like individually created ordinary rows;
+- existing shipper receipt/shipment readers require no code change;
+- no replacement, shipper, customer, Sage, VAT or export file is changed by the patch.
+
+## 19. Locked acceptance examples
+
+### Ordinary bulk
 
 Given:
 
 ```text
-A qty 1, remaining 1
-B qty 3, existing allocation qty 1, remaining 2
-C qty 1, remaining 1
+A effective qty 1, ordinary remaining 1
+B effective qty 3, existing ordinary allocation qty 1, ordinary remaining 2
+C effective qty 1, ordinary remaining 1
 ```
 
-The operator selects tracking package `DHL123`, selects A/B/C, explicitly confirms they are in that package and submits bulk allocation.
+Choose `DHL123`, select A/B/C, confirm and submit.
 
-One atomic transaction must create:
+One transaction creates:
 
 ```text
 A -> DHL123 qty 1
@@ -445,14 +463,31 @@ B -> DHL123 qty 2
 C -> DHL123 qty 1
 ```
 
-The pre-existing B allocation remains untouched.
+The existing B allocation remains untouched.
 
-The existing shipper exact-receipt route must subsequently see A qty 1, B qty 2 and C qty 1 under DHL123 without any shipper workflow rewrite.
+### Replacement separation
 
-If any validation, insert or invoice-adjustment recalculation fails, none of the three new allocation rows may remain committed.
-
-## 21. Final governing sentence
+Given:
 
 ```text
-Bulk delivery allocation is only a safe convenience over the existing allocation ledger: choose one package, select progressed physical lines, explicitly confirm they belong together, and atomically allocate each line's current server-authoritative remaining quantity through the same database authority used by the existing single-line path. Preserve partial allocation, replacement effective-entitlement semantics, exact downstream provenance, shipper workflow and every unrelated working control unchanged.
+supplier line effective qty = 2
+existing original ordinary allocation = 1
+same-order replacement successor = 1
+```
+
+The ordinary delivery-allocation page must show:
+
+```text
+ordinary allocated = 1
+ordinary remaining = 1
+```
+
+while the raw allocation history may show both physical attempts.
+
+The replacement successor is created and managed only through the existing replacement lane.
+
+## 20. Final governing sentence
+
+```text
+This patch does one thing: add atomic bulk submission to the existing ordinary delivery-allocation lane. Single and bulk ordinary writes share one transaction-safe RPC; bulk uses current server-authoritative ordinary remaining quantity; replacement successor rows are excluded only from ordinary-remaining arithmetic and otherwise remain untouched raw history; the existing replacement, rework, shipper, customer, accounting and export workflows are not redesigned or replaced.
 ```
