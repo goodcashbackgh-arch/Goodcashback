@@ -46,13 +46,17 @@ Preserve its existing wording correction:
 
 `Amount received` -> `Payment applied to this order`
 
-Where the same customer operations route renders an account-credit component line beginning:
+The account-credit clarification must be scoped only to the same payment-summary card whose heading is exactly `Amount received` or the already-patched `Payment applied to this order`.
+
+Within that card only, where the contained account-credit component line begins:
 
 `Account credit applied:`
 
 clarify that component wording to:
 
 `Includes account credit:`
+
+Do not rename `Account credit applied` anywhere else on the customer route, including journey/status copy, payment details, credit/payment details, or any other customer surface.
 
 Do not change the displayed canonical payment amount.
 
@@ -68,18 +72,20 @@ For:
 - confirmed DVA cash funding £739.21;
 - applied account credit £0.79;
 
-customer presentation must read semantically as:
+customer presentation must read semantically in the payment-summary card as:
 
 - Payment applied to this order: £740.00;
 - Includes account credit: £0.79.
 
 The presentation must not imply £740.79 has been applied and must not reinterpret the canonical £740.00 as cash-only £739.21.
 
+All other existing `Account credit applied` wording outside that single summary card remains unchanged.
+
 ## 5. Downstream and cross-surface boundary
 
 No importer, internal, funding, settlement-resolution, DVA/card, accounting, Sage, VAT, supplier, shipment or database surface is changed.
 
-The customer operations layout remains byte-for-byte equivalent to `main` for this build. The only runtime delta is customer-route text clarification inside the pre-existing presentation patch.
+The customer operations layout remains byte-for-byte equivalent to `main` for this build. The only runtime delta is text clarification inside the already-existing customer settlement presentation patch, scoped to the single payment-summary card.
 
 ## 6. Regression requirements
 
@@ -94,7 +100,8 @@ Before merge confirm:
 7. Account-credit amount remains unchanged.
 8. Final balance, pending credit, funding threshold and completion/status calculations remain unchanged.
 9. Importer and internal surfaces remain unchanged.
+10. Only the account-credit line inside the payment-summary card is renamed; every other `Account credit applied` occurrence remains unchanged.
 
 ## Locked implementation rule
 
-> Preserve the canonical combined amount applied to the order. Clarify only that the displayed account-credit component is included in that total. Nothing else.
+> Preserve the canonical combined amount applied to the order. Inside the single payment-summary card only, clarify that the displayed account-credit component is included in that total. Nothing else.
