@@ -3,185 +3,492 @@ BEGIN;
 SET LOCAL lock_timeout = '15s';
 SET LOCAL statement_timeout = '0';
 
--- DVA funding-consumption workbench visibility v1.
--- Read-model only: count accepted-estimate order-funding reconciliation as
--- statement-line consumption so already-funded principal is not shown as remaining.
+-- DVA statement-line canonical consumption alignment v1.
+-- Governing authority:
+-- docs/governing-pack/ui/DVA_FUNDING_CONSUMPTION_WORKBENCH_VISIBILITY_ADDENDUM_v1.md
+--
+-- Exact scope:
+--   1. compatibility-summary aggregate calculation only;
+--   2. final-balance canonical amount guard;
+--   3. retailer-refund/IN canonical amount guard only;
+--   4. customer-funding + FX split canonical amount guard.
+--
+-- No data repair. No new trigger/table/column. No UI change. No canonical-control rewrite.
 
-DO $$
+DO $preflight$
+DECLARE
+  r record;
+  v_actual text;
 BEGIN
-  IF to_regclass('public.dva_statement_line_allocations') IS NULL THEN
-    RAISE EXCEPTION 'Prerequisite missing: public.dva_statement_line_allocations';
-  END IF;
-  IF to_regclass('public.dva_statement_lines') IS NULL THEN
-    RAISE EXCEPTION 'Prerequisite missing: public.dva_statement_lines';
-  END IF;
-  IF to_regclass('public.dva_statements') IS NULL THEN
-    RAISE EXCEPTION 'Prerequisite missing: public.dva_statements';
-  END IF;
-  IF to_regclass('public.dva_reconciliation') IS NULL THEN
-    RAISE EXCEPTION 'Prerequisite missing: public.dva_reconciliation';
-  END IF;
-  IF to_regclass('public.main_bank_completion_loyalty_funding_matches') IS NULL THEN
-    RAISE EXCEPTION 'Prerequisite missing: public.main_bank_completion_loyalty_funding_matches';
-  END IF;
-END $$;
+  FOR r IN
+    SELECT *
+    FROM (VALUES
+      ('view', 'public.dva_statement_line_allocation_summary_vw', '1219ed77fd0db05f59624e508fc64357'),
+      ('function', 'public.staff_reconcile_dva_line_to_order_customer_fx_gain_v1(uuid,uuid,numeric,uuid,text)', '6f369fcd2a64a67736d77bf97d55e4cc'),
+      ('function', 'public.staff_allocate_statement_line_to_dispute_or_hold(uuid,character varying,uuid,numeric,text)', 'b90f7d7a2e6293a4c44acab6d08e649a'),
+      ('function', 'public.staff_allocate_statement_line_to_final_balance_payment_v1(uuid,uuid,boolean,text)', '61c8d9289a8b42ff72e6e4d78aaabb96'),
+      ('function', 'public.staff_reconcile_dva_line_to_order(uuid,uuid,numeric,boolean,uuid,text)', '3d888918bff171d132049104b5692937'),
+      ('function', 'public.trg_sync_order_funding_event_from_dva_reconciliation()', '28fa4b6b255956601d84ed813dfca47e'),
+      ('function', 'public.internal_guard_order_funding_statement_line_v1()', 'b687d2343908cc3b526efaebd3d820d9'),
+      ('view', 'public.statement_line_effective_interpretation_v1', 'b9f63595b613c69715fe807836bdd4ef'),
+      ('function', 'public.internal_completion_loyalty_destination_in_candidates_v1(uuid,text,integer,integer)', '4c77b96b38121b879ccf273b829b5aa6'),
+      ('function', 'public.staff_pair_loyalty_destination_in_and_release_v1(uuid,uuid,text)', '49d05f8d9400611d74582fd6d5e3e0c5'),
+      ('function', 'public.staff_reconcile_dva_line_to_order_pending_surplus_v1(uuid,uuid,numeric,uuid,text)', '93d34501d77c71d4c3ace0424f1d29b5'),
+      ('view', 'public.statement_line_control_position_v1', 'fe6ee2fc8909e383b8d584995b30cc78'),
+      ('function', 'public.internal_statement_line_control_resolver_v2(uuid)', 'eb9bfa5ea572335272217c372fa02f53'),
+      ('function', 'public.staff_allocate_main_bank_line_to_shipper_ap_v1(uuid,uuid,numeric,text)', '233823bb26a631cc6e2e51a36ee89e27'),
+      ('function', 'public.staff_allocate_statement_line_to_supplier_invoice_incremental_v(uuid,uuid,numeric,text)', 'b4f70e857141436a585bfb0a1b472d5c'),
+      ('function', 'public.internal_supplier_payment_readiness_v1(uuid)', '004105ba835a28c500e6b697cb4b75bb'),
+      ('function', 'public.internal_supplier_payment_bundle_source_v1(uuid,numeric)', '7f4499adddc7c7433cae6e2a17c68282'),
+      ('view', 'public.statement_line_control_usage_v1', '581d367a31ab0f689f3d31b46df5922e'),
+      ('function', 'public.internal_statement_line_control_worklist_v1(uuid,integer,integer)', '021697c6302f2cedb39610a79dba2e1f')
+    ) AS x(object_type, object_name, expected_md5)
+  LOOP
+    IF r.object_type = 'view' THEN
+      IF to_regclass(r.object_name) IS NULL THEN
+        RAISE EXCEPTION 'Preflight failed: required view % is missing.', r.object_name;
+      END IF;
+      EXECUTE format('SELECT md5(pg_get_viewdef(%L::regclass, true))', r.object_name)
+        INTO v_actual;
+    ELSE
+      IF to_regprocedure(r.object_name) IS NULL THEN
+        RAISE EXCEPTION 'Preflight failed: required function % is missing.', r.object_name;
+      END IF;
+      EXECUTE format('SELECT md5(pg_get_functiondef(%L::regprocedure))', r.object_name)
+        INTO v_actual;
+    END IF;
 
-CREATE OR REPLACE VIEW public.dva_statement_line_allocation_summary_vw AS
-WITH allocation_totals AS (
-  SELECT
-    a.dva_statement_line_id,
-    COALESCE(SUM(a.allocated_gbp_amount) FILTER (
-      WHERE a.allocation_status = 'confirmed'
-    ), 0)::numeric AS normal_confirmed_allocated_gbp,
-    COALESCE(SUM(a.allocated_gbp_amount) FILTER (
-      WHERE a.allocation_status IN ('draft', 'held')
-    ), 0)::numeric AS open_allocated_gbp,
-    COALESCE(SUM(a.allocated_gbp_amount) FILTER (
-      WHERE a.allocation_status = 'confirmed'
-        AND a.allocation_type = 'supplier_invoice'
-    ), 0)::numeric AS supplier_invoice_allocated_gbp,
-    COALESCE(SUM(a.allocated_gbp_amount) FILTER (
-      WHERE a.allocation_status = 'confirmed'
-        AND a.allocation_type = 'retailer_refund'
-    ), 0)::numeric AS retailer_refund_allocated_gbp,
-    COALESCE(SUM(a.allocated_gbp_amount) FILTER (
-      WHERE a.allocation_status = 'confirmed'
-        AND a.allocation_type IN ('fx_card_difference', 'bank_fee')
-    ), 0)::numeric AS fx_card_or_fee_allocated_gbp,
-    COALESCE(SUM(a.allocated_gbp_amount) FILTER (
-      WHERE a.allocation_status = 'confirmed'
-        AND a.allocation_type IN ('exception_hold', 'not_charged_closure', 'unmatched_hold')
-    ), 0)::numeric AS exception_or_hold_allocated_gbp,
-    COUNT(a.id) FILTER (WHERE a.allocation_status <> 'reversed') AS active_allocation_count,
-    COALESCE(SUM(a.allocated_gbp_amount) FILTER (
-      WHERE a.allocation_status = 'confirmed'
-        AND a.allocation_type = 'final_balance_payment'
-    ), 0)::numeric AS final_balance_payment_allocated_gbp
-  FROM public.dva_statement_line_allocations a
-  GROUP BY a.dva_statement_line_id
-), funding_totals AS (
-  SELECT
-    dr.dva_statement_line_id,
-    ROUND(COALESCE(SUM(ABS(dr.reconciled_gbp_amount)) FILTER (
-      WHERE dr.reconciliation_type::text = 'order_funding'
-    ), 0)::numeric, 2) AS order_funding_allocated_gbp,
-    COUNT(dr.id) FILTER (
-      WHERE dr.reconciliation_type::text = 'order_funding'
-    ) AS order_funding_reconciliation_count
-  FROM public.dva_reconciliation dr
-  WHERE dr.dva_statement_line_id IS NOT NULL
-  GROUP BY dr.dva_statement_line_id
-), loyalty_totals AS (
-  SELECT
-    lm.dva_statement_line_id,
-    ROUND(COALESCE(SUM(lm.matched_gbp_amount) FILTER (
-      WHERE lm.match_status IN ('confirmed', 'released_available_dashboard_credit')
-    ), 0)::numeric, 2) AS loyalty_credit_funding_allocated_gbp,
-    COUNT(lm.id) FILTER (
-      WHERE lm.match_status IN ('confirmed', 'released_available_dashboard_credit')
-    ) AS main_bank_loyalty_match_count
-  FROM public.main_bank_completion_loyalty_funding_matches lm
-  GROUP BY lm.dva_statement_line_id
-), base AS (
-  SELECT
-    l.id AS dva_statement_line_id,
-    l.dva_statement_id,
-    s.importer_id,
-    l.statement_date,
-    l.reference_raw,
-    l.direction,
-    l.amount_local_ccy,
-    l.local_ccy,
-    l.fx_rate_applied,
-    l.card_markup_pct_applied,
-    l.amount_gbp_equivalent AS statement_gbp_amount,
-    l.auth_id_ref,
-    l.retailer_name_ref,
-    l.match_status,
-    COALESCE(a.normal_confirmed_allocated_gbp, 0) AS normal_confirmed_allocated_gbp,
-    COALESCE(a.open_allocated_gbp, 0) AS open_allocated_gbp,
-    COALESCE(a.supplier_invoice_allocated_gbp, 0) AS supplier_invoice_allocated_gbp,
-    COALESCE(a.retailer_refund_allocated_gbp, 0) AS retailer_refund_allocated_gbp,
-    COALESCE(a.fx_card_or_fee_allocated_gbp, 0) AS fx_card_or_fee_allocated_gbp,
-    COALESCE(a.exception_or_hold_allocated_gbp, 0) AS exception_or_hold_allocated_gbp,
-    COALESCE(a.active_allocation_count, 0) AS active_allocation_count,
-    COALESCE(a.final_balance_payment_allocated_gbp, 0) AS final_balance_payment_allocated_gbp,
-    COALESCE(f.order_funding_allocated_gbp, 0) AS order_funding_allocated_gbp,
-    COALESCE(f.order_funding_reconciliation_count, 0) AS order_funding_reconciliation_count,
-    COALESCE(loyalty.loyalty_credit_funding_allocated_gbp, 0) AS loyalty_credit_funding_allocated_gbp,
-    COALESCE(loyalty.main_bank_loyalty_match_count, 0) AS main_bank_loyalty_match_count,
-    COALESCE(s.statement_account_context, 'importer_dva_card_account') AS statement_account_context,
-    s.statement_account_label,
-    s.source_bank
-  FROM public.dva_statement_lines l
-  JOIN public.dva_statements s
-    ON s.id = l.dva_statement_id
-  LEFT JOIN allocation_totals a
-    ON a.dva_statement_line_id = l.id
-  LEFT JOIN funding_totals f
-    ON f.dva_statement_line_id = l.id
-  LEFT JOIN loyalty_totals loyalty
-    ON loyalty.dva_statement_line_id = l.id
-)
-SELECT
-  dva_statement_line_id,
-  dva_statement_id,
-  importer_id,
-  statement_date,
-  reference_raw,
-  direction,
-  amount_local_ccy,
-  local_ccy,
-  fx_rate_applied,
-  card_markup_pct_applied,
-  statement_gbp_amount,
-  auth_id_ref,
-  retailer_name_ref,
-  match_status,
-  (normal_confirmed_allocated_gbp + order_funding_allocated_gbp + loyalty_credit_funding_allocated_gbp) AS confirmed_allocated_gbp,
-  open_allocated_gbp,
-  supplier_invoice_allocated_gbp,
-  retailer_refund_allocated_gbp,
-  fx_card_or_fee_allocated_gbp,
-  exception_or_hold_allocated_gbp,
-  active_allocation_count,
-  (
-    statement_gbp_amount
-    - normal_confirmed_allocated_gbp
-    - order_funding_allocated_gbp
-    - loyalty_credit_funding_allocated_gbp
-  ) AS confirmed_unallocated_gbp,
-  (
-    ABS(
-      statement_gbp_amount
-      - normal_confirmed_allocated_gbp
-      - order_funding_allocated_gbp
-      - loyalty_credit_funding_allocated_gbp
-    ) < 0.01
-  ) AS confirmed_balanced_yn,
-  final_balance_payment_allocated_gbp,
-  statement_account_context,
-  statement_account_label,
-  source_bank,
-  loyalty_credit_funding_allocated_gbp,
-  main_bank_loyalty_match_count,
-  CASE
-    WHEN loyalty_credit_funding_allocated_gbp > 0 THEN 'loyalty_credit_funding'
-    WHEN order_funding_allocated_gbp > 0 THEN 'order_funding'
-    WHEN final_balance_payment_allocated_gbp > 0 THEN 'final_balance_payment'
-    WHEN supplier_invoice_allocated_gbp > 0 THEN 'supplier_invoice'
-    WHEN retailer_refund_allocated_gbp > 0 THEN 'retailer_refund'
-    WHEN fx_card_or_fee_allocated_gbp > 0 THEN 'fx_card_or_fee'
-    WHEN exception_or_hold_allocated_gbp > 0 THEN 'exception_or_hold'
-    ELSE NULL
-  END AS control_match_reason,
-  order_funding_allocated_gbp,
-  order_funding_reconciliation_count
-FROM base;
+    IF v_actual IS DISTINCT FROM r.expected_md5 THEN
+      RAISE EXCEPTION 'Preflight failed: % fingerprint changed. expected %, actual %.', r.object_name, r.expected_md5, v_actual;
+    END IF;
+  END LOOP;
 
-COMMENT ON VIEW public.dva_statement_line_allocation_summary_vw IS
-'Read model showing confirmed statement-line consumption and remaining balance across DVA allocations, accepted-estimate order funding reconciliation, final-balance allocation, completion loyalty, FX/card, fee and hold controls. Read-only alignment; no synthetic allocation rows.';
+  FOR r IN
+    SELECT *
+    FROM (VALUES
+      ('trg_guard_order_funding_statement_line_v1', '138e59bd4364968240d0ab0b091e9541'),
+      ('trg_reverse_pending_surplus_with_funding_v1', '9a4b8bb6215fc62fad9dda9124a86ac8'),
+      ('trg_sync_dva_line_status_from_order_funding_v1', '406a73e25a5687dc26a00cdad5dc6e3b'),
+      ('trg_sync_order_funding_event_from_dva_reconciliation', 'b6ac2d75684239db99580da7157bbaa3')
+    ) AS x(trigger_name, expected_md5)
+  LOOP
+    SELECT md5(pg_get_triggerdef(t.oid, true))
+      INTO v_actual
+    FROM pg_trigger t
+    JOIN pg_class c ON c.oid = t.tgrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relname = 'dva_reconciliation'
+      AND t.tgname = r.trigger_name
+      AND NOT t.tgisinternal;
+
+    IF v_actual IS NULL THEN
+      RAISE EXCEPTION 'Preflight failed: required trigger % is missing.', r.trigger_name;
+    END IF;
+    IF v_actual IS DISTINCT FROM r.expected_md5 THEN
+      RAISE EXCEPTION 'Preflight failed: trigger % fingerprint changed. expected %, actual %.', r.trigger_name, r.expected_md5, v_actual;
+    END IF;
+  END LOOP;
+END
+$preflight$;
+
+-- ---------------------------------------------------------------------------
+-- 1. Compatibility view: patch only the three aggregate availability fields.
+--    The exact deployed definition is carried forward, including loyalty source/
+--    destination handling and the outer voided-import filter.
+-- ---------------------------------------------------------------------------
+DO $patch_view$
+DECLARE
+  v_def text;
+  v_patched text;
+  v_old text;
+  v_new text;
+BEGIN
+  SELECT pg_get_viewdef('public.dva_statement_line_allocation_summary_vw'::regclass, true)
+    INTO v_def;
+  v_patched := v_def;
+
+  v_old := 'base.normal_confirmed_allocated_gbp + base.loyalty_credit_funding_allocated_gbp AS confirmed_allocated_gbp';
+  v_new := 'base.normal_confirmed_allocated_gbp + base.loyalty_credit_funding_allocated_gbp + COALESCE((SELECT sum(abs(dr.reconciled_gbp_amount)) FROM public.dva_reconciliation dr WHERE dr.dva_statement_line_id = base.dva_statement_line_id AND dr.reconciliation_type::text = ''order_funding''::text), 0::numeric) AS confirmed_allocated_gbp';
+  IF position(v_old IN v_patched) = 0 THEN
+    RAISE EXCEPTION 'Compatibility-view patch anchor missing: confirmed_allocated_gbp.';
+  END IF;
+  v_patched := replace(v_patched, v_old, v_new);
+
+  v_old := 'base.statement_gbp_amount - base.normal_confirmed_allocated_gbp - base.loyalty_credit_funding_allocated_gbp AS confirmed_unallocated_gbp';
+  v_new := 'base.statement_gbp_amount - base.normal_confirmed_allocated_gbp - base.loyalty_credit_funding_allocated_gbp - COALESCE((SELECT sum(abs(dr.reconciled_gbp_amount)) FROM public.dva_reconciliation dr WHERE dr.dva_statement_line_id = base.dva_statement_line_id AND dr.reconciliation_type::text = ''order_funding''::text), 0::numeric) AS confirmed_unallocated_gbp';
+  IF position(v_old IN v_patched) = 0 THEN
+    RAISE EXCEPTION 'Compatibility-view patch anchor missing: confirmed_unallocated_gbp.';
+  END IF;
+  v_patched := replace(v_patched, v_old, v_new);
+
+  v_old := 'abs(base.statement_gbp_amount - base.normal_confirmed_allocated_gbp - base.loyalty_credit_funding_allocated_gbp) < 0.01 AS confirmed_balanced_yn';
+  v_new := 'abs(base.statement_gbp_amount - base.normal_confirmed_allocated_gbp - base.loyalty_credit_funding_allocated_gbp - COALESCE((SELECT sum(abs(dr.reconciled_gbp_amount)) FROM public.dva_reconciliation dr WHERE dr.dva_statement_line_id = base.dva_statement_line_id AND dr.reconciliation_type::text = ''order_funding''::text), 0::numeric)) < 0.01 AS confirmed_balanced_yn';
+  IF position(v_old IN v_patched) = 0 THEN
+    RAISE EXCEPTION 'Compatibility-view patch anchor missing: confirmed_balanced_yn.';
+  END IF;
+  v_patched := replace(v_patched, v_old, v_new);
+
+  IF v_patched = v_def THEN
+    RAISE EXCEPTION 'Compatibility-view patch produced no change.';
+  END IF;
+
+  EXECUTE 'CREATE OR REPLACE VIEW public.dva_statement_line_allocation_summary_vw AS ' || v_patched;
+END
+$patch_view$;
+
+-- ---------------------------------------------------------------------------
+-- 2. Final-balance writer: canonical availability guard only.
+-- ---------------------------------------------------------------------------
+DO $patch_final_balance$
+DECLARE
+  v_reg regprocedure := 'public.staff_allocate_statement_line_to_final_balance_payment_v1(uuid,uuid,boolean,text)'::regprocedure;
+  v_def text;
+  v_patched text;
+  v_old text;
+  v_new text;
+BEGIN
+  SELECT pg_get_functiondef(v_reg) INTO v_def;
+  v_patched := v_def;
+
+  v_old := '  v_settlement record;';
+  v_new := '  v_settlement record;' || E'\n' || '  v_statement_control record;';
+  IF position(v_old IN v_patched) = 0 THEN
+    RAISE EXCEPTION 'Final-balance patch anchor missing: declaration.';
+  END IF;
+  v_patched := replace(v_patched, v_old, v_new);
+
+  v_old := '  v_line_remaining_before := ROUND((v_line.amount_gbp_equivalent - v_confirmed_before)::numeric, 2);';
+  v_new := $guard$
+  SELECT p.* INTO v_statement_control
+  FROM public.statement_line_control_position_v1 p
+  WHERE p.statement_line_id = p_dva_statement_line_id;
+
+  IF v_statement_control.statement_line_id IS NULL THEN
+    RAISE EXCEPTION 'Canonical statement-line control position is missing for %', p_dva_statement_line_id;
+  END IF;
+  IF COALESCE(v_statement_control.overconsumed_gbp, 0) > 0.005 THEN
+    RAISE EXCEPTION 'Statement line % is already over-consumed by %', p_dva_statement_line_id, v_statement_control.overconsumed_gbp;
+  END IF;
+
+  v_line_remaining_before := ROUND(COALESCE(v_statement_control.remaining_unconsumed_gbp, 0)::numeric, 2);
+$guard$;
+  IF position(v_old IN v_patched) = 0 THEN
+    RAISE EXCEPTION 'Final-balance patch anchor missing: remaining calculation.';
+  END IF;
+  v_patched := replace(v_patched, v_old, rtrim(v_new, E'\n'));
+
+  v_old := '  v_line_remaining_after := ROUND((v_line.amount_gbp_equivalent - v_confirmed_after)::numeric, 2);';
+  v_new := $postcheck$
+  v_line_remaining_after := ROUND((v_line.amount_gbp_equivalent - v_confirmed_after)::numeric, 2);
+
+  SELECT p.* INTO v_statement_control
+  FROM public.statement_line_control_position_v1 p
+  WHERE p.statement_line_id = p_dva_statement_line_id;
+
+  IF v_statement_control.statement_line_id IS NULL
+     OR COALESCE(v_statement_control.overconsumed_gbp, 0) > 0.005
+     OR COALESCE(v_statement_control.principal_lane_count, 0) > 1 THEN
+    RAISE EXCEPTION 'Final-balance allocation violates canonical statement-line control for %', p_dva_statement_line_id;
+  END IF;
+$postcheck$;
+  IF position(v_old IN v_patched) = 0 THEN
+    RAISE EXCEPTION 'Final-balance patch anchor missing: postcondition.';
+  END IF;
+  v_patched := replace(v_patched, v_old, rtrim(v_new, E'\n'));
+
+  EXECUTE v_patched;
+END
+$patch_final_balance$;
+
+-- ---------------------------------------------------------------------------
+-- 3. Operational writer: retailer_refund / IN branch only.
+--    OUT exception/hold branches retain their exact existing calculation.
+-- ---------------------------------------------------------------------------
+DO $patch_retailer_refund$
+DECLARE
+  v_reg regprocedure := 'public.staff_allocate_statement_line_to_dispute_or_hold(uuid,character varying,uuid,numeric,text)'::regprocedure;
+  v_def text;
+  v_patched text;
+  v_old text;
+  v_new text;
+BEGIN
+  SELECT pg_get_functiondef(v_reg) INTO v_def;
+  v_patched := v_def;
+
+  v_old := '  v_order record;';
+  v_new := '  v_order record;' || E'\n' || '  v_statement_control record;';
+  IF position(v_old IN v_patched) = 0 THEN
+    RAISE EXCEPTION 'Retailer-refund patch anchor missing: declaration.';
+  END IF;
+  v_patched := replace(v_patched, v_old, v_new);
+
+  v_old := $anchor$
+  if p_allocation_type in ('exception_hold', 'not_charged_closure', 'unmatched_hold') and v_line.direction <> 'out' then
+    raise exception 'Exception/hold allocation requires an OUT statement line. Line % has direction %', p_dva_statement_line_id, v_line.direction;
+  end if;
+$anchor$;
+  v_new := $guard$
+  if p_allocation_type in ('exception_hold', 'not_charged_closure', 'unmatched_hold') and v_line.direction <> 'out' then
+    raise exception 'Exception/hold allocation requires an OUT statement line. Line % has direction %', p_dva_statement_line_id, v_line.direction;
+  end if;
+
+  if p_allocation_type = 'retailer_refund' then
+    select p.* into v_statement_control
+    from public.statement_line_control_position_v1 p
+    where p.statement_line_id = p_dva_statement_line_id;
+
+    if v_statement_control.statement_line_id is null then
+      raise exception 'Canonical statement-line control position is missing for %', p_dva_statement_line_id;
+    end if;
+    if coalesce(v_statement_control.overconsumed_gbp, 0) > 0.005 then
+      raise exception 'Statement line % is already over-consumed by %', p_dva_statement_line_id, v_statement_control.overconsumed_gbp;
+    end if;
+    if coalesce(v_statement_control.remaining_unconsumed_gbp, 0) <= 0.005 then
+      raise exception 'Statement line % has no canonical remaining amount available for retailer refund allocation', p_dva_statement_line_id;
+    end if;
+  end if;
+$guard$;
+  IF position(rtrim(v_old, E'\n') IN v_patched) = 0 THEN
+    RAISE EXCEPTION 'Retailer-refund patch anchor missing: direction guard.';
+  END IF;
+  v_patched := replace(v_patched, rtrim(v_old, E'\n'), rtrim(v_new, E'\n'));
+
+  v_old := '  v_unallocated_before := round(v_line.amount_gbp_equivalent::numeric - v_existing_confirmed_total, 2);';
+  v_new := $remaining$
+  if p_allocation_type = 'retailer_refund' then
+    v_unallocated_before := round(coalesce(v_statement_control.remaining_unconsumed_gbp, 0)::numeric, 2);
+  else
+    v_unallocated_before := round(v_line.amount_gbp_equivalent::numeric - v_existing_confirmed_total, 2);
+  end if;
+$remaining$;
+  IF position(v_old IN v_patched) = 0 THEN
+    RAISE EXCEPTION 'Retailer-refund patch anchor missing: remaining calculation.';
+  END IF;
+  v_patched := replace(v_patched, v_old, rtrim(v_new, E'\n'));
+
+  v_old := '  v_unallocated_after := round(v_line.amount_gbp_equivalent::numeric - v_confirmed_total_after, 2);';
+  v_new := $postcheck$
+  v_unallocated_after := round(v_line.amount_gbp_equivalent::numeric - v_confirmed_total_after, 2);
+
+  if p_allocation_type = 'retailer_refund' then
+    select p.* into v_statement_control
+    from public.statement_line_control_position_v1 p
+    where p.statement_line_id = p_dva_statement_line_id;
+
+    if v_statement_control.statement_line_id is null
+       or coalesce(v_statement_control.overconsumed_gbp, 0) > 0.005
+       or coalesce(v_statement_control.principal_lane_count, 0) > 1 then
+      raise exception 'Retailer refund allocation violates canonical statement-line control for %', p_dva_statement_line_id;
+    end if;
+  end if;
+$postcheck$;
+  IF position(v_old IN v_patched) = 0 THEN
+    RAISE EXCEPTION 'Retailer-refund patch anchor missing: postcondition.';
+  END IF;
+  v_patched := replace(v_patched, v_old, rtrim(v_new, E'\n'));
+
+  EXECUTE v_patched;
+END
+$patch_retailer_refund$;
+
+-- ---------------------------------------------------------------------------
+-- 4. Customer funding + FX split: canonical pre-split, residual and post guards.
+-- ---------------------------------------------------------------------------
+DO $patch_customer_fx$
+DECLARE
+  v_reg regprocedure := 'public.staff_reconcile_dva_line_to_order_customer_fx_gain_v1(uuid,uuid,numeric,uuid,text)'::regprocedure;
+  v_def text;
+  v_patched text;
+  v_old text;
+  v_new text;
+BEGIN
+  SELECT pg_get_functiondef(v_reg) INTO v_def;
+  v_patched := v_def;
+
+  v_old := '  v_order record;';
+  v_new := '  v_order record;' || E'\n' || '  v_statement_control record;';
+  IF position(v_old IN v_patched) = 0 THEN
+    RAISE EXCEPTION 'Customer-FX patch anchor missing: declaration.';
+  END IF;
+  v_patched := replace(v_patched, v_old, v_new);
+
+  v_old := $anchor$
+  IF v_requested_amount <= 0 THEN
+    RAISE EXCEPTION 'Reconciled GBP amount must be greater than zero. Received: %', v_requested_amount;
+  END IF;
+$anchor$;
+  v_new := $guard$
+  IF v_requested_amount <= 0 THEN
+    RAISE EXCEPTION 'Reconciled GBP amount must be greater than zero. Received: %', v_requested_amount;
+  END IF;
+
+  SELECT p.* INTO v_statement_control
+  FROM public.statement_line_control_position_v1 p
+  WHERE p.statement_line_id = p_dva_statement_line_id;
+
+  IF v_statement_control.statement_line_id IS NULL THEN
+    RAISE EXCEPTION 'Canonical statement-line control position is missing for %', p_dva_statement_line_id;
+  END IF;
+  IF COALESCE(v_statement_control.overconsumed_gbp, 0) > 0.005 THEN
+    RAISE EXCEPTION 'Statement line % is already over-consumed by %', p_dva_statement_line_id, v_statement_control.overconsumed_gbp;
+  END IF;
+  IF v_requested_amount > COALESCE(v_statement_control.remaining_unconsumed_gbp, 0) + 0.005 THEN
+    RAISE EXCEPTION 'Requested receipt amount % exceeds canonical statement-line remaining amount %', v_requested_amount, v_statement_control.remaining_unconsumed_gbp;
+  END IF;
+$guard$;
+  IF position(rtrim(v_old, E'\n') IN v_patched) = 0 THEN
+    RAISE EXCEPTION 'Customer-FX patch anchor missing: pre-split guard.';
+  END IF;
+  v_patched := replace(v_patched, rtrim(v_old, E'\n'), rtrim(v_new, E'\n'));
+
+  v_old := '  INSERT INTO public.dva_statement_line_allocations (';
+  v_new := $residual$
+  SELECT p.* INTO v_statement_control
+  FROM public.statement_line_control_position_v1 p
+  WHERE p.statement_line_id = p_dva_statement_line_id;
+
+  IF v_statement_control.statement_line_id IS NULL
+     OR COALESCE(v_statement_control.overconsumed_gbp, 0) > 0.005 THEN
+    RAISE EXCEPTION 'Canonical statement-line control is invalid after order funding for %', p_dva_statement_line_id;
+  END IF;
+  IF v_fx_gain_amount > COALESCE(v_statement_control.remaining_unconsumed_gbp, 0) + 0.005 THEN
+    RAISE EXCEPTION 'FX residual % exceeds canonical post-funding remaining amount %', v_fx_gain_amount, v_statement_control.remaining_unconsumed_gbp;
+  END IF;
+
+  INSERT INTO public.dva_statement_line_allocations (
+$residual$;
+  IF position(v_old IN v_patched) = 0 THEN
+    RAISE EXCEPTION 'Customer-FX patch anchor missing: FX allocation.';
+  END IF;
+  v_patched := replace(v_patched, v_old, rtrim(v_new, E'\n'));
+
+  v_old := '  RETURN v_result || jsonb_build_object(';
+  v_new := $postcheck$
+  SELECT p.* INTO v_statement_control
+  FROM public.statement_line_control_position_v1 p
+  WHERE p.statement_line_id = p_dva_statement_line_id;
+
+  IF v_statement_control.statement_line_id IS NULL
+     OR COALESCE(v_statement_control.overconsumed_gbp, 0) > 0.005 THEN
+    RAISE EXCEPTION 'Customer funding/FX split violates canonical statement-line control for %', p_dva_statement_line_id;
+  END IF;
+
+  RETURN v_result || jsonb_build_object(
+$postcheck$;
+  IF position(v_old IN v_patched) = 0 THEN
+    RAISE EXCEPTION 'Customer-FX patch anchor missing: postcondition.';
+  END IF;
+  v_patched := replace(v_patched, v_old, rtrim(v_new, E'\n'));
+
+  EXECUTE v_patched;
+END
+$patch_customer_fx$;
+
+-- ---------------------------------------------------------------------------
+-- Postflight: every frozen authority must be bit-for-bit definition-stable.
+-- ---------------------------------------------------------------------------
+DO $postflight$
+DECLARE
+  r record;
+  v_actual text;
+  v_view_def text;
+  v_function_def text;
+BEGIN
+  FOR r IN
+    SELECT *
+    FROM (VALUES
+      ('function', 'public.staff_reconcile_dva_line_to_order(uuid,uuid,numeric,boolean,uuid,text)', '3d888918bff171d132049104b5692937'),
+      ('function', 'public.trg_sync_order_funding_event_from_dva_reconciliation()', '28fa4b6b255956601d84ed813dfca47e'),
+      ('function', 'public.internal_guard_order_funding_statement_line_v1()', 'b687d2343908cc3b526efaebd3d820d9'),
+      ('view', 'public.statement_line_effective_interpretation_v1', 'b9f63595b613c69715fe807836bdd4ef'),
+      ('function', 'public.internal_completion_loyalty_destination_in_candidates_v1(uuid,text,integer,integer)', '4c77b96b38121b879ccf273b829b5aa6'),
+      ('function', 'public.staff_pair_loyalty_destination_in_and_release_v1(uuid,uuid,text)', '49d05f8d9400611d74582fd6d5e3e0c5'),
+      ('function', 'public.staff_reconcile_dva_line_to_order_pending_surplus_v1(uuid,uuid,numeric,uuid,text)', '93d34501d77c71d4c3ace0424f1d29b5'),
+      ('view', 'public.statement_line_control_position_v1', 'fe6ee2fc8909e383b8d584995b30cc78'),
+      ('function', 'public.internal_statement_line_control_resolver_v2(uuid)', 'eb9bfa5ea572335272217c372fa02f53'),
+      ('function', 'public.staff_allocate_main_bank_line_to_shipper_ap_v1(uuid,uuid,numeric,text)', '233823bb26a631cc6e2e51a36ee89e27'),
+      ('function', 'public.staff_allocate_statement_line_to_supplier_invoice_incremental_v(uuid,uuid,numeric,text)', 'b4f70e857141436a585bfb0a1b472d5c'),
+      ('function', 'public.internal_supplier_payment_readiness_v1(uuid)', '004105ba835a28c500e6b697cb4b75bb'),
+      ('function', 'public.internal_supplier_payment_bundle_source_v1(uuid,numeric)', '7f4499adddc7c7433cae6e2a17c68282'),
+      ('view', 'public.statement_line_control_usage_v1', '581d367a31ab0f689f3d31b46df5922e'),
+      ('function', 'public.internal_statement_line_control_worklist_v1(uuid,integer,integer)', '021697c6302f2cedb39610a79dba2e1f')
+    ) AS x(object_type, object_name, expected_md5)
+  LOOP
+    IF r.object_type = 'view' THEN
+      EXECUTE format('SELECT md5(pg_get_viewdef(%L::regclass, true))', r.object_name)
+        INTO v_actual;
+    ELSE
+      EXECUTE format('SELECT md5(pg_get_functiondef(%L::regprocedure))', r.object_name)
+        INTO v_actual;
+    END IF;
+
+    IF v_actual IS DISTINCT FROM r.expected_md5 THEN
+      RAISE EXCEPTION 'Postflight failed: frozen % changed. expected %, actual %.', r.object_name, r.expected_md5, v_actual;
+    END IF;
+  END LOOP;
+
+  FOR r IN
+    SELECT *
+    FROM (VALUES
+      ('trg_guard_order_funding_statement_line_v1', '138e59bd4364968240d0ab0b091e9541'),
+      ('trg_reverse_pending_surplus_with_funding_v1', '9a4b8bb6215fc62fad9dda9124a86ac8'),
+      ('trg_sync_dva_line_status_from_order_funding_v1', '406a73e25a5687dc26a00cdad5dc6e3b'),
+      ('trg_sync_order_funding_event_from_dva_reconciliation', 'b6ac2d75684239db99580da7157bbaa3')
+    ) AS x(trigger_name, expected_md5)
+  LOOP
+    SELECT md5(pg_get_triggerdef(t.oid, true))
+      INTO v_actual
+    FROM pg_trigger t
+    JOIN pg_class c ON c.oid = t.tgrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relname = 'dva_reconciliation'
+      AND t.tgname = r.trigger_name
+      AND NOT t.tgisinternal;
+
+    IF v_actual IS DISTINCT FROM r.expected_md5 THEN
+      RAISE EXCEPTION 'Postflight failed: frozen trigger % changed. expected %, actual %.', r.trigger_name, r.expected_md5, v_actual;
+    END IF;
+  END LOOP;
+
+  SELECT lower(pg_get_viewdef('public.dva_statement_line_allocation_summary_vw'::regclass, true))
+    INTO v_view_def;
+
+  IF position('dva_reconciliation' IN v_view_def) = 0
+     OR position('order_funding' IN v_view_def) = 0
+     OR position('loyalty_internal_transfer_out_gbp' IN v_view_def) = 0
+     OR position('loyalty_internal_transfer_in_gbp' IN v_view_def) = 0
+     OR position('loyalty_internal_transfer_in_count' IN v_view_def) = 0
+     OR position('dva_statement_line_import_links' IN v_view_def) = 0 THEN
+    RAISE EXCEPTION 'Postflight failed: compatibility view lost a governed calculation or preservation seam.';
+  END IF;
+
+  SELECT lower(pg_get_functiondef('public.staff_allocate_statement_line_to_final_balance_payment_v1(uuid,uuid,boolean,text)'::regprocedure))
+    INTO v_function_def;
+  IF position('statement_line_control_position_v1' IN v_function_def) = 0
+     OR position('overconsumed_gbp' IN v_function_def) = 0
+     OR position('principal_lane_count' IN v_function_def) = 0 THEN
+    RAISE EXCEPTION 'Postflight failed: final-balance canonical guard missing.';
+  END IF;
+
+  SELECT lower(pg_get_functiondef('public.staff_allocate_statement_line_to_dispute_or_hold(uuid,character varying,uuid,numeric,text)'::regprocedure))
+    INTO v_function_def;
+  IF position('statement_line_control_position_v1' IN v_function_def) = 0
+     OR position('retailer_refund' IN v_function_def) = 0
+     OR position('principal_lane_count' IN v_function_def) = 0 THEN
+    RAISE EXCEPTION 'Postflight failed: retailer-refund canonical guard missing.';
+  END IF;
+
+  SELECT lower(pg_get_functiondef('public.staff_reconcile_dva_line_to_order_customer_fx_gain_v1(uuid,uuid,numeric,uuid,text)'::regprocedure))
+    INTO v_function_def;
+  IF position('statement_line_control_position_v1' IN v_function_def) = 0
+     OR position('staff_reconcile_dva_line_to_order(' IN v_function_def) = 0
+     OR position('fx residual' IN v_function_def) = 0 THEN
+    RAISE EXCEPTION 'Postflight failed: customer-FX canonical split guard missing.';
+  END IF;
+END
+$postflight$;
 
 NOTIFY pgrst, 'reload schema';
-
 COMMIT;
