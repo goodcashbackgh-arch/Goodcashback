@@ -12,44 +12,49 @@ const data = read("app/delivery-allocation/data.ts");
 const workspace = read("app/delivery-allocation/DeliveryAllocationWorkspace.tsx");
 const bulkControls = read("app/delivery-allocation/DeliveryAllocationBulkControls.tsx");
 const floatingActionBar = read("app/_components/FloatingActionBar.tsx");
+const replacementPanel = read("app/importer/ReplacementOrdersPanel.tsx");
+const replacementRpc = read("supabase/migrations/20260803211000_same_order_free_replacement_tracking_allocation_v1.sql");
 
-assert.match(addendum, /Governing amendment v1\.1 — atomic bulk allocation and exact-provenance rework/);
-assert.match(addendum, /No generic table-wide trigger enforcing raw `SUM\(qty_allocated\)/);
-assert.match(addendum, /Both the existing single-line allocation action and the new bulk action must use this same database authority/);
-assert.match(addendum, /Do not delete downstream history merely to make allocation deletion succeed/);
+assert.match(addendum, /Governing amendment v1\.2 — narrow atomic bulk ordinary allocation/);
+assert.match(addendum, /This patch does one thing: add atomic bulk submission to the existing ordinary delivery-allocation lane/);
+assert.match(addendum, /replacement successor rows are excluded only from ordinary-remaining arithmetic/);
+assert.match(addendum, /existing ordinary clear\/rework behaviour/);
 
-assert.match(migration, /CREATE OR REPLACE FUNCTION public\.delivery_allocate_tracking_lines_v1/);
-assert.match(migration, /CREATE OR REPLACE FUNCTION public\.delivery_clear_tracking_allocations_v1/);
-assert.match(migration, /CREATE OR REPLACE FUNCTION public\.delivery_allocation_control_state_v1/);
+assert.match(migration, /CREATE FUNCTION public\.delivery_allocate_tracking_lines_v1/);
+assert.doesNotMatch(migration, /delivery_clear_tracking_allocations_v1/);
+assert.doesNotMatch(migration, /delivery_allocation_control_state_v1/);
 assert.match(migration, /pg_advisory_xact_lock\(hashtext\(p_order_id::text\)\)/);
-assert.match(migration, /successor_tracking_line_allocation_id = a\.id/);
-assert.match(migration, /receipt_model_version = 2/);
-assert.match(migration, /shipper_shipment_batch_line_memberships/);
+assert.match(migration, /successor_tracking_line_allocation_id=a\.id/);
+assert.match(migration, /route_status='tracking_allocated'/);
+assert.match(migration, /Single allocation requires exact quantity mode/);
+assert.match(migration, /qty_confirmed/);
+assert.match(migration, /amount_confirmed/);
 assert.match(migration, /recalculate_invoice_adjustment_consumption_v1/);
-assert.doesNotMatch(migration, /CREATE\s+TRIGGER\s+.*order_tracking_line_allocations/is);
-assert.doesNotMatch(migration, /DROP\s+TABLE\s+public\./i);
+assert.doesNotMatch(migration, /CREATE\s+TRIGGER/is);
 assert.doesNotMatch(migration, /ALTER\s+TABLE\s+public\.order_tracking_line_allocations/i);
 
 assert.match(actions, /rpc\("delivery_allocate_tracking_lines_v1"/);
 assert.match(actions, /p_request_kind: "single"/);
+assert.match(actions, /quantity_mode: "exact"/);
 assert.match(actions, /p_request_kind: "bulk"/);
-assert.match(actions, /rpc\("delivery_clear_tracking_allocations_v1"/);
-assert.doesNotMatch(actions, /from\("order_tracking_line_allocations"\)\.insert/);
-assert.doesNotMatch(actions, /from\("order_tracking_line_allocations"\)[\s\S]{0,120}\.delete\(/);
-assert.doesNotMatch(actions, /recalculate_invoice_adjustment_consumption_v1/);
+assert.match(actions, /quantity_mode: "remaining"/);
+assert.match(actions, /from\("order_tracking_line_allocations"\)[\s\S]{0,200}\.delete\(/);
+assert.doesNotMatch(actions, /delivery_clear_tracking_allocations_v1/);
 
 assert.match(data, /qty_confirmed/);
 assert.match(data, /amount_confirmed/);
-assert.match(data, /delivery_allocation_control_state_v1/);
-assert.match(data, /accepts_new_allocations/);
-assert.match(data, /can_simple_clear/);
+assert.match(data, /physical_replacement_same_order_routes/);
+assert.match(data, /successor_tracking_line_allocation_id/);
+assert.match(data, /counts_toward_ordinary_remaining/);
+assert.doesNotMatch(data, /delivery_allocation_control_state_v1/);
 
 assert.match(workspace, /DeliveryAllocationBulkControls/);
 assert.match(workspace, /form="bulk-delivery-allocation-form"/);
-assert.match(workspace, /Clear editable allocations/);
-assert.match(workspace, /cannot be cleared here\. Use the controlled correction route/);
-assert.match(workspace, /disabled=!tracking\.accepts_new_allocations|disabled=\{!tracking\.accepts_new_allocations\}/);
-assert.doesNotMatch(workspace, /Shipper receipt, package selection, or quote does not lock contents/);
+assert.match(workspace, /filter\(\(allocation\) => allocation\.counts_toward_ordinary_remaining\)/);
+assert.match(workspace, /effectiveLineQty/);
+assert.match(workspace, /effectiveLineAmount/);
+assert.match(workspace, /Clear unlocked allocations/);
+assert.match(workspace, /Shipper receipt, package selection, or quote does not lock contents/);
 
 assert.match(bulkControls, /FloatingActionBar/);
 assert.match(bulkControls, /Select all available/);
@@ -59,5 +64,8 @@ assert.match(bulkControls, /setConfirmed\(false\)/);
 assert.doesNotMatch(bulkControls, /name="qty_allocated"/);
 
 assert.match(floatingActionBar, /export function FloatingActionBar/);
+assert.match(replacementPanel, /Allocate successor tracking/);
+assert.match(replacementRpc, /operator_allocate_same_order_replacement_tracking_v1/);
+assert.doesNotMatch(migration, /operator_allocate_same_order_replacement_tracking_v1[\s\S]*CREATE|CREATE[\s\S]*operator_allocate_same_order_replacement_tracking_v1/);
 
-console.log("delivery allocation atomic bulk source regression passed");
+console.log("delivery allocation atomic bulk v1.2 source regression passed");
