@@ -58,6 +58,7 @@ export type DeliveryAllocationRow = {
   notes: string | null;
   supervisor_accepted_at: string | null;
   locked_for_export_pack_at: string | null;
+  counts_toward_ordinary_remaining: boolean;
   can_simple_clear: boolean;
   clear_blocker: string | null;
 };
@@ -110,6 +111,7 @@ type ControlTrackingRow = {
 
 type ControlAllocationRow = {
   allocation_id?: string;
+  counts_toward_ordinary_remaining?: boolean;
   can_simple_clear?: boolean;
   blocker?: string | null;
 };
@@ -281,6 +283,7 @@ export async function loadDeliveryAllocationData(
         notes: row.notes ?? null,
         supervisor_accepted_at: row.supervisor_accepted_at ?? null,
         locked_for_export_pack_at: row.locked_for_export_pack_at ?? null,
+        counts_toward_ordinary_remaining: control?.counts_toward_ordinary_remaining !== false,
         can_simple_clear: control?.can_simple_clear === true,
         clear_blocker: control?.blocker ?? null,
       };
