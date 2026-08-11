@@ -573,7 +573,7 @@ BEGIN
       statement_period_from, statement_period_to, parse_status
     ) VALUES (
       v_statement_id, v_final_importer_id, 'importer_dva_card_account',
-      v_final_importer_id::text, 'Rollback final-balance success path', 'regression',
+      v_final_importer_id::text, 'Rollback final-balance success path', 'gcb',
       v_staff_id, 'regression://dva-final-balance-' || v_statement_id::text,
       CURRENT_DATE, CURRENT_DATE, 'parsed'
     );
@@ -643,7 +643,7 @@ BEGIN
       statement_period_from, statement_period_to, parse_status
     ) VALUES (
       v_statement_id, v_refund_importer_id, 'importer_dva_card_account',
-      v_refund_importer_id::text, 'Rollback retailer-refund success path', 'regression',
+      v_refund_importer_id::text, 'Rollback retailer-refund success path', 'gcb',
       v_staff_id, 'regression://dva-retailer-refund-' || v_statement_id::text,
       CURRENT_DATE, CURRENT_DATE, 'parsed'
     );
@@ -720,7 +720,7 @@ BEGIN
       statement_period_from, statement_period_to, parse_status
     ) VALUES (
       v_statement_id, v_fx_importer_id, 'importer_dva_card_account',
-      v_fx_importer_id::text, 'Rollback customer-FX success path', 'regression',
+      v_fx_importer_id::text, 'Rollback customer-FX success path', 'gcb',
       v_staff_id, 'regression://dva-customer-fx-' || v_statement_id::text,
       CURRENT_DATE, CURRENT_DATE, 'parsed'
     );
