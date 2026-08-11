@@ -1,4 +1,4 @@
--- Delivery allocation bulk wrapper postflight v1.3
+-- Delivery allocation bulk wrapper postflight v1.4
 -- Read-only. Run after applying 20260811190000_delivery_allocation_atomic_bulk_control_v1.sql.
 
 DO $test$
@@ -49,6 +49,23 @@ BEGIN
     RAISE EXCEPTION 'Bulk authority no longer mirrors the existing raw allocated-quantity basis';
   END IF;
 
+  IF position('COALESCE(sil.qty, 0)::numeric AS page_qty' in v_function_def) = 0 THEN
+    RAISE EXCEPTION 'Bulk authority no longer re-derives the frozen page quantity from raw qty';
+  END IF;
+
+  IF position('COALESCE(sil.qty_confirmed, sil.qty, 0)::numeric AS validation_line_qty' in v_function_def) = 0 THEN
+    RAISE EXCEPTION 'Bulk authority no longer mirrors the existing single-action validation quantity';
+  END IF;
+
+  IF position('v_existing_form_remaining := v_row.page_qty - v_already_allocated' in v_function_def) = 0 THEN
+    RAISE EXCEPTION 'Bulk authority no longer proposes the frozen page/form remaining quantity';
+  END IF;
+
+  IF position('v_existing_form_remaining > v_row.validation_line_qty' in v_function_def) = 0
+     OR position('v_already_allocated + v_existing_form_remaining > v_row.validation_line_qty + 0.0001' in v_function_def) = 0 THEN
+    RAISE EXCEPTION 'Bulk authority no longer applies the existing single-action quantity checks';
+  END IF;
+
   IF position('non_physical_financial' in v_function_def) = 0 THEN
     RAISE EXCEPTION 'Bulk authority no longer mirrors the existing non-physical write rejection';
   END IF;
@@ -63,6 +80,6 @@ BEGIN
     RAISE EXCEPTION 'Bulk authority has drifted into replacement-specific logic';
   END IF;
 
-  RAISE NOTICE 'delivery allocation bulk wrapper v1.3 postflight passed';
+  RAISE NOTICE 'delivery allocation bulk wrapper v1.4 postflight passed';
 END
 $test$;
