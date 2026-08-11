@@ -6,6 +6,14 @@ type SettlementRow = {
   potential_additional_credit_gbp: number | string | null;
 };
 
+type FundingRow = {
+  confirmed_dva_funding_gbp: number | string | null;
+};
+
+type AudienceStatusRow = {
+  customer_sales_state: string | null;
+};
+
 function money(value: number | string | null | undefined) {
   return new Intl.NumberFormat("en-GB", {
     style: "currency",
@@ -23,18 +31,27 @@ export default async function CustomerOrderOperationsLayout({
 }) {
   const { order_id: orderId } = await params;
   const supabase = await createClient();
-  const { data } = await supabase
-    .rpc("order_settlement_audience_v1", { p_order_id: orderId })
-    .maybeSingle();
+  const [{ data: settlementData }, { data: fundingData }, { data: audienceStatusData }] = await Promise.all([
+    supabase.rpc("order_settlement_audience_v1", { p_order_id: orderId }).maybeSingle(),
+    supabase.from("order_funding_position_vw").select("confirmed_dva_funding_gbp").eq("order_id", orderId).maybeSingle(),
+    (supabase as any).rpc("order_audience_status_v1", { p_order_id: orderId }).maybeSingle(),
+  ]);
 
-  const settlement = data as SettlementRow | null;
+  const settlement = settlementData as SettlementRow | null;
+  const funding = fundingData as FundingRow | null;
+  const audienceStatus = audienceStatusData as AudienceStatusRow | null;
   const creditAdded = Math.max(Number(settlement?.credit_added_to_account_gbp ?? 0), 0);
   const pendingCredit = Math.max(Number(settlement?.potential_additional_credit_gbp ?? 0), 0);
   const showCreditUpdate = creditAdded > 0.01 || pendingCredit > 0.01;
+  const finalSaleValueConfirmed = audienceStatus?.customer_sales_state === "posted";
+  const confirmedPaymentGbp = Math.max(Number(funding?.confirmed_dva_funding_gbp ?? 0), 0);
 
   return (
     <>
-      <SettlementCustomerPatch />
+      <SettlementCustomerPatch
+        finalSaleValueConfirmed={finalSaleValueConfirmed}
+        confirmedPaymentGbp={confirmedPaymentGbp}
+      />
       {showCreditUpdate ? (
         <div className="bg-slate-50 px-4 pt-4 xl:px-6">
           <section className="mx-auto rounded-3xl border border-cyan-100 bg-cyan-50/70 p-4 text-sm text-cyan-950 shadow-sm">
