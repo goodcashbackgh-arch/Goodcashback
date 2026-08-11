@@ -1,4 +1,5 @@
 import { createClient } from "@/utils/supabase/server";
+import { supabaseAdmin } from "@/lib/supabase/admin";
 import SettlementCustomerPatch from "./SettlementCustomerPatch";
 
 type SettlementRow = {
@@ -8,10 +9,6 @@ type SettlementRow = {
 
 type FundingRow = {
   confirmed_dva_funding_gbp: number | string | null;
-};
-
-type AudienceStatusRow = {
-  customer_sales_state: string | null;
 };
 
 function money(value: number | string | null | undefined) {
@@ -31,19 +28,25 @@ export default async function CustomerOrderOperationsLayout({
 }) {
   const { order_id: orderId } = await params;
   const supabase = await createClient();
-  const [{ data: settlementData }, { data: fundingData }, { data: audienceStatusData }] = await Promise.all([
+  const [{ data: settlementData }, { data: fundingData }, { data: saleDocumentData }] = await Promise.all([
     supabase.rpc("order_settlement_audience_v1", { p_order_id: orderId }).maybeSingle(),
     supabase.from("order_funding_position_vw").select("confirmed_dva_funding_gbp").eq("order_id", orderId).maybeSingle(),
-    (supabase as any).rpc("order_audience_status_v1", { p_order_id: orderId }).maybeSingle(),
+    (supabaseAdmin as any)
+      .from("sales_invoices")
+      .select("id")
+      .eq("order_id", orderId)
+      .eq("sage_status", "posted")
+      .not("sage_invoice_id", "is", null)
+      .in("invoice_type", ["main", "supplementary", "credit_note"])
+      .limit(1),
   ]);
 
   const settlement = settlementData as SettlementRow | null;
   const funding = fundingData as FundingRow | null;
-  const audienceStatus = audienceStatusData as AudienceStatusRow | null;
   const creditAdded = Math.max(Number(settlement?.credit_added_to_account_gbp ?? 0), 0);
   const pendingCredit = Math.max(Number(settlement?.potential_additional_credit_gbp ?? 0), 0);
   const showCreditUpdate = creditAdded > 0.01 || pendingCredit > 0.01;
-  const finalSaleValueConfirmed = audienceStatus?.customer_sales_state === "posted";
+  const finalSaleValueConfirmed = (saleDocumentData ?? []).length > 0;
   const confirmedPaymentGbp = Math.max(Number(funding?.confirmed_dva_funding_gbp ?? 0), 0);
 
   return (
