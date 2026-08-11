@@ -1,112 +1,100 @@
-# Pre-Final-Sale Payment Presentation Addendum v1
+# Customer Applied-Credit Inclusion Presentation Addendum v1
 
-Status: locked corrective governing addendum for implementation.
+Status: locked corrective governing addendum after full upstream/downstream dependency audit.
 
-## 1. Purpose
+## 1. Proven defect
 
-Correct a customer-facing presentation defect where the canonical final-sale settlement amount is surfaced before any posted customer sale document exists, causing applied account credit to appear additive even though it is already included in the canonical settlement amount.
+The customer operations page correctly displays the canonical amount applied to the order, but when account credit is part of that amount the component line can read as though the credit should be added again.
 
-## 2. Existing authorities preserved
+Example:
 
-This addendum extends and must not alter:
+- accepted estimate: £740.00;
+- confirmed DVA cash funding: £739.21;
+- account credit applied: £0.79;
+- canonical amount applied to the order: £740.00.
 
-- `FINAL_SALE_VALUE_AND_BALANCE_DUE_ADDENDUM_v1.md`;
-- `CANONICAL_SETTLEMENT_CLASSIFICATION_AND_INCREMENTAL_RESOLUTION_ADDENDUM_v1.md`;
+The £740.00 is correct. It already includes the £0.79 account credit. The defect is presentation wording only.
+
+## 2. Governing semantics preserved
+
+This addendum must not reinterpret or alter:
+
+- `order_funding_events`;
 - `order_funding_position_vw`;
+- `internal_platform_order_status_v1()`;
 - `order_audience_status_v1(uuid)`;
-- DVA reconciliation and statement-line control;
-- importer credit ledger application/reversal;
-- FX/card-difference classification;
+- `order_settlement_resolution_position_v1`;
+- `order_settlement_audience_v1(uuid)`;
+- accepted-estimate funding threshold;
+- DVA reconciliation;
+- importer credit application/reversal;
 - final-balance payment allocation;
-- Sage, VAT, shipment, supplier and accounting controls.
+- pending receipt residual settlement;
+- FX/card-difference classification;
+- customer sale documents;
+- Sage, VAT, supplier, shipment, tracking, hold or dispute controls.
 
-No database object or economic amount is changed by this patch.
+Applied account credit is an order-funding component. The canonical amount applied to the order includes that component. Posted final-sale documents govern final sale value, final balance and final settlement classification; they do not change the meaning of the already-applied funding total.
 
-## 3. Locked phase boundary
+## 3. Exact corrective scope
 
-### Pre-final-sale phase
+Use the existing customer-only presentation component:
 
-Where no posted customer sale document exists for the order:
+`app/customer/orders/[order_id]/operations/SettlementCustomerPatch.tsx`
 
-- accepted estimate remains the commercial reference;
-- initial funding presentation is sourced from `order_funding_position_vw`;
-- confirmed cash payment is `confirmed_dva_funding_gbp`;
-- applied account credit is `applied_credit_gbp`;
-- total accepted-estimate funding may remain available for status/gating but must not be presented as a separate settlement amount in a way that duplicates the displayed account-credit component;
-- canonical final-sale settlement fields remain backend truth but are not used as the customer payment headline.
+Preserve its existing wording correction:
 
-### Final-sale phase
+`Amount received` -> `Payment applied to this order`
 
-Once at least one posted customer sale document exists:
+Where the same customer operations route renders an account-credit component line beginning:
 
-- canonical settlement presentation becomes authoritative;
-- `canonical_amount_received_gbp`, `final_sale_value_gbp`, `canonical_balance_due_gbp`, final-balance payments and pending-credit presentation remain governed by the existing final-sale settlement contracts.
+`Account credit applied:`
 
-## 4. Existing presentation boundary
+clarify that component wording to:
 
-The customer operations route already includes:
+`Includes account credit:`
 
-- `app/customer/orders/[order_id]/operations/layout.tsx`;
-- `app/customer/orders/[order_id]/operations/SettlementCustomerPatch.tsx`.
+Do not change the displayed canonical payment amount.
 
-That existing wrapper is the surgical presentation boundary for this correction. The large customer operations page must remain unchanged.
+Do not add phase detection, posted-sale queries, funding queries, admin-client dependencies or new server props to the layout.
 
-The layout may read only the existing phase/funding authorities required to tell the presentation patch:
+Do not change `app/customer/orders/[order_id]/operations/page.tsx`.
 
-- whether final-sale customer documents are posted;
-- the confirmed DVA cash payment amount.
+## 4. Acceptance case
 
-The client presentation patch may then:
-
-- keep the existing `Amount received` -> `Payment applied to this order` wording correction;
-- before final-sale confirmation, replace only the displayed amount paired with that label with confirmed DVA cash payment;
-- after final-sale confirmation, leave the existing canonical amount untouched.
-
-It must not alter hidden data, status, calculations, links, actions, account-credit values, final-balance values, or any other text/value.
-
-## 5. Importer operations dependency
-
-The importer operations page consumes the same canonical and funding sources but already exposes explicit `Confirmed payment` and `Applied credit` component cards. This corrective build does not change importer runtime presentation. Any importer simplification is a separate UI decision and is out of scope.
-
-## 6. Acceptance cases
-
-### A. No posted customer sale document; cash plus applied credit
-
-Given:
+For:
 
 - accepted estimate £740.00;
-- confirmed DVA funding £739.21;
+- confirmed DVA cash funding £739.21;
 - applied account credit £0.79;
-- no posted customer sale document.
 
-Customer payment presentation must show:
+customer presentation must read semantically as:
 
-- Payment applied to this order: £739.21;
-- Account credit applied: £0.79.
+- Payment applied to this order: £740.00;
+- Includes account credit: £0.79.
 
-It must not present £740.00 as the payment row while also separately displaying £0.79 credit.
+The presentation must not imply £740.79 has been applied and must not reinterpret the canonical £740.00 as cash-only £739.21.
 
-### B. Posted customer sale document exists
+## 5. Downstream and cross-surface boundary
 
-When final-sale evidence exists, the displayed payment amount remains the existing canonical settlement amount without modification.
+No importer, internal, funding, settlement-resolution, DVA/card, accounting, Sage, VAT, supplier, shipment or database surface is changed.
 
-### C. No account credit
+The customer operations layout remains byte-for-byte equivalent to `main` for this build. The only runtime delta is customer-route text clarification inside the pre-existing presentation patch.
 
-Where applied credit is zero, existing display conditions remain unchanged.
+## 6. Regression requirements
 
-## 7. No-impact boundary
+Before merge confirm:
 
-Do not change:
+1. PR runtime diff contains only `SettlementCustomerPatch.tsx`.
+2. Customer operations `page.tsx` is unchanged.
+3. Customer operations `layout.tsx` is unchanged from `main`.
+4. No SQL/migration/database object is changed.
+5. No new Supabase query or `supabaseAdmin` dependency is introduced.
+6. Canonical amount applied remains unchanged before and after posted sale documents.
+7. Account-credit amount remains unchanged.
+8. Final balance, pending credit, funding threshold and completion/status calculations remain unchanged.
+9. Importer and internal surfaces remain unchanged.
 
-- `app/customer/orders/[order_id]/operations/page.tsx`;
-- database functions/views/tables;
-- DVA funding amounts;
-- funding completion threshold;
-- account-credit application;
-- canonical settlement arithmetic;
-- FX/card-difference handling;
-- supplier allocation;
-- final-balance allocation;
-- Sage/VAT/accounting;
-- importer operations runtime;
-- unrelated customer UI.
+## Locked implementation rule
+
+> Preserve the canonical combined amount applied to the order. Clarify only that the displayed account-credit component is included in that total. Nothing else.
