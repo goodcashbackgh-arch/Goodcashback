@@ -1,8 +1,8 @@
 # DVA Funding Consumption Workbench Visibility Addendum v1
 
-Status: governing addendum amended after full repository and live-database statement-line authority audit.
+Status: governing addendum amended after full repository and live-database statement-line authority audit and post-build review.
 
-The earlier read-model-only draft of this addendum is superseded. The existing PR #245 migration/regression must not be merged or applied unchanged because the live audit proved that the defect is not only presentation: two deployed allocation writers can also reuse value that the canonical statement-line control has already consumed through order funding.
+The earlier read-model-only draft of this addendum is superseded. The existing PR #245 migration/regression must not be merged or applied unless they conform exactly to this addendum and pass the required rollback regression.
 
 ## Problem proved in live testing
 
@@ -97,11 +97,13 @@ WHERE dva_reconciliation.dva_statement_line_id = statement line
 
 No synthetic allocation row may be created.
 
+The existing completion-loyalty governance and deployed loyalty source/destination behaviour are frozen. This build must preserve them exactly but must not edit the loyalty governing addendum or loyalty runtime authorities.
+
 ## Live write-authority finding
 
 The live trigger inventory contains an amount-aware guard on order-funding INSERTs into `dva_reconciliation`, but no generic amount-aware trigger on inserts into `dva_statement_line_allocations`.
 
-Therefore every allocation writer that can operate on a line already consumed by another economic family must fail closed against the canonical statement position itself.
+Therefore every allocation writer changed by this build must fail closed against the canonical statement position itself.
 
 The live audit proved two deployed writers do not currently do that:
 
@@ -166,13 +168,25 @@ In `staff_reconcile_dva_line_to_order_customer_fx_gain_v1(...)` only:
 - after the FX allocation insert, fail/roll back if canonical `overconsumed_gbp > 0.005`;
 - do not create importer credit and do not change the valid economic result for an in-bounds funding+FX receipt.
 
-## Read-consumer consequences
+## Migration implementation rule
 
-The compatibility correction removes the false positive remaining amount from legacy consumers of the established summary fields. Those surfaces may continue to use existing category-specific totals for display.
+The migration must carry forward the exact audited live definitions and insert only the authorised guards/calculations.
 
-Any economic-availability decision changed by this build must use canonical `remaining_unconsumed_gbp`; no third remaining-balance formula may be introduced.
+Because `pg_get_functiondef(...)` text may contain either LF or CRLF line endings, patch anchors must not depend on a multiline newline sequence. Each function patch must use unique single-line anchors, or another equivalently line-ending-agnostic exact anchor, and must fail closed if an anchor is missing or non-unique.
+
+The migration must not normalize, reformat or reconstruct the untouched parts of any live function. The preflight fingerprints remain the authority for proving the expected starting definition.
+
+## Read-consumer boundary
+
+The compatibility correction fixes consumers that actually derive their availability from the three corrected compatibility-summary aggregate fields.
+
+It does **not** authorize a UI change and does not claim to correct every independently calculated display in the platform.
+
+The existing `/internal/dva-reconciliation/review-pack` has a separate `hasFunding` branch that calculates open value from physical statement amount minus funding amount and can therefore ignore a coexisting FX allocation. That Review Pack calculation is explicitly **out of scope for this PR**. It must not be altered here. If it is to be corrected, it requires a separately governed follow-up after this database integrity correction is complete.
 
 The existing Treasury Control Summary / resolver-v2 worklist already uses canonical `remaining_unconsumed_gbp` and is frozen.
+
+Any economic-availability decision changed by this build must use canonical `remaining_unconsumed_gbp`; no third remaining-balance formula may be introduced.
 
 ## Authorities proved safe or out of scope
 
@@ -184,13 +198,14 @@ No behaviour change is authorized to:
 - supplier-payment readiness and provenance;
 - supplier invoice allocation direction/eligibility;
 - `staff_allocate_statement_line_to_fx_card_or_fee(...)`;
-- completion-loyalty matching/release economics;
+- completion-loyalty matching/release economics or governing addenda;
 - main-bank shipper/AP allocation;
 - Sage/accounting release;
 - VAT;
 - statement extraction/import;
 - statement physical monetary values;
-- order funding totals, gaps, `funded_at`, funding-event sync, overfunding and importer-credit authorities.
+- order funding totals, gaps, `funded_at`, funding-event sync, overfunding and importer-credit authorities;
+- application/UI code, including Review Pack.
 
 ## Frozen live fingerprint gate
 
@@ -258,19 +273,24 @@ not available for final balance/refund/another funding use
 
 ## Regression requirements
 
-The replacement regression must prove:
+The replacement regression must run inside `BEGIN ... ROLLBACK` and prove:
 
 1. canonical statement-control definitions remain fingerprint-stable;
 2. the compatibility view adds exact `order_funding` consumption only and preserves existing allocation, loyalty and voided-import behaviour;
 3. both known live fixtures report compatibility remaining £0.00 / balanced and canonical remaining £0.00 / overconsumed £0.00;
 4. a fully consumed funding line is rejected by the final-balance writer before target-specific mutation;
 5. a fully consumed funding line is rejected by the retailer-refund writer before target-specific mutation;
-6. the customer-FX writer contains both pre-split and post-funding canonical amount gates while preserving the existing base funding call and FX allocation path;
-7. supplier allocation, loyalty, main-bank shipper/AP, funding-event sync and accounting/Sage fingerprints remain unchanged;
-8. no browser amount or client-side calculation becomes monetary authority.
+6. a fully consumed funding line is rejected by the customer-FX writer before funding or FX residue is created;
+7. one valid final-balance allocation path executes successfully under rollback and preserves its existing result contract while canonical overconsumption remains zero;
+8. one valid retailer-refund allocation path executes successfully under rollback and preserves its existing result contract while canonical overconsumption remains zero;
+9. one valid customer funding+FX split executes successfully under rollback, produces the existing exact `funding + FX = entered receipt` economic result, creates no importer credit, and leaves canonical remaining/overconsumption correct;
+10. supplier allocation, loyalty, main-bank shipper/AP, base funding, funding-event sync and other frozen fingerprints remain unchanged after the success-path exercises;
+11. no browser amount or client-side calculation becomes monetary authority.
+
+Source inspection alone is not sufficient for requirements 7-9. The actual post-patch RPCs must execute successfully against eligible rollback-only fixtures or eligible rollback-only live-path records.
 
 Any behavioural change outside the four authorized interventions above is a build failure.
 
 ## PR #245 quarantine rule
 
-PR #245 remains not mergeable by governance until its migration and regression are rebuilt to this amended addendum. Its earlier read-model-only implementation is incomplete and must be replaced rather than extended.
+PR #245 remains not mergeable until the migration and rollback regression conform to this amended addendum and the regression passes against the audited database.
