@@ -12,13 +12,23 @@ function clarifyPaymentAppliedLabel() {
 
   for (const node of nodes) {
     const value = (node.nodeValue ?? "").trim();
+    if (value !== "Amount received" && value !== "Payment applied to this order") continue;
+
     if (value === "Amount received") {
       node.nodeValue = "Payment applied to this order";
-      continue;
     }
 
-    if (value.startsWith("Account credit applied:")) {
-      node.nodeValue = value.replace("Account credit applied:", "Includes account credit:");
+    const card = node.parentElement?.parentElement;
+    if (!card) continue;
+
+    const cardWalker = document.createTreeWalker(card, NodeFilter.SHOW_TEXT);
+    while (cardWalker.nextNode()) {
+      const cardNode = cardWalker.currentNode;
+      if (!(cardNode instanceof Text)) continue;
+      const cardValue = (cardNode.nodeValue ?? "").trim();
+      if (cardValue.startsWith("Account credit applied:")) {
+        cardNode.nodeValue = cardValue.replace("Account credit applied:", "Includes account credit:");
+      }
     }
   }
 }
