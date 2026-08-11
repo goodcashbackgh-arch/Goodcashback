@@ -23,7 +23,9 @@ export type DeliveryAllocationLine = {
   line_order: number;
   description: string;
   qty: number;
+  qty_confirmed: number | null;
   amount_inc_vat_gbp: number;
+  amount_confirmed: number | null;
   eligible_for_invoice_yn: string;
 };
 
@@ -37,6 +39,8 @@ export type DeliveryAllocationTracking = {
   note: string | null;
   is_final_delivery_yn: boolean | null;
   courier_name: string | null;
+  accepts_new_allocations: boolean;
+  allocation_blocker: string | null;
 };
 
 export type DeliveryAllocationRow = {
@@ -54,6 +58,8 @@ export type DeliveryAllocationRow = {
   notes: string | null;
   supervisor_accepted_at: string | null;
   locked_for_export_pack_at: string | null;
+  can_simple_clear: boolean;
+  clear_blocker: string | null;
 };
 
 export type DeliveryAllocationAdjustmentTotals = {
@@ -78,6 +84,14 @@ export function isProgressedFlag(value: string | null | undefined) {
   return ["y", "yes", "true", "1"].includes((value ?? "").trim().toLowerCase());
 }
 
+export function effectiveLineQty(line: Pick<DeliveryAllocationLine, "qty" | "qty_confirmed">) {
+  return Number(line.qty_confirmed ?? line.qty ?? 0);
+}
+
+export function effectiveLineAmount(line: Pick<DeliveryAllocationLine, "amount_inc_vat_gbp" | "amount_confirmed">) {
+  return money(line.amount_confirmed ?? line.amount_inc_vat_gbp);
+}
+
 function firstRelated<T>(value: T | T[] | null | undefined): T | null {
   if (!value) return null;
   return Array.isArray(value) ? value[0] ?? null : value;
@@ -88,9 +102,22 @@ function money(value: unknown) {
   return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0;
 }
 
+type ControlTrackingRow = {
+  tracking_submission_id?: string;
+  accepts_new_allocations?: boolean;
+  blocker?: string | null;
+};
+
+type ControlAllocationRow = {
+  allocation_id?: string;
+  can_simple_clear?: boolean;
+  blocker?: string | null;
+};
+
 export async function loadDeliveryAllocationData(
   supabase: Awaited<ReturnType<typeof createClient>>,
-  orderId: string
+  orderId: string,
+  mode: "operator" | "staff" = "operator"
 ): Promise<{ data: DeliveryAllocationData | null; error: string | null }> {
   const db = supabase as any;
 
@@ -131,7 +158,7 @@ export async function loadDeliveryAllocationData(
   const { data: lines, error: linesError } = invoiceIds.length > 0
     ? await db
         .from("supplier_invoice_lines")
-        .select("id, supplier_invoice_id, line_order, description, qty, amount_inc_vat_gbp, eligible_for_invoice_yn")
+        .select("id, supplier_invoice_id, line_order, description, qty, qty_confirmed, amount_inc_vat_gbp, amount_confirmed, eligible_for_invoice_yn")
         .in("supplier_invoice_id", invoiceIds)
         .order("supplier_invoice_id", { ascending: true })
         .order("line_order", { ascending: true })
@@ -163,6 +190,28 @@ export async function loadDeliveryAllocationData(
     return { data: null, error: allocationError.message };
   }
 
+  const { data: controlState, error: controlError } = await db.rpc("delivery_allocation_control_state_v1", {
+    p_order_id: orderId,
+    p_actor_mode: mode,
+  });
+
+  if (controlError) {
+    return { data: null, error: controlError.message };
+  }
+
+  const trackingControlRows = Array.isArray(controlState?.tracking_packages)
+    ? (controlState.tracking_packages as ControlTrackingRow[])
+    : [];
+  const allocationControlRows = Array.isArray(controlState?.allocations)
+    ? (controlState.allocations as ControlAllocationRow[])
+    : [];
+  const trackingControlById = new Map(
+    trackingControlRows.map((row) => [String(row.tracking_submission_id ?? ""), row])
+  );
+  const allocationControlById = new Map(
+    allocationControlRows.map((row) => [String(row.allocation_id ?? ""), row])
+  );
+
   const { data: adjustmentRows, error: adjustmentError } = await db
     .from("order_value_adjustments")
     .select("adjustment_type, amount_gbp, approval_status")
@@ -193,11 +242,14 @@ export async function loadDeliveryAllocationData(
       line_order: Number(line.line_order ?? 0),
       description: String(line.description ?? ""),
       qty: Number(line.qty ?? 0),
+      qty_confirmed: line.qty_confirmed == null ? null : Number(line.qty_confirmed),
       amount_inc_vat_gbp: money(line.amount_inc_vat_gbp),
+      amount_confirmed: line.amount_confirmed == null ? null : money(line.amount_confirmed),
       eligible_for_invoice_yn: String(line.eligible_for_invoice_yn ?? "N"),
     })),
     tracking: ((trackingRows ?? []) as any[]).map((row) => {
       const courier = firstRelated(row.couriers as { name?: string | null }[] | { name?: string | null } | null);
+      const control = trackingControlById.get(String(row.id));
       return {
         id: row.id,
         tracking_ref: String(row.tracking_ref ?? ""),
@@ -208,24 +260,31 @@ export async function loadDeliveryAllocationData(
         note: row.note ?? null,
         is_final_delivery_yn: row.is_final_delivery_yn ?? null,
         courier_name: courier?.name ?? null,
+        accepts_new_allocations: control?.accepts_new_allocations !== false,
+        allocation_blocker: control?.blocker ?? null,
       };
     }),
-    allocations: ((allocationRows ?? []) as any[]).map((row) => ({
-      id: row.id,
-      supplier_invoice_line_id: row.supplier_invoice_line_id,
-      tracking_submission_id: row.tracking_submission_id ?? null,
-      qty_allocated: Number(row.qty_allocated ?? 0),
-      base_value_gbp: money(row.base_value_gbp),
-      discount_share_gbp: money(row.discount_share_gbp),
-      retailer_delivery_share_gbp: money(row.retailer_delivery_share_gbp),
-      adjusted_net_value_gbp: money(row.adjusted_net_value_gbp),
-      allocation_status: String(row.allocation_status ?? "unknown_contents"),
-      allocation_basis: String(row.allocation_basis ?? "operator_declared"),
-      evidence_url: row.evidence_url ?? null,
-      notes: row.notes ?? null,
-      supervisor_accepted_at: row.supervisor_accepted_at ?? null,
-      locked_for_export_pack_at: row.locked_for_export_pack_at ?? null,
-    })),
+    allocations: ((allocationRows ?? []) as any[]).map((row) => {
+      const control = allocationControlById.get(String(row.id));
+      return {
+        id: row.id,
+        supplier_invoice_line_id: row.supplier_invoice_line_id,
+        tracking_submission_id: row.tracking_submission_id ?? null,
+        qty_allocated: Number(row.qty_allocated ?? 0),
+        base_value_gbp: money(row.base_value_gbp),
+        discount_share_gbp: money(row.discount_share_gbp),
+        retailer_delivery_share_gbp: money(row.retailer_delivery_share_gbp),
+        adjusted_net_value_gbp: money(row.adjusted_net_value_gbp),
+        allocation_status: String(row.allocation_status ?? "unknown_contents"),
+        allocation_basis: String(row.allocation_basis ?? "operator_declared"),
+        evidence_url: row.evidence_url ?? null,
+        notes: row.notes ?? null,
+        supervisor_accepted_at: row.supervisor_accepted_at ?? null,
+        locked_for_export_pack_at: row.locked_for_export_pack_at ?? null,
+        can_simple_clear: control?.can_simple_clear === true,
+        clear_blocker: control?.blocker ?? null,
+      };
+    }),
     adjustments: {
       retailerDeliveryGbp: approvedAdjustments.filter((row: any) => row.adjustment_type === "retailer_delivery").reduce((sum: number, row: any) => sum + money(row.amount_gbp), 0),
       retailerDiscountGbp: approvedAdjustments.filter((row: any) => row.adjustment_type === "retailer_discount").reduce((sum: number, row: any) => sum + money(row.amount_gbp), 0),
