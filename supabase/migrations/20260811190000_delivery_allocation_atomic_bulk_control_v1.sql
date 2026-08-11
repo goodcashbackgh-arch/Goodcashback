@@ -264,7 +264,6 @@ BEGIN
       RAISE EXCEPTION 'Tracking ref/package is missing, superseded or belongs to another order.';
     END IF;
 
-    -- Exact package-set mutation gate. Header-only legacy activity is not enough.
     IF EXISTS (
       SELECT 1
       FROM public.shipper_package_receipts r
@@ -299,14 +298,13 @@ BEGIN
   END IF;
 
   DROP TABLE IF EXISTS pg_temp.delivery_allocation_items_v1;
-  CREATE TEMP TABLE pg_temp.delivery_allocation_items_v1 (
+  CREATE TEMP TABLE delivery_allocation_items_v1 (
     supplier_invoice_line_id uuid PRIMARY KEY,
     supplier_invoice_id uuid NOT NULL,
     qty_to_allocate numeric NOT NULL,
     base_value_gbp numeric NOT NULL
   ) ON COMMIT DROP;
 
-  -- Deterministic supplier-line locks.
   PERFORM 1
   FROM public.supplier_invoice_lines sil
   JOIN public.supplier_invoices si ON si.id = sil.supplier_invoice_id
@@ -322,8 +320,6 @@ BEGIN
   ORDER BY sil.id
   FOR UPDATE OF sil;
 
-  -- Deterministic existing-allocation locks. Replacement successor rows are
-  -- retained for provenance but excluded from ordinary source-quantity consumption.
   PERFORM 1
   FROM public.order_tracking_line_allocations a
   WHERE a.supplier_invoice_line_id IN (
@@ -712,6 +708,11 @@ BEGIN
   SELECT COALESCE(jsonb_agg(
     jsonb_build_object(
       'allocation_id', a.id,
+      'counts_toward_ordinary_remaining', NOT EXISTS (
+        SELECT 1
+        FROM public.physical_replacement_same_order_routes successor_route
+        WHERE successor_route.successor_tracking_line_allocation_id = a.id
+      ),
       'can_simple_clear', CASE
         WHEN a.locked_for_export_pack_at IS NOT NULL OR a.allocation_status = 'locked_for_export_pack' THEN false
         WHEN EXISTS (SELECT 1 FROM public.shipper_package_receipt_line_dispositions d WHERE d.tracking_line_allocation_id = a.id) THEN false
