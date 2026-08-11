@@ -5,7 +5,7 @@ SET LOCAL statement_timeout = '0';
 
 -- Governing authority:
 -- docs/governing-pack/backend/Delivery_Allocation_Lock_Timing_Clarification_v1.md
--- section "Governing amendment v1.3 — bulk assignment wrapper only".
+-- section "Governing amendment v1.4 — atomic bulk assignment wrapper over the frozen existing form".
 -- This migration adds one bulk-only allocation authority and changes no existing authority.
 
 DO $preflight$
@@ -175,8 +175,9 @@ BEGIN
     SELECT
       sil.id AS supplier_invoice_line_id,
       sil.supplier_invoice_id,
-      COALESCE(sil.qty_confirmed, sil.qty, 0)::numeric AS line_qty,
-      ROUND(COALESCE(sil.amount_confirmed, sil.amount_inc_vat_gbp, 0)::numeric, 2) AS line_amount,
+      COALESCE(sil.qty, 0)::numeric AS page_qty,
+      COALESCE(sil.qty_confirmed, sil.qty, 0)::numeric AS validation_line_qty,
+      ROUND(COALESCE(sil.amount_confirmed, sil.amount_inc_vat_gbp, 0)::numeric, 2) AS validation_line_amount,
       sil.eligible_for_invoice_yn::text AS eligible_for_invoice_yn
     FROM public.supplier_invoice_lines sil
     JOIN public.supplier_invoices si ON si.id = sil.supplier_invoice_id
@@ -198,13 +199,13 @@ BEGIN
       RAISE EXCEPTION 'Non-physical financial lines cannot be allocated to tracking refs.';
     END IF;
 
-    IF v_row.line_qty <= 0 OR v_row.line_amount < 0 THEN
+    IF v_row.validation_line_qty <= 0 OR v_row.validation_line_amount < 0 THEN
       RAISE EXCEPTION 'Line quantity/value is not valid for allocation.';
     END IF;
 
     DECLARE
       v_already_allocated numeric := 0;
-      v_remaining numeric := 0;
+      v_existing_form_remaining numeric := 0;
       v_base numeric := 0;
     BEGIN
       SELECT COALESCE(SUM(a.qty_allocated), 0)::numeric
@@ -212,13 +213,21 @@ BEGIN
       FROM public.order_tracking_line_allocations a
       WHERE a.supplier_invoice_line_id = v_row.supplier_invoice_line_id;
 
-      v_remaining := v_row.line_qty - v_already_allocated;
+      v_existing_form_remaining := v_row.page_qty - v_already_allocated;
 
-      IF v_remaining <= 0.0001 THEN
+      IF v_existing_form_remaining <= 0.0001 THEN
         RAISE EXCEPTION 'One of the selected items no longer has remaining quantity. Nothing was saved.';
       END IF;
 
-      v_base := ROUND((v_row.line_amount / v_row.line_qty) * v_remaining, 2);
+      IF v_existing_form_remaining > v_row.validation_line_qty THEN
+        RAISE EXCEPTION 'Allocated quantity must be greater than zero and no more than the line quantity. Nothing was saved.';
+      END IF;
+
+      IF v_already_allocated + v_existing_form_remaining > v_row.validation_line_qty + 0.0001 THEN
+        RAISE EXCEPTION 'Allocation would exceed the progressed line quantity. Clear unlocked allocations or review locked export allocations first. Nothing was saved.';
+      END IF;
+
+      v_base := ROUND((v_row.validation_line_amount / v_row.validation_line_qty) * v_existing_form_remaining, 2);
 
       INSERT INTO pg_temp.delivery_allocation_bulk_items_v1(
         supplier_invoice_line_id,
@@ -228,7 +237,7 @@ BEGIN
       ) VALUES (
         v_row.supplier_invoice_line_id,
         v_row.supplier_invoice_id,
-        v_remaining,
+        v_existing_form_remaining,
         v_base
       );
     END;
