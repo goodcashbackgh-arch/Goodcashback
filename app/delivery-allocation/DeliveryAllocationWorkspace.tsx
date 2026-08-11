@@ -3,10 +3,13 @@ import {
   clearDeliveryAllocationForLineAction,
   saveDeliveryAllocationAction,
 } from "./actions";
+import DeliveryAllocationBulkControls from "./DeliveryAllocationBulkControls";
 import {
   DeliveryAllocationData,
   DeliveryAllocationLine,
   DeliveryAllocationRow,
+  effectiveLineAmount,
+  effectiveLineQty,
   isProgressedFlag,
 } from "./data";
 
@@ -44,6 +47,17 @@ function trackingName(data: DeliveryAllocationData, trackingId: string | null) {
   return `${tracking.courier_name ?? "Courier"} · ${tracking.tracking_ref}`;
 }
 
+function packageBlockerText(blocker: string | null) {
+  switch (blocker) {
+    case "exact_physical_receipt":
+      return "Exact shipper receipt captured — contents frozen";
+    case "exact_shipment_snapshot":
+      return "Exact shipment snapshot captured — contents frozen";
+    default:
+      return "Contents frozen by downstream history";
+  }
+}
+
 export default function DeliveryAllocationWorkspace({
   mode,
   data,
@@ -56,9 +70,13 @@ export default function DeliveryAllocationWorkspace({
   error?: string;
 }) {
   const progressedLines = data.lines.filter((line) => isProgressedFlag(line.eligible_for_invoice_yn));
-  const totalProgressedQty = progressedLines.reduce((sum, line) => sum + Number(line.qty ?? 0), 0);
+  const totalProgressedQty = progressedLines.reduce((sum, line) => sum + effectiveLineQty(line), 0);
   const allocatedQty = data.allocations.reduce((sum, allocation) => sum + Number(allocation.qty_allocated ?? 0), 0);
   const unknownCount = data.allocations.filter((allocation) => ["unknown_contents", "needs_operator_evidence"].includes(allocation.allocation_status)).length;
+  const selectableCount = progressedLines.filter((line) => {
+    const lineAllocations = allocationsForLine(line, data.allocations);
+    return Math.max(0, effectiveLineQty(line) - sumAllocatedQty(lineAllocations)) > 0.0001;
+  }).length;
   const basePath = mode === "staff" ? "/internal" : "/importer";
   const backHref = mode === "staff" ? `/internal/reconciliation/${data.order.id}` : `/importer/reconciliation/${data.order.id}`;
 
@@ -81,7 +99,7 @@ export default function DeliveryAllocationWorkspace({
             <span className="rounded-full bg-emerald-100 px-3 py-1 text-emerald-800">Original invoice lines stay intact</span>
             <span className="rounded-full bg-slate-100 px-3 py-1 text-slate-700">Partial/full derived by quantity</span>
             <span className="rounded-full bg-slate-100 px-3 py-1 text-slate-700">No operator value apportionment</span>
-            <span className="rounded-full bg-slate-100 px-3 py-1 text-slate-700">Editable until downstream lock</span>
+            <span className="rounded-full bg-slate-100 px-3 py-1 text-slate-700">Editable until exact downstream provenance</span>
             {mode === "staff" ? <span className="rounded-full bg-purple-100 px-3 py-1 text-purple-800">Supervisor takeover / review</span> : null}
           </div>
           {success ? <p className="mt-4 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">{success}</p> : null}
@@ -157,6 +175,11 @@ export default function DeliveryAllocationWorkspace({
                   <p className="font-semibold text-slate-900">{tracking.courier_name ?? "Courier"} · {tracking.tracking_ref}</p>
                   <p className="mt-1 text-slate-600">Tracking date: {formatDate(tracking.tracking_date)}</p>
                   <p className="mt-1 text-slate-600">Final retailer delivery marker: {tracking.is_final_delivery_yn ? "Yes" : "No"}</p>
+                  {!tracking.accepts_new_allocations ? (
+                    <p className="mt-2 rounded-lg bg-slate-200 px-2 py-1 text-xs font-semibold text-slate-700">
+                      {packageBlockerText(tracking.allocation_blocker)}
+                    </p>
+                  ) : null}
                   {tracking.note ? <p className="mt-2 text-slate-700">{tracking.note}</p> : null}
                   {tracking.tracking_screenshot_url ? <a href={tracking.tracking_screenshot_url} target="_blank" rel="noreferrer" className="mt-2 inline-block text-sm font-semibold text-sky-700 underline">Open tracking evidence</a> : null}
                 </article>
@@ -178,171 +201,206 @@ export default function DeliveryAllocationWorkspace({
               No progressed lines are available. Progress clean invoice lines first, then return here for delivery allocation.
             </p>
           ) : (
-            <div className="mt-4 space-y-5">
-              {progressedLines.map((line) => {
-                const lineAllocations = allocationsForLine(line, data.allocations);
-                const originalQty = Number(line.qty ?? 0);
-                const lineAllocatedQty = sumAllocatedQty(lineAllocations);
-                const remainingQty = Math.max(0, originalQty - lineAllocatedQty);
-                const complete = remainingQty <= 0.0001;
-                const hasDownstreamLock = lineAllocations.some((allocation) => Boolean(allocation.locked_for_export_pack_at));
-                const canRework = lineAllocations.length > 0 && !hasDownstreamLock;
-                const nextAction = hasDownstreamLock
-                  ? "Downstream locked"
-                  : complete
-                    ? "Fully allocated — still editable until lock"
+            <>
+              <DeliveryAllocationBulkControls
+                mode={mode}
+                orderId={data.order.id}
+                selectableCount={selectableCount}
+                tracking={data.tracking.map((tracking) => ({
+                  id: tracking.id,
+                  label: `${tracking.courier_name ?? "Courier"} · ${tracking.tracking_ref}`,
+                  acceptsNewAllocations: tracking.accepts_new_allocations,
+                  blocker: tracking.allocation_blocker,
+                }))}
+              />
+
+              <div className="mt-4 space-y-5">
+                {progressedLines.map((line) => {
+                  const lineAllocations = allocationsForLine(line, data.allocations);
+                  const originalQty = effectiveLineQty(line);
+                  const originalAmount = effectiveLineAmount(line);
+                  const lineAllocatedQty = sumAllocatedQty(lineAllocations);
+                  const remainingQty = Math.max(0, originalQty - lineAllocatedQty);
+                  const complete = remainingQty <= 0.0001;
+                  const hasReworkableAllocations = lineAllocations.some((allocation) => allocation.can_simple_clear);
+                  const hasImmutableAllocations = lineAllocations.some((allocation) => !allocation.can_simple_clear);
+                  const nextAction = complete
+                    ? hasImmutableAllocations
+                      ? "Fully allocated — downstream history"
+                      : "Fully allocated — still editable until downstream history"
                     : lineAllocatedQty > 0
                       ? "Continue allocating remaining qty"
                       : "Allocate this line to a package";
 
-                return (
-                  <article key={line.id} className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                      <div>
-                        <p className="text-sm font-semibold text-slate-900">Line {line.line_order}: {line.description}</p>
-                        <p className="mt-1 text-sm text-slate-600">Original line value {gbp(line.amount_inc_vat_gbp)}</p>
+                  return (
+                    <article key={line.id} className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="flex items-start gap-3">
+                          {!complete ? (
+                            <input
+                              form="bulk-delivery-allocation-form"
+                              type="checkbox"
+                              name="line_ids"
+                              value={line.id}
+                              data-remaining-qty={remainingQty}
+                              aria-label={`Select line ${line.line_order}: ${line.description} for bulk allocation`}
+                              className="mt-1 h-5 w-5 shrink-0 rounded border-slate-300"
+                            />
+                          ) : null}
+                          <div>
+                            <p className="text-sm font-semibold text-slate-900">Line {line.line_order}: {line.description}</p>
+                            <p className="mt-1 text-sm text-slate-600">Original line value {gbp(originalAmount)}</p>
+                          </div>
+                        </div>
+                        <span className={`w-fit rounded-full px-3 py-1 text-xs font-semibold ${complete && hasImmutableAllocations ? "bg-slate-200 text-slate-800" : complete ? "bg-emerald-100 text-emerald-800" : lineAllocatedQty > 0 ? "bg-amber-100 text-amber-800" : "bg-slate-100 text-slate-700"}`}>
+                          {nextAction}
+                        </span>
                       </div>
-                      <span className={`w-fit rounded-full px-3 py-1 text-xs font-semibold ${hasDownstreamLock ? "bg-slate-200 text-slate-800" : complete ? "bg-emerald-100 text-emerald-800" : lineAllocatedQty > 0 ? "bg-amber-100 text-amber-800" : "bg-slate-100 text-slate-700"}`}>
-                        {nextAction}
-                      </span>
-                    </div>
 
-                    <div className="mt-4 grid gap-3 md:grid-cols-3">
-                      <div className="rounded-2xl border border-slate-200 bg-white p-3">
-                        <p className="text-xs uppercase tracking-wide text-slate-500">Original qty</p>
-                        <p className="mt-1 text-xl font-semibold">{originalQty}</p>
+                      <div className="mt-4 grid gap-3 md:grid-cols-3">
+                        <div className="rounded-2xl border border-slate-200 bg-white p-3">
+                          <p className="text-xs uppercase tracking-wide text-slate-500">Original qty</p>
+                          <p className="mt-1 text-xl font-semibold">{originalQty}</p>
+                        </div>
+                        <div className="rounded-2xl border border-slate-200 bg-white p-3">
+                          <p className="text-xs uppercase tracking-wide text-slate-500">Already allocated</p>
+                          <p className="mt-1 text-xl font-semibold">{lineAllocatedQty}</p>
+                        </div>
+                        <div className={`rounded-2xl border p-3 ${remainingQty > 0 ? "border-amber-200 bg-amber-50" : "border-emerald-200 bg-emerald-50"}`}>
+                          <p className="text-xs uppercase tracking-wide text-slate-500">Remaining qty</p>
+                          <p className="mt-1 text-xl font-semibold">{remainingQty}</p>
+                        </div>
                       </div>
-                      <div className="rounded-2xl border border-slate-200 bg-white p-3">
-                        <p className="text-xs uppercase tracking-wide text-slate-500">Already allocated</p>
-                        <p className="mt-1 text-xl font-semibold">{lineAllocatedQty}</p>
-                      </div>
-                      <div className={`rounded-2xl border p-3 ${remainingQty > 0 ? "border-amber-200 bg-amber-50" : "border-emerald-200 bg-emerald-50"}`}>
-                        <p className="text-xs uppercase tracking-wide text-slate-500">Remaining qty</p>
-                        <p className="mt-1 text-xl font-semibold">{remainingQty}</p>
-                      </div>
-                    </div>
 
-                    {lineAllocations.length > 0 ? (
-                      <div className="mt-4 overflow-x-auto rounded-2xl border border-slate-200 bg-white">
-                        <table className="min-w-full divide-y divide-slate-200 text-sm">
-                          <thead className="bg-slate-100 text-xs uppercase tracking-wide text-slate-500">
-                            <tr>
-                              <th className="px-3 py-2 text-left">Tracking/package</th>
-                              <th className="px-3 py-2 text-right">Qty in this package</th>
-                              {mode === "staff" ? <th className="px-3 py-2 text-right">Base</th> : null}
-                              {mode === "staff" ? <th className="px-3 py-2 text-right">Discount</th> : null}
-                              {mode === "staff" ? <th className="px-3 py-2 text-right">Delivery</th> : null}
-                              {mode === "staff" ? <th className="px-3 py-2 text-right">System net</th> : null}
-                              <th className="px-3 py-2 text-left">Evidence state</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-slate-100 bg-white">
-                            {lineAllocations.map((allocation) => (
-                              <tr key={allocation.id}>
-                                <td className="px-3 py-2">{trackingName(data, allocation.tracking_submission_id)}</td>
-                                <td className="px-3 py-2 text-right">{allocation.qty_allocated}</td>
-                                {mode === "staff" ? <td className="px-3 py-2 text-right">{gbp(allocation.base_value_gbp)}</td> : null}
-                                {mode === "staff" ? <td className="px-3 py-2 text-right">-{gbp(allocation.discount_share_gbp)}</td> : null}
-                                {mode === "staff" ? <td className="px-3 py-2 text-right">{gbp(allocation.retailer_delivery_share_gbp)}</td> : null}
-                                {mode === "staff" ? <td className="px-3 py-2 text-right font-semibold">{gbp(allocation.adjusted_net_value_gbp)}</td> : null}
-                                <td className="px-3 py-2">{allocationLabel(allocation.allocation_status)}</td>
+                      {lineAllocations.length > 0 ? (
+                        <div className="mt-4 overflow-x-auto rounded-2xl border border-slate-200 bg-white">
+                          <table className="min-w-full divide-y divide-slate-200 text-sm">
+                            <thead className="bg-slate-100 text-xs uppercase tracking-wide text-slate-500">
+                              <tr>
+                                <th className="px-3 py-2 text-left">Tracking/package</th>
+                                <th className="px-3 py-2 text-right">Qty in this package</th>
+                                {mode === "staff" ? <th className="px-3 py-2 text-right">Base</th> : null}
+                                {mode === "staff" ? <th className="px-3 py-2 text-right">Discount</th> : null}
+                                {mode === "staff" ? <th className="px-3 py-2 text-right">Delivery</th> : null}
+                                {mode === "staff" ? <th className="px-3 py-2 text-right">System net</th> : null}
+                                <th className="px-3 py-2 text-left">Evidence state</th>
                               </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    ) : null}
-
-                    <div className="mt-4 grid gap-4 lg:grid-cols-[2fr_1fr]">
-                      {!complete && !hasDownstreamLock ? (
-                        <form action={saveDeliveryAllocationAction} className="rounded-2xl border border-slate-200 bg-white p-4">
-                          <input type="hidden" name="mode" value={mode} />
-                          <input type="hidden" name="order_id" value={data.order.id} />
-                          <input type="hidden" name="supplier_invoice_line_id" value={line.id} />
-                          <div className="grid gap-3 md:grid-cols-2">
-                            <label className="space-y-1 text-sm">
-                              <span className="text-xs uppercase tracking-wide text-slate-500">Tracking ref / package</span>
-                              <select name="tracking_submission_id" className="w-full rounded-xl border border-slate-300 px-3 py-2">
-                                <option value="">Select tracking ref or mark unknown</option>
-                                {data.tracking.map((tracking) => (
-                                  <option key={tracking.id} value={tracking.id}>{tracking.courier_name ?? "Courier"} · {tracking.tracking_ref}</option>
-                                ))}
-                              </select>
-                            </label>
-                            <label className="space-y-1 text-sm">
-                              <span className="text-xs uppercase tracking-wide text-slate-500">Qty to allocate now</span>
-                              <input name="qty_allocated" type="number" step="0.001" min="0" max={remainingQty} defaultValue={remainingQty} className="w-full rounded-xl border border-slate-300 px-3 py-2" />
-                            </label>
-                            <label className="space-y-1 text-sm">
-                              <span className="text-xs uppercase tracking-wide text-slate-500">Contents evidence state</span>
-                              <select name="content_state" className="w-full rounded-xl border border-slate-300 px-3 py-2" defaultValue="confirmed">
-                                <option value="confirmed">Confirmed contents</option>
-                                <option value="unknown_contents">Unknown contents</option>
-                                <option value="needs_operator_evidence">Needs evidence</option>
-                                {mode === "staff" ? <option value="supervisor_accepted_estimate">Supervisor accepted estimate</option> : null}
-                              </select>
-                            </label>
-                            <label className="space-y-1 text-sm">
-                              <span className="text-xs uppercase tracking-wide text-slate-500">Basis</span>
-                              <select name="allocation_basis" className="w-full rounded-xl border border-slate-300 px-3 py-2" defaultValue={mode === "staff" ? "supervisor_estimate" : "operator_declaration"}>
-                                <option value="operator_declaration">Operator declaration</option>
-                                <option value="retailer_dispatch_email">Retailer dispatch email</option>
-                                <option value="retailer_app">Retailer app</option>
-                                <option value="packing_slip">Packing slip</option>
-                                <option value="retailer_delivery_note">Retailer delivery note</option>
-                                {mode === "staff" ? <option value="supervisor_estimate">Supervisor estimate</option> : null}
-                                <option value="unknown">Unknown</option>
-                              </select>
-                            </label>
-                            <label className="space-y-1 text-sm md:col-span-2">
-                              <span className="text-xs uppercase tracking-wide text-slate-500">Evidence URL</span>
-                              <input name="evidence_url" className="w-full rounded-xl border border-slate-300 px-3 py-2" placeholder="Retailer dispatch screenshot/app/packing-slip link" />
-                            </label>
-                            <label className="space-y-1 text-sm md:col-span-2">
-                              <span className="text-xs uppercase tracking-wide text-slate-500">Notes</span>
-                              <textarea name="notes" rows={2} className="w-full rounded-xl border border-slate-300 px-3 py-2" placeholder="Explain which items/qty are in this package, or why contents are unknown." />
-                            </label>
-                          </div>
-                          <div className="mt-3 flex flex-wrap gap-2">
-                            <button type="submit" className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">
-                              Add package allocation
-                            </button>
-                            <span className="rounded-xl bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-800">Default qty = remaining qty</span>
-                          </div>
-                        </form>
-                      ) : hasDownstreamLock ? (
-                        <div className="rounded-2xl border border-slate-300 bg-slate-100 p-4 text-sm text-slate-800">
-                          This line has a downstream export/accounting lock. Corrections must use a controlled reversal, amendment, supplementary invoice, credit note, or supervisor/admin correction route.
+                            </thead>
+                            <tbody className="divide-y divide-slate-100 bg-white">
+                              {lineAllocations.map((allocation) => (
+                                <tr key={allocation.id}>
+                                  <td className="px-3 py-2">{trackingName(data, allocation.tracking_submission_id)}</td>
+                                  <td className="px-3 py-2 text-right">{allocation.qty_allocated}</td>
+                                  {mode === "staff" ? <td className="px-3 py-2 text-right">{gbp(allocation.base_value_gbp)}</td> : null}
+                                  {mode === "staff" ? <td className="px-3 py-2 text-right">-{gbp(allocation.discount_share_gbp)}</td> : null}
+                                  {mode === "staff" ? <td className="px-3 py-2 text-right">{gbp(allocation.retailer_delivery_share_gbp)}</td> : null}
+                                  {mode === "staff" ? <td className="px-3 py-2 text-right font-semibold">{gbp(allocation.adjusted_net_value_gbp)}</td> : null}
+                                  <td className="px-3 py-2">{allocationLabel(allocation.allocation_status)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
                         </div>
-                      ) : (
-                        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
-                          This line is fully allocated. It can still be reworked until sales invoice release, export pack generation, Sage queue, or final evidence lock.
-                        </div>
-                      )}
-
-                      {canRework ? (
-                        <form action={clearDeliveryAllocationForLineAction} className="rounded-2xl border border-rose-200 bg-rose-50 p-4">
-                          <input type="hidden" name="mode" value={mode} />
-                          <input type="hidden" name="order_id" value={data.order.id} />
-                          <input type="hidden" name="supplier_invoice_line_id" value={line.id} />
-                          <p className="text-sm font-semibold text-rose-900">Rework this line</p>
-                          <p className="mt-2 text-sm leading-6 text-rose-800">
-                            Clears unlocked package allocations for this line. Shipper receipt, package selection, or quote does not lock contents. Export/accounting locks are not touched.
-                          </p>
-                          <button type="submit" className="mt-3 rounded-xl border border-rose-300 bg-white px-4 py-2 text-sm font-semibold text-rose-800 hover:bg-rose-100">
-                            Clear unlocked allocations
-                          </button>
-                        </form>
                       ) : null}
-                    </div>
-                  </article>
-                );
-              })}
-            </div>
+
+                      <div className="mt-4 grid gap-4 lg:grid-cols-[2fr_1fr]">
+                        {!complete ? (
+                          <form action={saveDeliveryAllocationAction} className="rounded-2xl border border-slate-200 bg-white p-4">
+                            <input type="hidden" name="mode" value={mode} />
+                            <input type="hidden" name="order_id" value={data.order.id} />
+                            <input type="hidden" name="supplier_invoice_line_id" value={line.id} />
+                            <div className="grid gap-3 md:grid-cols-2">
+                              <label className="space-y-1 text-sm">
+                                <span className="text-xs uppercase tracking-wide text-slate-500">Tracking ref / package</span>
+                                <select name="tracking_submission_id" className="w-full rounded-xl border border-slate-300 px-3 py-2">
+                                  <option value="">Select tracking ref or mark unknown</option>
+                                  {data.tracking.map((tracking) => (
+                                    <option key={tracking.id} value={tracking.id} disabled={!tracking.accepts_new_allocations}>
+                                      {tracking.courier_name ?? "Courier"} · {tracking.tracking_ref}
+                                      {tracking.accepts_new_allocations ? "" : ` — ${packageBlockerText(tracking.allocation_blocker)}`}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                              <label className="space-y-1 text-sm">
+                                <span className="text-xs uppercase tracking-wide text-slate-500">Qty to allocate now</span>
+                                <input name="qty_allocated" type="number" step="0.001" min="0" max={remainingQty} defaultValue={remainingQty} className="w-full rounded-xl border border-slate-300 px-3 py-2" />
+                              </label>
+                              <label className="space-y-1 text-sm">
+                                <span className="text-xs uppercase tracking-wide text-slate-500">Contents evidence state</span>
+                                <select name="content_state" className="w-full rounded-xl border border-slate-300 px-3 py-2" defaultValue="confirmed">
+                                  <option value="confirmed">Confirmed contents</option>
+                                  <option value="unknown_contents">Unknown contents</option>
+                                  <option value="needs_operator_evidence">Needs evidence</option>
+                                  {mode === "staff" ? <option value="supervisor_accepted_estimate">Supervisor accepted estimate</option> : null}
+                                </select>
+                              </label>
+                              <label className="space-y-1 text-sm">
+                                <span className="text-xs uppercase tracking-wide text-slate-500">Basis</span>
+                                <select name="allocation_basis" className="w-full rounded-xl border border-slate-300 px-3 py-2" defaultValue={mode === "staff" ? "supervisor_estimate" : "operator_declaration"}>
+                                  <option value="operator_declaration">Operator declaration</option>
+                                  <option value="retailer_dispatch_email">Retailer dispatch email</option>
+                                  <option value="retailer_app">Retailer app</option>
+                                  <option value="packing_slip">Packing slip</option>
+                                  <option value="retailer_delivery_note">Retailer delivery note</option>
+                                  {mode === "staff" ? <option value="supervisor_estimate">Supervisor estimate</option> : null}
+                                  <option value="unknown">Unknown</option>
+                                </select>
+                              </label>
+                              <label className="space-y-1 text-sm md:col-span-2">
+                                <span className="text-xs uppercase tracking-wide text-slate-500">Evidence URL</span>
+                                <input name="evidence_url" className="w-full rounded-xl border border-slate-300 px-3 py-2" placeholder="Retailer dispatch screenshot/app/packing-slip link" />
+                              </label>
+                              <label className="space-y-1 text-sm md:col-span-2">
+                                <span className="text-xs uppercase tracking-wide text-slate-500">Notes</span>
+                                <textarea name="notes" rows={2} className="w-full rounded-xl border border-slate-300 px-3 py-2" placeholder="Explain which items/qty are in this package, or why contents are unknown." />
+                              </label>
+                            </div>
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              <button type="submit" className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">
+                                Add package allocation
+                              </button>
+                              <span className="rounded-xl bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-800">Default qty = remaining qty</span>
+                            </div>
+                          </form>
+                        ) : hasImmutableAllocations ? (
+                          <div className="rounded-2xl border border-slate-300 bg-slate-100 p-4 text-sm text-slate-800">
+                            This line is fully allocated and one or more exact allocations now have downstream history. Those allocation identities cannot be silently reassigned here.
+                          </div>
+                        ) : (
+                          <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
+                            This line is fully allocated. Editable allocations can still be cleared and redone until exact downstream history consumes them.
+                          </div>
+                        )}
+
+                        {hasReworkableAllocations ? (
+                          <form action={clearDeliveryAllocationForLineAction} className="rounded-2xl border border-rose-200 bg-rose-50 p-4">
+                            <input type="hidden" name="mode" value={mode} />
+                            <input type="hidden" name="order_id" value={data.order.id} />
+                            <input type="hidden" name="supplier_invoice_line_id" value={line.id} />
+                            <p className="text-sm font-semibold text-rose-900">Rework this line</p>
+                            <p className="mt-2 text-sm leading-6 text-rose-800">
+                              Clears only allocations that remain editable. Exact receipt, shipment, customer-release, replacement/remedy and export/accounting history is preserved and never deleted by this action.
+                            </p>
+                            <button type="submit" className="mt-3 rounded-xl border border-rose-300 bg-white px-4 py-2 text-sm font-semibold text-rose-800 hover:bg-rose-100">
+                              Clear editable allocations
+                            </button>
+                          </form>
+                        ) : hasImmutableAllocations ? (
+                          <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-700">
+                            This allocation has downstream history and cannot be cleared here. Use the controlled correction route.
+                          </div>
+                        ) : null}
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            </>
           )}
         </section>
 
-        <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+        <section id="delivery-allocation-bulk-hide-sentinel" className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
           <h2 className="text-xl font-semibold">What this page does next</h2>
           <div className="mt-3 grid gap-3 md:grid-cols-3">
             <div className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-700">1. Operator/supervisor maps progressed lines to tracking refs/packages.</div>
