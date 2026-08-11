@@ -3,6 +3,7 @@ import {
   clearDeliveryAllocationForLineAction,
   saveDeliveryAllocationAction,
 } from "./actions";
+import DeliveryAllocationBulkControls from "./DeliveryAllocationBulkControls";
 import {
   DeliveryAllocationData,
   DeliveryAllocationLine,
@@ -178,7 +179,13 @@ export default function DeliveryAllocationWorkspace({
               No progressed lines are available. Progress clean invoice lines first, then return here for delivery allocation.
             </p>
           ) : (
-            <div className="mt-4 space-y-5">
+            <>
+              <DeliveryAllocationBulkControls
+                mode={mode}
+                orderId={data.order.id}
+                tracking={data.tracking.map((tracking) => ({ id: tracking.id, label: `${tracking.courier_name ?? "Courier"} · ${tracking.tracking_ref}` }))}
+              />
+              <div className="mt-4 space-y-5">
               {progressedLines.map((line) => {
                 const lineAllocations = allocationsForLine(line, data.allocations);
                 const originalQty = Number(line.qty ?? 0);
@@ -198,9 +205,14 @@ export default function DeliveryAllocationWorkspace({
                 return (
                   <article key={line.id} className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                      <div>
-                        <p className="text-sm font-semibold text-slate-900">Line {line.line_order}: {line.description}</p>
-                        <p className="mt-1 text-sm text-slate-600">Original line value {gbp(line.amount_inc_vat_gbp)}</p>
+                      <div className="flex items-start gap-3">
+                        {!complete && !hasDownstreamLock ? (
+                          <input form="bulk-delivery-allocation-form" type="checkbox" name="line_ids" value={line.id} data-remaining-qty={remainingQty} aria-label={`Select line ${line.line_order}: ${line.description} for bulk allocation`} className="mt-1 h-5 w-5 shrink-0 rounded border-slate-300" />
+                        ) : null}
+                        <div>
+                          <p className="text-sm font-semibold text-slate-900">Line {line.line_order}: {line.description}</p>
+                          <p className="mt-1 text-sm text-slate-600">Original line value {gbp(line.amount_inc_vat_gbp)}</p>
+                        </div>
                       </div>
                       <span className={`w-fit rounded-full px-3 py-1 text-xs font-semibold ${hasDownstreamLock ? "bg-slate-200 text-slate-800" : complete ? "bg-emerald-100 text-emerald-800" : lineAllocatedQty > 0 ? "bg-amber-100 text-amber-800" : "bg-slate-100 text-slate-700"}`}>
                         {nextAction}
@@ -338,11 +350,12 @@ export default function DeliveryAllocationWorkspace({
                   </article>
                 );
               })}
-            </div>
+              </div>
+            </>
           )}
         </section>
 
-        <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+        <section id="delivery-allocation-bulk-hide-sentinel" className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
           <h2 className="text-xl font-semibold">What this page does next</h2>
           <div className="mt-3 grid gap-3 md:grid-cols-3">
             <div className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-700">1. Operator/supervisor maps progressed lines to tracking refs/packages.</div>

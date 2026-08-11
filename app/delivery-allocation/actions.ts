@@ -296,3 +296,41 @@ export async function clearDeliveryAllocationForLineAction(formData: FormData) {
   revalidatePath(`/internal/delivery-allocation/${orderId}`);
   redirectBack(mode, orderId, { success: "Unlocked package allocations cleared and invoice adjustment ledger refreshed." });
 }
+
+export async function saveBulkDeliveryAllocationAction(formData: FormData) {
+  const supabase = await createClient();
+  const mode = readString(formData, "mode") === "staff" ? "staff" : "operator";
+  const orderId = readString(formData, "order_id");
+  const trackingSubmissionId = readString(formData, "tracking_submission_id");
+  const confirmed = readString(formData, "confirm_same_package") === "yes";
+  const lineIds = formData
+    .getAll("line_ids")
+    .filter((value): value is string => typeof value === "string")
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  if (!orderId) redirect("/importer");
+  if (lineIds.length === 0) redirectBack(mode, orderId, { error: "Select at least one item." });
+  if (!trackingSubmissionId) redirectBack(mode, orderId, { error: "Select a tracking ref/package." });
+  if (!confirmed) redirectBack(mode, orderId, { error: "Confirm that the selected items are in this tracking package." });
+
+  const { data, error } = await (supabase as any).rpc("delivery_allocate_tracking_lines_bulk_v1", {
+    p_order_id: orderId,
+    p_actor_mode: mode,
+    p_tracking_submission_id: trackingSubmissionId,
+    p_line_ids: lineIds,
+    p_confirm_same_package: true,
+  });
+
+  if (error) redirectBack(mode, orderId, { error: error.message });
+
+  const allocationCount = Number(data?.allocation_count ?? lineIds.length);
+  const totalQty = Number(data?.total_qty_allocated ?? 0);
+  revalidatePath(`/importer/delivery-allocation/${orderId}`);
+  revalidatePath(`/internal/delivery-allocation/${orderId}`);
+  revalidatePath(`/importer/reconciliation/${orderId}`);
+  revalidatePath(`/internal/reconciliation/${orderId}`);
+  redirectBack(mode, orderId, {
+    success: `${totalQty} unit${Math.abs(totalQty - 1) < 0.0001 ? "" : "s"} across ${allocationCount} item${allocationCount === 1 ? "" : "s"} allocated to the selected tracking package.`,
+  });
+}
