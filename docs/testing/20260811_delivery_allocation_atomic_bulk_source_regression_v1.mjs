@@ -21,10 +21,11 @@ const baseData = atBase("app/delivery-allocation/data.ts");
 const workspace = read("app/delivery-allocation/DeliveryAllocationWorkspace.tsx");
 const bulkControls = read("app/delivery-allocation/DeliveryAllocationBulkControls.tsx");
 
-assert.match(addendum, /Governing amendment v1\.3 — bulk assignment wrapper only/);
-assert.match(addendum, /This patch is only a bulk-assignment wrapper around the existing delivery-allocation lane/);
+assert.match(addendum, /Governing amendment v1\.4 — atomic bulk assignment wrapper over the frozen existing form/);
+assert.match(addendum, /Bulk assignment is an atomic wrapper around the existing Delivery Allocation form/);
 assert.match(addendum, /existing `saveDeliveryAllocationAction` remains on its pre-patch implementation/);
 assert.match(addendum, /`app\/delivery-allocation\/data\.ts` remains byte-for-byte unchanged/);
+assert.match(addendum, /does not claim or introduce global writer serialization against the unchanged legacy single writer/);
 
 assert.equal(data, baseData, "delivery-allocation data loader must remain byte-identical to the branch base");
 assert.ok(actions.startsWith(baseActions), "existing delivery-allocation actions must remain byte-identical at the start of actions.ts");
@@ -68,8 +69,14 @@ assert.doesNotMatch(migration, /physical_replacement_same_order_routes|successor
 assert.match(migration, /pg_advisory_xact_lock\(hashtext\(p_order_id::text\)\)/);
 assert.match(migration, /SUM\(a\.qty_allocated\)/);
 assert.match(migration, /resolution_type = 'non_physical_financial'/);
-assert.match(migration, /COALESCE\(sil\.qty_confirmed, sil\.qty, 0\)/);
-assert.match(migration, /COALESCE\(sil\.amount_confirmed, sil\.amount_inc_vat_gbp, 0\)/);
+assert.match(migration, /COALESCE\(sil\.qty, 0\)::numeric AS page_qty/);
+assert.match(migration, /COALESCE\(sil\.qty_confirmed, sil\.qty, 0\)::numeric AS validation_line_qty/);
+assert.match(migration, /COALESCE\(sil\.amount_confirmed, sil\.amount_inc_vat_gbp, 0\)::numeric, 2\) AS validation_line_amount/);
+assert.match(migration, /v_existing_form_remaining := v_row\.page_qty - v_already_allocated/);
+assert.match(migration, /v_existing_form_remaining > v_row\.validation_line_qty/);
+assert.match(migration, /v_already_allocated \+ v_existing_form_remaining > v_row\.validation_line_qty \+ 0\.0001/);
+assert.match(migration, /validation_line_amount \/ v_row\.validation_line_qty\) \* v_existing_form_remaining/);
+assert.doesNotMatch(migration, /v_remaining := v_row\.validation_line_qty - v_already_allocated/);
 assert.match(migration, /recalculate_invoice_adjustment_consumption_v1/);
 assert.doesNotMatch(migration, /CREATE\s+TRIGGER|ALTER\s+TABLE/is);
 
@@ -93,4 +100,4 @@ assert.ok(!changedFiles.includes("app/delivery-allocation/data.ts"));
 assert.ok(!changedFiles.includes("app/_components/FloatingActionBar.tsx"));
 assert.ok(!changedFiles.some((path) => path.includes("ReplacementOrdersPanel") || path.includes("replacement-orders-data")));
 
-console.log("delivery allocation bulk wrapper v1.3 source regression passed");
+console.log("delivery allocation bulk wrapper v1.4 source regression passed");
