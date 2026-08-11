@@ -97,24 +97,26 @@ Shipper actions move package/shipment truth forward, but they do not lock item-c
 
 ---
 
-# Governing amendment v1.3 — bulk assignment wrapper only
+# Governing amendment v1.4 — atomic bulk assignment wrapper over the frozen existing form
 
 **Status:** governing correction and replacement for all earlier branch-only bulk specifications  
 **Effective date:** 11 August 2026  
-**Implementation rule:** sections 1–6 above remain unchanged. This v1.3 amendment is the sole authority for the delivery-allocation bulk-assignment patch. It replaces the branch-only v1.1 and v1.2 bulk specifications in full.
+**Implementation rule:** sections 1–6 above remain unchanged. This v1.4 amendment is the sole authority for the delivery-allocation bulk-assignment patch. It replaces the branch-only v1.1, v1.2 and v1.3 bulk specifications in full.
 
 ## 7. Purpose
 
 Add one convenience to the existing delivery-allocation page:
 
 ```text
-select one existing tracking ref/package
--> tick several lines that the existing individual assignment UI already allows to be assigned
--> confirm that those selected items are in that package
--> assign the existing displayed remaining quantity for all selected lines in one atomic submit
+choose one existing tracking ref/package
+-> tick several lines that already expose the existing individual assignment form
+-> confirm that those selected items are physically in that package
+-> submit once
+-> database performs the equivalent of submitting each selected line's existing full-remaining individual allocation
+-> all selected allocations succeed or all fail
 ```
 
-This is a wrapper over the existing delivery-allocation lane. It is not a new allocation lane and must not reinterpret the lane.
+Bulk assignment is a wrapper over the existing delivery-allocation lane. It is not a new allocation model and must not reinterpret or repair that lane.
 
 ## 8. Frozen existing behaviour
 
@@ -145,7 +147,7 @@ If a pre-existing concern is discovered while implementing bulk assignment, reco
 
 Bulk eligibility must be derived from the exact same server-rendered state that already controls the existing individual assignment form.
 
-On the current page that means a bulk checkbox may be rendered only where the existing individual assignment form is rendered:
+On the current page a bulk checkbox may be rendered only where the existing individual assignment form is rendered:
 
 ```text
 !complete && !hasDownstreamLock
@@ -155,7 +157,7 @@ The patch must not add a new eligibility query, a new non-physical filter, a new
 
 `Select all available` means all currently rendered/enabled bulk checkboxes. Nothing else.
 
-## 10. Existing single path is byte-for-byte frozen
+## 10. Existing single path is frozen
 
 The existing `saveDeliveryAllocationAction` remains on its pre-patch implementation.
 
@@ -196,7 +198,7 @@ Changing tracking selection or line selection resets confirmation.
 
 Bulk has no quantity input. Partial quantity remains exclusively in the existing individual form.
 
-The browser's displayed remaining quantity is not authoritative for the database write.
+The browser's displayed remaining quantity is informational only. The database must re-derive the equivalent quantity from committed server state before writing.
 
 ## 12. Bulk-only server action
 
@@ -229,51 +231,138 @@ public.delivery_allocate_tracking_lines_bulk_v1(
 
 This function exists only for bulk submission. It must not replace or be called by the existing single action.
 
-For each selected line, the function must reproduce the existing single-action allocation rules as they exist at the patch baseline:
+For each selected line the function must reproduce the quantity the frozen existing page/form would submit and then apply the same authoritative validation used by the existing single action.
+
+### 13.1 Existing-form quantity proposal
+
+The frozen page calculates line remaining quantity from the raw source quantity and raw allocation history:
+
+```text
+page_quantity
+= COALESCE(qty, 0)
+
+already_allocated
+= raw SUM(order_tracking_line_allocations.qty_allocated)
+
+existing_form_remaining
+= page_quantity - already_allocated
+```
+
+The bulk RPC must re-derive that quantity from current committed database state under lock.
+
+That `existing_form_remaining` is the bulk quantity proposal.
+
+The bulk RPC must not silently replace that proposal with a different quantity derived from `qty_confirmed`.
+
+### 13.2 Existing single-action validation
+
+The existing single action validates the submitted form quantity against:
+
+```text
+validation_line_qty
+= COALESCE(qty_confirmed, qty, 0)
+
+validation_line_amount
+= COALESCE(amount_confirmed, amount_inc_vat_gbp, 0)
+```
+
+Bulk must therefore require, for every selected line:
+
+```text
+existing_form_remaining > 0
+
+existing_form_remaining <= validation_line_qty
+
+already_allocated + existing_form_remaining
+<= validation_line_qty + 0.0001
+```
+
+If any check fails, the entire bulk transaction fails with zero new allocation rows.
+
+Example:
+
+```text
+raw qty = 2
+qty_confirmed = 1
+already_allocated = 0
+existing page/form remaining = 2
+```
+
+The existing individual form would submit quantity `2`, and the existing single action would reject that quantity against confirmed quantity `1`.
+
+Bulk must do the same:
+
+```text
+propose 2
+-> reject
+-> roll back the whole bulk transaction
+```
+
+Bulk must not silently allocate `1`.
+
+### 13.3 Other existing validation and write behaviour
+
+For each selected line the bulk RPC must also reproduce the existing single-action rules as they exist at the patch baseline:
 
 - authenticate operator/importer access or active supervisor/admin staff;
 - require the tracking submission to belong to the order;
 - require the supplier line to belong to the order and be progressed;
 - reject an active `non_physical_financial` resolution exactly as the existing single action does;
-- derive line quantity as `COALESCE(qty_confirmed, qty, 0)`;
-- derive line amount as `COALESCE(amount_confirmed, amount_inc_vat_gbp, 0)`;
+- require `validation_line_qty > 0` and `validation_line_amount >= 0`;
 - calculate existing allocated quantity using the same raw `SUM(qty_allocated)` basis as the existing single action;
-- derive current remaining quantity on the server;
-- reject zero/negative remaining quantity;
-- allocate the full current server-derived remaining quantity;
-- derive base value proportionally using the same existing single-action formula;
+- derive base value proportionally as `ROUND((validation_line_amount / validation_line_qty) * existing_form_remaining, 2)`;
 - write the same ordinary confirmed allocation shape used by the existing operator/staff flow, with zero discount/delivery shares and adjusted net equal to base value;
 - use `operator_declaration` for operator bulk assignment and `supervisor_estimate` for staff bulk assignment, matching the current form defaults.
 
 No replacement-specific arithmetic or replacement-route lookup belongs in this function.
 
-## 14. Atomicity and concurrency
+## 14. Atomicity and concurrency boundary
 
-The bulk RPC must be one transaction.
-
-It must:
+The bulk RPC must execute as one transaction:
 
 ```text
 validate payload
 -> lock order
 -> authenticate actor
--> acquire the established order advisory transaction lock
--> lock the selected supplier lines in deterministic order
+-> acquire pg_advisory_xact_lock(hashtext(order_id::text))
+-> validate and lock tracking submission
+-> lock selected supplier lines in deterministic order
 -> lock relevant existing allocation rows in deterministic order
--> calculate every selected line's current remaining quantity
+-> re-derive every selected line's existing-form quantity proposal from committed state
 -> validate every selected line before inserting any allocation
--> insert all selected allocations
+-> insert every selected allocation
 -> call the existing recalculate_invoice_adjustment_consumption_v1 for each affected supplier invoice
 -> return success
+-> commit
 ```
 
-One invalid selected line, one failed insert or one failed ledger recalculation must roll back the entire bulk operation.
+One invalid selected line, failed insert or failed ledger recalculation rolls back the entire bulk operation.
 
-The advisory lock is writer serialization only. It does not alter replacement behaviour or make replacement part of this feature.
+The new bulk RPC uses the established order advisory transaction lock. The existing same-order replacement tracking RPC uses the same advisory lock, so bulk assignment and replacement-successor assignment serialize against each other.
 
-Do not add a generic cumulative-allocation trigger or constraint.
+The existing legacy single Delivery Allocation writer is deliberately frozen by this amendment and does not participate in that advisory-lock family. Therefore this patch does **not** claim or introduce global writer serialization against the unchanged legacy single writer.
 
-## 15. Permitted implementation files
+Do not change the existing single writer, add a generic cumulative-allocation trigger, or add a new constraint merely to broaden that concurrency guarantee. Such a change is outside this patch.
+
+## 15. Replacement boundary
+
+Replacement remains a separate lane.
+
+The bulk RPC must not reference or depend on:
+
+```text
+physical_replacement_same_order_routes
+successor_tracking_line_allocation_id
+tracking_allocation_effective_entitlement_v1
+replacement_qty
+replacement route IDs
+```
+
+No replacement arithmetic, replacement mutation, replacement UI change or replacement authority change is permitted.
+
+The shared advisory-lock convention is coordination only and does not make replacement part of this feature.
+
+## 16. Permitted implementation files
 
 Application changes are limited to:
 
@@ -298,9 +387,9 @@ docs/testing/<bulk rollback/postflight regression>.sql
 
 No replacement, shipper, customer, reconciliation, Sage, VAT, COS or export implementation file may change.
 
-## 16. Migration contract
+## 17. Migration contract
 
-Use one additive migration. Do not edit deployed migrations.
+Use one additive migration. Do not edit any migration already deployed to the target environment.
 
 The migration must install only `delivery_allocate_tracking_lines_bulk_v1` plus exact execution grants.
 
@@ -315,11 +404,12 @@ It must not create or alter:
 
 Revoke execution from `PUBLIC` and `anon`; grant to `authenticated` consistent with application use.
 
-## 17. Mandatory regression proof
+## 18. Mandatory regression proof
 
 Before merge, prove:
 
 ### Frozen baseline
+
 - `app/delivery-allocation/data.ts` is byte-identical to the branch base;
 - the existing `saveDeliveryAllocationAction` body is unchanged from the branch base;
 - the existing `clearDeliveryAllocationForLineAction` body is unchanged from the branch base;
@@ -328,6 +418,7 @@ Before merge, prove:
 - `FloatingActionBar.tsx` is unchanged.
 
 ### Bulk UI
+
 - checkbox rendering uses the same `!complete && !hasDownstreamLock` gate as the individual assignment form;
 - Select all acts only on those rendered/enabled checkboxes;
 - tracking change resets confirmation;
@@ -337,20 +428,42 @@ Before merge, prove:
 - existing individual partial form is unchanged and still present.
 
 ### Bulk database behaviour
+
 - one selected line succeeds;
 - several selected lines succeed atomically;
-- a partially allocated selected line receives only its current server-derived remaining quantity;
+- a partially allocated selected line receives the current server-rederived equivalent of the existing displayed/form remainder;
 - duplicate line IDs fail;
 - wrong-order tracking fails;
 - non-progressed line fails;
 - active non-physical financial line fails using the existing rule;
-- stale browser state cannot over-allocate;
 - one invalid line causes zero bulk inserts;
 - recalculation failure rolls back every bulk insert;
 - no replacement row/function is mutated;
 - no generic allocation trigger/constraint is introduced.
 
-## 18. Acceptance example
+### Raw/confirmed mismatch
+
+Given:
+
+```text
+qty = 2
+qty_confirmed = 1
+already allocated = 0
+existing page/form remainder = 2
+```
+
+prove that bulk proposes `2`, rejects it under the existing single-action validation and commits zero new rows.
+
+Prove explicitly that bulk does not silently allocate `1`.
+
+### Concurrency
+
+- stale page state caused by previously committed allocations is revalidated against current committed server state before writing;
+- two bulk requests for the same order serialize and cannot both consume the same previously available bulk remainder;
+- bulk assignment and same-order replacement tracking assignment serialize on the established order advisory lock;
+- no claim is made that the deliberately unchanged legacy single writer participates in that advisory lock.
+
+## 19. Acceptance example
 
 Given the existing page currently renders three individually assignable lines:
 
@@ -362,7 +475,7 @@ C remaining 1
 
 The operator selects `DHL123`, ticks A/B/C, confirms the selected items are in that package and presses `Apply tracking ref`.
 
-One atomic bulk transaction creates the same ordinary allocations that three current full-remaining individual submissions would create:
+One atomic bulk transaction creates the same ordinary allocations that three current full-remaining individual form submissions would create, provided each would pass the existing single-action validation at the current committed state:
 
 ```text
 A -> DHL123 qty 1
@@ -372,8 +485,8 @@ C -> DHL123 qty 1
 
 The existing individual forms, line visibility, line arithmetic, rework behaviour and all downstream/replacement workflows remain unchanged.
 
-## 19. Final governing sentence
+## 20. Final governing sentence
 
 ```text
-This patch is only a bulk-assignment wrapper around the existing delivery-allocation lane: it adds checkboxes, one shared package confirmation and one atomic bulk-only write, while leaving the existing single assignment, data loader, eligibility meaning, quantity/value presentation, rework, replacement and downstream workflows unchanged.
+Bulk assignment is an atomic wrapper around the existing Delivery Allocation form. It selects only lines already assignable by that form, re-derives exactly the same full-remaining quantity the frozen page/form would submit, validates that quantity using the existing single-action quantity/value rules, and either creates every selected allocation or none. It does not change the existing page/read model, legacy single allocation, rework, replacement or downstream workflows, and it makes no global concurrency claim for the unchanged legacy single writer.
 ```
