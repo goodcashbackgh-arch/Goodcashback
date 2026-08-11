@@ -12,7 +12,6 @@ type TrackingOption = {
 type DeliveryAllocationBulkControlsProps = {
   mode: "operator" | "staff";
   orderId: string;
-  selectableCount: number;
   tracking: TrackingOption[];
 };
 
@@ -29,9 +28,9 @@ function selectableCheckboxes() {
 export default function DeliveryAllocationBulkControls({
   mode,
   orderId,
-  selectableCount,
   tracking,
 }: DeliveryAllocationBulkControlsProps) {
+  const [availableCount, setAvailableCount] = useState(0);
   const [selectedCount, setSelectedCount] = useState(0);
   const [selectedQty, setSelectedQty] = useState(0);
   const [trackingId, setTrackingId] = useState("");
@@ -43,7 +42,9 @@ export default function DeliveryAllocationBulkControls({
   );
 
   function refreshSelection(resetConfirmation = true) {
-    const selected = selectableCheckboxes().filter((checkbox) => checkbox.checked);
+    const checkboxes = selectableCheckboxes();
+    const selected = checkboxes.filter((checkbox) => checkbox.checked);
+    setAvailableCount(checkboxes.length);
     setSelectedCount(selected.length);
     setSelectedQty(
       selected.reduce((sum, checkbox) => {
@@ -76,7 +77,7 @@ export default function DeliveryAllocationBulkControls({
     document.addEventListener("change", handleChange);
     refreshSelection(false);
     return () => document.removeEventListener("change", handleChange);
-  }, [selectableCount]);
+  }, []);
 
   return (
     <>
@@ -100,7 +101,7 @@ export default function DeliveryAllocationBulkControls({
             </select>
           </label>
           <div className="flex flex-wrap items-center gap-2">
-            <button type="button" onClick={() => setSelection(true)} disabled={selectableCount === 0} className="rounded-xl border border-sky-300 bg-white px-3 py-2 text-sm font-semibold text-sky-900 hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-50">
+            <button type="button" onClick={() => setSelection(true)} disabled={availableCount === 0} className="rounded-xl border border-sky-300 bg-white px-3 py-2 text-sm font-semibold text-sky-900 hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-50">
               Select all available
             </button>
             <button type="button" onClick={() => setSelection(false)} disabled={selectedCount === 0} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50">
@@ -108,8 +109,8 @@ export default function DeliveryAllocationBulkControls({
             </button>
           </div>
         </div>
-        <p className="mt-3 text-sm font-medium text-sky-950">{selectedCount} of {selectableCount} available item{selectableCount === 1 ? "" : "s"} selected</p>
-        <p className="mt-1 text-xs leading-5 text-sky-800">Bulk allocation uses the full current ordinary remaining quantity of every selected item. Use the existing individual item form for a partial quantity.</p>
+        <p className="mt-3 text-sm font-medium text-sky-950">{selectedCount} of {availableCount} available item{availableCount === 1 ? "" : "s"} selected</p>
+        <p className="mt-1 text-xs leading-5 text-sky-800">Bulk allocation uses the full current remaining quantity of every selected item. Use the existing individual item form for a partial quantity.</p>
       </form>
 
       {selectedCount > 0 ? (
