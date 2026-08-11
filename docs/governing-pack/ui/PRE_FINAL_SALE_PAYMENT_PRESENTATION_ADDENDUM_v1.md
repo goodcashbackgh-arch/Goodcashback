@@ -42,17 +42,27 @@ Once at least one posted customer sale document exists:
 - canonical settlement presentation becomes authoritative;
 - `canonical_amount_received_gbp`, `final_sale_value_gbp`, `canonical_balance_due_gbp`, final-balance payments and pending-credit presentation remain governed by the existing final-sale settlement contracts.
 
-## 4. Customer page correction
+## 4. Existing presentation boundary
 
-On `app/customer/orders/[order_id]/operations/page.tsx`:
+The customer operations route already includes:
 
-- preserve the existing `finalSaleValueConfirmed` phase detector;
-- before final sale confirmation, the payment row must show confirmed DVA cash payment rather than canonical settlement amount;
-- applied account credit remains separately shown as its own component;
-- after final sale confirmation, the payment row continues to show canonical amount received;
-- do not change accepted estimate, amount-to-pay, status, journey, sale documents, account-credit balance, or settlement calculations.
+- `app/customer/orders/[order_id]/operations/layout.tsx`;
+- `app/customer/orders/[order_id]/operations/SettlementCustomerPatch.tsx`.
 
-The existing client-side wording patch may continue to rename `Amount received` to `Payment applied to this order`; only the value selected for that label is phase-dependent.
+That existing wrapper is the surgical presentation boundary for this correction. The large customer operations page must remain unchanged.
+
+The layout may read only the existing phase/funding authorities required to tell the presentation patch:
+
+- whether final-sale customer documents are posted;
+- the confirmed DVA cash payment amount.
+
+The client presentation patch may then:
+
+- keep the existing `Amount received` -> `Payment applied to this order` wording correction;
+- before final-sale confirmation, replace only the displayed amount paired with that label with confirmed DVA cash payment;
+- after final-sale confirmation, leave the existing canonical amount untouched.
+
+It must not alter hidden data, status, calculations, links, actions, account-credit values, final-balance values, or any other text/value.
 
 ## 5. Importer operations dependency
 
@@ -69,7 +79,7 @@ Given:
 - applied account credit £0.79;
 - no posted customer sale document.
 
-Customer payment detail must present:
+Customer payment presentation must show:
 
 - Payment applied to this order: £739.21;
 - Account credit applied: £0.79.
@@ -78,7 +88,7 @@ It must not present £740.00 as the payment row while also separately displaying
 
 ### B. Posted customer sale document exists
 
-When final-sale evidence exists, the payment row uses `canonical_amount_received_gbp` exactly as governed by the existing settlement model.
+When final-sale evidence exists, the displayed payment amount remains the existing canonical settlement amount without modification.
 
 ### C. No account credit
 
@@ -88,6 +98,7 @@ Where applied credit is zero, existing display conditions remain unchanged.
 
 Do not change:
 
+- `app/customer/orders/[order_id]/operations/page.tsx`;
 - database functions/views/tables;
 - DVA funding amounts;
 - funding completion threshold;
