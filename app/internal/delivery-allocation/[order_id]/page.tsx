@@ -31,7 +31,7 @@ export default async function InternalDeliveryAllocationPage({
     redirect("/auth/check");
   }
 
-  const { data, error } = await loadDeliveryAllocationData(supabase, orderId);
+  const { data, error } = await loadDeliveryAllocationData(supabase, orderId, "staff");
   if (error || !data) {
     redirect(`/internal/reconciliation/${orderId}?error=${encodeURIComponent(error ?? "Delivery allocation data not found.")}`);
   }
