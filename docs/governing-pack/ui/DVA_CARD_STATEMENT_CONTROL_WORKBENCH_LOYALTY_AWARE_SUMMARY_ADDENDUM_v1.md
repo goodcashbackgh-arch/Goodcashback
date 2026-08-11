@@ -15,16 +15,7 @@ main bank OUT statement line
 
 That route correctly releases the loyalty credit and records the main-bank funding match.
 
-However, the shared `dva_statement_line_allocation_summary_vw` currently derives its allocation totals only from `dva_statement_line_allocations`. It does not count `main_bank_completion_loyalty_funding_matches`. Therefore a real main-bank OUT line that is already consumed by loyalty funding can still appear in the DVA/card control hub, matching workspace, unmatched OUT triage, review pack, and pre-Sage readiness views as:
-
-```text
-confirmed_allocated_gbp = 0
-confirmed_unallocated_gbp = statement_gbp_amount
-confirmed_balanced_yn = false
-match_status = unmatched
-```
-
-That is a false control signal. The line is not unmatched; it is matched to loyalty credit funding.
+However, the shared `dva_statement_line_allocation_summary_vw` originally derived its allocation totals only from `dva_statement_line_allocations`. It did not count `main_bank_completion_loyalty_funding_matches`. Therefore a real main-bank OUT line already consumed by loyalty funding could still appear in the DVA/card control hub, matching workspace, unmatched OUT triage, review pack, and pre-Sage readiness views as unmatched/open.
 
 ## Non-negotiable boundary
 
@@ -48,11 +39,11 @@ Main-company-bank lines should remain visible in the shared control hub, but the
 
 ## Correct read-model behaviour
 
-`dva_statement_line_allocation_summary_vw` must remain the shared statement-line control summary, but it must become loyalty-aware for main-bank completion loyalty funding matches.
+`dva_statement_line_allocation_summary_vw` remains the established compatibility statement-line summary. It is not the canonical monetary authority for economic availability; that authority is the later amount-aware statement-line control chain governed elsewhere.
 
-The existing column order and types must be preserved. Any new columns must be appended at the end of the view.
+The existing column order and types must be preserved. Any later compatibility correction must preserve the existing loyalty source and destination fields and must not remove or rename them.
 
-The view must append at least these fields:
+The loyalty-aware compatibility fields are:
 
 ```text
 statement_account_context
@@ -61,15 +52,16 @@ source_bank
 loyalty_credit_funding_allocated_gbp
 main_bank_loyalty_match_count
 control_match_reason
+loyalty_internal_transfer_out_gbp
+loyalty_internal_transfer_in_gbp
+loyalty_internal_transfer_in_count
 ```
-
-The view may append further explanatory fields only if they do not break existing consumers.
 
 ## Confirmed amount calculation
 
-For statement-line control display, the confirmed consumed amount must include both normal allocation rows and confirmed/released main-bank loyalty funding matches.
+For statement-line compatibility display, confirmed consumed amount includes both normal allocation rows and confirmed/released completion-loyalty funding matches.
 
-Use this control calculation:
+Use this loyalty control calculation:
 
 ```text
 normal_confirmed_allocated_gbp =
@@ -79,35 +71,45 @@ normal_confirmed_allocated_gbp =
 loyalty_credit_funding_allocated_gbp =
   sum(main_bank_completion_loyalty_funding_matches.matched_gbp_amount)
   where match_status in ('confirmed', 'released_available_dashboard_credit')
-
-confirmed_allocated_gbp =
-  normal_confirmed_allocated_gbp
-  + loyalty_credit_funding_allocated_gbp
-
-confirmed_unallocated_gbp =
-  statement_gbp_amount
-  - normal_confirmed_allocated_gbp
-  - loyalty_credit_funding_allocated_gbp
-
-confirmed_balanced_yn =
-  abs(statement_gbp_amount - normal_confirmed_allocated_gbp - loyalty_credit_funding_allocated_gbp) < 0.01
 ```
 
-Existing breakdown columns must retain their narrow meanings:
+The summary may also include other independently governed consumption families in its aggregate compatibility fields, provided that:
+
+- loyalty amounts are counted exactly once;
+- loyalty-specific breakdown fields retain their narrow meanings;
+- source-OUT and destination-IN completion-loyalty handling remains present;
+- no loyalty amount is reclassified as supplier, refund, FX/fee, exception/hold or final-balance allocation;
+- the existing column order and row filtering remain preserved.
+
+Existing breakdown columns retain their narrow meanings:
 
 ```text
 supplier_invoice_allocated_gbp = supplier invoice allocations only
 retailer_refund_allocated_gbp = retailer refund allocations only
 fx_card_or_fee_allocated_gbp = FX/card difference and bank fee allocations only
 exception_or_hold_allocated_gbp = exception/hold/not-charged/unmatched hold allocations only
-final_balance_payment_allocated_gbp = final balance allocations only, where already present
+final_balance_payment_allocated_gbp = final balance allocations only
 ```
 
-Do not hide loyalty funding inside supplier, refund, FX/fee, exception/hold, or final-balance columns.
+## Compatibility-preservation rule for later statement-consumption corrections
+
+Any later change to `dva_statement_line_allocation_summary_vw`, including the 11 August 2026 order-funding compatibility correction, must start from the exact deployed view definition and preserve all loyalty-aware behaviour established by this addendum.
+
+Specifically, a later migration must not:
+
+- replace the deployed loyalty source/destination logic with an older source-only definition;
+- remove `loyalty_internal_transfer_out_gbp`;
+- remove `loyalty_internal_transfer_in_gbp`;
+- remove `loyalty_internal_transfer_in_count`;
+- change the existing loyalty branch precedence in `control_match_reason` except where explicitly governed;
+- remove the deployed voided-import exclusion wrapper;
+- append unrelated replacement columns that alter the established view contract.
+
+A later aggregate-consumption fix may change only the exact aggregate fields authorised by its own governing addendum. All loyalty-specific columns and semantics are frozen unless a separate loyalty change is approved.
 
 ## UI display rule
 
-When `loyalty_credit_funding_allocated_gbp > 0`, statement-line cards must make the reason explicit.
+When loyalty funding is the control explanation, statement-line cards must make the reason explicit.
 
 Display label:
 
@@ -121,7 +123,7 @@ or, where space is tight:
 Loyalty credit funding
 ```
 
-The line may still be shown as balanced/green where `confirmed_balanced_yn = true`, but the UI must not imply that the line was matched to a supplier invoice, refund, final-balance payment, FX/card difference, bank fee, or generic hold.
+The line may still be shown as balanced/green where the compatibility aggregate says balanced, but the UI must not imply that the line was matched to a supplier invoice, refund, final-balance payment, FX/card difference, bank fee, or generic hold.
 
 The UI should also expose the account context where possible:
 
@@ -131,13 +133,13 @@ Importer DVA/card
 Other statement account context
 ```
 
-Do not remove main-company-bank lines from the DVA/card control hub. The goal is one consolidated staff control view with correct account context and explanation.
+Do not remove main-company-bank lines from the DVA/card control hub.
 
 ## Expected effect on existing pages
 
 ### `/internal/dva-reconciliation`
 
-A main-bank loyalty-funded OUT line should remain visible, but it must no longer appear as an unmatched line requiring supplier/refund/fee/hold matching. It should show as consumed/balanced with reason `Matched to loyalty credit funding`.
+A main-bank loyalty-funded OUT line should remain visible, but it must no longer appear as an unmatched line requiring supplier/refund/fee/hold matching.
 
 ### `/internal/dva-reconciliation/workspace`
 
@@ -149,17 +151,11 @@ A fully loyalty-consumed main-bank OUT line should not appear in unmatched OUT t
 
 ### `/internal/dva-reconciliation/review-pack`
 
-The review pack should not show a false open balance for a loyalty-consumed line. It may show the line as balanced review unless/until the UI is explicitly updated to treat loyalty funding as a ready control explanation.
+The review pack should not show a false open balance for a loyalty-consumed line.
 
 ### `/internal/status-control/pre-sage-financial-readiness`
 
 Importer-level open/unallocated statement warnings must not include amounts already consumed by confirmed/released main-bank loyalty funding matches.
-
-## Defensive write-side guard for a later patch
-
-The read-model correction is the immediate fix. A later defensive patch may update supplier allocation RPCs so that, for `statement_account_context = 'main_company_bank_account'`, they subtract existing main-bank loyalty and shipper AP consumption before allowing supplier allocation.
-
-That later guard must be separately approved and tested. It must not be bundled with the narrow read-model/UI fix unless explicitly approved.
 
 ## Test case required before implementation is accepted
 
@@ -174,24 +170,6 @@ auth/ref: JOINV2605v1
 loyalty_match_status: released_available_dashboard_credit
 ```
 
-Before patch, expected current defect:
+The compatibility summary must continue to recognise the existing loyalty consumption with no synthetic allocation rows and without changing loyalty funding, credit-ledger, shipper, supplier, funding or Sage data.
 
-```text
-confirmed_allocated_gbp = 0
-confirmed_unallocated_gbp = 13.50
-confirmed_balanced_yn = false
-match_status = unmatched
-```
-
-After patch, expected control result:
-
-```text
-loyalty_credit_funding_allocated_gbp = 13.50
-confirmed_allocated_gbp = 13.50
-confirmed_unallocated_gbp = 0.00
-confirmed_balanced_yn = true
-control_match_reason = loyalty_credit_funding
-UI label = Matched to loyalty credit funding
-```
-
-No credit ledger rows, loyalty funding confirmation rows, Sage posting rows, supplier allocation rows, shipper AP allocation rows, or order-funding rows should be created, deleted, or changed by this read-model/UI patch.
+Any later migration touching the summary view must regression-test preservation of this loyalty source/destination behaviour in addition to its own new scope.
