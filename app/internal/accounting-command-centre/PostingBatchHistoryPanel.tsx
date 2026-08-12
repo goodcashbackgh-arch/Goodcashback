@@ -48,7 +48,7 @@ function isCancelledOrSuperseded(row: Row) {
 export default async function PostingBatchHistoryPanel() {
   const supabase = await createClient();
   const { data, error } = await (supabase as any).rpc("internal_sage_posting_batch_history_v1", { p_limit: 30 });
-  const rows = ((data ?? []) as Row[]).filter((row) => !isCancelledOrSuperseded(row));
+  const rows = ((data ?? []) as Row[]).filter((row) => !isCancelledOrSuperseded(row)).slice(0, 10);
 
   return (
     <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -56,9 +56,9 @@ export default async function PostingBatchHistoryPanel() {
         <div>
           <p className="text-xs font-bold uppercase tracking-[0.2em] text-violet-500">Posting batch history</p>
           <h2 className="mt-1 text-xl font-semibold">Recent active batches</h2>
-          <p className="mt-1 text-sm leading-5 text-slate-600">Read-only list of current local batch locks. Cancelled/superseded batches are hidden here so they do not look like work in progress. Use Queue = Cancelled/Superseded or All documents in the grid only when you need audit history or refreeze pointers.</p>
+          <p className="mt-1 text-sm leading-5 text-slate-600">Read-only list of current local batch locks. Cancelled/superseded batches are hidden here so they do not look like work in progress. Use View full history for the complete posting-batch history.</p>
         </div>
-        <Link href="/internal/accounting-command-centre?queue=all" className="w-fit rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-800 hover:bg-slate-50">Open full history grid</Link>
+        <Link href="/internal/accounting-command-centre/batch-history" className="w-fit rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-800 hover:bg-slate-50">View full history</Link>
       </div>
 
       {error ? <p className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">Batch history unavailable: {error.message}</p> : null}
