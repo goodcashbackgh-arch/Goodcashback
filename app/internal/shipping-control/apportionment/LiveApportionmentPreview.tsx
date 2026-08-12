@@ -74,6 +74,7 @@ export default function LiveApportionmentPreview({
   const [bulkReason, setBulkReason] = useState("");
   const [bulkError, setBulkError] = useState<string | null>(null);
   const overrideReasonRefs = useRef<Array<HTMLInputElement | null>>([]);
+  const bulkReasonIndexesRef = useRef<Set<number>>(new Set());
 
   const ruleMap = useMemo(
     () => new Map(rules.map((rule) => [rule.rule_code, n(rule.default_factor)])),
@@ -182,7 +183,13 @@ export default function LiveApportionmentPreview({
       const input = overrideReasonRefs.current[index];
       if (!input) return;
       const suggestedCategoryCode = rows[index].suggested_category_code ?? "unclassified";
-      input.value = bulkCategoryCode === suggestedCategoryCode ? "" : reason;
+      if (bulkCategoryCode === suggestedCategoryCode) {
+        input.value = "";
+        bulkReasonIndexesRef.current.delete(index);
+      } else {
+        input.value = reason;
+        bulkReasonIndexesRef.current.add(index);
+      }
     });
 
     setSelectedIndexes(new Set());
@@ -330,9 +337,20 @@ export default function LiveApportionmentPreview({
                     name="category_code"
                     value={categoryCodes[index]}
                     onChange={(event) => {
+                      const nextCategoryCode = event.target.value;
                       const next = [...categoryCodes];
-                      next[index] = event.target.value;
+                      next[index] = nextCategoryCode;
                       setCategoryCodes(next);
+
+                      const suggestedCategoryCode = rows[index].suggested_category_code ?? "unclassified";
+                      if (
+                        nextCategoryCode === suggestedCategoryCode &&
+                        bulkReasonIndexesRef.current.has(index)
+                      ) {
+                        const input = overrideReasonRefs.current[index];
+                        if (input) input.value = "";
+                        bulkReasonIndexesRef.current.delete(index);
+                      }
                     }}
                     className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm"
                     disabled={!canApprove}
@@ -354,6 +372,9 @@ export default function LiveApportionmentPreview({
                       overrideReasonRefs.current[index] = element;
                     }}
                     name="override_reason"
+                    onChange={() => {
+                      bulkReasonIndexesRef.current.delete(index);
+                    }}
                     placeholder="Required if changing category"
                     className="w-56 rounded-xl border border-slate-300 px-3 py-2 text-sm"
                     disabled={!canApprove}
