@@ -303,3 +303,165 @@ This addendum does not:
 - create a new Sage endpoint;
 - delete source evidence;
 - reopen approved or posted documents.
+
+## 20. Supplier draft-ready refund / credit-note status filtering
+
+This section governs the refund / credit-note readiness panel on:
+
+`/internal/supplier-draft-ready`
+
+The purpose is queue visibility only. It must not introduce a new refund state machine, mutate submission state, change readiness precedence, or alter any accounting, OCR, approval, reconciliation, settlement or Sage control.
+
+### 20.1 Authoritative source and latest-record rule
+
+Current refund / credit-note rows are sourced from `dispute_refund_evidence_submissions` and must continue to use the latest submission per dispute as the authoritative current record.
+
+Historic `dispute_messages` refund/credit evidence remains a compatibility fallback only where no authoritative submission exists for the dispute. The fallback must not bypass the selected filter.
+
+### 20.2 Existing derived status is the single status authority
+
+The existing page-level authoritative refund-status derivation remains the governing presentation/readiness classifier. Its current precedence must not be changed by this filter build.
+
+Filtering must use a stable machine-readable key attached to the existing derived status result. It must not independently reinterpret raw database status combinations and must not filter by the human display label.
+
+The machine-readable derived keys are:
+
+- `approved_current`
+- `operator_resubmission_required`
+- `credit_note_pending_ocr`
+- `supervisor_review_required`
+- `ready_for_approval`
+- `released_coding_required`
+- `ready_for_supplier_control`
+- `blocked_pending`
+
+Adding these keys is presentation plumbing only. The underlying branch conditions and precedence remain unchanged.
+
+### 20.3 Filter contract
+
+The refund / credit-note panel must expose an independent URL filter named `credit_status` with these values:
+
+- `open`
+- `ready`
+- `blocked`
+- `approved`
+- `actioned`
+- `all`
+
+Invalid or missing values default to `open`.
+
+User-facing labels should mirror the existing supplier-invoice filter vocabulary:
+
+- Open approval queue
+- Ready only
+- Blocked only
+- Approved/current
+- Actioned history
+- All loaded statuses
+
+The mapping is locked as follows:
+
+```text
+open
+  ready_for_approval
+  ready_for_supplier_control
+  released_coding_required
+  credit_note_pending_ocr
+  supervisor_review_required
+  blocked_pending
+
+ready
+  ready_for_approval
+  ready_for_supplier_control
+
+blocked
+  released_coding_required
+  credit_note_pending_ocr
+  supervisor_review_required
+  blocked_pending
+
+approved
+  approved_current
+
+actioned
+  approved_current
+  operator_resubmission_required
+
+all
+  every derived key
+```
+
+`operator_resubmission_required` is actioned/history rather than open supplier approval work because the next operational action sits outside the supplier-current approval lane.
+
+### 20.4 Independent invoice and credit/refund URL state
+
+The existing supplier-invoice filter continues to use `status` unchanged.
+
+The new credit/refund filter uses `credit_status` independently.
+
+Changing `status` must preserve the current `credit_status`. Changing `credit_status` must preserve the current `status`.
+
+No filter action may reset the other queue silently.
+
+### 20.5 Render and empty-state rule
+
+Authoritative refund status must be derived once per current submission using the existing status function and the existing accounting totals input, then the resulting rows are filtered before JSX rendering.
+
+The refund / credit-note empty state must be based on the filtered visible rows, not the unfiltered loaded arrays.
+
+Historic fallback rows, if any later exist, must be mapped into equivalent filter buckets using the existing fallback helpers and must obey the same selected `credit_status`.
+
+### 20.6 Current live-data regression oracle at lock date
+
+The read-only production probe performed before this section was locked returned:
+
+- 6 authoritative current disputes;
+- 0 legacy-only disputes;
+- 5 authoritative records approved current;
+- 1 authoritative record not approved current, with `document_mode = credit_note`, `ocr_status = not_started`, `match_status = matched_ready_to_release`, and `supplier_control_status = released_to_supplier_control`.
+
+Because the existing status derivation checks formal credit-note OCR completeness before released-to-supplier-control accounting readiness, that sixth record must remain classified as `credit_note_pending_ocr`. This build must not change that precedence.
+
+Against that locked live-data snapshot, the expected refund / credit-note filter counts are:
+
+```text
+open      1
+ready     0
+blocked   1
+approved  5
+actioned  5
+all       6
+```
+
+These counts are a regression oracle for this build, not permanent business constants.
+
+### 20.7 Build boundary
+
+The implementation is limited to `app/internal/supplier-draft-ready/page.tsx` unless a compile-only type extraction is strictly required.
+
+This filter build must not:
+
+- add or alter database schema, views, RPCs, migrations or RLS;
+- change refund/credit-note workflow states or state precedence;
+- change OCR enqueue/fetch/compare behaviour;
+- change release, coding or approval actions;
+- change refund-IN/DVA/card matching;
+- change Sage readiness, freezing or posting;
+- change the dedicated `/internal/refund-document-control` queue;
+- add document-type tabs, new counters or a new dashboard;
+- remove the historic fallback compatibility path.
+
+### 20.8 Acceptance tests
+
+The build is accepted only when:
+
+1. missing or invalid `credit_status` defaults to `open`;
+2. the current live-data snapshot renders `1 / 0 / 1 / 5 / 5 / 6` for open / ready / blocked / approved / actioned / all respectively;
+3. approved-current records do not appear in the default open credit/refund queue;
+4. the existing invoice `status` filter behaviour remains unchanged;
+5. changing invoice status preserves `credit_status`;
+6. changing credit/refund status preserves invoice `status`;
+7. filtered empty states are correct;
+8. current credit/refund links and actions remain unchanged;
+9. historic fallback rows cannot bypass the filter;
+10. the application compiles successfully.
