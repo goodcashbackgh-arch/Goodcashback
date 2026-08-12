@@ -3,7 +3,7 @@ BEGIN;
 SET LOCAL lock_timeout = '15s';
 SET LOCAL statement_timeout = '0';
 
-CREATE OR REPLACE FUNCTION public.internal_sage_posting_batch_audit_v1(
+CREATE FUNCTION public.internal_sage_posting_batch_audit_v1(
   p_lane text DEFAULT 'all',
   p_status text DEFAULT 'all',
   p_limit integer DEFAULT 20,
