@@ -12,7 +12,7 @@ import {
   bulkApproveSupplierInvoicesCurrentAction,
 } from "./actions";
 
-type SearchParams = { success?: string; error?: string; status?: string };
+type SearchParams = { success?: string; error?: string; status?: string; credit_status?: string };
 
 type FinancialSummary = { invoice_total_gbp: number | null };
 
@@ -88,7 +88,18 @@ type RefundAccountingTotals = {
   gross_variance_gbp: number | null;
 };
 
+type RefundStatusKey =
+  | "approved_current"
+  | "operator_resubmission_required"
+  | "credit_note_pending_ocr"
+  | "supervisor_review_required"
+  | "ready_for_approval"
+  | "released_coding_required"
+  | "ready_for_supplier_control"
+  | "blocked_pending";
+
 type AuthoritativeRefundStatus = {
+  key: RefundStatusKey;
   label: string;
   badgeClass: string;
   explanation: string | null;
@@ -135,6 +146,27 @@ const STATUS_FILTER_DESCRIPTIONS: Record<StatusFilter, string> = {
   approved: "Invoices already approved/current or reference-corrected approved.",
   actioned: "Approved/current, rejected and superseded invoice history.",
   all: "Open queue plus approved/rejected/superseded history.",
+};
+
+const CREDIT_STATUS_FILTERS = ["open", "ready", "blocked", "approved", "actioned", "all"] as const;
+type CreditStatusFilter = (typeof CREDIT_STATUS_FILTERS)[number];
+
+const CREDIT_STATUS_FILTER_LABELS: Record<CreditStatusFilter, string> = {
+  open: "Open approval queue",
+  ready: "Ready only",
+  blocked: "Blocked only",
+  approved: "Approved/current",
+  actioned: "Actioned history",
+  all: "All loaded statuses",
+};
+
+const CREDIT_STATUS_FILTER_DESCRIPTIONS: Record<CreditStatusFilter, string> = {
+  open: "Only refund or credit-note records still requiring supplier-side work.",
+  ready: "Only records ready for supplier control or approval now.",
+  blocked: "Only records waiting on OCR, review, coding, or another readiness blocker.",
+  approved: "Only supplier-side refund or credit-note records already approved current.",
+  actioned: "Approved-current and operator-resubmission history.",
+  all: "All loaded refund and credit-note statuses.",
 };
 
 function firstRelated<T>(value: T | T[] | null | undefined): T | null {
@@ -237,7 +269,7 @@ function approvalReferencesEvidence(approval: ApprovalMessage, evidenceId: strin
 function authoritativeRefundStatus(submission: RefundSubmission, totals: RefundAccountingTotals | undefined): AuthoritativeRefundStatus {
   const approvedCurrent = submission.supplier_approval_status === "approved_current" || submission.supplier_control_status === "approved_current";
   if (approvedCurrent) {
-    return { label: "Approved current", badgeClass: "bg-emerald-100 text-emerald-800", explanation: null, approvedCurrent: true };
+    return { key: "approved_current", label: "Approved current", badgeClass: "bg-emerald-100 text-emerald-800", explanation: null, approvedCurrent: true };
   }
 
   const statuses = [submission.evidence_control_status, submission.supplier_readiness_route, submission.supplier_control_status].map((value) => String(value ?? ""));
@@ -246,7 +278,7 @@ function authoritativeRefundStatus(submission: RefundSubmission, totals: RefundA
     || submission.supplier_readiness_route === "operator_resubmission_required"
     || statuses.some((value) => value.includes("rejected") || value.includes("resubmission_required"));
   if (rejected) {
-    return { label: "Operator resubmission required", badgeClass: "bg-rose-100 text-rose-800", explanation: "The refund document was rejected or returned for operator resubmission.", approvedCurrent: false };
+    return { key: "operator_resubmission_required", label: "Operator resubmission required", badgeClass: "bg-rose-100 text-rose-800", explanation: "The refund document was rejected or returned for operator resubmission.", approvedCurrent: false };
   }
 
   const ocrStatus = String(submission.ocr_status ?? "").toLowerCase();
@@ -257,7 +289,7 @@ function authoritativeRefundStatus(submission: RefundSubmission, totals: RefundA
     || submission.evidence_control_status === "credit_note_uploaded_pending_ocr_compare"
   );
   if (creditNotePending) {
-    return { label: "Credit note pending OCR/compare", badgeClass: "bg-sky-100 text-sky-800", explanation: "Credit-note control is blocked until OCR and document comparison complete.", approvedCurrent: false };
+    return { key: "credit_note_pending_ocr", label: "Credit note pending OCR/compare", badgeClass: "bg-sky-100 text-sky-800", explanation: "Credit-note control is blocked until OCR and document comparison complete.", approvedCurrent: false };
   }
 
   const reviewRequired = submission.supervisor_review_status === "pending_review"
@@ -265,7 +297,7 @@ function authoritativeRefundStatus(submission: RefundSubmission, totals: RefundA
   || submission.match_status === "needs_operator_review"
   || statuses.some((value) => value.includes("review_required"));
   if (reviewRequired) {
-    return { label: "Supervisor review required", badgeClass: "bg-amber-100 text-amber-800", explanation: "Supervisor review must be completed before supplier approval can proceed.", approvedCurrent: false };
+    return { key: "supervisor_review_required", label: "Supervisor review required", badgeClass: "bg-amber-100 text-amber-800", explanation: "Supervisor review must be completed before supplier approval can proceed.", approvedCurrent: false };
   }
 
   const accountingReady = Boolean(totals)
@@ -273,20 +305,20 @@ function authoritativeRefundStatus(submission: RefundSubmission, totals: RefundA
     && totals?.all_progressed_lines_coded_yn === true
     && totals?.gross_reconciled_to_document_yn === true;
   if (submission.supplier_control_status === "released_to_supplier_control" && accountingReady) {
-    return { label: "Ready for approval", badgeClass: "bg-emerald-100 text-emerald-800", explanation: "Coding and document gross reconciliation are complete. Open supplier control to approve.", approvedCurrent: false };
+    return { key: "ready_for_approval", label: "Ready for approval", badgeClass: "bg-emerald-100 text-emerald-800", explanation: "Coding and document gross reconciliation are complete. Open supplier control to approve.", approvedCurrent: false };
   }
   if (submission.supplier_control_status === "released_to_supplier_control") {
-    return { label: "Released — coding required", badgeClass: "bg-amber-100 text-amber-800", explanation: "Released to supplier control, but progressed lines are not fully coded and reconciled to the document gross.", approvedCurrent: false };
+    return { key: "released_coding_required", label: "Released — coding required", badgeClass: "bg-amber-100 text-amber-800", explanation: "Released to supplier control, but progressed lines are not fully coded and reconciled to the document gross.", approvedCurrent: false };
   }
 
   const readyForControl = submission.match_status === "matched_ready_to_release"
   || submission.match_status === "matched"
   || statuses.some((value) => value.includes("ready") || value.includes("matched"));
   if (readyForControl) {
-    return { label: "Ready for supplier control", badgeClass: "bg-sky-100 text-sky-800", explanation: "Document checks are ready. Open the dedicated supplier control page to continue.", approvedCurrent: false };
+    return { key: "ready_for_supplier_control", label: "Ready for supplier control", badgeClass: "bg-sky-100 text-sky-800", explanation: "Document checks are ready. Open the dedicated supplier control page to continue.", approvedCurrent: false };
   }
 
-  return { label: "Blocked / pending", badgeClass: "bg-slate-100 text-slate-800", explanation: "Refund-document readiness is still blocked or pending in the current workflow.", approvedCurrent: false };
+  return { key: "blocked_pending", label: "Blocked / pending", badgeClass: "bg-slate-100 text-slate-800", explanation: "Refund-document readiness is still blocked or pending in the current workflow.", approvedCurrent: false };
 }
 
 function firstRefundTotal(...values: (number | null | undefined)[]) {
@@ -301,6 +333,10 @@ function normalizedStatusFilter(value: string | undefined): StatusFilter {
   return STATUS_FILTERS.includes(value as StatusFilter) ? (value as StatusFilter) : "open";
 }
 
+function normalizedCreditStatusFilter(value: string | undefined): CreditStatusFilter {
+  return CREDIT_STATUS_FILTERS.includes(value as CreditStatusFilter) ? (value as CreditStatusFilter) : "open";
+}
+
 function reviewStatusesForFilter(status: StatusFilter) {
   if (status === "approved") return ["approved_current", "ref_corrected_approved"];
   if (status === "actioned") return ["approved_current", "ref_corrected_approved", "rejected_resubmit_required", "superseded"];
@@ -308,9 +344,29 @@ function reviewStatusesForFilter(status: StatusFilter) {
   return ["pending_review", "duplicate_blocked"];
 }
 
-function statusHref(status: StatusFilter) {
+function refundStatusMatchesFilter(key: RefundStatusKey, status: CreditStatusFilter) {
+  if (status === "all") return true;
+  if (status === "approved") return key === "approved_current";
+  if (status === "actioned") return ["approved_current", "operator_resubmission_required"].includes(key);
+  if (status === "ready") return ["ready_for_approval", "ready_for_supplier_control"].includes(key);
+  if (status === "blocked") return ["released_coding_required", "credit_note_pending_ocr", "supervisor_review_required", "blocked_pending"].includes(key);
+  return ["ready_for_approval", "ready_for_supplier_control", "released_coding_required", "credit_note_pending_ocr", "supervisor_review_required", "blocked_pending"].includes(key);
+}
+
+function legacyRefundStatusKey(body: string | null | undefined, approvedCurrent: boolean): RefundStatusKey {
+  if (approvedCurrent) return "approved_current";
+  const text = body ?? "";
+  if (text.includes("resubmission_required") || text.includes("rejected")) return "operator_resubmission_required";
+  if (isCreditNotePending(body)) return "credit_note_pending_ocr";
+  if (isReviewRequired(body)) return "supervisor_review_required";
+  if (isRefundAdjustmentReady(body)) return "ready_for_approval";
+  return "blocked_pending";
+}
+
+function queueHref(status: StatusFilter, creditStatus: CreditStatusFilter) {
   const params = new URLSearchParams();
   params.set("status", status);
+  params.set("credit_status", creditStatus);
   return `/internal/supplier-draft-ready?${params.toString()}`;
 }
 
@@ -337,6 +393,7 @@ function isHttpUrl(value: string | null | undefined) {
 export default async function SupplierDraftReadyPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
   const qp = await searchParams;
   const statusFilter = normalizedStatusFilter(qp.status);
+  const creditStatusFilter = normalizedCreditStatusFilter(qp.credit_status);
   const supabase = await createClient();
   const {
     data: { user },
@@ -494,6 +551,18 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
     : { data: [] };
   const refundApprovals = (refundApprovalRaw ?? []) as ApprovalMessage[];
 
+  const authoritativeRefundRows = authoritativeSubmissions.map((submission) => {
+    const totals = refundTotalsBySubmissionId.get(submission.id);
+    return { submission, totals, currentStatus: authoritativeRefundStatus(submission, totals) };
+  });
+  const visibleAuthoritativeRefundRows = authoritativeRefundRows.filter((row) => refundStatusMatchesFilter(row.currentStatus.key, creditStatusFilter));
+
+  const legacyRefundRowsWithStatus = legacyRefundRows.map((evidence) => {
+    const approvedCurrent = refundApprovals.some((approval) => approvalReferencesEvidence(approval, evidence.id));
+    return { evidence, approvedCurrent, statusKey: legacyRefundStatusKey(evidence.body, approvedCurrent) };
+  });
+  const visibleLegacyRefundRows = legacyRefundRowsWithStatus.filter((row) => refundStatusMatchesFilter(row.statusKey, creditStatusFilter));
+
   const disputeIds = [...new Set([
     ...authoritativeSubmissions.map((row) => row.dispute_id),
     ...legacyDisputeIds,
@@ -521,7 +590,6 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
     refundTotalsError ? `Failed to load refund accounting totals: ${refundTotalsError.message}` : null,
     legacyRefundEvidenceError ? `Failed to load historic refund evidence fallback: ${legacyRefundEvidenceError.message}` : null,
   ].filter((message): message is string => Boolean(message));
-
 
   return (
     <main className="min-h-screen bg-slate-50 px-6 py-8 text-slate-950">
@@ -557,7 +625,7 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
               {STATUS_FILTERS.map((status) => (
                 <Link
                   key={status}
-                  href={statusHref(status)}
+                  href={queueHref(status, creditStatusFilter)}
                   className={`rounded-full px-3 py-1 text-xs font-semibold ring-1 ${statusFilter === status ? "bg-slate-950 text-white ring-slate-950" : "bg-white text-slate-700 ring-slate-200 hover:bg-slate-50"}`}
                 >
                   {STATUS_FILTER_LABELS[status]}
@@ -580,8 +648,28 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
               <p className="text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Refund / credit-note readiness</p>
               <h2 className="mt-2 text-xl font-semibold">Supplier-side refund evidence routed from exceptions</h2>
               <p className="mt-2 max-w-3xl text-sm text-slate-600">
-  Current refund and credit-note submissions are reviewed and approved through the dedicated credit/refund control page. Credit notes must complete OCR comparison before approval. DVA/card refund IN matching remains required to clear the money position.
+                Current refund and credit-note submissions are reviewed and approved through the dedicated credit/refund control page. Credit notes must complete OCR comparison before approval. DVA/card refund IN matching remains required to clear the money position.
               </p>
+            </div>
+          </div>
+
+          <div className="mt-5 rounded-2xl border border-sky-100 bg-sky-50 p-4">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <p className="text-sm font-semibold text-slate-950">Credit/refund status filter</p>
+                <p className="mt-1 text-sm text-slate-600">{CREDIT_STATUS_FILTER_DESCRIPTIONS[creditStatusFilter]}</p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {CREDIT_STATUS_FILTERS.map((creditStatus) => (
+                  <Link
+                    key={creditStatus}
+                    href={queueHref(statusFilter, creditStatus)}
+                    className={`rounded-full px-3 py-1 text-xs font-semibold ring-1 ${creditStatusFilter === creditStatus ? "bg-slate-950 text-white ring-slate-950" : "bg-white text-slate-700 ring-slate-200 hover:bg-slate-50"}`}
+                  >
+                    {CREDIT_STATUS_FILTER_LABELS[creditStatus]}
+                  </Link>
+                ))}
+              </div>
             </div>
           </div>
 
@@ -592,17 +680,15 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
             </div>
           ) : null}
 
-          {authoritativeSubmissions.length === 0 && legacyRefundRows.length === 0 && refundPanelErrors.length === 0 ? (
-            <p className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">No refund or credit-note evidence has been routed here yet.</p>
+          {visibleAuthoritativeRefundRows.length === 0 && visibleLegacyRefundRows.length === 0 && refundPanelErrors.length === 0 ? (
+            <p className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">No refund or credit-note records match this filter.</p>
           ) : (
             <div className="mt-5 grid gap-4">
-              {authoritativeSubmissions.map((submission) => {
+              {visibleAuthoritativeRefundRows.map(({ submission, totals, currentStatus }) => {
                 const dispute = disputeById.get(submission.dispute_id);
                 const order = dispute ? orderById.get(dispute.order_id) : null;
                 const retailer = firstRelated(order?.retailers)?.name ?? submission.ocr_retailer_name ?? "—";
                 const importer = firstRelated(order?.importers)?.company_name ?? "—";
-                const totals = refundTotalsBySubmissionId.get(submission.id);
-                const currentStatus = authoritativeRefundStatus(submission, totals);
                 const acceptedTotal = firstRefundTotal(
                   totals?.accepted_document_gross_gbp,
                   submission.ocr_credit_note_total_gbp,
@@ -646,7 +732,7 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
                 );
               })}
 
-              {legacyRefundRows.map((evidence) => {
+              {visibleLegacyRefundRows.map(({ evidence, approvedCurrent }) => {
                 const dispute = disputeById.get(evidence.dispute_id);
                 const order = dispute ? orderById.get(dispute.order_id) : null;
                 const retailer = firstRelated(order?.retailers)?.name ?? "—";
@@ -655,7 +741,6 @@ export default async function SupplierDraftReadyPage({ searchParams }: { searchP
                 const expectedTotal = bodyValue(evidence.body, "operator_expected_credit_note_total_gbp") || bodyValue(evidence.body, "captured_refund_amount_abs_gbp") || "0";
                 const creditNoteRef = bodyValue(evidence.body, "credit_note_ref") || "—";
                 const route = evidenceRoute(evidence.body);
-                const approvedCurrent = refundApprovals.some((approval) => approvalReferencesEvidence(approval, evidence.id));
                 const canApproveNow = !approvedCurrent && isRefundAdjustmentReady(evidence.body) && !isCreditNotePending(evidence.body) && !isReviewRequired(evidence.body);
                 const reviewNeeded = isReviewRequired(evidence.body);
                 const creditNotePending = isCreditNotePending(evidence.body);
