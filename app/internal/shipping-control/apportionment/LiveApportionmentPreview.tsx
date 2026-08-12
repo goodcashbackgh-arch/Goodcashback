@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 
 type PreviewRow = {
   tracking_submission_id: string | null;
@@ -69,6 +69,11 @@ export default function LiveApportionmentPreview({
   const [categoryCodes, setCategoryCodes] = useState(() =>
     rows.map((row) => row.suggested_category_code ?? "unclassified"),
   );
+  const [selectedIndexes, setSelectedIndexes] = useState<Set<number>>(() => new Set());
+  const [bulkCategoryCode, setBulkCategoryCode] = useState("");
+  const [bulkReason, setBulkReason] = useState("");
+  const [bulkError, setBulkError] = useState<string | null>(null);
+  const overrideReasonRefs = useRef<Array<HTMLInputElement | null>>([]);
 
   const ruleMap = useMemo(
     () => new Map(rules.map((rule) => [rule.rule_code, n(rule.default_factor)])),
@@ -118,6 +123,73 @@ export default function LiveApportionmentPreview({
   }, [categoryCodes, rows, ruleMap, sourceTotal]);
 
   const itemQty = rows.reduce((sum, row) => sum + n(row.qty_allocated), 0);
+  const selectableIndexes = rows
+    .map((row, index) => ({ row, index }))
+    .filter(({ row }) => canApprove && !row.blocker)
+    .map(({ index }) => index);
+  const selectedCount = selectedIndexes.size;
+  const allSelectableSelected =
+    selectableIndexes.length > 0 && selectableIndexes.every((index) => selectedIndexes.has(index));
+  const bulkWouldOverride =
+    bulkCategoryCode !== "" &&
+    Array.from(selectedIndexes).some(
+      (index) => bulkCategoryCode !== (rows[index].suggested_category_code ?? "unclassified"),
+    );
+
+  function setRowSelected(index: number, checked: boolean) {
+    setBulkError(null);
+    setSelectedIndexes((current) => {
+      const next = new Set(current);
+      if (checked) next.add(index);
+      else next.delete(index);
+      return next;
+    });
+  }
+
+  function selectAll() {
+    setBulkError(null);
+    setSelectedIndexes(new Set(selectableIndexes));
+  }
+
+  function unselectAll() {
+    setBulkError(null);
+    setSelectedIndexes(new Set());
+  }
+
+  function applyBulkCategory() {
+    if (selectedCount === 0) {
+      setBulkError("Select at least one item.");
+      return;
+    }
+    if (!bulkCategoryCode) {
+      setBulkError("Choose a category / weight.");
+      return;
+    }
+
+    const reason = bulkReason.trim();
+    if (bulkWouldOverride && !reason) {
+      setBulkError("Enter an override reason for the selected category change.");
+      return;
+    }
+
+    setCategoryCodes((current) =>
+      current.map((categoryCode, index) =>
+        selectedIndexes.has(index) ? bulkCategoryCode : categoryCode,
+      ),
+    );
+
+    selectedIndexes.forEach((index) => {
+      const input = overrideReasonRefs.current[index];
+      if (!input) return;
+      const suggestedCategoryCode = rows[index].suggested_category_code ?? "unclassified";
+      input.value = bulkCategoryCode === suggestedCategoryCode ? "" : reason;
+    });
+
+    setSelectedIndexes(new Set());
+    setBulkCategoryCode("");
+    setBulkReason("");
+    setBulkError(null);
+  }
 
   return (
     <>
@@ -144,6 +216,76 @@ export default function LiveApportionmentPreview({
         </div>
       </div>
 
+      <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={selectAll}
+              disabled={!canApprove || selectableIndexes.length === 0 || allSelectableSelected}
+              className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Select all
+            </button>
+            <button
+              type="button"
+              onClick={unselectAll}
+              disabled={selectedCount === 0}
+              className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Unselect all
+            </button>
+            <span className="text-sm font-semibold text-slate-700">
+              {selectedCount} selected
+            </span>
+          </div>
+
+          <label className="min-w-56 flex-1 text-sm">
+            <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Category / weight</span>
+            <select
+              value={bulkCategoryCode}
+              onChange={(event) => {
+                setBulkCategoryCode(event.target.value);
+                setBulkError(null);
+              }}
+              disabled={!canApprove || selectedCount === 0}
+              className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm"
+            >
+              <option value="">Choose category</option>
+              {rules.map((rule) => (
+                <option key={rule.rule_code} value={rule.rule_code}>
+                  {rule.label} × {n(rule.default_factor).toFixed(1)}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="min-w-64 flex-[2] text-sm">
+            <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Bulk override reason</span>
+            <input
+              value={bulkReason}
+              onChange={(event) => {
+                setBulkReason(event.target.value);
+                setBulkError(null);
+              }}
+              placeholder={bulkWouldOverride ? "Required for category override" : "Only required for an override"}
+              disabled={!canApprove || selectedCount === 0}
+              className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm"
+            />
+          </label>
+
+          <button
+            type="button"
+            onClick={applyBulkCategory}
+            disabled={!canApprove || selectedCount === 0 || !bulkCategoryCode}
+            className="rounded-xl bg-sky-700 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+          >
+            Apply to selected
+          </button>
+        </div>
+        {bulkError ? <p className="mt-2 text-sm font-semibold text-rose-700">{bulkError}</p> : null}
+      </div>
+
       <div className="mt-5 overflow-x-auto rounded-2xl border border-slate-200">
         <table className="min-w-full divide-y divide-slate-200 text-sm">
           <thead className="bg-slate-100 text-xs uppercase tracking-wide text-slate-500">
@@ -162,6 +304,16 @@ export default function LiveApportionmentPreview({
             {rows.map((row, index) => (
               <tr key={`${row.tracking_submission_id}-${row.supplier_invoice_line_id}-${index}`}>
                 <td className="px-3 py-3 align-top">
+                  <label className="mb-2 flex items-center gap-2 text-xs font-semibold text-slate-600">
+                    <input
+                      type="checkbox"
+                      checked={selectedIndexes.has(index)}
+                      onChange={(event) => setRowSelected(index, event.target.checked)}
+                      disabled={!canApprove || !!row.blocker}
+                      className="h-4 w-4 rounded border-slate-300"
+                    />
+                    Select
+                  </label>
                   <p className="font-semibold">{row.order_ref ?? row.order_id ?? "—"}</p>
                   <p className="text-xs text-slate-500">{row.tracking_ref ?? row.tracking_submission_id ?? "—"}</p>
                 </td>
@@ -198,6 +350,9 @@ export default function LiveApportionmentPreview({
                 </td>
                 <td className="px-3 py-3 align-top">
                   <input
+                    ref={(element) => {
+                      overrideReasonRefs.current[index] = element;
+                    }}
                     name="override_reason"
                     placeholder="Required if changing category"
                     className="w-56 rounded-xl border border-slate-300 px-3 py-2 text-sm"
