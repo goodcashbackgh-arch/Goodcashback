@@ -4,6 +4,11 @@ SET LOCAL lock_timeout = '15s';
 SET LOCAL statement_timeout = '0';
 
 DO $$
+DECLARE
+  v_fn_oid oid := to_regprocedure('public.customer_pre_shipment_hold_review_v1(text)');
+  v_body_hash text;
+  v_security_definer boolean;
+  v_config text[];
 BEGIN
   IF to_regclass('public.customer_pre_shipment_hold_requests') IS NULL THEN
     RAISE EXCEPTION 'Prerequisite missing: public.customer_pre_shipment_hold_requests';
@@ -17,8 +22,37 @@ BEGIN
   IF to_regprocedure('public.customer_review_ready_line_ids_v1(uuid)') IS NULL THEN
     RAISE EXCEPTION 'Prerequisite missing: public.customer_review_ready_line_ids_v1(uuid)';
   END IF;
-  IF to_regprocedure('public.customer_pre_shipment_hold_review_v1(text)') IS NULL THEN
+  IF v_fn_oid IS NULL THEN
     RAISE EXCEPTION 'Prerequisite missing: public.customer_pre_shipment_hold_review_v1(text)';
+  END IF;
+
+  SELECT md5(p.prosrc), p.prosecdef, p.proconfig
+    INTO v_body_hash, v_security_definer, v_config
+  FROM pg_proc p
+  WHERE p.oid = v_fn_oid;
+
+  -- Fail closed against unreviewed live drift. This hash is the exact stored
+  -- PL/pgSQL body from 20260719_customer_hold_review_orderwide_state_v1.sql.
+  IF v_body_hash IS DISTINCT FROM '67da874101ecfa2620169d89fb5fec9c' THEN
+    RAISE EXCEPTION
+      'Customer review RPC drift detected; expected baseline body hash 67da874101ecfa2620169d89fb5fec9c, got %. No changes applied.',
+      v_body_hash;
+  END IF;
+
+  IF v_security_definer IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'Customer review RPC drift detected: SECURITY DEFINER changed. No changes applied.';
+  END IF;
+
+  IF NOT ('search_path=public, pg_temp' = ANY(COALESCE(v_config, ARRAY[]::text[]))) THEN
+    RAISE EXCEPTION 'Customer review RPC drift detected: search_path changed to %. No changes applied.', v_config;
+  END IF;
+
+  IF NOT has_function_privilege('anon', v_fn_oid, 'EXECUTE') THEN
+    RAISE EXCEPTION 'Customer review RPC drift detected: anon EXECUTE privilege missing. No changes applied.';
+  END IF;
+
+  IF NOT has_function_privilege('authenticated', v_fn_oid, 'EXECUTE') THEN
+    RAISE EXCEPTION 'Customer review RPC drift detected: authenticated EXECUTE privilege missing. No changes applied.';
   END IF;
 END $$;
 
@@ -107,8 +141,8 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.customer_pre_shipment_hold_review_v1(text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.customer_pre_shipment_hold_review_v1(text) TO anon, authenticated;
+-- CREATE OR REPLACE preserves the existing function owner and privileges.
+-- Do not REVOKE/GRANT here: this migration is not authorised to alter access.
 
 NOTIFY pgrst, 'reload schema';
 
