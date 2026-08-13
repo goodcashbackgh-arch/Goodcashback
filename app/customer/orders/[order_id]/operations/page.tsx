@@ -12,6 +12,18 @@ type ShipmentBatchRow = { id: string; dispatched_at?: string | null; shipment_cu
 type InvoiceRow = { id: string; amount_gbp?: number | string | null; invoice_type?: string | null; sage_invoice_id?: string | null; sage_invoice_date?: string | null; sage_posted_at?: string | null };
 type FinalBalancePaymentAllocationRow = { allocated_gbp_amount?: number | string | null };
 type EvidenceRow = { document_kind?: string | null; review_status?: string | null };
+type HoldHistoryLineRow = { description?: string | null; qty?: number | string | null; amount_inc_vat_gbp?: number | string | null };
+type HoldHistoryRow = {
+  id: string;
+  requested_scope?: string | null;
+  supplier_invoice_line_id?: string | null;
+  status?: string | null;
+  reason?: string | null;
+  supervisor_review_note?: string | null;
+  converted_dispute_id?: string | null;
+  created_at?: string | null;
+  supplier_invoice_lines?: HoldHistoryLineRow | HoldHistoryLineRow[] | null;
+};
 type AudienceStatusRow = {
   accepted_estimate_gbp: number | string | null;
   final_sale_value_gbp: number | string | null;
@@ -31,6 +43,24 @@ function money(value: unknown) {
 
 function localAmount(value: unknown, code = "Local") {
   return `${code} ${new Intl.NumberFormat("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(value ?? 0))}`;
+}
+
+function friendly(value: string | null | undefined) {
+  if (!value) return "—";
+  return value.replaceAll("_", " ").replace(/^./, (first) => first.toUpperCase());
+}
+
+function holdStatusClass(status: string | null | undefined) {
+  if (status === "supervisor_approved") return "bg-amber-100 text-amber-900 ring-amber-200";
+  if (status === "requested") return "bg-sky-100 text-sky-900 ring-sky-200";
+  if (status === "rejected") return "bg-rose-100 text-rose-900 ring-rose-200";
+  if (["resolved", "converted_to_exception", "superseded"].includes(String(status ?? ""))) return "bg-emerald-100 text-emerald-900 ring-emerald-200";
+  return "bg-slate-100 text-slate-700 ring-slate-200";
+}
+
+function holdHistoryLine(row: HoldHistoryRow) {
+  if (Array.isArray(row.supplier_invoice_lines)) return row.supplier_invoice_lines[0] ?? null;
+  return row.supplier_invoice_lines ?? null;
 }
 
 function saleDocumentLabel(value: string | null | undefined) {
@@ -121,7 +151,7 @@ export default async function CustomerOrderOperationsPage({ params, searchParams
   if (!access) redirect("/customer");
 
   const today = new Date().toISOString().slice(0, 10);
-  const [fundingRes, screenshotsRes, reviewRes, creditBalanceRes, fxRes, shipmentPackageRes, invoiceRes, finalBalancePaymentRes, audienceStatusRes] = await Promise.all([
+  const [fundingRes, screenshotsRes, reviewRes, creditBalanceRes, fxRes, shipmentPackageRes, invoiceRes, finalBalancePaymentRes, audienceStatusRes, holdHistoryRes] = await Promise.all([
     supabase.from("order_funding_position_vw").select("*").eq("order_id", orderId).maybeSingle(),
     supabase.from("order_screenshots").select("id, screenshot_url").eq("order_id", orderId).order("display_order"),
     (supabase as any).rpc("customer_active_order_review_link_v1", { p_order_id: orderId }).maybeSingle(),
@@ -131,6 +161,7 @@ export default async function CustomerOrderOperationsPage({ params, searchParams
     (supabaseAdmin as any).from("sales_invoices").select("id, amount_gbp, invoice_type, sage_invoice_id, sage_invoice_date, sage_posted_at").eq("order_id", orderId).eq("sage_status", "posted").not("sage_invoice_id", "is", null).in("invoice_type", ["main", "supplementary", "credit_note"]),
     (supabaseAdmin as any).from("dva_statement_line_allocations").select("allocated_gbp_amount").eq("order_id", orderId).eq("allocation_type", "final_balance_payment").eq("allocation_status", "confirmed"),
     (supabase as any).rpc("order_audience_status_v1", { p_order_id: orderId }).maybeSingle(),
+    (supabaseAdmin as any).from("customer_pre_shipment_hold_requests").select("id, requested_scope, supplier_invoice_line_id, status, reason, supervisor_review_note, converted_dispute_id, created_at, supplier_invoice_lines(description, qty, amount_inc_vat_gbp)").eq("order_id", orderId).eq("requested_scope", "line").not("supplier_invoice_line_id", "is", null).order("created_at", { ascending: false }),
   ]);
 
   if (audienceStatusRes.error) throw audienceStatusRes.error;
@@ -158,6 +189,11 @@ export default async function CustomerOrderOperationsPage({ params, searchParams
     const rank = invoiceSortRank(a.invoice_type) - invoiceSortRank(b.invoice_type);
     if (rank !== 0) return rank;
     return String(a.sage_posted_at ?? a.sage_invoice_date ?? "").localeCompare(String(b.sage_posted_at ?? b.sage_invoice_date ?? ""));
+  });
+  const holdHistory = (holdHistoryRes.error ? [] : ((holdHistoryRes.data ?? []) as HoldHistoryRow[])).filter((hold) => {
+    if (hold.requested_scope !== "line" || !hold.supplier_invoice_line_id) return false;
+    if (hold.status === "requested" || hold.status === "rejected") return false;
+    return hold.status === "supervisor_approved" || Boolean(hold.converted_dispute_id);
   });
 
   const funding = fundingRes.data;
@@ -261,6 +297,33 @@ export default async function CustomerOrderOperationsPage({ params, searchParams
         <details className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm"><summary className="cursor-pointer list-none text-xl font-black">Payment details</summary><div className="mt-4 grid gap-3 text-sm text-slate-700"><p>Payment reference: <span className="font-black text-slate-950">{order.payment_auth_id ?? "Not assigned"}</span></p><p>Accepted estimate: <span className="font-black text-slate-950">{money(acceptedEstimateGbp)}</span></p>{finalSaleValueConfirmed ? <p>Final order value: <span className="font-black text-slate-950">{money(finalSaleValueGbp)}</span></p> : null}{confirmedPaymentGbp > 0.01 ? <p>Confirmed payment: <span className="font-black text-slate-950">{money(confirmedPaymentGbp)}</span></p> : null}{appliedCreditGbp > 0.01 ? <p>Account credit applied: <span className="font-black text-slate-950">{money(appliedCreditGbp)}</span></p> : null}{finalBalancePaymentGbp > 0.01 ? <p>Remaining balance payment: <span className="font-black text-slate-950">{money(finalBalancePaymentGbp)}</span></p> : null}{hasAmountReceived ? <p>Amount received: <span className="font-black text-slate-950">{money(amountReceivedGbp)}</span></p> : null}{visibleCashDueGbp > 0.01 ? <p>Amount to pay: <span className="font-black text-slate-950">{money(visibleCashDueGbp)}</span></p> : null}{pendingCreditGbp > 0.01 ? <p>Potential credit pending final review: <span className="font-black text-slate-950">{money(pendingCreditGbp)}</span></p> : null}</div></details>
         <details className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm"><summary className="cursor-pointer list-none text-xl font-black">Order evidence</summary><p className="mt-3 text-sm leading-6 text-slate-600">Original order screenshots are available. Internal procurement and warehouse tracking details are hidden.</p><div className="mt-4 flex flex-wrap gap-2">{screenshots.length === 0 ? <p className="text-sm text-slate-600">No screenshots uploaded.</p> : null}{screenshots.map((row, index) => <a key={row.id} href={row.screenshot_url} target="_blank" rel="noreferrer" className="rounded-xl bg-slate-950 px-3 py-2 text-xs font-black text-white">Open screenshot {index + 1}</a>)}</div></details>
       </section>
+
+      {holdHistory.length > 0 ? (
+        <details className="mt-5 rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
+          <summary className="cursor-pointer list-none text-xl font-black">Hold request history</summary>
+          <div className="mt-4 grid gap-3">
+            {holdHistory.map((hold) => {
+              const line = holdHistoryLine(hold);
+              return (
+                <article key={hold.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="font-black">Item hold</p>
+                    <span className={`rounded-full px-3 py-1 text-xs font-bold ring-1 ${holdStatusClass(hold.status)}`}>{friendly(hold.status)}</span>
+                  </div>
+                  {line?.description ? (
+                    <div className="mt-2">
+                      <p className="font-black text-slate-950">{line.description}</p>
+                      <p className="mt-1 text-slate-600">Qty {line.qty ?? "—"}{line.amount_inc_vat_gbp != null ? ` · ${money(line.amount_inc_vat_gbp)}` : ""}</p>
+                    </div>
+                  ) : null}
+                  <p className="mt-2 text-slate-700">{hold.reason}</p>
+                  {hold.supervisor_review_note ? <p className="mt-2 rounded-xl bg-white p-3 text-slate-700"><span className="font-semibold">Review note:</span> {hold.supervisor_review_note}</p> : null}
+                </article>
+              );
+            })}
+          </div>
+        </details>
+      ) : null}
     </main>
   );
 }
