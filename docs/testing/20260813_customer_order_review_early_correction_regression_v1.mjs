@@ -204,6 +204,7 @@ assert.match(correctionControl, /<details open=\{isOpen\}/);
 assert.match(correctionControl, /border border-slate-300 bg-white px-3 py-1\.5 text-xs/);
 assert.match(correctionControl, /setIsOpen\(false\)/);
 assert.match(correctionControl, /isAuthoritativeBlocker\(rawMessage\)[\s\S]*setEligibleOrder\(null\)/);
+assert.match(correctionControl, /originalScreenshotCount: replacementFiles\.length > 0 \? replacementFiles\.length : current\.originalScreenshotCount/);
 
 // The v1.3 continuation leaves both create actions and OrderForm byte-for-byte untouched.
 for (const frozenPath of [sharedFormPath, customerCreateActionPath, "app/importer/orders/new/actions.ts"]) {
