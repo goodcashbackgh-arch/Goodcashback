@@ -6,8 +6,10 @@ const addendumPath = "docs/governing-pack/architecture/CUSTOMER_ORDER_PRE_CREATI
 const amendmentPath = "docs/governing-pack/architecture/CUSTOMER_ORDER_PRE_CREATION_REVIEW_AND_EARLY_CORRECTION_ADDENDUM_v1_1.md";
 const amendmentV12Path = "docs/governing-pack/architecture/CUSTOMER_ORDER_PRE_CREATION_REVIEW_AND_EARLY_CORRECTION_ADDENDUM_v1_2.md";
 const amendmentV13Path = "docs/governing-pack/architecture/CUSTOMER_ORDER_PRE_CREATION_REVIEW_AND_EARLY_CORRECTION_ADDENDUM_v1_3.md";
+const amendmentV14Path = "docs/governing-pack/architecture/CUSTOMER_ORDER_PRE_CREATION_REVIEW_AND_EARLY_CORRECTION_ADDENDUM_v1_4.md";
 const migrationPath = "supabase/migrations/20260813124500_customer_order_early_correction_v1.sql";
 const migrationV13Path = "supabase/migrations/20260813165000_customer_order_early_correction_v1_3.sql";
+const migrationV14Path = "supabase/migrations/20260813201500_customer_order_early_correction_v1_4.sql";
 const sharedFormPath = "app/importer/orders/new/OrderForm.tsx";
 const customerCreatePagePath = "app/customer/orders/new/page.tsx";
 const customerCreateActionPath = "app/customer/orders/new/actions.ts";
@@ -19,8 +21,10 @@ const addendum = fs.readFileSync(addendumPath, "utf8");
 const amendment = fs.readFileSync(amendmentPath, "utf8");
 const amendmentV12 = fs.readFileSync(amendmentV12Path, "utf8");
 const amendmentV13 = fs.readFileSync(amendmentV13Path, "utf8");
+const amendmentV14 = fs.readFileSync(amendmentV14Path, "utf8");
 const migration = fs.readFileSync(migrationPath, "utf8");
 const migrationV13 = fs.readFileSync(migrationV13Path, "utf8");
+const migrationV14 = fs.readFileSync(migrationV14Path, "utf8");
 const sharedForm = fs.readFileSync(sharedFormPath, "utf8");
 const customerCreatePage = fs.readFileSync(customerCreatePagePath, "utf8");
 const customerCreateAction = fs.readFileSync(customerCreateActionPath, "utf8");
@@ -46,6 +50,14 @@ assert.match(amendmentV12, /leave the importer\/default submit path behaviour un
 assert.match(amendmentV12, /must not persist the caller-supplied URL string verbatim/);
 assert.match(amendmentV12, /trusted public Storage URL prefix from the existing original screenshot rows/);
 assert.match(amendmentV12, /caller-supplied arbitrary host or URL prefix must never become authoritative/);
+
+// v1.4 corrects only the partial-credit gate and button discoverability.
+assert.match(amendmentV14, /only automatically applied account credit may remain eligible for early correction/i);
+assert.match(amendmentV14, /orders\.funded_at IS NOT NULL` remains an absolute blocker/);
+assert.match(amendmentV14, /already-applied credit remains exactly as it was before correction/);
+assert.match(amendmentV14, /remaining due becomes £170 through the existing read model/);
+assert.match(amendmentV14, /Fully funded\/credit-funded orders remain outside this feature/);
+assert.match(amendmentV14, /sky\/blue customer palette/);
 
 // Review is opt-in and therefore importer behaviour stays off by default.
 assert.match(sharedForm, /reviewBeforeSubmit = false/);
@@ -85,6 +97,15 @@ assert.match(correctionControl, /order_tracking_submissions/);
 assert.match(correctionControl, /supplier_invoices/);
 assert.match(correctionControl, /Original order screenshot/);
 assert.match(correctionControl, /MAX_ATTACHMENT_BYTES = 3\.5 \* 1024 \* 1024/);
+
+// v1.4 advisory eligibility permits credit_applied only and reads the existing canonical funding view.
+assert.match(correctionControl, /order_funding_events"\)\.select\("id, event_type"\)/);
+assert.match(correctionControl, /row\.event_type !== "credit_applied"/);
+assert.match(correctionControl, /order_funding_position_vw/);
+assert.match(correctionControl, /applied_credit_gbp, funded_total_gbp, markup_applied_gbp, gap_remaining_gbp, threshold_met_yn/);
+assert.match(correctionControl, /fundedTotalGbp > appliedCreditGbp \+ 0\.01/);
+assert.match(correctionControl, /proposedFundingGap <= 0\.01/);
+assert.match(correctionControl, /account credit is already applied\. It stays unchanged/);
 
 // Replacement files reuse the existing bucket and are never physically removed by this feature.
 assert.match(correctionUpload, /from\("order-screenshots"\)\.upload/);
@@ -184,6 +205,35 @@ assert.match(migrationV13, /v_storage_public_prefix \|\| parsed\.object_name AS 
 assert.doesNotMatch(migrationV13, /storage\.objects[\s\S]*DELETE FROM storage\.objects/i);
 assert.doesNotMatch(correctionUpload, /\.remove\s*\(/);
 
+// v1.4 is a feature-owned RPC replacement only: partial account credit stays frozen and full funding stays blocked.
+assert.match(migrationV14, /CREATE OR REPLACE FUNCTION public\.customer_correct_unprocessed_order_v1/);
+assert.match(migrationV14, /x\.event_type IS DISTINCT FROM 'credit_applied'/);
+assert.match(migrationV14, /FROM public\.order_funding_position_vw f/);
+assert.match(migrationV14, /v_funding\.funded_total_gbp > v_funding\.applied_credit_gbp \+ 0\.01/);
+assert.match(migrationV14, /v_funding\.threshold_met_yn/);
+assert.match(migrationV14, /v_funding\.gap_remaining_gbp <= 0\.01/);
+assert.match(migrationV14, /v_proposed_funding_gap <= 0\.01/);
+assert.match(migrationV14, /corrected value would require funding-state recomputation/);
+assert.match(migrationV14, /Order correction funding postcondition failed/);
+assert.doesNotMatch(migrationV14, /customer_apply_available_credit_to_order_v1\s*\(/);
+assert.doesNotMatch(migrationV14, /(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+public\.(?:importer_credit_ledger|order_funding_events|dva_reconciliation)/i);
+assert.doesNotMatch(migrationV14, /CREATE\s+(?:OR\s+REPLACE\s+)?TRIGGER|ALTER\s+TABLE|CREATE\s+POLICY|DROP\s+POLICY/i);
+assert.match(migrationV14, /REVOKE ALL ON FUNCTION public\.customer_correct_unprocessed_order_v1/);
+assert.match(migrationV14, /GRANT EXECUTE ON FUNCTION public\.customer_correct_unprocessed_order_v1/);
+
+// v1.4 preserves the v1.3 Storage/screenshot machinery and stored quote economics byte-for-concept.
+for (const expected of [
+  /so\.bucket_id = 'order-screenshots'/,
+  /> 3670016/,
+  /v_storage_public_prefix \|\| parsed\.object_name AS canonical_url/,
+  /INSERT INTO public\.order_screenshots[\s\S]*'Original order screenshot'/,
+  /DELETE FROM public\.order_screenshots os[\s\S]*os\.id = ANY\(v_original_screenshot_ids\)/,
+  /Replacement screenshot row count postcondition failed/,
+  /Replacement screenshot display order postcondition failed/,
+  /v_order\.quote_total_ghs::numeric[\s\S]*\/ v_order\.order_total_gbp_declared::numeric/,
+]) assert.match(migrationV14, expected);
+assert.doesNotMatch(migrationV14, /FROM\s+public\.fx_rates/i);
+
 // Correction copies the established optimiser and uploads only its prepared files.
 for (const constant of [
   /MAX_ATTACHMENT_BYTES = 3\.5 \* 1024 \* 1024/,
@@ -201,23 +251,25 @@ assert.doesNotMatch(correctionControl, /replacementFiles\.length !== currentElig
 
 // Presentation and authoritative post-save behaviour remain deliberately narrow.
 assert.match(correctionControl, /<details open=\{isOpen\}/);
-assert.match(correctionControl, /border border-slate-300 bg-white px-3 py-1\.5 text-xs/);
+assert.match(correctionControl, /border border-sky-600 bg-sky-600 px-3 py-1\.5 text-xs font-black text-white/);
 assert.match(correctionControl, /setIsOpen\(false\)/);
 assert.match(correctionControl, /isAuthoritativeBlocker\(rawMessage\)[\s\S]*setEligibleOrder\(null\)/);
 assert.match(correctionControl, /originalScreenshotCount: replacementFiles\.length > 0 \? replacementFiles\.length : current\.originalScreenshotCount/);
 
-// The v1.3 continuation leaves both create actions and OrderForm byte-for-byte untouched.
+// The v1.3/v1.4 continuation leaves both create actions and OrderForm byte-for-byte untouched.
 for (const frozenPath of [sharedFormPath, customerCreateActionPath, "app/importer/orders/new/actions.ts"]) {
   const delta = execFileSync("git", ["diff", "167dd976e93f64ea89d8daae9598b6a01bedb9f1", "--", frozenPath], { encoding: "utf8" });
   assert.equal(delta, "", `${frozenPath} must remain unchanged after the v1.3 governance commit`);
 }
 
-// The corrective migration is feature-only: no schema, RLS, trigger, or adjacent business-lane expansion.
-assert.doesNotMatch(migrationV13, /ALTER\s+TABLE|CREATE\s+(?:OR\s+REPLACE\s+)?TRIGGER|CREATE\s+POLICY|DROP\s+POLICY/i);
-assert.doesNotMatch(migrationV13, /customer_apply_available_credit|sage|UPDATE\s+public\.(?:order_funding_events|order_tracking_submissions|supplier_invoices|dva_reconciliation|sales_invoices|shipping_quote_orders)/i);
-assert.doesNotMatch(migrationV13, /DELETE\s+FROM\s+public\.orders/i);
+// The corrective migrations remain feature-only: no schema, RLS, trigger, or adjacent business-lane expansion.
+for (const correctiveMigration of [migrationV13, migrationV14]) {
+  assert.doesNotMatch(correctiveMigration, /ALTER\s+TABLE|CREATE\s+(?:OR\s+REPLACE\s+)?TRIGGER|CREATE\s+POLICY|DROP\s+POLICY/i);
+  assert.doesNotMatch(correctiveMigration, /sage|UPDATE\s+public\.(?:order_funding_events|order_tracking_submissions|supplier_invoices|dva_reconciliation|sales_invoices|shipping_quote_orders)/i);
+  assert.doesNotMatch(correctiveMigration, /DELETE\s+FROM\s+public\.orders/i);
+}
 
 console.log(JSON.stringify({
   regression_result: "PASS",
-  proof: "customer-only review remains opt-in; existing create/auto-credit authority remains present and frozen; v1.1 active-operator and v1.2 review/canonical-URL controls remain; v1.3 supports variable whole-set replacement while preserving overlapping row IDs, tightly scopes inserts/deletes, verifies stored image metadata and the 3,670,016-byte ceiling, uploads prepared images, collapses or hides the subtle disclosure as governed, and introduces no schema, RLS, trigger, adjacent business-lane, or physical Storage-object mutation"
+  proof: "customer-only review remains opt-in; existing create/credit/funding authority remains frozen; v1.3 variable whole-set replacement and Storage postconditions remain; v1.4 allows only genuinely partial credit-funded untouched orders, keeps existing applied credit immutable, blocks any non-credit funding or funded state, fail-closes before funding-state recomputation, and makes the compact Correct order disclosure visibly blue without expanding adjacent workflows"
 }, null, 2));
