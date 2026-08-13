@@ -271,3 +271,56 @@ The build must prove:
 13. supplier refund evidence remains tied to the original supplier invoice;
 14. retailer refund IN is matched once;
 15. existing one-invoice and unprogressed-hold flows remain unchanged.
+
+## 16. Customer hold history item identity
+
+Historical customer hold audit must remain intelligible after the affected line is no longer part of the current customer review-ready set.
+
+For a line-scoped hold, the authoritative identity anchor is the existing:
+
+```text
+customer_pre_shipment_hold_requests.supplier_invoice_line_id
+→ supplier_invoice_lines.id
+```
+
+Customer hold history must not depend on the current `customer_review_ready_line_ids_v1()` result to recover the historical item identity. A resolved, superseded, converted, or otherwise closed line hold may legitimately remain in audit history after that line has left the current review-ready set.
+
+The existing customer review RPC may therefore enrich each hold object additively with only:
+
+- `line_description`;
+- `line_qty`;
+- `line_amount_inc_vat_gbp`.
+
+These fields must be sourced by a direct left join from the hold's existing `supplier_invoice_line_id` to `supplier_invoice_lines.id`.
+
+The customer review history UI may display those fields for line-scoped holds so that a customer can identify which historical item the hold concerned.
+
+This enrichment is presentation/read-model only. It must not:
+
+- alter hold creation, approval, rejection, narrowing, resolution, supersession, or exception conversion;
+- alter `customer_review_ready_line_ids_v1()`;
+- reintroduce a closed line into the current review-ready item set;
+- alter shipment eligibility or blocking;
+- alter customer invoice eligibility or release;
+- alter exception/refund/return state;
+- alter DVA, supplier AP, Sage, VAT, or accounting readiness;
+- alter RLS, grants, review-link scope, expiry, or customer permissions.
+
+The customer payload must not expose additional internal identifiers or operational/accounting detail merely to support history identity. In particular, this change does not authorise exposure of supplier invoice references, tracking references, supplier invoice ids, VAT fields, OCR data, DVA data, Sage data, or internal review statuses.
+
+Where no line identity is available, the existing hold history card must continue to render safely without fabricated fallback data.
+
+## 17. Regression extension for history identity
+
+In addition to section 15, the history-identity build must prove:
+
+1. an existing resolved line hold retains its original `supplier_invoice_line_id`;
+2. the historical supplier line remains joinable even when absent from `customer_review_ready_line_ids_v1()`;
+3. the customer review RPC returns `line_description`, `line_qty`, and `line_amount_inc_vat_gbp` additively for that hold;
+4. existing hold keys and status/reason values remain unchanged;
+5. current review-ready membership remains unchanged;
+6. hold row counts and active/closed classifications remain unchanged;
+7. no hold lifecycle, shipment, exception, refund, return, Sage, VAT, DVA, RLS, grant, or permission behaviour is modified;
+8. the Customer Review history renders the historical item identity only for line-scoped holds where that identity exists.
+
+This section is the governing authority for the customer hold history item-identity correction. Implementation must not exceed this scope.
