@@ -6,7 +6,7 @@ Status: governing corrective amendment to v1, v1.1 and v1.2
 
 This amendment changes four customer-correction presentation/attachment points only:
 
-1. replacement of the original attachment set may contain one or more images instead of being forced to match the previous row count;
+1. replacement of the original attachment set may contain one or more images instead of being forced to match the previous row count, with the dedicated correction RPC independently verifying that the stored replacement objects are images and remain within the same 3.5 MB total ceiling;
 2. replacement images must use the same browser-side optimisation approach already proven in the create-order form, copied into the correction path without refactoring or changing the working create-order implementation;
 3. the collapsed `Correct order` control must remain clearly discoverable but visually subordinate to the primary order-status/payment content; and
 4. after a successful correction the correction disclosure must collapse automatically, while remaining available if the order is still genuinely untouched. If an authoritative Save rejection proves processing has started, the correction control must hide immediately.
@@ -23,7 +23,13 @@ Read-only live verification on 13 August 2026 established for `public.order_scre
 - the only functions whose stored definitions reference `order_screenshots` are the already-created `customer_correct_unprocessed_order_v1(...)` feature RPC and the existing importer create-order function;
 - the existing customer, importer, reconciliation and internal-hold UI consumers iterate screenshot rows as a collection rather than assuming one fixed row.
 
-This evidence authorises controlled original-screenshot row-count replacement inside the dedicated correction RPC only. It does not authorise mutation of any downstream evidence row or any other consumer.
+A subsequent read-only live Storage probe established for the existing `order-screenshots` bucket:
+
+- `file_size_limit` is currently `null`;
+- `allowed_mime_types` is currently `null`; and
+- recent `storage.objects.metadata` records expose stored-object `size` and `mimetype` values.
+
+This evidence authorises controlled original-screenshot row-count replacement and correction-only stored-object validation inside the dedicated correction RPC. It does not authorise mutation of any downstream evidence row, any other consumer, the Storage bucket configuration, or the existing create-order upload path.
 
 ## 1. Replacement attachment set
 
@@ -62,7 +68,7 @@ No row having any other note may be updated, inserted over, removed or reclassif
 
 Physical Storage remains non-destructive: superseded and orphaned Storage objects are not removed by this feature.
 
-## 2. Storage security remains unchanged
+## 2. Storage security remains canonical and fail-closed
 
 v1.2 canonical Storage persistence remains mandatory for every replacement position.
 
@@ -73,6 +79,10 @@ Every supplied replacement must:
 - discard any caller-supplied host/prefix as authority;
 - use the trusted public Storage prefix derived consistently from the existing original screenshot rows; and
 - persist only the canonical URL rebuilt from that trusted prefix plus the verified object name.
+
+The live `order-screenshots` bucket does not currently impose a bucket-level MIME allow-list or file-size limit. Its `storage.objects.metadata` records the stored object's `mimetype` and `size`. Therefore, for correction replacement objects only, the dedicated RPC must independently fail closed unless every verified stored object reports an `image/*` MIME type and the combined stored-object size for the requested replacement set is no more than the same 3.5 MB ceiling used by the correction client (`3.5 * 1024 * 1024 = 3,670,016` bytes).
+
+This server-side verification is a correction-RPC backstop only. It does not authorise changing the Storage bucket configuration, `OrderForm.tsx`, the customer create action, the importer create action, or any existing upload policy.
 
 Variable row count must not weaken these controls.
 
