@@ -349,6 +349,30 @@ BEGIN
       AND os.order_id = p_order_id
       AND os.note = 'Original order screenshot';
 
+    IF (
+      SELECT COUNT(*)::integer
+      FROM public.order_screenshots os
+      WHERE os.order_id = p_order_id
+        AND os.note = 'Original order screenshot'
+    ) IS DISTINCT FROM v_replacement_count THEN
+      RAISE EXCEPTION 'Replacement screenshot row count postcondition failed.';
+    END IF;
+
+    IF EXISTS (
+      SELECT 1
+      FROM (
+        SELECT
+          os.display_order,
+          row_number() OVER (ORDER BY os.display_order, os.id)::integer AS expected_display_order
+        FROM public.order_screenshots os
+        WHERE os.order_id = p_order_id
+          AND os.note = 'Original order screenshot'
+      ) final_screenshots
+      WHERE final_screenshots.display_order IS DISTINCT FROM final_screenshots.expected_display_order
+    ) THEN
+      RAISE EXCEPTION 'Replacement screenshot display order postcondition failed.';
+    END IF;
+
     v_screenshots_replaced := true;
   END IF;
 
