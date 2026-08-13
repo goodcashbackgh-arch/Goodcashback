@@ -12,6 +12,13 @@ type AttachmentSummary = {
   status: "idle" | "optimising" | "ready";
   error: string;
 };
+type ReviewSummary = {
+  retailer: string;
+  quantity: string;
+  amount: string;
+  destination: string;
+  attachments: number;
+};
 
 const MAX_ATTACHMENT_BYTES = 3.5 * 1024 * 1024;
 const TARGET_ATTACHMENT_BYTES = 3.1 * 1024 * 1024;
@@ -113,16 +120,21 @@ export default function OrderForm({
   assignedHub,
   emptyMessages,
   action,
+  reviewBeforeSubmit = false,
 }: {
   retailers: Option[];
   shipperName: string;
   assignedHub: Hub | null;
   emptyMessages: string[];
   action: (formData: FormData) => Promise<void>;
+  reviewBeforeSubmit?: boolean;
 }) {
+  const formRef = useRef<HTMLFormElement>(null);
   const preparedFilesRef = useRef<File[]>([]);
   const selectionVersionRef = useRef(0);
   const [isSubmitting, startSubmitTransition] = useTransition();
+  const [reviewing, setReviewing] = useState(false);
+  const [reviewSummary, setReviewSummary] = useState<ReviewSummary | null>(null);
   const [attachmentSummary, setAttachmentSummary] = useState<AttachmentSummary>({
     count: 0,
     originalBytes: 0,
@@ -205,12 +217,7 @@ export default function OrderForm({
     }
   }
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const form = event.currentTarget;
-
-    if (!form.reportValidity() || attachmentSummary.status === "optimising" || preparedFilesRef.current.length === 0) return;
-
+  function submitPreparedForm(form: HTMLFormElement) {
     const formData = new FormData(form);
     formData.delete("screenshots");
     for (const file of preparedFilesRef.current) formData.append("screenshots", file, file.name);
@@ -220,82 +227,135 @@ export default function OrderForm({
     });
   }
 
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+
+    if (!form.reportValidity() || attachmentSummary.status === "optimising" || preparedFilesRef.current.length === 0) return;
+
+    if (reviewBeforeSubmit) {
+      const formData = new FormData(form);
+      const retailerId = String(formData.get("retailer_id") ?? "");
+      const quantity = String(formData.get("total_qty_declared") ?? "");
+      const amountNumber = Number(formData.get("order_total_gbp_declared") ?? 0);
+      setReviewSummary({
+        retailer: retailers.find((retailer) => retailer.id === retailerId)?.name ?? "Selected retailer",
+        quantity,
+        amount: Number.isFinite(amountNumber) ? `£${amountNumber.toFixed(2)}` : String(formData.get("order_total_gbp_declared") ?? ""),
+        destination: assignedHub ? `${assignedHub.name}${assignedHub.city ? ` (${assignedHub.city})` : ""}` : "Not assigned",
+        attachments: preparedFilesRef.current.length,
+      });
+      setReviewing(true);
+      return;
+    }
+
+    submitPreparedForm(form);
+  }
+
+  function confirmCreate() {
+    const form = formRef.current;
+    if (!form || attachmentSummary.status === "optimising" || preparedFilesRef.current.length === 0 || isSubmitting) return;
+    submitPreparedForm(form);
+  }
+
   const attachmentsBusy = attachmentSummary.status === "optimising";
   const submitDisabled = retailers.length === 0 || !assignedHub || attachmentsBusy || Boolean(attachmentSummary.error) || isSubmitting;
 
   return (
-    <form action={action} onSubmit={handleSubmit} className="space-y-4 max-w-3xl" encType="multipart/form-data">
-      {emptyMessages.length > 0 && <div className="rounded border border-amber-500 bg-amber-50 p-3 text-sm">{emptyMessages.join(" ")}</div>}
-      <select name="retailer_id" className="border p-2 w-full" required disabled={retailers.length === 0}>
-        <option value="">Select retailer</option>
-        {retailers.map((r) => (
-          <option key={r.id} value={r.id}>{r.name}</option>
-        ))}
-      </select>
+    <form ref={formRef} action={action} onSubmit={handleSubmit} className="space-y-4 max-w-3xl" encType="multipart/form-data">
+      <div className={reviewing ? "hidden" : "space-y-4"}>
+        {emptyMessages.length > 0 && <div className="rounded border border-amber-500 bg-amber-50 p-3 text-sm">{emptyMessages.join(" ")}</div>}
+        <select name="retailer_id" className="border p-2 w-full" required disabled={retailers.length === 0}>
+          <option value="">Select retailer</option>
+          {retailers.map((r) => (
+            <option key={r.id} value={r.id}>{r.name}</option>
+          ))}
+        </select>
 
-      <div className="grid gap-2 md:grid-cols-2">
-        <div className="rounded border p-3 text-sm"><span className="font-semibold">Assigned shipper:</span> {shipperName}</div>
-        <div className="rounded border p-3 text-sm"><span className="font-semibold">Assigned destination hub/city:</span> {assignedHub ? `${assignedHub.name}${assignedHub.city ? ` (${assignedHub.city})` : ""}` : "Not assigned"}</div>
-      </div>
-      <input type="hidden" name="destination_hub_id" value={assignedHub?.id ?? ""} />
-
-      <div className="space-y-2 rounded border p-3">
-        <div className="flex items-center justify-between gap-3">
-          <label htmlFor="screenshots" className="text-sm font-medium">Order attachments</label>
-          <span className="text-xs font-semibold text-slate-700" aria-live="polite">
-            {attachmentsBusy
-              ? `Optimising ${attachmentSummary.count} ${attachmentSummary.count === 1 ? "attachment" : "attachments"}…`
-              : `${attachmentSummary.count} ${attachmentSummary.count === 1 ? "attachment" : "attachments"} · ${formatMb(attachmentSummary.uploadBytes)} MB`}
-          </span>
+        <div className="grid gap-2 md:grid-cols-2">
+          <div className="rounded border p-3 text-sm"><span className="font-semibold">Assigned shipper:</span> {shipperName}</div>
+          <div className="rounded border p-3 text-sm"><span className="font-semibold">Assigned destination hub/city:</span> {assignedHub ? `${assignedHub.name}${assignedHub.city ? ` (${assignedHub.city})` : ""}` : "Not assigned"}</div>
         </div>
-        <input
-          id="screenshots"
-          name="screenshots"
-          type="file"
-          accept="image/*"
-          multiple
-          required
-          className="border p-2 w-full"
-          onChange={handleAttachmentChange}
-          aria-describedby="attachment-guidance attachment-status attachment-error"
-        />
-        <p id="attachment-guidance" className="text-xs text-slate-600">Select all required screenshots in one selection. Large screenshots are automatically optimised before upload.</p>
-        {attachmentSummary.optimisedCount > 0 && !attachmentsBusy ? (
-          <p id="attachment-status" className="rounded border border-emerald-200 bg-emerald-50 p-2 text-xs font-medium text-emerald-800">
-            Ready to upload: reduced from {formatMb(attachmentSummary.originalBytes)} MB to {formatMb(attachmentSummary.uploadBytes)} MB.
-          </p>
-        ) : null}
-        {attachmentSummary.error ? (
-          <p id="attachment-error" role="alert" className="rounded border border-red-300 bg-red-50 p-2 text-sm font-medium text-red-800">
-            {attachmentSummary.error}
-          </p>
-        ) : null}
-      </div>
+        <input type="hidden" name="destination_hub_id" value={assignedHub?.id ?? ""} />
 
-      <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-        <div>
-          <label className="mb-1 block text-sm font-medium">Total quantity declared</label>
-          <input className="border p-2 w-full" name="total_qty_declared" type="number" min="1" step="1" required />
+        <div className="space-y-2 rounded border p-3">
+          <div className="flex items-center justify-between gap-3">
+            <label htmlFor="screenshots" className="text-sm font-medium">Order attachments</label>
+            <span className="text-xs font-semibold text-slate-700" aria-live="polite">
+              {attachmentsBusy
+                ? `Optimising ${attachmentSummary.count} ${attachmentSummary.count === 1 ? "attachment" : "attachments"}…`
+                : `${attachmentSummary.count} ${attachmentSummary.count === 1 ? "attachment" : "attachments"} · ${formatMb(attachmentSummary.uploadBytes)} MB`}
+            </span>
+          </div>
+          <input
+            id="screenshots"
+            name="screenshots"
+            type="file"
+            accept="image/*"
+            multiple
+            required
+            className="border p-2 w-full"
+            onChange={handleAttachmentChange}
+            aria-describedby="attachment-guidance attachment-status attachment-error"
+          />
+          <p id="attachment-guidance" className="text-xs text-slate-600">Select all required screenshots in one selection. Large screenshots are automatically optimised before upload.</p>
+          {attachmentSummary.optimisedCount > 0 && !attachmentsBusy ? (
+            <p id="attachment-status" className="rounded border border-emerald-200 bg-emerald-50 p-2 text-xs font-medium text-emerald-800">
+              Ready to upload: reduced from {formatMb(attachmentSummary.originalBytes)} MB to {formatMb(attachmentSummary.uploadBytes)} MB.
+            </p>
+          ) : null}
+          {attachmentSummary.error ? (
+            <p id="attachment-error" role="alert" className="rounded border border-red-300 bg-red-50 p-2 text-sm font-medium text-red-800">
+              {attachmentSummary.error}
+            </p>
+          ) : null}
         </div>
-        <div>
-          <label className="mb-1 block text-sm font-medium">Order total GBP declared</label>
-          <input className="border p-2 w-full" name="order_total_gbp_declared" type="number" min="0.01" step="0.01" required />
+
+        <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+          <div>
+            <label className="mb-1 block text-sm font-medium">Total quantity declared</label>
+            <input className="border p-2 w-full" name="total_qty_declared" type="number" min="1" step="1" required />
+          </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium">Order total GBP declared</label>
+            <input className="border p-2 w-full" name="order_total_gbp_declared" type="number" min="0.01" step="0.01" required />
+          </div>
         </div>
+
+        <div className="rounded border p-3 text-sm space-y-2">
+          <p className="font-semibold">Product confirmation</p>
+          <p>I confirm this order does not include children’s clothing, infant clothing, school uniform, or similar restricted items. If restricted items are found, the order may be rejected or refunded, and an admin charge may apply.</p>
+          <label className="flex items-center gap-2"><input type="checkbox" name="product_confirmed" value="yes" required /> I confirm and accept</label>
+        </div>
+
+        <div className="rounded border p-3 text-sm space-y-1">
+          <p className="font-semibold">Goods Pro Forma Estimate</p>
+          <p>This estimate is based on the goods value you submitted. Shipping is excluded at this stage. Shipping will be quoted separately after goods are received and checked by the shipper.</p>
+        </div>
+        <button className="rounded bg-sky-600 text-white px-4 py-2 disabled:bg-slate-300" disabled={submitDisabled}>
+          {isSubmitting ? "Creating order…" : attachmentsBusy ? "Optimising screenshots…" : reviewBeforeSubmit ? "Review order" : "Create order / Goods Pro Forma Estimate"}
+        </button>
       </div>
 
-      <div className="rounded border p-3 text-sm space-y-2">
-        <p className="font-semibold">Product confirmation</p>
-        <p>I confirm this order does not include children’s clothing, infant clothing, school uniform, or similar restricted items. If restricted items are found, the order may be rejected or refunded, and an admin charge may apply.</p>
-        <label className="flex items-center gap-2"><input type="checkbox" name="product_confirmed" value="yes" required /> I confirm and accept</label>
-      </div>
-
-      <div className="rounded border p-3 text-sm space-y-1">
-        <p className="font-semibold">Goods Pro Forma Estimate</p>
-        <p>This estimate is based on the goods value you submitted. Shipping is excluded at this stage. Shipping will be quoted separately after goods are received and checked by the shipper.</p>
-      </div>
-      <button className="rounded bg-sky-600 text-white px-4 py-2 disabled:bg-slate-300" disabled={submitDisabled}>
-        {isSubmitting ? "Creating order…" : attachmentsBusy ? "Optimising screenshots…" : "Create order / Goods Pro Forma Estimate"}
-      </button>
+      {reviewBeforeSubmit && reviewing && reviewSummary ? (
+        <section className="rounded-2xl border border-sky-200 bg-sky-50 p-5 text-slate-950">
+          <h2 className="text-xl font-semibold">Review your order</h2>
+          <p className="mt-1 text-sm text-slate-600">Please check these details before creating the order.</p>
+          <dl className="mt-4 grid gap-3 sm:grid-cols-2">
+            <div className="rounded-xl bg-white p-3"><dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">Retailer</dt><dd className="mt-1 font-semibold">{reviewSummary.retailer}</dd></div>
+            <div className="rounded-xl bg-white p-3"><dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">Quantity</dt><dd className="mt-1 font-semibold">{reviewSummary.quantity}</dd></div>
+            <div className="rounded-xl bg-white p-3"><dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">Goods value</dt><dd className="mt-1 font-semibold">{reviewSummary.amount}</dd></div>
+            <div className="rounded-xl bg-white p-3"><dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">Destination</dt><dd className="mt-1 font-semibold">{reviewSummary.destination}</dd></div>
+            <div className="rounded-xl bg-white p-3"><dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">Attachments</dt><dd className="mt-1 font-semibold">{reviewSummary.attachments}</dd></div>
+          </dl>
+          <div className="mt-5 flex flex-wrap gap-3">
+            <button type="button" className="rounded border border-slate-300 bg-white px-4 py-2 font-semibold text-slate-800" onClick={() => setReviewing(false)} disabled={isSubmitting}>Back & edit</button>
+            <button type="button" className="rounded bg-sky-600 px-4 py-2 font-semibold text-white disabled:bg-slate-300" onClick={confirmCreate} disabled={isSubmitting}>
+              {isSubmitting ? "Creating order…" : "Confirm & create order"}
+            </button>
+          </div>
+        </section>
+      ) : null}
     </form>
   );
 }
