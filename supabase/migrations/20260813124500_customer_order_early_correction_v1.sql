@@ -57,6 +57,7 @@ DECLARE
   v_qty_changed boolean := false;
   v_original_screenshot_count integer := 0;
   v_screenshots_replaced boolean := false;
+  v_storage_public_prefix text;
 BEGIN
   IF auth.uid() IS NULL THEN
     RAISE EXCEPTION 'Unauthenticated user.';
@@ -253,6 +254,27 @@ BEGIN
       RAISE EXCEPTION 'Replacement screenshot count must match the existing original screenshot count (%).', v_original_screenshot_count;
     END IF;
 
+    SELECT MIN(parsed.public_prefix)
+    INTO v_storage_public_prefix
+    FROM public.order_screenshots os
+    CROSS JOIN LATERAL (
+      SELECT CASE
+        WHEN position('/storage/v1/object/public/order-screenshots/' IN os.screenshot_url) > 0
+          THEN split_part(os.screenshot_url, '/storage/v1/object/public/order-screenshots/', 1)
+               || '/storage/v1/object/public/order-screenshots/'
+        ELSE NULL
+      END AS public_prefix
+    ) parsed
+    WHERE os.order_id = p_order_id
+      AND os.note = 'Original order screenshot'
+    HAVING COUNT(*) > 0
+       AND COUNT(parsed.public_prefix) = COUNT(*)
+       AND COUNT(DISTINCT parsed.public_prefix) = 1;
+
+    IF v_storage_public_prefix IS NULL THEN
+      RAISE EXCEPTION 'Replacement screenshot URL baseline is unavailable or inconsistent.';
+    END IF;
+
     WITH current_rows AS (
       SELECT
         os.id,
@@ -262,13 +284,20 @@ BEGIN
         AND os.note = 'Original order screenshot'
     ), replacements AS (
       SELECT
-        replacement.url,
+        v_storage_public_prefix || parsed.object_name AS canonical_url,
         replacement.ordinality::bigint AS position
       FROM unnest(p_replacement_screenshot_urls) WITH ORDINALITY AS replacement(url, ordinality)
+      CROSS JOIN LATERAL (
+        SELECT CASE
+          WHEN position('/storage/v1/object/public/order-screenshots/' IN replacement.url) > 0
+            THEN split_part(replacement.url, '/storage/v1/object/public/order-screenshots/', 2)
+          ELSE replacement.url
+        END AS object_name
+      ) parsed
     )
     UPDATE public.order_screenshots os
     SET
-      screenshot_url = replacements.url,
+      screenshot_url = replacements.canonical_url,
       uploaded_by_operator_id = v_operator.operator_id
     FROM current_rows
     JOIN replacements USING (position)
