@@ -285,6 +285,8 @@ customer_pre_shipment_hold_requests.supplier_invoice_line_id
 
 Customer hold history must not depend on the current `customer_review_ready_line_ids_v1()` result to recover the historical item identity. A resolved, superseded, converted, or otherwise closed line hold may legitimately remain in audit history after that line has left the current review-ready set.
 
+The existing customer review-cycle selection is protected authority and must remain unchanged by this correction. For timed review links (`expires_at IS NOT NULL`), the customer review RPC must continue to source review lines from active `customer_review_cycle_memberships` belonging to the exact `review_link_id`. Only legacy untimed links (`expires_at IS NULL`) may continue to source current lines from `customer_review_ready_line_ids_v1(order_id)`. This history-identity correction must not remove, broaden, invert, or replace that timed-versus-legacy selection.
+
 The existing customer review RPC may therefore enrich each hold object additively with only:
 
 - `line_description`;
@@ -321,6 +323,7 @@ In addition to section 15, the history-identity build must prove:
 5. current review-ready membership remains unchanged;
 6. hold row counts and active/closed classifications remain unchanged;
 7. no hold lifecycle, shipment, exception, refund, return, Sage, VAT, DVA, RLS, grant, or permission behaviour is modified;
-8. the Customer Review history renders the historical item identity only for line-scoped holds where that identity exists.
+8. the Customer Review history renders the historical item identity only for line-scoped holds where that identity exists;
+9. timed review links still source lines from active immutable `customer_review_cycle_memberships`, while legacy untimed links retain the existing `customer_review_ready_line_ids_v1()` fallback only.
 
 This section is the governing authority for the customer hold history item-identity correction. Implementation must not exceed this scope.
