@@ -132,6 +132,7 @@ export default function OrderForm({
   const formRef = useRef<HTMLFormElement>(null);
   const preparedFilesRef = useRef<File[]>([]);
   const selectionVersionRef = useRef(0);
+  const reviewConfirmStartedRef = useRef(false);
   const [isSubmitting, startSubmitTransition] = useTransition();
   const [reviewing, setReviewing] = useState(false);
   const [reviewSummary, setReviewSummary] = useState<ReviewSummary | null>(null);
@@ -254,7 +255,15 @@ export default function OrderForm({
 
   function confirmCreate() {
     const form = formRef.current;
-    if (!form || attachmentSummary.status === "optimising" || preparedFilesRef.current.length === 0 || isSubmitting) return;
+    if (
+      !form
+      || attachmentSummary.status === "optimising"
+      || preparedFilesRef.current.length === 0
+      || isSubmitting
+      || reviewConfirmStartedRef.current
+    ) return;
+
+    reviewConfirmStartedRef.current = true;
     submitPreparedForm(form);
   }
 
