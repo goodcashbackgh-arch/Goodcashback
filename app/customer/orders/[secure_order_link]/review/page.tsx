@@ -20,6 +20,9 @@ type HoldRow = {
   status?: string | null;
   reason?: string | null;
   supervisor_review_note?: string | null;
+  line_description?: string | null;
+  line_qty?: number | string | null;
+  line_amount_inc_vat_gbp?: number | string | null;
 };
 
 type PackageGroup = {
@@ -271,6 +274,12 @@ export default async function CustomerOrderReviewPage({
                   <p className="font-black">{scopeLabel(hold.requested_scope)} hold</p>
                   <span className={`rounded-full px-3 py-1 text-xs font-bold ring-1 ${statusClass(hold.status)}`}>{friendly(hold.status)}</span>
                 </div>
+                {hold.requested_scope === "line" && hold.line_description ? (
+                  <div className="mt-2">
+                    <p className="font-black text-slate-950">{hold.line_description}</p>
+                    <p className="mt-1 text-slate-600">Qty {hold.line_qty ?? "—"} · {money(hold.line_amount_inc_vat_gbp)}</p>
+                  </div>
+                ) : null}
                 <p className="mt-2 text-slate-700">{hold.reason}</p>
                 {hold.supervisor_review_note ? <p className="mt-2 rounded-xl bg-white p-3 text-slate-700"><span className="font-semibold">Review note:</span> {hold.supervisor_review_note}</p> : null}
               </article>
