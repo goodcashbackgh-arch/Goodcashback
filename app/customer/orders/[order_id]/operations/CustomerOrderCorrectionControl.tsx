@@ -25,6 +25,9 @@ type EligibleOrder = {
   currentQty: number;
   currentAmount: number;
   originalScreenshotCount: number;
+  appliedCreditGbp: number;
+  fundedTotalGbp: number;
+  markupAppliedGbp: number;
 };
 
 function correctionError(message: string) {
@@ -32,13 +35,19 @@ function correctionError(message: string) {
   if (lower.includes("processing has started") || lower.includes("downstream evidence")) {
     return "This order can no longer be corrected because processing has started.";
   }
+  if (lower.includes("funding postcondition failed")) {
+    return "This order can no longer be corrected because its funding changed while you were editing.";
+  }
+  if (lower.includes("funding-state recomputation")) {
+    return "The goods value cannot be reduced that far because the existing account credit would fully cover the order. Enter a higher goods value or leave it unchanged.";
+  }
   if (lower.includes("replacement screenshot count")) return message;
   return "We could not save this correction. Refresh the order and try again.";
 }
 
 function isAuthoritativeBlocker(message: string) {
   const lower = message.toLowerCase();
-  return lower.includes("processing has started") || lower.includes("downstream evidence");
+  return lower.includes("processing has started") || lower.includes("downstream evidence") || lower.includes("funding postcondition failed");
 }
 
 function formatMb(bytes: number) {
@@ -199,8 +208,9 @@ export default function CustomerOrderCorrectionControl({ orderId }: { orderId: s
         order.vat_return_period == null;
       if (!baseEligible) return;
 
-      const [fundingResult, trackingResult, invoiceResult, screenshotResult, childResult] = await Promise.all([
-        supabase.from("order_funding_events").select("id").eq("order_id", orderId).limit(1),
+      const [fundingEventResult, fundingPositionResult, trackingResult, invoiceResult, screenshotResult, childResult] = await Promise.all([
+        supabase.from("order_funding_events").select("id, event_type").eq("order_id", orderId),
+        supabase.from("order_funding_position_vw").select("applied_credit_gbp, funded_total_gbp, markup_applied_gbp, gap_remaining_gbp, threshold_met_yn").eq("order_id", orderId).maybeSingle(),
         supabase.from("order_tracking_submissions").select("id").eq("order_id", orderId).limit(1),
         supabase.from("supplier_invoices").select("id").eq("order_id", orderId).limit(1),
         supabase.from("order_screenshots").select("id, note, display_order").eq("order_id", orderId).order("display_order").order("id"),
@@ -208,8 +218,17 @@ export default function CustomerOrderCorrectionControl({ orderId }: { orderId: s
       ]);
 
       if (cancelled) return;
-      if (fundingResult.error || trackingResult.error || invoiceResult.error || screenshotResult.error || childResult.error) return;
-      if ((fundingResult.data ?? []).length > 0 || (trackingResult.data ?? []).length > 0 || (invoiceResult.data ?? []).length > 0 || (childResult.data ?? []).length > 0) return;
+      if (fundingEventResult.error || fundingPositionResult.error || trackingResult.error || invoiceResult.error || screenshotResult.error || childResult.error) return;
+      if ((fundingEventResult.data ?? []).some((row) => row.event_type !== "credit_applied") || (trackingResult.data ?? []).length > 0 || (invoiceResult.data ?? []).length > 0 || (childResult.data ?? []).length > 0) return;
+
+      const fundingPosition = fundingPositionResult.data;
+      if (!fundingPosition) return;
+      const appliedCreditGbp = Number(fundingPosition.applied_credit_gbp ?? 0);
+      const fundedTotalGbp = Number(fundingPosition.funded_total_gbp ?? 0);
+      const markupAppliedGbp = Number(fundingPosition.markup_applied_gbp ?? 0);
+      const gapRemainingGbp = Number(fundingPosition.gap_remaining_gbp ?? 0);
+      if (![appliedCreditGbp, fundedTotalGbp, markupAppliedGbp, gapRemainingGbp].every(Number.isFinite)) return;
+      if (Boolean(fundingPosition.threshold_met_yn) || gapRemainingGbp <= 0.01 || fundedTotalGbp > appliedCreditGbp + 0.01) return;
 
       const screenshots = screenshotResult.data ?? [];
       if (screenshots.some((row) => row.note !== "Original order screenshot")) return;
@@ -223,6 +242,9 @@ export default function CustomerOrderCorrectionControl({ orderId }: { orderId: s
         currentQty,
         currentAmount,
         originalScreenshotCount: screenshots.length,
+        appliedCreditGbp,
+        fundedTotalGbp,
+        markupAppliedGbp,
       });
     }
 
@@ -259,6 +281,16 @@ export default function CustomerOrderCorrectionControl({ orderId }: { orderId: s
       return;
     }
 
+    const roundedAmount = Math.round(totalAmount * 100) / 100;
+    if (roundedAmount !== currentEligibleOrder.currentAmount) {
+      const proposedFundingGap = Math.round(Math.max(roundedAmount + currentEligibleOrder.markupAppliedGbp - currentEligibleOrder.fundedTotalGbp, 0) * 100) / 100;
+      if (proposedFundingGap <= 0.01) {
+        setIsError(true);
+        setMessage("The goods value cannot be reduced that far because the existing account credit would fully cover the order. Enter a higher goods value or leave it unchanged.");
+        return;
+      }
+    }
+
     if (replacementSelected && (attachmentSummary.status !== "ready" || replacementFiles.length < 1)) return;
     if (replacementFiles.length > 0) {
       if (replacementFiles.reduce((sum, file) => sum + file.size, 0) > MAX_ATTACHMENT_BYTES) {
@@ -280,7 +312,7 @@ export default function CustomerOrderCorrectionControl({ orderId }: { orderId: s
       const { error } = await (supabase as any).rpc("customer_correct_unprocessed_order_v1", {
         p_order_id: orderId,
         p_total_qty_declared: totalQty,
-        p_order_total_gbp_declared: Math.round(totalAmount * 100) / 100,
+        p_order_total_gbp_declared: roundedAmount,
         p_replacement_screenshot_urls: replacementUrls,
       });
       if (error) throw new Error(error.message ?? "Correction failed");
@@ -288,7 +320,7 @@ export default function CustomerOrderCorrectionControl({ orderId }: { orderId: s
       setEligibleOrder((current) => current ? {
         ...current,
         currentQty: totalQty,
-        currentAmount: Math.round(totalAmount * 100) / 100,
+        currentAmount: roundedAmount,
         originalScreenshotCount: replacementFiles.length > 0 ? replacementFiles.length : current.originalScreenshotCount,
       } : current);
       preparedFilesRef.current = [];
@@ -313,9 +345,14 @@ export default function CustomerOrderCorrectionControl({ orderId }: { orderId: s
     <div className="bg-slate-50 px-4 pt-3 xl:px-6">
       <section className="mx-auto">
         <details open={isOpen} onToggle={(event) => setIsOpen(event.currentTarget.open)}>
-          <summary className="inline-flex cursor-pointer list-none rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm hover:bg-slate-50">Correct order</summary>
+          <summary className="inline-flex cursor-pointer list-none rounded-lg border border-sky-600 bg-sky-600 px-3 py-1.5 text-xs font-black text-white shadow-sm hover:bg-sky-700">Correct order</summary>
           <div className="mt-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
           <p className="mt-2 text-sm text-slate-600">You can correct the quantity, goods value or original attachments only before processing starts.</p>
+          {eligibleOrder.appliedCreditGbp > 0.01 ? (
+            <p className="mt-3 rounded-xl border border-cyan-100 bg-cyan-50 p-3 text-sm font-semibold text-cyan-900">
+              £{eligibleOrder.appliedCreditGbp.toFixed(2)} account credit is already applied. It stays unchanged; correcting the goods value changes only the remaining amount due.
+            </p>
+          ) : null}
           <form onSubmit={handleSubmit} className="mt-4 grid gap-4" encType="multipart/form-data">
             <div className="grid gap-3 sm:grid-cols-2">
               <label className="text-sm font-semibold text-slate-700">
