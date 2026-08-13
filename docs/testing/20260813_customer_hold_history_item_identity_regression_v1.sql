@@ -11,6 +11,7 @@ DECLARE
   v_fn_oid oid := to_regprocedure('public.customer_pre_shipment_hold_review_v1(text)');
   v_ready_oid oid := to_regprocedure('public.customer_review_ready_line_ids_v1(uuid)');
   v_fn_def text;
+  v_body_hash text;
   v_security_definer boolean;
   v_config text[];
   v_hold_count integer;
@@ -31,10 +32,15 @@ BEGIN
     RAISE EXCEPTION 'FAIL: customer_review_ready_line_ids_v1(uuid) is missing';
   END IF;
 
-  SELECT pg_get_functiondef(v_fn_oid), p.prosecdef, p.proconfig
-    INTO v_fn_def, v_security_definer, v_config
+  SELECT pg_get_functiondef(v_fn_oid), md5(p.prosrc), p.prosecdef, p.proconfig
+    INTO v_fn_def, v_body_hash, v_security_definer, v_config
   FROM pg_proc p
   WHERE p.oid = v_fn_oid;
+
+  -- Exact post-migration body proof. Any unreviewed change fails closed.
+  IF v_body_hash IS DISTINCT FROM 'dce9d66a5433dcab6141a4e8ea3914e9' THEN
+    RAISE EXCEPTION 'FAIL: customer review RPC body differs from the governed migration; got hash %', v_body_hash;
+  END IF;
 
   IF v_security_definer IS DISTINCT FROM true THEN
     RAISE EXCEPTION 'FAIL: customer review RPC is no longer SECURITY DEFINER';
@@ -61,6 +67,11 @@ BEGIN
   IF position('LEFT JOIN public.supplier_invoice_lines hsil' in v_fn_def) = 0
      OR position('hsil.id = h.supplier_invoice_line_id' in v_fn_def) = 0 THEN
     RAISE EXCEPTION 'FAIL: historical hold identity is not sourced from the hold supplier_invoice_line_id';
+  END IF;
+
+  -- The customer read RPC must never mutate hold state.
+  IF v_fn_def ~* '(insert[[:space:]]+into|update|delete[[:space:]]+from)[[:space:]]+public[.]customer_pre_shipment_hold_requests' THEN
+    RAISE EXCEPTION 'FAIL: customer review RPC contains prohibited hold-table DML';
   END IF;
 
   -- Existing keys that must remain in the hold JSON object.
@@ -167,8 +178,10 @@ SELECT jsonb_build_object(
     )
   ),
   '04_function', jsonb_build_object(
+    'body_hash', md5(p.prosrc),
     'security_definer', p.prosecdef,
     'function_config', p.proconfig,
+    'function_acl', p.proacl,
     'anon_can_execute', has_function_privilege('anon', p.oid, 'EXECUTE'),
     'authenticated_can_execute', has_function_privilege('authenticated', p.oid, 'EXECUTE'),
     'has_line_description_key', position('''line_description''' in pg_get_functiondef(p.oid)) > 0,
