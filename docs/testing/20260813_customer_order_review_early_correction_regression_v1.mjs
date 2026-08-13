@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { execFileSync } from "node:child_process";
 
 const addendumPath = "docs/governing-pack/architecture/CUSTOMER_ORDER_PRE_CREATION_REVIEW_AND_EARLY_CORRECTION_ADDENDUM_v1.md";
 const amendmentPath = "docs/governing-pack/architecture/CUSTOMER_ORDER_PRE_CREATION_REVIEW_AND_EARLY_CORRECTION_ADDENDUM_v1_1.md";
 const amendmentV12Path = "docs/governing-pack/architecture/CUSTOMER_ORDER_PRE_CREATION_REVIEW_AND_EARLY_CORRECTION_ADDENDUM_v1_2.md";
+const amendmentV13Path = "docs/governing-pack/architecture/CUSTOMER_ORDER_PRE_CREATION_REVIEW_AND_EARLY_CORRECTION_ADDENDUM_v1_3.md";
 const migrationPath = "supabase/migrations/20260813124500_customer_order_early_correction_v1.sql";
+const migrationV13Path = "supabase/migrations/20260813165000_customer_order_early_correction_v1_3.sql";
 const sharedFormPath = "app/importer/orders/new/OrderForm.tsx";
 const customerCreatePagePath = "app/customer/orders/new/page.tsx";
 const customerCreateActionPath = "app/customer/orders/new/actions.ts";
@@ -15,7 +18,9 @@ const operationsLayoutPath = "app/customer/orders/[order_id]/operations/layout.t
 const addendum = fs.readFileSync(addendumPath, "utf8");
 const amendment = fs.readFileSync(amendmentPath, "utf8");
 const amendmentV12 = fs.readFileSync(amendmentV12Path, "utf8");
+const amendmentV13 = fs.readFileSync(amendmentV13Path, "utf8");
 const migration = fs.readFileSync(migrationPath, "utf8");
+const migrationV13 = fs.readFileSync(migrationV13Path, "utf8");
 const sharedForm = fs.readFileSync(sharedFormPath, "utf8");
 const customerCreatePage = fs.readFileSync(customerCreatePagePath, "utf8");
 const customerCreateAction = fs.readFileSync(customerCreateActionPath, "utf8");
@@ -153,7 +158,63 @@ assert.doesNotMatch(migration, /screenshot_url = replacements\.url/);
 assert.match(migration, /uploaded_by_operator_id = v_operator\.operator_id/);
 assert.doesNotMatch(migration, /INSERT\s+INTO\s+public\.order_screenshots/i);
 
+// v1.3 permits variable whole-set image replacement without changing frozen create-order code.
+assert.match(amendmentV13, /replacement image count >= 1/);
+assert.match(amendmentV13, /replacement count does not have to equal the previous original screenshot row count/);
+assert.match(migrationV13, /CREATE OR REPLACE FUNCTION public\.customer_correct_unprocessed_order_v1/);
+assert.doesNotMatch(migrationV13, /cardinality\(p_replacement_screenshot_urls\) IS DISTINCT FROM v_original_screenshot_count/);
+assert.match(migrationV13, /v_replacement_count < 1/);
+assert.match(migrationV13, /array_agg\(os\.id ORDER BY os\.display_order, os\.id\)/);
+assert.match(migrationV13, /os\.id = v_original_screenshot_ids\[replacements\.position\]/);
+assert.match(migrationV13, /WHERE replacement\.ordinality > v_original_screenshot_count/);
+assert.match(migrationV13, /INSERT INTO public\.order_screenshots[\s\S]*'Original order screenshot'/);
+assert.match(migrationV13, /DELETE FROM public\.order_screenshots os[\s\S]*os\.id = ANY\(v_original_screenshot_ids\)[\s\S]*os\.order_id = p_order_id[\s\S]*os\.note = 'Original order screenshot'/);
+assert.match(migrationV13, /display_order = replacements\.position/);
+
+// Every replacement is canonicalised from a verified correction object and its stored metadata.
+assert.match(migrationV13, /so\.bucket_id = 'order-screenshots'/);
+assert.match(migrationV13, /r\.object_name NOT LIKE v_operator\.importer_id::text \|\| '\/' \|\| p_order_id::text \|\| '\/correction-%'/);
+assert.match(migrationV13, /so\.metadata IS NULL/);
+assert.match(migrationV13, /so\.metadata->>'mimetype'[\s\S]*NOT LIKE 'image\/%'/);
+assert.match(migrationV13, /so\.metadata->>'size'[\s\S]*'\^\[0-9\]\+\$'/);
+assert.match(migrationV13, /> 3670016/);
+assert.match(migrationV13, /v_storage_public_prefix \|\| parsed\.object_name AS canonical_url/);
+assert.doesNotMatch(migrationV13, /storage\.objects[\s\S]*DELETE FROM storage\.objects/i);
+assert.doesNotMatch(correctionUpload, /\.remove\s*\(/);
+
+// Correction copies the established optimiser and uploads only its prepared files.
+for (const constant of [
+  /MAX_ATTACHMENT_BYTES = 3\.5 \* 1024 \* 1024/,
+  /TARGET_ATTACHMENT_BYTES = 3\.1 \* 1024 \* 1024/,
+  /COMPRESSION_TRIGGER_BYTES = 700 \* 1024/,
+  /MAX_FILE_TARGET_BYTES = 900 \* 1024/,
+  /MIN_FILE_TARGET_BYTES = 300 \* 1024/,
+  /MAX_IMAGE_DIMENSIONS = \[1800, 1500, 1200\]/,
+  /JPEG_QUALITIES = \[0\.86, 0\.76, 0\.66\]/,
+]) assert.match(correctionControl, constant);
+assert.match(correctionControl, /preparedFilesRef\.current/);
+assert.match(correctionControl, /uploadCorrectionScreenshots\([\s\S]*files: replacementFiles/);
+assert.match(correctionControl, /replacementFiles\.reduce\([\s\S]*> MAX_ATTACHMENT_BYTES/);
+assert.doesNotMatch(correctionControl, /replacementFiles\.length !== currentEligibleOrder\.originalScreenshotCount/);
+
+// Presentation and authoritative post-save behaviour remain deliberately narrow.
+assert.match(correctionControl, /<details open=\{isOpen\}/);
+assert.match(correctionControl, /border border-slate-300 bg-white px-3 py-1\.5 text-xs/);
+assert.match(correctionControl, /setIsOpen\(false\)/);
+assert.match(correctionControl, /isAuthoritativeBlocker\(rawMessage\)[\s\S]*setEligibleOrder\(null\)/);
+
+// The v1.3 continuation leaves both create actions and OrderForm byte-for-byte untouched.
+for (const frozenPath of [sharedFormPath, customerCreateActionPath, "app/importer/orders/new/actions.ts"]) {
+  const delta = execFileSync("git", ["diff", "167dd976e93f64ea89d8daae9598b6a01bedb9f1", "--", frozenPath], { encoding: "utf8" });
+  assert.equal(delta, "", `${frozenPath} must remain unchanged after the v1.3 governance commit`);
+}
+
+// The corrective migration is feature-only: no schema, RLS, trigger, or adjacent business-lane expansion.
+assert.doesNotMatch(migrationV13, /ALTER\s+TABLE|CREATE\s+(?:OR\s+REPLACE\s+)?TRIGGER|CREATE\s+POLICY|DROP\s+POLICY/i);
+assert.doesNotMatch(migrationV13, /customer_apply_available_credit|sage|UPDATE\s+public\.(?:order_funding_events|order_tracking_submissions|supplier_invoices|dva_reconciliation|sales_invoices|shipping_quote_orders)/i);
+assert.doesNotMatch(migrationV13, /DELETE\s+FROM\s+public\.orders/i);
+
 console.log(JSON.stringify({
   regression_result: "PASS",
-  proof: "customer-only review remains opt-in; existing create/auto-credit authority remains present; v1.1 authorises updated_at metadata and explicit active-operator authority; categories remain excluded; v1.2 adds a synchronous review-confirm one-shot guard and requires canonical Storage persistence; correction has no direct client DB mutation; RPC owns auth, row lock, full fail-closed gate and proportional quote preservation; screenshot replacement is one-for-one, restricted to verified order-screenshots objects and rebuilt from a trusted existing Storage prefix; no order deletion, existing-control replacement, RLS/schema mutation or physical Storage removal is introduced"
+  proof: "customer-only review remains opt-in; existing create/auto-credit authority remains present and frozen; v1.1 active-operator and v1.2 review/canonical-URL controls remain; v1.3 supports variable whole-set replacement while preserving overlapping row IDs, tightly scopes inserts/deletes, verifies stored image metadata and the 3,670,016-byte ceiling, uploads prepared images, collapses or hides the subtle disclosure as governed, and introduces no schema, RLS, trigger, adjacent business-lane, or physical Storage-object mutation"
 }, null, 2));
