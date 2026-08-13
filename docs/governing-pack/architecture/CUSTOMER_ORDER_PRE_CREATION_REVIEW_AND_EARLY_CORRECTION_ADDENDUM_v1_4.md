@@ -6,7 +6,9 @@ Status: governing corrective amendment to v1, v1.1, v1.2 and v1.3
 
 Correct one governance mistake in the existing early-correction gate without changing the working customer-credit or funding engines.
 
-A customer order that has only automatically applied account credit may remain eligible for early correction while it is still genuinely pre-funding and otherwise untouched.
+A customer order that has only account credit applied may remain eligible for early correction while it is still genuinely pre-funding and otherwise untouched.
+
+The permitted exception is defined by the existing canonical funding event classification `credit_applied`. The correction feature does not reinterpret, replace or modify whichever existing authorised credit-application seam created that credit.
 
 This amendment also allows the collapsed `Correct order` disclosure to use the existing customer sky/blue palette so it is easy to find while remaining secondary to the primary order-status and payment content.
 
@@ -21,6 +23,8 @@ Read-only live verification on 13 August 2026 established:
 - the canonical order status chain derives the accepted estimate directly from `orders.order_total_gbp_declared`, so a safe correction of that field is reflected by existing read models without mutating credit/funding rows;
 - live data includes a `pending_dva_funding` order with only `credit_applied` funding activity, `funded_at IS NULL`, and a remaining cash gap; and
 - live data also includes credit-only orders whose credit fully funded the order and whose `funded_at` is already stamped.
+
+Repository verification also established that existing customer/staff account-credit application paths lock the target order before applying credit, so the existing order-row lock remains the correct serialization boundary for this narrow correction seam.
 
 Therefore the safe seam is partial-credit-only correction. Fully funded/credit-funded orders remain outside this feature because changing their value would require funding-state recomputation and would cross into the existing funding engine.
 
@@ -46,6 +50,8 @@ Every other existing v1-v1.3 blocker remains unchanged, including status, locks,
 
 `orders.funded_at IS NOT NULL` remains an absolute blocker.
 
+The existing canonical funding position must also remain genuinely incomplete. If `threshold_met_yn` is already true or the canonical remaining gap is `<= £0.01`, correction is blocked even if the only funding event type is `credit_applied`.
+
 ## 2. Existing account credit is frozen during correction
 
 The correction feature must not mutate, reverse, consume, release, replace or reapply account credit.
@@ -69,9 +75,9 @@ The already-applied credit remains exactly as it was before correction.
 Example:
 
 ```text
-order goods value     £100
-already-applied credit £30
-remaining due          £70
+order goods value      £100
+already-applied credit  £30
+remaining due           £70
 
 customer corrects goods value to £200
 already-applied credit remains £30
@@ -84,17 +90,28 @@ No additional available account credit is automatically consumed by the correcti
 
 Because the correction RPC deliberately does not mutate funding rows and does not invoke the funding engine, an amount correction must not turn a currently part-funded order into a fully funded order.
 
-After the order row is locked, the correction RPC must read the canonical current funding position and, when the declared GBP amount changes and applied account credit is greater than zero, compute the proposed funding threshold using:
+After the order row is locked, the correction RPC must read the canonical current funding position and compute the proposed funding threshold using:
 
 ```text
 proposed funding threshold = corrected order_total_gbp_declared + existing markup_applied_gbp
+proposed remaining gap     = proposed funding threshold - existing funded_total_gbp
 ```
 
-The correction must fail without mutation if the proposed remaining funding gap after existing applied credit would be `<= £0.01`.
+The correction must fail without mutation if the proposed remaining funding gap would be `<= £0.01`.
 
-This guard also fail-closes any inconsistent legacy row that is not stamped `funded_at` but would already be effectively fully covered by applied credit after the proposed correction.
+This guard also fail-closes any inconsistent legacy row that is not stamped `funded_at` but is already effectively fully covered according to the canonical funding position.
 
 The correction must not stamp, clear or recompute `funded_at` itself.
+
+After updating quantity/value, the RPC must re-read the canonical funding position and fail atomically if:
+
+- applied credit changed unexpectedly;
+- funded total changed unexpectedly;
+- the funding threshold became met;
+- the remaining gap is `<= £0.01`; or
+- an amount correction does not produce the expected remaining gap.
+
+That postcondition is verification only; it does not mutate the funding system.
 
 ## 4. Quote economics remain unchanged
 
@@ -114,9 +131,9 @@ The authenticated correction control remains advisory; the RPC remains final aut
 
 The client may treat `credit_applied` rows as non-blocking while continuing to hide itself for any other customer-readable funding activity.
 
-When account credit is already applied, the expanded correction panel should tell the customer that the existing credit stays unchanged and that correcting the goods value changes only the remaining amount due.
+The client must use the existing `order_funding_position_vw` read model to fail closed when the order is already fully funded/effectively fully funded and may pre-check the same proposed-gap boundary before uploading replacement images.
 
-The client may pre-check the same partial-credit boundary for immediate feedback, but the server-side RPC must independently enforce it.
+When account credit is already applied, the expanded correction panel should tell the customer that the existing credit stays unchanged and that correcting the goods value changes only the remaining amount due.
 
 ### Discoverability
 
@@ -148,9 +165,10 @@ The v1 migration and the already-applied v1.3 corrective migration remain histor
 Exactly one new v1.4 corrective migration is authorised. It may only:
 
 - require the existing feature-owned `public.customer_correct_unprocessed_order_v1(uuid,integer,numeric,text[])` function and `public.order_funding_position_vw` to exist;
+- verify that the live correction function still has the expected v1.3 Storage/postcondition/security boundary before replacement;
 - `CREATE OR REPLACE` that feature-owned correction RPC;
 - change its funding-event gate so only `credit_applied` rows are permitted;
-- read the existing funding view to enforce the partial-credit boundary;
+- read the existing funding view to enforce the partial-credit boundary and funding postconditions;
 - preserve every v1.3 ownership, status/lock, downstream, quote-economics, Storage, screenshot-row and postcondition control;
 - preserve existing security/search-path/execute privileges; and
 - notify PostgREST schema reload.
@@ -174,16 +192,18 @@ Before merge, prove at minimum:
 
 1. an otherwise untouched `pending_dva_funding` order with only partial `credit_applied` funding remains correctable;
 2. £100 goods value with £30 already-applied credit may be corrected to £200 without changing the £30 credit rows;
-3. the existing funding read model then reports the increased remaining gap rather than auto-consuming more credit;
+3. the existing funding read model then reports the increased remaining gap rather than consuming more credit;
 4. the correction RPC does not call the auto-credit RPC or mutate credit/funding/DVA rows;
 5. any non-`credit_applied` funding event still blocks correction;
 6. `funded_at IS NOT NULL` still blocks correction;
-7. an amount correction that would leave a funding gap of `<= £0.01` after existing applied credit fails atomically;
-8. quantity-only and screenshot-only correction remain allowed for an otherwise eligible partial-credit order because they do not change the funding threshold;
-9. all v1.3 Storage, screenshot replacement and postcondition controls remain unchanged;
-10. stored quote economics remain proportional and no FX lookup is introduced;
-11. the collapsed `Correct order` control uses a visible sky/blue secondary-action treatment; and
-12. customer/importer create actions and every existing credit/funding function/view/trigger remain unchanged.
+7. an already/effectively fully funded order still blocks correction;
+8. an amount correction that would leave a funding gap of `<= £0.01` after existing funding fails atomically;
+9. quantity-only and screenshot-only correction remain allowed for an otherwise eligible partial-credit order because they do not change the funding threshold;
+10. the post-update funding read remains unchanged except for the dynamically derived gap/threshold caused by the corrected order value;
+11. all v1.3 Storage, screenshot replacement and postcondition controls remain unchanged;
+12. stored quote economics remain proportional and no FX lookup is introduced;
+13. the collapsed `Correct order` control uses a visible sky/blue secondary-action treatment; and
+14. customer/importer create actions and every existing credit/funding function/view/trigger remain unchanged.
 
 ## Acceptance
 
@@ -191,10 +211,12 @@ The intended customer path is:
 
 ```text
 Create order
-→ existing account credit may auto-apply
+→ existing account credit may be applied
 → if credit is only partial and no genuine processing has started, Correct order remains available
 → existing applied credit stays frozen
 → changing the goods value changes the remaining amount due through existing read models
-→ no extra credit is consumed
-→ any real funding/downstream activity, funded state, or correction requiring funding-state recomputation still blocks fail-closed
+→ no extra credit is consumed by correction
+→ any real funding/downstream activity, funded state, effective full funding, or correction requiring funding-state recomputation still blocks fail-closed
 ```
+
+No broader order editing, credit reversal, funding mutation or working-flow refactor is authorised.
