@@ -277,7 +277,7 @@ export default async function CustomerOrderReviewPage({
                 {hold.requested_scope === "line" && hold.line_description ? (
                   <div className="mt-2">
                     <p className="font-black text-slate-950">{hold.line_description}</p>
-                    <p className="mt-1 text-slate-600">Qty {hold.line_qty ?? "—"} · {money(hold.line_amount_inc_vat_gbp)}</p>
+                    <p className="mt-1 text-slate-600">Qty {hold.line_qty ?? "—"}{hold.line_amount_inc_vat_gbp != null ? ` · ${money(hold.line_amount_inc_vat_gbp)}` : ""}</p>
                   </div>
                 ) : null}
                 <p className="mt-2 text-slate-700">{hold.reason}</p>
