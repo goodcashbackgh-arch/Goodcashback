@@ -113,7 +113,8 @@ export default function CustomerOrderCorrectionControl({ orderId }: { orderId: s
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (submitting) return;
+    const currentEligibleOrder = eligibleOrder;
+    if (!currentEligibleOrder || submitting) return;
 
     const form = event.currentTarget;
     if (!form.reportValidity()) return;
@@ -137,9 +138,9 @@ export default function CustomerOrderCorrectionControl({ orderId }: { orderId: s
     }
 
     if (replacementFiles.length > 0) {
-      if (eligibleOrder.originalScreenshotCount < 1 || replacementFiles.length !== eligibleOrder.originalScreenshotCount) {
+      if (currentEligibleOrder.originalScreenshotCount < 1 || replacementFiles.length !== currentEligibleOrder.originalScreenshotCount) {
         setIsError(true);
-        setMessage(`Select exactly ${eligibleOrder.originalScreenshotCount} replacement ${eligibleOrder.originalScreenshotCount === 1 ? "attachment" : "attachments"}.`);
+        setMessage(`Select exactly ${currentEligibleOrder.originalScreenshotCount} replacement ${currentEligibleOrder.originalScreenshotCount === 1 ? "attachment" : "attachments"}.`);
         return;
       }
       if (replacementFiles.some((file) => !file.type.startsWith("image/"))) {
@@ -160,7 +161,7 @@ export default function CustomerOrderCorrectionControl({ orderId }: { orderId: s
 
     try {
       const replacementUrls = replacementFiles.length > 0
-        ? await uploadCorrectionScreenshots({ orderId, importerId: eligibleOrder.importerId, files: replacementFiles })
+        ? await uploadCorrectionScreenshots({ orderId, importerId: currentEligibleOrder.importerId, files: replacementFiles })
         : null;
       const supabase = createClient();
       const { error } = await (supabase as any).rpc("customer_correct_unprocessed_order_v1", {
