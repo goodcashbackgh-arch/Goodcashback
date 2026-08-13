@@ -28,6 +28,7 @@ type EligibleOrder = {
   appliedCreditGbp: number;
   fundedTotalGbp: number;
   markupAppliedGbp: number;
+  previouslyFullyFunded: boolean;
 };
 
 function correctionError(message: string) {
@@ -35,11 +36,20 @@ function correctionError(message: string) {
   if (lower.includes("processing has started") || lower.includes("downstream evidence")) {
     return "This order can no longer be corrected because processing has started.";
   }
-  if (lower.includes("funding postcondition failed")) {
+  if (lower.includes("funding") && lower.includes("postcondition failed")) {
     return "This order can no longer be corrected because its funding changed while you were editing.";
   }
-  if (lower.includes("funding-state recomputation")) {
-    return "The goods value cannot be reduced that far because the existing account credit would fully cover the order. Enter a higher goods value or leave it unchanged.";
+  if (lower.includes("credit funding event and ledger position disagree")) {
+    return "This order can no longer be corrected because its credit funding records do not agree.";
+  }
+  if (lower.includes("non-credit funding has started")) {
+    return "This order can no longer be corrected because non-credit funding has started.";
+  }
+  if (lower.includes("corrected value would require credit release or financial-state repair")) {
+    return "This goods value would require account credit to be released or repaired. Enter a value that leaves an amount still due, or leave it unchanged.";
+  }
+  if (lower.includes("fully funded value correction must increase goods value beyond existing credit funding")) {
+    return "A fully credit-funded order can only change to a higher goods value that leaves a new amount due.";
   }
   if (lower.includes("replacement screenshot count")) return message;
   return "We could not save this correction. Refresh the order and try again.";
@@ -47,7 +57,11 @@ function correctionError(message: string) {
 
 function isAuthoritativeBlocker(message: string) {
   const lower = message.toLowerCase();
-  return lower.includes("processing has started") || lower.includes("downstream evidence") || lower.includes("funding postcondition failed");
+  return lower.includes("processing has started")
+    || lower.includes("downstream evidence")
+    || (lower.includes("funding") && lower.includes("postcondition failed"))
+    || lower.includes("credit funding event and ledger position disagree")
+    || lower.includes("non-credit funding has started");
 }
 
 function formatMb(bytes: number) {
@@ -201,7 +215,6 @@ export default function CustomerOrderCorrectionControl({ orderId }: { orderId: s
         order.status === "pending_dva_funding" &&
         order.content_locked_at == null &&
         order.tracking_locked_at == null &&
-        order.funded_at == null &&
         order.completed_at == null &&
         order.accounting_release_ready_at == null &&
         order.vat_release_approved_at == null &&
@@ -228,7 +241,11 @@ export default function CustomerOrderCorrectionControl({ orderId }: { orderId: s
       const markupAppliedGbp = Number(fundingPosition.markup_applied_gbp ?? 0);
       const gapRemainingGbp = Number(fundingPosition.gap_remaining_gbp ?? 0);
       if (![appliedCreditGbp, fundedTotalGbp, markupAppliedGbp, gapRemainingGbp].every(Number.isFinite)) return;
-      if (Boolean(fundingPosition.threshold_met_yn) || gapRemainingGbp <= 0.01 || fundedTotalGbp > appliedCreditGbp + 0.01) return;
+      if (fundedTotalGbp > appliedCreditGbp + 0.01) return;
+      const previouslyFullyFunded =
+        order.funded_at != null
+        || Boolean(fundingPosition.threshold_met_yn)
+        || gapRemainingGbp <= 0.01;
 
       const screenshots = screenshotResult.data ?? [];
       if (screenshots.some((row) => row.note !== "Original order screenshot")) return;
@@ -245,6 +262,7 @@ export default function CustomerOrderCorrectionControl({ orderId }: { orderId: s
         appliedCreditGbp,
         fundedTotalGbp,
         markupAppliedGbp,
+        previouslyFullyFunded,
       });
     }
 
@@ -283,10 +301,15 @@ export default function CustomerOrderCorrectionControl({ orderId }: { orderId: s
 
     const roundedAmount = Math.round(totalAmount * 100) / 100;
     if (roundedAmount !== currentEligibleOrder.currentAmount) {
-      const proposedFundingGap = Math.round(Math.max(roundedAmount + currentEligibleOrder.markupAppliedGbp - currentEligibleOrder.fundedTotalGbp, 0) * 100) / 100;
+      const proposedFundingGap = Math.round((roundedAmount + currentEligibleOrder.markupAppliedGbp - currentEligibleOrder.fundedTotalGbp) * 100) / 100;
       if (proposedFundingGap <= 0.01) {
         setIsError(true);
-        setMessage("The goods value cannot be reduced that far because the existing account credit would fully cover the order. Enter a higher goods value or leave it unchanged.");
+        setMessage("This goods value would require account credit to be released or repaired. Enter a value that leaves more than £0.01 due, or leave it unchanged.");
+        return;
+      }
+      if (currentEligibleOrder.previouslyFullyFunded && roundedAmount <= currentEligibleOrder.currentAmount) {
+        setIsError(true);
+        setMessage("A fully credit-funded order can only change to a higher goods value that leaves a new amount due.");
         return;
       }
     }
@@ -322,6 +345,7 @@ export default function CustomerOrderCorrectionControl({ orderId }: { orderId: s
         currentQty: totalQty,
         currentAmount: roundedAmount,
         originalScreenshotCount: replacementFiles.length > 0 ? replacementFiles.length : current.originalScreenshotCount,
+        previouslyFullyFunded: current.previouslyFullyFunded && roundedAmount > current.currentAmount ? false : current.previouslyFullyFunded,
       } : current);
       preparedFilesRef.current = [];
       selectionVersionRef.current += 1;

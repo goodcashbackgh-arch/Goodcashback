@@ -105,15 +105,37 @@ assert.match(correctionControl, /MAX_ATTACHMENT_BYTES = 3\.5 \* 1024 \* 1024/);
 // v1.4 advisory eligibility permits credit_applied only and reads the existing canonical funding view.
 assert.match(correctionControl, /order_funding_events"\)\.select\("id, event_type"\)/);
 assert.match(correctionControl, /row\.event_type !== "credit_applied"/);
+assert.match(correctionControl, /some\(\(row\) => row\.event_type !== "credit_applied"\)[\s\S]*?return/);
 assert.match(correctionControl, /order_funding_position_vw/);
 assert.match(correctionControl, /applied_credit_gbp, funded_total_gbp, markup_applied_gbp, gap_remaining_gbp, threshold_met_yn/);
-// The current UI still has advisory fully-funded/proposed-gap blockers. Governance and
-// database authority are corrected here; removing these blockers is a separate scoped task.
-const uiHasLegacyFullyFundedBlocker = /order\.funded_at == null/.test(correctionControl)
-  && /Boolean\(fundingPosition\.threshold_met_yn\) \|\| gapRemainingGbp <= 0\.01/.test(correctionControl)
-  && /fundedTotalGbp > appliedCreditGbp \+ 0\.01/.test(correctionControl)
-  && /proposedFundingGap <= 0\.01/.test(correctionControl);
-assert.equal(uiHasLegacyFullyFundedBlocker, true);
+// Fully credit-funded orders remain visible for quantity/screenshot correction. Only amount
+// changes receive the advisory gap and upward-value checks; the RPC remains final authority.
+const baseEligible = correctionControl.match(/const baseEligible =[\s\S]*?if \(!baseEligible\) return;/)?.[0] ?? "";
+assert.ok(baseEligible);
+assert.doesNotMatch(baseEligible, /order\.funded_at == null/);
+assert.doesNotMatch(correctionControl, /if \(Boolean\(fundingPosition\.threshold_met_yn\) \|\| gapRemainingGbp <= 0\.01/);
+assert.match(correctionControl, /fundedTotalGbp > appliedCreditGbp \+ 0\.01/);
+assert.match(correctionControl, /const previouslyFullyFunded =[\s\S]*?order\.funded_at != null[\s\S]*?Boolean\(fundingPosition\.threshold_met_yn\)[\s\S]*?gapRemainingGbp <= 0\.01/);
+const amountChangeGuard = correctionControl.match(/if \(roundedAmount !== currentEligibleOrder\.currentAmount\) \{[\s\S]*?\n    \}/)?.[0] ?? "";
+assert.ok(amountChangeGuard);
+assert.match(amountChangeGuard, /roundedAmount \+ currentEligibleOrder\.markupAppliedGbp - currentEligibleOrder\.fundedTotalGbp/);
+assert.match(amountChangeGuard, /proposedFundingGap <= 0\.01/);
+assert.match(amountChangeGuard, /currentEligibleOrder\.previouslyFullyFunded && roundedAmount <= currentEligibleOrder\.currentAmount/);
+assert.doesNotMatch(correctionControl.slice(0, correctionControl.indexOf("async function handleSubmit")), /proposedFundingGap <= 0\.01/);
+assert.doesNotMatch(correctionControl, /recompute_order_platform_funded/);
+assert.doesNotMatch(correctionControl, /customer_apply_available_credit_to_order_v1\s*\(|sync_order_overfunding_credit\s*\(|credit_revers\w*\s*\(/i);
+assert.equal((correctionControl.match(/\.rpc\(/g) ?? []).length, 1);
+assert.match(correctionControl, /\.rpc\("customer_correct_unprocessed_order_v1"/);
+for (const rpcMessage of [
+  "corrected value would require credit release or financial-state repair",
+  "fully funded value correction must increase goods value beyond existing credit funding",
+  "credit funding event and ledger position disagree",
+  "non-credit funding has started",
+]) {
+  assert.match(correctionControl, new RegExp(rpcMessage));
+}
+assert.match(correctionControl, /lower\.includes\("funding"\) && lower\.includes\("postcondition failed"\)/);
+assert.match(correctionControl, /previouslyFullyFunded: current\.previouslyFullyFunded && roundedAmount > current\.currentAmount \? false/);
 assert.match(correctionControl, /account credit is already applied\. It stays unchanged/);
 
 // Replacement files reuse the existing bucket and are never physically removed by this feature.
@@ -304,5 +326,5 @@ for (const correctiveMigration of [migrationV13, migrationV14]) {
 
 console.log(JSON.stringify({
   regression_result: "PASS",
-  proof: "customer-only review remains opt-in; create/credit/funding authority stays frozen; v1.3 Storage safeguards remain; v1.4 permits credit-only partial and fully-funded corrections, confines recompute to the fully-funded upward-value path, and rejects corrections requiring credit release; the legacy UI advisory blocker is identified for separate follow-up"
+  proof: "customer-only review remains opt-in; create/credit/funding authority stays frozen; v1.3 Storage safeguards remain; v1.4 UI and RPC permit credit-only partial and fully-funded corrections, confine recompute to the RPC's fully-funded upward-value path, and reject corrections requiring credit release"
 }, null, 2));

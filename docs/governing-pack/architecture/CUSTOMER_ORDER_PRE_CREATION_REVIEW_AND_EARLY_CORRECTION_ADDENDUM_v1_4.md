@@ -83,7 +83,9 @@ Correction never queries `fx_rates` and never modifies `quote_fx_rate`, `quote_c
 
 ## 5. Customer correction UI
 
-The authenticated correction control remains advisory; the RPC remains final authority. The client may treat `credit_applied` events as non-blocking, but an existing advisory blocker for fully funded orders would now conflict with this governing rule and requires its own separately scoped UI correction. No UI file is authorised to change in this task.
+The authenticated correction control mirrors the RPC as an advisory guard, while the RPC remains final authority. Existing `credit_applied` events are non-blocking. `orders.funded_at IS NOT NULL`, `threshold_met_yn = true`, and a canonical gap `<= £0.01` do not by themselves hide an otherwise untouched credit-only order. Every non-credit funding event, funded total beyond applied credit by more than £0.01, and the existing downstream gates continue to hide the control.
+
+Fully/effectively credit-funded quantity-only and screenshot-only corrections remain visible and submit without requiring a positive funding gap. For an amount change, the client calculates the proposed canonical gap from corrected goods value plus existing markup less existing funded total. It rejects a proposed gap `<= £0.01`; and, when the order was previously fully/effectively funded, it also requires an increase in goods value. A fully funded upward-value change that creates a positive gap may submit normally. The UI does not reproduce the event-versus-ledger assertion, invoke recomputation, or mutate credit; the RPC makes every authoritative eligibility, consistency and postcondition decision.
 
 The existing sky/blue collapsed `Correct order` treatment remains governed by v1.4's authorised source boundary.
 
@@ -115,7 +117,7 @@ The four-file v1.4 authorised source boundary remains unchanged:
 3. `supabase/migrations/20260813201500_customer_order_early_correction_v1_4.sql`;
 4. `docs/testing/20260813_customer_order_review_early_correction_regression_v1.mjs`.
 
-This task changes only items 1, 3 and 4. No additional runtime file is authorised.
+This follow-up changes only items 1, 2 and 4. No additional runtime file is authorised, and the existing v1.4 migration remains unchanged.
 
 ## Acceptance
 
