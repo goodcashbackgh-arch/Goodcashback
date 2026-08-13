@@ -3,6 +3,7 @@ import fs from "node:fs";
 
 const addendumPath = "docs/governing-pack/architecture/CUSTOMER_ORDER_PRE_CREATION_REVIEW_AND_EARLY_CORRECTION_ADDENDUM_v1.md";
 const amendmentPath = "docs/governing-pack/architecture/CUSTOMER_ORDER_PRE_CREATION_REVIEW_AND_EARLY_CORRECTION_ADDENDUM_v1_1.md";
+const amendmentV12Path = "docs/governing-pack/architecture/CUSTOMER_ORDER_PRE_CREATION_REVIEW_AND_EARLY_CORRECTION_ADDENDUM_v1_2.md";
 const migrationPath = "supabase/migrations/20260813124500_customer_order_early_correction_v1.sql";
 const sharedFormPath = "app/importer/orders/new/OrderForm.tsx";
 const customerCreatePagePath = "app/customer/orders/new/page.tsx";
@@ -13,6 +14,7 @@ const operationsLayoutPath = "app/customer/orders/[order_id]/operations/layout.t
 
 const addendum = fs.readFileSync(addendumPath, "utf8");
 const amendment = fs.readFileSync(amendmentPath, "utf8");
+const amendmentV12 = fs.readFileSync(amendmentV12Path, "utf8");
 const migration = fs.readFileSync(migrationPath, "utf8");
 const sharedForm = fs.readFileSync(sharedFormPath, "utf8");
 const customerCreatePage = fs.readFileSync(customerCreatePagePath, "utf8");
@@ -33,6 +35,13 @@ assert.match(amendment, /op\.active = true/);
 assert.match(amendment, /order_category_lines` is not part of this correction feature/);
 assert.match(amendment, /must not be added to its eligibility gate/);
 
+// v1.2 governs the synchronous review-confirm guard and canonical Storage persistence only.
+assert.match(amendmentV12, /synchronous client-side one-shot guard/);
+assert.match(amendmentV12, /leave the importer\/default submit path behaviour unchanged/);
+assert.match(amendmentV12, /must not persist the caller-supplied URL string verbatim/);
+assert.match(amendmentV12, /trusted public Storage URL prefix from the existing original screenshot rows/);
+assert.match(amendmentV12, /caller-supplied arbitrary host or URL prefix must never become authoritative/);
+
 // Review is opt-in and therefore importer behaviour stays off by default.
 assert.match(sharedForm, /reviewBeforeSubmit = false/);
 assert.match(sharedForm, /reviewBeforeSubmit\?: boolean/);
@@ -41,6 +50,15 @@ assert.match(sharedForm, /setReviewing\(true\);\s*return;/);
 assert.match(sharedForm, /Back & edit/);
 assert.match(sharedForm, /Confirm & create order/);
 assert.match(sharedForm, /function submitPreparedForm\(form: HTMLFormElement\)/);
+
+// v1.2: review confirmation is synchronously one-shot and the guard is confined to confirmCreate().
+assert.match(sharedForm, /const reviewConfirmStartedRef = useRef\(false\);/);
+const confirmCreateSource = sharedForm.match(/function confirmCreate\(\) \{[\s\S]*?\n  \}/)?.[0] ?? "";
+assert.ok(confirmCreateSource, "confirmCreate source must be present");
+assert.match(confirmCreateSource, /reviewConfirmStartedRef\.current/);
+assert.match(confirmCreateSource, /reviewConfirmStartedRef\.current = true;/);
+assert.match(confirmCreateSource, /submitPreparedForm\(form\);/);
+assert.doesNotMatch(sharedForm.replace(confirmCreateSource, ""), /reviewConfirmStartedRef\.current/);
 
 // The existing customer create action remains the creation authority and retains auto-credit.
 assert.match(customerCreateAction, /export async function createCustomerOrderAction/);
@@ -120,17 +138,22 @@ assert.doesNotMatch(migration, /quote_card_markup_pct\s*=/i);
 assert.doesNotMatch(migration, /status\s*=\s*'pending_dva_funding'/i);
 assert.match(migration, /updated_at = now\(\)/);
 
-// Screenshot correction is one-for-one in existing rows and validates actual Storage objects.
+// Screenshot correction is one-for-one, verifies actual Storage objects, and persists only a rebuilt trusted URL.
 assert.match(migration, /storage\.objects/);
 assert.match(migration, /so\.bucket_id = 'order-screenshots'/);
 assert.match(migration, /parsed\.object_name NOT LIKE v_operator\.importer_id::text \|\| '\/' \|\| p_order_id::text \|\| '\/correction-%'/);
 assert.match(migration, /cardinality\(p_replacement_screenshot_urls\) IS DISTINCT FROM v_original_screenshot_count/);
+assert.match(migration, /v_storage_public_prefix text/);
+assert.match(migration, /COUNT\(parsed\.public_prefix\) = COUNT\(\*\)/);
+assert.match(migration, /COUNT\(DISTINCT parsed\.public_prefix\) = 1/);
+assert.match(migration, /v_storage_public_prefix \|\| parsed\.object_name AS canonical_url/);
 assert.match(migration, /UPDATE public\.order_screenshots os/);
-assert.match(migration, /screenshot_url = replacements\.url/);
+assert.match(migration, /screenshot_url = replacements\.canonical_url/);
+assert.doesNotMatch(migration, /screenshot_url = replacements\.url/);
 assert.match(migration, /uploaded_by_operator_id = v_operator\.operator_id/);
 assert.doesNotMatch(migration, /INSERT\s+INTO\s+public\.order_screenshots/i);
 
 console.log(JSON.stringify({
   regression_result: "PASS",
-  proof: "customer-only review remains opt-in; existing create/auto-credit authority remains present; v1.1 authorises updated_at metadata and explicit active-operator authority; categories remain excluded; correction has no direct client DB mutation; RPC owns auth, row lock, full fail-closed gate and proportional quote preservation; screenshot replacement is one-for-one and restricted to verified order-screenshots objects; no order deletion, existing-control replacement, RLS/schema mutation or physical Storage removal is introduced"
+  proof: "customer-only review remains opt-in; existing create/auto-credit authority remains present; v1.1 authorises updated_at metadata and explicit active-operator authority; categories remain excluded; v1.2 adds a synchronous review-confirm one-shot guard and requires canonical Storage persistence; correction has no direct client DB mutation; RPC owns auth, row lock, full fail-closed gate and proportional quote preservation; screenshot replacement is one-for-one, restricted to verified order-screenshots objects and rebuilt from a trusted existing Storage prefix; no order deletion, existing-control replacement, RLS/schema mutation or physical Storage removal is introduced"
 }, null, 2));
