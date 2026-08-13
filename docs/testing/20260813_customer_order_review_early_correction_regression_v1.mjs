@@ -51,13 +51,17 @@ assert.match(amendmentV12, /must not persist the caller-supplied URL string verb
 assert.match(amendmentV12, /trusted public Storage URL prefix from the existing original screenshot rows/);
 assert.match(amendmentV12, /caller-supplied arbitrary host or URL prefix must never become authoritative/);
 
-// v1.4 corrects only the partial-credit gate and button discoverability.
-assert.match(amendmentV14, /only automatically applied account credit may remain eligible for early correction/i);
-assert.match(amendmentV14, /orders\.funded_at IS NOT NULL` remains an absolute blocker/);
-assert.match(amendmentV14, /already-applied credit remains exactly as it was before correction/);
-assert.match(amendmentV14, /remaining due becomes £170 through the existing read model/);
-assert.match(amendmentV14, /Fully funded\/credit-funded orders remain outside this feature/);
-assert.match(amendmentV14, /sky\/blue customer palette/);
+// v1.4 governs partial and fully credit-funded correction while freezing credit itself.
+assert.match(amendmentV14, /every existing funding event, if any, is `credit_applied`/);
+assert.match(amendmentV14, /Credit itself stays frozen/);
+assert.match(amendmentV14, /£100 with £30 existing credit may increase to £200[\s\S]*£170 due/);
+assert.match(amendmentV14, /decrease to £50 because £20 remains due/);
+assert.match(amendmentV14, /quantity-only correction is allowed/);
+assert.match(amendmentV14, /screenshot-only correction is allowed/);
+assert.match(amendmentV14, /may call the existing unchanged/);
+assert.match(amendmentV14, /must never create, replace or modify it/);
+assert.match(amendmentV14, /£100 fully funded by £100 credit cannot be reduced to £70/);
+assert.match(amendmentV14, /sky\/blue collapsed `Correct order` treatment/);
 
 // Review is opt-in and therefore importer behaviour stays off by default.
 assert.match(sharedForm, /reviewBeforeSubmit = false/);
@@ -103,8 +107,13 @@ assert.match(correctionControl, /order_funding_events"\)\.select\("id, event_typ
 assert.match(correctionControl, /row\.event_type !== "credit_applied"/);
 assert.match(correctionControl, /order_funding_position_vw/);
 assert.match(correctionControl, /applied_credit_gbp, funded_total_gbp, markup_applied_gbp, gap_remaining_gbp, threshold_met_yn/);
-assert.match(correctionControl, /fundedTotalGbp > appliedCreditGbp \+ 0\.01/);
-assert.match(correctionControl, /proposedFundingGap <= 0\.01/);
+// The current UI still has advisory fully-funded/proposed-gap blockers. Governance and
+// database authority are corrected here; removing these blockers is a separate scoped task.
+const uiHasLegacyFullyFundedBlocker = /order\.funded_at == null/.test(correctionControl)
+  && /Boolean\(fundingPosition\.threshold_met_yn\) \|\| gapRemainingGbp <= 0\.01/.test(correctionControl)
+  && /fundedTotalGbp > appliedCreditGbp \+ 0\.01/.test(correctionControl)
+  && /proposedFundingGap <= 0\.01/.test(correctionControl);
+assert.equal(uiHasLegacyFullyFundedBlocker, true);
 assert.match(correctionControl, /account credit is already applied\. It stays unchanged/);
 
 // Replacement files reuse the existing bucket and are never physically removed by this feature.
@@ -205,21 +214,45 @@ assert.match(migrationV13, /v_storage_public_prefix \|\| parsed\.object_name AS 
 assert.doesNotMatch(migrationV13, /storage\.objects[\s\S]*DELETE FROM storage\.objects/i);
 assert.doesNotMatch(correctionUpload, /\.remove\s*\(/);
 
-// v1.4 is a feature-owned RPC replacement only: partial account credit stays frozen and full funding stays blocked.
+// v1.4 is a feature-owned RPC replacement only and implements three funding paths.
 assert.match(migrationV14, /CREATE OR REPLACE FUNCTION public\.customer_correct_unprocessed_order_v1/);
 assert.match(migrationV14, /x\.event_type IS DISTINCT FROM 'credit_applied'/);
-assert.match(migrationV14, /FROM public\.order_funding_position_vw f/);
-assert.match(migrationV14, /v_funding\.funded_total_gbp > v_funding\.applied_credit_gbp \+ 0\.01/);
-assert.match(migrationV14, /v_funding\.threshold_met_yn/);
-assert.match(migrationV14, /v_funding\.gap_remaining_gbp <= 0\.01/);
+assert.match(migrationV14, /v_previously_fully_funded := v_order\.funded_at IS NOT NULL[\s\S]*v_funding\.threshold_met_yn[\s\S]*v_funding\.gap_remaining_gbp <= 0\.01/);
+assert.match(migrationV14, /v_new_amount <= v_credit_event_sum \+ 0\.01/);
 assert.match(migrationV14, /v_proposed_funding_gap <= 0\.01/);
-assert.match(migrationV14, /corrected value would require funding-state recomputation/);
-assert.match(migrationV14, /Order correction funding postcondition failed/);
+assert.match(migrationV14, /PERFORM public\.recompute_order_platform_funded\(p_order_id\)/);
+assert.doesNotMatch(migrationV14, /CREATE(?: OR REPLACE)? FUNCTION public\.recompute_order_platform_funded/i);
+assert.match(migrationV14, /to_regprocedure\('public\.recompute_order_platform_funded\(uuid\)'\)/);
+assert.match(migrationV14, /This equality guard is deliberately local to the fully funded upward-value path/);
+assert.match(migrationV14, /abs\(v_credit_event_sum_after - v_applied_credit_before_recompute\) > 0\.01/);
+assert.match(migrationV14, /FROM public\.order_funding_position_vw f[\s\S]*LEFT JOIN public\.order_funding_events x/);
+assert.match(migrationV14, /v_funding_after\.funded_at IS NOT NULL/);
+assert.match(migrationV14, /v_funding_after\.threshold_met_yn/);
+assert.match(migrationV14, /v_credit_event_count_after IS DISTINCT FROM v_credit_event_count/);
+assert.match(migrationV14, /corrected value would require credit release or financial-state repair/);
 assert.doesNotMatch(migrationV14, /customer_apply_available_credit_to_order_v1\s*\(/);
-assert.doesNotMatch(migrationV14, /(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+public\.(?:importer_credit_ledger|order_funding_events|dva_reconciliation)/i);
+assert.doesNotMatch(migrationV14, /sync_order_overfunding_credit\s*\(/);
+for (const frozenTable of ["importer_credit_ledger", "order_funding_events", "dva_reconciliation"]) {
+  assert.doesNotMatch(migrationV14, new RegExp(`(?:INSERT\\s+INTO|UPDATE|DELETE\\s+FROM)\\s+public\\.${frozenTable}`, "i"));
+}
 assert.doesNotMatch(migrationV14, /CREATE\s+(?:OR\s+REPLACE\s+)?TRIGGER|ALTER\s+TABLE|CREATE\s+POLICY|DROP\s+POLICY/i);
 assert.match(migrationV14, /REVOKE ALL ON FUNCTION public\.customer_correct_unprocessed_order_v1/);
 assert.match(migrationV14, /GRANT EXECUTE ON FUNCTION public\.customer_correct_unprocessed_order_v1/);
+
+// Arithmetic policy examples: immutable credit feeds only the canonical derived gap.
+const canonicalGap = (goods, credit, markup = 0) => Math.max(goods + markup - credit, 0);
+assert.equal(canonicalGap(200, 30), 170); // £100 + £30 -> £200.
+assert.equal(canonicalGap(50, 30), 20);   // £100 + £30 -> £50 remains genuinely partial.
+assert.equal(canonicalGap(200, 100), 100); // fully funded £100 -> £200 creates a gap.
+assert.ok(canonicalGap(70, 100) <= 0.01);  // a £100 -> £70 reduction requires release.
+
+// Recompute is guarded by the fully-funded branch, so quantity/screenshot-only paths cannot call it.
+const recomputeBranch = migrationV14.match(/IF v_recompute_required THEN[\s\S]*?PERFORM public\.recompute_order_platform_funded\(p_order_id\);[\s\S]*?END IF;/)?.[0] ?? "";
+assert.ok(recomputeBranch);
+assert.match(migrationV14, /v_recompute_required boolean := false/);
+assert.match(migrationV14, /IF v_amount_changed THEN[\s\S]*v_recompute_required := true/);
+assert.doesNotMatch(recomputeBranch, /p_replacement_screenshot_urls|v_qty_changed/);
+assert.match(migrationV14, /IF NOT v_amount_changed THEN[\s\S]*Order correction no-amount funding preservation postcondition failed/);
 
 // v1.4 preserves the v1.3 Storage/screenshot machinery and stored quote economics byte-for-concept.
 for (const expected of [
@@ -271,5 +304,5 @@ for (const correctiveMigration of [migrationV13, migrationV14]) {
 
 console.log(JSON.stringify({
   regression_result: "PASS",
-  proof: "customer-only review remains opt-in; existing create/credit/funding authority remains frozen; v1.3 variable whole-set replacement and Storage postconditions remain; v1.4 allows only genuinely partial credit-funded untouched orders, keeps existing applied credit immutable, blocks any non-credit funding or funded state, fail-closes before funding-state recomputation, and makes the compact Correct order disclosure visibly blue without expanding adjacent workflows"
+  proof: "customer-only review remains opt-in; create/credit/funding authority stays frozen; v1.3 Storage safeguards remain; v1.4 permits credit-only partial and fully-funded corrections, confines recompute to the fully-funded upward-value path, and rejects corrections requiring credit release; the legacy UI advisory blocker is identified for separate follow-up"
 }, null, 2));
