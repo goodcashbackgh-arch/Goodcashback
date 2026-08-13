@@ -18,6 +18,10 @@ BEGIN
     RAISE EXCEPTION 'Prerequisite missing: public.order_funding_position_vw';
   END IF;
 
+  IF to_regprocedure('public.recompute_order_platform_funded(uuid)') IS NULL THEN
+    RAISE EXCEPTION 'Prerequisite missing: public.recompute_order_platform_funded(uuid)';
+  END IF;
+
   SELECT
     pg_get_functiondef(p.oid),
     p.prosecdef,
@@ -67,6 +71,13 @@ DECLARE
   v_proposed_funding_gap numeric(12,2);
   v_amount_changed boolean := false;
   v_qty_changed boolean := false;
+  v_previously_fully_funded boolean := false;
+  v_recompute_required boolean := false;
+  v_credit_event_sum numeric := 0;
+  v_credit_event_count integer := 0;
+  v_credit_event_sum_after numeric := 0;
+  v_credit_event_count_after integer := 0;
+  v_applied_credit_before_recompute numeric := 0;
   v_original_screenshot_count integer := 0;
   v_original_screenshot_ids uuid[];
   v_replacement_count integer := 0;
@@ -200,7 +211,6 @@ BEGIN
      OR v_order.status IS DISTINCT FROM 'pending_dva_funding'
      OR v_order.content_locked_at IS NOT NULL
      OR v_order.tracking_locked_at IS NOT NULL
-     OR v_order.funded_at IS NOT NULL
      OR v_order.completed_at IS NOT NULL
      OR v_order.accounting_release_ready_at IS NOT NULL
      OR v_order.vat_release_approved_at IS NOT NULL
@@ -256,12 +266,20 @@ BEGIN
   END IF;
 
   IF v_funding.confirmed_dva_funding_gbp > 0.01
-     OR v_funding.funded_total_gbp > v_funding.applied_credit_gbp + 0.01
-     OR v_funding.threshold_met_yn
-     OR v_funding.gap_remaining_gbp <= 0.01 THEN
-    RAISE EXCEPTION 'Order correction blocked: processing has started.';
+     OR v_funding.funded_total_gbp > v_funding.applied_credit_gbp + 0.01 THEN
+    RAISE EXCEPTION 'Order correction blocked: non-credit funding has started.';
   END IF;
 
+  SELECT
+    COALESCE(ROUND(SUM(x.amount_gbp) FILTER (WHERE x.event_type = 'credit_applied'), 2), 0),
+    COUNT(*) FILTER (WHERE x.event_type = 'credit_applied')::integer
+  INTO v_credit_event_sum, v_credit_event_count
+  FROM public.order_funding_events x
+  WHERE x.order_id = p_order_id;
+
+  v_previously_fully_funded := v_order.funded_at IS NOT NULL
+    OR v_funding.threshold_met_yn
+    OR v_funding.gap_remaining_gbp <= 0.01;
   v_qty_changed := v_order.total_qty_declared IS DISTINCT FROM p_total_qty_declared;
   v_amount_changed := ROUND(v_order.order_total_gbp_declared::numeric, 2) IS DISTINCT FROM v_new_amount;
 
@@ -286,7 +304,15 @@ BEGIN
     );
 
     IF v_proposed_funding_gap <= 0.01 THEN
-      RAISE EXCEPTION 'Order correction blocked: corrected value would require funding-state recomputation.';
+      RAISE EXCEPTION 'Order correction blocked: corrected value would require credit release or financial-state repair.';
+    END IF;
+
+    IF v_previously_fully_funded THEN
+      IF v_new_amount <= ROUND(v_order.order_total_gbp_declared::numeric, 2)
+         OR v_new_amount <= v_credit_event_sum + 0.01 THEN
+        RAISE EXCEPTION 'Order correction blocked: fully funded value correction must increase goods value beyond existing credit funding.';
+      END IF;
+      v_recompute_required := true;
     END IF;
 
     IF v_order.order_total_gbp_declared IS NULL
@@ -316,24 +342,76 @@ BEGIN
       updated_at = now()
     WHERE id = p_order_id;
 
+    IF v_recompute_required THEN
+      -- This equality guard is deliberately local to the fully funded upward-value path.
+      SELECT
+        COALESCE(ROUND(SUM(x.amount_gbp) FILTER (WHERE x.event_type = 'credit_applied'), 2), 0),
+        COUNT(*) FILTER (WHERE x.event_type = 'credit_applied')::integer,
+        ROUND(f.applied_credit_gbp::numeric, 2)
+      INTO
+        v_credit_event_sum_after,
+        v_credit_event_count_after,
+        v_applied_credit_before_recompute
+      FROM public.order_funding_position_vw f
+      LEFT JOIN public.order_funding_events x ON x.order_id = f.order_id
+      WHERE f.order_id = p_order_id
+      GROUP BY f.applied_credit_gbp;
+
+      IF v_applied_credit_before_recompute IS NULL
+         OR abs(v_credit_event_sum_after - v_applied_credit_before_recompute) > 0.01 THEN
+        RAISE EXCEPTION 'Order correction blocked: credit funding event and ledger position disagree.';
+      END IF;
+
+      PERFORM public.recompute_order_platform_funded(p_order_id);
+    END IF;
+
     SELECT
       f.order_id,
+      o.funded_at AS funded_at,
       COALESCE(f.applied_credit_gbp, 0)::numeric AS applied_credit_gbp,
       COALESCE(f.funded_total_gbp, 0)::numeric AS funded_total_gbp,
       COALESCE(f.gap_remaining_gbp, 0)::numeric AS gap_remaining_gbp,
       COALESCE(f.threshold_met_yn, false) AS threshold_met_yn
     INTO v_funding_after
-    FROM public.order_funding_position_vw f
-    WHERE f.order_id = p_order_id;
+    FROM public.orders o
+    JOIN public.order_funding_position_vw f ON f.order_id = o.id
+    WHERE o.id = p_order_id;
+
+    SELECT
+      COALESCE(ROUND(SUM(x.amount_gbp) FILTER (WHERE x.event_type = 'credit_applied'), 2), 0),
+      COUNT(*) FILTER (WHERE x.event_type = 'credit_applied')::integer
+    INTO v_credit_event_sum_after, v_credit_event_count_after
+    FROM public.order_funding_events x
+    WHERE x.order_id = p_order_id;
 
     IF v_funding_after.order_id IS NULL
        OR ROUND(v_funding_after.applied_credit_gbp, 2) IS DISTINCT FROM ROUND(v_funding.applied_credit_gbp, 2)
        OR ROUND(v_funding_after.funded_total_gbp, 2) IS DISTINCT FROM ROUND(v_funding.funded_total_gbp, 2)
-       OR v_funding_after.threshold_met_yn
-       OR v_funding_after.gap_remaining_gbp <= 0.01
+       OR v_credit_event_sum_after IS DISTINCT FROM v_credit_event_sum
+       OR v_credit_event_count_after IS DISTINCT FROM v_credit_event_count
        OR (
-         v_amount_changed
-         AND ROUND(v_funding_after.gap_remaining_gbp, 2) IS DISTINCT FROM v_proposed_funding_gap
+         v_recompute_required
+         AND (
+           v_funding_after.funded_at IS NOT NULL
+           OR v_funding_after.threshold_met_yn
+           OR abs(ROUND(v_funding_after.gap_remaining_gbp, 2) - v_proposed_funding_gap) > 0.01
+         )
+       )
+       OR (
+         NOT v_recompute_required
+         AND v_previously_fully_funded
+         AND v_funding_after.funded_at IS DISTINCT FROM v_order.funded_at
+       )
+       OR (
+         NOT v_previously_fully_funded
+         AND (
+           v_funding_after.threshold_met_yn
+           OR v_funding_after.gap_remaining_gbp <= 0.01
+           OR (
+             v_amount_changed
+             AND abs(ROUND(v_funding_after.gap_remaining_gbp, 2) - v_proposed_funding_gap) > 0.01
+           )
+         )
        ) THEN
       RAISE EXCEPTION 'Order correction funding postcondition failed.';
     END IF;
@@ -450,6 +528,38 @@ BEGIN
     END IF;
 
     v_screenshots_replaced := true;
+  END IF;
+
+  IF NOT v_amount_changed THEN
+    SELECT
+      f.order_id,
+      o.funded_at AS funded_at,
+      COALESCE(f.applied_credit_gbp, 0)::numeric AS applied_credit_gbp,
+      COALESCE(f.funded_total_gbp, 0)::numeric AS funded_total_gbp,
+      COALESCE(f.gap_remaining_gbp, 0)::numeric AS gap_remaining_gbp,
+      COALESCE(f.threshold_met_yn, false) AS threshold_met_yn
+    INTO v_funding_after
+    FROM public.orders o
+    JOIN public.order_funding_position_vw f ON f.order_id = o.id
+    WHERE o.id = p_order_id;
+
+    SELECT
+      COALESCE(ROUND(SUM(x.amount_gbp) FILTER (WHERE x.event_type = 'credit_applied'), 2), 0),
+      COUNT(*) FILTER (WHERE x.event_type = 'credit_applied')::integer
+    INTO v_credit_event_sum_after, v_credit_event_count_after
+    FROM public.order_funding_events x
+    WHERE x.order_id = p_order_id;
+
+    IF v_funding_after.order_id IS NULL
+       OR ROUND(v_funding_after.applied_credit_gbp, 2) IS DISTINCT FROM ROUND(v_funding.applied_credit_gbp, 2)
+       OR ROUND(v_funding_after.funded_total_gbp, 2) IS DISTINCT FROM ROUND(v_funding.funded_total_gbp, 2)
+       OR ROUND(v_funding_after.gap_remaining_gbp, 2) IS DISTINCT FROM ROUND(v_funding.gap_remaining_gbp, 2)
+       OR v_funding_after.threshold_met_yn IS DISTINCT FROM v_funding.threshold_met_yn
+       OR v_funding_after.funded_at IS DISTINCT FROM v_order.funded_at
+       OR v_credit_event_sum_after IS DISTINCT FROM v_credit_event_sum
+       OR v_credit_event_count_after IS DISTINCT FROM v_credit_event_count THEN
+      RAISE EXCEPTION 'Order correction no-amount funding preservation postcondition failed.';
+    END IF;
   END IF;
 
   RETURN jsonb_build_object(
