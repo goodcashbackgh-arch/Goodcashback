@@ -1,11 +1,24 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import { createClient } from "@/utils/supabase/client";
 import { uploadCorrectionScreenshots } from "./uploadCorrectionScreenshots";
 
 const MAX_ATTACHMENT_BYTES = 3.5 * 1024 * 1024;
+const TARGET_ATTACHMENT_BYTES = 3.1 * 1024 * 1024;
+const COMPRESSION_TRIGGER_BYTES = 700 * 1024;
+const MAX_FILE_TARGET_BYTES = 900 * 1024;
+const MIN_FILE_TARGET_BYTES = 300 * 1024;
+const MAX_IMAGE_DIMENSIONS = [1800, 1500, 1200];
+const JPEG_QUALITIES = [0.86, 0.76, 0.66];
+
+type AttachmentSummary = {
+  count: number;
+  uploadBytes: number;
+  status: "idle" | "optimising" | "ready";
+  error: string;
+};
 
 type EligibleOrder = {
   importerId: string;
@@ -23,12 +36,122 @@ function correctionError(message: string) {
   return "We could not save this correction. Refresh the order and try again.";
 }
 
+function isAuthoritativeBlocker(message: string) {
+  const lower = message.toLowerCase();
+  return lower.includes("processing has started") || lower.includes("downstream evidence");
+}
+
+function formatMb(bytes: number) {
+  return (bytes / 1024 / 1024).toFixed(2);
+}
+
+function jpegName(filename: string) {
+  const base = filename.replace(/\.[^.]+$/, "") || "screenshot";
+  return `${base}.jpg`;
+}
+
+function loadImage(file: File) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => { URL.revokeObjectURL(objectUrl); resolve(image); };
+    image.onerror = () => { URL.revokeObjectURL(objectUrl); reject(new Error(`Could not read ${file.name}`)); };
+    image.src = objectUrl;
+  });
+}
+
+function canvasToJpeg(canvas: HTMLCanvasElement, quality: number) {
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob);
+      else reject(new Error("Could not optimise screenshot"));
+    }, "image/jpeg", quality);
+  });
+}
+
+async function optimiseImage(file: File, targetBytes: number) {
+  const canOptimise = file.type.startsWith("image/") && !["image/gif", "image/svg+xml"].includes(file.type);
+  if (!canOptimise || file.size <= COMPRESSION_TRIGGER_BYTES) return file;
+
+  let image: HTMLImageElement;
+  try { image = await loadImage(file); } catch { return file; }
+  const originalWidth = image.naturalWidth || image.width;
+  const originalHeight = image.naturalHeight || image.height;
+  if (!originalWidth || !originalHeight) return file;
+
+  let smallestBlob: Blob | null = null;
+  for (const maxDimension of MAX_IMAGE_DIMENSIONS) {
+    const scale = Math.min(1, maxDimension / Math.max(originalWidth, originalHeight));
+    const width = Math.max(1, Math.round(originalWidth * scale));
+    const height = Math.max(1, Math.round(originalHeight * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d");
+    if (!context) return file;
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, width, height);
+    context.drawImage(image, 0, 0, width, height);
+
+    for (const quality of JPEG_QUALITIES) {
+      const blob = await canvasToJpeg(canvas, quality);
+      if (!smallestBlob || blob.size < smallestBlob.size) smallestBlob = blob;
+      if (blob.size <= targetBytes) {
+        return new File([blob], jpegName(file.name), { type: "image/jpeg", lastModified: file.lastModified });
+      }
+    }
+  }
+  if (!smallestBlob || smallestBlob.size >= file.size) return file;
+  return new File([smallestBlob], jpegName(file.name), { type: "image/jpeg", lastModified: file.lastModified });
+}
+
 export default function CustomerOrderCorrectionControl({ orderId }: { orderId: string }) {
   const router = useRouter();
   const [eligibleOrder, setEligibleOrder] = useState<EligibleOrder | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState("");
   const [isError, setIsError] = useState(false);
+  const [isOpen, setIsOpen] = useState(false);
+  const preparedFilesRef = useRef<File[]>([]);
+  const selectionVersionRef = useRef(0);
+  const [attachmentSummary, setAttachmentSummary] = useState<AttachmentSummary>({ count: 0, uploadBytes: 0, status: "idle", error: "" });
+
+  async function handleAttachmentChange(event: ChangeEvent<HTMLInputElement>) {
+    const input = event.currentTarget;
+    const files = Array.from(input.files ?? []);
+    const selectionVersion = ++selectionVersionRef.current;
+    preparedFilesRef.current = [];
+    if (files.length === 0) {
+      setAttachmentSummary({ count: 0, uploadBytes: 0, status: "idle", error: "" });
+      return;
+    }
+    if (files.some((file) => !file.type.startsWith("image/"))) {
+      input.value = "";
+      setAttachmentSummary({ count: 0, uploadBytes: 0, status: "idle", error: "Replacement attachments must be images." });
+      return;
+    }
+    setAttachmentSummary({ count: files.length, uploadBytes: files.reduce((sum, file) => sum + file.size, 0), status: "optimising", error: "" });
+    const targetPerFile = Math.max(MIN_FILE_TARGET_BYTES, Math.min(MAX_FILE_TARGET_BYTES, Math.floor(TARGET_ATTACHMENT_BYTES / files.length)));
+    try {
+      const preparedFiles: File[] = [];
+      for (const file of files) preparedFiles.push(await optimiseImage(file, targetPerFile));
+      if (selectionVersionRef.current !== selectionVersion) return;
+      const uploadBytes = preparedFiles.reduce((sum, file) => sum + file.size, 0);
+      if (uploadBytes > MAX_ATTACHMENT_BYTES) {
+        input.value = "";
+        preparedFilesRef.current = [];
+        setAttachmentSummary({ count: 0, uploadBytes: 0, status: "idle", error: `These attachments remain ${formatMb(uploadBytes)} MB after automatic optimisation. Please remove one attachment and try again.` });
+        return;
+      }
+      preparedFilesRef.current = preparedFiles;
+      setAttachmentSummary({ count: preparedFiles.length, uploadBytes, status: "ready", error: "" });
+    } catch {
+      if (selectionVersionRef.current !== selectionVersion) return;
+      input.value = "";
+      preparedFilesRef.current = [];
+      setAttachmentSummary({ count: 0, uploadBytes: 0, status: "idle", error: "We could not prepare those attachments. Please select them again." });
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -122,9 +245,8 @@ export default function CustomerOrderCorrectionControl({ orderId }: { orderId: s
     const formData = new FormData(form);
     const totalQty = Number(formData.get("total_qty_declared"));
     const totalAmount = Number(formData.get("order_total_gbp_declared"));
-    const replacementFiles = formData
-      .getAll("replacement_screenshots")
-      .filter((value): value is File => value instanceof File && value.size > 0);
+    const replacementSelected = formData.getAll("replacement_screenshots").some((value) => value instanceof File && value.size > 0);
+    const replacementFiles = preparedFilesRef.current;
 
     if (!Number.isInteger(totalQty) || totalQty <= 0) {
       setIsError(true);
@@ -137,17 +259,8 @@ export default function CustomerOrderCorrectionControl({ orderId }: { orderId: s
       return;
     }
 
+    if (replacementSelected && (attachmentSummary.status !== "ready" || replacementFiles.length < 1)) return;
     if (replacementFiles.length > 0) {
-      if (currentEligibleOrder.originalScreenshotCount < 1 || replacementFiles.length !== currentEligibleOrder.originalScreenshotCount) {
-        setIsError(true);
-        setMessage(`Select exactly ${currentEligibleOrder.originalScreenshotCount} replacement ${currentEligibleOrder.originalScreenshotCount === 1 ? "attachment" : "attachments"}.`);
-        return;
-      }
-      if (replacementFiles.some((file) => !file.type.startsWith("image/"))) {
-        setIsError(true);
-        setMessage("Replacement attachments must be images.");
-        return;
-      }
       if (replacementFiles.reduce((sum, file) => sum + file.size, 0) > MAX_ATTACHMENT_BYTES) {
         setIsError(true);
         setMessage("Replacement attachments must total no more than 3.5 MB.");
@@ -173,11 +286,17 @@ export default function CustomerOrderCorrectionControl({ orderId }: { orderId: s
       if (error) throw new Error(error.message ?? "Correction failed");
 
       setEligibleOrder((current) => current ? { ...current, currentQty: totalQty, currentAmount: Math.round(totalAmount * 100) / 100 } : current);
+      preparedFilesRef.current = [];
+      selectionVersionRef.current += 1;
+      setAttachmentSummary({ count: 0, uploadBytes: 0, status: "idle", error: "" });
+      form.reset();
+      setIsOpen(false);
       setMessage("Order correction saved.");
       setIsError(false);
       router.refresh();
     } catch (error) {
       const rawMessage = error instanceof Error ? error.message : "Correction failed";
+      if (isAuthoritativeBlocker(rawMessage)) setEligibleOrder(null);
       setIsError(true);
       setMessage(correctionError(rawMessage));
     } finally {
@@ -186,10 +305,11 @@ export default function CustomerOrderCorrectionControl({ orderId }: { orderId: s
   }
 
   return (
-    <div className="bg-slate-50 px-4 pt-4 xl:px-6">
-      <section className="mx-auto rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
-        <details>
-          <summary className="cursor-pointer list-none text-sm font-black text-slate-950">Correct order</summary>
+    <div className="bg-slate-50 px-4 pt-3 xl:px-6">
+      <section className="mx-auto">
+        <details open={isOpen} onToggle={(event) => setIsOpen(event.currentTarget.open)}>
+          <summary className="inline-flex cursor-pointer list-none rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm hover:bg-slate-50">Correct order</summary>
+          <div className="mt-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
           <p className="mt-2 text-sm text-slate-600">You can correct the quantity, goods value or original attachments only before processing starts.</p>
           <form onSubmit={handleSubmit} className="mt-4 grid gap-4" encType="multipart/form-data">
             <div className="grid gap-3 sm:grid-cols-2">
@@ -209,10 +329,13 @@ export default function CustomerOrderCorrectionControl({ orderId }: { orderId: s
             {eligibleOrder.originalScreenshotCount > 0 ? (
               <label className="text-sm font-semibold text-slate-700">
                 Replace original attachments <span className="font-normal text-slate-500">(optional)</span>
-                <input name="replacement_screenshots" type="file" accept="image/*" multiple className="mt-1 block w-full rounded-xl border border-slate-300 bg-white p-2 text-sm" />
+                <input name="replacement_screenshots" type="file" accept="image/*" multiple onChange={handleAttachmentChange} className="mt-1 block w-full rounded-xl border border-slate-300 bg-white p-2 text-sm" />
                 <span className="mt-1 block text-xs font-medium text-slate-500">
-                  This order has {eligibleOrder.originalScreenshotCount} original {eligibleOrder.originalScreenshotCount === 1 ? "attachment" : "attachments"}. To replace them, select exactly {eligibleOrder.originalScreenshotCount}. Total replacement size must be 3.5 MB or less.
+                  Select one or more images to replace the complete existing set of {eligibleOrder.originalScreenshotCount} original {eligibleOrder.originalScreenshotCount === 1 ? "attachment" : "attachments"}. Prepared replacements must total 3.5 MB or less.
                 </span>
+                {attachmentSummary.status === "optimising" ? <span className="mt-1 block text-xs text-slate-500">Optimising attachments…</span> : null}
+                {attachmentSummary.status === "ready" ? <span className="mt-1 block text-xs text-slate-500">{attachmentSummary.count} {attachmentSummary.count === 1 ? "image" : "images"} ready ({formatMb(attachmentSummary.uploadBytes)} MB).</span> : null}
+                {attachmentSummary.error ? <span role="alert" className="mt-1 block text-xs font-semibold text-rose-700">{attachmentSummary.error}</span> : null}
               </label>
             ) : null}
 
@@ -221,11 +344,12 @@ export default function CustomerOrderCorrectionControl({ orderId }: { orderId: s
             ) : null}
 
             <div className="flex justify-end">
-              <button type="submit" disabled={submitting} className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-black text-white disabled:bg-slate-400">
+              <button type="submit" disabled={submitting || attachmentSummary.status === "optimising" || Boolean(attachmentSummary.error)} className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-black text-white disabled:bg-slate-400">
                 {submitting ? "Saving correction…" : "Save correction"}
               </button>
             </div>
           </form>
+          </div>
         </details>
       </section>
     </div>
