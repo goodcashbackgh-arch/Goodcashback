@@ -285,7 +285,12 @@ export default function CustomerOrderCorrectionControl({ orderId }: { orderId: s
       });
       if (error) throw new Error(error.message ?? "Correction failed");
 
-      setEligibleOrder((current) => current ? { ...current, currentQty: totalQty, currentAmount: Math.round(totalAmount * 100) / 100 } : current);
+      setEligibleOrder((current) => current ? {
+        ...current,
+        currentQty: totalQty,
+        currentAmount: Math.round(totalAmount * 100) / 100,
+        originalScreenshotCount: replacementFiles.length > 0 ? replacementFiles.length : current.originalScreenshotCount,
+      } : current);
       preparedFilesRef.current = [];
       selectionVersionRef.current += 1;
       setAttachmentSummary({ count: 0, uploadBytes: 0, status: "idle", error: "" });
