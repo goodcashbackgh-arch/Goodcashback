@@ -170,6 +170,8 @@ assert.match(migrationV13, /WHERE replacement\.ordinality > v_original_screensho
 assert.match(migrationV13, /INSERT INTO public\.order_screenshots[\s\S]*'Original order screenshot'/);
 assert.match(migrationV13, /DELETE FROM public\.order_screenshots os[\s\S]*os\.id = ANY\(v_original_screenshot_ids\)[\s\S]*os\.order_id = p_order_id[\s\S]*os\.note = 'Original order screenshot'/);
 assert.match(migrationV13, /display_order = replacements\.position/);
+assert.match(migrationV13, /COUNT\(\*\)::integer[\s\S]*IS DISTINCT FROM v_replacement_count[\s\S]*Replacement screenshot row count postcondition failed/);
+assert.match(migrationV13, /row_number\(\) OVER \(ORDER BY os\.display_order, os\.id\)::integer AS expected_display_order[\s\S]*display_order IS DISTINCT FROM final_screenshots\.expected_display_order[\s\S]*Replacement screenshot display order postcondition failed/);
 
 // Every replacement is canonicalised from a verified correction object and its stored metadata.
 assert.match(migrationV13, /so\.bucket_id = 'order-screenshots'/);
