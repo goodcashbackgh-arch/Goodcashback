@@ -8,7 +8,9 @@ Correct one governance mistake in the existing early-correction gate without cha
 
 A customer order that has only account credit applied may remain eligible for early correction while it is still genuinely pre-funding and otherwise untouched.
 
-The permitted exception is defined by the existing canonical funding event classification `credit_applied`. The correction feature does not reinterpret, replace or modify whichever existing authorised credit-application seam created that credit.
+The earlier intended customer-create rule was that only automatically applied account credit may remain eligible for early correction rather than being mistaken for downstream processing. Live authority confirms that the robust runtime discriminator for that permitted pre-funding credit state is the existing canonical funding event classification `credit_applied`, regardless of which already-authorised credit writer produced the matching canonical entry.
+
+The correction feature does not reinterpret, replace or modify whichever existing authorised credit-application seam created that credit.
 
 This amendment also allows the collapsed `Correct order` disclosure to use the existing customer sky/blue palette so it is easy to find while remaining secondary to the primary order-status and payment content.
 
