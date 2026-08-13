@@ -77,17 +77,25 @@ BEGIN
     RAISE EXCEPTION 'FAIL: an existing hold payload key was removed or changed';
   END IF;
 
+  SELECT count(*)::integer
+    INTO v_hold_count
+  FROM public.customer_pre_shipment_hold_requests h
+  WHERE h.id = 'f815a08d-afe9-4f86-98ed-67dc8f81a9af'::uuid
+    AND h.order_id = 'a40fe4a1-7f49-4766-9332-4b14056608ff'::uuid;
+
+  IF v_hold_count <> 1 THEN
+    RAISE EXCEPTION 'FAIL: regression hold fixture missing or duplicated';
+  END IF;
+
   SELECT
-    count(*)::integer,
-    max(h.status::text),
-    max(h.reason),
-    max(h.supplier_invoice_line_id),
-    max(h.converted_dispute_id),
-    max(sil.description::text),
-    max(sil.qty::numeric),
-    max(sil.amount_inc_vat_gbp::numeric)
+    h.status::text,
+    h.reason,
+    h.supplier_invoice_line_id,
+    h.converted_dispute_id,
+    sil.description::text,
+    sil.qty::numeric,
+    sil.amount_inc_vat_gbp::numeric
   INTO
-    v_hold_count,
     v_status,
     v_reason,
     v_line_id,
@@ -100,10 +108,6 @@ BEGIN
     ON sil.id = h.supplier_invoice_line_id
   WHERE h.id = 'f815a08d-afe9-4f86-98ed-67dc8f81a9af'::uuid
     AND h.order_id = 'a40fe4a1-7f49-4766-9332-4b14056608ff'::uuid;
-
-  IF v_hold_count <> 1 THEN
-    RAISE EXCEPTION 'FAIL: regression hold fixture missing or duplicated';
-  END IF;
 
   IF v_status IS DISTINCT FROM 'resolved' THEN
     RAISE EXCEPTION 'FAIL: hold status changed; expected resolved, got %', v_status;
