@@ -11,6 +11,29 @@ function progressed(value: unknown) {
   return ["y", "yes", "true", "1"].includes(String(value ?? "").toLowerCase());
 }
 
+function normalisedDescription(value: string | null | undefined) {
+  return (value ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function isDiscountDescription(value: string | null | undefined) {
+  return /(^| )(discount|promotion|promotional|promo|voucher|coupon|saving|savings)( |$)/.test(normalisedDescription(value));
+}
+
+function isDeliveryDescription(value: string | null | undefined) {
+  return /(^| )(delivery|shipping|postage|freight|carriage)( |$)/.test(normalisedDescription(value));
+}
+
+function isFeeDescription(value: string | null | undefined) {
+  return /(^| )(fee|charge|surcharge)( |$)/.test(normalisedDescription(value));
+}
+
+function obviousNonPhysical(line: { description?: string | null; amount_inc_vat_gbp?: number | null }) {
+  return Number(line.amount_inc_vat_gbp ?? 0) < 0
+    || isDiscountDescription(line.description)
+    || isDeliveryDescription(line.description)
+    || isFeeDescription(line.description);
+}
+
 function gbp(value: unknown) {
   return new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" }).format(Number(value ?? 0));
 }
@@ -69,7 +92,9 @@ export default async function ExactSupplierInvoiceSupervisorPage({
   ]);
 
   const nonPhysical = new Set((resolutions ?? []).map((row) => row.supplier_invoice_line_id));
-  const physicalCandidates = (lines ?? []).filter((line) => !progressed(line.eligible_for_invoice_yn) && !nonPhysical.has(line.id));
+  const physicalCandidates = (lines ?? []).filter(
+    (line) => !progressed(line.eligible_for_invoice_yn) && !nonPhysical.has(line.id) && !obviousNonPhysical(line),
+  );
   const approved = ["approved_current", "ref_corrected_approved"].includes(String(invoice.review_status ?? ""));
   const codingReady = Boolean(
     codingTotals?.all_progressed_lines_coded_yn &&
