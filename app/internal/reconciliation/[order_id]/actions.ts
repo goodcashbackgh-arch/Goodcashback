@@ -33,6 +33,21 @@ function moneyOrNull(value: unknown) {
   return Number.isFinite(n) ? Math.round(n * 100) / 100 : null;
 }
 
+function supervisorExactInvoiceReviewHref(orderId: string, invoiceId: string, params: Record<string, string> = {}) {
+  const query = new URLSearchParams(params).toString();
+  const base = `/internal/reconciliation/${orderId}/invoice-bundle/${invoiceId}`;
+  return query ? `${base}?${query}` : base;
+}
+
+const ALLOWED_NON_PHYSICAL_FINANCIAL_TYPES = new Set([
+  "delivery",
+  "discount",
+  "fee",
+  "zero_value_delivery",
+  "rounding",
+  "other_non_physical",
+]);
+
 async function requireSupervisorOrAdmin() {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -52,6 +67,60 @@ async function requireSupervisorOrAdmin() {
   }
 
   return { ok: true as const, supabase };
+}
+
+export async function supervisorResolveSupplierInvoiceLineNonPhysicalAction(formData: FormData) {
+  const orderId = asString(formData.get("order_id")).trim();
+  const invoiceId = asString(formData.get("supplier_invoice_id")).trim();
+  const lineId = asString(formData.get("line_id")).trim();
+  const financialType = asString(formData.get("financial_type")).trim();
+  const notes = asString(formData.get("notes")).trim();
+
+  if (!orderId || !invoiceId) redirect(`/internal/reconciliation/${orderId || ""}?error=Missing+invoice+or+order+id`);
+  if (!lineId) redirect(supervisorExactInvoiceReviewHref(orderId, invoiceId, { error: "Missing supplier invoice line id." }));
+  if (!ALLOWED_NON_PHYSICAL_FINANCIAL_TYPES.has(financialType)) {
+    redirect(supervisorExactInvoiceReviewHref(orderId, invoiceId, { error: "Select a valid non-physical financial type." }));
+  }
+
+  const guard = await requireSupervisorOrAdmin();
+  if (!guard.ok) redirect(supervisorExactInvoiceReviewHref(orderId, invoiceId, { error: guard.error }));
+
+  const { data: invoice, error: invoiceError } = await guard.supabase
+    .from("supplier_invoices")
+    .select("id")
+    .eq("id", invoiceId)
+    .eq("order_id", orderId)
+    .maybeSingle();
+
+  if (invoiceError || !invoice) {
+    redirect(supervisorExactInvoiceReviewHref(orderId, invoiceId, { error: invoiceError?.message ?? "Supplier invoice does not belong to this order." }));
+  }
+
+  const { data: line, error: lineError } = await guard.supabase
+    .from("supplier_invoice_lines")
+    .select("id")
+    .eq("id", lineId)
+    .eq("supplier_invoice_id", invoiceId)
+    .maybeSingle();
+
+  if (lineError || !line) {
+    redirect(supervisorExactInvoiceReviewHref(orderId, invoiceId, { error: lineError?.message ?? "Supplier invoice line does not belong to this exact invoice." }));
+  }
+
+  const { error } = await guard.supabase.rpc("staff_resolve_supplier_invoice_line_non_physical", {
+    p_order_id: orderId,
+    p_supplier_invoice_line_id: lineId,
+    p_financial_type: financialType,
+    p_notes: notes || null,
+  });
+
+  if (error) redirect(supervisorExactInvoiceReviewHref(orderId, invoiceId, { error: error.message }));
+
+  revalidatePath(`/internal/reconciliation/${orderId}/invoice-bundle/${invoiceId}`);
+  revalidatePath(`/internal/reconciliation/${orderId}`);
+  revalidatePath("/internal/supplier-draft-ready");
+
+  redirect(supervisorExactInvoiceReviewHref(orderId, invoiceId, { success: "Line parked as non-physical financial line." }));
 }
 
 export async function supervisorProgressSupplierInvoiceLinesAction(formData: FormData) {
