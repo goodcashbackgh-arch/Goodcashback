@@ -39,7 +39,10 @@ for (const expected of [
   /already-installed v1\.4 database behaviour proven by rollback simulation is frozen/,
   /The order being corrected is the authority for importer scope/,
   /require a non-revoked `operator_importers` row for that exact `operator_id` and the loaded `order\.importer_id`/,
-  /correction RPC is the single authoritative eligibility and mutation contract/,
+  /correction RPC is the single authoritative business-eligibility and mutation contract/,
+  /public\.customer_order_correction_eligibility_v1\(uuid\)/,
+  /direct browser no-op call using values read earlier is not authorised/,
+  /row lock is already held and the values come from the same transaction/,
   /`loading`[\s\S]*`eligible`[\s\S]*`blocked`[\s\S]*`check_failed`/,
   /must not independently reproduce the complete backend blocker graph/,
   /already-applied `20260813201500_customer_order_early_correction_v1_4\.sql` is also historical/,
@@ -59,8 +62,8 @@ assert.match(customerCreateAction, /note: "Original order screenshot"/);
 assert.match(operationsLayout, /CustomerOrderCorrectionControl/);
 assert.match(operationsLayout, /<CustomerOrderCorrectionControl orderId=\{orderId\} \/>/);
 
-// The browser reads only the viewed order for form seed values; backend eligibility is probed
-// through the same correction RPC used for the eventual write.
+// The browser reads only the viewed order for form seed values. It does not read the blocker
+// graph and it probes through the race-safe wrapper, while actual mutation stays on the correction RPC.
 assert.match(correctionControl, /\.from\("orders"\)[\s\S]*\.select\("id, importer_id, total_qty_declared, order_total_gbp_declared"\)/);
 for (const forbiddenBrowserAuthority of [
   "order_funding_events",
@@ -72,9 +75,11 @@ for (const forbiddenBrowserAuthority of [
   "shipping_quote_orders",
 ]) assert.ok(!correctionControl.includes(forbiddenBrowserAuthority), `browser must not independently read ${forbiddenBrowserAuthority}`);
 
-assert.equal((correctionControl.match(/\.rpc\("customer_correct_unprocessed_order_v1"/g) ?? []).length, 2);
-assert.match(correctionControl, /p_total_qty_declared: currentQty[\s\S]*p_order_total_gbp_declared: roundedAmount[\s\S]*p_replacement_screenshot_urls: null/);
+assert.equal((correctionControl.match(/\.rpc\("customer_order_correction_eligibility_v1"/g) ?? []).length, 1);
+assert.equal((correctionControl.match(/\.rpc\("customer_correct_unprocessed_order_v1"/g) ?? []).length, 1);
+assert.match(correctionControl, /\.rpc\("customer_order_correction_eligibility_v1", \{[\s\S]*p_order_id: orderId/);
 assert.match(correctionControl, /p_total_qty_declared: totalQty[\s\S]*p_order_total_gbp_declared: roundedAmount[\s\S]*p_replacement_screenshot_urls: replacementUrls/);
+assert.doesNotMatch(correctionControl, /p_total_qty_declared: currentQty[\s\S]*p_replacement_screenshot_urls: null/);
 assert.doesNotMatch(correctionControl, /\.update\s*\(|\.insert\s*\(|\.delete\s*\(/);
 assert.doesNotMatch(correctionControl, /service_role/i);
 assert.doesNotMatch(correctionControl, /recompute_order_platform_funded|customer_apply_available_credit_to_order_v1|sync_order_overfunding_credit|credit_revers\w*/i);
@@ -139,9 +144,9 @@ for (const frozenTable of ["importer_credit_ledger", "order_funding_events", "dv
 const historicalMigrationDelta = execFileSync("git", ["diff", "386a64dd23d9a964cf4ebf472e0bf4bc9641af7a", "--", migrationV14Path], { encoding: "utf8" });
 assert.equal(historicalMigrationDelta, "", "installed v1.4 migration must remain historical and unchanged");
 
-// New forward migration is surgical: it rewrites only access resolution inside the feature-owned RPC.
+// New forward migration is surgical: order-scoped access rewrite plus one race-safe delegating wrapper.
 assert.match(accessMigration, /pg_get_functiondef/);
-assert.match(accessMigration, /CREATE OR REPLACE FUNCTION public\.customer_correct_unprocessed_order_v1|EXECUTE v_new_definition/);
+assert.match(accessMigration, /EXECUTE v_new_definition/);
 assert.match(accessMigration, /op\.auth_user_id = auth\.uid\(\)/);
 assert.match(accessMigration, /op\.active = true/);
 assert.match(accessMigration, /v_order\.operator_id IS DISTINCT FROM v_operator\.operator_id/);
@@ -152,11 +157,26 @@ assert.match(accessMigration, /v_operator\.importer_id := v_order\.importer_id/)
 assert.match(accessMigration, /Expected v1\.4 operator-resolution block not found/);
 assert.match(accessMigration, /Expected v1\.4 ownership block not found/);
 assert.match(accessMigration, /Order-scoped access rewrite postcondition failed/);
+
+assert.match(accessMigration, /CREATE OR REPLACE FUNCTION public\.customer_order_correction_eligibility_v1/);
+assert.match(accessMigration, /SECURITY DEFINER[\s\S]*SET search_path = public, pg_temp/);
+const eligibilityWrapper = accessMigration.match(/CREATE OR REPLACE FUNCTION public\.customer_order_correction_eligibility_v1[\s\S]*?\n\$\$;/)?.[0] ?? "";
+assert.ok(eligibilityWrapper, "eligibility wrapper must exist");
+assert.match(eligibilityWrapper, /FROM public\.orders o[\s\S]*FOR UPDATE OF o/);
+assert.match(eligibilityWrapper, /op\.auth_user_id = auth\.uid\(\)/);
+assert.match(eligibilityWrapper, /oi\.importer_id = o\.importer_id/);
+assert.match(eligibilityWrapper, /oi\.revoked_at IS NULL/);
+assert.match(eligibilityWrapper, /RETURN public\.customer_correct_unprocessed_order_v1\([\s\S]*v_order\.total_qty_declared[\s\S]*v_order\.order_total_gbp_declared[\s\S]*NULL::text\[\]/);
+assert.doesNotMatch(eligibilityWrapper, /order_funding_events|order_funding_position_vw|supplier_invoices|dva_reconciliation|shipping_quote_orders/);
+assert.doesNotMatch(eligibilityWrapper, /INSERT\s+INTO|UPDATE\s+public\.|DELETE\s+FROM/i);
+
 assert.doesNotMatch(accessMigration, /ALTER\s+TABLE|CREATE\s+(?:OR\s+REPLACE\s+)?TRIGGER|CREATE\s+POLICY|DROP\s+POLICY|CREATE\s+TABLE|CREATE\s+VIEW/i);
 assert.doesNotMatch(accessMigration, /INSERT\s+INTO\s+public\.|UPDATE\s+public\.|DELETE\s+FROM\s+public\./i);
 assert.doesNotMatch(accessMigration, /CREATE(?: OR REPLACE)? FUNCTION public\.recompute_order_platform_funded/i);
 assert.match(accessMigration, /REVOKE ALL ON FUNCTION public\.customer_correct_unprocessed_order_v1/);
 assert.match(accessMigration, /GRANT EXECUTE ON FUNCTION public\.customer_correct_unprocessed_order_v1/);
+assert.match(accessMigration, /REVOKE ALL ON FUNCTION public\.customer_order_correction_eligibility_v1/);
+assert.match(accessMigration, /GRANT EXECUTE ON FUNCTION public\.customer_order_correction_eligibility_v1/);
 
 // Frozen create actions and shared form stay outside this continuation.
 for (const frozenPath of [sharedFormPath, customerCreateActionPath, "app/importer/orders/new/actions.ts"]) {
@@ -171,5 +191,5 @@ assert.match(correctionControl, /setIsOpen\(false\)/);
 
 console.log(JSON.stringify({
   regression_result: "PASS",
-  proof: "customer review/create and financial machinery remain frozen; installed v1.4 semantics remain historical; correction eligibility and mutation share one RPC authority; order-scoped importer access is forward-only; UI exposes eligible, blocked and technical-failure states instead of silently disappearing"
+  proof: "customer review/create and financial machinery remain frozen; installed v1.4 semantics remain historical; race-safe eligibility wrapper locks current values and delegates to the correction RPC; order-scoped importer access is forward-only; UI exposes eligible, blocked and technical-failure states instead of silently disappearing"
 }, null, 2));
