@@ -51,7 +51,8 @@ assert(gitBlobSha(v13Migration) === "a5413ad41c485d03155b271e6e3451d1f205d117", 
 
 // The exact supervisor page must port only the relevant importer-parity state/display pieces.
 for (const required of [
-  'BulkLineSelectionControls from "@/app/importer/reconciliation/[order_id]/BulkLineSelectionControls"',
+  'BulkLineSelectionControls from "../../../../../importer/reconciliation/[order_id]/BulkLineSelectionControls"',
+  'supervisorResolveSupplierInvoiceLineNonPhysicalAction } from "../../actions"',
   'type Search = { success?: string; error?: string }',
   'supplier_invoice_line_id, resolution_type, financial_type, notes',
   'disputes!inner(id, desired_outcome, resolved_at)',
