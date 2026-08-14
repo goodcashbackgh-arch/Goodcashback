@@ -52,7 +52,14 @@ export default async function NewCustomerOrderPage() {
     <main className="p-6 space-y-6">
       <Link href="/customer" className="text-sky-600">← Back to customer dashboard</Link>
       <h1 className="text-2xl font-semibold">Create order</h1>
-      <OrderForm retailers={retailers} shipperName={shipper?.name ?? "—"} assignedHub={hubRows[0] ?? null} emptyMessages={emptyMessages} action={createCustomerOrderAction} />
+      <OrderForm
+        retailers={retailers}
+        shipperName={shipper?.name ?? "—"}
+        assignedHub={hubRows[0] ?? null}
+        emptyMessages={emptyMessages}
+        action={createCustomerOrderAction}
+        reviewBeforeSubmit={true}
+      />
     </main>
   );
 }
