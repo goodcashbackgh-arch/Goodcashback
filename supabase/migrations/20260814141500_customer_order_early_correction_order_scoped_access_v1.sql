@@ -116,10 +116,67 @@ $new$;
 END
 $migration$;
 
+CREATE OR REPLACE FUNCTION public.customer_order_correction_eligibility_v1(
+  p_order_id uuid
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_order record;
+BEGIN
+  IF auth.uid() IS NULL THEN
+    RAISE EXCEPTION 'Unauthenticated user.';
+  END IF;
+
+  IF p_order_id IS NULL THEN
+    RAISE EXCEPTION 'Order is required.';
+  END IF;
+
+  SELECT
+    o.id,
+    o.total_qty_declared,
+    o.order_total_gbp_declared
+  INTO v_order
+  FROM public.orders o
+  JOIN public.operators op
+    ON op.id = o.operator_id
+   AND op.auth_user_id = auth.uid()
+   AND op.active = true
+  WHERE o.id = p_order_id
+    AND EXISTS (
+      SELECT 1
+      FROM public.operator_importers oi
+      WHERE oi.operator_id = op.id
+        AND oi.importer_id = o.importer_id
+        AND oi.revoked_at IS NULL
+    )
+  FOR UPDATE OF o;
+
+  IF v_order.id IS NULL THEN
+    RAISE EXCEPTION 'Order does not belong to the active customer/operator assignment.';
+  END IF;
+
+  RETURN public.customer_correct_unprocessed_order_v1(
+    p_order_id,
+    v_order.total_qty_declared,
+    v_order.order_total_gbp_declared,
+    NULL::text[]
+  );
+END;
+$$;
+
 REVOKE ALL ON FUNCTION public.customer_correct_unprocessed_order_v1(uuid, integer, numeric, text[]) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.customer_correct_unprocessed_order_v1(uuid, integer, numeric, text[]) FROM anon;
 GRANT EXECUTE ON FUNCTION public.customer_correct_unprocessed_order_v1(uuid, integer, numeric, text[]) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.customer_correct_unprocessed_order_v1(uuid, integer, numeric, text[]) TO service_role;
+
+REVOKE ALL ON FUNCTION public.customer_order_correction_eligibility_v1(uuid) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.customer_order_correction_eligibility_v1(uuid) FROM anon;
+GRANT EXECUTE ON FUNCTION public.customer_order_correction_eligibility_v1(uuid) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.customer_order_correction_eligibility_v1(uuid) TO service_role;
 
 NOTIFY pgrst, 'reload schema';
 
