@@ -225,11 +225,8 @@ export default function CustomerOrderCorrectionControl({ orderId }: { orderId: s
       }
 
       const roundedAmount = Math.round(currentAmount * 100) / 100;
-      const { error: eligibilityError } = await (supabase as any).rpc("customer_correct_unprocessed_order_v1", {
+      const { error: eligibilityError } = await (supabase as any).rpc("customer_order_correction_eligibility_v1", {
         p_order_id: orderId,
-        p_total_qty_declared: currentQty,
-        p_order_total_gbp_declared: roundedAmount,
-        p_replacement_screenshot_urls: null,
       });
       if (cancelled) return;
       if (eligibilityError) {
