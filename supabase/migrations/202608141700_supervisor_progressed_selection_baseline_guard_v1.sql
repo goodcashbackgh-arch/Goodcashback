@@ -82,6 +82,8 @@ begin
     raise exception 'Exception-linked lines cannot be progressed by supervisor takeover.';
   end if;
 
+  -- Mirror the already-proven importer physical/non-physical selection boundary
+  -- so stale or crafted submissions cannot progress financial rows as stock.
   select count(*)
     into v_selected_nonphysical_count
   from public.supplier_invoice_lines sil
@@ -108,6 +110,8 @@ begin
     raise exception 'Non-physical financial lines cannot be progressed as physical goods.';
   end if;
 
+  -- Preserve the existing order-wide physical quantity/value position, while
+  -- excluding explicitly resolved non-physical rows from physical progression.
   select
     coalesce(sum(coalesce(sil.qty_confirmed, sil.qty, 0)), 0),
     coalesce(sum(coalesce(sil.amount_confirmed, sil.amount_inc_vat_gbp, 0)), 0)
@@ -125,6 +129,8 @@ begin
         and r.active = true
     );
 
+  -- Reuse the existing non-physical resolution sign contract. Resolved rows add
+  -- commercial value only and never physical quantity.
   select coalesce(sum(
     case
       when r.financial_type = 'discount' then -abs(coalesce(sil.amount_inc_vat_gbp, r.amount_gbp, 0))
@@ -151,6 +157,11 @@ begin
     and sil.id = any(p_line_ids)
     and coalesce(lower(sil.eligible_for_invoice_yn), '') not in ('y', 'yes', 'true', '1');
 
+  -- Reuse the importer signed-baseline proof contract. A provisional unresolved
+  -- discount/delivery offset is permitted only where the exact same invoice has
+  -- approved/non-rejected adjustment evidence within £0.01. For multi-invoice
+  -- supervisor progression, an invoice participates only if it already has a
+  -- progressed physical line or is the currently selected exact invoice.
   with participating_invoices as (
     select p_supplier_invoice_id as supplier_invoice_id
     union
