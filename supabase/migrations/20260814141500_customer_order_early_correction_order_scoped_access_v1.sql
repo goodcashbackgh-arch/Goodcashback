@@ -1,0 +1,126 @@
+BEGIN;
+
+SET LOCAL lock_timeout = '15s';
+SET LOCAL statement_timeout = '0';
+
+DO $migration$
+DECLARE
+  v_definition text;
+  v_new_definition text;
+  v_security_definer boolean;
+  v_config text[];
+  v_old_operator_block text;
+  v_new_operator_block text;
+  v_old_ownership_block text;
+  v_new_ownership_block text;
+BEGIN
+  IF to_regprocedure('public.customer_correct_unprocessed_order_v1(uuid,integer,numeric,text[])') IS NULL THEN
+    RAISE EXCEPTION 'Function missing: public.customer_correct_unprocessed_order_v1(uuid,integer,numeric,text[])';
+  END IF;
+
+  SELECT pg_get_functiondef(p.oid), p.prosecdef, p.proconfig
+  INTO v_definition, v_security_definer, v_config
+  FROM pg_proc p
+  WHERE p.oid = 'public.customer_correct_unprocessed_order_v1(uuid,integer,numeric,text[])'::regprocedure;
+
+  IF NOT COALESCE(v_security_definer, false)
+     OR NOT COALESCE(v_config, ARRAY[]::text[]) @> ARRAY['search_path=public, pg_temp']::text[] THEN
+    RAISE EXCEPTION 'Correction RPC security boundary changed; stop.';
+  END IF;
+
+  IF position('corrected value would require credit release or financial-state repair' IN lower(v_definition)) = 0
+     OR position('fully funded value correction must increase goods value beyond existing credit funding' IN lower(v_definition)) = 0
+     OR position('perform public.recompute_order_platform_funded(p_order_id)' IN lower(v_definition)) = 0
+     OR position('replacement screenshot row count postcondition failed' IN lower(v_definition)) = 0
+     OR position('replacement screenshot display order postcondition failed' IN lower(v_definition)) = 0 THEN
+    RAISE EXCEPTION 'Correction RPC is not the installed v1.4 authority; stop.';
+  END IF;
+
+  v_old_operator_block := $old$
+  SELECT
+    op.id AS operator_id,
+    oi.importer_id
+  INTO v_operator
+  FROM public.operators op
+  JOIN public.operator_importers oi
+    ON oi.operator_id = op.id
+   AND oi.revoked_at IS NULL
+  WHERE op.auth_user_id = auth.uid()
+    AND op.active = true
+  ORDER BY oi.id DESC
+  LIMIT 1;
+
+  IF v_operator.operator_id IS NULL OR v_operator.importer_id IS NULL THEN
+    RAISE EXCEPTION 'Active customer/operator assignment not found.';
+  END IF;
+$old$;
+
+  v_new_operator_block := $new$
+  SELECT
+    op.id AS operator_id,
+    NULL::uuid AS importer_id
+  INTO v_operator
+  FROM public.operators op
+  WHERE op.auth_user_id = auth.uid()
+    AND op.active = true
+  LIMIT 1;
+
+  IF v_operator.operator_id IS NULL THEN
+    RAISE EXCEPTION 'Active customer/operator assignment not found.';
+  END IF;
+$new$;
+
+  v_old_ownership_block := $old$
+  IF v_order.importer_id IS DISTINCT FROM v_operator.importer_id
+     OR v_order.operator_id IS DISTINCT FROM v_operator.operator_id THEN
+    RAISE EXCEPTION 'Order does not belong to the active customer/operator assignment.';
+  END IF;
+$old$;
+
+  v_new_ownership_block := $new$
+  IF v_order.operator_id IS DISTINCT FROM v_operator.operator_id THEN
+    RAISE EXCEPTION 'Order does not belong to the active customer/operator assignment.';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+    FROM public.operator_importers oi
+    WHERE oi.operator_id = v_operator.operator_id
+      AND oi.importer_id = v_order.importer_id
+      AND oi.revoked_at IS NULL
+  ) THEN
+    RAISE EXCEPTION 'Order does not belong to the active customer/operator assignment.';
+  END IF;
+
+  v_operator.importer_id := v_order.importer_id;
+$new$;
+
+  IF position(v_old_operator_block IN v_definition) = 0 THEN
+    RAISE EXCEPTION 'Expected v1.4 operator-resolution block not found; stop.';
+  END IF;
+  IF position(v_old_ownership_block IN v_definition) = 0 THEN
+    RAISE EXCEPTION 'Expected v1.4 ownership block not found; stop.';
+  END IF;
+
+  v_new_definition := replace(v_definition, v_old_operator_block, v_new_operator_block);
+  v_new_definition := replace(v_new_definition, v_old_ownership_block, v_new_ownership_block);
+
+  IF v_new_definition = v_definition
+     OR position('oi.importer_id = v_order.importer_id' IN v_new_definition) = 0
+     OR position('v_operator.importer_id := v_order.importer_id' IN v_new_definition) = 0
+     OR position('ORDER BY oi.id DESC' IN v_new_definition) > 0 THEN
+    RAISE EXCEPTION 'Order-scoped access rewrite postcondition failed; stop.';
+  END IF;
+
+  EXECUTE v_new_definition;
+END
+$migration$;
+
+REVOKE ALL ON FUNCTION public.customer_correct_unprocessed_order_v1(uuid, integer, numeric, text[]) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.customer_correct_unprocessed_order_v1(uuid, integer, numeric, text[]) FROM anon;
+GRANT EXECUTE ON FUNCTION public.customer_correct_unprocessed_order_v1(uuid, integer, numeric, text[]) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.customer_correct_unprocessed_order_v1(uuid, integer, numeric, text[]) TO service_role;
+
+NOTIFY pgrst, 'reload schema';
+
+COMMIT;
