@@ -1,0 +1,19 @@
+name: Temporary supervisor clean-line parity validation
+
+on:
+  push:
+    branches:
+      - test/supervisor-exact-clean-line-parity-ci
+
+permissions:
+  contents: read
+
+jobs:
+  source-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact tested source
+        uses: actions/checkout@v4
+      - name: Run governed source regression
+        run: node docs/testing/20260814_supervisor_exact_clean_line_multi_invoice_parity_regression_v1.mjs
