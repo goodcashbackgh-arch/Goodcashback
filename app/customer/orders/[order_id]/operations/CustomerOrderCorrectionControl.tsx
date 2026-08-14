@@ -20,15 +20,13 @@ type AttachmentSummary = {
   error: string;
 };
 
+type EligibilityState = "loading" | "eligible" | "blocked" | "check_failed";
+
 type EligibleOrder = {
   importerId: string;
   currentQty: number;
   currentAmount: number;
   originalScreenshotCount: number;
-  appliedCreditGbp: number;
-  fundedTotalGbp: number;
-  markupAppliedGbp: number;
-  previouslyFullyFunded: boolean;
 };
 
 function correctionError(message: string) {
@@ -62,6 +60,10 @@ function isAuthoritativeBlocker(message: string) {
     || (lower.includes("funding") && lower.includes("postcondition failed"))
     || lower.includes("credit funding event and ledger position disagree")
     || lower.includes("non-credit funding has started");
+}
+
+function eligibilityCheckFailedMessage() {
+  return "We could not check whether this order can be corrected. Refresh the order and try again.";
 }
 
 function formatMb(bytes: number) {
@@ -131,6 +133,9 @@ async function optimiseImage(file: File, targetBytes: number) {
 export default function CustomerOrderCorrectionControl({ orderId }: { orderId: string }) {
   const router = useRouter();
   const [eligibleOrder, setEligibleOrder] = useState<EligibleOrder | null>(null);
+  const [eligibilityState, setEligibilityState] = useState<EligibilityState>("loading");
+  const [eligibilityMessage, setEligibilityMessage] = useState("");
+  const [eligibilityAttempt, setEligibilityAttempt] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState("");
   const [isError, setIsError] = useState(false);
@@ -180,99 +185,86 @@ export default function CustomerOrderCorrectionControl({ orderId }: { orderId: s
     let cancelled = false;
     const supabase = createClient();
 
+    async function failCheck() {
+      if (cancelled) return;
+      setEligibleOrder(null);
+      setEligibilityState("check_failed");
+      setEligibilityMessage(eligibilityCheckFailedMessage());
+    }
+
     async function loadEligibility() {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user || cancelled) return;
+      setEligibleOrder(null);
+      setEligibilityState("loading");
+      setEligibilityMessage("");
 
-      const { data: operator, error: operatorError } = await supabase
-        .from("operators")
-        .select("id")
-        .eq("auth_user_id", user.id)
-        .eq("active", true)
-        .maybeSingle();
-      if (operatorError || !operator || cancelled) return;
-
-      const { data: operatorImporter, error: assignmentError } = await supabase
-        .from("operator_importers")
-        .select("importer_id")
-        .eq("operator_id", operator.id)
-        .is("revoked_at", null)
-        .order("id", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      if (assignmentError || !operatorImporter?.importer_id || cancelled) return;
+      const { data: { user }, error: userError } = await supabase.auth.getUser();
+      if (userError || !user || cancelled) {
+        await failCheck();
+        return;
+      }
 
       const { data: order, error: orderError } = await supabase
         .from("orders")
-        .select("id, importer_id, operator_id, order_type, status, total_qty_declared, order_total_gbp_declared, content_locked_at, tracking_locked_at, funded_at, completed_at, accounting_release_ready_at, vat_release_approved_at, vat_return_period")
+        .select("id, importer_id, total_qty_declared, order_total_gbp_declared")
         .eq("id", orderId)
         .maybeSingle();
-      if (orderError || !order || cancelled) return;
-      if (order.importer_id !== operatorImporter.importer_id || order.operator_id !== operator.id) return;
-
-      const baseEligible =
-        order.order_type === "original" &&
-        order.status === "pending_dva_funding" &&
-        order.content_locked_at == null &&
-        order.tracking_locked_at == null &&
-        order.completed_at == null &&
-        order.accounting_release_ready_at == null &&
-        order.vat_release_approved_at == null &&
-        order.vat_return_period == null;
-      if (!baseEligible) return;
-
-      const [fundingEventResult, fundingPositionResult, trackingResult, invoiceResult, screenshotResult, childResult] = await Promise.all([
-        supabase.from("order_funding_events").select("id, event_type").eq("order_id", orderId),
-        supabase.from("order_funding_position_vw").select("applied_credit_gbp, funded_total_gbp, markup_applied_gbp, gap_remaining_gbp, threshold_met_yn").eq("order_id", orderId).maybeSingle(),
-        supabase.from("order_tracking_submissions").select("id").eq("order_id", orderId).limit(1),
-        supabase.from("supplier_invoices").select("id").eq("order_id", orderId).limit(1),
-        supabase.from("order_screenshots").select("id, note, display_order").eq("order_id", orderId).order("display_order").order("id"),
-        supabase.from("orders").select("id").eq("parent_order_id", orderId).limit(1),
-      ]);
-
-      if (cancelled) return;
-      if (fundingEventResult.error || fundingPositionResult.error || trackingResult.error || invoiceResult.error || screenshotResult.error || childResult.error) return;
-      if ((fundingEventResult.data ?? []).some((row) => row.event_type !== "credit_applied") || (trackingResult.data ?? []).length > 0 || (invoiceResult.data ?? []).length > 0 || (childResult.data ?? []).length > 0) return;
-
-      const fundingPosition = fundingPositionResult.data;
-      if (!fundingPosition) return;
-      const appliedCreditGbp = Number(fundingPosition.applied_credit_gbp ?? 0);
-      const fundedTotalGbp = Number(fundingPosition.funded_total_gbp ?? 0);
-      const markupAppliedGbp = Number(fundingPosition.markup_applied_gbp ?? 0);
-      const gapRemainingGbp = Number(fundingPosition.gap_remaining_gbp ?? 0);
-      if (![appliedCreditGbp, fundedTotalGbp, markupAppliedGbp, gapRemainingGbp].every(Number.isFinite)) return;
-      if (fundedTotalGbp > appliedCreditGbp + 0.01) return;
-      const previouslyFullyFunded =
-        order.funded_at != null
-        || Boolean(fundingPosition.threshold_met_yn)
-        || gapRemainingGbp <= 0.01;
-
-      const screenshots = screenshotResult.data ?? [];
-      if (screenshots.some((row) => row.note !== "Original order screenshot")) return;
+      if (orderError || !order || cancelled) {
+        await failCheck();
+        return;
+      }
 
       const currentQty = Number(order.total_qty_declared ?? 0);
       const currentAmount = Number(order.order_total_gbp_declared ?? 0);
-      if (!Number.isInteger(currentQty) || currentQty <= 0 || !Number.isFinite(currentAmount) || currentAmount <= 0) return;
+      if (!order.importer_id || !Number.isInteger(currentQty) || currentQty <= 0 || !Number.isFinite(currentAmount) || currentAmount <= 0) {
+        await failCheck();
+        return;
+      }
+
+      const { error: eligibilityError } = await (supabase as any).rpc("customer_correct_unprocessed_order_v1", {
+        p_order_id: orderId,
+        p_total_qty_declared: currentQty,
+        p_order_total_gbp_declared: Math.round(currentAmount * 100) / 100,
+        p_replacement_screenshot_urls: null,
+      });
+      if (cancelled) return;
+      if (eligibilityError) {
+        const rawMessage = eligibilityError.message ?? "Eligibility check failed";
+        setEligibleOrder(null);
+        if (isAuthoritativeBlocker(rawMessage)) {
+          setEligibilityState("blocked");
+          setEligibilityMessage(correctionError(rawMessage));
+        } else {
+          setEligibilityState("check_failed");
+          setEligibilityMessage(eligibilityCheckFailedMessage());
+        }
+        return;
+      }
+
+      const { count: originalScreenshotCount, error: screenshotError } = await supabase
+        .from("order_screenshots")
+        .select("id", { count: "exact", head: true })
+        .eq("order_id", orderId)
+        .eq("note", "Original order screenshot");
+      if (screenshotError || cancelled) {
+        await failCheck();
+        return;
+      }
 
       setEligibleOrder({
-        importerId: operatorImporter.importer_id,
+        importerId: order.importer_id,
         currentQty,
-        currentAmount,
-        originalScreenshotCount: screenshots.length,
-        appliedCreditGbp,
-        fundedTotalGbp,
-        markupAppliedGbp,
-        previouslyFullyFunded,
+        currentAmount: Math.round(currentAmount * 100) / 100,
+        originalScreenshotCount: originalScreenshotCount ?? 0,
       });
+      setEligibilityState("eligible");
+      setEligibilityMessage("");
     }
 
     void loadEligibility();
     return () => {
       cancelled = true;
     };
-  }, [orderId]);
-
-  if (!eligibleOrder) return null;
+  }, [orderId, eligibilityAttempt]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -300,19 +292,6 @@ export default function CustomerOrderCorrectionControl({ orderId }: { orderId: s
     }
 
     const roundedAmount = Math.round(totalAmount * 100) / 100;
-    if (roundedAmount !== currentEligibleOrder.currentAmount) {
-      const proposedFundingGap = Math.round((roundedAmount + currentEligibleOrder.markupAppliedGbp - currentEligibleOrder.fundedTotalGbp) * 100) / 100;
-      if (proposedFundingGap <= 0.01) {
-        setIsError(true);
-        setMessage("This goods value would require account credit to be released or repaired. Enter a value that leaves more than £0.01 due, or leave it unchanged.");
-        return;
-      }
-      if (currentEligibleOrder.previouslyFullyFunded && roundedAmount <= currentEligibleOrder.currentAmount) {
-        setIsError(true);
-        setMessage("A fully credit-funded order can only change to a higher goods value that leaves a new amount due.");
-        return;
-      }
-    }
 
     if (replacementSelected && (attachmentSummary.status !== "ready" || replacementFiles.length < 1)) return;
     if (replacementFiles.length > 0) {
@@ -345,7 +324,6 @@ export default function CustomerOrderCorrectionControl({ orderId }: { orderId: s
         currentQty: totalQty,
         currentAmount: roundedAmount,
         originalScreenshotCount: replacementFiles.length > 0 ? replacementFiles.length : current.originalScreenshotCount,
-        previouslyFullyFunded: current.previouslyFullyFunded && roundedAmount > current.currentAmount ? false : current.previouslyFullyFunded,
       } : current);
       preparedFilesRef.current = [];
       selectionVersionRef.current += 1;
@@ -357,12 +335,50 @@ export default function CustomerOrderCorrectionControl({ orderId }: { orderId: s
       router.refresh();
     } catch (error) {
       const rawMessage = error instanceof Error ? error.message : "Correction failed";
-      if (isAuthoritativeBlocker(rawMessage)) setEligibleOrder(null);
-      setIsError(true);
-      setMessage(correctionError(rawMessage));
+      if (isAuthoritativeBlocker(rawMessage)) {
+        setEligibleOrder(null);
+        setEligibilityState("blocked");
+        setEligibilityMessage(correctionError(rawMessage));
+      } else {
+        setIsError(true);
+        setMessage(correctionError(rawMessage));
+      }
     } finally {
       setSubmitting(false);
     }
+  }
+
+  if (eligibilityState === "loading") {
+    return (
+      <div className="bg-slate-50 px-4 pt-3 xl:px-6">
+        <section className="mx-auto rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+          Checking correction availability…
+        </section>
+      </div>
+    );
+  }
+
+  if (eligibilityState === "blocked") {
+    return (
+      <div className="bg-slate-50 px-4 pt-3 xl:px-6">
+        <section className="mx-auto rounded-xl border border-slate-200 bg-white p-3">
+          <p className="text-xs font-black uppercase tracking-wide text-slate-500">Order correction</p>
+          <p className="mt-1 text-sm font-semibold text-slate-700">{eligibilityMessage}</p>
+        </section>
+      </div>
+    );
+  }
+
+  if (eligibilityState === "check_failed" || !eligibleOrder) {
+    return (
+      <div className="bg-slate-50 px-4 pt-3 xl:px-6">
+        <section className="mx-auto rounded-xl border border-amber-200 bg-amber-50 p-3 text-amber-950">
+          <p className="text-xs font-black uppercase tracking-wide">Order correction</p>
+          <p className="mt-1 text-sm font-semibold">{eligibilityMessage || eligibilityCheckFailedMessage()}</p>
+          <button type="button" onClick={() => setEligibilityAttempt((current) => current + 1)} className="mt-2 rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-black text-amber-950">Check again</button>
+        </section>
+      </div>
+    );
   }
 
   return (
@@ -372,11 +388,6 @@ export default function CustomerOrderCorrectionControl({ orderId }: { orderId: s
           <summary className="inline-flex cursor-pointer list-none rounded-lg border border-sky-600 bg-sky-600 px-3 py-1.5 text-xs font-black text-white shadow-sm hover:bg-sky-700">Correct order</summary>
           <div className="mt-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
           <p className="mt-2 text-sm text-slate-600">You can correct the quantity, goods value or original attachments only before processing starts.</p>
-          {eligibleOrder.appliedCreditGbp > 0.01 ? (
-            <p className="mt-3 rounded-xl border border-cyan-100 bg-cyan-50 p-3 text-sm font-semibold text-cyan-900">
-              £{eligibleOrder.appliedCreditGbp.toFixed(2)} account credit is already applied. It stays unchanged; correcting the goods value changes only the remaining amount due.
-            </p>
-          ) : null}
           <form onSubmit={handleSubmit} className="mt-4 grid gap-4" encType="multipart/form-data">
             <div className="grid gap-3 sm:grid-cols-2">
               <label className="text-sm font-semibold text-slate-700">
