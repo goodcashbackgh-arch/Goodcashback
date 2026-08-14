@@ -30,18 +30,21 @@ const bulkControls = read(bulkControlsPath);
 const accountingPage = read(accountingPagePath);
 const v13Migration = read(v13MigrationPath);
 
-// Governing authority must explicitly constrain the build.
+// Governing authority must explicitly constrain the corrective build.
 for (const required of [
   "governing additive authority",
+  "Corrective UI baseline inspected",
   "app/internal/reconciliation/[order_id]/invoice-bundle/[supplier_invoice_id]/page.tsx",
   "app/internal/reconciliation/[order_id]/actions.ts",
-  "No other production file is authorised to change.",
+  "The existing `app/internal/reconciliation/[order_id]/actions.ts` implementation is frozen for this correction",
   "No SQL migration is authorised.",
   "The all-line review list must render independently of `physicalCandidates.length`",
+  "classificationOnly && !done && !locked",
   "STOP",
 ]) assert(authority.includes(required), `Missing v1.4 governing control: ${required}`);
 
 // Frozen working implementations must remain byte-for-byte unchanged.
+assert(gitBlobSha(internalActions) === "3a9cd9df1fa66757312c8438ac3d38203bcfa368", "Supervisor internal actions changed during Park UI correction.");
 assert(gitBlobSha(importerPage) === "c628f3740b335a1e55a9cfe0d3bb2674fde59791", "Importer reconciliation page changed.");
 assert(gitBlobSha(importerActions) === "0e01ed8b98a594c5757ef595085ff0cd343381a2", "Importer reconciliation actions changed.");
 assert(gitBlobSha(importerNonPhysical) === "ece9dc94445030be65b7a43e95ba21401044736b", "Importer non-physical action changed.");
@@ -49,7 +52,7 @@ assert(gitBlobSha(bulkControls) === "968565fb16edfe1b1fbd25154ce32e39ea33102f", 
 assert(gitBlobSha(accountingPage) === "d84f7ddb24aa7d9ed1c06c604b72e2a149f31afa", "Supervisor accounting page changed.");
 assert(gitBlobSha(v13Migration) === "a5413ad41c485d03155b271e6e3451d1f205d117", "Governed v1.3 staff progression migration changed.");
 
-// The exact supervisor page must port only the relevant importer-parity state/display pieces.
+// The exact supervisor page must preserve the existing importer-parity state/display pieces.
 for (const required of [
   'BulkLineSelectionControls from "../../../../../importer/reconciliation/[order_id]/BulkLineSelectionControls"',
   'supervisorResolveSupplierInvoiceLineNonPhysicalAction } from "../../actions"',
@@ -67,11 +70,18 @@ for (const required of [
   'form="bulk-progress-form"',
   'disabled={!canProgress}',
   '<BulkLineSelectionControls selectableCount={physicalCandidates.length} />',
-  '!done && !locked',
+  'classificationOnly && !done && !locked',
   'Non-physical classification required',
   'It cannot enter physical progression, tracking or shipment.',
   'supervisorResolveSupplierInvoiceLineNonPhysicalAction',
-]) assert(exactPage.includes(required), `Missing exact-page importer-parity contract: ${required}`);
+]) assert(exactPage.includes(required), `Missing exact-page corrective contract: ${required}`);
+
+// The Park form itself must be gated by classificationOnly, not merely unresolved/unlocked state.
+const parkFormIndex = exactPage.indexOf('<form action={supervisorResolveSupplierInvoiceLineNonPhysicalAction}');
+assert(parkFormIndex > 0, "Supervisor Park form missing.");
+const parkGateWindow = exactPage.slice(Math.max(0, parkFormIndex - 180), parkFormIndex);
+assert(parkGateWindow.includes("classificationOnly && !done && !locked"), "Park form is not gated by classificationOnly && !done && !locked.");
+assert(!parkGateWindow.includes("{!done && !locked ? ("), "Bare unresolved/unlocked Park gate remains active.");
 
 // Existing description/sign vocabulary must stay aligned with importer.
 for (const vocabulary of [
@@ -84,7 +94,7 @@ for (const vocabulary of [
 }
 assert(exactPage.includes("Number(line.amount_inc_vat_gbp ?? 0) < 0"), "Negative-amount non-physical boundary missing from supervisor page.");
 
-// Suggested financial type mapping and visible allow-list must match importer vocabulary.
+// Suggested financial type mapping and visible allow-list must remain unchanged.
 for (const value of ["delivery", "discount", "fee", "zero_value_delivery", "rounding", "other_non_physical"]) {
   assert(exactPage.includes(`<option value="${value}">${value}</option>`), `Supervisor Park option missing: ${value}`);
   assert(importerNonPhysical.includes(`"${value}"`), `Importer action allow-list missing: ${value}`);
@@ -114,7 +124,7 @@ const physicalActionIndex = exactPage.indexOf("Progress clean physical lines on 
 assert(lineReviewIndex >= 0 && allLinesIndex > lineReviewIndex, "All-line review is missing.");
 assert(physicalActionIndex > allLinesIndex, "Physical action block unexpectedly gates the all-line review list.");
 
-// Park wrapper must be importer-parity plus exact supervisor route isolation only.
+// Existing Park wrapper must remain unchanged and exact-route isolated.
 const parkStart = internalActions.indexOf("export async function supervisorResolveSupplierInvoiceLineNonPhysicalAction");
 const parkEnd = internalActions.indexOf("export async function supervisorProgressSupplierInvoiceLinesAction", parkStart);
 assert(parkStart >= 0 && parkEnd > parkStart, "Supervisor Park action not found.");
@@ -137,13 +147,13 @@ assert(!parkAction.includes("obviousNonPhysical"), "New supervisor-only non-phys
 assert(!/\.from\("supplier_invoice_line_resolutions"\)[\s\S]*\.(insert|update|delete)\(/.test(parkAction), "Park wrapper directly mutates resolution rows.");
 assert(!/\.from\("supplier_invoice_lines"\)[\s\S]*\.(insert|update|delete)\(/.test(parkAction), "Park wrapper directly mutates supplier invoice lines.");
 
-// The six-value action allow-list must exist and contain no extra value.
+// The six-value action allow-list must remain unchanged.
 const allowListMatch = internalActions.match(/const ALLOWED_NON_PHYSICAL_FINANCIAL_TYPES = new Set\(\[([\s\S]*?)\]\);/);
 assert(allowListMatch, "Supervisor Park allow-list missing.");
 const allowValues = [...allowListMatch[1].matchAll(/"([a-z_]+)"/g)].map((match) => match[1]);
 assert(JSON.stringify(allowValues) === JSON.stringify(["delivery", "discount", "fee", "zero_value_delivery", "rounding", "other_non_physical"]), `Supervisor Park allow-list drifted: ${allowValues.join(", ")}`);
 
-// Existing physical progression wiring must remain present and unchanged in authority/routing semantics.
+// Existing physical progression wiring must remain unchanged in authority/routing semantics.
 const progressStart = internalActions.indexOf("export async function supervisorProgressSupplierInvoiceLinesAction");
 const progressEnd = internalActions.indexOf("export async function approveCurrentSupplierInvoiceFromReconciliationAction", progressStart);
 assert(progressStart >= 0 && progressEnd > progressStart, "Existing supervisor progression action missing.");
@@ -163,8 +173,9 @@ console.log(JSON.stringify({
   regression_result: "PASS",
   governing_authority: authorityPath,
   exact_page: exactPagePath,
-  park_action: "supervisorResolveSupplierInvoiceLineNonPhysicalAction",
+  corrective_gate: "classificationOnly && !done && !locked",
   frozen_blobs: {
+    internal_actions: gitBlobSha(internalActions),
     importer_page: gitBlobSha(importerPage),
     importer_actions: gitBlobSha(importerActions),
     importer_non_physical: gitBlobSha(importerNonPhysical),
@@ -172,5 +183,5 @@ console.log(JSON.stringify({
     accounting_page: gitBlobSha(accountingPage),
     v13_progression_migration: gitBlobSha(v13Migration),
   },
-  scope: "Two production files only; importer/database/accounting/downstream paths frozen.",
+  scope: "One production file only; actions/importer/database/accounting/downstream paths frozen.",
 }, null, 2));
