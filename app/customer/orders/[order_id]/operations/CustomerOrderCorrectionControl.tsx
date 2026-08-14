@@ -20,11 +20,17 @@ type AttachmentSummary = {
   error: string;
 };
 
+type EligibilityState = "loading" | "eligible" | "blocked" | "check_failed";
+
 type EligibleOrder = {
   importerId: string;
   currentQty: number;
   currentAmount: number;
   originalScreenshotCount: number;
+  appliedCreditGbp: number;
+  fundedTotalGbp: number;
+  markupAppliedGbp: number;
+  previouslyFullyFunded: boolean;
 };
 
 function correctionError(message: string) {
@@ -32,13 +38,41 @@ function correctionError(message: string) {
   if (lower.includes("processing has started") || lower.includes("downstream evidence")) {
     return "This order can no longer be corrected because processing has started.";
   }
+  if (lower.includes("funding") && lower.includes("postcondition failed")) {
+    return "This order can no longer be corrected because its funding changed while you were editing.";
+  }
+  if (lower.includes("credit funding event and ledger position disagree")) {
+    return "This order can no longer be corrected because its credit funding records do not agree.";
+  }
+  if (lower.includes("non-credit funding has started")) {
+    return "This order can no longer be corrected because non-credit funding has started.";
+  }
+  if (lower.includes("does not belong to the active customer/operator assignment") || lower.includes("active customer/operator assignment not found")) {
+    return "This order is not available for correction from this customer account.";
+  }
+  if (lower.includes("corrected value would require credit release or financial-state repair")) {
+    return "This goods value would require account credit to be released or repaired. Enter a value that leaves an amount still due, or leave it unchanged.";
+  }
+  if (lower.includes("fully funded value correction must increase goods value beyond existing credit funding")) {
+    return "A fully credit-funded order can only change to a higher goods value that leaves a new amount due.";
+  }
   if (lower.includes("replacement screenshot count")) return message;
   return "We could not save this correction. Refresh the order and try again.";
 }
 
 function isAuthoritativeBlocker(message: string) {
   const lower = message.toLowerCase();
-  return lower.includes("processing has started") || lower.includes("downstream evidence");
+  return lower.includes("processing has started")
+    || lower.includes("downstream evidence")
+    || (lower.includes("funding") && lower.includes("postcondition failed"))
+    || lower.includes("credit funding event and ledger position disagree")
+    || lower.includes("non-credit funding has started")
+    || lower.includes("does not belong to the active customer/operator assignment")
+    || lower.includes("active customer/operator assignment not found");
+}
+
+function eligibilityCheckFailedMessage() {
+  return "We could not check whether this order can be corrected. Refresh the order and try again.";
 }
 
 function formatMb(bytes: number) {
@@ -108,6 +142,9 @@ async function optimiseImage(file: File, targetBytes: number) {
 export default function CustomerOrderCorrectionControl({ orderId }: { orderId: string }) {
   const router = useRouter();
   const [eligibleOrder, setEligibleOrder] = useState<EligibleOrder | null>(null);
+  const [eligibilityState, setEligibilityState] = useState<EligibilityState>("loading");
+  const [eligibilityMessage, setEligibilityMessage] = useState("");
+  const [eligibilityAttempt, setEligibilityAttempt] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState("");
   const [isError, setIsError] = useState(false);
@@ -157,82 +194,80 @@ export default function CustomerOrderCorrectionControl({ orderId }: { orderId: s
     let cancelled = false;
     const supabase = createClient();
 
-    async function loadEligibility() {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user || cancelled) return;
-
-      const { data: operator, error: operatorError } = await supabase
-        .from("operators")
-        .select("id")
-        .eq("auth_user_id", user.id)
-        .eq("active", true)
-        .maybeSingle();
-      if (operatorError || !operator || cancelled) return;
-
-      const { data: operatorImporter, error: assignmentError } = await supabase
-        .from("operator_importers")
-        .select("importer_id")
-        .eq("operator_id", operator.id)
-        .is("revoked_at", null)
-        .order("id", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      if (assignmentError || !operatorImporter?.importer_id || cancelled) return;
-
-      const { data: order, error: orderError } = await supabase
-        .from("orders")
-        .select("id, importer_id, operator_id, order_type, status, total_qty_declared, order_total_gbp_declared, content_locked_at, tracking_locked_at, funded_at, completed_at, accounting_release_ready_at, vat_release_approved_at, vat_return_period")
-        .eq("id", orderId)
-        .maybeSingle();
-      if (orderError || !order || cancelled) return;
-      if (order.importer_id !== operatorImporter.importer_id || order.operator_id !== operator.id) return;
-
-      const baseEligible =
-        order.order_type === "original" &&
-        order.status === "pending_dva_funding" &&
-        order.content_locked_at == null &&
-        order.tracking_locked_at == null &&
-        order.funded_at == null &&
-        order.completed_at == null &&
-        order.accounting_release_ready_at == null &&
-        order.vat_release_approved_at == null &&
-        order.vat_return_period == null;
-      if (!baseEligible) return;
-
-      const [fundingResult, trackingResult, invoiceResult, screenshotResult, childResult] = await Promise.all([
-        supabase.from("order_funding_events").select("id").eq("order_id", orderId).limit(1),
-        supabase.from("order_tracking_submissions").select("id").eq("order_id", orderId).limit(1),
-        supabase.from("supplier_invoices").select("id").eq("order_id", orderId).limit(1),
-        supabase.from("order_screenshots").select("id, note, display_order").eq("order_id", orderId).order("display_order").order("id"),
-        supabase.from("orders").select("id").eq("parent_order_id", orderId).limit(1),
-      ]);
-
+    function failCheck() {
       if (cancelled) return;
-      if (fundingResult.error || trackingResult.error || invoiceResult.error || screenshotResult.error || childResult.error) return;
-      if ((fundingResult.data ?? []).length > 0 || (trackingResult.data ?? []).length > 0 || (invoiceResult.data ?? []).length > 0 || (childResult.data ?? []).length > 0) return;
+      setEligibleOrder(null);
+      setEligibilityState("check_failed");
+      setEligibilityMessage(eligibilityCheckFailedMessage());
+    }
 
-      const screenshots = screenshotResult.data ?? [];
-      if (screenshots.some((row) => row.note !== "Original order screenshot")) return;
+    async function loadEligibility() {
+      setEligibleOrder(null);
+      setEligibilityState("loading");
+      setEligibilityMessage("");
 
-      const currentQty = Number(order.total_qty_declared ?? 0);
-      const currentAmount = Number(order.order_total_gbp_declared ?? 0);
-      if (!Number.isInteger(currentQty) || currentQty <= 0 || !Number.isFinite(currentAmount) || currentAmount <= 0) return;
+      const { data: snapshot, error: eligibilityError } = await (supabase as any).rpc("customer_order_correction_eligibility_v1", {
+        p_order_id: orderId,
+      });
+      if (cancelled) return;
+      if (eligibilityError) {
+        const rawMessage = eligibilityError.message ?? "Eligibility check failed";
+        setEligibleOrder(null);
+        if (isAuthoritativeBlocker(rawMessage)) {
+          setEligibilityState("blocked");
+          setEligibilityMessage(correctionError(rawMessage));
+        } else {
+          setEligibilityState("check_failed");
+          setEligibilityMessage(eligibilityCheckFailedMessage());
+        }
+        return;
+      }
+
+      const importerId = typeof snapshot?.importer_id === "string" ? snapshot.importer_id : "";
+      const currentQty = Number(snapshot?.current_qty);
+      const currentAmount = Number(snapshot?.current_amount);
+      const originalScreenshotCount = Number(snapshot?.original_screenshot_count ?? 0);
+      const appliedCreditGbp = Number(snapshot?.applied_credit_gbp ?? 0);
+      const fundedTotalGbp = Number(snapshot?.funded_total_gbp ?? 0);
+      const markupAppliedGbp = Number(snapshot?.markup_applied_gbp ?? 0);
+      const previouslyFullyFunded = snapshot?.previously_fully_funded === true;
+
+      if (
+        snapshot?.ok !== true
+        || snapshot?.eligible !== true
+        || snapshot?.changed !== false
+        || !importerId
+        || !Number.isInteger(currentQty)
+        || currentQty <= 0
+        || !Number.isFinite(currentAmount)
+        || currentAmount <= 0
+        || !Number.isInteger(originalScreenshotCount)
+        || originalScreenshotCount < 0
+        || ![appliedCreditGbp, fundedTotalGbp, markupAppliedGbp].every(Number.isFinite)
+      ) {
+        failCheck();
+        return;
+      }
 
       setEligibleOrder({
-        importerId: operatorImporter.importer_id,
+        importerId,
         currentQty,
-        currentAmount,
-        originalScreenshotCount: screenshots.length,
+        currentAmount: Math.round(currentAmount * 100) / 100,
+        originalScreenshotCount,
+        appliedCreditGbp,
+        fundedTotalGbp,
+        markupAppliedGbp,
+        previouslyFullyFunded,
       });
+      setEligibilityState("eligible");
+      setEligibilityMessage("");
     }
 
     void loadEligibility();
     return () => {
       cancelled = true;
     };
-  }, [orderId]);
-
-  if (!eligibleOrder) return null;
+  }, [orderId, eligibilityAttempt]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -259,13 +294,26 @@ export default function CustomerOrderCorrectionControl({ orderId }: { orderId: s
       return;
     }
 
-    if (replacementSelected && (attachmentSummary.status !== "ready" || replacementFiles.length < 1)) return;
-    if (replacementFiles.length > 0) {
-      if (replacementFiles.reduce((sum, file) => sum + file.size, 0) > MAX_ATTACHMENT_BYTES) {
+    const roundedAmount = Math.round(totalAmount * 100) / 100;
+    if (roundedAmount !== currentEligibleOrder.currentAmount) {
+      const proposedFundingGap = Math.round((roundedAmount + currentEligibleOrder.markupAppliedGbp - currentEligibleOrder.fundedTotalGbp) * 100) / 100;
+      if (proposedFundingGap <= 0.01) {
         setIsError(true);
-        setMessage("Replacement attachments must total no more than 3.5 MB.");
+        setMessage("This goods value would require account credit to be released or repaired. Enter a value that leaves more than £0.01 due, or leave it unchanged.");
         return;
       }
+      if (currentEligibleOrder.previouslyFullyFunded && roundedAmount <= currentEligibleOrder.currentAmount) {
+        setIsError(true);
+        setMessage("A fully credit-funded order can only change to a higher goods value that leaves a new amount due.");
+        return;
+      }
+    }
+
+    if (replacementSelected && (attachmentSummary.status !== "ready" || replacementFiles.length < 1)) return;
+    if (replacementFiles.length > 0 && replacementFiles.reduce((sum, file) => sum + file.size, 0) > MAX_ATTACHMENT_BYTES) {
+      setIsError(true);
+      setMessage("Replacement attachments must total no more than 3.5 MB.");
+      return;
     }
 
     setSubmitting(true);
@@ -280,7 +328,7 @@ export default function CustomerOrderCorrectionControl({ orderId }: { orderId: s
       const { error } = await (supabase as any).rpc("customer_correct_unprocessed_order_v1", {
         p_order_id: orderId,
         p_total_qty_declared: totalQty,
-        p_order_total_gbp_declared: Math.round(totalAmount * 100) / 100,
+        p_order_total_gbp_declared: roundedAmount,
         p_replacement_screenshot_urls: replacementUrls,
       });
       if (error) throw new Error(error.message ?? "Correction failed");
@@ -288,8 +336,9 @@ export default function CustomerOrderCorrectionControl({ orderId }: { orderId: s
       setEligibleOrder((current) => current ? {
         ...current,
         currentQty: totalQty,
-        currentAmount: Math.round(totalAmount * 100) / 100,
+        currentAmount: roundedAmount,
         originalScreenshotCount: replacementFiles.length > 0 ? replacementFiles.length : current.originalScreenshotCount,
+        previouslyFullyFunded: current.previouslyFullyFunded && roundedAmount > current.currentAmount ? false : current.previouslyFullyFunded,
       } : current);
       preparedFilesRef.current = [];
       selectionVersionRef.current += 1;
@@ -301,59 +350,102 @@ export default function CustomerOrderCorrectionControl({ orderId }: { orderId: s
       router.refresh();
     } catch (error) {
       const rawMessage = error instanceof Error ? error.message : "Correction failed";
-      if (isAuthoritativeBlocker(rawMessage)) setEligibleOrder(null);
-      setIsError(true);
-      setMessage(correctionError(rawMessage));
+      if (isAuthoritativeBlocker(rawMessage)) {
+        setEligibleOrder(null);
+        setEligibilityState("blocked");
+        setEligibilityMessage(correctionError(rawMessage));
+      } else {
+        setIsError(true);
+        setMessage(correctionError(rawMessage));
+      }
     } finally {
       setSubmitting(false);
     }
+  }
+
+  if (eligibilityState === "loading") {
+    return (
+      <div className="bg-slate-50 px-4 pt-3 xl:px-6">
+        <section className="mx-auto rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600">
+          Checking correction availability…
+        </section>
+      </div>
+    );
+  }
+
+  if (eligibilityState === "blocked") {
+    return (
+      <div className="bg-slate-50 px-4 pt-3 xl:px-6">
+        <section className="mx-auto rounded-xl border border-slate-200 bg-white p-3">
+          <p className="text-xs font-black uppercase tracking-wide text-slate-500">Order correction</p>
+          <p className="mt-1 text-sm font-semibold text-slate-700">{eligibilityMessage}</p>
+        </section>
+      </div>
+    );
+  }
+
+  if (eligibilityState === "check_failed" || !eligibleOrder) {
+    return (
+      <div className="bg-slate-50 px-4 pt-3 xl:px-6">
+        <section className="mx-auto rounded-xl border border-amber-200 bg-amber-50 p-3 text-amber-950">
+          <p className="text-xs font-black uppercase tracking-wide">Order correction</p>
+          <p className="mt-1 text-sm font-semibold">{eligibilityMessage || eligibilityCheckFailedMessage()}</p>
+          <button type="button" onClick={() => setEligibilityAttempt((current) => current + 1)} className="mt-2 rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-black text-amber-950">Check again</button>
+        </section>
+      </div>
+    );
   }
 
   return (
     <div className="bg-slate-50 px-4 pt-3 xl:px-6">
       <section className="mx-auto">
         <details open={isOpen} onToggle={(event) => setIsOpen(event.currentTarget.open)}>
-          <summary className="inline-flex cursor-pointer list-none rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm hover:bg-slate-50">Correct order</summary>
+          <summary className="inline-flex cursor-pointer list-none rounded-lg border border-sky-600 bg-sky-600 px-3 py-1.5 text-xs font-black text-white shadow-sm hover:bg-sky-700">Correct order</summary>
           <div className="mt-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-          <p className="mt-2 text-sm text-slate-600">You can correct the quantity, goods value or original attachments only before processing starts.</p>
-          <form onSubmit={handleSubmit} className="mt-4 grid gap-4" encType="multipart/form-data">
-            <div className="grid gap-3 sm:grid-cols-2">
-              <label className="text-sm font-semibold text-slate-700">
-                Quantity
-                <input name="total_qty_declared" type="number" min="1" step="1" required defaultValue={eligibleOrder.currentQty} className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-slate-950" />
-              </label>
-              <label className="text-sm font-semibold text-slate-700">
-                Goods value
-                <div className="mt-1 flex rounded-xl border border-slate-300 bg-white">
-                  <span className="px-3 py-2 font-semibold text-slate-500">£</span>
-                  <input name="order_total_gbp_declared" type="number" min="0.01" step="0.01" required defaultValue={eligibleOrder.currentAmount.toFixed(2)} className="min-w-0 flex-1 rounded-r-xl px-2 py-2 text-slate-950 outline-none" />
-                </div>
-              </label>
-            </div>
-
-            {eligibleOrder.originalScreenshotCount > 0 ? (
-              <label className="text-sm font-semibold text-slate-700">
-                Replace original attachments <span className="font-normal text-slate-500">(optional)</span>
-                <input name="replacement_screenshots" type="file" accept="image/*" multiple onChange={handleAttachmentChange} className="mt-1 block w-full rounded-xl border border-slate-300 bg-white p-2 text-sm" />
-                <span className="mt-1 block text-xs font-medium text-slate-500">
-                  Select one or more images to replace the complete existing set of {eligibleOrder.originalScreenshotCount} original {eligibleOrder.originalScreenshotCount === 1 ? "attachment" : "attachments"}. Prepared replacements must total 3.5 MB or less.
-                </span>
-                {attachmentSummary.status === "optimising" ? <span className="mt-1 block text-xs text-slate-500">Optimising attachments…</span> : null}
-                {attachmentSummary.status === "ready" ? <span className="mt-1 block text-xs text-slate-500">{attachmentSummary.count} {attachmentSummary.count === 1 ? "image" : "images"} ready ({formatMb(attachmentSummary.uploadBytes)} MB).</span> : null}
-                {attachmentSummary.error ? <span role="alert" className="mt-1 block text-xs font-semibold text-rose-700">{attachmentSummary.error}</span> : null}
-              </label>
+            <p className="mt-2 text-sm text-slate-600">You can correct the quantity, goods value or original attachments only before processing starts.</p>
+            {eligibleOrder.appliedCreditGbp > 0.01 ? (
+              <p className="mt-3 rounded-xl border border-cyan-100 bg-cyan-50 p-3 text-sm font-semibold text-cyan-900">
+                £{eligibleOrder.appliedCreditGbp.toFixed(2)} account credit is already applied. It stays unchanged; correcting the goods value changes only the remaining amount due.
+              </p>
             ) : null}
+            <form onSubmit={handleSubmit} className="mt-4 grid gap-4" encType="multipart/form-data">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="text-sm font-semibold text-slate-700">
+                  Quantity
+                  <input name="total_qty_declared" type="number" min="1" step="1" required defaultValue={eligibleOrder.currentQty} className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-slate-950" />
+                </label>
+                <label className="text-sm font-semibold text-slate-700">
+                  Goods value
+                  <div className="mt-1 flex rounded-xl border border-slate-300 bg-white">
+                    <span className="px-3 py-2 font-semibold text-slate-500">£</span>
+                    <input name="order_total_gbp_declared" type="number" min="0.01" step="0.01" required defaultValue={eligibleOrder.currentAmount.toFixed(2)} className="min-w-0 flex-1 rounded-r-xl px-2 py-2 text-slate-950 outline-none" />
+                  </div>
+                </label>
+              </div>
 
-            {message ? (
-              <p role={isError ? "alert" : "status"} className={`rounded-xl border p-3 text-sm font-semibold ${isError ? "border-rose-200 bg-rose-50 text-rose-800" : "border-emerald-200 bg-emerald-50 text-emerald-800"}`}>{message}</p>
-            ) : null}
+              {eligibleOrder.originalScreenshotCount > 0 ? (
+                <label className="text-sm font-semibold text-slate-700">
+                  Replace original attachments <span className="font-normal text-slate-500">(optional)</span>
+                  <input name="replacement_screenshots" type="file" accept="image/*" multiple onChange={handleAttachmentChange} className="mt-1 block w-full rounded-xl border border-slate-300 bg-white p-2 text-sm" />
+                  <span className="mt-1 block text-xs font-medium text-slate-500">
+                    Select one or more images to replace the complete existing set of {eligibleOrder.originalScreenshotCount} original {eligibleOrder.originalScreenshotCount === 1 ? "attachment" : "attachments"}. Prepared replacements must total 3.5 MB or less.
+                  </span>
+                  {attachmentSummary.status === "optimising" ? <span className="mt-1 block text-xs text-slate-500">Optimising attachments…</span> : null}
+                  {attachmentSummary.status === "ready" ? <span className="mt-1 block text-xs text-slate-500">{attachmentSummary.count} {attachmentSummary.count === 1 ? "image" : "images"} ready ({formatMb(attachmentSummary.uploadBytes)} MB).</span> : null}
+                  {attachmentSummary.error ? <span role="alert" className="mt-1 block text-xs font-semibold text-rose-700">{attachmentSummary.error}</span> : null}
+                </label>
+              ) : null}
 
-            <div className="flex justify-end">
-              <button type="submit" disabled={submitting || attachmentSummary.status === "optimising" || Boolean(attachmentSummary.error)} className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-black text-white disabled:bg-slate-400">
-                {submitting ? "Saving correction…" : "Save correction"}
-              </button>
-            </div>
-          </form>
+              {message ? (
+                <p role={isError ? "alert" : "status"} className={`rounded-xl border p-3 text-sm font-semibold ${isError ? "border-rose-200 bg-rose-50 text-rose-800" : "border-emerald-200 bg-emerald-50 text-emerald-800"}`}>{message}</p>
+              ) : null}
+
+              <div className="flex justify-end">
+                <button type="submit" disabled={submitting || attachmentSummary.status === "optimising" || Boolean(attachmentSummary.error)} className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-black text-white disabled:bg-slate-400">
+                  {submitting ? "Saving correction…" : "Save correction"}
+                </button>
+              </div>
+            </form>
           </div>
         </details>
       </section>
