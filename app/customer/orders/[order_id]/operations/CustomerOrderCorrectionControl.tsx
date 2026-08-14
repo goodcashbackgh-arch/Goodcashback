@@ -26,6 +26,11 @@ type EligibleOrder = {
   importerId: string;
   currentQty: number;
   currentAmount: number;
+  originalScreenshotCount: number;
+  appliedCreditGbp: number;
+  fundedTotalGbp: number;
+  markupAppliedGbp: number;
+  previouslyFullyFunded: boolean;
 };
 
 function correctionError(message: string) {
@@ -201,31 +206,7 @@ export default function CustomerOrderCorrectionControl({ orderId }: { orderId: s
       setEligibilityState("loading");
       setEligibilityMessage("");
 
-      const { data: { user }, error: userError } = await supabase.auth.getUser();
-      if (userError || !user || cancelled) {
-        failCheck();
-        return;
-      }
-
-      const { data: order, error: orderError } = await supabase
-        .from("orders")
-        .select("id, importer_id, total_qty_declared, order_total_gbp_declared")
-        .eq("id", orderId)
-        .maybeSingle();
-      if (orderError || !order || cancelled) {
-        failCheck();
-        return;
-      }
-
-      const currentQty = Number(order.total_qty_declared ?? 0);
-      const currentAmount = Number(order.order_total_gbp_declared ?? 0);
-      if (!order.importer_id || !Number.isInteger(currentQty) || currentQty <= 0 || !Number.isFinite(currentAmount) || currentAmount <= 0) {
-        failCheck();
-        return;
-      }
-
-      const roundedAmount = Math.round(currentAmount * 100) / 100;
-      const { error: eligibilityError } = await (supabase as any).rpc("customer_order_correction_eligibility_v1", {
+      const { data: snapshot, error: eligibilityError } = await (supabase as any).rpc("customer_order_correction_eligibility_v1", {
         p_order_id: orderId,
       });
       if (cancelled) return;
@@ -242,10 +223,41 @@ export default function CustomerOrderCorrectionControl({ orderId }: { orderId: s
         return;
       }
 
+      const importerId = typeof snapshot?.importer_id === "string" ? snapshot.importer_id : "";
+      const currentQty = Number(snapshot?.current_qty);
+      const currentAmount = Number(snapshot?.current_amount);
+      const originalScreenshotCount = Number(snapshot?.original_screenshot_count ?? 0);
+      const appliedCreditGbp = Number(snapshot?.applied_credit_gbp ?? 0);
+      const fundedTotalGbp = Number(snapshot?.funded_total_gbp ?? 0);
+      const markupAppliedGbp = Number(snapshot?.markup_applied_gbp ?? 0);
+      const previouslyFullyFunded = snapshot?.previously_fully_funded === true;
+
+      if (
+        snapshot?.ok !== true
+        || snapshot?.eligible !== true
+        || snapshot?.changed !== false
+        || !importerId
+        || !Number.isInteger(currentQty)
+        || currentQty <= 0
+        || !Number.isFinite(currentAmount)
+        || currentAmount <= 0
+        || !Number.isInteger(originalScreenshotCount)
+        || originalScreenshotCount < 0
+        || ![appliedCreditGbp, fundedTotalGbp, markupAppliedGbp].every(Number.isFinite)
+      ) {
+        failCheck();
+        return;
+      }
+
       setEligibleOrder({
-        importerId: order.importer_id,
+        importerId,
         currentQty,
-        currentAmount: roundedAmount,
+        currentAmount: Math.round(currentAmount * 100) / 100,
+        originalScreenshotCount,
+        appliedCreditGbp,
+        fundedTotalGbp,
+        markupAppliedGbp,
+        previouslyFullyFunded,
       });
       setEligibilityState("eligible");
       setEligibilityMessage("");
@@ -283,6 +295,19 @@ export default function CustomerOrderCorrectionControl({ orderId }: { orderId: s
     }
 
     const roundedAmount = Math.round(totalAmount * 100) / 100;
+    if (roundedAmount !== currentEligibleOrder.currentAmount) {
+      const proposedFundingGap = Math.round((roundedAmount + currentEligibleOrder.markupAppliedGbp - currentEligibleOrder.fundedTotalGbp) * 100) / 100;
+      if (proposedFundingGap <= 0.01) {
+        setIsError(true);
+        setMessage("This goods value would require account credit to be released or repaired. Enter a value that leaves more than £0.01 due, or leave it unchanged.");
+        return;
+      }
+      if (currentEligibleOrder.previouslyFullyFunded && roundedAmount <= currentEligibleOrder.currentAmount) {
+        setIsError(true);
+        setMessage("A fully credit-funded order can only change to a higher goods value that leaves a new amount due.");
+        return;
+      }
+    }
 
     if (replacementSelected && (attachmentSummary.status !== "ready" || replacementFiles.length < 1)) return;
     if (replacementFiles.length > 0 && replacementFiles.reduce((sum, file) => sum + file.size, 0) > MAX_ATTACHMENT_BYTES) {
@@ -312,6 +337,8 @@ export default function CustomerOrderCorrectionControl({ orderId }: { orderId: s
         ...current,
         currentQty: totalQty,
         currentAmount: roundedAmount,
+        originalScreenshotCount: replacementFiles.length > 0 ? replacementFiles.length : current.originalScreenshotCount,
+        previouslyFullyFunded: current.previouslyFullyFunded && roundedAmount > current.currentAmount ? false : current.previouslyFullyFunded,
       } : current);
       preparedFilesRef.current = [];
       selectionVersionRef.current += 1;
@@ -376,6 +403,11 @@ export default function CustomerOrderCorrectionControl({ orderId }: { orderId: s
           <summary className="inline-flex cursor-pointer list-none rounded-lg border border-sky-600 bg-sky-600 px-3 py-1.5 text-xs font-black text-white shadow-sm hover:bg-sky-700">Correct order</summary>
           <div className="mt-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <p className="mt-2 text-sm text-slate-600">You can correct the quantity, goods value or original attachments only before processing starts.</p>
+            {eligibleOrder.appliedCreditGbp > 0.01 ? (
+              <p className="mt-3 rounded-xl border border-cyan-100 bg-cyan-50 p-3 text-sm font-semibold text-cyan-900">
+                £{eligibleOrder.appliedCreditGbp.toFixed(2)} account credit is already applied. It stays unchanged; correcting the goods value changes only the remaining amount due.
+              </p>
+            ) : null}
             <form onSubmit={handleSubmit} className="mt-4 grid gap-4" encType="multipart/form-data">
               <div className="grid gap-3 sm:grid-cols-2">
                 <label className="text-sm font-semibold text-slate-700">
@@ -391,14 +423,18 @@ export default function CustomerOrderCorrectionControl({ orderId }: { orderId: s
                 </label>
               </div>
 
-              <label className="text-sm font-semibold text-slate-700">
-                Replace original attachments <span className="font-normal text-slate-500">(optional)</span>
-                <input name="replacement_screenshots" type="file" accept="image/*" multiple onChange={handleAttachmentChange} className="mt-1 block w-full rounded-xl border border-slate-300 bg-white p-2 text-sm" />
-                <span className="mt-1 block text-xs font-medium text-slate-500">Select one or more images to replace the complete existing set of original attachments. Prepared replacements must total 3.5 MB or less.</span>
-                {attachmentSummary.status === "optimising" ? <span className="mt-1 block text-xs text-slate-500">Optimising attachments…</span> : null}
-                {attachmentSummary.status === "ready" ? <span className="mt-1 block text-xs text-slate-500">{attachmentSummary.count} {attachmentSummary.count === 1 ? "image" : "images"} ready ({formatMb(attachmentSummary.uploadBytes)} MB).</span> : null}
-                {attachmentSummary.error ? <span role="alert" className="mt-1 block text-xs font-semibold text-rose-700">{attachmentSummary.error}</span> : null}
-              </label>
+              {eligibleOrder.originalScreenshotCount > 0 ? (
+                <label className="text-sm font-semibold text-slate-700">
+                  Replace original attachments <span className="font-normal text-slate-500">(optional)</span>
+                  <input name="replacement_screenshots" type="file" accept="image/*" multiple onChange={handleAttachmentChange} className="mt-1 block w-full rounded-xl border border-slate-300 bg-white p-2 text-sm" />
+                  <span className="mt-1 block text-xs font-medium text-slate-500">
+                    Select one or more images to replace the complete existing set of {eligibleOrder.originalScreenshotCount} original {eligibleOrder.originalScreenshotCount === 1 ? "attachment" : "attachments"}. Prepared replacements must total 3.5 MB or less.
+                  </span>
+                  {attachmentSummary.status === "optimising" ? <span className="mt-1 block text-xs text-slate-500">Optimising attachments…</span> : null}
+                  {attachmentSummary.status === "ready" ? <span className="mt-1 block text-xs text-slate-500">{attachmentSummary.count} {attachmentSummary.count === 1 ? "image" : "images"} ready ({formatMb(attachmentSummary.uploadBytes)} MB).</span> : null}
+                  {attachmentSummary.error ? <span role="alert" className="mt-1 block text-xs font-semibold text-rose-700">{attachmentSummary.error}</span> : null}
+                </label>
+              ) : null}
 
               {message ? (
                 <p role={isError ? "alert" : "status"} className={`rounded-xl border p-3 text-sm font-semibold ${isError ? "border-rose-200 bg-rose-50 text-rose-800" : "border-emerald-200 bg-emerald-50 text-emerald-800"}`}>{message}</p>
