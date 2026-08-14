@@ -6,6 +6,8 @@
 
 **Repository baseline inspected:** `main` at `7c5f2fa1c175b07a8a562564f4d591481c3bc196`
 
+**Corrective UI baseline inspected:** `main` at `69227f58d4febd6837c6f987450a9c6373635976`
+
 ## 1. Purpose
 
 This amendment ports only the relevant, already-working importer reconciliation line-review behaviour into the existing supervisor exact-invoice route.
@@ -50,7 +52,7 @@ Non-physical financial classification must not change `eligible_for_invoice_yn` 
 
 ## 4. Authorised production scope
 
-Exactly these production files may change:
+Exactly these production files may change for the v1.4 importer-parity build:
 
 ```text
 app/internal/reconciliation/[order_id]/invoice-bundle/[supplier_invoice_id]/page.tsx
@@ -68,6 +70,14 @@ No other production file is authorised to change.
 A focused regression file may be added under `docs/testing/`.
 
 No SQL migration is authorised.
+
+For the corrective Park-UI-gate build on baseline `69227f58d4febd6837c6f987450a9c6373635976`, the only authorised production change is:
+
+```text
+app/internal/reconciliation/[order_id]/invoice-bundle/[supplier_invoice_id]/page.tsx
+```
+
+The existing `app/internal/reconciliation/[order_id]/actions.ts` implementation is frozen for this correction and must not change.
 
 ## 5. Importer-parity mapping
 
@@ -244,15 +254,21 @@ Its RPC arguments, server-side baseline authority, revalidation and successful a
 
 No new physical progression authority is authorised.
 
-## 13. Non-physical Park UI — importer parity
+## 13. Non-physical Park UI — corrective gate
 
-The relevant importer Park behaviour must be ported without a new supervisor classifier.
+The supervisor exact-invoice Park form must render only for a line already identified by the existing page-level `classificationOnly = obviousNonPhysical(line)` condition and only while that line is neither progressed nor locked.
 
-For an unresolved and unlocked line (`!done && !locked`), the supervisor line card may show the explicit financial-type Park form using `suggestedFinancialType(line)` as the default.
+The exact rendering authority is:
 
-Obvious financial rows additionally display the importer-equivalent `Non-physical classification required` state/warning and must not be enabled for physical progression.
+```text
+classificationOnly && !done && !locked
+```
 
-The explicit financial-type allow-list is exactly:
+An unresolved physical candidate with `classificationOnly = false` must not display the non-physical financial-type dropdown or `Park` button. This is a presentation gate only; it does not change physical progression eligibility, line-state semantics, the existing classifier, the existing Park action, or any backend authority.
+
+Obvious financial rows continue to display the existing `Non-physical classification required` state/warning and remain disabled for physical progression.
+
+The explicit financial-type allow-list remains exactly:
 
 ```text
 delivery
@@ -263,35 +279,20 @@ rounding
 other_non_physical
 ```
 
-No additional value is authorised. No automatic Park/classification is authorised.
+No additional value is authorised. No automatic Park/classification is authorised. No new classifier or heuristic is authorised.
 
-This v1.4 UI wrapper must not add a new server-side `obviousNonPhysical` requirement; importer parity deliberately leaves the explicit user classification decision available for an unresolved unlocked line and delegates final write validity to the existing non-physical authority.
+The existing `obviousNonPhysical` and `suggestedFinancialType` implementations must remain unchanged.
 
 ## 14. New supervisor Park server action
 
-Add exactly one new server action to:
+The existing v1.4 server action remains:
 
 ```text
 app/internal/reconciliation/[order_id]/actions.ts
-```
-
-Suggested identity:
-
-```text
 supervisorResolveSupplierInvoiceLineNonPhysicalAction
 ```
 
-Form inputs:
-
-```text
-order_id
-supplier_invoice_id
-line_id
-financial_type
-notes
-```
-
-The action must mirror the importer non-physical action where relevant and make only these staff/exact-route substitutions:
+Its established contract remains unchanged:
 
 1. reuse the existing `requireSupervisorOrAdmin()` guard;
 2. validate `financial_type` against the exact six-value importer allow-list;
@@ -301,7 +302,7 @@ The action must mirror the importer non-physical action where relevant and make 
 6. never write directly to `supplier_invoice_line_resolutions` or `supplier_invoice_lines`;
 7. redirect success/error back to the same exact supervisor invoice route.
 
-The exact order -> invoice -> line proof is a route-isolation safeguard only. It must not become a new classification or accounting rule.
+For the corrective Park-UI-gate build, this action file is frozen and no change to it is authorised.
 
 ## 15. Supervisor Park redirect/revalidation
 
@@ -337,9 +338,19 @@ Order discount   N
 Delivery         N
 ```
 
-The page must show all five. Physical bulk selection must enable only the first three. The financial rows must display importer-parity classification treatment.
+The page must show all five. Physical bulk selection must enable only the first three. The three physical rows must not display a non-physical Park control. The discount and delivery rows must retain their explicit financial classification/Park treatment.
 
-After explicit Park:
+Expected UI treatment:
+
+```text
+Air Fryer        -> physical checkbox only; no Park UI
+Food Processor   -> physical checkbox only; no Park UI
+Blender          -> physical checkbox only; no Park UI
+Order discount   -> non-physical classification required; discount + Park
+Delivery         -> non-physical classification required; delivery + Park
+```
+
+After explicit Park of the two financial rows:
 
 ```text
 Air Fryer        N
@@ -405,6 +416,12 @@ app/importer/**
 
 including the importer page, importer actions, importer non-physical action and reusable bulk-selection component.
 
+For the corrective Park-UI-gate build it must also not modify:
+
+```text
+app/internal/reconciliation/[order_id]/actions.ts
+```
+
 It must not modify:
 
 ```text
@@ -430,36 +447,45 @@ It must not modify or add:
 - customer sales release;
 - Sage;
 - VAT;
-- loyalty/final settlement/completion.
+- loyalty/final settlement/completion;
+- unrelated display defects, including the existing SKU `[object Object]` display issue.
 
 ## 20. Mandatory focused regression
 
-Before merge, a focused regression must prove at minimum:
+Before merge, the focused regression must prove at minimum:
 
-1. this v1.4 authority exists and is the documented governing scope;
-2. only the two authorised production files change;
+1. this v1.4 authority exists and documents the corrective Park-UI gate;
+2. for the corrective build, only the exact supervisor invoice page changes in production;
 3. the all-line exact invoice review is not gated by `physicalCandidates.length`;
-4. resolution-state handling mirrors importer semantics;
-5. dispute-state handling mirrors importer semantics;
-6. `obviousNonPhysical` vocabulary remains aligned with importer;
-7. `suggestedFinancialType` vocabulary remains aligned with importer;
-8. checkboxes use `name="line_ids"`, `form="bulk-progress-form"` and disabled state from `canProgress`;
-9. the existing importer `BulkLineSelectionControls` is imported and remains byte-for-byte unchanged;
-10. the Park UI follows unresolved/unlocked importer behaviour;
-11. the financial allow-list is identical to importer;
-12. no new server-side `obviousNonPhysical` restriction is introduced in the Park wrapper;
-13. the Park wrapper reuses `requireSupervisorOrAdmin`;
-14. the Park wrapper proves exact order -> invoice -> line membership;
-15. the Park wrapper calls `staff_resolve_supplier_invoice_line_non_physical` and never the operator RPC;
-16. the Park wrapper does not directly mutate resolution/line tables;
-17. the existing supervisor progression action/RPC wiring remains otherwise unchanged;
+4. resolution-state handling remains unchanged;
+5. dispute-state handling remains unchanged;
+6. `obviousNonPhysical` vocabulary remains aligned with importer and unchanged;
+7. `suggestedFinancialType` vocabulary remains aligned with importer and unchanged;
+8. checkboxes retain `name="line_ids"`, `form="bulk-progress-form"` and disabled state from `canProgress`;
+9. the existing importer `BulkLineSelectionControls` remains byte-for-byte unchanged;
+10. the Park form rendering condition is exactly `classificationOnly && !done && !locked`;
+11. a bare `!done && !locked` condition is not the standalone Park-form rendering authority;
+12. unresolved physical rows remain physical candidates and do not expose the Park form;
+13. obvious non-physical rows remain excluded from physical progression and retain the Park form;
+14. the financial allow-list is unchanged;
+15. `app/internal/reconciliation/[order_id]/actions.ts` is unchanged;
+16. the existing supervisor Park action remains unchanged;
+17. the existing supervisor progression action/RPC wiring remains unchanged;
 18. no SQL migration is added;
 19. importer files are byte-for-byte unchanged;
 20. accounting and other frozen production files remain unchanged.
 
 ## 21. Build stop rule
 
-If this work appears to require modifying an importer file, database RPC/migration, accounting code, tracking/shipment, exception handling, order-value adjustment logic, approval logic or any unrelated application route:
+If this corrective work appears to require modifying anything other than:
+
+```text
+docs/governing-pack/architecture/MULTI_SUPPLIER_INVOICE_ORDER_CONTROL_ADDENDUM_v1_4.md
+app/internal/reconciliation/[order_id]/invoice-bundle/[supplier_invoice_id]/page.tsx
+docs/testing/20260814_supervisor_exact_invoice_importer_parity_regression_v1.mjs
+```
+
+then:
 
 ```text
 STOP
@@ -469,6 +495,6 @@ do not expand v1.4
 
 ## 22. Acceptance rule
 
-The build is complete only when the supervisor exact-invoice page uses the proven importer line-review model for the relevant parts: every exact-invoice line remains visible; the same resolution/dispute/classification semantics are used; bulk selection affects only existing supervisor-progressable physical rows; unresolved unlocked rows may be explicitly parked using the same importer financial-type model through the existing staff authority; physical progression continues through the existing supervisor authority; exact sibling isolation is preserved; and importer, database, accounting and downstream working behaviour remain unchanged.
+The corrective build is complete only when every exact-invoice line remains visible; physical progression and bulk selection remain unchanged; unresolved physical rows no longer expose the non-physical dropdown/Park control; obvious non-physical financial rows still expose the existing classification/Park control through the exact rendering condition `classificationOnly && !done && !locked`; the existing supervisor Park and physical progression authorities remain unchanged; exact sibling isolation is preserved; and importer, database, accounting and downstream working behaviour remain unchanged.
 
 This v1.4 amendment is the governing authority for the implementation.
