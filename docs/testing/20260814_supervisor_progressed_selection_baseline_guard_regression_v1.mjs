@@ -30,6 +30,15 @@ assert(gitBlobSha(importerActions) === "0e01ed8b98a594c5757ef595085ff0cd343381a2
 assert(gitBlobSha(internalActions) === "4e8eb348f7da7263bb86f3e971ba68b3010edef6", "Supervisor action wiring changed.");
 assert(gitBlobSha(exactPage) === "b515d8e990987cc10bc113b1fa12c08d6c45a9a4", "Exact supervisor page changed in the edge-case correction.");
 
+// Exact defect/fix: prior function contained the exclusion; replacement must be byte-for-byte
+// identical to the prior governed migration after removing that one predicate line.
+const staleExclusion = "and not (sil.id = any(p_line_ids))";
+const staleExclusionLine = "    and not (sil.id = any(p_line_ids))\n";
+assert(prior.includes(staleExclusion), "Expected defect predicate is not present in the prior governed migration.");
+assert(!migration.includes(staleExclusion), "Already-progressed selected lines are still excluded from current progressed totals.");
+assert(prior.includes(staleExclusionLine), "Expected exact defect line is not present in prior migration.");
+assert(migration === prior.replace(staleExclusionLine, ""), "Replacement RPC drifted beyond the single authorised predicate removal.");
+
 // Function contract/security/write semantics remain present.
 for (const required of [
   "CREATE OR REPLACE FUNCTION public.staff_progress_supplier_invoice_lines(p_order_id uuid, p_supplier_invoice_id uuid, p_line_ids uuid[], p_progress_notes text DEFAULT NULL::text)",
@@ -54,11 +63,6 @@ for (const required of [
   "amount_confirmed = coalesce(sil.amount_confirmed, sil.amount_inc_vat_gbp)",
   "grant execute on function public.staff_progress_supplier_invoice_lines(uuid, uuid, uuid[], text) to authenticated;",
 ]) assert(migration.toLowerCase().includes(required.toLowerCase()), `Missing preserved contract: ${required}`);
-
-// Exact defect/fix: prior function contained the exclusion; replacement must not.
-const staleExclusion = "and not (sil.id = any(p_line_ids))";
-assert(prior.includes(staleExclusion), "Expected defect predicate is not present in the prior governed migration.");
-assert(!migration.includes(staleExclusion), "Already-progressed selected lines are still excluded from current progressed totals.");
 
 // Selected proposal must remain new/unprogressed only.
 assert(
@@ -96,6 +100,7 @@ assert(753.00 <= baselineValue + tolerance, "Existing £0.01 tolerance changed."
 
 console.log(JSON.stringify({
   regression_result: "PASS",
+  exact_rpc_delta: "prior v1.2 function minus one stale selected-ID exclusion predicate",
   defect_removed: staleExclusion,
   frozen_application_blobs: {
     importer_page: gitBlobSha(importerPage),
