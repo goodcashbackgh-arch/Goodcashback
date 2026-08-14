@@ -119,6 +119,7 @@ async function detectNextEligibleMonthlyVatPeriod(supabase: Awaited<ReturnType<t
     .from("vat_return_runs")
     .select("id, return_period_label, period_start_date, period_end_date, status, created_at")
     .in("status", ACTIVE_VAT_RUN_STATUSES)
+    .is("sequence_excluded_at", null)
     .order("period_start_date", { ascending: true })
     .order("created_at", { ascending: true })
     .limit(1)
