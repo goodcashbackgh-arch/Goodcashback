@@ -234,7 +234,7 @@ export default async function ExactSupplierInvoiceSupervisorPage({
                     Qty {Number(line.qty ?? 0)} · {gbp(line.amount_inc_vat_gbp)}{line.retailer_sku ? ` · SKU ${line.retailer_sku}` : ""}
                   </p>
 
-                  {!done && !locked ? (
+                  {classificationOnly && !done && !locked ? (
                     <form action={supervisorResolveSupplierInvoiceLineNonPhysicalAction} className="mt-3 flex flex-wrap gap-2">
                       <input type="hidden" name="order_id" value={orderId} />
                       <input type="hidden" name="supplier_invoice_id" value={invoiceId} />
