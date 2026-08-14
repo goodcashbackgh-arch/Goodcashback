@@ -40,9 +40,9 @@ BEGIN
     RAISE EXCEPTION 'VAT draft generator fingerprint drift: expected 05f3be1b133f8726b26a98cc8c0c3082, got %. Refusing overwrite.', v_hash;
   END IF;
 
-  SELECT count(*)
-    INTO v_old_count
-  FROM regexp_matches(v_definition, 'r\\.status <> ''matched_to_sage_locked''', 'g');
+  v_old_count := (
+    length(v_definition) - length(replace(v_definition, v_old_predicate, ''))
+  ) / length(v_old_predicate);
 
   IF v_old_count <> 1 THEN
     RAISE EXCEPTION 'Expected exactly one reviewed stale duplicate predicate; found %. Refusing replacement.', v_old_count;
@@ -93,9 +93,8 @@ $migration$;
 DO $postflight$
 DECLARE
   v_definition text;
-  v_old_count integer;
-  v_new_status_count integer;
-  v_sequence_count integer;
+  v_old_predicate text := E'r.status <> \'matched_to_sage_locked\'';
+  v_new_predicate text := E'r.status NOT IN (\'matched_to_sage_locked\', \'superseded\')\n      AND r.sequence_excluded_at IS NULL';
   v_june_active_count integer;
 BEGIN
   SELECT pg_get_functiondef(p.oid)
@@ -107,17 +106,12 @@ BEGIN
     AND pg_get_function_identity_arguments(p.oid) = 'p_period_start_date date, p_period_end_date date, p_return_period_label text'
   LIMIT 1;
 
-  SELECT count(*) INTO v_old_count
-  FROM regexp_matches(v_definition, 'r\\.status <> ''matched_to_sage_locked''', 'g');
+  IF position(v_old_predicate IN v_definition) > 0 THEN
+    RAISE EXCEPTION 'Postflight failed: stale same-period predicate is still present.';
+  END IF;
 
-  SELECT count(*) INTO v_new_status_count
-  FROM regexp_matches(v_definition, 'r\\.status NOT IN \\(\'matched_to_sage_locked\', \'superseded\'\\)', 'g');
-
-  SELECT count(*) INTO v_sequence_count
-  FROM regexp_matches(v_definition, 'r\\.sequence_excluded_at IS NULL', 'g');
-
-  IF v_old_count <> 0 OR v_new_status_count <> 1 OR v_sequence_count <> 1 THEN
-    RAISE EXCEPTION 'Postflight predicate mismatch: old %, corrected-status %, sequence-exclusion %.', v_old_count, v_new_status_count, v_sequence_count;
+  IF position(v_new_predicate IN v_definition) = 0 THEN
+    RAISE EXCEPTION 'Postflight failed: corrected same-period predicate is missing.';
   END IF;
 
   SELECT count(*) INTO v_june_active_count
