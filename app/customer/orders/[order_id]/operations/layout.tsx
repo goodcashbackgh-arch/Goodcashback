@@ -1,5 +1,6 @@
 import { createClient } from "@/utils/supabase/server";
 import SettlementCustomerPatch from "./SettlementCustomerPatch";
+import CustomerOrderCorrectionControl from "./CustomerOrderCorrectionControl";
 
 type SettlementRow = {
   credit_added_to_account_gbp: number | string | null;
@@ -47,6 +48,7 @@ export default async function CustomerOrderOperationsLayout({
           </section>
         </div>
       ) : null}
+      <CustomerOrderCorrectionControl orderId={orderId} />
       {children}
     </>
   );
