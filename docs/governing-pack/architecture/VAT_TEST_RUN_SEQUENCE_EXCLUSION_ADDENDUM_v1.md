@@ -118,3 +118,73 @@ The build is acceptable only when:
 7. latest locked May remains unchanged;
 8. the next monthly period remains June 2026;
 9. no VAT box, source line, blocker, journal, Sage payload or submission evidence is mutated by the exclusion operation.
+
+## 9. Same-period regeneration after supersede
+
+A later live verification found one additional stale sequence predicate inside `generate_vat_return_draft_run_v1`.
+
+Historical June and July 2026 draft packs were deliberately marked `superseded` by `20260531_supersede_june_july_vat_drafts_v1.sql` so that they no longer participate in the active VAT sequence. The draft generator nevertheless still rejects a new pack for the same dates whenever any same-period row has a status other than `matched_to_sage_locked`.
+
+That predicate is inconsistent with the already-governed meaning of `superseded` and with the explicit sequence-exclusion metadata introduced by this addendum.
+
+The same-period duplicate guard must therefore use the same active-participation semantics as the other sequence gates:
+
+```text
+same-period row blocks generation only when:
+status NOT IN ('matched_to_sage_locked', 'superseded')
+AND sequence_excluded_at IS NULL
+```
+
+Consequences:
+
+- a historical `superseded` pack does not block regeneration of that same monthly period;
+- an explicitly sequence-excluded test/history row does not block regeneration of that same monthly period;
+- every genuinely active same-period row continues to block exactly as before;
+- locked history continues not to block exactly as before.
+
+## 10. Generator replacement safety
+
+The live generator must not be reconstructed from an old migration file.
+
+Before replacement, the correction migration must:
+
+1. resolve the exact deployed signature `generate_vat_return_draft_run_v1(date,date,text)`;
+2. require deployed function MD5 `05f3be1b133f8726b26a98cc8c0c3082`;
+3. require exactly one occurrence of the reviewed stale predicate;
+4. derive the replacement from `pg_get_functiondef()` of that exact live function;
+5. replace only the stale same-period predicate;
+6. execute the resulting function definition without altering any other calculation, source-line, blocker, grant, security-definer or search-path behavior.
+
+If the fingerprint or reviewed predicate differs, the migration must abort rather than overwrite newer work.
+
+## 11. Verified historical same-period facts
+
+Read-only verification on 14 August 2026 established:
+
+```text
+June 2026 historical run:
+id d8a1b7f8-b419-4cb2-b246-f203bcc46f8a
+status superseded
+reason Out-of-sequence draft generated before earlier VAT return was filed
+
+July 2026 historical run:
+id fbd18b51-228a-47c3-a9f7-b6cf94bd14e1
+status superseded
+reason Out-of-sequence draft generated before earlier VAT return was filed
+```
+
+No genuinely active June 2026 run existed under the corrected guard at verification time.
+
+The correction must not update, delete, reopen or reclassify either historical superseded run.
+
+## 12. Extended acceptance criteria
+
+The generator correction is acceptable only when all of the following hold:
+
+1. the live generator replacement starts from hash `05f3be1b133f8726b26a98cc8c0c3082`;
+2. the stale predicate no longer exists after replacement;
+3. the generator contains both `status NOT IN ('matched_to_sage_locked', 'superseded')` and `sequence_excluded_at IS NULL` in its same-period duplicate guard;
+4. the June and July historical rows remain `superseded` with the same IDs and reasons;
+5. there is no genuinely active June same-period blocker before generation;
+6. no VAT calculation, source-line generation, blocker calculation, Sage behavior, journal behavior, evidence behavior, permissions or UI behavior changes;
+7. a new June 2026 draft can be generated through the existing normal action without bypass SQL or direct row insertion.
