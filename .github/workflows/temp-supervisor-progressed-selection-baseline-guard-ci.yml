@@ -1,0 +1,19 @@
+name: Temporary supervisor progressed-selection baseline validation
+
+on:
+  push:
+    branches:
+      - test/supervisor-progressed-selection-baseline-guard-ci
+
+permissions:
+  contents: read
+
+jobs:
+  source-regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact tested source
+        uses: actions/checkout@v4
+      - name: Run governed source regression
+        run: node docs/testing/20260814_supervisor_progressed_selection_baseline_guard_regression_v1.mjs
