@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - test/pr250-static-regression-ci-20260814
+  pull_request:
+    branches:
+      - agent/customer-order-review-correction
 
 permissions:
   contents: read
