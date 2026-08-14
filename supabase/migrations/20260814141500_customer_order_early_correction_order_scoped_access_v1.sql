@@ -126,6 +126,10 @@ SET search_path = public, pg_temp
 AS $$
 DECLARE
   v_order record;
+  v_funding record;
+  v_probe jsonb;
+  v_original_screenshot_count integer := 0;
+  v_previously_fully_funded boolean := false;
 BEGIN
   IF auth.uid() IS NULL THEN
     RAISE EXCEPTION 'Unauthenticated user.';
@@ -137,8 +141,10 @@ BEGIN
 
   SELECT
     o.id,
+    o.importer_id,
     o.total_qty_declared,
-    o.order_total_gbp_declared
+    o.order_total_gbp_declared,
+    o.funded_at
   INTO v_order
   FROM public.orders o
   JOIN public.operators op
@@ -159,11 +165,56 @@ BEGIN
     RAISE EXCEPTION 'Order does not belong to the active customer/operator assignment.';
   END IF;
 
-  RETURN public.customer_correct_unprocessed_order_v1(
+  v_probe := public.customer_correct_unprocessed_order_v1(
     p_order_id,
     v_order.total_qty_declared,
     v_order.order_total_gbp_declared,
     NULL::text[]
+  );
+
+  IF NOT COALESCE((v_probe->>'ok')::boolean, false)
+     OR COALESCE((v_probe->>'changed')::boolean, true) THEN
+    RAISE EXCEPTION 'Order correction eligibility probe returned an unexpected result.';
+  END IF;
+
+  SELECT
+    f.order_id,
+    COALESCE(f.applied_credit_gbp, 0)::numeric AS applied_credit_gbp,
+    COALESCE(f.funded_total_gbp, 0)::numeric AS funded_total_gbp,
+    COALESCE(f.markup_applied_gbp, 0)::numeric AS markup_applied_gbp,
+    COALESCE(f.gap_remaining_gbp, 0)::numeric AS gap_remaining_gbp,
+    COALESCE(f.threshold_met_yn, false) AS threshold_met_yn
+  INTO v_funding
+  FROM public.order_funding_position_vw f
+  WHERE f.order_id = p_order_id;
+
+  IF v_funding.order_id IS NULL THEN
+    RAISE EXCEPTION 'Order correction eligibility snapshot is unavailable.';
+  END IF;
+
+  SELECT COUNT(*)::integer
+  INTO v_original_screenshot_count
+  FROM public.order_screenshots os
+  WHERE os.order_id = p_order_id
+    AND os.note = 'Original order screenshot';
+
+  v_previously_fully_funded := v_order.funded_at IS NOT NULL
+    OR v_funding.threshold_met_yn
+    OR v_funding.gap_remaining_gbp <= 0.01;
+
+  RETURN jsonb_build_object(
+    'ok', true,
+    'eligible', true,
+    'changed', false,
+    'order_id', p_order_id,
+    'importer_id', v_order.importer_id,
+    'current_qty', v_order.total_qty_declared,
+    'current_amount', ROUND(v_order.order_total_gbp_declared::numeric, 2),
+    'original_screenshot_count', v_original_screenshot_count,
+    'applied_credit_gbp', ROUND(v_funding.applied_credit_gbp, 2),
+    'funded_total_gbp', ROUND(v_funding.funded_total_gbp, 2),
+    'markup_applied_gbp', ROUND(v_funding.markup_applied_gbp, 2),
+    'previously_fully_funded', v_previously_fully_funded
   );
 END;
 $$;
