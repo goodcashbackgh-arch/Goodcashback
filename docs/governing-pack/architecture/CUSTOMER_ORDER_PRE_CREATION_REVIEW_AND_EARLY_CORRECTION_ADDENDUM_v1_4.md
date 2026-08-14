@@ -8,7 +8,7 @@ This amendment corrects the early-correction funding gate without changing the w
 
 Credit itself stays frozen. Correction never applies, reverses, releases, reallocates or reapplies credit and never changes a credit or funding row. v1-v1.3 remain governing in every other respect.
 
-This amendment is also the governing authority for the post-install access and UI integration correction described in sections 5-8. The already-installed v1.4 database behaviour proven by rollback simulation is frozen except for the narrowly authorised order-specific access-resolution correction. No financial rule may be reopened as part of that work.
+This amendment is also the governing authority for the post-install access and UI integration correction described in sections 5-8. The already-installed v1.4 database behaviour proven by rollback simulation is frozen except for the narrowly authorised order-specific access-resolution correction and the race-safe eligibility wrapper defined below. No financial rule may be reopened as part of that work.
 
 ## 1. Funding-event eligibility and unchanged downstream gates
 
@@ -101,22 +101,36 @@ This is an access-resolution correction only. It must not change any funding, qu
 
 ## 6. Customer correction UI: one authoritative eligibility contract
 
-The correction RPC is the single authoritative eligibility and mutation contract. The browser must not independently reproduce the complete backend blocker graph by directly querying internal funding, tracking, invoice, child-order or other downstream tables and then silently deciding whether the control exists.
+The correction RPC is the single authoritative business-eligibility and mutation contract. The browser must not independently reproduce the complete backend blocker graph by directly querying internal funding, tracking, invoice, child-order or other downstream tables and then silently deciding whether the control exists.
 
-The customer UI may load only the order fields needed to render the existing correction form and to make an eligibility probe. Eligibility is checked by calling the existing correction RPC with the order's current quantity, current goods value and `NULL` replacement screenshots. The existing RPC no-op path is authoritative: after authentication, ownership and every blocker check passes, it returns `changed = false` without changing the order.
+A direct browser no-op call using values read earlier is not authorised because a concurrent order change could make those values stale and turn the apparent probe into a real correction. Eligibility must therefore use the feature-owned wrapper:
 
-The UI state contract is:
+```text
+public.customer_order_correction_eligibility_v1(uuid)
+```
+
+The wrapper is not a second business authority. In one transaction it must:
+
+1. authenticate the current user;
+2. resolve the exact active operator/order/importer ownership relationship for the requested order;
+3. lock that order row;
+4. read the order's current `total_qty_declared` and `order_total_gbp_declared` under that lock; and
+5. call `public.customer_correct_unprocessed_order_v1(...)` with those exact current values and `NULL` replacement screenshots.
+
+Because the row lock is already held and the values come from the same transaction, the delegated correction call reaches its existing no-op path after running the authoritative blockers and cannot become a stale-value mutation. The wrapper must not itself reproduce funding, downstream, quote, screenshot or financial eligibility logic and must not insert, update or delete any business row.
+
+The customer UI may load only the order fields needed to render the existing correction form. It calls the eligibility wrapper to determine availability. The UI state contract is:
 
 - `loading`: eligibility has not yet resolved;
-- `eligible`: the no-op RPC succeeds, so the existing `Correct order` control is available;
-- `blocked`: the RPC returns a recognised authoritative business blocker, so the UI shows a compact unavailable/disabled correction state with a customer-safe reason; and
+- `eligible`: the wrapper succeeds, so the existing `Correct order` control is available;
+- `blocked`: the delegated correction authority returns a recognised business/access blocker, so the UI shows a compact unavailable/disabled correction state with a customer-safe reason; and
 - `check_failed`: authentication, transport, unexpected RPC error or other technical failure prevents a reliable eligibility decision, so the UI says correction availability could not be checked and offers refresh/retry behaviour.
 
 A technical failure must never be presented as a business blocker, and no eligibility failure may disappear silently through a generic `return null` once the customer is already viewing an authorised order page.
 
-The actual save path remains unchanged: the browser calls only `public.customer_correct_unprocessed_order_v1(uuid, integer, numeric, text[])` for correction. The browser must not call credit application, credit reversal, funding recomputation, overfunding synchronisation, ledger mutation or funding-event mutation functions.
+The actual save path remains unchanged: the browser calls only `public.customer_correct_unprocessed_order_v1(uuid, integer, numeric, text[])` for a correction mutation. The browser must not call credit application, credit reversal, funding recomputation, overfunding synchronisation, ledger mutation or funding-event mutation functions.
 
-Client-side form validation may continue to provide immediate guidance for quantity, amount and attachment constraints, including the fully-funded upward-value rule, but it is advisory only. The RPC remains final authority for ownership, downstream state, funding consistency and all postconditions.
+Client-side form validation may continue to provide immediate guidance for quantity, amount and attachment constraints, but it is advisory only. The RPC remains final authority for ownership, downstream state, funding consistency and all postconditions.
 
 The existing sky/blue collapsed `Correct order` treatment remains the visual baseline. This amendment changes availability resolution and failure visibility, not the surrounding customer order journey, payment cards or lifecycle presentation.
 
@@ -126,7 +140,7 @@ No definition or behaviour of any working credit/funding object is authorised to
 
 Customer/importer create actions, FX, tracking, supplier invoices, reconciliation, shipping, Sage, VAT/accounting, schema and lifecycle/status definitions also remain frozen.
 
-RLS policies are not authorised to change merely to make the correction UI work. The integration must use the already-authorised customer order read surface plus the `SECURITY DEFINER` correction RPC as the authoritative eligibility/mutation boundary.
+RLS policies are not authorised to change merely to make the correction UI work. The integration must use the already-authorised customer order read surface plus the feature-owned security-definer eligibility wrapper and correction RPC boundaries.
 
 The already-installed v1.4 funding behaviour is frozen. The successful rollback simulations are the non-regression baseline:
 
@@ -141,21 +155,21 @@ Any implementation that changes those outcomes is outside this authority.
 
 The v1 migration and already-applied v1.3 migration remain historical and must not be edited or rerun. The already-applied `20260813201500_customer_order_early_correction_v1_4.sql` is also historical and must not be edited, deleted, rerun or treated as an unapplied migration.
 
-Any database correction required by section 5 must be delivered as one new forward migration. That migration may only:
+Any database correction required by sections 5-6 must be delivered as one new forward migration. That migration may only:
 
 - require the existing correction RPC and its v1.4 security boundary to exist;
-- replace only `public.customer_correct_unprocessed_order_v1(uuid, integer, numeric, text[])`;
-- change only the operator/importer access-resolution ordering described in section 5;
+- replace only `public.customer_correct_unprocessed_order_v1(uuid, integer, numeric, text[])` to change the operator/importer access-resolution ordering described in section 5;
+- create or replace only `public.customer_order_correction_eligibility_v1(uuid)` as the race-safe, no-business-logic wrapper described in section 6;
 - preserve the installed v1.4 three correction paths, downstream gates, quote logic, Storage validation, screenshot replacement, funding assertions, recomputation call, grants and `search_path` security boundary exactly in behaviour; and
 - notify PostgREST to reload its schema if required.
 
-It must not add or alter tables, views, triggers, RLS policies, credit/funding functions or adjacent workflow objects.
+It must not add or alter tables, views, triggers, RLS policies, credit/funding functions or adjacent workflow objects. The eligibility wrapper must not write any business row and must delegate all business eligibility to the correction RPC.
 
 The authorised implementation delta for this follow-up is limited to:
 
 1. this governing v1.4 amendment;
 2. `app/customer/orders/[order_id]/operations/CustomerOrderCorrectionControl.tsx`;
-3. one new forward migration dedicated to the section 5 access-resolution correction; and
+3. one new forward migration dedicated to the section 5 access-resolution correction and section 6 race-safe eligibility wrapper; and
 4. `docs/testing/20260813_customer_order_review_early_correction_regression_v1.mjs`.
 
 The installed `supabase/migrations/20260813201500_customer_order_early_correction_v1_4.sql` remains unchanged and is not part of the editable delta. No additional runtime file is authorised unless a concrete build failure proves it unavoidable and this governing amendment is updated first.
@@ -167,14 +181,15 @@ The follow-up is not merge-ready until all of the following are true:
 1. the existing rollback SQL simulation suite still passes the four installed v1.4 financial cases without changed funding or credit semantics;
 2. a multi-importer authenticated SQL simulation proves an operator can correct an eligible owned order whose importer is not the operator's newest active assignment;
 3. revoked importer assignment and wrong-operator ownership simulations fail closed;
-4. the customer UI on an authorised clean order resolves to `eligible` and exposes `Correct order` without requiring direct browser reads of the internal blocker tables;
-5. a recognised downstream/business blocker produces a visible customer-safe `blocked` state rather than silently hiding the component;
-6. an injected or reproducible technical eligibility failure produces `check_failed`, not a false business blocker;
-7. the existing static correction regression passes and proves that the browser performs no credit/funding mutation and only the correction RPC performs the correction write; and
-8. repository/build deployment checks remain green.
+4. an eligibility-wrapper simulation proves the wrapper uses the locked current quantity/value, returns the delegated no-op success for a clean order, and leaves the order/funding state unchanged;
+5. the customer UI on an authorised clean order resolves to `eligible` and exposes `Correct order` without requiring direct browser reads of the internal blocker tables;
+6. a recognised downstream/business blocker produces a visible customer-safe `blocked` state rather than silently hiding the component;
+7. an injected or reproducible technical eligibility failure produces `check_failed`, not a false business blocker;
+8. the existing static correction regression passes and proves that the browser performs no credit/funding mutation and that only the correction RPC performs the correction write; and
+9. repository/build deployment checks remain green.
 
 ## Acceptance
 
 Existing credit remains immutable. Ordinary partial-credit corrections let the canonical view derive the changed gap. Fully credit-funded quantity/screenshot-only corrections preserve funding state. Only a fully/effectively funded upward-value correction that creates both the required goods-value and canonical gaps may call the existing recomputation function to clear `funded_at`. Reductions or other corrections requiring credit release fail closed, while every non-credit funding event and existing downstream gate continues to block correction.
 
-Order access is resolved against the importer belonging to the requested order, not an arbitrary latest assignment. The RPC is the single eligibility and mutation authority. The customer UI must make eligible correction usable, make genuine blockers understandable, make technical failures distinguishable, and must not duplicate or weaken the backend's financial and lifecycle protections.
+Order access is resolved against the importer belonging to the requested order, not an arbitrary latest assignment. The correction RPC remains the single business eligibility and mutation authority. The eligibility wrapper only obtains a race-safe locked current snapshot and delegates to that authority. The customer UI must make eligible correction usable, make genuine blockers understandable, make technical failures distinguishable, and must not duplicate or weaken the backend's financial and lifecycle protections.
