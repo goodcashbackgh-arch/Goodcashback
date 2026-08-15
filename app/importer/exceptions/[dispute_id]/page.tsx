@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import FlashQueryParamCleaner from "@/app/_components/FlashQueryParamCleaner";
+import { customerImporterTerminology } from "@/lib/ui/customerImporterTerminology";
 import { createClient } from "@/utils/supabase/server";
 import { saveRetailerUpdateAction } from "./actions";
 import RefundEvidenceModeSelector, { type RefundDocumentHistoryRow } from "./RefundEvidenceModeSelector";
@@ -108,7 +109,12 @@ function normaliseAbsNumber(value: unknown) {
 
 function friendlyStatus(status: string | null | undefined) {
   if (!status) return "Pending review";
-  return status.replaceAll("_", " ").replace(/^./, (first) => first.toUpperCase());
+  return customerImporterTerminology(status.replaceAll("_", " ").replace(/^./, (first) => first.toUpperCase()));
+}
+
+function sourceLineLabel(value: string | null | undefined) {
+  if (value === "ocr_extracted") return "Document extraction";
+  return friendlyStatus(value);
 }
 
 function formatDateTime(value: string | null | undefined) {
@@ -119,7 +125,7 @@ function formatDateTime(value: string | null | undefined) {
 }
 
 function renderExpandableMessage(body: string | null | undefined) {
-  const text = (body ?? "").trim();
+  const text = customerImporterTerminology((body ?? "").trim());
   if (!text) return <p className="mt-2 text-sm italic text-slate-500">No response text saved.</p>;
 
   if (text.length <= RETAILER_MESSAGE_PREVIEW_LENGTH) {
@@ -292,7 +298,7 @@ export default async function ImporterExceptionDetailPage({
           <Link href={`/importer/reconciliation/${dispute.order_id}`} className="text-sm font-semibold text-sky-600">← Back to reconciliation</Link>
           <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Importer exception workflow</p>
           <h1 className="mt-2 text-3xl font-semibold tracking-tight">Dispute {dispute.id}</h1>
-          <p className="mt-2 text-sm text-slate-600">Parent order {order?.order_ref ?? dispute.order_id} · Outcome {dispute.desired_outcome} · Status {dispute.status}</p>
+          <p className="mt-2 text-sm text-slate-600">Parent order {order?.order_ref ?? dispute.order_id} · Outcome {customerImporterTerminology(dispute.desired_outcome)} · Status {friendlyStatus(dispute.status)}</p>
           <div className="mt-4 grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3"><p className="text-xs uppercase text-slate-500">Declared qty</p><p className="mt-1 font-semibold">{order?.total_qty_declared ?? "—"}</p></div>
             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3"><p className="text-xs uppercase text-slate-500">Declared value</p><p className="mt-1 font-semibold">{gbp(order?.order_total_gbp_declared)}</p></div>
@@ -303,8 +309,8 @@ export default async function ImporterExceptionDetailPage({
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3"><p className="text-xs uppercase text-slate-500">Dispute type</p><p className="mt-1 font-semibold">Replacement</p></div>
             )}
           </div>
-          {query.success ? <p className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">{query.success}</p> : null}
-          {query.error ? <p className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">{query.error}</p> : null}
+          {query.success ? <p className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">{customerImporterTerminology(query.success)}</p> : null}
+          {query.error ? <p className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">{customerImporterTerminology(query.error)}</p> : null}
           {isFinalOutcome ? (
             <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
               <p className="font-semibold">{finalOutcomeMessage(dispute)}</p>
@@ -321,8 +327,8 @@ export default async function ImporterExceptionDetailPage({
               const sourceLine = firstSourceLine(line.supplier_invoice_lines);
               return (
                 <article key={line.id} className="rounded-2xl border border-amber-300 bg-amber-50 p-3 text-sm">
-                  <p className="font-semibold">Line {sourceLine?.line_order ?? "—"} · {sourceLine?.line_source ?? "—"}</p>
-                  <p>{sourceLine?.description ?? "No description"}</p>
+                  <p className="font-semibold">Line {sourceLine?.line_order ?? "—"} · {sourceLineLabel(sourceLine?.line_source)}</p>
+                  <p>{customerImporterTerminology(sourceLine?.description ?? "No description")}</p>
                   <p>Qty impact {line.qty_impact} · Amount impact {gbp(line.amount_impact_gbp)}</p>
                 </article>
               );
@@ -339,7 +345,7 @@ export default async function ImporterExceptionDetailPage({
           ) : (
             <>
               <p className="mt-2 text-sm text-slate-600">Paste the retailer response first. If the retailer accepts the refund/replacement, mark the outcome as accepted so the approved workflow can continue.</p>
-              {!isTerminalAcceptedState ? <p className="mt-3 text-sm text-slate-700"><span className="font-semibold">Current retailer outcome:</span> {retailerOutcome.replaceAll("_", " ")}</p> : null}
+              {!isTerminalAcceptedState ? <p className="mt-3 text-sm text-slate-700"><span className="font-semibold">Current retailer outcome:</span> {customerImporterTerminology(retailerOutcome.replaceAll("_", " "))}</p> : null}
               {isTerminalAcceptedState ? <p className="mt-3 text-sm text-slate-700"><span className="font-semibold">Active terminal state:</span> {finalOutcomeMessage(dispute)}</p> : null}
               {isFinalOutcome ? (
                 <p className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">Retailer update is locked because the final outcome has already been accepted or processed.</p>
@@ -380,7 +386,7 @@ export default async function ImporterExceptionDetailPage({
                   <article key={message.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                     <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
                       <p className="text-sm font-semibold text-slate-900">Retailer reply</p>
-                      <p className="text-xs text-slate-500">{formatDateTime(message.created_at)} · {message.generated_by ?? "manual"}</p>
+                      <p className="text-xs text-slate-500">{formatDateTime(message.created_at)} · {customerImporterTerminology(message.generated_by ?? "manual")}</p>
                     </div>
                     {renderExpandableMessage(message.body)}
                   </article>
@@ -463,7 +469,7 @@ export default async function ImporterExceptionDetailPage({
                       {returnHistory.map((row) => (
                         <details key={row.id} className="rounded-xl border border-slate-200 bg-white p-3 text-sm">
                           <summary className="cursor-pointer font-semibold">{friendlyStatus(row.message_type)} · {formatDateTime(row.created_at)}</summary>
-                          <p className="mt-2 whitespace-pre-wrap text-slate-700">{row.body ?? "No details saved."}</p>
+                          <p className="mt-2 whitespace-pre-wrap text-slate-700">{customerImporterTerminology(row.body ?? "No details saved.")}</p>
                         </details>
                       ))}
                     </div>
