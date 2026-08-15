@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { createClient } from "@/utils/supabase/server";
+import { customerImporterTerminology } from "@/lib/ui/customerImporterTerminology";
 import { submitCustomerHoldRequestAction } from "./actions";
 
 type LineRow = {
@@ -51,7 +52,7 @@ function money(value: number | string | null | undefined) {
 
 function friendly(value: string | null | undefined) {
   if (!value) return "—";
-  return value.replaceAll("_", " ").replace(/^./, (first) => first.toUpperCase());
+  return customerImporterTerminology(value.replaceAll("_", " ").replace(/^./, (first) => first.toUpperCase()));
 }
 
 function scopeLabel(value: string | null | undefined) {
@@ -65,7 +66,7 @@ function safeText(value: unknown) {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   if (!trimmed || trimmed.toLowerCase() === "[object object]") return null;
-  return trimmed;
+  return customerImporterTerminology(trimmed);
 }
 
 function statusClass(status: string | null | undefined) {
@@ -116,7 +117,7 @@ function LineSummary({ line }: { line: LineRow }) {
   const sku = safeText(line.retailer_sku);
   return (
     <div>
-      <p className="font-black text-slate-950">{line.description ?? "Item"}</p>
+      <p className="font-black text-slate-950">{customerImporterTerminology(line.description ?? "Item")}</p>
       <p className="mt-1 text-sm text-slate-600">Qty {line.qty ?? "—"} · {money(line.amount_inc_vat_gbp)}</p>
       {size || sku ? <p className="mt-1 text-xs text-slate-500">{size ? `Size ${size}` : ""}{size && sku ? " · " : ""}{sku ? `SKU ${sku}` : ""}</p> : null}
     </div>
@@ -144,7 +145,7 @@ export default async function CustomerOrderReviewPage({
         <section className="mx-auto max-w-2xl rounded-3xl border border-rose-200 bg-white p-6 shadow-sm">
           <p className="text-sm font-semibold uppercase tracking-[0.2em] text-rose-500">Goodcashback</p>
           <h1 className="mt-2 text-2xl font-semibold">This review link is not available</h1>
-          <p className="mt-3 text-sm leading-6 text-slate-600">{error.message}</p>
+          <p className="mt-3 text-sm leading-6 text-slate-600">{customerImporterTerminology(error.message)}</p>
         </section>
       </main>
     );
@@ -169,12 +170,12 @@ export default async function CustomerOrderReviewPage({
           <div className="p-5 md:p-7">
             <p className="text-xs font-black uppercase tracking-[0.28em] text-sky-600">Goodcashback customer review</p>
             <h1 className="mt-2 text-3xl font-black tracking-tight md:text-5xl">Review before shipment</h1>
-            <p className="mt-2 text-sm text-slate-600">Order {order.order_ref ?? order.id ?? "—"} · {order.retailer_name ?? "Retailer"}</p>
+            <p className="mt-2 text-sm text-slate-600">Order {order.order_ref ?? order.id ?? "—"} · {customerImporterTerminology(order.retailer_name ?? "Retailer")}</p>
             <p className="mt-4 max-w-3xl text-sm leading-6 text-slate-700">
               Review received packages and items before shipment. If you no longer want a whole package or a specific item, request a hold. Internal retailer invoices and retailer-to-warehouse tracking are hidden.
             </p>
-            {query.success ? <p className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-800">{query.success}</p> : null}
-            {query.error ? <p className="mt-4 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-800">{query.error}</p> : null}
+            {query.success ? <p className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-800">{customerImporterTerminology(query.success)}</p> : null}
+            {query.error ? <p className="mt-4 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-800">{customerImporterTerminology(query.error)}</p> : null}
           </div>
         </header>
 
@@ -276,12 +277,12 @@ export default async function CustomerOrderReviewPage({
                 </div>
                 {hold.requested_scope === "line" && hold.line_description ? (
                   <div className="mt-2">
-                    <p className="font-black text-slate-950">{hold.line_description}</p>
+                    <p className="font-black text-slate-950">{customerImporterTerminology(hold.line_description)}</p>
                     <p className="mt-1 text-slate-600">Qty {hold.line_qty ?? "—"}{hold.line_amount_inc_vat_gbp != null ? ` · ${money(hold.line_amount_inc_vat_gbp)}` : ""}</p>
                   </div>
                 ) : null}
-                <p className="mt-2 text-slate-700">{hold.reason}</p>
-                {hold.supervisor_review_note ? <p className="mt-2 rounded-xl bg-white p-3 text-slate-700"><span className="font-semibold">Review note:</span> {hold.supervisor_review_note}</p> : null}
+                <p className="mt-2 text-slate-700">{customerImporterTerminology(hold.reason)}</p>
+                {hold.supervisor_review_note ? <p className="mt-2 rounded-xl bg-white p-3 text-slate-700"><span className="font-semibold">Review note:</span> {customerImporterTerminology(hold.supervisor_review_note)}</p> : null}
               </article>
             ))}
           </div>
