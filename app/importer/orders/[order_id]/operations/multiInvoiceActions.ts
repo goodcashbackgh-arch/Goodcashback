@@ -207,7 +207,7 @@ export async function submitAdditionalInvoiceEvidenceAction(formData: FormData) 
         operatorId,
       });
     } catch (error) {
-      redirect(`/importer/orders/${orderId}/operations?error=${encodeURIComponent(error instanceof Error ? error.message : "OCR failed")}`);
+      redirect(`/importer/orders/${orderId}/operations?error=${encodeURIComponent(error instanceof Error ? error.message : "Document extraction failed")}`);
     }
   }
 
