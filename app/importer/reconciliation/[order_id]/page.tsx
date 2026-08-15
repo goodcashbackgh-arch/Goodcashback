@@ -2,6 +2,7 @@ import Link from "next/link";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import FlashQueryParamCleaner from "@/app/_components/FlashQueryParamCleaner";
+import { customerImporterTerminology } from "@/lib/ui/customerImporterTerminology";
 import { createClient } from "@/utils/supabase/server";
 import BulkLineSelectionControls from "./BulkLineSelectionControls";
 import SelectedInvoiceCookie from "./SelectedInvoiceCookie";
@@ -263,8 +264,8 @@ export default async function Page({
               </Link>
             ))}
           </div>
-          {qp.success ? <p className="mt-4 rounded-xl bg-emerald-50 p-3 text-sm text-emerald-900">{qp.success}</p> : null}
-          {qp.error ? <p className="mt-4 rounded-xl bg-rose-50 p-3 text-sm text-rose-900">{qp.error}</p> : null}
+          {qp.success ? <p className="mt-4 rounded-xl bg-emerald-50 p-3 text-sm text-emerald-900">{customerImporterTerminology(qp.success)}</p> : null}
+          {qp.error ? <p className="mt-4 rounded-xl bg-rose-50 p-3 text-sm text-rose-900">{customerImporterTerminology(qp.error)}</p> : null}
         </section>
 
         <section className="rounded-3xl border bg-white p-5 shadow-sm">
@@ -298,14 +299,14 @@ export default async function Page({
           <article className="rounded-3xl border bg-white p-5 shadow-sm">
             <h2 className="text-xl font-semibold">Selected supplier invoice</h2>
             {invoiceError ? (
-              <p className="mt-3 text-rose-700">{invoiceError.message}</p>
+              <p className="mt-3 text-rose-700">{customerImporterTerminology(invoiceError.message)}</p>
             ) : invoice ? (
               <>
                 <dl className="mt-4 grid gap-3 sm:grid-cols-2">
                   <div><dt className="text-xs text-slate-500">Reference</dt><dd className="font-semibold">{invoice.invoice_ref}</dd></div>
                   <div><dt className="text-xs text-slate-500">Line count</dt><dd>{lines.length}</dd></div>
                   <div><dt className="text-xs text-slate-500">Uploaded</dt><dd>{invoice.uploaded_at ?? "—"}</dd></div>
-                  <div><dt className="text-xs text-slate-500">OCR extracted</dt><dd>{invoice.ocr_extracted_at ?? "—"}</dd></div>
+                  <div><dt className="text-xs text-slate-500">Document extraction</dt><dd>{invoice.ocr_extracted_at ?? "—"}</dd></div>
                 </dl>
                 <a href={invoice.invoice_pdf_url} target="_blank" rel="noreferrer" className="mt-4 inline-block rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white">Open this invoice</a>
               </>
@@ -318,7 +319,7 @@ export default async function Page({
               {(screenshots ?? []).map((screenshot: any) => (
                 <details key={screenshot.id} className="rounded-xl border p-3">
                   <summary className="cursor-pointer font-semibold">Screenshot {screenshot.display_order ?? ""}</summary>
-                  {screenshot.note ? <p className="mt-2 text-sm">{screenshot.note}</p> : null}
+                  {screenshot.note ? <p className="mt-2 text-sm">{customerImporterTerminology(screenshot.note)}</p> : null}
                   <img src={screenshot.screenshot_url} alt="Order screenshot" className="mt-3 max-h-[60vh] w-full object-contain" />
                 </details>
               ))}
@@ -354,7 +355,7 @@ export default async function Page({
               ) : null}
 
               {linesError ? (
-                <p className="mt-4 text-rose-700">{linesError.message}</p>
+                <p className="mt-4 text-rose-700">{customerImporterTerminology(linesError.message)}</p>
               ) : (
                 <div className="mt-4 space-y-4">
                   {lines.map((line) => {
@@ -387,7 +388,7 @@ export default async function Page({
                         </div>
                         {classificationOnly && !locked ? (
                           <p className="mt-3 rounded-xl border border-sky-200 bg-white p-3 text-sm text-sky-900">
-                            OCR financial row: keep the signed amount and classify it below. It cannot enter physical progression, tracking or shipment.
+                            Document extraction financial row: keep the signed amount and classify it below. It cannot enter physical progression, tracking or shipment.
                           </p>
                         ) : null}
                         <div className="mt-3 grid gap-3 md:grid-cols-6">
@@ -450,7 +451,7 @@ export default async function Page({
                   {exceptionEligible.map((line) => (
                     <label key={line.id} className="block rounded-xl bg-slate-50 p-3">
                       <input type="checkbox" name="exception_line_ids" value={line.id} className="mr-2" />
-                      Line {line.line_order} · {line.description} · {gbp(line.amount_inc_vat_gbp)}
+                      Line {line.line_order} · {customerImporterTerminology(line.description)} · {gbp(line.amount_inc_vat_gbp)}
                     </label>
                   ))}
                   <label className="mr-4"><input type="radio" name="remedy" value="refund" className="mr-2" />Refund</label>
