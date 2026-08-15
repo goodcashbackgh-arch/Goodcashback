@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import FlashQueryParamCleaner from "@/app/_components/FlashQueryParamCleaner";
+import { customerImporterTerminology } from "@/lib/ui/customerImporterTerminology";
 import { createClient } from "@/utils/supabase/server";
 import {
   addManualRefundDocumentLineAction,
@@ -114,7 +115,12 @@ function cleanDescription(value: string | null | undefined) {
 
 function statusLabel(value: string | null | undefined) {
   if (!value) return "—";
-  return value.replaceAll("_", " ").replace(/^./, (first) => first.toUpperCase());
+  return customerImporterTerminology(value.replaceAll("_", " ").replace(/^./, (first) => first.toUpperCase()));
+}
+
+function lineSourceLabel(value: string | null | undefined) {
+  if (value === "ocr_extracted") return "Document extraction";
+  return statusLabel(value);
 }
 
 function modeLabel(value: string | null | undefined) {
@@ -289,8 +295,8 @@ export default async function OperatorRefundDocumentReviewPage({
               Approved current — no further supervisor approval is required.
             </p>
           ) : null}
-          {qp.success ? <p className="mt-4 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">{qp.success}</p> : null}
-          {qp.error ? <p className="mt-4 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-900">{qp.error}</p> : null}
+          {qp.success ? <p className="mt-4 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">{customerImporterTerminology(qp.success)}</p> : null}
+          {qp.error ? <p className="mt-4 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-900">{customerImporterTerminology(qp.error)}</p> : null}
         </section>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
@@ -322,10 +328,10 @@ export default async function OperatorRefundDocumentReviewPage({
               <div><dt className="text-slate-500">Operator ref</dt><dd className="font-semibold">{submission.credit_note_ref ?? "—"}</dd></div>
               <div><dt className="text-slate-500">Document date</dt><dd className="font-semibold">{submission.credit_note_date ?? "—"}</dd></div>
               <div><dt className="text-slate-500">Expected total</dt><dd className="font-semibold">{gbp(expectedTotal)}</dd></div>
-              <div><dt className="text-slate-500">OCR ref</dt><dd className="font-semibold">{submission.ocr_credit_note_ref ?? "—"}</dd></div>
-              <div><dt className="text-slate-500">OCR retailer</dt><dd className="font-semibold">{submission.ocr_retailer_name ?? "—"}</dd></div>
-              <div><dt className="text-slate-500">OCR date</dt><dd className="font-semibold">{submission.ocr_credit_note_date ?? "—"}</dd></div>
-              <div><dt className="text-slate-500">OCR total</dt><dd className="font-semibold">{gbp(submission.ocr_credit_note_total_gbp)}</dd></div>
+              <div><dt className="text-slate-500">Extracted ref</dt><dd className="font-semibold">{submission.ocr_credit_note_ref ?? "—"}</dd></div>
+              <div><dt className="text-slate-500">Extracted retailer</dt><dd className="font-semibold">{customerImporterTerminology(submission.ocr_retailer_name ?? "—")}</dd></div>
+              <div><dt className="text-slate-500">Extracted date</dt><dd className="font-semibold">{submission.ocr_credit_note_date ?? "—"}</dd></div>
+              <div><dt className="text-slate-500">Extracted total</dt><dd className="font-semibold">{gbp(submission.ocr_credit_note_total_gbp)}</dd></div>
             </dl>
             <div className="mt-4 flex flex-wrap gap-3 text-sm font-semibold">
               {submission.credit_note_file_url ? <a href={submission.credit_note_file_url} target="_blank" className="text-sky-700 underline">Open credit note file</a> : null}
@@ -342,8 +348,8 @@ export default async function OperatorRefundDocumentReviewPage({
                 const source = firstLine(line.supplier_invoice_lines);
                 return (
                   <div key={line.id} className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm">
-                    <p className="font-semibold">Line {source?.line_order ?? "—"} · {source?.line_source ?? "—"}</p>
-                    <p>{source?.description ?? "Disputed line"}</p>
+                    <p className="font-semibold">Line {source?.line_order ?? "—"} · {lineSourceLabel(source?.line_source)}</p>
+                    <p>{customerImporterTerminology(source?.description ?? "Disputed line")}</p>
                     <p className="mt-1 text-slate-700">Qty impact {line.qty_impact ?? "—"} · Amount impact {gbp(line.amount_impact_gbp)}</p>
                   </div>
                 );
@@ -358,10 +364,10 @@ export default async function OperatorRefundDocumentReviewPage({
             <div>
               <p className="text-sm font-medium uppercase tracking-[0.16em] text-slate-500">Line check</p>
               <h2 className="mt-1 text-xl font-semibold">Refund document lines</h2>
-              <p className="mt-2 text-sm text-slate-600">{approvedCurrent ? "Approved lines are read-only audit evidence." : "Check OCR/manual lines before deciding. OCR lines are editable but not deletable. Manual correction lines can be added or deleted before the operator decision."}</p>
+              <p className="mt-2 text-sm text-slate-600">{approvedCurrent ? "Approved lines are read-only audit evidence." : "Check extracted/manual lines before deciding. Extracted lines are editable but not deletable. Manual correction lines can be added or deleted before the operator decision."}</p>
             </div>
             <div className="flex flex-wrap gap-2">
-              <span className={`rounded-full px-3 py-1 text-xs font-semibold ${badgeClass(submission.ocr_status)}`}>OCR {statusLabel(submission.ocr_status)}</span>
+              <span className={`rounded-full px-3 py-1 text-xs font-semibold ${badgeClass(submission.ocr_status)}`}>Document extraction {statusLabel(submission.ocr_status)}</span>
               <span className={`rounded-full px-3 py-1 text-xs font-semibold ${badgeClass(submission.match_status)}`}>Match {statusLabel(submission.match_status)}</span>
               <span className={`rounded-full px-3 py-1 text-xs font-semibold ${badgeClass(submission.amount_balance_status)}`}>Amount {statusLabel(submission.amount_balance_status)}</span>
               <span className={`rounded-full px-3 py-1 text-xs font-semibold ${badgeClass(approvedCurrent ? "approved_current" : submission.evidence_control_status)}`}>{operatorDecisionLabel(submission)}</span>
@@ -379,7 +385,7 @@ export default async function OperatorRefundDocumentReviewPage({
                     <input type="hidden" name="refund_evidence_submission_id" value={submissionId} />
                     <input type="hidden" name="line_id" value={line.id} />
                     <label className="block text-sm font-semibold text-slate-700">
-                      Line {line.line_order} · {line.line_source}
+                      Line {line.line_order} · {lineSourceLabel(line.line_source)}
                       <input name="description" defaultValue={description} disabled={locked} className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm disabled:bg-slate-100" />
                     </label>
                     <label className="block text-sm font-semibold text-slate-700">
@@ -414,7 +420,7 @@ export default async function OperatorRefundDocumentReviewPage({
                 </article>
               );
             })}
-            {lines.length === 0 ? <p className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">No refund document lines exist yet. Ask staff to run/fetch OCR for a credit note, or add manual lines if this is a no-credit-note/no-document case.</p> : null}
+            {lines.length === 0 ? <p className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">No refund document lines exist yet. Ask staff to run/fetch document extraction for a credit note, or add manual lines if this is a no-credit-note/no-document case.</p> : null}
           </div>
         </section>
 
@@ -422,7 +428,7 @@ export default async function OperatorRefundDocumentReviewPage({
           <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
             <p className="text-sm font-medium uppercase tracking-[0.16em] text-slate-500">Manual line</p>
             <h2 className="mt-1 text-xl font-semibold">Add manual correction line</h2>
-            <p className="mt-2 text-sm text-slate-600">Use this only when OCR missed a refund line or the retailer provided refund proof/no-document evidence without clean line extraction.</p>
+            <p className="mt-2 text-sm text-slate-600">Use this only when document extraction missed a refund line or the retailer provided refund proof/no-document evidence without clean line extraction.</p>
             <form action={addManualRefundDocumentLineAction} className="mt-4 grid gap-3 md:grid-cols-[1.7fr_1fr_1fr_90px_150px_auto] md:items-end">
               <input type="hidden" name="dispute_id" value={disputeId} />
               <input type="hidden" name="refund_evidence_submission_id" value={submissionId} />
@@ -489,8 +495,8 @@ export default async function OperatorRefundDocumentReviewPage({
             <div className="mt-4 space-y-3">
               {messages.map((message) => (
                 <article key={message.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
-                  <p className="font-semibold">{message.message_type} · {message.generated_by}</p>
-                  <p className="mt-2 whitespace-pre-wrap">{message.body}</p>
+                  <p className="font-semibold">{statusLabel(message.message_type)} · {customerImporterTerminology(message.generated_by ?? "")}</p>
+                  <p className="mt-2 whitespace-pre-wrap">{customerImporterTerminology(message.body ?? "")}</p>
                   <p className="mt-2 text-xs text-slate-500">{message.created_at}</p>
                 </article>
               ))}
