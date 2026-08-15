@@ -178,10 +178,10 @@ export default function OrderOperationsUxCleanup({
       if (statusBadge) {
         const matched = ocrVariance !== null && Math.abs(ocrVariance) < 0.01;
         statusBadge.textContent = invoice.ocrTotalGbp === null
-          ? "Awaiting OCR total"
+          ? "Awaiting extracted total"
           : matched
-            ? "Entered total matches OCR"
-            : "Entered/OCR total variance";
+            ? "Entered total matches extracted total"
+            : "Entered/extracted total variance";
         statusBadge.className = `rounded-full px-2.5 py-1 text-xs font-semibold ${matched ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`;
       }
     }
