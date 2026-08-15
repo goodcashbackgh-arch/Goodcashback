@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { customerImporterTerminology } from "@/lib/ui/customerImporterTerminology";
 import { createClient } from "@/utils/supabase/server";
 import { answerOrderEvidenceQueryAction, submitMissingInvoiceEvidenceAction } from "./actions";
 
@@ -17,13 +18,6 @@ type EvidenceQuery = {
 function formatValue(value: string | null | undefined) {
   if (!value) return "—";
   return value;
-}
-
-function audienceText(value: string | null | undefined) {
-  return String(value ?? "")
-    .replace(/\bMindee\b/gi, "Document processor")
-    .replace(/\bOCR\b/gi, "Document extraction")
-    .replace(/\bSage\b/gi, "Accounting system");
 }
 
 export default async function ImporterEvidenceQueriesPage({
@@ -82,12 +76,12 @@ export default async function ImporterEvidenceQueriesPage({
 
           {queryParams.query_success ? (
             <p className="mt-4 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">
-              {audienceText(queryParams.query_success)}
+              {customerImporterTerminology(queryParams.query_success)}
             </p>
           ) : null}
           {queryParams.query_error ? (
             <p className="mt-4 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-900">
-              {audienceText(queryParams.query_error)}
+              {customerImporterTerminology(queryParams.query_error)}
             </p>
           ) : null}
         </section>
@@ -95,7 +89,7 @@ export default async function ImporterEvidenceQueriesPage({
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold">Inbox</h2>
           {queriesError ? (
-            <p className="mt-4 text-sm text-rose-700">Failed to load evidence queries: {audienceText(queriesError.message)}</p>
+            <p className="mt-4 text-sm text-rose-700">Failed to load evidence queries: {customerImporterTerminology(queriesError.message)}</p>
           ) : queries && queries.length > 0 ? (
             <div className="mt-4 overflow-x-auto rounded-2xl border border-slate-200">
               <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
@@ -120,9 +114,9 @@ export default async function ImporterEvidenceQueriesPage({
                           <div className="font-medium">{formatValue(orderRef)}</div>
                           <div className="text-xs text-slate-500">{query.order_id}</div>
                         </td>
-                        <td className="px-4 py-3">{audienceText(formatValue(query.query_type))}</td>
-                        <td className="max-w-lg px-4 py-3">{audienceText(formatValue(query.message))}</td>
-                        <td className="px-4 py-3">{audienceText(formatValue(query.status))}</td>
+                        <td className="px-4 py-3">{customerImporterTerminology(formatValue(query.query_type))}</td>
+                        <td className="max-w-lg px-4 py-3">{customerImporterTerminology(formatValue(query.message))}</td>
+                        <td className="px-4 py-3">{customerImporterTerminology(formatValue(query.status))}</td>
                         <td className="max-w-md px-4 py-3">
                           {query.status === "open" ? (
                             query.query_type === "missing_invoice" ? (
@@ -173,7 +167,7 @@ export default async function ImporterEvidenceQueriesPage({
                             )
                           ) : (
                             <div className="space-y-1">
-                              <p>{audienceText(formatValue(query.answer_text))}</p>
+                              <p>{formatValue(query.answer_text)}</p>
                               <p className="text-xs text-slate-500">Answered at: {formatValue(query.answered_at)}</p>
                             </div>
                           )}
