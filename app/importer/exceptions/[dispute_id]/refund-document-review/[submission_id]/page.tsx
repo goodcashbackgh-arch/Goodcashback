@@ -329,7 +329,7 @@ export default async function OperatorRefundDocumentReviewPage({
               <div><dt className="text-slate-500">Document date</dt><dd className="font-semibold">{submission.credit_note_date ?? "—"}</dd></div>
               <div><dt className="text-slate-500">Expected total</dt><dd className="font-semibold">{gbp(expectedTotal)}</dd></div>
               <div><dt className="text-slate-500">Extracted ref</dt><dd className="font-semibold">{submission.ocr_credit_note_ref ?? "—"}</dd></div>
-              <div><dt className="text-slate-500">Extracted retailer</dt><dd className="font-semibold">{customerImporterTerminology(submission.ocr_retailer_name ?? "—")}</dd></div>
+              <div><dt className="text-slate-500">Extracted retailer</dt><dd className="font-semibold">{submission.ocr_retailer_name ?? "—"}</dd></div>
               <div><dt className="text-slate-500">Extracted date</dt><dd className="font-semibold">{submission.ocr_credit_note_date ?? "—"}</dd></div>
               <div><dt className="text-slate-500">Extracted total</dt><dd className="font-semibold">{gbp(submission.ocr_credit_note_total_gbp)}</dd></div>
             </dl>
@@ -349,7 +349,7 @@ export default async function OperatorRefundDocumentReviewPage({
                 return (
                   <div key={line.id} className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm">
                     <p className="font-semibold">Line {source?.line_order ?? "—"} · {lineSourceLabel(source?.line_source)}</p>
-                    <p>{customerImporterTerminology(source?.description ?? "Disputed line")}</p>
+                    <p>{source?.description ?? "Disputed line"}</p>
                     <p className="mt-1 text-slate-700">Qty impact {line.qty_impact ?? "—"} · Amount impact {gbp(line.amount_impact_gbp)}</p>
                   </div>
                 );
@@ -496,7 +496,7 @@ export default async function OperatorRefundDocumentReviewPage({
               {messages.map((message) => (
                 <article key={message.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
                   <p className="font-semibold">{statusLabel(message.message_type)} · {customerImporterTerminology(message.generated_by ?? "")}</p>
-                  <p className="mt-2 whitespace-pre-wrap">{customerImporterTerminology(message.body ?? "")}</p>
+                  <p className="mt-2 whitespace-pre-wrap">{message.body ?? ""}</p>
                   <p className="mt-2 text-xs text-slate-500">{message.created_at}</p>
                 </article>
               ))}
