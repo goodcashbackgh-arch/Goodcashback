@@ -44,7 +44,7 @@ function dateField(field: unknown) {
 function normalizeInvoiceLine(line: unknown, lineOrder: number): OcrInvoiceLine | null {
   if (!line || typeof line !== "object") return null;
   const row = line as Record<string, unknown>;
-  const description = stringField(row.description) ?? stringField(row.product_code) ?? `Extracted line ${lineOrder}`;
+  const description = stringField(row.description) ?? stringField(row.product_code) ?? `OCR line ${lineOrder}`;
   const rawQty = numberField(row.quantity) ?? 1;
   const qty = Math.max(0, Math.round(rawQty));
   const amount = numberField(row.total_amount) ?? numberField(row.total_price) ?? null;
@@ -112,13 +112,13 @@ export async function runMindeeOcrAfterUpload(params: {
     orderId: params.orderId,
     supplierInvoiceId: params.supplierInvoiceId,
     flagType: "ocr_unclear",
-    message: "Automatic document extraction is intentionally disabled until the V2 enqueue/result flow is fully proven manually. Supervisor manual document extraction is required.",
+    message: "Automatic Mindee OCR is intentionally disabled until the V2 enqueue/result flow is fully proven manually. Supervisor manual OCR is required.",
     raisedByOperatorId: params.operatorId,
   });
 
   return {
     ran: false,
     insertedLineCount: 0,
-    message: "Automatic document extraction disabled until V2 manual flow is proven",
+    message: "Automatic OCR disabled until V2 manual flow is proven",
   };
 }
