@@ -64,7 +64,7 @@ function retailerOutcomeFromStatus(status: string | null | undefined) {
 }
 
 function previewText(value: string | null | undefined, max = 84) {
-  const text = customerImporterTerminology((value ?? "").trim());
+  const text = (value ?? "").trim();
   if (!text) return "—";
   if (text.length <= max) return text;
   return `${text.slice(0, max - 1)}…`;
