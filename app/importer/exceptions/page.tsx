@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { customerImporterTerminology } from "@/lib/ui/customerImporterTerminology";
 import { createClient } from "@/utils/supabase/server";
 
 type OrderRelation = { order_ref: string | null } | { order_ref: string | null }[] | null;
@@ -63,7 +64,7 @@ function retailerOutcomeFromStatus(status: string | null | undefined) {
 }
 
 function previewText(value: string | null | undefined, max = 84) {
-  const text = (value ?? "").trim();
+  const text = customerImporterTerminology((value ?? "").trim());
   if (!text) return "—";
   if (text.length <= max) return text;
   return `${text.slice(0, max - 1)}…`;
@@ -184,7 +185,7 @@ export default async function ImporterExceptionsPage() {
         </header>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-          {error ? <p className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">Failed to load disputes: {error.message}</p> : null}
+          {error ? <p className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">Failed to load disputes: {customerImporterTerminology(error.message)}</p> : null}
 
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
@@ -210,9 +211,9 @@ export default async function ImporterExceptionsPage() {
                     <tr key={dispute.id} className="border-t border-slate-200">
                       <td className="p-3 font-semibold">{disputeRef(dispute.id)}</td>
                       <td className="p-3 font-medium">{orderRef(dispute.orders, dispute.order_id)}</td>
-                      <td className="p-3">{dispute.desired_outcome ?? "—"}</td>
+                      <td className="p-3">{customerImporterTerminology(dispute.desired_outcome ?? "—")}</td>
                       <td className="p-3">{retailerPosition}</td>
-                      <td className="p-3">{terminalMessage ?? `${dispute.status ?? "—"} · ${retailerOutcome}`}</td>
+                      <td className="p-3">{customerImporterTerminology(terminalMessage ?? `${dispute.status ?? "—"} · ${retailerOutcome}`)}</td>
                       <td className="p-3">{gbp(dispute.amount_impact_gbp)}</td>
                       <td className="p-3">
                         <Link href={`/importer/exceptions/${dispute.id}`} className="font-semibold text-sky-700 underline">Open</Link>
