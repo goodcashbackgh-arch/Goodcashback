@@ -70,7 +70,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ orde
   if (!access) return new NextResponse("Forbidden", { status: 403 });
 
   const pdf = await fetchSageInvoicePdf(String(invoice.sage_invoice_id), origin);
-  if (!pdf) return new NextResponse("Unable to fetch Sage PDF", { status: 502 });
+  if (!pdf) return new NextResponse("Unable to fetch invoice PDF", { status: 502 });
 
   return new NextResponse(pdf, {
     headers: {
