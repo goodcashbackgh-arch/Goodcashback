@@ -125,7 +125,7 @@ function formatDateTime(value: string | null | undefined) {
 }
 
 function renderExpandableMessage(body: string | null | undefined) {
-  const text = customerImporterTerminology((body ?? "").trim());
+  const text = (body ?? "").trim();
   if (!text) return <p className="mt-2 text-sm italic text-slate-500">No response text saved.</p>;
 
   if (text.length <= RETAILER_MESSAGE_PREVIEW_LENGTH) {
@@ -328,7 +328,7 @@ export default async function ImporterExceptionDetailPage({
               return (
                 <article key={line.id} className="rounded-2xl border border-amber-300 bg-amber-50 p-3 text-sm">
                   <p className="font-semibold">Line {sourceLine?.line_order ?? "—"} · {sourceLineLabel(sourceLine?.line_source)}</p>
-                  <p>{customerImporterTerminology(sourceLine?.description ?? "No description")}</p>
+                  <p>{sourceLine?.description ?? "No description"}</p>
                   <p>Qty impact {line.qty_impact} · Amount impact {gbp(line.amount_impact_gbp)}</p>
                 </article>
               );
@@ -469,7 +469,7 @@ export default async function ImporterExceptionDetailPage({
                       {returnHistory.map((row) => (
                         <details key={row.id} className="rounded-xl border border-slate-200 bg-white p-3 text-sm">
                           <summary className="cursor-pointer font-semibold">{friendlyStatus(row.message_type)} · {formatDateTime(row.created_at)}</summary>
-                          <p className="mt-2 whitespace-pre-wrap text-slate-700">{customerImporterTerminology(row.body ?? "No details saved.")}</p>
+                          <p className="mt-2 whitespace-pre-wrap text-slate-700">{row.body ?? "No details saved."}</p>
                         </details>
                       ))}
                     </div>
