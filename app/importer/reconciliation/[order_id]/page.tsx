@@ -319,7 +319,7 @@ export default async function Page({
               {(screenshots ?? []).map((screenshot: any) => (
                 <details key={screenshot.id} className="rounded-xl border p-3">
                   <summary className="cursor-pointer font-semibold">Screenshot {screenshot.display_order ?? ""}</summary>
-                  {screenshot.note ? <p className="mt-2 text-sm">{customerImporterTerminology(screenshot.note)}</p> : null}
+                  {screenshot.note ? <p className="mt-2 text-sm">{screenshot.note}</p> : null}
                   <img src={screenshot.screenshot_url} alt="Order screenshot" className="mt-3 max-h-[60vh] w-full object-contain" />
                 </details>
               ))}
@@ -451,7 +451,7 @@ export default async function Page({
                   {exceptionEligible.map((line) => (
                     <label key={line.id} className="block rounded-xl bg-slate-50 p-3">
                       <input type="checkbox" name="exception_line_ids" value={line.id} className="mr-2" />
-                      Line {line.line_order} · {customerImporterTerminology(line.description)} · {gbp(line.amount_inc_vat_gbp)}
+                      Line {line.line_order} · {line.description} · {gbp(line.amount_inc_vat_gbp)}
                     </label>
                   ))}
                   <label className="mr-4"><input type="radio" name="remedy" value="refund" className="mr-2" />Refund</label>
