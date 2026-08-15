@@ -100,7 +100,24 @@ Those stored values are evidence of why a final presentation boundary may be nee
 
 All internal accounting, API-log, Sage, Mindee, OCR, VAT-control, test-fixture, and technical records remain unchanged.
 
-## 8. Required verification
+## 8. Large-file and working-page safety gate
+
+For any existing working page/component that is large, complex, or retrieved through a tool that may truncate output, the following rules are mandatory before any edit:
+
+1. **Never reconstruct, replace, or rewrite a large file from a partial or truncated view.**
+2. The complete current file content MUST be fetched from the implementation branch before editing.
+3. The current blob/file SHA MUST be recorded and supplied to the write operation so the edit fails if the file changed underneath the patch.
+4. The intended substitutions MUST be enumerated in advance and limited to the exact customer/importer presentation points required by this addendum.
+5. No surrounding blocks may be deleted, moved, reordered, reformatted, refactored, simplified, or rewritten merely to apply terminology changes.
+6. Existing imports, functions, conditions, calculations, hooks, actions, JSX structure, query logic, form wiring, route behaviour, and internal identifiers MUST remain unchanged unless a single narrow presentation-only helper/import is strictly required to protect a rendered dynamic string.
+7. Where a narrow presentation helper is required, it may only transform the final rendered text for `OCR`, `Mindee`, and `Sage`; it must not participate in business logic or mutate the underlying value.
+8. Immediately after each large-file edit, a file-level diff MUST be reviewed before any further file is changed.
+9. The edit MUST be rejected or reverted if the diff contains any unplanned deletion, block movement, structural rewrite, logic change, unrelated formatting churn, or unrelated text change.
+10. If the available tooling cannot establish complete-file content and a trustworthy surgical diff, the file MUST NOT be changed under this addendum; the remaining visible terminology must instead be reported as outstanding.
+
+This section is a **fail-closed safety gate**. Avoiding regression takes priority over completing the terminology purge in a single pass.
+
+## 9. Required verification
 
 Before this patch may be considered complete, a postflight must demonstrate:
 
@@ -110,16 +127,19 @@ Before this patch may be considered complete, a postflight must demonstrate:
 4. Every code change outside this addendum is either:
    - a user-visible string literal replacement; or
    - a narrowly scoped presentation-only guard explicitly required to prevent a dynamic customer/importer leak.
-5. Customer/importer rendered wording contains no unintended visible `OCR`, `Mindee`, or `Sage` terminology on the governed surfaces.
-6. Internal identifiers and technical machinery remain intact.
-7. Relevant existing tests/type checks/build checks pass, or any unavailable check is reported explicitly.
+5. For every large/complex file touched, complete-file retrieval and SHA-guarded editing were used, and the immediate file-level diff contained no unplanned structural or behavioural change.
+6. Customer/importer rendered wording contains no unintended visible `OCR`, `Mindee`, or `Sage` terminology on the governed surfaces.
+7. Internal identifiers and technical machinery remain intact.
+8. Relevant existing tests/type checks/build checks pass, or any unavailable check is reported explicitly.
 
-## 9. Scope-creep rule
+## 10. Scope-creep rule
 
 If removing a visible term would require changing backend logic, database content, a status value, an API contract, an integration, or any working functional behaviour, that occurrence MUST be left unchanged and reported separately rather than changed under this addendum.
 
-## 10. Governing authority
+If a terminology change on a large working page cannot be performed as an exact SHA-guarded surgical edit with a clean file-level diff, it MUST likewise be left unchanged and reported rather than risking deletion or regression.
 
-From the point this file is committed to the implementation branch, this addendum is the governing authority for the customer/importer OCR/Mindee/Sage presentation terminology purge.
+## 11. Governing authority
+
+From the point this updated file is committed to the implementation branch, this addendum is the governing authority for the customer/importer OCR/Mindee/Sage presentation terminology purge, including the large-file safety gate in section 8.
 
 Any implementation inconsistent with this document is out of scope and must not be applied.
