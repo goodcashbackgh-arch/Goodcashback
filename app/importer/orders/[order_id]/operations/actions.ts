@@ -317,7 +317,7 @@ export async function submitInvoiceEvidenceAction(formData: FormData) {
     }
   }
 
-  let successMessage = "Invoice submitted. OCR pending.";
+  let successMessage = "Invoice submitted. Document extraction pending.";
   if (automaticOcrEnabled()) {
     const ocrResult = await runMindeeOcrAfterUpload({
       supplierInvoiceId,
@@ -327,8 +327,8 @@ export async function submitInvoiceEvidenceAction(formData: FormData) {
       operatorId: operator.id,
     });
     successMessage = ocrResult.ran
-      ? `Invoice submitted. Mindee OCR saved ${ocrResult.insertedLineCount} line(s).`
-      : "Invoice submitted. OCR queued for supervisor review.";
+      ? `Invoice submitted. Document extraction completed — ${ocrResult.insertedLineCount} line(s) saved.`
+      : "Invoice submitted. Document extraction queued for supervisor review.";
   }
 
   revalidatePath(`/importer/orders/${orderId}/operations`);
