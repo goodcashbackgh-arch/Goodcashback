@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { customerImporterTerminology } from "@/lib/ui/customerImporterTerminology";
 import { uploadOperatorCreditNoteEvidenceAction, uploadReturnCollectionEvidenceAction } from "./actions";
 
 type SupplierInvoiceOption = {
@@ -65,17 +66,10 @@ function gbp(value: unknown) {
   return new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" }).format(Number(value ?? 0));
 }
 
-function audienceText(value: string | null | undefined) {
-  return String(value ?? "")
-    .replace(/\bMindee\b/gi, "Document processor")
-    .replace(/\bOCR\b/gi, "Document extraction")
-    .replace(/\bSage\b/gi, "Accounting system");
-}
-
 function statusLabel(value: string | null | undefined) {
   if (!value) return "Pending";
   const label = value.replaceAll("_", " ").replace(/^./, (first) => first.toUpperCase());
-  return audienceText(label);
+  return customerImporterTerminology(label);
 }
 
 function modeLabel(value: string | null | undefined) {
@@ -176,9 +170,9 @@ function compactHistoryLine(row: HistoryRow) {
   const trackingDate = historyValue(body, "Tracking date");
   const status = row.generated_by || historyValue(body, "Supervisor review") || "Pending review";
 
-  if (row.message_type === "return_collection_evidence_review") return `Supervisor review · ${audienceText(status)}`;
+  if (row.message_type === "return_collection_evidence_review") return `Supervisor review · ${customerImporterTerminology(status)}`;
 
-  return [courier || "Courier not provided", trackingRef || "No tracking ref", trackingDate || "No date", audienceText(status)].join(" · ");
+  return [courier || "Courier not provided", trackingRef || "No tracking ref", trackingDate || "No date", customerImporterTerminology(status)].join(" · ");
 }
 
 function detailRows(body: string | null) {
@@ -268,8 +262,8 @@ function ReturnHistory({ rows }: { rows: HistoryRow[] }) {
                     <div className="grid gap-2 md:grid-cols-2">
                       {summaryRows.map((item, index) => (
                         <div key={`${row.id}-summary-${index}`} className="rounded-xl border border-slate-200 bg-white p-3">
-                          {item.label ? <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{audienceText(item.label)}</p> : null}
-                          <p className="mt-1 break-words font-medium text-slate-900">{audienceText(item.value) || "—"}</p>
+                          {item.label ? <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{customerImporterTerminology(item.label)}</p> : null}
+                          <p className="mt-1 break-words font-medium text-slate-900">{item.value || "—"}</p>
                         </div>
                       ))}
                     </div>
@@ -356,7 +350,7 @@ function RefundDocumentHistory({ rows, disputeId }: { rows: RefundDocumentHistor
                     This submission was rejected by supervisor. Submit the corrected refund document below; the old file remains here as audit history.
                   </p>
                 ) : null}
-                {row.notes ? <p className="mt-2 text-xs text-slate-600">Notes: {audienceText(row.notes)}</p> : null}
+                {row.notes ? <p className="mt-2 text-xs text-slate-600">Notes: {row.notes}</p> : null}
               </article>
             );
           })}
