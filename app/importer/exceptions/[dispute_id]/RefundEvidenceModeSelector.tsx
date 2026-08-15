@@ -65,9 +65,17 @@ function gbp(value: unknown) {
   return new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" }).format(Number(value ?? 0));
 }
 
+function audienceText(value: string | null | undefined) {
+  return String(value ?? "")
+    .replace(/\bMindee\b/gi, "Document processor")
+    .replace(/\bOCR\b/gi, "Document extraction")
+    .replace(/\bSage\b/gi, "Accounting system");
+}
+
 function statusLabel(value: string | null | undefined) {
   if (!value) return "Pending";
-  return value.replaceAll("_", " ").replace(/^./, (first) => first.toUpperCase());
+  const label = value.replaceAll("_", " ").replace(/^./, (first) => first.toUpperCase());
+  return audienceText(label);
 }
 
 function modeLabel(value: string | null | undefined) {
@@ -103,7 +111,7 @@ function InvoiceSelector({ invoiceOptions }: { invoiceOptions: SupplierInvoiceOp
       <select name="original_supplier_invoice_id" required className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm">
         {invoiceOptions.map((option) => (
           <option key={option.id} value={option.id}>
-            {option.invoice_ref ?? option.id} {option.review_status ? `· ${option.review_status}` : ""}
+            {option.invoice_ref ?? option.id} {option.review_status ? `· ${statusLabel(option.review_status)}` : ""}
           </option>
         ))}
       </select>
@@ -168,9 +176,9 @@ function compactHistoryLine(row: HistoryRow) {
   const trackingDate = historyValue(body, "Tracking date");
   const status = row.generated_by || historyValue(body, "Supervisor review") || "Pending review";
 
-  if (row.message_type === "return_collection_evidence_review") return `Supervisor review · ${status}`;
+  if (row.message_type === "return_collection_evidence_review") return `Supervisor review · ${audienceText(status)}`;
 
-  return [courier || "Courier not provided", trackingRef || "No tracking ref", trackingDate || "No date", status].join(" · ");
+  return [courier || "Courier not provided", trackingRef || "No tracking ref", trackingDate || "No date", audienceText(status)].join(" · ");
 }
 
 function detailRows(body: string | null) {
@@ -260,8 +268,8 @@ function ReturnHistory({ rows }: { rows: HistoryRow[] }) {
                     <div className="grid gap-2 md:grid-cols-2">
                       {summaryRows.map((item, index) => (
                         <div key={`${row.id}-summary-${index}`} className="rounded-xl border border-slate-200 bg-white p-3">
-                          {item.label ? <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{item.label}</p> : null}
-                          <p className="mt-1 break-words font-medium text-slate-900">{item.value || "—"}</p>
+                          {item.label ? <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{audienceText(item.label)}</p> : null}
+                          <p className="mt-1 break-words font-medium text-slate-900">{audienceText(item.value) || "—"}</p>
                         </div>
                       ))}
                     </div>
@@ -303,7 +311,7 @@ function RefundDocumentHistory({ rows, disputeId }: { rows: RefundDocumentHistor
       <div className="flex items-center justify-between gap-3">
         <div>
           <h3 className="text-lg font-semibold">Refund document / credit note submission history</h3>
-          <p className="mt-1 text-sm text-slate-600">Structured credit-note, refund-proof and no-document submissions. OCR/control happens in the internal supplier credit lane.</p>
+          <p className="mt-1 text-sm text-slate-600">Structured credit-note, refund-proof and no-document submissions. Document extraction and control happen in the internal supplier credit lane.</p>
         </div>
         <span className="rounded-full bg-sky-50 px-3 py-1 text-xs font-semibold text-sky-800 ring-1 ring-sky-200">{rows.length} record(s)</span>
       </div>
@@ -324,7 +332,7 @@ function RefundDocumentHistory({ rows, disputeId }: { rows: RefundDocumentHistor
                     <p className="mt-1 text-slate-600">Ref {row.credit_note_ref ?? "—"} · Date {row.credit_note_date ?? "—"} · Submitted {row.submitted_at ?? "—"}</p>
                   </div>
                   <div className="flex flex-wrap gap-2">
-                    <span className={`rounded-full px-2 py-1 text-xs font-semibold ${badgeClass(row.ocr_status)}`}>OCR {statusLabel(row.ocr_status)}</span>
+                    <span className={`rounded-full px-2 py-1 text-xs font-semibold ${badgeClass(row.ocr_status)}`}>Document extraction {statusLabel(row.ocr_status)}</span>
                     <span className={`rounded-full px-2 py-1 text-xs font-semibold ${badgeClass(row.match_status)}`}>Match {statusLabel(row.match_status)}</span>
                     <span className={`rounded-full px-2 py-1 text-xs font-semibold ${badgeClass(row.amount_balance_status)}`}>Amount {statusLabel(row.amount_balance_status)}</span>
                     <span className={`rounded-full px-2 py-1 text-xs font-semibold ${badgeClass(row.supplier_approval_status)}`}>Approval {statusLabel(row.supplier_approval_status)}</span>
@@ -348,7 +356,7 @@ function RefundDocumentHistory({ rows, disputeId }: { rows: RefundDocumentHistor
                     This submission was rejected by supervisor. Submit the corrected refund document below; the old file remains here as audit history.
                   </p>
                 ) : null}
-                {row.notes ? <p className="mt-2 text-xs text-slate-600">Notes: {row.notes}</p> : null}
+                {row.notes ? <p className="mt-2 text-xs text-slate-600">Notes: {audienceText(row.notes)}</p> : null}
               </article>
             );
           })}
@@ -423,7 +431,7 @@ export default function RefundEvidenceModeSelector({ disputeId, originalOrderId,
         <legend className="px-2 text-sm font-semibold text-slate-700">What refund document did the retailer provide?</legend>
         <div className="mt-3 grid gap-3 md:grid-cols-3">
           {[
-            ["credit_note", "Credit note issued", "Upload the credit note; OCR/compare comes next."],
+            ["credit_note", "Credit note issued", "Upload the credit note; document extraction/compare comes next."],
             ["refund_proof_no_credit_note", "Refund proof, no credit note", "Use prefilled exception lines as the refund adjustment source."],
             ["no_document", "No document issued", "Requires explanation and supervisor exception control."],
           ].map(([value, title, detail]) => (
@@ -440,7 +448,7 @@ export default function RefundEvidenceModeSelector({ disputeId, originalOrderId,
         <form action={uploadOperatorCreditNoteEvidenceAction} encType="multipart/form-data" className="space-y-5 rounded-3xl border border-sky-200 bg-white p-5">
           <HiddenBaseFields disputeId={disputeId} originalOrderId={originalOrderId} mode="credit_note" />
           <h3 className="text-lg font-semibold">{hasRejectedRefundDocument ? "Corrected credit note issued" : "Credit note issued"}</h3>
-          <p className="text-sm text-slate-600">Enter the expected credit-note total and upload the document. OCR/compare will decide whether it is ready or needs review.</p>
+          <p className="text-sm text-slate-600">Enter the expected credit-note total and upload the document. Document extraction/compare will decide whether it is ready or needs review.</p>
           <InvoiceSelector invoiceOptions={invoiceOptions} />
           <div className="grid gap-4 md:grid-cols-2">
             <label className="block text-sm font-semibold text-slate-700">Credit note ref<input name="credit_note_ref" required className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" placeholder="e.g. CN-12345" /></label>
