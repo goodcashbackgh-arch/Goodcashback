@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { createClient } from "@/utils/supabase/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { customerImporterTerminology } from "@/lib/ui/customerImporterTerminology";
 import { addTrackingSubmissionAction, flagSupplierInvoiceForReviewAction, submitInvoiceEvidenceAction } from "./actions";
 
 type ScreenshotRow = { id: string; screenshot_url: string };
@@ -82,7 +83,7 @@ function invoiceStatusLabel(status: string | null | undefined) {
   if (status === "approved_current" || status === "ref_corrected_approved") return "Approved current";
   if (status === "duplicate_blocked") return "Duplicate blocked";
   if (status === "superseded") return "Superseded";
-  return status ?? "Pending review";
+  return customerImporterTerminology(status ?? "Pending review");
 }
 
 function invoiceStatusClass(status: string | null | undefined) {
@@ -102,7 +103,7 @@ function friendlyValue(value: string | null | undefined) {
   if (value === "partially_progressed") return "Evidence matched; tracking open";
   if (value === "pending_dva_funding") return "Payment pending";
   if (value === "reconcilling" || value === "reconciling") return "Matching";
-  return value.replaceAll("_", " ").replace(/^./, (first) => first.toUpperCase());
+  return customerImporterTerminology(value.replaceAll("_", " ").replace(/^./, (first) => first.toUpperCase()));
 }
 
 function fundingStatusClass(status: string | null | undefined, thresholdMet: boolean) {
@@ -213,17 +214,17 @@ export default async function OrderOperationsPage({ params, searchParams }: { pa
           <h1 className="mt-2 break-words text-2xl font-semibold tracking-tight text-slate-950 md:text-3xl">{order.order_ref ?? orderId}</h1>
           <p className="mt-1 break-all text-sm text-slate-500">{order.id}</p>
         </div>
-        <span className={`w-fit rounded-full px-3 py-1 text-xs font-semibold ${orderHasResubmissionRequired ? "bg-rose-100 text-rose-800" : finalBalanceDueGbp > 0.01 ? "bg-amber-100 text-amber-800" : "bg-slate-100 text-slate-700"}`}>{operationalStatus}</span>
+        <span className={`w-fit rounded-full px-3 py-1 text-xs font-semibold ${orderHasResubmissionRequired ? "bg-rose-100 text-rose-800" : finalBalanceDueGbp > 0.01 ? "bg-amber-100 text-amber-800" : "bg-slate-100 text-slate-700"}`}>{customerImporterTerminology(operationalStatus)}</span>
       </div>
     </header>
 
-    {qp.error ? <div className="rounded-2xl border border-red-300 bg-red-50 p-3 text-sm text-red-700">{qp.error}</div> : null}
-    {qp.success ? <div className="rounded-2xl border border-emerald-300 bg-emerald-50 p-3 text-sm text-emerald-900"><p className="font-semibold">{qp.success}</p><p>This estimate is based on the accepted order value. Final order value updates once final order documents are posted.</p></div> : null}
+    {qp.error ? <div className="rounded-2xl border border-red-300 bg-red-50 p-3 text-sm text-red-700">{customerImporterTerminology(qp.error)}</div> : null}
+    {qp.success ? <div className="rounded-2xl border border-emerald-300 bg-emerald-50 p-3 text-sm text-emerald-900"><p className="font-semibold">{customerImporterTerminology(qp.success)}</p><p>This estimate is based on the accepted order value. Final order value updates once final order documents are posted.</p></div> : null}
 
     {orderHasResubmissionRequired ? <section className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-900 shadow-sm">
       <h2 className="font-semibold">Evidence rejected — upload corrected evidence</h2>
       <p className="mt-1">There is no current order evidence for this order. Upload the corrected evidence below.</p>
-      {rejectedInvoices[0]?.review_notes ? <p className="mt-2"><span className="font-semibold">Supervisor note:</span> {rejectedInvoices[0].review_notes}</p> : null}
+      {rejectedInvoices[0]?.review_notes ? <p className="mt-2"><span className="font-semibold">Supervisor note:</span> {customerImporterTerminology(rejectedInvoices[0].review_notes)}</p> : null}
     </section> : rejectedInvoices.length > 0 ? <section className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-700 shadow-sm">
       <h2 className="font-semibold text-slate-950">Rejected evidence kept for audit</h2>
       <p className="mt-1">A previous evidence upload was rejected, but a current evidence record is already present. Continue review/matching on the current evidence.</p>
@@ -232,12 +233,12 @@ export default async function OrderOperationsPage({ params, searchParams }: { pa
     <section className={cardClass}>
       <h2 className="text-lg font-semibold text-slate-950">Summary</h2>
       <div className="mt-4 grid gap-3 text-sm md:grid-cols-6">
-        <div className="rounded-xl bg-slate-50 p-3"><div className="text-xs text-slate-500">Retailer</div><div className="font-semibold text-slate-950">{orderRetailerName}</div></div>
+        <div className="rounded-xl bg-slate-50 p-3"><div className="text-xs text-slate-500">Retailer</div><div className="font-semibold text-slate-950">{customerImporterTerminology(orderRetailerName)}</div></div>
         <div className="rounded-xl bg-slate-50 p-3"><div className="text-xs text-slate-500">Quantity</div><div className="font-semibold text-slate-950">{order.total_qty_declared}</div></div>
         <div className="rounded-xl bg-slate-50 p-3"><div className="text-xs text-slate-500">Accepted estimate</div><div className="font-semibold text-slate-950">{money(acceptedEstimateGbp)}</div></div>
         <div className="rounded-xl bg-slate-50 p-3"><div className="text-xs text-slate-500">{finalSaleValueConfirmed ? "Final order value" : "Estimated order value"}</div><div className="font-semibold text-slate-950">{money(finalSaleValueGbp)}</div></div>
         <div className="rounded-xl bg-slate-50 p-3"><div className="text-xs text-slate-500">Remaining order balance</div><div className={`font-semibold ${finalBalanceDueGbp > 0.01 ? "text-amber-900" : "text-slate-950"}`}>{money(finalBalanceDueGbp)}</div>{creditDueGbp > 0.01 ? <div className="mt-1 text-[11px] text-emerald-700">Credit due {money(creditDueGbp)}</div> : null}</div>
-        <div className="rounded-xl bg-slate-50 p-3"><div className="text-xs text-slate-500">Status</div><div className="font-semibold text-slate-950">{operationalStatus}</div></div>
+        <div className="rounded-xl bg-slate-50 p-3"><div className="text-xs text-slate-500">Status</div><div className="font-semibold text-slate-950">{customerImporterTerminology(operationalStatus)}</div></div>
       </div>
     </section>
 
@@ -300,7 +301,7 @@ export default async function OrderOperationsPage({ params, searchParams }: { pa
                   <div><span className="font-semibold">Submitted:</span> {formatDate(t.submitted_at)}</div>
                   <div><span className="font-semibold">Track parcel:</span> {trackUrl ? <a href={trackUrl} target="_blank" rel="noreferrer" className="font-semibold text-sky-700 underline">Open live tracking</a> : "—"}</div>
                   <div><span className="font-semibold">Evidence:</span> {evidenceUrl ? <a href={evidenceUrl} target="_blank" rel="noreferrer" className="font-semibold text-sky-700 underline">{legacyOnly ? "Open legacy link/evidence" : "Open evidence file"}</a> : "—"}</div>
-                  {t.note ? <p className="mt-2 rounded bg-slate-50 p-2"><span className="font-medium">Note:</span> {t.note}</p> : null}
+                  {t.note ? <p className="mt-2 rounded bg-slate-50 p-2"><span className="font-medium">Note:</span> {customerImporterTerminology(t.note)}</p> : null}
                 </div>
               </details>
             </div>
@@ -311,7 +312,7 @@ export default async function OrderOperationsPage({ params, searchParams }: { pa
 
     <section id="invoice" className={cardClass}>
       <h2 className="text-lg font-semibold text-slate-950">Order evidence</h2>
-      <p className="mt-1 text-xs text-slate-500">Expected retailer for evidence matching: <span className="font-semibold text-slate-700">{orderRetailerName}</span></p>
+      <p className="mt-1 text-xs text-slate-500">Expected retailer for evidence matching: <span className="font-semibold text-slate-700">{customerImporterTerminology(orderRetailerName)}</span></p>
       {showInvoiceUploadForm ? <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className={orderHasResubmissionRequired ? "mb-3 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-900" : "mb-3 text-sm text-slate-600"}>{orderHasResubmissionRequired ? "Upload corrected order evidence here. Rejected evidence remains visible below for audit only." : "No order evidence has been uploaded for this order yet."}</p><form action={submitInvoiceEvidenceAction} className="grid gap-3 md:grid-cols-3"><input type="hidden" name="order_id" value={orderId} /><input name="invoice_ref" placeholder="Evidence ref" className={inputClass} required /><input name="invoice_total_gbp" type="number" min="0.01" step="0.01" placeholder="Evidence total GBP" className={inputClass} required /><input name="invoice_file" type="file" accept=".pdf,image/*,.png,.jpg,.jpeg,.webp" className={inputClass} required /><input name="retailer_delivery_gbp" type="number" min="0" step="0.01" placeholder="Optional delivery charge GBP" className={inputClass} /><input name="retailer_discount_gbp" type="number" min="0" step="0.01" placeholder="Optional discount GBP" className={inputClass} /><p className="text-xs text-slate-500 md:col-span-3">Evidence total is checked against: accepted estimate + delivery - discount. Item lines remain a separate matching check.</p><button className="w-fit rounded-full bg-emerald-700 px-4 py-2 text-sm font-semibold text-white shadow-sm">{orderHasResubmissionRequired ? "Upload corrected evidence" : "Upload evidence"}</button></form></div> : <p className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900">A current order evidence record is already present. Continue review/matching below instead of uploading another one.</p>}
 
       <div className="mt-4 space-y-3 text-sm">
@@ -332,15 +333,15 @@ export default async function OrderOperationsPage({ params, searchParams }: { pa
 
           return <div key={invoice.id} className={`rounded-2xl border p-4 ${retired ? "border-rose-100 bg-rose-50/70" : "border-slate-200 bg-slate-50"}`}>
             <div className="flex flex-wrap items-center justify-between gap-2"><div className="flex flex-wrap items-center gap-2"><span className="text-base font-semibold text-slate-950">{invoice.invoice_ref}</span>{!retired ? <Link className={secondaryButtonClass} href={`/importer/reconciliation/${orderId}`}>Match evidence</Link> : <span className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-rose-800">Audit only</span>}</div><div className="flex flex-wrap gap-2"><span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${invoiceStatusClass(invoice.review_status)}`}>{invoiceStatusLabel(invoice.review_status)}</span>{!retired && summary ? <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${matched ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>{matched ? "Evidence total matched" : "Evidence total variance"}</span> : null}{!retired && activeFlags.length > 0 ? <span className="rounded-full bg-rose-100 px-2.5 py-1 text-xs font-semibold text-rose-800">Flagged for review</span> : null}</div></div>
-            {retired ? <div className="mt-3 rounded-xl border border-rose-100 bg-white p-3 text-xs text-rose-900"><span className="font-semibold">Rejected/retired from current workflow.</span> {invoice.review_notes ? `Reason: ${invoice.review_notes}` : "Kept for audit only."}</div> : summary ? <div className="mt-3 grid gap-2 text-xs md:grid-cols-7"><div><span className="text-slate-500">Invoice qty</span><div className="font-medium">{goods.qty}</div></div><div><span className="text-slate-500">Item lines</span><div className="font-medium">{money(goods.amount)}</div></div><div><span className="text-slate-500">Accepted estimate</span><div className="font-medium">{money(orderGoodsBaseline)}</div></div><div><span className="text-slate-500">Delivery</span><div className="font-medium">{money(deliveryTotal)}</div></div><div><span className="text-slate-500">Discount</span><div className="font-medium">-{money(discountTotal)}</div></div><div><span className="text-slate-500">Expected total</span><div className="font-medium">{money(expectedInvoiceTotal)}</div></div><div><span className="text-slate-500">Variance</span><div className="font-medium">{signedMoney(variance)}</div></div></div> : null}
-            {!retired && activeFlags.length > 0 ? <div className="mt-3 space-y-1"><h4 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Open review flags</h4>{activeFlags.map((flag) => <div key={flag.id} className="rounded-xl border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900"><span className="font-semibold">{flagLabel(flag.flag_type)} · {flag.status}</span> — {flag.message}</div>)}</div> : null}
-            {auditFlags.length > 0 ? <details className="mt-3 rounded-xl border border-slate-200 bg-white p-3"><summary className="cursor-pointer text-xs font-semibold text-slate-600">Show resolved/audit flags</summary><div className="mt-2 space-y-1">{auditFlags.map((flag) => <div key={flag.id} className="rounded-lg bg-slate-50 p-2 text-xs text-slate-600"><span className="font-semibold">{flagLabel(flag.flag_type)} · {flag.status}</span> — {flag.message}</div>)}</div></details> : null}
+            {retired ? <div className="mt-3 rounded-xl border border-rose-100 bg-white p-3 text-xs text-rose-900"><span className="font-semibold">Rejected/retired from current workflow.</span> {invoice.review_notes ? customerImporterTerminology(`Reason: ${invoice.review_notes}`) : "Kept for audit only."}</div> : summary ? <div className="mt-3 grid gap-2 text-xs md:grid-cols-7"><div><span className="text-slate-500">Invoice qty</span><div className="font-medium">{goods.qty}</div></div><div><span className="text-slate-500">Item lines</span><div className="font-medium">{money(goods.amount)}</div></div><div><span className="text-slate-500">Accepted estimate</span><div className="font-medium">{money(orderGoodsBaseline)}</div></div><div><span className="text-slate-500">Delivery</span><div className="font-medium">{money(deliveryTotal)}</div></div><div><span className="text-slate-500">Discount</span><div className="font-medium">-{money(discountTotal)}</div></div><div><span className="text-slate-500">Expected total</span><div className="font-medium">{money(expectedInvoiceTotal)}</div></div><div><span className="text-slate-500">Variance</span><div className="font-medium">{signedMoney(variance)}</div></div></div> : null}
+            {!retired && activeFlags.length > 0 ? <div className="mt-3 space-y-1"><h4 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Open review flags</h4>{activeFlags.map((flag) => <div key={flag.id} className="rounded-xl border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900"><span className="font-semibold">{flagLabel(flag.flag_type)} · {customerImporterTerminology(flag.status)}</span> — {customerImporterTerminology(flag.message)}</div>)}</div> : null}
+            {auditFlags.length > 0 ? <details className="mt-3 rounded-xl border border-slate-200 bg-white p-3"><summary className="cursor-pointer text-xs font-semibold text-slate-600">Show resolved/audit flags</summary><div className="mt-2 space-y-1">{auditFlags.map((flag) => <div key={flag.id} className="rounded-lg bg-slate-50 p-2 text-xs text-slate-600"><span className="font-semibold">{flagLabel(flag.flag_type)} · {customerImporterTerminology(flag.status)}</span> — {customerImporterTerminology(flag.message)}</div>)}</div></details> : null}
             {!retired ? <form action={flagSupplierInvoiceForReviewAction} className="mt-3 grid gap-2 md:grid-cols-[220px_1fr_auto]"><input type="hidden" name="order_id" value={orderId} /><input type="hidden" name="supplier_invoice_id" value={invoice.id} /><select name="flag_type" className={inputClass} defaultValue="invoice_total_mismatch"><option value="invoice_total_mismatch">Evidence total mismatch</option><option value="ocr_unclear">Document read unclear</option><option value="wrong_invoice">Wrong evidence</option><option value="delivery_discount_query">Delivery/discount query</option><option value="manual_line_needed">Manual line needed</option><option value="other">Other</option></select><input name="message" className={inputClass} placeholder="Explain what supervisor should check" required /><button className="rounded-full bg-amber-700 px-3 py-2 text-xs font-semibold text-white shadow-sm">Flag for review</button></form> : null}
           </div>;
         })}
       </div>
 
-      {activeAdjustmentRows.length > 0 ? <div className="mt-4 space-y-1 text-sm"><h3 className="font-medium">Active final order adjustments for current evidence</h3>{activeAdjustmentRows.map((a) => <div key={a.id} className="rounded-xl bg-slate-50 p-2">{adjustmentLabel(a.adjustment_type)} — {money(a.amount_gbp)} — {a.approval_status}</div>)}</div> : null}
+      {activeAdjustmentRows.length > 0 ? <div className="mt-4 space-y-1 text-sm"><h3 className="font-medium">Active final order adjustments for current evidence</h3>{activeAdjustmentRows.map((a) => <div key={a.id} className="rounded-xl bg-slate-50 p-2">{adjustmentLabel(a.adjustment_type)} — {money(a.amount_gbp)} — {customerImporterTerminology(a.approval_status)}</div>)}</div> : null}
     </section>
   </main>;
 }
