@@ -30,6 +30,13 @@ function allocationLabel(status: string) {
     .replace(/^./, (char) => char.toUpperCase());
 }
 
+function audienceIntegrationText(value: string) {
+  return value
+    .replace(/\bMindee\b/gi, "Document processor")
+    .replace(/\bOCR\b/gi, "Document extraction")
+    .replace(/\bSage\b/gi, "Accounting system");
+}
+
 function allocationsForLine(line: DeliveryAllocationLine, allocations: DeliveryAllocationRow[]) {
   return allocations.filter((allocation) => allocation.supplier_invoice_line_id === line.id);
 }
@@ -85,8 +92,8 @@ export default function DeliveryAllocationWorkspace({
             <span className="rounded-full bg-slate-100 px-3 py-1 text-slate-700">Editable until downstream lock</span>
             {mode === "staff" ? <span className="rounded-full bg-purple-100 px-3 py-1 text-purple-800">Supervisor takeover / review</span> : null}
           </div>
-          {success ? <p className="mt-4 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">{success}</p> : null}
-          {error ? <p className="mt-4 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-900">{error}</p> : null}
+          {success ? <p className="mt-4 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">{mode === "operator" ? audienceIntegrationText(success) : success}</p> : null}
+          {error ? <p className="mt-4 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-900">{mode === "operator" ? audienceIntegrationText(error) : error}</p> : null}
         </section>
 
         <section className="grid gap-4 md:grid-cols-4">
@@ -144,7 +151,7 @@ export default function DeliveryAllocationWorkspace({
             <p className="text-sm font-semibold uppercase tracking-[0.16em] text-sky-700">Operator task boundary</p>
             <h2 className="mt-1 text-xl font-semibold text-sky-950">Only allocate contents to tracking refs</h2>
             <p className="mt-2 text-sm leading-6 text-sky-900">
-              Do not adjust values here. Retailer delivery, discounts, shipping cost, COS value and Sage readiness values are calculated later by the platform and reviewed by supervisor/admin.
+              Do not adjust values here. Retailer delivery, discounts, shipping cost, COS value and Accounting readiness values are calculated later by the platform and reviewed by supervisor/admin.
             </p>
           </section>
         )}
@@ -328,7 +335,7 @@ export default function DeliveryAllocationWorkspace({
                         </div>
                       ) : (
                         <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
-                          This line is fully allocated. It can still be reworked until sales invoice release, export pack generation, Sage queue, or final evidence lock.
+                          This line is fully allocated. It can still be reworked until sales invoice release, export pack generation, accounting queue, or final evidence lock.
                         </div>
                       )}
 
@@ -360,7 +367,7 @@ export default function DeliveryAllocationWorkspace({
           <div className="mt-3 grid gap-3 md:grid-cols-3">
             <div className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-700">1. Operator/supervisor maps progressed lines to tracking refs/packages.</div>
             <div className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-700">2. Remaining quantity stays open until the line is fully allocated.</div>
-            <div className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-700">3. Supervisor/admin preview handles values, shipping apportionment, draft COS and Sage readiness.</div>
+            <div className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-700">3. Supervisor/admin preview handles values, shipping apportionment, draft COS and Accounting readiness.</div>
           </div>
           <div className="mt-4 flex flex-wrap gap-3">
             <Link href={`${basePath === "/internal" ? "/internal" : "/importer"}`} className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">Back to dashboard</Link>
