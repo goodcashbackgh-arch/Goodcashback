@@ -1,0 +1,155 @@
+name: Temporary guarded UI branding replacement
+
+on:
+  push:
+    branches:
+      - agent/ui-branding-goods-to-ship
+
+permissions:
+  contents: write
+
+jobs:
+  replace-visible-branding:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/ui-branding-goods-to-ship
+          fetch-depth: 0
+
+      - name: Apply fail-closed byte substitutions
+        shell: python
+        run: |
+          from pathlib import Path
+
+          files = [
+              "app/customer/page.tsx",
+              "app/customer/orders/[secure_order_link]/review/page.tsx",
+              "app/importer/page.tsx",
+              "app/shipper/page.tsx",
+              "app/shipper/return-tasks/ReturnTasksRedirect.tsx",
+              "app/shipper/shipments/page.tsx",
+              "app/shipper/shipments/new/page.tsx",
+              "app/shipper/customer-holds/page.tsx",
+              "app/shipper/package-receipts/page.tsx",
+              "app/shipper/return-actions/page.tsx",
+              "app/shipper/groupage-movements/page.tsx",
+              "app/shipper/shipping-documents/new/page.tsx",
+              "app/shipper/shipments/[shipment_batch_id]/page.tsx",
+              "app/shipper/package-receipts/v2/[tracking_submission_id]/page.tsx",
+              "app/shipper/package-contents/[tracking_submission_id]/page.tsx",
+              "app/shipper/shipments/[shipment_batch_id]/final-evidence/page.tsx",
+              "app/shipper/groupage-movements/[groupage_movement_id]/page.tsx",
+              "app/shipper/groupage-movements/[groupage_movement_id]/final-evidence/page.tsx",
+              "app/internal/page.tsx",
+              "app/internal/access-control/page.tsx",
+              "app/internal/sage-ready/page.tsx",
+              "app/internal/sage-mapping/page.tsx",
+              "app/internal/customer-holds/page.tsx",
+              "app/internal/shipping-control/page.tsx",
+              "app/internal/shipper-return-tasks/page.tsx",
+              "app/internal/onboarding/OnboardingWorkspace.tsx",
+              "app/internal/dva-statement-import/[batch_id]/page.tsx",
+              "app/internal/dva-statement-import/StatementBalanceCheckCard.tsx",
+              "app/internal/export-evidence/pod/[shipment_batch_id]/page.tsx",
+              "app/internal/export-evidence/final/[shipment_batch_id]/page.tsx",
+              "app/internal/export-evidence/draft/[shipment_batch_id]/page.tsx",
+              "app/internal/shipping-control/shipper-documents/page.tsx",
+              "app/internal/shipping-control/shipper-documents/[shipping_document_id]/page.tsx",
+              "app/internal/shipping-control/[shipment_batch_id]/page.tsx",
+              "app/internal/shipping-control/customer-invoice-release/page.tsx",
+              "app/internal/shipping-control/apportionment/[shipping_document_id]/page.tsx",
+              "app/internal/shipping-control/readiness/[shipment_batch_id]/page.tsx",
+              "app/internal/shipping-control/package-contents/[tracking_submission_id]/page.tsx",
+              "app/internal/shipping-control/customer-invoice/[shipment_batch_id]/page.tsx",
+              "app/internal/shipping-control/groupage-movements/[groupage_movement_id]/page.tsx",
+          ]
+
+          replacements = {
+              b"Goodcashback Customer": b"Goods To Ship Customer",
+              b"Goodcashback Importer": b"Goods To Ship Importer",
+              b"Goodcashback Shipper": b"Goods To Ship Shipper",
+              b"Goodcashback Internal": b"Goods To Ship Internal",
+          }
+
+          changed = []
+          total_replacements = 0
+
+          for name in files:
+              path = Path(name)
+              if not path.is_file():
+                  raise SystemExit(f"FAIL: approved UI file missing: {name}")
+              before = path.read_bytes()
+              after = before
+              file_replacements = 0
+              for old, new in replacements.items():
+                  count = after.count(old)
+                  file_replacements += count
+                  after = after.replace(old, new)
+              if b"Goodcashback" in after:
+                  raise SystemExit(f"FAIL: unexpected Goodcashback form in approved UI file: {name}")
+              if file_replacements == 0 and b"Goods To Ship" not in before:
+                  raise SystemExit(f"FAIL: expected visible branding not found in approved UI file: {name}")
+              if after != before:
+                  path.write_bytes(after)
+                  changed.append(name)
+                  total_replacements += file_replacements
+
+          if not changed:
+              raise SystemExit("FAIL: no UI branding replacements were made")
+
+          print(f"Changed {len(changed)} files with {total_replacements} approved substitutions")
+          for name in changed:
+              print(name)
+
+      - name: Verify no protected paths changed
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t changed < <(git diff --name-only)
+          for path in "${changed[@]}"; do
+            case "$path" in
+              app/*.tsx|app/*/*.tsx|app/*/*/*.tsx|app/*/*/*/*.tsx|app/*/*/*/*/*.tsx|app/*/*/*/*/*/*.tsx|app/*/*/*/*/*/*/*.tsx|app/*/*/*/*/*/*/*/*.tsx)
+                ;;
+              *)
+                echo "FAIL: unexpected changed path before workflow cleanup: $path"
+                exit 1
+                ;;
+            esac
+          done
+          if git diff --name-only | grep -E '^(supabase/|src/app/|src/lib/|package(-lock)?\.json$|next\.config|app/api/|.*\.sql$)' ; then
+            echo "FAIL: protected path changed"
+            exit 1
+          fi
+
+      - name: Verify every content change is exact branding substitution
+        shell: python
+        run: |
+          import subprocess
+
+          diff = subprocess.check_output(["git", "diff", "--unified=0"], text=True)
+          for line in diff.splitlines():
+              if line.startswith(("+++", "---", "@@", "diff ", "index ")):
+                  continue
+              if line.startswith("-"):
+                  if "Goodcashback" not in line:
+                      raise SystemExit(f"FAIL: non-brand deletion detected: {line}")
+              elif line.startswith("+"):
+                  if "Goods To Ship" not in line:
+                      raise SystemExit(f"FAIL: non-brand addition detected: {line}")
+          print("Diff content verified: branding substitutions only")
+
+      - name: Remove temporary workflow from final branch state
+        shell: bash
+        run: git rm .github/workflows/_temporary_goods_to_ship_ui_branding.yml
+
+      - name: Commit guarded replacement and workflow cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- app
+          git commit -m "Replace user-visible UI branding with Goods To Ship"
+          git push origin HEAD:agent/ui-branding-goods-to-ship
