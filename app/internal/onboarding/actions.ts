@@ -1,7 +1,9 @@
 "use server";
 
+import { randomBytes } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { createAuthAdminClient } from "@/utils/supabase/admin";
 import { createClient } from "@/utils/supabase/server";
 
 function textValue(formData: FormData, key: string) {
@@ -127,4 +129,134 @@ export async function linkOperatorImporterAction(formData: FormData) {
         ? "Existing user roles saved as Customer only"
         : "Existing user roles saved as Importer only",
   );
+}
+
+export type NewOperatorOnboardingState = {
+  status: "idle" | "success" | "error";
+  message?: string;
+  email?: string;
+  temporaryPassword?: string;
+};
+
+export const initialNewOperatorOnboardingState: NewOperatorOnboardingState = {
+  status: "idle",
+};
+
+function generateTemporaryPassword() {
+  // 24 random bytes encoded as base64url gives a high-entropy, copyable temporary credential.
+  return `${randomBytes(24).toString("base64url")}aA7!`;
+}
+
+export async function createNewOperatorOnboardingAction(
+  _previousState: NewOperatorOnboardingState,
+  formData: FormData,
+): Promise<NewOperatorOnboardingState> {
+  const email = textValue(formData, "email").toLowerCase();
+  const fullName = textValue(formData, "full_name");
+  const phone = nullableText(formData, "phone");
+  const importerId = nullableUuid(formData, "importer_id");
+  const relationshipType = textValue(formData, "relationship_type");
+  const roleCodes = formData
+    .getAll("role_codes")
+    .map((value) => String(value).trim())
+    .filter((value): value is "customer" | "importer" => value === "customer" || value === "importer");
+
+  if (!email || !fullName || !importerId) {
+    return { status: "error", message: "Name, email and importer/customer branch are required." };
+  }
+
+  if (roleCodes.length === 0) {
+    return { status: "error", message: "Select at least one portal role." };
+  }
+
+  if (relationshipType !== "sole_owner" && relationshipType !== "authorised_user") {
+    return { status: "error", message: "Select a valid relationship." };
+  }
+
+  const sessionClient = await createClient();
+  const { data: { user } } = await sessionClient.auth.getUser();
+  if (!user) {
+    return { status: "error", message: "Your staff session has expired. Sign in again." };
+  }
+
+  const { data: staff, error: staffError } = await sessionClient
+    .from("staff")
+    .select("id")
+    .eq("auth_user_id", user.id)
+    .eq("active", true)
+    .maybeSingle();
+
+  if (staffError || !staff) {
+    return { status: "error", message: "Active staff access is required to create a login." };
+  }
+
+  const temporaryPassword = generateTemporaryPassword();
+  const adminClient = createAuthAdminClient();
+
+  const { data: created, error: createError } = await adminClient.auth.admin.createUser({
+    email,
+    password: temporaryPassword,
+    email_confirm: true,
+    user_metadata: { full_name: fullName },
+  });
+
+  if (createError || !created.user) {
+    return {
+      status: "error",
+      message: createError?.message ?? "The authentication login could not be created.",
+    };
+  }
+
+  try {
+    const { error: platformError } = await (sessionClient as any).rpc(
+      "internal_create_operator_onboarding_v1",
+      {
+        p_auth_user_id: created.user.id,
+        p_email: email,
+        p_full_name: fullName,
+        p_phone: phone,
+        p_importer_id: importerId,
+        p_relationship_type: relationshipType,
+        p_role_codes: roleCodes,
+      },
+    );
+
+    if (platformError) {
+      throw new Error(platformError.message);
+    }
+  } catch (error) {
+    const { error: deleteError } = await adminClient.auth.admin.deleteUser(created.user.id);
+
+    if (deleteError) {
+      // A failed deletion must still leave the login unusable. Replace the known
+      // temporary credential with an undisclosed random credential and ban it.
+      const undisclosedPassword = generateTemporaryPassword();
+      const { error: disableError } = await adminClient.auth.admin.updateUserById(created.user.id, {
+        password: undisclosedPassword,
+        ban_duration: "876000h",
+      });
+
+      if (disableError) {
+        return {
+          status: "error",
+          message: "Onboarding failed and automatic Auth compensation also failed. Treat this login as incomplete and escalate for immediate repair.",
+        };
+      }
+    }
+
+    return {
+      status: "error",
+      message: error instanceof Error ? error.message : "Onboarding failed. The new login was compensated and is not ready for use.",
+    };
+  }
+
+  revalidatePath("/internal/onboarding");
+  revalidatePath("/internal/access-control");
+
+  return {
+    status: "success",
+    message: "New login created. Copy these details now; the temporary password is not stored by the platform.",
+    email,
+    temporaryPassword,
+  };
 }
