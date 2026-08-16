@@ -173,7 +173,7 @@ export default async function ShipperReturnActionsPage({
             <Link href="/shipper/customer-holds">Customer holds</Link>
             <Link href="/shipper/package-receipts">Package receipt actions</Link>
           </div>
-          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Goodcashback Shipper</p>
+          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Goods To Ship Shipper</p>
           <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">Return actions</h1>
           <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
             Return actions come from operator return or collection instructions for approved refund exceptions and damaged or wrong replacement items. Confirm only the physical action: collected, handed to courier, returned, unable to return, or query.

@@ -291,7 +291,7 @@ export default async function InternalPage() {
       <div className="mx-auto flex max-w-7xl flex-col gap-8">
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <p className="text-sm font-medium uppercase tracking-[0.2em] text-sky-500">
-            Goodcashback Internal
+            Goods To Ship Internal
           </p>
           <div className="mt-3 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
             <div>

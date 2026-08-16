@@ -284,7 +284,7 @@ export default async function CustomerDashboardPage() {
         <div className="flex flex-col gap-5 p-5 xl:flex-row xl:items-start xl:justify-between xl:p-7">
           <div>
             <p className="text-xs font-black uppercase tracking-[0.28em] text-sky-600">Customer portal</p>
-            <h1 className="mt-2 text-4xl font-black tracking-tight text-slate-950 xl:text-5xl">Goodcashback Customer</h1>
+            <h1 className="mt-2 text-4xl font-black tracking-tight text-slate-950 xl:text-5xl">Goods To Ship Customer</h1>
             <p className="mt-2 text-base text-slate-600">{operator.full_name} · {importer.trading_name ?? importer.company_name}</p>
             <p className="mt-3 text-sm font-semibold text-slate-500">{rows.length} orders · {needsAttention.length} need attention · {gbp(creditBalanceGbp)} available account credit</p>
           </div>

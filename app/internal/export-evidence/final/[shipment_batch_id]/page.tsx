@@ -72,7 +72,7 @@ export default async function InternalFinalExportEvidencePage({
             <Link href={`/internal/export-evidence/draft/${shipmentBatchId}`}>Draft COS / EEP review</Link>
             <Link href={`/shipper/shipments/${shipmentBatchId}/draft-cos-pack`}>Download draft pack</Link>
           </div>
-          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Goodcashback Internal</p>
+          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Goods To Ship Internal</p>
           <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">Final COS / export evidence review</h1>
           <p className="mt-2 text-sm leading-6 text-slate-600">
             Supervisor review lane for completed signed/stamped COS, final EEP/packing list, MBL/BOL, container/seal evidence and export/departure evidence uploaded by the shipper.

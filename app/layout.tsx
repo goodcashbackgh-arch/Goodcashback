@@ -4,8 +4,8 @@ import StatusTextPatch from "./_components/StatusTextPatch";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Goodcashback",
-  description: "Goodcashback app",
+  title: "Goods To Ship",
+  description: "Goods To Ship app",
 };
 
 export default function RootLayout({

@@ -205,7 +205,7 @@ export default async function StatementBalanceCheckCard({ importBatchId }: { imp
       </div>
 
       <div className="mt-5 grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
-        <p><span className="block text-xs font-semibold uppercase tracking-wide opacity-70">Statement account</span><span className="font-semibold">{text(batch.statement_account_label) || (isMainCompanyBank ? "Goodcashback Main Company Bank Account" : "Importer DVA/card account")}</span></p>
+        <p><span className="block text-xs font-semibold uppercase tracking-wide opacity-70">Statement account</span><span className="font-semibold">{text(batch.statement_account_label) || (isMainCompanyBank ? "Goods To Ship Main Company Bank Account" : "Importer DVA/card account")}</span></p>
         <p><span className="block text-xs font-semibold uppercase tracking-wide opacity-70">Account holder</span><span className="font-semibold">{accountHolder}</span></p>
         <p><span className="block text-xs font-semibold uppercase tracking-wide opacity-70">Account number</span><span className="font-semibold">{maskAccount(accountNumber)}</span></p>
         <p><span className="block text-xs font-semibold uppercase tracking-wide opacity-70">Extracted period</span><span className="font-semibold">{statementPeriodFrom || "—"} → {statementPeriodTo || "—"}</span></p>

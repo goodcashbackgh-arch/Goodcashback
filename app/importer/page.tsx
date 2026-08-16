@@ -165,7 +165,7 @@ export default async function ImporterPage() {
           <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.22em] text-sky-700">Importer workspace</p>
-              <h1 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950 md:text-3xl">Goodcashback Importer</h1>
+              <h1 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950 md:text-3xl">Goods To Ship Importer</h1>
               <p className="mt-2 text-sm text-slate-600">Welcome, {operator.full_name}. Manage orders, evidence, tracking, matching and remaining order balances from one control view.</p>
             </div>
             <div className="grid gap-2 md:flex md:flex-wrap md:justify-end">

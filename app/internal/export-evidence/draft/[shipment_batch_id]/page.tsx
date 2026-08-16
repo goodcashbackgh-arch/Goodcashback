@@ -174,7 +174,7 @@ export default async function DraftCosExportEvidencePage({ params }: { params: P
             <Link href={`/internal/shipping-control/${shipmentBatchId}`}>Batch detail</Link>
             <Link href={`/internal/shipping-control/readiness/${shipmentBatchId}`}>Readiness / route preview</Link>
           </div>
-          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Goodcashback Internal</p>
+          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Goods To Ship Internal</p>
           <div className="mt-2 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
             <div>
               <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Draft COS / Export Evidence Pack review</h1>
@@ -246,7 +246,7 @@ export default async function DraftCosExportEvidencePage({ params }: { params: P
           <article className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
             <h2 className="text-xl font-semibold">Draft COS header preview</h2>
             <div className="mt-4 grid gap-3 text-sm md:grid-cols-2">
-              <div className="rounded-2xl bg-slate-50 p-3"><span className="text-slate-500">Exporter / supplier</span><p className="font-semibold">Goodcashback / tenant exporter</p></div>
+              <div className="rounded-2xl bg-slate-50 p-3"><span className="text-slate-500">Exporter / supplier</span><p className="font-semibold">Goods To Ship / tenant exporter</p></div>
               <div className="rounded-2xl bg-slate-50 p-3"><span className="text-slate-500">Freight forwarder / packer</span><p className="font-semibold">{firstPack?.shipper_name ?? "Shipper to complete"}</p></div>
               <div className="rounded-2xl bg-slate-50 p-3"><span className="text-slate-500">Consignee</span><p className="font-semibold">Ghana jurisdiction hub / tenant destination hub</p></div>
               <div className="rounded-2xl bg-slate-50 p-3"><span className="text-slate-500">Customer reference</span><p className="font-semibold">{firstPack?.booking_ref ?? firstBatch?.booking_ref ?? shipmentBatchId}</p></div>

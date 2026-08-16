@@ -77,7 +77,7 @@ export default async function InternalPackageContentsPage({
             <Link href="/internal/shipping-control">← Shipping control</Link>
             <Link href="/internal">Internal dashboard</Link>
           </div>
-          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Goodcashback Internal</p>
+          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Goods To Ship Internal</p>
           <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">Package contents</h1>
           <p className="mt-2 text-sm text-slate-600">{staff.full_name} · {staff.role_type}</p>
           <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-600">

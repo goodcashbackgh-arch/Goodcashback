@@ -95,7 +95,7 @@ export default async function InternalShipperReturnTasksPage({
             <Link href="/internal/customer-holds">Customer holds</Link>
             <Link href="/internal/sage-ready">Ready for Sage queue</Link>
           </div>
-          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Goodcashback Internal</p>
+          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Goods To Ship Internal</p>
           <div className="mt-2 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
             <div>
               <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Shipper return proof review</h1>
