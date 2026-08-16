@@ -51,7 +51,7 @@ type ExportEvidenceCompletionFields = {
   container_number: string | null;
   seal_number: string | null;
   vessel_voyage: string | null;
-  port_of_loading text: never;
+  port_of_loading: string | null;
   port_of_discharge: string | null;
   place_of_delivery: string | null;
   export_shipment_date: string | null;
