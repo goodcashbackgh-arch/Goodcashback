@@ -196,7 +196,7 @@ export default async function InternalCustomerHoldsPage({
             <Link href="/internal/sage-ready">Ready for Sage queue</Link>
             <Link href="/shipper">Shipper dashboard</Link>
           </div>
-          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Goodcashback Internal</p>
+          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Goods To Ship Internal</p>
           <div className="mt-2 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
             <div>
               <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Customer pre-shipment holds</h1>

@@ -163,7 +163,7 @@ export default async function ShipperCustomerHoldsPage() {
             <Link href="/shipper/package-receipts">Package receipt actions</Link>
             <Link href="/shipper/return-actions">Return actions</Link>
           </div>
-          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Goodcashback Shipper</p>
+          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Goods To Ship Shipper</p>
           <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">Customer hold / set-aside instructions</h1>
           <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
             This page shows approved set-aside instructions and the next state. It does not show upstream finance, payment or accounting controls.

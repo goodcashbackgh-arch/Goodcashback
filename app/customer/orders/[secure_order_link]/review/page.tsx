@@ -143,7 +143,7 @@ export default async function CustomerOrderReviewPage({
     return (
       <main className="min-h-screen bg-slate-50 px-4 py-10 text-slate-950">
         <section className="mx-auto max-w-2xl rounded-3xl border border-rose-200 bg-white p-6 shadow-sm">
-          <p className="text-sm font-semibold uppercase tracking-[0.2em] text-rose-500">Goodcashback</p>
+          <p className="text-sm font-semibold uppercase tracking-[0.2em] text-rose-500">Goods To Ship</p>
           <h1 className="mt-2 text-2xl font-semibold">This review link is not available</h1>
           <p className="mt-3 text-sm leading-6 text-slate-600">{customerImporterTerminology(error.message)}</p>
         </section>
@@ -168,7 +168,7 @@ export default async function CustomerOrderReviewPage({
         <header className="overflow-hidden rounded-[2rem] border border-sky-100 bg-white shadow-sm">
           <div className="bg-gradient-to-r from-sky-500 via-cyan-400 to-emerald-300 px-5 py-2" />
           <div className="p-5 md:p-7">
-            <p className="text-xs font-black uppercase tracking-[0.28em] text-sky-600">Goodcashback customer review</p>
+            <p className="text-xs font-black uppercase tracking-[0.28em] text-sky-600">Goods To Ship customer review</p>
             <h1 className="mt-2 text-3xl font-black tracking-tight md:text-5xl">Review before shipment</h1>
             <p className="mt-2 text-sm text-slate-600">Order {order.order_ref ?? order.id ?? "—"} · {order.retailer_name ?? "Retailer"}</p>
             <p className="mt-4 max-w-3xl text-sm leading-6 text-slate-700">

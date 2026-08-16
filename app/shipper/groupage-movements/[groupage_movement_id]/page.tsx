@@ -192,7 +192,7 @@ export default async function ShipperGroupageMovementDetailPage({
             <Link href="/shipper/groupage-movements">← Groupage Movements</Link>
             <Link href="/shipper/shipments">Shipment batches</Link>
           </div>
-          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Goodcashback Shipper</p>
+          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Goods To Ship Shipper</p>
           <div className="mt-2 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
             <div>
               <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Groupage Movement {first?.groupage_movement_ref ?? groupageMovementId}</h1>

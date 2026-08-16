@@ -104,7 +104,7 @@ export default async function NewShippingDocumentPage({
             <Link href="/shipper">← Shipper dashboard</Link>
             <Link href="/shipper/shipments">Shipment batches</Link>
           </div>
-          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Goodcashback Shipper</p>
+          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Goods To Ship Shipper</p>
           <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">Shipping charge document upload</h1>
           <p className="mt-2 text-sm text-slate-600">{(shipperUser as any).full_name} · {shipper?.name ?? "Shipper"}</p>
           <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-600">

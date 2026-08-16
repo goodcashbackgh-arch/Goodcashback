@@ -98,7 +98,7 @@ export default async function ShippingApportionmentPage({ params, searchParams }
             <Link href={`/internal/shipping-control/shipper-documents/${shippingDocumentId}`}>Review document</Link>
             <Link href="/internal/shipping-control">Shipping control</Link>
           </div>
-          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Goodcashback Internal</p>
+          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Goods To Ship Internal</p>
           <div className="mt-2 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
             <div>
               <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Shipping cost apportionment</h1>

@@ -85,7 +85,7 @@ export default async function ShipperFinalEvidencePage({
             <Link href={`/shipper/shipments/${shipmentBatchId}`}>← Shipment batch</Link>
             <Link href="/shipper/shipments">Shipment batches</Link>
           </div>
-          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Goodcashback Shipper</p>
+          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Goods To Ship Shipper</p>
           <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">Upload completed COS / final export evidence</h1>
           <p className="mt-2 text-sm text-slate-600">{(shipperUser as any).full_name} · {shipper?.name ?? "Shipper"} · Batch {(batch as any).booking_ref ?? shipmentBatchId}</p>
           {queryParams.success ? <p className="mt-4 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">{queryParams.success}</p> : null}

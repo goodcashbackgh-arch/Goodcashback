@@ -78,7 +78,7 @@ export default async function GroupageFinalEvidencePage({
             <Link href={`/shipper/groupage-movements/${groupageMovementId}/export-pack`} target="_blank">Download combined export pack</Link>
             <Link href={`/shipper/groupage-movements/${groupageMovementId}/sales-invoices-zip`}>Download supporting ZIP</Link>
           </div>
-          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Goodcashback Shipper</p>
+          <p className="mt-6 text-sm font-medium uppercase tracking-[0.2em] text-sky-500">Goods To Ship Shipper</p>
           <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">Final evidence upload · {movementRef}</h1>
           <p className="mt-2 text-sm leading-6 text-slate-600">Upload the signed/stamped Groupage Export Pack once for the full movement. Upload POD only for booking refs covered by the delivery evidence. Previously submitted or accepted POD booking refs are locked to prevent duplicate evidence.</p>
           {signedPackSubmitted ? <p className="mt-4 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-900">Signed export pack already submitted for supervisor review.</p> : null}
