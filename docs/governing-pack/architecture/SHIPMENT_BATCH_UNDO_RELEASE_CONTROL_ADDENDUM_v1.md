@@ -137,9 +137,9 @@ The following states do not block Shipment Batch Undo by themselves:
 
 Shipment Batch Undo must not delete invoice-adjustment history and must not mutate terminal or immutable adjustment outcomes.
 
-After shipment memberships are deactivated, any active mutable `progressed_allocated` adjustment rows that still carry the voided Shipment Batch ID must be superseded/recalculated through the platform's existing invoice-adjustment recalculation authority so that current mutable adjustment state no longer retains a stale active Shipment Batch reference.
+After shipment memberships are deactivated, any active mutable `progressed_allocated` adjustment rows that still carry the voided Shipment Batch ID must be superseded and rebuilt inside the Undo transaction using the same mutable criteria as the existing `recalculate_invoice_adjustment_consumption_v1` authority: only allocations that are not export-locked and have no active customer-sales release may be recalculated. The existing recalculation function, its permissions and its staff/operator authority must not be changed by this build.
 
-If the existing recalculation authority refuses because the underlying allocation has crossed its own immutable export/customer-release boundary, Undo must fail rather than bypass that authority.
+If an affected allocation has crossed the existing immutable export/customer-release boundary, Undo must fail rather than bypass that boundary.
 
 ## Reselection after Undo
 
