@@ -14,16 +14,14 @@ export default async function AuthCheckPage() {
 
   const userId = user.id;
 
-  // Patch C priority gate only. Existing portal routing below remains unchanged
-  // until the shared resolver is switched on in Patch F.
-  const { data: profile } = await supabase
-    .from("platform_user_profiles")
-    .select("must_change_password")
-    .eq("auth_user_id", userId)
-    .eq("active", true)
-    .maybeSingle();
+  // Patch C priority gate only. Read through the existing SECURITY DEFINER
+  // shared resolver so platform_user_profiles RLS cannot hide the flag.
+  // Existing portal routing below remains unchanged until Patch F.
+  const { data: accessContext } = await supabase.rpc(
+    "current_platform_access_context_v1",
+  );
 
-  if (profile?.must_change_password === true) {
+  if (accessContext?.must_change_password === true) {
     redirect("/auth/change-password");
   }
 
