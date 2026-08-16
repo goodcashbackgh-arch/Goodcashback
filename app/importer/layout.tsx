@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { createClient } from "@/utils/supabase/server";
+import { requirePortalAccess } from "@/utils/platform-access/portal-guard";
 import ReplacementOrdersPanel from "./ReplacementOrdersPanel";
 import SettlementImporterSummary from "./SettlementImporterSummary";
 
@@ -13,6 +14,8 @@ type SettlementRow = {
 };
 
 export default async function ImporterLayout({ children }: { children: React.ReactNode }) {
+  await requirePortalAccess("importer");
+
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   const [{ data }, { data: physicalData }] = user

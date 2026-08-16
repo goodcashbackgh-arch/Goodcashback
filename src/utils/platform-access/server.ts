@@ -46,6 +46,34 @@ export type PlatformAccessContext = {
   profile_active: boolean;
 };
 
+export function workspacePath(workspace: PlatformWorkspace | null) {
+  if (workspace === "internal") return "/internal";
+  if (workspace === "shipper") return "/shipper";
+  if (workspace === "customer") return "/customer";
+  if (workspace === "importer") return "/importer";
+  if (workspace === "workspace_select") return "/workspace/select";
+  return null;
+}
+
+export function hasExplicitMembershipResolution(access: PlatformAccessContext) {
+  return access.membership_workspace !== null;
+}
+
+export function canAccessPortal(
+  access: PlatformAccessContext,
+  portal: "customer" | "importer",
+) {
+  if (hasExplicitMembershipResolution(access)) {
+    return portal === "customer"
+      ? access.has_customer_membership === true
+      : access.has_importer_membership === true;
+  }
+
+  // Patch F transition fallback: preserve the pre-enforcement operator path only
+  // when no explicit membership workspace is available.
+  return access.legacy_operator === true;
+}
+
 export async function resolveCurrentPlatformAccess(): Promise<PlatformAccessContext> {
   const supabase = await createClient();
   const { data, error } = await supabase.rpc("current_platform_access_context_v1");
