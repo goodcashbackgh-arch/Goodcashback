@@ -101,7 +101,7 @@ export default function ShipmentSelectionControls({ formId, selectableCount }: P
       <button
         type="button"
         onClick={() => setSelection(true)}
-        className="rounded-xl border border-emerald-300 bg-white px-3 py-2 text-sm font-semibold text-emerald-900 hover:bg-emerald-50"
+        className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-100"
       >
         Select all
       </button>
