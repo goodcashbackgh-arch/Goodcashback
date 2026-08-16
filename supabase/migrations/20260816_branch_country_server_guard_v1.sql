@@ -88,7 +88,7 @@ BEGIN
 
   SELECT
     count(DISTINCT sc.country_id)::integer,
-    min(sc.country_id)
+    (array_agg(DISTINCT sc.country_id))[1]
   INTO v_active_country_count, v_existing_country_id
   FROM public.shipper_countries sc
   JOIN public.countries c
@@ -115,7 +115,6 @@ BEGIN
   RETURN v_shipper_id;
 END;
 $function$;
-
 
 CREATE OR REPLACE FUNCTION public.internal_upsert_importer_branch_v1(
   p_importer_id uuid,
@@ -169,7 +168,7 @@ BEGIN
 
   SELECT
     count(DISTINCT sc.country_id)::integer,
-    min(sc.country_id)
+    (array_agg(DISTINCT sc.country_id))[1]
   INTO v_active_country_count, v_resolved_country_id
   FROM public.shipper_countries sc
   JOIN public.countries c
