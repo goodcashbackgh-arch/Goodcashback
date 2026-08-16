@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useActionState, useMemo, useState } from "react";
 import {
+  createNewOperatorOnboardingAction,
   linkOperatorImporterAction,
   setSupervisorScopeAction,
   upsertExportEvidenceProfileAction,
@@ -30,6 +31,8 @@ type Props = {
   blockers: any;
   savedMessage?: string | null;
 };
+
+const initialNewOperatorOnboardingState = { status: "idle" as const };
 
 function Field({ label, name, required, value, placeholder }: { label: string; name: string; required?: boolean; value?: string | null; placeholder?: string }) {
   return (
@@ -71,6 +74,10 @@ export default function OnboardingWorkspace({ staff, countries, shippers, import
   const [exportShipperId, setExportShipperId] = useState("");
   const [exportCountryId, setExportCountryId] = useState("");
   const [scopeMode, setScopeMode] = useState("all");
+  const [newUserState, newUserAction, newUserPending] = useActionState(
+    createNewOperatorOnboardingAction,
+    initialNewOperatorOnboardingState,
+  );
 
   const selectedShipper = shippers.find((item) => item.id === shipperId);
   const selectedImporter = importers.find((item) => item.id === importerId);
@@ -189,6 +196,34 @@ export default function OnboardingWorkspace({ staff, countries, shippers, import
             <label className="flex flex-col gap-1 text-sm font-medium text-slate-700"><span>Relationship *</span><select name="relationship_type" required className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm"><option value="sole_owner">sole_owner</option><option value="authorised_user">authorised_user</option></select></label>
             <div className="md:col-span-2"><Button>Link existing user</Button></div>
           </form>
+        </Panel>
+
+        <Panel eyebrow="5B. New user login" title="Create new customer/importer login" note="For genuinely new users only. The temporary password is shown here once after the complete onboarding transaction succeeds.">
+          <form action={newUserAction} className="grid gap-4 md:grid-cols-2">
+            <Field label="Full name" name="full_name" required />
+            <Field label="Email" name="email" required />
+            <Field label="Phone" name="phone" />
+            <label className="flex flex-col gap-1 text-sm font-medium text-slate-700"><span>Importer/customer branch *</span><select name="importer_id" required className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm"><option value="">Select importer/customer</option>{importers.map((item) => <option key={item.id} value={item.id}>{item.importer_name}</option>)}</select></label>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 md:col-span-2"><p className="text-sm font-semibold text-slate-800">Portal roles *</p><div className="mt-3 grid gap-2 sm:grid-cols-2"><label className="flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-sm ring-1 ring-slate-200"><input type="checkbox" name="role_codes" value="customer" defaultChecked /> Customer</label><label className="flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-sm ring-1 ring-slate-200"><input type="checkbox" name="role_codes" value="importer" defaultChecked /> Importer</label></div></div>
+            <label className="flex flex-col gap-1 text-sm font-medium text-slate-700"><span>Relationship *</span><select name="relationship_type" required className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm"><option value="sole_owner">sole_owner</option><option value="authorised_user">authorised_user</option></select></label>
+            <div className="md:col-span-2"><button disabled={newUserPending} className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60">{newUserPending ? "Creating login…" : "Create new login"}</button></div>
+          </form>
+
+          {newUserState.status === "error" ? (
+            <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-950">{newUserState.message}</div>
+          ) : null}
+
+          {newUserState.status === "success" ? (
+            <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-950">
+              <p className="font-semibold">Login created — copy these details now</p>
+              <p className="mt-1">{newUserState.message}</p>
+              <dl className="mt-4 grid gap-3 sm:grid-cols-2">
+                <div className="rounded-xl bg-white p-3 ring-1 ring-emerald-200"><dt className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Email</dt><dd className="mt-1 break-all font-mono text-sm">{newUserState.email}</dd></div>
+                <div className="rounded-xl bg-white p-3 ring-1 ring-emerald-200"><dt className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Temporary password</dt><dd className="mt-1 break-all font-mono text-sm">{newUserState.temporaryPassword}</dd></div>
+              </dl>
+              <p className="mt-3 text-xs font-medium">This password disappears when this page is refreshed or another onboarding attempt replaces this result.</p>
+            </div>
+          ) : null}
         </Panel>
 
         <Panel eyebrow="6. Supervisor scope" title="Assign supervisor visibility" note="All-mode preserves current visibility. Assigned-mode limits the supervisor to selected shipper branches.">
