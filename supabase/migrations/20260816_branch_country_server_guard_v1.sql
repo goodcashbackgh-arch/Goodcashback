@@ -37,20 +37,20 @@ BEGIN
     RAISE EXCEPTION 'shipper_name_required';
   END IF;
 
-  IF p_country_id IS NULL THEN
-    RAISE EXCEPTION 'country_required';
-  END IF;
-
-  IF NOT EXISTS (
-    SELECT 1
-    FROM public.countries c
-    WHERE c.id = p_country_id
-      AND c.active = true
-  ) THEN
-    RAISE EXCEPTION 'country_not_found_or_inactive';
-  END IF;
-
   IF p_shipper_id IS NULL THEN
+    IF p_country_id IS NULL THEN
+      RAISE EXCEPTION 'country_required';
+    END IF;
+
+    IF NOT EXISTS (
+      SELECT 1
+      FROM public.countries c
+      WHERE c.id = p_country_id
+        AND c.active = true
+    ) THEN
+      RAISE EXCEPTION 'country_not_found_or_inactive';
+    END IF;
+
     INSERT INTO public.shippers (
       name,
       contact_email,
@@ -100,7 +100,8 @@ BEGIN
     RAISE EXCEPTION 'shipper_branch_country_not_ready';
   END IF;
 
-  IF v_existing_country_id IS DISTINCT FROM p_country_id THEN
+  IF p_country_id IS NULL
+     OR v_existing_country_id IS DISTINCT FROM p_country_id THEN
     RAISE EXCEPTION 'shipper_branch_country_mismatch';
   END IF;
 
