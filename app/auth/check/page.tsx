@@ -1,5 +1,9 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
+import {
+  resolveCurrentPlatformAccess,
+  workspacePath,
+} from "@/utils/platform-access/server";
 
 export default async function AuthCheckPage() {
   const supabase = await createClient();
@@ -12,18 +16,23 @@ export default async function AuthCheckPage() {
     redirect("/login");
   }
 
-  const userId = user.id;
+  try {
+    const access = await resolveCurrentPlatformAccess();
 
-  // Patch C priority gate only. Read through the existing SECURITY DEFINER
-  // shared resolver so platform_user_profiles RLS cannot hide the flag.
-  // Existing portal routing below remains unchanged until Patch F.
-  const { data: accessContext } = await supabase.rpc(
-    "current_platform_access_context_v1",
-  );
+    if (access.must_change_password === true) {
+      redirect("/auth/change-password");
+    }
 
-  if (accessContext?.must_change_password === true) {
-    redirect("/auth/change-password");
+    const resolvedPath = workspacePath(access.resolved_workspace);
+    if (resolvedPath) {
+      redirect(resolvedPath);
+    }
+  } catch {
+    // Patch F transition fallback only: preserve the exact legacy route order
+    // while membership routing is under acceptance testing.
   }
+
+  const userId = user.id;
 
   const { data: staff } = await supabase
     .from("staff")
