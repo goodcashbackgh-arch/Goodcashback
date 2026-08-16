@@ -4,7 +4,6 @@ import Link from "next/link";
 import { useActionState, useMemo, useState } from "react";
 import {
   createNewOperatorOnboardingAction,
-  initialNewOperatorOnboardingState,
   linkOperatorImporterAction,
   setSupervisorScopeAction,
   upsertExportEvidenceProfileAction,
@@ -32,6 +31,8 @@ type Props = {
   blockers: any;
   savedMessage?: string | null;
 };
+
+const initialNewOperatorOnboardingState = { status: "idle" as const };
 
 function Field({ label, name, required, value, placeholder }: { label: string; name: string; required?: boolean; value?: string | null; placeholder?: string }) {
   return (
