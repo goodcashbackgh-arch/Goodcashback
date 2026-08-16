@@ -73,6 +73,7 @@ export default async function ShipperFinalEvidencePage({
   ]);
 
   if (!batch) redirect("/shipper/shipments?error=Shipment%20batch%20not%20found.");
+  const batchCreated = (batch as any).status === "created";
   const completionReady = (fields as any)?.completion_status === "completion_fields_ready";
   const rows = (docs ?? []) as EvidenceDoc[];
   const shipper = Array.isArray((shipperUser as any).shippers) ? (shipperUser as any).shippers[0] : (shipperUser as any).shippers;
@@ -96,7 +97,9 @@ export default async function ShipperFinalEvidencePage({
         <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 shadow-sm sm:p-6">
           <h2 className="text-xl font-semibold text-amber-950">Final evidence upload</h2>
           <p className="mt-2 text-sm leading-6 text-amber-900">Upload the completed signed/stamped COS and any final export evidence documents. Use POD / delivery evidence when the only remaining proof is delivery/POD. Supervisor can view/download and accept or reject after submission.</p>
-          {!completionReady ? (
+          {!batchCreated ? (
+            <p className="mt-4 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700">Final evidence upload is locked for this Shipment Batch status.</p>
+          ) : !completionReady ? (
             <p className="mt-4 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-900">Complete and save the final shipment/COS fields before uploading final export evidence.</p>
           ) : (
             <form action={submitFinalExportEvidenceAction} className="mt-5 grid gap-3 md:grid-cols-2">
