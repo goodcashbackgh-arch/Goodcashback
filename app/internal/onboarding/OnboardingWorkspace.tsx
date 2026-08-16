@@ -70,6 +70,7 @@ function Button({ children }: { children: React.ReactNode }) {
 export default function OnboardingWorkspace({ staff, countries, shippers, importers, operators, exportProfiles, supervisors, blockers, savedMessage }: Props) {
   const [shipperId, setShipperId] = useState("");
   const [importerId, setImporterId] = useState("");
+  const [importerShipperId, setImporterShipperId] = useState("");
   const [deliveryImporterId, setDeliveryImporterId] = useState("");
   const [exportShipperId, setExportShipperId] = useState("");
   const [exportCountryId, setExportCountryId] = useState("");
@@ -81,6 +82,9 @@ export default function OnboardingWorkspace({ staff, countries, shippers, import
 
   const selectedShipper = shippers.find((item) => item.id === shipperId);
   const selectedImporter = importers.find((item) => item.id === importerId);
+  const selectedImporterShipper = shippers.find((item) => item.id === importerShipperId);
+  const selectedImporterBranchCountries = selectedImporterShipper?.countries ?? [];
+  const derivedImporterCountry = selectedImporterBranchCountries.length === 1 ? selectedImporterBranchCountries[0] : null;
   const selectedDeliveryImporter = importers.find((item) => item.id === deliveryImporterId);
 
   const matchingExportProfile = useMemo(
@@ -133,10 +137,21 @@ export default function OnboardingWorkspace({ staff, countries, shippers, import
             </label>
             <label className="flex flex-col gap-1 text-sm font-medium text-slate-700">
               <span>Country / currency lane *</span>
-              <select name="country_id" required defaultValue={selectedShipper?.countries?.[0]?.country_id ?? ""} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm">
-                <option value="">Select country</option>
-                {countries.map((item) => <option key={item.id} value={item.id}>{item.name}{item.currency_code ? ` (${item.currency_code})` : ""}</option>)}
-              </select>
+              {shipperId ? (
+                <>
+                  <input type="hidden" name="country_id" value={selectedShipper?.countries?.length === 1 ? selectedShipper.countries[0].country_id : ""} />
+                  <div className="rounded-xl border border-slate-300 bg-slate-100 px-3 py-2 text-sm text-slate-700">
+                    {selectedShipper?.countries?.length === 1
+                      ? `${selectedShipper.countries[0].country_name}${selectedShipper.countries[0].currency_code ? ` (${selectedShipper.countries[0].currency_code})` : ""}`
+                      : "Branch country is not ready — review required"}
+                  </div>
+                </>
+              ) : (
+                <select name="country_id" required className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm">
+                  <option value="">Select country</option>
+                  {countries.map((item) => <option key={item.id} value={item.id}>{item.name}{item.currency_code ? ` (${item.currency_code})` : ""}</option>)}
+                </select>
+              )}
             </label>
             <Field label="Branch / shipper name" name="name" required value={selectedShipper?.name} placeholder="Jobyco Ghana" />
             <Field label="Contact email" name="contact_email" value={selectedShipper?.contact_email} />
@@ -147,11 +162,43 @@ export default function OnboardingWorkspace({ staff, countries, shippers, import
           </form>
         </Panel>
 
-        <Panel eyebrow="2. Importer/customer branch" title="Create or update importer/customer" note="Importer/customer inherits its shipper branch and country/currency lane here.">
+        <Panel eyebrow="2. Importer/customer branch" title="Create or update importer/customer" note="Importer/customer inherits its country/currency lane from the selected shipping-company branch. Country is not independently editable.">
           <form action={upsertImporterBranchAction} className="grid gap-4 md:grid-cols-2">
-            <label className="flex flex-col gap-1 text-sm font-medium text-slate-700"><span>Existing importer/customer</span><select name="importer_id" value={importerId} onChange={(event) => setImporterId(event.target.value)} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm"><option value="">Create new importer/customer</option>{importers.map((item) => <option key={item.id} value={item.id}>{item.importer_name}</option>)}</select></label>
-            <label className="flex flex-col gap-1 text-sm font-medium text-slate-700"><span>Assigned shipper branch *</span><select name="shipper_id" required defaultValue={selectedImporter?.shipper_id ?? ""} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm"><option value="">Select branch</option>{shippers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-            <label className="flex flex-col gap-1 text-sm font-medium text-slate-700"><span>Country / currency lane *</span><select name="country_id" required defaultValue={selectedImporter?.country_id ?? ""} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm"><option value="">Select country</option>{countries.map((item) => <option key={item.id} value={item.id}>{item.name}{item.currency_code ? ` (${item.currency_code})` : ""}</option>)}</select></label>
+            <label className="flex flex-col gap-1 text-sm font-medium text-slate-700">
+              <span>Existing importer/customer</span>
+              <select
+                name="importer_id"
+                value={importerId}
+                onChange={(event) => {
+                  const nextImporterId = event.target.value;
+                  const nextImporter = importers.find((item) => item.id === nextImporterId);
+                  setImporterId(nextImporterId);
+                  setImporterShipperId(nextImporter?.shipper_id ?? "");
+                }}
+                className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm"
+              >
+                <option value="">Create new importer/customer</option>
+                {importers.map((item) => <option key={item.id} value={item.id}>{item.importer_name}</option>)}
+              </select>
+            </label>
+            <label className="flex flex-col gap-1 text-sm font-medium text-slate-700">
+              <span>Assigned shipper branch *</span>
+              <select name="shipper_id" required value={importerShipperId} onChange={(event) => setImporterShipperId(event.target.value)} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm">
+                <option value="">Select branch</option>
+                {shippers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+              </select>
+            </label>
+            <label className="flex flex-col gap-1 text-sm font-medium text-slate-700">
+              <span>Country / currency lane</span>
+              <input type="hidden" name="country_id" value={derivedImporterCountry?.country_id ?? ""} />
+              <div className={`rounded-xl border px-3 py-2 text-sm ${derivedImporterCountry ? "border-slate-300 bg-slate-100 text-slate-700" : "border-amber-300 bg-amber-50 text-amber-900"}`}>
+                {!importerShipperId
+                  ? "Select a shipping-company branch"
+                  : derivedImporterCountry
+                    ? `${derivedImporterCountry.country_name}${derivedImporterCountry.currency_code ? ` (${derivedImporterCountry.currency_code})` : ""}`
+                    : "Branch must resolve to exactly one active country before onboarding"}
+              </div>
+            </label>
             <Field label="Legal/customer name" name="company_name" required value={selectedImporter?.company_name} />
             <Field label="Trading/display name" name="trading_name" value={selectedImporter?.trading_name} />
             <TextArea label="Business/customer address" name="address" value={selectedImporter?.address} />
