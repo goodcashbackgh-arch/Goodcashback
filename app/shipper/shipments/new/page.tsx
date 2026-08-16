@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 import { createExactShipmentBatchAction } from "./exact-actions";
+import ShipmentSelectionControls from "./ShipmentSelectionControls";
 import { PackageContentsPreview } from "../../PackageContentsPreview";
 
 type CandidateRow = {
@@ -101,7 +102,7 @@ export default async function NewShipperShipmentPage({
               No received-clean packages are available for shipment batch selection yet.
             </p>
           ) : (
-            <form action={createExactShipmentBatchAction} className="mt-5 space-y-5">
+            <form id="shipper-shipment-batch-create-form" action={createExactShipmentBatchAction} className="mt-5 space-y-5">
               <input type="hidden" name="importer_id" value={activeGroup.importerId} />
               <div className="min-w-0 overflow-hidden rounded-3xl border border-slate-200 bg-slate-50 p-4">
                 <h3 className="break-words text-lg font-semibold">{activeGroup.importerName}</h3>
@@ -129,6 +130,11 @@ export default async function NewShipperShipmentPage({
                 </div>
               </div>
 
+              <ShipmentSelectionControls
+                formId="shipper-shipment-batch-create-form"
+                selectableCount={new Set(activeGroup.rows.map((row) => row.tracking_submission_id)).size}
+              />
+
               <div className="space-y-3 md:hidden">
                 {activeGroup.rows.map((row) => (
                   <article key={row.tracking_submission_id} className="min-w-0 overflow-hidden rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -137,6 +143,7 @@ export default async function NewShipperShipmentPage({
                         type="checkbox"
                         name="tracking_submission_ids"
                         value={row.tracking_submission_id}
+                        data-shipment-batch-select="true"
                         className="mt-1 h-5 w-5 shrink-0"
                       />
                       <span className="min-w-0">
@@ -189,7 +196,7 @@ export default async function NewShipperShipmentPage({
                     {activeGroup.rows.map((row) => (
                       <tr key={row.tracking_submission_id}>
                         <td className="px-3 py-2">
-                          <input type="checkbox" name="tracking_submission_ids" value={row.tracking_submission_id} className="h-4 w-4" />
+                          <input type="checkbox" name="tracking_submission_ids" value={row.tracking_submission_id} data-shipment-batch-select="true" className="h-4 w-4" />
                         </td>
                         <td className="px-3 py-2 font-semibold">{row.order_ref ?? row.order_id}</td>
                         <td className="px-3 py-2">{row.retailer_name ?? "—"}</td>
