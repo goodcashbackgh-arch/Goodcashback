@@ -39,8 +39,8 @@ checks AS (
 SELECT jsonb_build_object(
   'probe', 'PATCH_C_ADMIN_ONBOARDING_POSTFLIGHT_V1',
   'read_only', true,
-  'checks', to_jsonb(checks),
-  'password_like_columns', COALESCE((SELECT jsonb_agg(to_jsonb(password_columns)) FROM password_columns), '[]'::jsonb),
+  'checks', (SELECT to_jsonb(c) FROM checks c),
+  'password_like_columns', COALESCE((SELECT jsonb_agg(to_jsonb(pc)) FROM password_columns pc), '[]'::jsonb),
   'ready', (
     SELECT function_exists
        AND security_definer
