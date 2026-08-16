@@ -1,15 +1,21 @@
--- PATCH_C2_TEST_IMPORTER_SELECTION_PROBE_V1
+-- PATCH_C2_TEST_IMPORTER_SELECTION_PROBE_V2
 -- READ ONLY.
--- Purpose: choose the safest existing importer/customer record for the disposable Patch C2 login.
--- This does NOT read, change, reset, or require any user's password.
+-- Chooses a safe existing importer/customer for the disposable Patch C2 login.
+-- Uses JSON inspection for importer display fields so it does not assume UI aliases are DB columns.
+-- Does NOT read, change, reset, or require any password.
 
 WITH importer_rows AS (
   SELECT
     i.id AS importer_id,
-    i.importer_name,
-    i.company_name,
-    i.shipper_id,
-    i.country_id
+    COALESCE(
+      NULLIF(to_jsonb(i)->>'importer_name', ''),
+      NULLIF(to_jsonb(i)->>'company_name', ''),
+      NULLIF(to_jsonb(i)->>'trading_name', ''),
+      NULLIF(to_jsonb(i)->>'name', ''),
+      i.id::text
+    ) AS display_name,
+    to_jsonb(i)->>'shipper_id' AS shipper_id,
+    to_jsonb(i)->>'country_id' AS country_id
   FROM public.importers i
 ),
 order_counts AS (
@@ -61,8 +67,7 @@ auth_links AS (
 result_rows AS (
   SELECT
     i.importer_id,
-    i.importer_name,
-    i.company_name,
+    i.display_name,
     i.shipper_id,
     i.country_id,
     COALESCE(oc.order_count, 0) AS order_count,
@@ -79,12 +84,12 @@ result_rows AS (
   LEFT JOIN auth_links al ON al.importer_id = i.importer_id
 )
 SELECT jsonb_build_object(
-  'probe', 'PATCH_C2_TEST_IMPORTER_SELECTION_PROBE_V1',
+  'probe', 'PATCH_C2_TEST_IMPORTER_SELECTION_PROBE_V2',
   'read_only', true,
   'passwords_read_or_changed', false,
   'importers', COALESCE(
     (
-      SELECT jsonb_agg(to_jsonb(r) ORDER BY r.order_count, r.active_operator_links, r.importer_name)
+      SELECT jsonb_agg(to_jsonb(r) ORDER BY r.order_count, r.active_operator_links, r.display_name)
       FROM result_rows r
     ),
     '[]'::jsonb
