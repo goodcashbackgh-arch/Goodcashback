@@ -138,12 +138,7 @@ export type NewOperatorOnboardingState = {
   temporaryPassword?: string;
 };
 
-export const initialNewOperatorOnboardingState: NewOperatorOnboardingState = {
-  status: "idle",
-};
-
 function generateTemporaryPassword() {
-  // 24 random bytes encoded as base64url gives a high-entropy, copyable temporary credential.
   return `${randomBytes(24).toString("base64url")}aA7!`;
 }
 
@@ -228,8 +223,6 @@ export async function createNewOperatorOnboardingAction(
     const { error: deleteError } = await adminClient.auth.admin.deleteUser(created.user.id);
 
     if (deleteError) {
-      // A failed deletion must still leave the login unusable. Replace the known
-      // temporary credential with an undisclosed random credential and ban it.
       const undisclosedPassword = generateTemporaryPassword();
       const { error: disableError } = await adminClient.auth.admin.updateUserById(created.user.id, {
         password: undisclosedPassword,
