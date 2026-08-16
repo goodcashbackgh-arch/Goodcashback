@@ -85,7 +85,6 @@ jobs:
               ],
           }
 
-          # Verify the audited source state has not drifted before touching files.
           active_old_count = 0
           for path in Path("app").rglob("*"):
               if path.is_file() and path.suffix in {".ts", ".tsx", ".js", ".jsx"}:
@@ -131,14 +130,12 @@ jobs:
           if substitutions != 42:
               raise SystemExit(f"FAIL: expected 42 approved substitutions, got {substitutions}")
 
-          # Root metadata was already changed in its own exact commit.
           layout = Path("app/layout.tsx").read_bytes()
           if b'title: "Goods To Ship"' not in layout or b'description: "Goods To Ship app"' not in layout:
               raise SystemExit("FAIL: root Goods To Ship metadata is not present")
           if b"Goodcashback" in layout or b"Good Cashback" in layout:
               raise SystemExit("FAIL: old brand remains in root metadata")
 
-          # Case-sensitive old presentation brand must now be gone from active app source.
           remaining = []
           for path in sorted(Path("app").rglob("*")):
               if path.is_file() and path.suffix in {".ts", ".tsx", ".js", ".jsx"}:
@@ -211,8 +208,8 @@ jobs:
                   raise SystemExit(f"FAIL: non-brand addition detected: {line}")
           print("PASS: uncommitted diff is limited to audited UI branding lines")
 
-      - name: Install dependencies
-        run: npm ci
+      - name: Install dependencies without lockfile writes
+        run: npm install --package-lock=false
 
       - name: Typecheck
         run: npm run typecheck
@@ -226,7 +223,7 @@ jobs:
           set -euo pipefail
           unexpected="$(git status --porcelain | grep -vE '^ M app/.+\.tsx$' || true)"
           if [ -n "$unexpected" ]; then
-            echo "FAIL: test/build introduced unexpected tracked changes"
+            echo "FAIL: validation introduced unexpected tracked changes"
             echo "$unexpected"
             exit 1
           fi
