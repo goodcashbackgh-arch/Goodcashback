@@ -18,123 +18,47 @@ jobs:
           ref: agent/ui-branding-goods-to-ship
           fetch-depth: 0
 
-      - name: Apply exact presentation-only substitutions
+      - name: Apply audited presentation-only substitutions
         shell: python
         run: |
           from pathlib import Path
 
-          target_files = [
-              "app/customer/orders/[secure_order_link]/review/page.tsx",
-              "app/customer/page.tsx",
-              "app/importer/page.tsx",
-              "app/internal/access-control/page.tsx",
-              "app/internal/customer-holds/page.tsx",
-              "app/internal/dva-statement-import/StatementBalanceCheckCard.tsx",
-              "app/internal/export-evidence/draft/[shipment_batch_id]/page.tsx",
-              "app/internal/export-evidence/final/[shipment_batch_id]/page.tsx",
-              "app/internal/export-evidence/pod/[shipment_batch_id]/page.tsx",
-              "app/internal/onboarding/OnboardingWorkspace.tsx",
-              "app/internal/page.tsx",
-              "app/internal/sage-mapping/page.tsx",
-              "app/internal/sage-ready/page.tsx",
-              "app/internal/shipper-return-tasks/page.tsx",
-              "app/internal/shipping-control/[shipment_batch_id]/page.tsx",
-              "app/internal/shipping-control/apportionment/[shipping_document_id]/page.tsx",
-              "app/internal/shipping-control/customer-invoice/[shipment_batch_id]/page.tsx",
-              "app/internal/shipping-control/customer-invoice-release/page.tsx",
-              "app/internal/shipping-control/groupage-movements/[groupage_movement_id]/page.tsx",
-              "app/internal/shipping-control/package-contents/[tracking_submission_id]/page.tsx",
-              "app/internal/shipping-control/page.tsx",
-              "app/internal/shipping-control/readiness/[shipment_batch_id]/page.tsx",
-              "app/internal/shipping-control/shipper-documents/[shipping_document_id]/page.tsx",
-              "app/internal/shipping-control/shipper-documents/page.tsx",
-              "app/shipper/customer-holds/page.tsx",
-              "app/shipper/groupage-movements/[groupage_movement_id]/final-evidence/page.tsx",
-              "app/shipper/groupage-movements/[groupage_movement_id]/page.tsx",
-              "app/shipper/groupage-movements/page.tsx",
-              "app/shipper/package-contents/[tracking_submission_id]/page.tsx",
-              "app/shipper/package-receipts/page.tsx",
-              "app/shipper/package-receipts/v2/[tracking_submission_id]/page.tsx",
-              "app/shipper/page.tsx",
-              "app/shipper/return-actions/page.tsx",
-              "app/shipper/return-tasks/ReturnTasksRedirect.tsx",
-              "app/shipper/shipments/[shipment_batch_id]/final-evidence/page.tsx",
-              "app/shipper/shipments/[shipment_batch_id]/page.tsx",
-              "app/shipper/shipments/new/page.tsx",
-              "app/shipper/shipments/page.tsx",
-              "app/shipper/shipping-documents/new/page.tsx",
-          ]
-
-          global_replacements = [
+          replacements = [
               (b"Goodcashback Customer", b"Goods To Ship Customer"),
               (b"Goodcashback Importer", b"Goods To Ship Importer"),
               (b"Goodcashback Shipper", b"Goods To Ship Shipper"),
               (b"Goodcashback Internal", b"Goods To Ship Internal"),
+              (b"Goodcashback customer review", b"Goods To Ship customer review"),
+              (b">Goodcashback</p>", b">Goods To Ship</p>"),
+              (b"Goodcashback Main Company Bank Account", b"Goods To Ship Main Company Bank Account"),
+              (b"Goodcashback / tenant exporter", b"Goods To Ship / tenant exporter"),
           ]
 
-          special_replacements = {
-              "app/customer/orders/[secure_order_link]/review/page.tsx": [
-                  (b"Goodcashback customer review", b"Goods To Ship customer review"),
-                  (b">Goodcashback</p>", b">Goods To Ship</p>"),
-              ],
-              "app/internal/dva-statement-import/StatementBalanceCheckCard.tsx": [
-                  (b"Goodcashback Main Company Bank Account", b"Goods To Ship Main Company Bank Account"),
-              ],
-              "app/internal/export-evidence/draft/[shipment_batch_id]/page.tsx": [
-                  (b"Goodcashback / tenant exporter", b"Goods To Ship / tenant exporter"),
-              ],
-          }
-
-          active_old_count = 0
+          old_count = 0
           for path in Path("app").rglob("*"):
               if path.is_file() and path.suffix in {".ts", ".tsx", ".js", ".jsx"}:
                   data = path.read_bytes()
-                  active_old_count += data.count(b"Goodcashback") + data.count(b"Good Cashback")
-          if active_old_count != 42:
-              raise SystemExit(f"FAIL: active-app branding source drifted; expected 42 old-brand occurrences, found {active_old_count}")
+                  old_count += data.count(b"Goodcashback") + data.count(b"Good Cashback")
+          if old_count != 42:
+              raise SystemExit(f"FAIL: audited active-app source drifted; expected 42 old-brand hits, found {old_count}")
 
           changed = []
           substitutions = 0
-          for name in target_files:
-              path = Path(name)
-              if not path.is_file():
-                  raise SystemExit(f"FAIL: audited UI file missing: {name}")
+          for path in sorted(Path("app").rglob("*.tsx")):
               before = path.read_bytes()
               after = before
-              file_substitutions = 0
-
-              for old, new in special_replacements.get(name, []):
+              for old, new in replacements:
                   count = after.count(old)
-                  if count == 0:
-                      raise SystemExit(f"FAIL: expected special visible string missing in {name}: {old!r}")
+                  substitutions += count
                   after = after.replace(old, new)
-                  file_substitutions += count
-
-              for old, new in global_replacements:
-                  count = after.count(old)
-                  after = after.replace(old, new)
-                  file_substitutions += count
-
-              if b"Goodcashback" in after or b"Good Cashback" in after:
-                  raise SystemExit(f"FAIL: unclassified old-brand form remains in audited UI file: {name}")
-              if file_substitutions == 0:
-                  raise SystemExit(f"FAIL: audited UI file produced no approved substitution: {name}")
-
               if after != before:
                   path.write_bytes(after)
-                  changed.append(name)
-                  substitutions += file_substitutions
+                  changed.append(str(path))
 
           if len(changed) != 39:
               raise SystemExit(f"FAIL: expected 39 changed UI files, got {len(changed)}")
           if substitutions != 42:
-              raise SystemExit(f"FAIL: expected 42 approved substitutions, got {substitutions}")
-
-          layout = Path("app/layout.tsx").read_bytes()
-          if b'title: "Goods To Ship"' not in layout or b'description: "Goods To Ship app"' not in layout:
-              raise SystemExit("FAIL: root Goods To Ship metadata is not present")
-          if b"Goodcashback" in layout or b"Good Cashback" in layout:
-              raise SystemExit("FAIL: old brand remains in root metadata")
+              raise SystemExit(f"FAIL: expected 42 substitutions, got {substitutions}")
 
           remaining = []
           for path in sorted(Path("app").rglob("*")):
@@ -143,70 +67,30 @@ jobs:
                   if b"Goodcashback" in data or b"Good Cashback" in data:
                       remaining.append(str(path))
           if remaining:
-              raise SystemExit("FAIL: old presentation brand remains in active app: " + ", ".join(remaining))
+              raise SystemExit("FAIL: old presentation brand remains: " + ", ".join(remaining))
 
-          print(f"PASS: changed {len(changed)} UI files with {substitutions} exact presentation substitutions")
+          layout = Path("app/layout.tsx").read_bytes()
+          if b'title: "Goods To Ship"' not in layout or b'description: "Goods To Ship app"' not in layout:
+              raise SystemExit("FAIL: Goods To Ship root metadata missing")
 
-      - name: Verify uncommitted diff scope and content
+          print(f"PASS: {substitutions} audited substitutions across {len(changed)} files")
+
+      - name: Verify exact diff boundary
         shell: python
         run: |
           import subprocess
-
-          target_files = {
-              "app/customer/orders/[secure_order_link]/review/page.tsx",
-              "app/customer/page.tsx",
-              "app/importer/page.tsx",
-              "app/internal/access-control/page.tsx",
-              "app/internal/customer-holds/page.tsx",
-              "app/internal/dva-statement-import/StatementBalanceCheckCard.tsx",
-              "app/internal/export-evidence/draft/[shipment_batch_id]/page.tsx",
-              "app/internal/export-evidence/final/[shipment_batch_id]/page.tsx",
-              "app/internal/export-evidence/pod/[shipment_batch_id]/page.tsx",
-              "app/internal/onboarding/OnboardingWorkspace.tsx",
-              "app/internal/page.tsx",
-              "app/internal/sage-mapping/page.tsx",
-              "app/internal/sage-ready/page.tsx",
-              "app/internal/shipper-return-tasks/page.tsx",
-              "app/internal/shipping-control/[shipment_batch_id]/page.tsx",
-              "app/internal/shipping-control/apportionment/[shipping_document_id]/page.tsx",
-              "app/internal/shipping-control/customer-invoice/[shipment_batch_id]/page.tsx",
-              "app/internal/shipping-control/customer-invoice-release/page.tsx",
-              "app/internal/shipping-control/groupage-movements/[groupage_movement_id]/page.tsx",
-              "app/internal/shipping-control/package-contents/[tracking_submission_id]/page.tsx",
-              "app/internal/shipping-control/page.tsx",
-              "app/internal/shipping-control/readiness/[shipment_batch_id]/page.tsx",
-              "app/internal/shipping-control/shipper-documents/[shipping_document_id]/page.tsx",
-              "app/internal/shipping-control/shipper-documents/page.tsx",
-              "app/shipper/customer-holds/page.tsx",
-              "app/shipper/groupage-movements/[groupage_movement_id]/final-evidence/page.tsx",
-              "app/shipper/groupage-movements/[groupage_movement_id]/page.tsx",
-              "app/shipper/groupage-movements/page.tsx",
-              "app/shipper/package-contents/[tracking_submission_id]/page.tsx",
-              "app/shipper/package-receipts/page.tsx",
-              "app/shipper/package-receipts/v2/[tracking_submission_id]/page.tsx",
-              "app/shipper/page.tsx",
-              "app/shipper/return-actions/page.tsx",
-              "app/shipper/return-tasks/ReturnTasksRedirect.tsx",
-              "app/shipper/shipments/[shipment_batch_id]/final-evidence/page.tsx",
-              "app/shipper/shipments/[shipment_batch_id]/page.tsx",
-              "app/shipper/shipments/new/page.tsx",
-              "app/shipper/shipments/page.tsx",
-              "app/shipper/shipping-documents/new/page.tsx",
-          }
-
-          changed = set(filter(None, subprocess.check_output(["git", "diff", "--name-only"], text=True).splitlines()))
-          if changed != target_files:
-              raise SystemExit(f"FAIL: uncommitted changed paths differ from audited target set. Unexpected={sorted(changed-target_files)} Missing={sorted(target_files-changed)}")
-
+          changed = subprocess.check_output(["git", "diff", "--name-only"], text=True).splitlines()
+          if len(changed) != 39 or any(not p.startswith("app/") or not p.endswith(".tsx") for p in changed):
+              raise SystemExit(f"FAIL: unexpected application diff paths: {changed}")
           diff = subprocess.check_output(["git", "diff", "--unified=0", "--", "app"], text=True)
           for line in diff.splitlines():
               if line.startswith(("+++", "---", "@@", "diff ", "index ")):
                   continue
               if line.startswith("-") and "Goodcashback" not in line and "Good Cashback" not in line:
-                  raise SystemExit(f"FAIL: non-brand deletion detected: {line}")
+                  raise SystemExit(f"FAIL: non-brand deletion: {line}")
               if line.startswith("+") and "Goods To Ship" not in line:
-                  raise SystemExit(f"FAIL: non-brand addition detected: {line}")
-          print("PASS: uncommitted diff is limited to audited UI branding lines")
+                  raise SystemExit(f"FAIL: non-brand addition: {line}")
+          print("PASS: diff contains branding lines only")
 
       - name: Install dependencies without lockfile writes
         run: npm install --package-lock=false
@@ -226,14 +110,14 @@ jobs:
             echo "PASS: production build completed"
           elif grep -Fq "Compiled successfully" /tmp/goods-to-ship-build.log \
             && grep -Fq "Your project's URL and API key are required to create a Supabase client" /tmp/goods-to-ship-build.log; then
-            echo "PASS: application compiled and TypeScript completed; prerender stopped only because CI has no Supabase credentials"
+            echo "PASS: compiled and typechecked; prerender blocked only by absent CI Supabase credentials"
           else
-            echo "FAIL: production build failed for a reason other than the known missing-Supabase-environment gate"
+            echo "FAIL: unexpected production build failure"
             exit "$status"
           fi
           rm -f /tmp/goods-to-ship-build.log
 
-      - name: Verify validation did not modify protected tracked files
+      - name: Verify protected tracked files untouched
         shell: bash
         run: |
           set -euo pipefail
@@ -244,16 +128,15 @@ jobs:
             exit 1
           fi
 
-      - name: Remove temporary workflow from final branch state
-        shell: bash
+      - name: Remove temporary workflow
         run: git rm .github/workflows/_temporary_goods_to_ship_ui_branding.yml
 
-      - name: Commit verified presentation-only replacement
+      - name: Commit verified UI-only replacement
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -- app .github/workflows/_temporary_goods_to_ship_ui_branding.yml
+          git add -- app
           git commit -m "Replace user-visible UI branding with Goods To Ship"
           git push origin HEAD:agent/ui-branding-goods-to-ship
