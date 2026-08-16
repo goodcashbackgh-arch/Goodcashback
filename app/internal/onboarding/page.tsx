@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 import OnboardingWorkspace from "./OnboardingWorkspace";
+import RetailerAccountReadinessPanel from "./RetailerAccountReadinessPanel";
 
 type SearchParams = { saved?: string | string[] | undefined };
 
@@ -24,14 +25,18 @@ export default async function InternalOnboardingPage({ searchParams }: { searchP
 
   if (!staff) redirect("/auth/check");
 
-  const { data, error } = await (supabase as any).rpc("internal_onboarding_overview_v1");
-  if (error) {
+  const [{ data, error }, { data: retailerReadiness, error: retailerError }] = await Promise.all([
+    (supabase as any).rpc("internal_onboarding_overview_v1"),
+    (supabase as any).rpc("internal_retailer_account_readiness_v1"),
+  ]);
+
+  if (error || retailerError) {
     return (
       <main className="min-h-screen bg-slate-50 px-4 py-8 text-slate-950">
         <section className="mx-auto max-w-3xl rounded-3xl border border-rose-200 bg-white p-6 shadow-sm">
           <p className="text-sm font-bold uppercase tracking-[0.2em] text-rose-600">Onboarding RPC not ready</p>
           <h1 className="mt-2 text-2xl font-semibold">Run onboarding migrations first</h1>
-          <p className="mt-3 text-sm leading-6 text-slate-600">{error.message}</p>
+          <p className="mt-3 text-sm leading-6 text-slate-600">{error?.message ?? retailerError?.message}</p>
         </section>
       </main>
     );
@@ -40,16 +45,21 @@ export default async function InternalOnboardingPage({ searchParams }: { searchP
   const overview = (data ?? {}) as any;
 
   return (
-    <OnboardingWorkspace
-      staff={{ full_name: staff.full_name, role_type: staff.role_type }}
-      countries={overview.countries ?? []}
-      shippers={overview.shippers ?? []}
-      importers={overview.importers ?? []}
-      operators={overview.operators ?? []}
-      exportProfiles={overview.export_profiles ?? []}
-      supervisors={overview.supervisors ?? []}
-      blockers={overview.blockers ?? {}}
-      savedMessage={savedMessageFrom(params)}
-    />
+    <>
+      <OnboardingWorkspace
+        staff={{ full_name: staff.full_name, role_type: staff.role_type }}
+        countries={overview.countries ?? []}
+        shippers={overview.shippers ?? []}
+        importers={overview.importers ?? []}
+        operators={overview.operators ?? []}
+        exportProfiles={overview.export_profiles ?? []}
+        supervisors={overview.supervisors ?? []}
+        blockers={overview.blockers ?? {}}
+        savedMessage={savedMessageFrom(params)}
+      />
+      <div className="bg-slate-50 px-4 pb-8 sm:px-6">
+        <RetailerAccountReadinessPanel data={(retailerReadiness ?? {}) as any} />
+      </div>
+    </>
   );
 }
