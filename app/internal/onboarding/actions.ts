@@ -113,18 +113,18 @@ export async function linkOperatorImporterAction(formData: FormData) {
     throw new Error("Select at least one portal role");
   }
 
-  const args = {
+  await rpcNoRedirect("internal_set_operator_importer_roles_v1", {
     p_operator_id: nullableUuid(formData, "operator_id"),
     p_importer_id: nullableUuid(formData, "importer_id"),
     p_relationship_type: textValue(formData, "relationship_type"),
-  };
+    p_role_codes: roleCodes,
+  });
 
-  for (const roleCode of roleCodes) {
-    await rpcNoRedirect("internal_link_operator_importer_v1", {
-      ...args,
-      p_role_code: roleCode,
-    });
-  }
-
-  finish(roleCodes.length === 2 ? "Existing user linked as customer and importer" : `Existing user linked as ${roleCodes[0]}`);
+  finish(
+    roleCodes.length === 2
+      ? "Existing user roles saved as Customer + Importer"
+      : roleCodes[0] === "customer"
+        ? "Existing user roles saved as Customer only"
+        : "Existing user roles saved as Importer only",
+  );
 }
