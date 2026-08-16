@@ -309,7 +309,7 @@ export default async function InternalPage() {
           </div>
         </section>
 
-        <section className="grid gap-4 md:grid-cols-2">
+        <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           <Link href="/internal/supervisor-command-centre" className="rounded-3xl border border-sky-200 bg-sky-50 p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
             <p className="text-xs font-bold uppercase tracking-[0.22em] text-sky-600">Daily cockpit 1</p>
             <h2 className="mt-2 text-2xl font-semibold tracking-tight">Supervisor Command Centre</h2>
@@ -321,6 +321,12 @@ export default async function InternalPage() {
             <h2 className="mt-2 text-2xl font-semibold tracking-tight">Accounting Command Centre</h2>
             <p className="mt-2 text-sm leading-6 text-slate-600">Single accounting cockpit for live-ready rows, frozen snapshots, revalidation, posting gates, mapping diagnostics and future batch posting.</p>
             <div className="mt-4 text-sm font-bold text-violet-700">Open accounting cockpit →</div>
+          </Link>
+          <Link href="/internal/onboarding" className="rounded-3xl border border-cyan-200 bg-cyan-50 p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
+            <p className="text-xs font-bold uppercase tracking-[0.22em] text-cyan-600">Setup & access</p>
+            <h2 className="mt-2 text-2xl font-semibold tracking-tight">Multi-tenant Onboarding Centre</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-600">Create and maintain shipper branches and importer/customer records, then manage delivery profiles, user role memberships and supervisor scope.</p>
+            <div className="mt-4 text-sm font-bold text-cyan-700">Open onboarding centre →</div>
           </Link>
         </section>
 
