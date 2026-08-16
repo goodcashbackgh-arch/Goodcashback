@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 import { saveExportEvidenceCompletionFieldsAction, updateShipmentBatchHeaderAction } from "../actions";
 import { PackageContentsPreview } from "../../PackageContentsPreview";
+import { undoShipmentBatchAction } from "./undo-action";
 
 type BatchPackageRow = {
   id: string;
@@ -50,7 +51,7 @@ type ExportEvidenceCompletionFields = {
   container_number: string | null;
   seal_number: string | null;
   vessel_voyage: string | null;
-  port_of_loading: string | null;
+  port_of_loading text: never;
   port_of_discharge: string | null;
   place_of_delivery: string | null;
   export_shipment_date: string | null;
@@ -154,6 +155,7 @@ export default async function ShipperShipmentDetailPage({
   }
   const canEditHeader = row?.status === "created";
   const canEditExportFields = row?.status === "created";
+  const canUndoBatch = row?.status === "created";
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-6 text-slate-950 sm:px-6 sm:py-8">
@@ -247,6 +249,26 @@ export default async function ShipperShipmentDetailPage({
                 </details>
               ) : null}
             </section>
+
+            {canUndoBatch ? (
+              <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+                <details>
+                  <summary className="cursor-pointer text-sm font-semibold text-slate-900">Undo Shipment Batch</summary>
+                  <div className="mt-4 max-w-3xl rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm leading-6 text-rose-950">
+                    <p className="font-semibold">Release the packages from this Shipment Batch.</p>
+                    <p className="mt-1">The batch and its history are preserved. Released packages become selectable again only if they still meet the normal shipment eligibility rules. If this batch is already in an active or irreversible downstream process, the platform will block Undo.</p>
+                  </div>
+                  <form action={undoShipmentBatchAction} className="mt-4 max-w-3xl space-y-3">
+                    <input type="hidden" name="shipment_batch_id" value={row.id} />
+                    <label className="block space-y-1 text-sm">
+                      <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Reason</span>
+                      <textarea name="reason" required rows={3} className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2" placeholder="Why is this Shipment Batch being undone?" />
+                    </label>
+                    <button type="submit" className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800">Undo Shipment Batch</button>
+                  </form>
+                </details>
+              </section>
+            ) : null}
 
             <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-sm leading-6 text-amber-900 shadow-sm sm:p-6">
               <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
