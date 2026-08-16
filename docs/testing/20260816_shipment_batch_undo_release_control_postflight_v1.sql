@@ -3,7 +3,7 @@
 -- Authority:
 -- docs/governing-pack/architecture/SHIPMENT_BATCH_UNDO_RELEASE_CONTROL_ADDENDUM_v1.md
 --
--- Read-only. No repair/backfill. No legacy anomaly mutation.
+-- READ ONLY. No repair/backfill. No Groupage mutation. No legacy mutation.
 -- =============================================================================
 
 WITH function_defs AS (
@@ -12,7 +12,8 @@ WITH function_defs AS (
     pg_get_functiondef(p.oid) AS definition,
     md5(pg_get_functiondef(p.oid)) AS md5,
     p.prosecdef AS security_definer,
-    p.proconfig AS proconfig
+    p.proconfig AS proconfig,
+    p.proacl::text AS acl
   FROM pg_proc p
   JOIN pg_namespace n ON n.oid = p.pronamespace
   WHERE n.nspname = 'public'
@@ -22,13 +23,33 @@ WITH function_defs AS (
       to_regprocedure('public.shipper_save_export_evidence_completion_fields_v1(uuid,text,text,text,text,text,text,text,date,text,text,boolean,text)'),
       to_regprocedure('public.shipper_submit_shipping_document_v1(uuid,text,text,date,text,numeric,text,text)'),
       to_regprocedure('public.shipper_submit_final_export_evidence_v1(uuid,text,text,text,text)'),
+      to_regprocedure('public.shipper_create_groupage_movement_v1(uuid[],text,uuid)'),
       to_regprocedure('public.internal_review_final_export_evidence_document_v1(uuid,text,text)'),
-      to_regprocedure('public.shipper_create_groupage_movement_v1(uuid[],text,uuid)')
+      to_regprocedure('public.groupage_recompute_movement_status_v1(uuid)'),
+      to_regprocedure('public.shipper_block_shipment_line_membership_mutation_v1()')
     )
 ),
 undo AS (
   SELECT * FROM function_defs
   WHERE signature = 'shipper_undo_shipment_batch_v1(uuid,text)'
+),
+authorised_writers AS (
+  SELECT * FROM function_defs
+  WHERE signature IN (
+    'shipper_update_shipment_batch_header_v1(uuid,text,timestamp with time zone,timestamp with time zone,integer,text,text,text)',
+    'shipper_save_export_evidence_completion_fields_v1(uuid,text,text,text,text,text,text,text,date,text,text,boolean,text)',
+    'shipper_submit_shipping_document_v1(uuid,text,text,date,text,numeric,text,text)',
+    'shipper_submit_final_export_evidence_v1(uuid,text,text,text,text)'
+  )
+),
+protected_authorities AS (
+  SELECT * FROM function_defs
+  WHERE signature IN (
+    'shipper_create_groupage_movement_v1(uuid[],text,uuid)',
+    'internal_review_final_export_evidence_document_v1(uuid,text,text)',
+    'groupage_recompute_movement_status_v1(uuid)',
+    'shipper_block_shipment_line_membership_mutation_v1()'
+  )
 ),
 writer_checks AS (
   SELECT jsonb_agg(
@@ -36,14 +57,24 @@ writer_checks AS (
       'signature', signature,
       'security_definer', security_definer,
       'search_path_ok', COALESCE(proconfig, ARRAY[]::text[]) @> ARRAY['search_path=public, pg_temp'],
-      'contains_for_update', definition ILIKE '%FOR UPDATE%'
+      'contains_parent_batch_for_update', definition ILIKE '%shipper_shipment_batches%' AND definition ILIKE '%FOR UPDATE%',
+      'acl', acl,
+      'definition_md5', md5
     ) ORDER BY signature
   ) AS result
-  FROM function_defs
-  WHERE signature <> 'shipper_undo_shipment_batch_v1(uuid,text)'
+  FROM authorised_writers
 ),
-trigger_def AS (
-  SELECT md5(pg_get_functiondef('public.shipper_block_shipment_line_membership_mutation_v1()'::regprocedure)) AS md5
+protected_checks AS (
+  SELECT jsonb_agg(
+    jsonb_build_object(
+      'signature', signature,
+      'definition_md5', md5,
+      'acl', acl,
+      'security_definer', security_definer,
+      'search_path_ok', COALESCE(proconfig, ARRAY[]::text[]) @> ARRAY['search_path=public, pg_temp']
+    ) ORDER BY signature
+  ) AS result
+  FROM protected_authorities
 ),
 live_integrity AS (
   SELECT jsonb_build_object(
@@ -121,8 +152,8 @@ latest_safety_map AS (
       ) AS blocks_accounting,
       EXISTS (
         SELECT 1 FROM public.shipper_final_export_evidence_documents d
-        WHERE d.shipment_batch_id=b.id AND d.review_status IN ('submitted_for_review','accepted_current')
-      ) AS blocks_final_evidence,
+        WHERE d.shipment_batch_id=b.id
+      ) AS blocks_any_final_evidence,
       EXISTS (
         SELECT 1 FROM public.invoice_adjustment_consumption_ledger l
         WHERE l.shipment_batch_id=b.id AND l.active=true AND l.outcome='progressed_allocated'
@@ -131,10 +162,6 @@ latest_safety_map AS (
         SELECT 1 FROM public.customer_sales_release_lines csrl
         WHERE csrl.source_shipment_batch_id=b.id AND csrl.release_status='reversed'
       ) AS has_reversed_customer_release_history,
-      EXISTS (
-        SELECT 1 FROM public.shipper_final_export_evidence_documents d
-        WHERE d.shipment_batch_id=b.id AND d.review_status='rejected_resubmit_required'
-      ) AS has_rejected_final_evidence_history,
       CASE
         WHEN b.status <> 'created' THEN 'BLOCK_STATUS'
         WHEN NOT EXISTS (SELECT 1 FROM public.shipper_shipment_batch_packages p WHERE p.shipment_batch_id=b.id AND p.active=true) THEN 'BLOCK_NO_ACTIVE_PACKAGES'
@@ -152,7 +179,7 @@ latest_safety_map AS (
           WHERE s.shipment_batch_id=b.id
             AND (s.sage_posting_status='posted' OR (COALESCE(s.active,true)=true AND COALESCE(s.sage_posting_status,'not_posted')<>'voided'))
         ) THEN 'BLOCK_ACCOUNTING'
-        WHEN EXISTS (SELECT 1 FROM public.shipper_final_export_evidence_documents d WHERE d.shipment_batch_id=b.id AND d.review_status IN ('submitted_for_review','accepted_current')) THEN 'BLOCK_FINAL_EVIDENCE'
+        WHEN EXISTS (SELECT 1 FROM public.shipper_final_export_evidence_documents d WHERE d.shipment_batch_id=b.id) THEN 'BLOCK_FINAL_EVIDENCE'
         ELSE 'UNDO_CANDIDATE'
       END AS undo_state
     FROM public.shipper_shipment_batches b
@@ -174,22 +201,22 @@ SELECT jsonb_pretty(jsonb_build_object(
       'deactivates_packages', COALESCE((SELECT definition ILIKE '%shipper_shipment_batch_packages%SET active = false%' FROM undo), false),
       'deactivates_exact_lines', COALESCE((SELECT definition ILIKE '%shipper_shipment_batch_line_memberships%SET active = false%' FROM undo), false),
       'voids_parent_with_audit', COALESCE((SELECT definition ILIKE '%status = ''voided''%' AND definition ILIKE '%voided_at = now()%' AND definition ILIKE '%voided_by_shipper_user_id%' AND definition ILIKE '%void_reason%' FROM undo), false),
-      'blocks_active_groupage', COALESCE((SELECT definition ILIKE '%shipper_groupage_movement_batches%' AND definition ILIKE '%gmb.active = true%' FROM undo), false),
+      'groupage_read_only_blocker', COALESCE((SELECT definition ILIKE '%shipper_groupage_movement_batches%' AND definition ILIKE '%gmb.active = true%' FROM undo), false),
       'blocks_active_shipping_document', COALESCE((SELECT definition ILIKE '%shipping_documents%' AND definition ILIKE '%sd.active = true%' FROM undo), false),
       'blocks_active_approved_shipping_cost', COALESCE((SELECT definition ILIKE '%shipping_cost_allocations%' AND definition ILIKE '%allocation_status = ''approved''%' FROM undo), false),
       'blocks_export_lock', COALESCE((SELECT definition ILIKE '%locked_for_export_pack_at IS NOT NULL%' AND definition ILIKE '%allocation_status = ''locked_for_export_pack''%' FROM undo), false),
       'blocks_active_customer_release', COALESCE((SELECT definition ILIKE '%source_shipment_batch_id%' AND definition ILIKE '%release_status = ''active''%' FROM undo), false),
-      'permits_reversed_customer_release_history', COALESCE((SELECT definition NOT ILIKE '%release_status = ''reversed''%RAISE EXCEPTION%' FROM undo), false),
       'blocks_posted_or_active_accounting', COALESCE((SELECT definition ILIKE '%sage_posting_status = ''posted''%' AND definition ILIKE '%sage_posting_status, ''not_posted''%<> ''voided''%' FROM undo), false),
-      'blocks_submitted_or_accepted_final_evidence', COALESCE((SELECT definition ILIKE '%IN (''submitted_for_review'', ''accepted_current'')%' FROM undo), false),
+      'blocks_any_final_evidence', COALESCE((SELECT definition ILIKE '%shipper_final_export_evidence_documents%' AND definition ILIKE '%WHERE d.shipment_batch_id = p_shipment_batch_id%' FROM undo), false),
       'does_not_block_dispatched_at', COALESCE((SELECT definition NOT ILIKE '%dispatched_at%RAISE EXCEPTION%' FROM undo), false),
       'rebuilds_mutable_progressed_adjustment', COALESCE((SELECT definition ILIKE '%Progressed allocation rebuilt after governed Shipment Batch Undo.%' FROM undo), false),
       'definition_md5', (SELECT md5 FROM undo)
     )
   ),
-  'writer_hardening', (SELECT result FROM writer_checks),
-  'protected_line_mutation_trigger_md5', (SELECT md5 FROM trigger_def),
+  'authorised_writer_hardening', (SELECT result FROM writer_checks),
+  'protected_authorities_current_fingerprints', (SELECT result FROM protected_checks),
   'protected_line_mutation_trigger_expected_md5', 'c56d6a1a2b2c1bf0ef751a07e3b33ff2',
+  'protected_line_mutation_trigger_matches', COALESCE((SELECT md5 = 'c56d6a1a2b2c1bf0ef751a07e3b33ff2' FROM protected_authorities WHERE signature='shipper_block_shipment_line_membership_mutation_v1()'), false),
   'live_integrity', (SELECT result FROM live_integrity),
   'latest_batch_safety_map', COALESCE((SELECT result FROM latest_safety_map), '[]'::jsonb)
 )) AS result;
