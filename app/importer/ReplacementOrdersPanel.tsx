@@ -71,7 +71,7 @@ function nextAction(order: ReplacementOrder) {
   return "Continue replacement order flow";
 }
 
-export default function ReplacementOrdersPanel() {
+export default function ReplacementOrdersPanel({ disputeId = null }: { disputeId?: string | null } = {}) {
   const [rows, setRows] = useState<ReplacementOrder[]>([]);
   const [sameOrderRoutes, setSameOrderRoutes] = useState<SameOrderRoute[]>([]);
   const [error, setError] = useState("");
@@ -88,8 +88,8 @@ export default function ReplacementOrdersPanel() {
       const response = await fetch("/importer/replacement-orders-data");
       const json = (await response.json()) as Payload;
       if (!response.ok) throw new Error(json.error || "Could not load replacement routes.");
-      const routes = json.same_order_routes ?? [];
-      setRows(json.rows ?? []);
+      const routes = (json.same_order_routes ?? []).filter((route) => !disputeId || route.dispute_id === disputeId);
+      setRows(disputeId ? [] : (json.rows ?? []));
       setSameOrderRoutes(routes);
 
       const waitingByOrder: Record<string, string[]> = {};
@@ -115,13 +115,13 @@ export default function ReplacementOrdersPanel() {
   }
 
   useEffect(() => {
-    if (window.location.pathname !== "/importer") {
+    if (!disputeId && window.location.pathname !== "/importer") {
       setLoading(false);
       return;
     }
     setVisible(true);
     void load();
-  }, []);
+  }, [disputeId]);
 
   const groups = useMemo(() => {
     const map = new Map<string, SameOrderRoute[]>();
