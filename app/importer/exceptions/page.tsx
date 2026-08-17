@@ -41,6 +41,12 @@ type ReplacementProgressRow = {
   active_shipment_booking_ref: string | null;
 };
 
+type PageSearchParams = Promise<{
+  q?: string | string[];
+  outcome?: string | string[];
+  status?: string | string[];
+}>;
+
 function gbp(value: number | null | undefined) {
   return new Intl.NumberFormat("en-GB", {
     style: "currency",
@@ -112,7 +118,12 @@ function disputeRef(id: string) {
   return `DSP-${id.slice(0, 8).toUpperCase()}`;
 }
 
-export default async function ImporterExceptionsPage() {
+export default async function ImporterExceptionsPage({
+  searchParams,
+}: {
+  searchParams: PageSearchParams;
+}) {
+  const params = await searchParams;
   const supabase = await createClient();
 
   const { data: disputes, error } = await supabase
@@ -175,6 +186,64 @@ export default async function ImporterExceptionsPage() {
     }
   }
 
+  const firstParam = (value: string | string[] | undefined) => Array.isArray(value) ? (value[0] ?? "") : (value ?? "");
+  const searchQuery = firstParam(params.q).trim().toLowerCase();
+  const outcomeParam = firstParam(params.outcome).trim().toLowerCase();
+  const statusParam = firstParam(params.status).trim().toLowerCase();
+  const selectedOutcome = outcomeParam === "refund" || outcomeParam === "replacement" ? outcomeParam : "all";
+  const allowedStatuses = new Set([
+    "all",
+    "waiting_retailer",
+    "retailer_follow_up",
+    "waiting_supervisor",
+    "refund_processing",
+    "replacement_tracking",
+    "replacement_delivery",
+    "replacement_shipment_ready",
+    "replacement_shipped",
+  ]);
+  const selectedStatus = allowedStatuses.has(statusParam) ? statusParam : "all";
+  const exceptionCount = disputeRows.length;
+  const replacementWaitingCount = ((replacementRoutes ?? []) as ReplacementRouteRow[])
+    .filter((route) => route.route_status === "approved_waiting_tracking")
+    .length;
+
+  const workStatusForDispute = (dispute: DisputeRow) => {
+    const progress = progressByDisputeId.get(dispute.id);
+    if (progress?.progress_status === "added_to_shipment") return "replacement_shipped";
+    if (progress?.progress_status === "shipment_eligible") return "replacement_shipment_ready";
+    if (progress?.progress_status === "awaiting_replacement_receipt") return "replacement_delivery";
+
+    const route = routeByDisputeId.get(dispute.id);
+    if (
+      route?.route_status === "tracking_allocated"
+      && route.successor_tracking_submission_id
+      && route.successor_tracking_line_allocation_id
+    ) {
+      return "replacement_delivery";
+    }
+    if (route?.route_status === "approved_waiting_tracking") return "replacement_tracking";
+    if (dispute.status === "awaiting_refund_credit") return "refund_processing";
+
+    if (terminalStatusMessage(dispute, routeByDisputeId, progressByDisputeId)) return null;
+
+    const lineStatus = activeLineStatusByDispute.get(dispute.id) ?? null;
+    const retailerOutcome = retailerOutcomeFromStatus(lineStatus);
+    if (retailerOutcome === "retailer_accepted") return "waiting_supervisor";
+    if (retailerOutcome === "retailer_disputed" || retailerOutcome === "more_info_requested") return "retailer_follow_up";
+    return "waiting_retailer";
+  };
+
+  const filteredDisputeRows = disputeRows.filter((dispute) => {
+    const matchesSearch = !searchQuery
+      || disputeRef(dispute.id).toLowerCase().includes(searchQuery)
+      || orderRef(dispute.orders, dispute.order_id).toLowerCase().includes(searchQuery);
+    const matchesOutcome = selectedOutcome === "all" || dispute.desired_outcome === selectedOutcome;
+    const workStatus = workStatusForDispute(dispute);
+    const matchesStatus = selectedStatus === "all" || workStatus === selectedStatus;
+    return matchesSearch && matchesOutcome && matchesStatus;
+  });
+
   return (
     <main className="min-h-screen bg-slate-50 p-6 text-slate-950">
       <div className="mx-auto max-w-7xl space-y-6">
@@ -185,6 +254,63 @@ export default async function ImporterExceptionsPage() {
         </header>
 
         <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Work queues</p>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <Link href="#importer-exception-cases" className="flex min-h-11 items-center justify-between rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-800">
+              <span>Exception cases</span>
+              <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs">{exceptionCount}</span>
+            </Link>
+            <Link href="/importer" className="flex min-h-11 items-center justify-between rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm font-semibold text-sky-800">
+              <span>Replacement tracking</span>
+              <span className="flex items-center gap-2">
+                <span className="rounded-full bg-white px-2.5 py-1 text-xs">{replacementWaitingCount}</span>
+                <span aria-hidden="true">→</span>
+              </span>
+            </Link>
+          </div>
+          {replacementWaitingCount > 0 ? <p className="mt-2 text-xs text-slate-500">Successor tracking requires assignment in the importer workspace.</p> : null}
+
+          <form method="get" className="mt-5 grid gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1.4fr)_auto] lg:items-end">
+            <label className="block text-sm font-medium text-slate-700">
+              Search
+              <input
+                type="search"
+                name="q"
+                defaultValue={firstParam(params.q)}
+                placeholder="Order or dispute reference"
+                className="mt-1 block w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-950 shadow-sm outline-none focus:border-sky-500"
+              />
+            </label>
+            <label className="block text-sm font-medium text-slate-700">
+              Outcome
+              <select name="outcome" defaultValue={selectedOutcome} className="mt-1 block w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-950 shadow-sm outline-none focus:border-sky-500">
+                <option value="all">All outcomes</option>
+                <option value="refund">Refund</option>
+                <option value="replacement">Replacement</option>
+              </select>
+            </label>
+            <label className="block text-sm font-medium text-slate-700">
+              Work status
+              <select name="status" defaultValue={selectedStatus} className="mt-1 block w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-950 shadow-sm outline-none focus:border-sky-500">
+                <option value="all">All statuses</option>
+                <option value="waiting_retailer">Waiting for retailer</option>
+                <option value="retailer_follow_up">Retailer follow-up required</option>
+                <option value="waiting_supervisor">Waiting for supervisor</option>
+                <option value="refund_processing">Refund processing</option>
+                <option value="replacement_tracking">Replacement tracking needed</option>
+                <option value="replacement_delivery">Waiting for replacement delivery</option>
+                <option value="replacement_shipment_ready">Replacement ready for shipment</option>
+                <option value="replacement_shipped">Replacement added to shipment</option>
+              </select>
+            </label>
+            <div className="flex gap-2 lg:pb-0">
+              <button type="submit" className="min-h-10 flex-1 rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white lg:flex-none">Apply filters</button>
+              <Link href="/importer/exceptions" className="min-h-10 flex-1 rounded-xl border border-slate-300 bg-white px-4 py-2 text-center text-sm font-semibold text-slate-700 lg:flex-none">Reset</Link>
+            </div>
+          </form>
+        </section>
+
+        <section id="importer-exception-cases" className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           {error ? <p className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">Failed to load disputes: {customerImporterTerminology(error.message)}</p> : null}
 
           <div className="overflow-x-auto">
@@ -201,7 +327,7 @@ export default async function ImporterExceptionsPage() {
                 </tr>
               </thead>
               <tbody>
-                {disputeRows.map((dispute) => {
+                {filteredDisputeRows.map((dispute) => {
                   const lineStatus = activeLineStatusByDispute.get(dispute.id) ?? null;
                   const retailerOutcome = retailerOutcomeFromStatus(lineStatus);
                   const retailerPosition = latestRetailerReplyByDispute.get(dispute.id) ?? "No retailer reply yet";
@@ -226,6 +352,9 @@ export default async function ImporterExceptionsPage() {
           </div>
 
           {disputeRows.length === 0 ? <p className="mt-4 text-sm text-slate-600">No active refund/replacement cases.</p> : null}
+          {disputeRows.length > 0 && filteredDisputeRows.length === 0 ? (
+            <p className="mt-4 text-sm text-slate-600">No exception cases match these filters. <Link href="/importer/exceptions" className="font-semibold text-sky-700 underline">Reset filters</Link></p>
+          ) : null}
         </section>
       </div>
     </main>
