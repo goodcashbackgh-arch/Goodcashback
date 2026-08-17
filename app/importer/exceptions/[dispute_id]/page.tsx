@@ -95,7 +95,7 @@ function retailerOutcomeFromStatus(status: string | null | undefined) {
 }
 
 function finalOutcomeMessage(dispute: { desired_outcome: string | null; status: string | null; replacement_child_order_id?: string | null }) {
-  if (dispute.desired_outcome === "replacement" && dispute.status === "replaced") return "Replacement accepted — child order created";
+  if (dispute.desired_outcome === "replacement" && dispute.status === "replaced") return dispute.replacement_child_order_id ? "Replacement accepted — child order created" : "Replacement accepted — awaiting successor tracking";
   if (dispute.desired_outcome === "refund" && dispute.status === "awaiting_refund_credit") return "Refund accepted — awaiting refund credit processing";
   if (dispute.status === "refunded") return "Refund processed — awaiting closure.";
   if (dispute.status === "closed") return "Exception closed.";
