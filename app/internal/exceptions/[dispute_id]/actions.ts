@@ -408,21 +408,21 @@ export async function acceptReplacementOutcomeAction(formData: FormData) {
   const finalOutcomeGuard = await requireRetailerMessageAndAcceptedOutcome(guard.supabase, disputeId);
   if (!finalOutcomeGuard.ok) redirectWithResult(disputeId, { error: finalOutcomeGuard.error });
 
-  const { data: childOrderId, error: childOrderError } = await guard.supabase.rpc("staff_accept_replacement_outcome_v1", {
+  const { data: sameOrderRouteId, error: sameOrderRouteError } = await guard.supabase.rpc("staff_accept_same_order_free_replacement_v1", {
     p_dispute_id: disputeId,
     p_staff_id: guard.staffId,
+    p_confirmed_supplier_cost_mode: "free_replacement",
     p_notes: "Final replacement outcome accepted by supervisor",
   });
 
-  if (childOrderError || !childOrderId) {
+  if (sameOrderRouteError || !sameOrderRouteId) {
     redirectWithResult(disputeId, {
-      error: childOrderError?.message ?? "Failed to accept replacement outcome atomically.",
+      error: sameOrderRouteError?.message ?? "Failed to accept replacement outcome atomically.",
     });
   }
 
   revalidatePath(`/internal/exceptions/${disputeId}`);
   revalidatePath(`/importer/exceptions/${disputeId}`);
-  revalidatePath(`/importer/orders/${childOrderId}/operations`);
   revalidatePath("/importer");
-  redirectWithResult(disputeId, { success: "Replacement outcome accepted and provenance-linked child order created." });
+  redirectWithResult(disputeId, { success: "Replacement accepted — awaiting successor tracking." });
 }
