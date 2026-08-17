@@ -260,7 +260,7 @@ export default async function ImporterExceptionsPage({
               <span>Exception cases</span>
               <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs">{exceptionCount}</span>
             </Link>
-            <Link href="/importer" className="flex min-h-11 items-center justify-between rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm font-semibold text-sky-800">
+            <Link href="#replacement-tracking" className="flex min-h-11 items-center justify-between rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm font-semibold text-sky-800">
               <span>Replacement tracking</span>
               <span className="flex items-center gap-2">
                 <span className="rounded-full bg-white px-2.5 py-1 text-xs">{replacementWaitingCount}</span>

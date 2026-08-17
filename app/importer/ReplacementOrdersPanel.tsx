@@ -115,7 +115,8 @@ export default function ReplacementOrdersPanel() {
   }
 
   useEffect(() => {
-    if (window.location.pathname !== "/importer") {
+    const pathname = window.location.pathname;
+    if (pathname !== "/importer" && pathname !== "/importer/exceptions") {
       setLoading(false);
       return;
     }
@@ -182,7 +183,7 @@ export default function ReplacementOrdersPanel() {
   const waitingCount = sameOrderRoutes.filter((route) => route.route_status === "approved_waiting_tracking").length;
 
   return (
-    <section className="rounded-2xl border border-sky-200 bg-sky-50 p-4 text-slate-950">
+    <section id="replacement-tracking" className="rounded-2xl border border-sky-200 bg-sky-50 p-4 text-slate-950">
       <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
         <div>
           <p className="text-xs font-bold uppercase tracking-[0.2em] text-sky-700">Replacement tracking handoff</p>
