@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { createClient } from "@/utils/supabase/server";
+import ReplacementOrdersPanel from "../../ReplacementOrdersPanel";
 import RefundAdjustmentGuidance from "./RefundAdjustmentGuidance";
 import RejectedRefundDocumentAuditOnlyEnhancer from "./RejectedRefundDocumentAuditOnlyEnhancer";
 import ReplacementOriginalItemReturnForm from "./ReplacementOriginalItemReturnForm";
@@ -66,6 +67,12 @@ export default async function ImporterExceptionLayout({
   let replacementStatusLabel: string | null = null;
   let replacementProgress: ReplacementProgressRow | null = null;
   let successorTracking: SuccessorTrackingRow | null = null;
+
+  const awaitingSuccessorTracking = Boolean(
+    dispute?.desired_outcome === "replacement"
+    && !dispute.replacement_child_order_id
+    && replacementRoute?.route_status === "approved_waiting_tracking"
+  );
 
   const hasVerifiedSuccessorTracking = Boolean(
     dispute?.desired_outcome === "replacement"
@@ -189,6 +196,13 @@ export default async function ImporterExceptionLayout({
       <ReadableDisputeReferenceEnhancer disputeId={disputeId} />
       <ReplacementStatusEnhancer statusLabel={replacementStatusLabel} />
       {children}
+      {awaitingSuccessorTracking ? (
+        <div className="bg-slate-50 px-6 pb-8 text-slate-950">
+          <div className="mx-auto max-w-6xl">
+            <ReplacementOrdersPanel disputeId={disputeId} />
+          </div>
+        </div>
+      ) : null}
       {hasVerifiedSuccessorTracking ? (
         <ReplacementSuccessorTrackingSummary
           courierName={successorCourier?.name ?? null}
