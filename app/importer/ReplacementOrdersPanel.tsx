@@ -115,6 +115,11 @@ export default function ReplacementOrdersPanel() {
   }
 
   useEffect(() => {
+    const pathname = window.location.pathname;
+    if (pathname !== "/importer" && pathname !== "/importer/exceptions") {
+      setLoading(false);
+      return;
+    }
     setVisible(true);
     void load();
   }, []);
