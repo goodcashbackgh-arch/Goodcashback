@@ -113,15 +113,15 @@ export default async function NewShipperShipmentPage({
                   </label>
                   <label className="min-w-0 space-y-1 text-sm">
                     <span className="text-xs uppercase tracking-wide text-slate-500">Shipment cut-off</span>
-                    <input name="shipment_cutoff_at" type="datetime-local" className="block w-full min-w-0 max-w-full rounded-xl border border-slate-300 px-3 py-2" />
+                    <input name="shipment_cutoff_at" type="datetime-local" required className="block w-full min-w-0 max-w-full rounded-xl border border-slate-300 px-3 py-2" />
                   </label>
                   <label className="min-w-0 space-y-1 text-sm">
                     <span className="text-xs uppercase tracking-wide text-slate-500">Dispatch date/time</span>
-                    <input name="dispatched_at" type="datetime-local" className="block w-full min-w-0 max-w-full rounded-xl border border-slate-300 px-3 py-2" />
+                    <input name="dispatched_at" type="datetime-local" required className="block w-full min-w-0 max-w-full rounded-xl border border-slate-300 px-3 py-2" />
                   </label>
                   <label className="min-w-0 space-y-1 text-sm">
                     <span className="text-xs uppercase tracking-wide text-slate-500">Box/carton count</span>
-                    <input name="box_count" type="number" min="0" step="1" className="block w-full min-w-0 max-w-full rounded-xl border border-slate-300 px-3 py-2" />
+                    <input name="box_count" type="number" min="1" step="1" required className="block w-full min-w-0 max-w-full rounded-xl border border-slate-300 px-3 py-2" />
                   </label>
                   <label className="min-w-0 space-y-1 text-sm md:col-span-2 xl:col-span-2">
                     <span className="text-xs uppercase tracking-wide text-slate-500">Notes</span>
