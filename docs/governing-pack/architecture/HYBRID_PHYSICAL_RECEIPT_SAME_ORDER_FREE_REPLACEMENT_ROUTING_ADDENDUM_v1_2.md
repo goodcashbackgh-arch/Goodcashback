@@ -81,7 +81,18 @@ existing replacement-child rejection
 retailer-message / accepted-outcome guard
 ```
 
-After those existing guards pass, the action must call only:
+After those existing guards pass, add only the minimum server-side read needed to prevent an unproven supplier-cost classification from being converted into a same-order free replacement:
+
+1. read the unresolved dispute line(s) for the dispute and identify the existing `physical_remedy_allocation_id`;
+2. fail closed if there is not exactly one unambiguous linked physical remedy for the action to use;
+3. read that existing remedy's `supplier_cost_mode` only;
+4. require the stored value to be exactly `free_replacement` before invoking the same-order authority;
+5. if the stored value is `pending_supplier_evidence`, `charged_repurchase`, null, missing or anything other than `free_replacement`, return an error and stop;
+6. never convert any failed or non-free case into a child order.
+
+This read is a routing safety check only. It must not reimplement the same-order authority's quantity, value, source, provenance, locking, concurrency or route-creation controls.
+
+After the stored `free_replacement` fact is proven, call only:
 
 ```text
 staff_accept_same_order_free_replacement_v1(
@@ -107,15 +118,17 @@ create_replacement_child_order_v2
 
 It must contain no fallback, alternate branch, retry branch or error-recovery branch that invokes a child-order authority.
 
-If `staff_accept_same_order_free_replacement_v1` rejects the dispute because its exact existing database prerequisites are not satisfied, the action must surface the returned error and stop.
+If the stored physical-remedy facts do not prove `free_replacement`, the action must surface an error and stop.
 
-It must not convert that rejection into a child order.
+If `staff_accept_same_order_free_replacement_v1` rejects the dispute because any of its exact existing database prerequisites are not satisfied, the action must surface that returned error and stop.
+
+It must never convert either type of rejection into a child order.
 
 The legacy child-order authority remains installed and unchanged. It is simply not reachable from this supervisor action.
 
 ## 6. No duplicated replacement logic in the application
 
-The application action must not reimplement or broaden the existing same-order authority's database rules.
+Apart from the narrow stored `supplier_cost_mode = free_replacement` proof in section 4, the application action must not reimplement or broaden the existing same-order authority's database rules.
 
 Do not add TypeScript logic for:
 
@@ -124,7 +137,7 @@ quantity apportionment
 value apportionment
 source-allocation validation
 source-disposition validation
-remedy provenance validation
+remedy provenance validation beyond locating the linked remedy needed for supplier-cost proof
 replacement-route uniqueness
 locking
 concurrency
@@ -135,7 +148,7 @@ route creation
 
 Those controls already belong to `staff_accept_same_order_free_replacement_v1` and remain authoritative.
 
-The application action only delegates to that existing authority after its current UI-level guards have passed.
+The application action only proves the already-stored free-replacement classification and delegates to the existing authority.
 
 ## 7. Revalidation and success result
 
@@ -155,7 +168,7 @@ Remove the child-specific revalidation:
 
 because the returned UUID is a route ID, not a child order ID.
 
-The action success message must state the same-order result, for example:
+The action success message must state the same-order result:
 
 ```text
 Replacement accepted — awaiting successor tracking.
@@ -163,23 +176,31 @@ Replacement accepted — awaiting successor tracking.
 
 No new navigation or replacement page is introduced.
 
-## 8. Presentation alignment
+## 8. Locked presentation alignment
 
-Presentation-only wording may be corrected where a `replaced` dispute is currently hard-coded to say that a child order was created.
+Presentation correction is limited to these three existing files only:
 
-Any such wording change must derive only from existing stored facts:
+```text
+app/internal/exceptions/[dispute_id]/page.tsx
+app/importer/exceptions/[dispute_id]/page.tsx
+app/internal/exceptions/page.tsx
+```
+
+The only permitted presentation change is replacement terminal wording derived from the already-stored `replacement_child_order_id` fact:
 
 ```text
 replacement_child_order_id is not null
--> historical child-order wording may remain
+-> historical child-order wording remains
 
 replacement_child_order_id is null
--> same-order wording must be shown
+-> same-order wording is shown, e.g. "Replacement accepted — awaiting successor tracking"
 ```
 
-Presentation alignment must not introduce workflow logic, database writes, new components, new navigation or new status families.
+No other labels, layout, components, navigation, queries, status families, permissions or workflow behaviour may be changed in these files.
 
-If presentation changes are included in the implementation PR, they must be individually identifiable as display-only changes.
+These edits are display-only and must be separately identifiable in the implementation diff.
+
+No other presentation file is in scope.
 
 ## 9. Explicit non-scope
 
@@ -217,7 +238,7 @@ No SQL migration is required by this correction.
 
 ## 10. Implementation scope ceiling
 
-The functional implementation is rejected for scope creep if it does any of the following:
+The implementation is rejected for scope creep if it does any of the following:
 
 ```text
 changes a database function
@@ -228,26 +249,32 @@ alters receipt, shipment, reconciliation or accounting behaviour
 changes Mini Build definitions
 adds a new fallback route
 creates or links a replacement child from acceptReplacementOutcomeAction()
-reimplements same-order validation in TypeScript
+reimplements same-order business validation in TypeScript
+changes production files other than the one functional file and the three locked display-only files in section 8
 ```
 
-The intended functional diff is one existing server action rewired from the wrong legacy authority to the already-built same-order authority.
+The intended functional diff is one existing server action rewired from the wrong legacy authority to the already-built same-order authority, with one narrow fail-closed read of the already-stored supplier-cost classification.
 
-Any additional functional file requires a separately documented reason and approval before implementation.
+The only additional permitted production edits are the three display-only wording corrections locked in section 8.
+
+Any other production file requires a separately documented reason and approval before implementation.
 
 ## 11. Required regression proof before merge
 
 Before merge, prove all of the following:
 
 1. source inspection shows `acceptReplacementOutcomeAction()` contains zero references to `staff_accept_replacement_outcome_v1` and zero references to a child-order creator;
-2. a controlled eligible replacement acceptance creates one `physical_replacement_same_order_routes` row through the existing authority;
-3. `disputes.replacement_child_order_id` remains null for that acceptance;
-4. `dispute_lines.resolved_via_child_order_id` remains null for that acceptance;
-5. the total replacement-child order population does not increase during the controlled test;
-6. the existing importer same-order successor-tracking handoff remains available after acceptance;
-7. the same-order authority fingerprint remains `78e94d6d76bf1c160068a3fd97ae4a87`;
-8. no protected Mini Build authority changes;
-9. TypeScript/build checks pass for the touched application code.
+2. source inspection shows the action requires the stored linked remedy `supplier_cost_mode` to equal `free_replacement` before calling the same-order RPC;
+3. a controlled eligible replacement acceptance creates one `physical_replacement_same_order_routes` row through the existing authority;
+4. `disputes.replacement_child_order_id` remains null for that acceptance;
+5. `dispute_lines.resolved_via_child_order_id` remains null for that acceptance;
+6. the total replacement-child order population does not increase during the controlled test;
+7. a controlled non-free or unproven supplier-cost case fails closed and creates neither a same-order route nor a child order;
+8. the existing importer same-order successor-tracking handoff remains available after acceptance;
+9. the same-order authority fingerprint remains `78e94d6d76bf1c160068a3fd97ae4a87`;
+10. no protected Mini Build authority changes;
+11. TypeScript/build checks pass for the touched application code;
+12. the three locked presentation files show child wording only when `replacement_child_order_id` is non-null and same-order wording when it is null.
 
 A failing regression stops the merge. Do not repair a regression by changing downstream working parts without a new governing decision.
 
@@ -265,11 +292,14 @@ The builder must implement exactly this:
 
 ```text
 keep existing acceptReplacementOutcomeAction guards
+prove the linked existing remedy already stores supplier_cost_mode = free_replacement
+fail closed otherwise
 remove legacy child-order RPC invocation from that action
-call existing staff_accept_same_order_free_replacement_v1 instead
+call existing staff_accept_same_order_free_replacement_v1 only
 never fall back to a child-order authority
 treat returned UUID as same-order route ID
 remove child-order-specific revalidation from the same-order result
+make only the three locked child-vs-same-order wording corrections
 preserve all existing downstream same-order infrastructure unchanged
 ```
 
