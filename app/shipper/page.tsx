@@ -147,6 +147,7 @@ export default async function ShipperPage({ searchParams }: { searchParams?: Pro
             <Link href="/shipper/package-receipts" className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold">3. Package receipt actions</Link>
             <Link href="/shipper/return-tasks" className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-900">4. Return tasks</Link>
             <Link href="/shipper/shipping-documents/new" className="rounded-xl border border-sky-300 bg-sky-50 px-4 py-2 text-sm font-semibold text-sky-900">5. Upload charge document</Link>
+            <Link href="/shipper/incoming-traffic" className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold">6. Incoming traffic</Link>
           </div>
           {rpcError ? <p className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">{rpcError.message}</p> : null}
         </section>
