@@ -54,14 +54,10 @@ export default function ShipperLoginPanel({ shippers }: Props) {
           </select>
         </label>
 
-        <label className="flex flex-col gap-1 text-sm font-medium text-slate-700 md:col-span-2">
-          <span>Access level *</span>
-          <select name="role_code" required defaultValue="shipper_operator" className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm md:max-w-md">
-            <option value="shipper_operator">Operator</option>
-            <option value="shipper_admin">Admin</option>
-            <option value="shipper_readonly">Read only</option>
-          </select>
-        </label>
+        <input type="hidden" name="role_code" value="shipper_operator" />
+        <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 md:col-span-2">
+          Shipper access
+        </div>
 
         <div className="md:col-span-2">
           <button disabled={pending} className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60">
