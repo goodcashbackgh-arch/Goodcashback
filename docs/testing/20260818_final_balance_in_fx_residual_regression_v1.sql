@@ -34,6 +34,9 @@ DECLARE
   r record;
   v_actual text;
   v_def text;
+  v_compat_before text;
+  v_compat_after text;
+  v_compat_def text;
   v_staff_id uuid;
   v_staff_auth_uid uuid;
   v_target_line constant uuid := 'f36b93f8-16c2-4d2f-be4c-015f3e234dc6'::uuid;
@@ -89,6 +92,29 @@ BEGIN
         r.object_name, r.expected_md5, v_actual;
     END IF;
   END LOOP;
+
+  -- The application direction-aware residual action reads the established
+  -- August compatibility view before delegating to the existing OUT writer or
+  -- the new IN writer. Capture its exact live fingerprint and prove the
+  -- governed August semantic seams before any behavioural exercise. The view
+  -- itself is never modified by this regression.
+  IF to_regclass('public.dva_statement_line_allocation_summary_vw') IS NULL THEN
+    RAISE EXCEPTION 'FAIL: compatibility view public.dva_statement_line_allocation_summary_vw is missing';
+  END IF;
+
+  SELECT
+    md5(pg_get_viewdef('public.dva_statement_line_allocation_summary_vw'::regclass, true)),
+    lower(pg_get_viewdef('public.dva_statement_line_allocation_summary_vw'::regclass, true))
+  INTO v_compat_before, v_compat_def;
+
+  IF position('dva_reconciliation' IN v_compat_def) = 0
+     OR position('order_funding' IN v_compat_def) = 0
+     OR position('loyalty_internal_transfer_out_gbp' IN v_compat_def) = 0
+     OR position('loyalty_internal_transfer_in_gbp' IN v_compat_def) = 0
+     OR position('loyalty_internal_transfer_in_count' IN v_compat_def) = 0
+     OR position('dva_statement_line_import_links' IN v_compat_def) = 0 THEN
+    RAISE EXCEPTION 'FAIL: compatibility view lost an August governed calculation/preservation seam';
+  END IF;
 
   IF to_regprocedure('public.staff_classify_final_balance_in_fx_residual_v1(uuid,numeric,text)') IS NULL THEN
     RAISE EXCEPTION 'FAIL: new final-balance IN FX residual writer is not installed';
@@ -643,6 +669,14 @@ BEGIN
     END IF;
   END LOOP;
 
+  SELECT md5(pg_get_viewdef('public.dva_statement_line_allocation_summary_vw'::regclass, true))
+  INTO v_compat_after;
+
+  IF v_compat_after IS DISTINCT FROM v_compat_before THEN
+    RAISE EXCEPTION 'FAIL: compatibility view changed during rollback regression. before %, after %',
+      v_compat_before, v_compat_after;
+  END IF;
+
   -- Existing inbound-FX rows must still be byte/row stable after all rollback exercises.
   SELECT md5(COALESCE(jsonb_agg(to_jsonb(x) ORDER BY x.id)::text, '[]'))
     INTO v_existing_in_fx_fingerprint_after
@@ -665,7 +699,7 @@ BEGIN
   INSERT INTO _final_balance_in_fx_regression_result(regression_result, details)
   VALUES (
     'PASS',
-    'Frozen June/July/August treasury authorities unchanged; exact live £20.19/£19.99/£0.20 path classified only £0.20 as inbound FX inside rollback; settlement v2 stayed £772.98/£772.98/£0 due/complete; canonical order settlement absorbed exactly +£0.20 as classified inbound FX with zero unresolved/over-resolved; existing £7.53 IN FX stayed unchanged; existing final-balance cash bridge remained £19.99; wrong-direction, amount-mismatch, no-final-balance, open-final-balance and duplicate attempts were rejected; all behavioural changes rolled back without residue.'
+    'Frozen June/July/August treasury authorities and the August compatibility-view routing contract remained unchanged; exact live £20.19/£19.99/£0.20 path classified only £0.20 as inbound FX inside rollback; settlement v2 stayed £772.98/£772.98/£0 due/complete; canonical order settlement absorbed exactly +£0.20 as classified inbound FX with zero unresolved/over-resolved; existing £7.53 IN FX stayed unchanged; existing final-balance cash bridge remained £19.99; wrong-direction, amount-mismatch, no-final-balance, open-final-balance and duplicate attempts were rejected; all behavioural changes rolled back without residue.'
   );
 END
 $regression$;
