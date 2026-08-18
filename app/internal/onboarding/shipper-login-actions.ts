@@ -49,18 +49,18 @@ export async function createNewShipperOnboardingAction(
   } = await sessionClient.auth.getUser();
 
   if (!user) {
-    return { status: "error", message: "Your staff session has expired. Sign in again." };
+    return { status: "error", message: "Your admin session has expired. Sign in again." };
   }
 
   const { data: staff, error: staffError } = await sessionClient
     .from("staff")
-    .select("id")
+    .select("id, role_type")
     .eq("auth_user_id", user.id)
     .eq("active", true)
     .maybeSingle();
 
-  if (staffError || !staff) {
-    return { status: "error", message: "Active staff access is required to create a login." };
+  if (staffError || !staff || staff.role_type !== "admin") {
+    return { status: "error", message: "Active admin access is required to create a shipper login." };
   }
 
   const temporaryPassword = generateTemporaryPassword();
