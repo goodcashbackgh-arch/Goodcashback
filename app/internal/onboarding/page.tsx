@@ -59,7 +59,7 @@ export default async function InternalOnboardingPage({ searchParams }: { searchP
         savedMessage={savedMessageFrom(params)}
       />
       <div className="space-y-6 bg-slate-50 px-4 pb-8 sm:px-6">
-        <ShipperLoginPanel shippers={overview.shippers ?? []} />
+        {staff.role_type === "admin" ? <ShipperLoginPanel shippers={overview.shippers ?? []} /> : null}
         <RetailerAccountReadinessPanel data={(retailerReadiness ?? {}) as any} />
       </div>
     </>
