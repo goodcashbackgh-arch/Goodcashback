@@ -24,6 +24,10 @@ active_shipper_users AS (
     EXISTS (
       SELECT 1 FROM auth.users u
       WHERE u.id = su.auth_user_id
+    ) AS auth_user_present,
+    EXISTS (
+      SELECT 1 FROM auth.users u
+      WHERE u.id = su.auth_user_id
         AND lower(btrim(COALESCE(u.email, ''))) = lower(btrim(COALESCE(su.email, '')))
     ) AS matching_auth_identity_present,
     EXISTS (
@@ -46,8 +50,12 @@ active_shipper_users AS (
 auth_present_defects AS (
   SELECT *
   FROM active_shipper_users
-  WHERE matching_auth_identity_present = true
-    AND (active_profile_present = false OR matching_active_memberships <> 1)
+  WHERE auth_user_present = true
+    AND (
+      matching_auth_identity_present = false
+      OR active_profile_present = false
+      OR matching_active_memberships <> 1
+    )
 ),
 duplicate_active_shipper_memberships AS (
   SELECT m.auth_user_id, m.shipper_id, count(*)::int AS membership_count
