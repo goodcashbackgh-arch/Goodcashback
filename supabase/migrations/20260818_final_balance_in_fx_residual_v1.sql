@@ -14,6 +14,10 @@ CREATE TEMP TABLE _final_balance_in_fx_frozen (
   expected_md5 text NOT NULL
 ) ON COMMIT DROP;
 
+CREATE TEMP TABLE _final_balance_in_fx_compat_guard (
+  before_md5 text NOT NULL
+) ON COMMIT DROP;
+
 INSERT INTO _final_balance_in_fx_frozen(object_type, object_name, expected_md5)
 VALUES
   ('function', 'public.staff_allocate_statement_line_to_final_balance_payment_v1(uuid,uuid,boolean,text)', 'c8ef31c0e5ef974624d261b3fd2d200b'),
@@ -34,6 +38,22 @@ DECLARE
   r record;
   v_actual text;
   v_existing_comment text;
+  v_compat_def text;
+  v_compat_columns text[];
+  v_expected_compat_columns text[] := ARRAY[
+    'dva_statement_line_id','dva_statement_id','importer_id','statement_date',
+    'reference_raw','direction','amount_local_ccy','local_ccy','fx_rate_applied',
+    'card_markup_pct_applied','statement_gbp_amount','auth_id_ref','retailer_name_ref',
+    'match_status','confirmed_allocated_gbp','open_allocated_gbp',
+    'supplier_invoice_allocated_gbp','retailer_refund_allocated_gbp',
+    'fx_card_or_fee_allocated_gbp','exception_or_hold_allocated_gbp',
+    'active_allocation_count','confirmed_unallocated_gbp','confirmed_balanced_yn',
+    'final_balance_payment_allocated_gbp','statement_account_context',
+    'statement_account_label','source_bank','loyalty_credit_funding_allocated_gbp',
+    'main_bank_loyalty_match_count','control_match_reason',
+    'loyalty_internal_transfer_out_gbp','loyalty_internal_transfer_in_gbp',
+    'loyalty_internal_transfer_in_count'
+  ];
 BEGIN
   FOR r IN SELECT * FROM _final_balance_in_fx_frozen ORDER BY object_name
   LOOP
@@ -62,6 +82,40 @@ BEGIN
      OR to_regclass('public.dva_statement_line_allocations') IS NULL THEN
     RAISE EXCEPTION 'PRECHECK: required treasury tables are missing';
   END IF;
+
+  -- The direction-aware server action reads this established August compatibility
+  -- view before delegating to either the existing OUT writer or the new IN writer.
+  -- Freeze its current live fingerprint for this transaction and prove the exact
+  -- August compatibility contract before any DDL. The view itself is not changed.
+  IF to_regclass('public.dva_statement_line_allocation_summary_vw') IS NULL THEN
+    RAISE EXCEPTION 'PRECHECK: compatibility view public.dva_statement_line_allocation_summary_vw is missing';
+  END IF;
+
+  SELECT array_agg(c.column_name::text ORDER BY c.ordinal_position)
+  INTO v_compat_columns
+  FROM information_schema.columns c
+  WHERE c.table_schema = 'public'
+    AND c.table_name = 'dva_statement_line_allocation_summary_vw';
+
+  IF v_compat_columns IS DISTINCT FROM v_expected_compat_columns THEN
+    RAISE EXCEPTION 'PRECHECK: compatibility-view column contract changed. expected %, actual %',
+      v_expected_compat_columns, v_compat_columns;
+  END IF;
+
+  SELECT lower(pg_get_viewdef('public.dva_statement_line_allocation_summary_vw'::regclass, true))
+  INTO v_compat_def;
+
+  IF position('dva_reconciliation' IN v_compat_def) = 0
+     OR position('order_funding' IN v_compat_def) = 0
+     OR position('loyalty_internal_transfer_out_gbp' IN v_compat_def) = 0
+     OR position('loyalty_internal_transfer_in_gbp' IN v_compat_def) = 0
+     OR position('loyalty_internal_transfer_in_count' IN v_compat_def) = 0
+     OR position('dva_statement_line_import_links' IN v_compat_def) = 0 THEN
+    RAISE EXCEPTION 'PRECHECK: compatibility view lost an August governed calculation/preservation seam';
+  END IF;
+
+  INSERT INTO _final_balance_in_fx_compat_guard(before_md5)
+  VALUES (md5(pg_get_viewdef('public.dva_statement_line_allocation_summary_vw'::regclass, true)));
 
   IF to_regprocedure('public.staff_classify_final_balance_in_fx_residual_v1(uuid,numeric,text)') IS NOT NULL THEN
     SELECT obj_description(
@@ -337,6 +391,9 @@ DECLARE
   v_def text;
   v_prosecdef boolean;
   v_config text[];
+  v_compat_before text;
+  v_compat_after text;
+  v_compat_def text;
 BEGIN
   FOR r IN SELECT * FROM _final_balance_in_fx_frozen ORDER BY object_name
   LOOP
@@ -350,6 +407,29 @@ BEGIN
         r.object_name, r.expected_md5, v_actual;
     END IF;
   END LOOP;
+
+  SELECT before_md5 INTO v_compat_before
+  FROM _final_balance_in_fx_compat_guard
+  LIMIT 1;
+
+  SELECT
+    md5(pg_get_viewdef('public.dva_statement_line_allocation_summary_vw'::regclass, true)),
+    lower(pg_get_viewdef('public.dva_statement_line_allocation_summary_vw'::regclass, true))
+  INTO v_compat_after, v_compat_def;
+
+  IF v_compat_after IS DISTINCT FROM v_compat_before THEN
+    RAISE EXCEPTION 'POSTCHECK: compatibility view changed during migration. before %, after %',
+      v_compat_before, v_compat_after;
+  END IF;
+
+  IF position('dva_reconciliation' IN v_compat_def) = 0
+     OR position('order_funding' IN v_compat_def) = 0
+     OR position('loyalty_internal_transfer_out_gbp' IN v_compat_def) = 0
+     OR position('loyalty_internal_transfer_in_gbp' IN v_compat_def) = 0
+     OR position('loyalty_internal_transfer_in_count' IN v_compat_def) = 0
+     OR position('dva_statement_line_import_links' IN v_compat_def) = 0 THEN
+    RAISE EXCEPTION 'POSTCHECK: compatibility view lost an August governed calculation/preservation seam';
+  END IF;
 
   SELECT p.prosecdef, p.proconfig, lower(pg_get_functiondef(p.oid))
   INTO v_prosecdef, v_config, v_def
@@ -390,6 +470,7 @@ SELECT jsonb_build_object(
   'ready', to_regprocedure('public.staff_classify_final_balance_in_fx_residual_v1(uuid,numeric,text)') IS NOT NULL,
   'business_rows_changed_by_migration', false,
   'existing_treasury_authorities_changed', false,
+  'compatibility_view_md5', md5(pg_get_viewdef('public.dva_statement_line_allocation_summary_vw'::regclass, true)),
   'authenticated_execute', has_function_privilege('authenticated',
     'public.staff_classify_final_balance_in_fx_residual_v1(uuid,numeric,text)', 'EXECUTE'),
   'anon_execute_revoked', NOT has_function_privilege('anon',
