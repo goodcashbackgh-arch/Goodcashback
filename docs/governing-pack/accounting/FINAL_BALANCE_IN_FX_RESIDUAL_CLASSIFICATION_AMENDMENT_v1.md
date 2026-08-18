@@ -324,7 +324,7 @@ inbound_fx_receipt_residual_gbp: £7.53 -> £7.73
 gross_positive_difference_gbp:  £7.53 -> £7.73
 total_classified_gbp:            £7.53 -> £7.73
 remaining_unresolved_gbp:        £0.00
-nover_resolved_gbp:               £0.00
+over_resolved_gbp:               £0.00
 resolution_status:               fully_resolved
 ```
 
