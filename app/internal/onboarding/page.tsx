@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 import OnboardingWorkspace from "./OnboardingWorkspace";
 import RetailerAccountReadinessPanel from "./RetailerAccountReadinessPanel";
+import ShipperLoginPanel from "./ShipperLoginPanel";
 
 type SearchParams = { saved?: string | string[] | undefined };
 
@@ -57,7 +58,8 @@ export default async function InternalOnboardingPage({ searchParams }: { searchP
         blockers={overview.blockers ?? {}}
         savedMessage={savedMessageFrom(params)}
       />
-      <div className="bg-slate-50 px-4 pb-8 sm:px-6">
+      <div className="space-y-6 bg-slate-50 px-4 pb-8 sm:px-6">
+        <ShipperLoginPanel shippers={overview.shippers ?? []} />
         <RetailerAccountReadinessPanel data={(retailerReadiness ?? {}) as any} />
       </div>
     </>
