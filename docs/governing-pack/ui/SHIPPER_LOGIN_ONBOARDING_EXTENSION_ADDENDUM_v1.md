@@ -24,13 +24,14 @@ Add admin-created Shipper logins to the existing multi-tenant onboarding centre 
 `internal_create_shipper_user_onboarding_v1(...)` must:
 1. require an active Admin staff actor;
 2. validate the complete live schema shape used by this writer before installation;
-3. validate active shipper branch and allowed shipper role;
-4. reject identity/email collisions across existing platform identities;
-5. create `platform_user_profiles` with `must_change_password = true`;
-6. create the canonical `shipper_users` row;
-7. create exactly one matching shipper membership;
-8. write `shipper_user_onboarding_created` to `platform_access_audit_log`;
-9. perform its database writes atomically.
+3. require the supplied `auth_user_id` to exist in Supabase Auth and match the supplied email;
+4. validate active shipper branch and allowed shipper role;
+5. reject identity/email collisions across existing platform identities;
+6. create `platform_user_profiles` with `must_change_password = true`;
+7. create the canonical `shipper_users` row;
+8. create exactly one matching shipper membership;
+9. write `shipper_user_onboarding_created` to `platform_access_audit_log`;
+10. perform its database writes atomically.
 
 ## Auth compensation
 The sibling server action must use the existing proven pattern: create the Auth user first, call the atomic database writer, and delete the newly created Auth user if the database writer fails. If deletion fails, replace the password with an undisclosed random password and ban the incomplete Auth user.
