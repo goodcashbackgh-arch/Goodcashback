@@ -21,7 +21,11 @@ active_shipper_users AS (
     su.shipper_id,
     su.email,
     su.role_at_shipper,
-    EXISTS (SELECT 1 FROM auth.users u WHERE u.id = su.auth_user_id) AS auth_user_present,
+    EXISTS (
+      SELECT 1 FROM auth.users u
+      WHERE u.id = su.auth_user_id
+        AND lower(btrim(COALESCE(u.email, ''))) = lower(btrim(COALESCE(su.email, '')))
+    ) AS matching_auth_identity_present,
     EXISTS (
       SELECT 1 FROM public.platform_user_profiles p
       WHERE p.auth_user_id = su.auth_user_id
@@ -42,7 +46,7 @@ active_shipper_users AS (
 auth_present_defects AS (
   SELECT *
   FROM active_shipper_users
-  WHERE auth_user_present = true
+  WHERE matching_auth_identity_present = true
     AND (active_profile_present = false OR matching_active_memberships <> 1)
 ),
 duplicate_active_shipper_memberships AS (
@@ -64,6 +68,8 @@ SELECT jsonb_build_object(
     AND COALESCE((SELECT authenticated_execute FROM writer LIMIT 1),false)
     AND NOT COALESCE((SELECT anon_execute FROM writer LIMIT 1),true)
     AND COALESCE((SELECT definition ILIKE '%role_type = ''admin''%' FROM writer LIMIT 1),false)
+    AND COALESCE((SELECT definition ILIKE '%auth.users%' FROM writer LIMIT 1),false)
+    AND COALESCE((SELECT definition ILIKE '%auth_identity_mismatch%' FROM writer LIMIT 1),false)
     AND COALESCE((SELECT definition ILIKE '%shipper_user_onboarding_created%' FROM writer LIMIT 1),false)
     AND COALESCE((SELECT definition ILIKE '%platform_user_profiles%' FROM writer LIMIT 1),false)
     AND COALESCE((SELECT definition ILIKE '%shipper_users%' FROM writer LIMIT 1),false)
@@ -80,6 +86,7 @@ SELECT jsonb_build_object(
     'authenticated_execute',COALESCE((SELECT authenticated_execute FROM writer LIMIT 1),false),
     'anon_execute_revoked',NOT COALESCE((SELECT anon_execute FROM writer LIMIT 1),true),
     'admin_only',COALESCE((SELECT definition ILIKE '%role_type = ''admin''%' FROM writer LIMIT 1),false),
+    'auth_identity_bound',COALESCE((SELECT definition ILIKE '%auth.users%' AND definition ILIKE '%auth_identity_mismatch%' FROM writer LIMIT 1),false),
     'writes_profile',COALESCE((SELECT definition ILIKE '%platform_user_profiles%' FROM writer LIMIT 1),false),
     'writes_shipper_user',COALESCE((SELECT definition ILIKE '%shipper_users%' FROM writer LIMIT 1),false),
     'writes_membership',COALESCE((SELECT definition ILIKE '%platform_user_memberships%' FROM writer LIMIT 1),false),
