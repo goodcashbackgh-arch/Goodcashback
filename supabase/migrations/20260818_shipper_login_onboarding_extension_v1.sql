@@ -10,7 +10,8 @@ BEGIN
      OR to_regclass('public.platform_access_audit_log') IS NULL
      OR to_regclass('public.shippers') IS NULL
      OR to_regclass('public.staff') IS NULL
-     OR to_regclass('public.operators') IS NULL THEN
+     OR to_regclass('public.operators') IS NULL
+     OR to_regclass('auth.users') IS NULL THEN
     RAISE EXCEPTION 'shipper_login_onboarding_schema_not_ready';
   END IF;
 
@@ -64,6 +65,16 @@ BEGIN
     )
   ) THEN
     RAISE EXCEPTION 'shipper_login_onboarding_required_column_missing';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns c
+    WHERE c.table_schema = 'auth' AND c.table_name = 'users' AND c.column_name = 'id'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM information_schema.columns c
+    WHERE c.table_schema = 'auth' AND c.table_name = 'users' AND c.column_name = 'email'
+  ) THEN
+    RAISE EXCEPTION 'shipper_login_onboarding_auth_shape_unexpected';
   END IF;
 
   IF NOT EXISTS (
@@ -142,6 +153,15 @@ BEGIN
 
   IF v_full_name = '' THEN
     RAISE EXCEPTION 'full_name_required';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+    FROM auth.users u
+    WHERE u.id = p_auth_user_id
+      AND lower(btrim(COALESCE(u.email, ''))) = v_email
+  ) THEN
+    RAISE EXCEPTION 'auth_identity_mismatch';
   END IF;
 
   IF v_role_code NOT IN ('shipper_admin','shipper_operator','shipper_readonly') THEN
