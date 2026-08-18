@@ -9,7 +9,8 @@ BEGIN
      OR to_regclass('public.platform_user_memberships') IS NULL
      OR to_regclass('public.platform_access_audit_log') IS NULL
      OR to_regclass('public.shippers') IS NULL
-     OR to_regclass('public.staff') IS NULL THEN
+     OR to_regclass('public.staff') IS NULL
+     OR to_regclass('public.operators') IS NULL THEN
     RAISE EXCEPTION 'shipper_login_onboarding_schema_not_ready';
   END IF;
 
@@ -23,6 +24,7 @@ BEGIN
       ('shipper_users','email'),
       ('shipper_users','phone'),
       ('shipper_users','role_at_shipper'),
+      ('shipper_users','permissions_json'),
       ('shipper_users','active'),
       ('platform_user_profiles','auth_user_id'),
       ('platform_user_profiles','email'),
@@ -30,6 +32,7 @@ BEGIN
       ('platform_user_profiles','active'),
       ('platform_user_profiles','must_change_password'),
       ('platform_user_profiles','created_by_staff_id'),
+      ('platform_user_memberships','id'),
       ('platform_user_memberships','auth_user_id'),
       ('platform_user_memberships','role_code'),
       ('platform_user_memberships','shipper_id'),
@@ -41,7 +44,16 @@ BEGIN
       ('platform_access_audit_log','target_auth_user_id'),
       ('platform_access_audit_log','target_shipper_id'),
       ('platform_access_audit_log','before_json'),
-      ('platform_access_audit_log','after_json')
+      ('platform_access_audit_log','after_json'),
+      ('shippers','id'),
+      ('shippers','active'),
+      ('staff','id'),
+      ('staff','auth_user_id'),
+      ('staff','email'),
+      ('staff','role_type'),
+      ('staff','active'),
+      ('operators','auth_user_id'),
+      ('operators','email')
     ) AS required(table_name, column_name)
     WHERE NOT EXISTS (
       SELECT 1
@@ -113,10 +125,11 @@ BEGIN
   FROM public.staff s
   WHERE s.auth_user_id = auth.uid()
     AND s.active = true
+    AND s.role_type = 'admin'
   LIMIT 1;
 
   IF v_staff_id IS NULL THEN
-    RAISE EXCEPTION 'not_authorised';
+    RAISE EXCEPTION 'admin_required';
   END IF;
 
   IF p_auth_user_id IS NULL THEN
