@@ -63,6 +63,7 @@ SELECT jsonb_build_object(
     AND COALESCE((SELECT config ILIKE '%search_path=public, pg_temp%' FROM writer LIMIT 1),false)
     AND COALESCE((SELECT authenticated_execute FROM writer LIMIT 1),false)
     AND NOT COALESCE((SELECT anon_execute FROM writer LIMIT 1),true)
+    AND COALESCE((SELECT definition ILIKE '%role_type = ''admin''%' FROM writer LIMIT 1),false)
     AND COALESCE((SELECT definition ILIKE '%shipper_user_onboarding_created%' FROM writer LIMIT 1),false)
     AND COALESCE((SELECT definition ILIKE '%platform_user_profiles%' FROM writer LIMIT 1),false)
     AND COALESCE((SELECT definition ILIKE '%shipper_users%' FROM writer LIMIT 1),false)
@@ -78,6 +79,7 @@ SELECT jsonb_build_object(
     'search_path_locked',COALESCE((SELECT config ILIKE '%search_path=public, pg_temp%' FROM writer LIMIT 1),false),
     'authenticated_execute',COALESCE((SELECT authenticated_execute FROM writer LIMIT 1),false),
     'anon_execute_revoked',NOT COALESCE((SELECT anon_execute FROM writer LIMIT 1),true),
+    'admin_only',COALESCE((SELECT definition ILIKE '%role_type = ''admin''%' FROM writer LIMIT 1),false),
     'writes_profile',COALESCE((SELECT definition ILIKE '%platform_user_profiles%' FROM writer LIMIT 1),false),
     'writes_shipper_user',COALESCE((SELECT definition ILIKE '%shipper_users%' FROM writer LIMIT 1),false),
     'writes_membership',COALESCE((SELECT definition ILIKE '%platform_user_memberships%' FROM writer LIMIT 1),false),
