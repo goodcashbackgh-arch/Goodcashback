@@ -1,6 +1,6 @@
 "use client";
 
-import { allocateStatementLineToFxCardOrFeeAction } from "../actions";
+import { allocateStatementLineFxResidualAction } from "../finalBalanceFxResidualActions";
 
 type FxResidualAllocationFormProps = {
   canAllocate: boolean;
@@ -16,7 +16,7 @@ export default function FxResidualAllocationForm({
   returnPath,
 }: FxResidualAllocationFormProps) {
   return (
-    <form action={allocateStatementLineToFxCardOrFeeAction} className="flex flex-wrap gap-2">
+    <form action={allocateStatementLineFxResidualAction} className="flex flex-wrap gap-2">
       <input type="hidden" name="dva_statement_line_id" value={canAllocate ? statementLineId : ""} />
       <input type="hidden" name="notes" value="Classified from DVA/card matching workspace residual." />
       <input type="hidden" name="return_path" value={returnPath} />
