@@ -111,6 +111,14 @@ function firstAmount(value: unknown, paths: Array<Array<string | number>>) {
   return 0;
 }
 
+function firstPresentAmount(value: unknown, paths: Array<Array<string | number>>) {
+  for (const path of paths) {
+    const found = getPath(value, path);
+    if (hasAmount(found)) return { present: true, amount: num(found) };
+  }
+  return { present: false, amount: 0 };
+}
+
 function bodyHash(value: unknown) {
   return crypto.createHash("sha256").update(JSON.stringify(value ?? {})).digest("hex");
 }
@@ -261,7 +269,9 @@ function extractApPurchaseInvoicePayload(row: BatchRow) {
     const ledgerAccountId = firstText(line, [["sage_ledger_account_id"], ["resolved_ledger_account_id"]]) || frozenLedgerAccountId;
     const taxRateId = frozenTaxRateId || firstText(line, [["sage_tax_rate_id"], ["resolved_tax_rate_id"]]);
     const quantity = num(line.quantity || line.qty || 1) || 1;
-    const grossAmount = firstAmount(line, [["gross_amount_gbp"], ["total_line_amount_gbp"], ["line_total_gbp"], ["amount_gbp"], ["unit_price_gbp"], ["unit_price"]]);
+    const amountPaths = [["gross_amount_gbp"], ["total_line_amount_gbp"], ["line_total_gbp"], ["amount_gbp"], ["unit_price_gbp"], ["unit_price"]] as Array<Array<string | number>>;
+    const supplierGross = config.lane === "supplier_goods_ap" ? firstPresentAmount(line, amountPaths) : null;
+    const grossAmount = supplierGross ? supplierGross.amount : firstAmount(line, amountPaths);
     const hasNet = hasAmount(line.net_amount_gbp);
     const hasVat = hasAmount(line.vat_amount_gbp);
     const netAmount = hasNet ? num(line.net_amount_gbp) : grossAmount;
@@ -270,7 +280,11 @@ function extractApPurchaseInvoicePayload(row: BatchRow) {
     if (!description) throw new Error(`${config.label} line ${index + 1} missing description.`);
     if (!ledgerAccountId) throw new Error(`${config.label} line ${index + 1} missing ledger account id.`);
     if (!taxRateId) throw new Error(`${config.label} line ${index + 1} missing tax rate id.`);
-    if (!grossAmount) throw new Error(`${config.label} line ${index + 1} missing amount.`);
+    if (config.lane === "supplier_goods_ap") {
+      if (!supplierGross?.present) throw new Error(`${config.label} line ${index + 1} missing amount.`);
+    } else if (!grossAmount) {
+      throw new Error(`${config.label} line ${index + 1} missing amount.`);
+    }
 
     if (config.requireExplicitNetVatGross) {
       if (!hasNet) throw new Error(`${config.label} line ${index + 1} missing net amount.`);
@@ -284,6 +298,15 @@ function extractApPurchaseInvoicePayload(row: BatchRow) {
 
     sourceTotal = round2(sourceTotal + grossAmount);
     sageNetTotal = round2(sageNetTotal + netAmount);
+
+    if (
+      config.lane === "supplier_goods_ap"
+      && round2(grossAmount) === 0
+      && round2(netAmount) === 0
+      && round2(vatAmount) === 0
+    ) {
+      return null;
+    }
 
     const invoiceLine: Row = {
       description,
@@ -300,13 +323,14 @@ function extractApPurchaseInvoicePayload(row: BatchRow) {
     }
 
     return invoiceLine;
-  });
+  }).filter((line): line is Row => line !== null);
 
   const headerAmount = num(row.amount_gbp || payload.amount_gbp);
   if (headerAmount && Math.abs(sourceTotal - round2(headerAmount)) > 0.01) {
     throw new Error(`${config.label} line total ${sourceTotal.toFixed(2)} does not match batch amount ${round2(headerAmount).toFixed(2)}.`);
   }
   if (!sageNetTotal) throw new Error(`${config.label} net total is missing.`);
+  if (invoiceLines.length === 0) throw new Error(`${config.label} invoice has no non-zero resolved lines.`);
 
   return {
     purchase_invoice: {
