@@ -39,4 +39,7 @@ jobs:
         run: npm run typecheck
 
       - name: Run production build
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: build-validation-placeholder
         run: npm run build
