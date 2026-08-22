@@ -181,7 +181,15 @@ export async function POST(request: Request) {
       notes: "Disposable Goodcashback Sage zero-line runtime proof; delete immediately after verification.",
       currency_code: "GBP",
       invoice_lines: [
-        { description: CONTROL_DESCRIPTION, ledger_account_id: ledgerId, tax_rate_id: taxRateId, quantity: 1, unit_price: 1 },
+        {
+          description: CONTROL_DESCRIPTION,
+          ledger_account_id: ledgerId,
+          tax_rate_id: taxRateId,
+          quantity: 1,
+          unit_price: 1,
+          tax_amount: 0.2,
+          currency_tax_amount: 0.2,
+        },
         {
           description: ZERO_DESCRIPTION,
           ledger_account_id: ledgerId,
