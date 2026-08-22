@@ -399,7 +399,12 @@ export default async function PostingBatchDetailPage({
   const dryRunFailedRows = rows.filter((row) => text(row.payload_validation_status) === "dry_run_failed");
   const dryRunPendingRows = includedRows.filter((row) => !["dry_run_validated", "dry_run_failed"].includes(text(row.payload_validation_status)));
   const unposted = includedRows.every((row) => !text(row.sage_object_id) && text(row.posting_status) !== "posted");
-  const canValidatePayloads = !error && includedRows.length > 0 && unposted;
+  const supplierGoodsPartialWithPostedEvidence = text(first.status) === "partial_success"
+    && text(first.batch_status) === "partially_posted"
+    && includedRows.length > 0
+    && includedRows.every((row) => text(row.document_lane) === "supplier_goods_ap")
+    && includedRows.some((row) => text(row.posting_status) === "posted" || Boolean(text(row.sage_object_id)) || Boolean(text(row.posted_at)));
+  const canValidatePayloads = !error && includedRows.length > 0 && !supplierGoodsPartialWithPostedEvidence;
   const canSupersede = !error && rows.length > 0 && rows.every((row) => text(row.posting_status) !== "posted" && !text(row.sage_object_id) && !text(row.posted_at));
   const supplierGoodsRows = includedRows.filter((row) => text(row.document_lane) === "supplier_goods_ap");
   const shipperApRows = includedRows.filter((row) => text(row.document_lane) === "shipper_ap");
@@ -417,7 +422,9 @@ export default async function PostingBatchDetailPage({
   const retryBatchEligible = !error
     && liveFlag
     && text(first.status) === "partial_success"
-    && text(first.batch_status) === "partially_posted";
+    && text(first.batch_status) === "partially_posted"
+    && supplierGoodsRows.length > 0
+    && supplierGoodsRows.length === includedRows.length;
   const canPostCustomerSales = !error
     && liveFlag
     && customerSalesRows.length > 0
@@ -465,7 +472,7 @@ export default async function PostingBatchDetailPage({
                     type="submit"
                     disabled={!canValidatePayloads}
                     className="rounded-2xl bg-violet-700 px-4 py-2 text-sm font-bold text-white shadow-sm disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-600"
-                    title={canValidatePayloads ? "Validate this fully unposted batch." : "Whole-batch validation is disabled once any row is posted."}
+                    title={supplierGoodsPartialWithPostedEvidence ? "Whole-batch validation is disabled for a partially posted Supplier Goods AP batch." : "Validate Sage payloads for this batch."}
                   >
                     Validate Sage payloads — dry run only
                   </button>
@@ -582,6 +589,7 @@ export default async function PostingBatchDetailPage({
                     && text(row.payload_validation_status) === "dry_run_failed"
                     && !text(row.sage_object_id)
                     && !text(row.posted_at)
+                    && Boolean(text(row.snapshot_id))
                     && Boolean(text(row.row_id));
 
                   return (
