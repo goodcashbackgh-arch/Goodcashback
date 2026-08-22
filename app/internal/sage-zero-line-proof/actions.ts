@@ -245,22 +245,14 @@ export async function runSageZeroLineProofAction(formData: FormData) {
       invoiceId = await resolveCreatedInvoiceIdByReference({ common, reference });
     }
 
-    if (createStatus !== 201 || !invoiceId) {
-      redirectResult({
-        code: "sage_zero_line_create_rejected_or_unresolved",
-        reference,
-        create_status: createStatus,
-        sage_write_made: createStatus === 201,
-        create_request_id: createRequestId,
-      });
-    }
-
-    const fetched = await sageCall({ ...common, method: "GET", path: `/purchase_invoices/${encodeURIComponent(invoiceId)}?attributes=all` });
-    getStatus = fetched.response.status;
-    getRequestId = fetched.requestId;
-    if (fetched.response.ok) {
-      zeroLine = findDescription(fetched.raw, ZERO_DESCRIPTION);
-      controlLine = findDescription(fetched.raw, CONTROL_DESCRIPTION);
+    if (createStatus === 201 && invoiceId) {
+      const fetched = await sageCall({ ...common, method: "GET", path: `/purchase_invoices/${encodeURIComponent(invoiceId)}?attributes=all` });
+      getStatus = fetched.response.status;
+      getRequestId = fetched.requestId;
+      if (fetched.response.ok) {
+        zeroLine = findDescription(fetched.raw, ZERO_DESCRIPTION);
+        controlLine = findDescription(fetched.raw, CONTROL_DESCRIPTION);
+      }
     }
   } finally {
     if (!invoiceId && createStatus === 201) {
@@ -300,6 +292,7 @@ export async function runSageZeroLineProofAction(formData: FormData) {
     zero_line_tax_amount: Number.isFinite(zeroTaxAmount) ? zeroTaxAmount : null,
     control_line_retained: Boolean(controlLine),
     cleanup_complete: deleteStatus === 204,
+    sage_write_made: createStatus === 201,
     create_request_id: createRequestId,
     get_request_id: getRequestId,
     delete_request_id: deleteRequestId,
