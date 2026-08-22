@@ -255,6 +255,20 @@ Immediately before the one live corrective retry, perform a final read-only stat
 
 If any of those facts differ from the proven state, stop and reassess before posting.
 
+### 16.1 Preflight evidence — SPB-1787160473
+
+Read-only production preflight completed on 22 August 2026 before merge/retry. It proved:
+
+- batch `91039a03-a368-48e0-9573-47a39f1801c0` remained `partial_success` / `partially_posted`, with two active rows, one success and one failure, total GBP 759.99;
+- posted sibling row `021fe2c5-604a-4417-905e-f988b301d375` remained `posted` with Sage object `84bd90492be14fb5bab231782a7748a9` and a non-null posted timestamp;
+- failed row `3f1517bf-5ed0-4aa1-a5d1-e114892bfec4` remained `failed_terminal`, `payload_builder_failed`, `dry_run_failed`, with no Sage object and no posted timestamp;
+- failed-row retained dry-run evidence remained `validation_errors=[]`, `sage_api_call_made=false`, `sage_object_created=false`;
+- failed snapshot `c2e8a314-705d-4a10-ba44-7d2dc2e40f03` remained active, `approved_frozen`, `ok_to_post`, `posting_failed`, with no Sage invoice id and no Sage posted timestamp;
+- `sage_api_request_log` contained zero posting requests for the failed row;
+- all five final retry guards evaluated true.
+
+This evidence authorises only the governed exact-row recovery. It does not authorise whole-batch revalidation, replay, refreeze or supersede.
+
 ## 17. Implementation discipline
 
 Build from this amendment exactly.
