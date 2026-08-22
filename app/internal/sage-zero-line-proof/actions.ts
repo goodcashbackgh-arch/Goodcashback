@@ -193,10 +193,8 @@ export async function runSageZeroLineProofAction(formData: FormData) {
   if (mappingError) redirectResult({ code: "mapping_read_failed", sage_write_made: false });
   const mappings = (mappingData ?? []) as Row[];
   const ledger = mappings.find((row) => row.mapping_code === "SUPPLIER_GOODS_AP_LEDGER" && row.mapping_status === "configured");
-  const taxRate = mappings.find((row) => row.mapping_code === "SUPPLIER_GOODS_AP_TAX_RATE" && row.mapping_status === "configured");
   const ledgerId = text(ledger?.sage_external_id);
-  const taxRateId = text(taxRate?.sage_external_id);
-  if (!ledgerId || !taxRateId) redirectResult({ code: "supplier_goods_ap_mapping_missing", sage_write_made: false });
+  if (!ledgerId) redirectResult({ code: "supplier_goods_ap_ledger_mapping_missing", sage_write_made: false });
 
   const accessToken = decryptSecret(text(token.access_token_encrypted));
   const config = sageOAuthConfig();
@@ -217,6 +215,8 @@ export async function runSageZeroLineProofAction(formData: FormData) {
   }
   const contact = exact[0];
   if (!contactIsVendor(contact)) redirectResult({ code: "dedicated_test_contact_is_not_vendor", sage_write_made: false });
+  const probeTaxRateId = text(contact.purchase_tax_rate?.id);
+  if (!probeTaxRateId) redirectResult({ code: "dedicated_test_contact_purchase_tax_rate_missing", sage_write_made: false });
 
   const reference = `GTS-ZERO-${Date.now()}`;
   const date = new Date().toISOString().slice(0, 10);
@@ -232,17 +232,17 @@ export async function runSageZeroLineProofAction(formData: FormData) {
         {
           description: CONTROL_DESCRIPTION,
           ledger_account_id: ledgerId,
-          tax_rate_id: taxRateId,
+          tax_rate_id: probeTaxRateId,
           eu_goods_services_type_id: "GOODS",
           quantity: 1,
           unit_price: 1,
-          tax_amount: 0.2,
+          tax_amount: 0,
           currency_tax_amount: 0,
         },
         {
           description: ZERO_DESCRIPTION,
           ledger_account_id: ledgerId,
-          tax_rate_id: taxRateId,
+          tax_rate_id: probeTaxRateId,
           eu_goods_services_type_id: "GOODS",
           quantity: 1,
           unit_price: 0,
