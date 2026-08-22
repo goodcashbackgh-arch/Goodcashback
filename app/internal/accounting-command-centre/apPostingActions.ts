@@ -136,6 +136,37 @@ async function attachPostedApSnapshots(args: { batchId: string; lane: ApPostingL
   return summary;
 }
 
+async function attachRetriedSupplierGoodsApRow(args: { batchId: string; rowId: string; staffId: string; origin: string }): Promise<AttachmentSummary> {
+  const summary: AttachmentSummary = { attempted: 0, attached: 0, failed: 0, errors: [] };
+  const { data: row, error } = await supabaseAdmin
+    .from("sage_posting_batch_rows")
+    .select("snapshot_id, posting_status, document_lane")
+    .eq("id", args.rowId)
+    .eq("batch_id", args.batchId)
+    .eq("document_lane", "supplier_goods_ap")
+    .maybeSingle();
+
+  if (error) throw new Error(error.message);
+  if (!row || text(row.posting_status) !== "posted" || !text(row.snapshot_id)) {
+    throw new Error("Retried Supplier goods AP row is not posted with an exact snapshot for attachment.");
+  }
+
+  summary.attempted = 1;
+  try {
+    const result = await attachApSourcePdfToSage({
+      snapshotId: text(row.snapshot_id),
+      staffId: args.staffId,
+      origin: args.origin,
+    });
+    summary.attached += result.attached;
+  } catch (attachmentError) {
+    summary.failed = 1;
+    summary.errors.push(attachmentError instanceof Error ? attachmentError.message : "Supplier goods AP source PDF attachment failed.");
+  }
+
+  return summary;
+}
+
 function apPostingSuccessMessage(result: { posted: number; failed: number; total: number; label?: string }, attachment?: AttachmentSummary) {
   const label = result.label || "AP purchase invoice";
   const base = `${label} Sage posting finished: ${result.posted} posted, ${result.failed} failed, ${result.total} total.`;
@@ -198,6 +229,48 @@ export async function postSupplierGoodsApBatchToSageAction(formData: FormData) {
 
 export async function postShipperApBatchToSageAction(formData: FormData) {
   return postApPurchaseInvoiceBatchAction(formData, "shipper_ap");
+}
+
+export async function retryFailedSupplierGoodsApRowAction(formData: FormData) {
+  const batchId = formText(formData, "batch_id", "");
+  const rowId = formText(formData, "row_id", "");
+  if (!batchId) redirect("/internal/accounting-command-centre?error=Missing posting batch id");
+  if (!rowId) redirect(`/internal/accounting-command-centre/batches/${batchId}?error=${encodeURIComponent("Missing Supplier goods AP posting row id")}`);
+
+  const { staffId } = await requireAccountingPostingContext();
+  let redirectTo = `/internal/accounting-command-centre/batches/${batchId}`;
+
+  try {
+    const origin = appOrigin();
+    const result = await postApPurchaseInvoiceBatchToSage({
+      batchId,
+      rowId,
+      staffId,
+      origin,
+      documentLane: "supplier_goods_ap",
+    });
+
+    let attachmentSummary: AttachmentSummary | undefined;
+    if (result.posted === 1) {
+      attachmentSummary = await attachRetriedSupplierGoodsApRow({ batchId, rowId, staffId, origin });
+    }
+
+    if (result.failed > 0) {
+      redirectTo = `/internal/accounting-command-centre/batches/${batchId}?error=${encodeURIComponent(`Supplier goods AP failed-row retry did not post: ${result.failed} failed.`)}`;
+    } else if (attachmentSummary?.failed) {
+      redirectTo = `/internal/accounting-command-centre/batches/${batchId}?error=${encodeURIComponent(apPostingSuccessMessage(result, attachmentSummary))}`;
+    } else {
+      redirectTo = `/internal/accounting-command-centre/batches/${batchId}?success=${encodeURIComponent(apPostingSuccessMessage(result, attachmentSummary))}`;
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Supplier goods AP failed-row retry was blocked.";
+    redirectTo = `/internal/accounting-command-centre/batches/${batchId}?error=${encodeURIComponent(message)}`;
+  }
+
+  revalidatePath("/internal/accounting-command-centre");
+  revalidatePath(`/internal/accounting-command-centre/batches/${batchId}`);
+  revalidatePath(`/internal/accounting-command-centre/batches/${batchId}/supplier-goods-ap-attachments`);
+  redirect(redirectTo);
 }
 
 // Keep direct wrappers available for older drill-down routes/imports.
