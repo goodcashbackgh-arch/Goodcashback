@@ -17,6 +17,32 @@ function text(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function sageValidationMessage(raw: unknown) {
+  const parts: string[] = [];
+  const keys = new Set(["$message", "message", "error", "error_description", "detail", "$dataCode", "code", "field", "property", "$source", "source"]);
+
+  const visit = (value: unknown, depth = 0) => {
+    if (depth > 4 || value === null || value === undefined) return;
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item, depth + 1);
+      return;
+    }
+    if (typeof value !== "object") return;
+
+    for (const [key, child] of Object.entries(value as Row)) {
+      if (keys.has(key) && (typeof child === "string" || typeof child === "number" || typeof child === "boolean")) {
+        const safe = String(child).replace(/\s+/g, " ").trim();
+        if (safe) parts.push(`${key}: ${safe}`);
+      } else if (typeof child === "object" && child !== null) {
+        visit(child, depth + 1);
+      }
+    }
+  };
+
+  visit(raw);
+  return [...new Set(parts)].join(" | ").slice(0, 700) || "Sage returned a validation error without a displayable message.";
+}
+
 function redirectResult(values: Record<string, string | number | boolean | null | undefined>): never {
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(values)) {
@@ -234,11 +260,13 @@ export async function runSageZeroLineProofAction(formData: FormData) {
   let createRequestId: string | null = null;
   let getRequestId: string | null = null;
   let deleteRequestId: string | null = null;
+  let createValidationError = "";
 
   try {
     const created = await sageCall({ ...common, method: "POST", path: "/purchase_invoices", body });
     createStatus = created.response.status;
     createRequestId = created.requestId;
+    if (!created.response.ok) createValidationError = sageValidationMessage(created.raw);
     invoiceId = objectId(created.raw, created.response.headers.get("location"));
 
     if (createStatus === 201 && !invoiceId) {
@@ -285,6 +313,7 @@ export async function runSageZeroLineProofAction(formData: FormData) {
     code: proven ? "sage_zero_line_runtime_proven" : "sage_zero_line_runtime_not_proven",
     reference,
     create_status: createStatus,
+    sage_validation_error: createValidationError || null,
     get_status: getStatus,
     delete_status: deleteStatus,
     zero_line_retained: Boolean(zeroLine),
