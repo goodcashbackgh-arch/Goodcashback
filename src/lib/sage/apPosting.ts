@@ -319,15 +319,6 @@ function extractApPurchaseInvoicePayload(row: BatchRow) {
     sourceTotal = round2(sourceTotal + grossAmount);
     sageNetTotal = round2(sageNetTotal + netAmount);
 
-    if (
-      config.lane === "supplier_goods_ap"
-      && round2(grossAmount) === 0
-      && round2(netAmount) === 0
-      && round2(vatAmount) === 0
-    ) {
-      return null;
-    }
-
     const invoiceLine: Row = {
       description,
       ledger_account_id: ledgerAccountId,
