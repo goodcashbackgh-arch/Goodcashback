@@ -552,11 +552,11 @@ async function preflightSupplierGoodsApFailedRowRetry(args: { batch: Row; row: B
   };
 }
 
-async function restoreSupplierGoodsApRetryClaim(args: { row: BatchRow; snapshot: RetrySnapshot }) {
-  const { row, snapshot } = args;
+async function restoreSupplierGoodsApRetryClaim(args: { row: BatchRow; snapshot: RetrySnapshot; restoreSnapshot?: boolean }) {
+  const { row, snapshot, restoreSnapshot = true } = args;
   const restoreErrors: string[] = [];
 
-  const { error: rowRestoreError } = await supabaseAdmin
+  const { data: restoredRow, error: rowRestoreError } = await supabaseAdmin
     .from("sage_posting_batch_rows")
     .update({
       posting_status: row.posting_status,
@@ -570,21 +570,29 @@ async function restoreSupplierGoodsApRetryClaim(args: { row: BatchRow; snapshot:
     .eq("batch_id", row.batch_id)
     .eq("posting_status", "posting")
     .is("sage_object_id", null)
-    .is("posted_at", null);
+    .is("posted_at", null)
+    .select("id")
+    .maybeSingle();
   if (rowRestoreError) restoreErrors.push(`row restore failed: ${rowRestoreError.message}`);
+  else if (!restoredRow) restoreErrors.push("row restore matched no claimed row");
 
-  const { error: snapshotRestoreError } = await supabaseAdmin
-    .from("sage_posting_snapshots")
-    .update({
-      sage_posting_status: snapshot.sage_posting_status,
-      posting_attempt_count: snapshot.posting_attempt_count,
-      last_posting_error: snapshot.last_posting_error,
-    })
-    .eq("id", snapshot.id)
-    .eq("sage_posting_status", "posting_in_progress")
-    .is("sage_invoice_id", null)
-    .is("sage_posted_at", null);
-  if (snapshotRestoreError) restoreErrors.push(`snapshot restore failed: ${snapshotRestoreError.message}`);
+  if (restoreSnapshot) {
+    const { data: restoredSnapshot, error: snapshotRestoreError } = await supabaseAdmin
+      .from("sage_posting_snapshots")
+      .update({
+        sage_posting_status: snapshot.sage_posting_status,
+        posting_attempt_count: snapshot.posting_attempt_count,
+        last_posting_error: snapshot.last_posting_error,
+      })
+      .eq("id", snapshot.id)
+      .eq("sage_posting_status", "posting_in_progress")
+      .is("sage_invoice_id", null)
+      .is("sage_posted_at", null)
+      .select("id")
+      .maybeSingle();
+    if (snapshotRestoreError) restoreErrors.push(`snapshot restore failed: ${snapshotRestoreError.message}`);
+    else if (!restoredSnapshot) restoreErrors.push("snapshot restore matched no claimed snapshot");
+  }
 
   if (restoreErrors.length > 0) {
     throw new Error(`Supplier goods AP retry was blocked but its local claim could not be fully restored: ${restoreErrors.join(" | ")}`);
@@ -641,8 +649,8 @@ export async function postApPurchaseInvoiceBatchToSage(params: {
   if (!rowRetry && rows.some((row) => row.payload_validation_status !== "dry_run_validated")) {
     throw new Error(`Every ${config.label} row must be dry-run validated before posting.`);
   }
-  if (rows.some((row) => text(row.sage_object_id) || row.posting_status === "posted" || text(row.posted_at))) {
-    throw new Error(`One or more ${config.label} rows already have Sage posting evidence.`);
+  if (!rowRetry && rows.some((row) => text((row as Row).sage_object_id) || row.posting_status === "posted")) {
+    throw new Error(`One or more ${config.label} rows already have a Sage object id or posted status.`);
   }
 
   const retryPreflight = rowRetry
@@ -728,7 +736,7 @@ export async function postApPurchaseInvoiceBatchToSage(params: {
       const { data: claimedSnapshot, error: snapshotClaimError } = await snapshotClaimQuery.select("id").maybeSingle();
 
       if (snapshotClaimError || !claimedSnapshot) {
-        await restoreSupplierGoodsApRetryClaim({ row, snapshot: retrySnapshot });
+        await restoreSupplierGoodsApRetryClaim({ row, snapshot: retrySnapshot, restoreSnapshot: false });
         if (snapshotClaimError) throw new Error(snapshotClaimError.message);
         throw new Error("Supplier goods AP snapshot changed state before retry and was not claimed.");
       }
