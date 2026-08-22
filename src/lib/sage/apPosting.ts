@@ -749,7 +749,7 @@ export async function postApPurchaseInvoiceBatchToSage(params: {
       if (
         batchRecheckError
         || !batchRecheck
-        || text(batchRecheck.status) !== "partial_success"
+        || text(batchRecheck.status) !== "posting"
         || text(batchRecheck.batch_status) !== "partially_posted"
       ) {
         await restoreSupplierGoodsApRetryClaim({ row, snapshot: retrySnapshot });
