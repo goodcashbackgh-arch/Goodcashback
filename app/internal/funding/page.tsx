@@ -494,6 +494,30 @@ export default async function InternalFundingPage({
   const gapByOrder = new Map(fundingRows.map((row) => [asString(row.order_id), asNumber(row.gap_remaining_gbp)]));
   const importerIds = Array.from(new Set(fundingRows.map((row) => asString(row.importer_id)).filter(Boolean)));
   const supabase = await createClient();
+
+  const canonicalFundingLineIds = new Set(worklistRows.map((row) => asString(row.dva_statement_line_id)).filter(Boolean));
+  const canonicalFundingEligibilityByLineId = new Map<string, boolean>();
+  let canonicalOffset = 0;
+  while (canonicalFundingEligibilityByLineId.size < canonicalFundingLineIds.size) {
+    const { data, error } = await (supabase as any).rpc("internal_statement_line_control_worklist_v1", {
+      p_importer_id: null,
+      p_limit: 500,
+      p_offset: canonicalOffset,
+    });
+    if (error) break;
+    const rows = (data ?? []) as DataRow[];
+    if (rows.length === 0) break;
+    for (const row of rows) {
+      const statementLineId = asString(row.dva_statement_line_id);
+      if (canonicalFundingLineIds.has(statementLineId)) {
+        canonicalFundingEligibilityByLineId.set(statementLineId, asBoolean(row.funding_action_allowed_yn));
+      }
+    }
+    canonicalOffset += rows.length;
+    const totalCount = asNumber(rows[0]?.total_count);
+    if (rows.length < 500 || (totalCount > 0 && canonicalOffset >= totalCount)) break;
+  }
+
   const eligibleCreditResults = await Promise.all(
     importerIds.map(async (importerId) => {
       const { data, error } = await supabase.rpc("internal_importer_available_account_credit_lots_v1", { p_importer_id: importerId });
@@ -507,7 +531,7 @@ export default async function InternalFundingPage({
     ]),
   );
 
-  const fundingCandidates: FundingCandidate[] = worklistRows
+  const legacyFundingCandidates: FundingCandidate[] = worklistRows
     .map((row) => {
       const inferred = inferFundingOrder(row, fundingRows);
       const dvaStatementLineId = asString(row.dva_statement_line_id);
@@ -547,6 +571,10 @@ export default async function InternalFundingPage({
     })
     .filter((candidate) => candidate.dvaStatementLineId);
 
+  const fundingCandidates = legacyFundingCandidates.filter(
+    (candidate) => canonicalFundingEligibilityByLineId.get(candidate.dvaStatementLineId) === true,
+  );
+
   const creditCandidates: CreditCandidate[] = fundingRows.map((row) => {
     const importerId = asString(row.importer_id);
     const orderId = asString(row.order_id);
@@ -582,7 +610,7 @@ export default async function InternalFundingPage({
   );
   const unmatchedLineIds = new Set(unmatchedInboundCandidates.map((candidate) => candidate.dvaStatementLineId));
   const fundingNeedsReview = fundingCandidates.filter((candidate) => !candidate.canReconcile && !candidate.alreadyReconciled && !unmatchedLineIds.has(candidate.dvaStatementLineId));
-  const reconciledFundingAudit = fundingCandidates.filter((candidate) => candidate.alreadyReconciled);
+  const reconciledFundingAudit = legacyFundingCandidates.filter((candidate) => candidate.alreadyReconciled);
   const readyCreditCandidates = creditCandidates.filter((candidate) => candidate.canApply);
   const creditNeedsReview = creditCandidates.filter((candidate) => !candidate.canApply && !candidate.alreadyFunded);
 
