@@ -6,8 +6,8 @@ export const runtime = "nodejs";
 
 const EXPECTED_BRANCH = "diagnostic/sage-zero-line-runtime-proof-v1";
 const CONFIRMATION = "SAGE_ZERO_LINE_RUNTIME_PROOF";
-const TEST_CONTACT_NAME = "Goodcashback API Zero Test";
-const TEST_CONTACT_REFERENCE = "GCBZERO";
+const TEST_CONTACT_NAME = "Goods To Ship API Zero Test";
+const TEST_CONTACT_REFERENCE = "GTSZERO";
 const CONTROL_DESCRIPTION = "Goodcashback zero-line control";
 const ZERO_DESCRIPTION = "Goodcashback zero-line runtime proof";
 
