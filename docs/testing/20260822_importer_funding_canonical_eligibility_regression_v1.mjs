@@ -99,6 +99,30 @@ const normalUnused = {
   dvaStatementLineId: "normal-unused-customer-funding",
   label: "normal unused customer funding",
 };
+const reserved = {
+  dvaStatementLineId: "reserved-statement-line",
+  label: "reserved statement money",
+};
+const overconsumed = {
+  dvaStatementLineId: "overconsumed-statement-line",
+  label: "overconsumed statement money",
+};
+const retailerRefund = {
+  dvaStatementLineId: "retailer-refund-line",
+  label: "retailer refund lane",
+};
+const supplierPayment = {
+  dvaStatementLineId: "supplier-payment-line",
+  label: "supplier payment lane",
+};
+const loyalty = {
+  dvaStatementLineId: "loyalty-line",
+  label: "loyalty lane",
+};
+const finalBalancePartial = {
+  dvaStatementLineId: "partial-final-balance-line",
+  label: "partial final balance lane",
+};
 const missingCanonical = {
   dvaStatementLineId: "missing-canonical-row",
   label: "missing canonical authority",
@@ -107,28 +131,50 @@ const missingCanonical = {
 const eligibility = new Map([
   [badTarget.dvaStatementLineId, false],
   [normalUnused.dvaStatementLineId, true],
+  [reserved.dvaStatementLineId, false],
+  [overconsumed.dvaStatementLineId, false],
+  [retailerRefund.dvaStatementLineId, false],
+  [supplierPayment.dvaStatementLineId, false],
+  [loyalty.dvaStatementLineId, false],
+  [finalBalancePartial.dvaStatementLineId, false],
 ]);
 
-const admitted = canonicalFundingPopulation(
-  [badTarget, normalUnused, missingCanonical],
-  eligibility,
-);
+const governedCases = [
+  badTarget,
+  normalUnused,
+  reserved,
+  overconsumed,
+  retailerRefund,
+  supplierPayment,
+  loyalty,
+  finalBalancePartial,
+  missingCanonical,
+];
+
+const admitted = canonicalFundingPopulation(governedCases, eligibility);
 
 assert.deepEqual(
   admitted.map((row) => row.dvaStatementLineId),
   [normalUnused.dvaStatementLineId],
   "only explicit canonical true may enter Funding working queues",
 );
-assert.equal(
-  admitted.some((row) => row.dvaStatementLineId === badTarget.dvaStatementLineId),
-  false,
-  "£20.19 consumed final-balance/FX line must be excluded",
-);
-assert.equal(
-  admitted.some((row) => row.dvaStatementLineId === missingCanonical.dvaStatementLineId),
-  false,
-  "missing canonical authority must fail closed",
-);
+
+for (const blocked of [
+  badTarget,
+  reserved,
+  overconsumed,
+  retailerRefund,
+  supplierPayment,
+  loyalty,
+  finalBalancePartial,
+  missingCanonical,
+]) {
+  assert.equal(
+    admitted.some((row) => row.dvaStatementLineId === blocked.dvaStatementLineId),
+    false,
+    `${blocked.label} must not enter Funding working queues`,
+  );
+}
 
 // Existing downstream matching still decides Ready vs Supervisor only after admission.
 function existingCanReconcile({ direction, lineId, orderId, amountGbp, gap, alreadyReconciled, score }) {
@@ -156,6 +202,20 @@ assert.equal(
   }),
   true,
   "canonically eligible normal IN retains the existing Ready Funding matching behavior",
+);
+
+assert.equal(
+  existingCanReconcile({
+    direction: "out",
+    lineId: normalUnused.dvaStatementLineId,
+    orderId: "order-1",
+    amountGbp: 100,
+    gap: 100,
+    alreadyReconciled: false,
+    score: 90,
+  }),
+  false,
+  "existing OUT guard must remain unchanged after canonical admission",
 );
 
 console.log("PASS: /internal/funding uses canonical funding eligibility as a surgical admission gate; actions, amounts and existing matching remain unchanged");
