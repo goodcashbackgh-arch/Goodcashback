@@ -274,3 +274,132 @@ This evidence authorises only the governed exact-row recovery. It does not autho
 Build from this amendment exactly.
 
 The corrective work should be split so that the zero-line payload correction is independently reviewable from the failed-row recovery surface. No opportunistic refactor or adjacent cleanup is part of this amendment.
+
+## 18. Authoritative post-claim retry lifecycle correction
+
+This section governs the final corrective specification for the Supplier Goods AP exact-row retry lifecycle. It supersedes any implementation assumption that the parent batch must remain `partial_success` after the failed row has been successfully claimed for posting.
+
+### 18.1 Existing platform behaviour is authoritative
+
+The existing `sage_posting_batch_rows` status-sync trigger is protected working behaviour and must not be changed for this correction.
+
+When the exact failed row is claimed by changing its `posting_status` to `posting`, the existing trigger synchronously recomputes the parent `sage_posting_batches.status` to `posting` because the batch then contains a row in posting state.
+
+That trigger does not introduce a new `batch_status` lifecycle value for this transition. The existing `batch_status = 'partially_posted'` remains the required recovery lifecycle state until the existing completion/recomputation logic later determines the final result.
+
+The retry implementation must conform to this existing lifecycle. The database trigger must not be changed to preserve an application-side stale-state assumption.
+
+### 18.2 Required pre-claim state
+
+Immediately before the exact failed row is claimed, the existing retry eligibility remains unchanged and must require:
+
+```text
+sage_posting_batches.status = 'partial_success'
+sage_posting_batches.batch_status = 'partially_posted'
+```
+
+All existing exact-row, exact-snapshot, no-Sage-object, no-posted-timestamp, local-builder-failure, payload-hash, attempt-state and zero-prior-posting-request guards remain mandatory and unchanged.
+
+### 18.3 Required post-claim state
+
+After both the exact failed row and its exact snapshot have been successfully claimed, and before any Sage posting request audit row or Sage API call is created, the parent batch must be re-read and must satisfy exactly:
+
+```text
+sage_posting_batches.status = 'posting'
+sage_posting_batches.batch_status = 'partially_posted'
+```
+
+Requiring `status = 'partial_success'` at this point is incorrect because it contradicts the existing synchronous batch-row status trigger.
+
+The production logic correction is therefore limited to the Supplier Goods AP row-retry post-claim assertion in `src/lib/sage/apPosting.ts`: replace the stale post-claim expectation of `partial_success` with the expected derived state `posting`. The pre-claim `partial_success` requirement must remain unchanged.
+
+### 18.4 Failure safety and rollback
+
+If the post-claim batch re-read does not return exactly `posting / partially_posted`, the retry must retain the existing fail-closed behaviour:
+
+- restore the claimed row to its exact pre-claim failed state;
+- restore the claimed snapshot to its exact pre-claim posting-failed state;
+- verify those restores matched the claimed records;
+- create no Sage posting request audit row;
+- make no Sage API call.
+
+No compensating database change, trigger bypass, trigger rewrite or manual batch-status mutation is authorised.
+
+### 18.5 Authoritative lifecycle
+
+The governed platform lifecycle for this recovery path is:
+
+```text
+partial_success / partially_posted
+        ↓
+claim exact eligible Supplier Goods AP failed row
+        ↓
+posting / partially_posted
+        ↓
+existing Sage posting result handling
+        ↓
+posted / posted
+or
+partial_success / partially_posted
+```
+
+The existing row/snapshot success and failure updates and existing batch count/status recomputation remain authoritative after the Sage result. No new completion rule is introduced.
+
+### 18.6 Scope lock
+
+The lifecycle correction authorises no change to:
+
+- the database trigger or any migration;
+- `updateBatchCounts` or other existing batch recomputation logic;
+- Shipper AP;
+- Customer Sales;
+- supplier credit notes;
+- normal whole-batch Supplier Goods AP posting;
+- OCR or source extraction;
+- reconciliation or financial summaries;
+- VAT or tax-rate mapping;
+- accounting coding or nominal accounts;
+- freeze, snapshot or supersede semantics;
+- zero-value-line payload construction already governed by this amendment;
+- attachment-engine behaviour;
+- Accounting Command Centre UI behaviour;
+- Sage OAuth/business selection;
+- request/response logging semantics;
+- idempotency behaviour;
+- unrelated refactors or cleanup.
+
+The only authorised production-logic change for this lifecycle defect is the post-claim Supplier Goods AP exact-row retry batch-status assertion described in section 18.3.
+
+### 18.7 Additional mandatory regression gates
+
+Before this lifecycle correction may be merged or used for a live retry, all of the following must be proved in addition to section 15:
+
+1. A qualifying Supplier Goods AP partial-success retry begins from `partial_success / partially_posted`.
+2. Claiming the exact eligible failed row causes the existing platform lifecycle to present `posting / partially_posted` at the post-claim recheck.
+3. The post-claim guard accepts exactly that expected state and does not weaken any other eligibility condition.
+4. Any unexpected post-claim parent state still triggers the existing verified rollback before a Sage request audit row or Sage API call.
+5. Normal Supplier Goods AP posting with no row selector is behaviourally unchanged.
+6. Shipper AP posting is behaviourally unchanged.
+7. Successful row retry continues to rely on existing result handling and batch recomputation to reach `posted / posted` when all active rows are posted.
+8. A Sage failure after a real request continues to use the existing failure path and must not be converted back into the local-builder-only retry class.
+9. The implementation diff contains no trigger, migration, UI, accounting, attachment, payload-builder or unrelated cleanup change.
+10. TypeScript typecheck and production build pass.
+
+### 18.8 Post-block recovery evidence
+
+A read-only production recovery check completed on 22 August 2026 after the blocked first retry proved that the fail-closed rollback completed cleanly:
+
+- the batch was restored to `partial_success / partially_posted`;
+- the failed row was restored to `failed_terminal` with `error_code = 'payload_builder_failed'` and `payload_validation_status = 'dry_run_failed'`;
+- the failed row still had no Sage object id and no posted timestamp;
+- the linked snapshot was restored to `posting_failed` with no Sage invoice id and no Sage posted timestamp;
+- `sage_api_request_log` still contained zero posting requests for the failed row;
+- all five recovery guards evaluated true.
+
+Accordingly, no business-data repair, refreeze, supersede, replay or Sage-side cleanup is authorised or required before implementing this lifecycle correction.
+
+### 18.9 Governing authority
+
+Sections 18.1 through 18.8 are the governing authority for the lifecycle correction described above.
+
+Implementation and review must be measured against this exact specification. Any broader behavioural change requires an explicit later governing amendment; it must not be introduced opportunistically as part of this correction.
