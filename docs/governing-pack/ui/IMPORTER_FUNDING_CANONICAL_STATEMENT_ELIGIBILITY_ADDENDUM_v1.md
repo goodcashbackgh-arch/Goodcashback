@@ -95,6 +95,8 @@ The rule applies to both:
 
 A line with canonical `funding_action_allowed_yn = false` must not appear as actionable in either queue.
 
+The canonical gate must be applied to the Funding page's working statement-line population before Ready Funding, Supervisor Assignment Required, and the funding-specific non-actionable review bucket are derived. This prevents a canonically non-funding line from merely moving from an actionable card into the page's separate funding-review summary. Existing reconciled-funding audit evidence and raw diagnostics may continue to use the legacy population because they are non-actionable audit/readout surfaces.
+
 ### 5.3 Missing canonical authority must fail closed
 
 If the Funding page cannot obtain a canonical control result for a statement line, that line must not be offered as an actionable funding candidate.
@@ -141,11 +143,11 @@ A simulated/controlled regression for a normal unused customer funding receipt i
 
 The intended production code change is limited to the Funding-page consumer boundary necessary to enforce existing canonical funding eligibility.
 
-Prefer reusing an existing staff-safe canonical worklist/position read by statement-line id rather than invoking or recreating economic logic independently in TypeScript.
+Reuse the existing `public.internal_statement_line_control_worklist_v1(uuid,integer,integer)` staff-safe projection to obtain `funding_action_allowed_yn` for the legacy Funding-page statement-line IDs. Page through that existing RPC as required until the current legacy Funding-page population has either been resolved or the canonical worklist is exhausted. Missing canonical rows must fail closed.
 
-The existing legacy funding worklist may remain the source of suggestion/reference/display fields if required, provided actionable admission is governed by canonical eligibility.
+The existing legacy funding worklist remains the source of suggestion/reference/display fields. Existing matching, scoring, same-importer order selection, funding amounts and audit metadata remain unchanged after the canonical admission gate.
 
-The implementation must be fail-closed and must not invent a second resolver.
+The implementation must be fail-closed and must not invent a second resolver, a new database object, or page-local economic formulas.
 
 ## 9. Frozen scope — do not change
 
@@ -193,6 +195,7 @@ Implementation is not complete unless regression proves all of the following:
 12. Importer-credit behaviour remains unchanged.
 13. Existing funding RPCs/actions and database guard remain byte-for-byte/functionally unchanged unless a separately proven defect requires a new addendum.
 14. Final balance, FX, settlement, Sage, VAT, supplier, shipper and loyalty flows show no regression.
+15. Canonically non-funding statement lines are not reintroduced into the Funding page's funding-specific non-actionable review summary; reconciled-funding audit and raw diagnostics remain unchanged.
 
 Do not prove safety by clicking the known £20.19 production line. Use read-only/live comparison and controlled regression data.
 
@@ -213,6 +216,7 @@ For the proven £20.19 case, the required result is:
 → funding_action_allowed_yn = false
 → absent from Ready Funding
 → absent from Supervisor Assignment Required
+→ absent from funding-specific Needs Review
 → no accounting, FX, settlement, Sage, VAT, supplier, shipper, credit or historical record change
 ```
 
