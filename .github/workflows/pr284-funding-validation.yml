@@ -29,8 +29,8 @@ jobs:
           node-version: 24
           cache: npm
 
-      - name: Install dependencies
-        run: npm ci --no-audit --no-fund
+      - name: Install dependencies without changing lockfile
+        run: npm install --no-package-lock --ignore-scripts --no-audit --no-fund
 
       - name: Run funding eligibility regression
         run: node docs/testing/20260822_importer_funding_canonical_eligibility_regression_v1.mjs
