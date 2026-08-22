@@ -20,10 +20,16 @@ type BatchRow = {
   batch_id: string;
   snapshot_id: string | null;
   idempotency_key: string | null;
+  payload_hash: string | null;
   posting_status: string;
   sage_object_type: string | null;
+  sage_object_id: string | null;
+  posted_at: string | null;
   request_payload_json: Row;
+  response_payload_json: Row | null;
   payload_validation_status: string;
+  error_code: string | null;
+  error_message: string | null;
   source_table: string | null;
   source_id: string | null;
   document_lane: string | null;
@@ -34,6 +40,20 @@ type BatchRow = {
   amount_gbp: string | number | null;
   currency_code: string | null;
   attempt_count: number | null;
+  last_attempt_at: string | null;
+};
+
+type RetrySnapshot = {
+  id: string;
+  active: boolean | null;
+  document_lane: string | null;
+  approval_status: string | null;
+  revalidation_status: string | null;
+  sage_posting_status: string | null;
+  sage_invoice_id: string | null;
+  sage_posted_at: string | null;
+  posting_attempt_count: number | null;
+  last_posting_error: string | null;
 };
 
 type ApLaneConfig = {
@@ -109,6 +129,14 @@ function firstAmount(value: unknown, paths: Array<Array<string | number>>) {
     if (hasAmount(found)) return num(found);
   }
   return 0;
+}
+
+function firstPresentAmount(value: unknown, paths: Array<Array<string | number>>) {
+  for (const path of paths) {
+    const found = getPath(value, path);
+    if (hasAmount(found)) return { present: true, amount: num(found) };
+  }
+  return { present: false, amount: 0 };
 }
 
 function bodyHash(value: unknown) {
@@ -261,7 +289,9 @@ function extractApPurchaseInvoicePayload(row: BatchRow) {
     const ledgerAccountId = firstText(line, [["sage_ledger_account_id"], ["resolved_ledger_account_id"]]) || frozenLedgerAccountId;
     const taxRateId = frozenTaxRateId || firstText(line, [["sage_tax_rate_id"], ["resolved_tax_rate_id"]]);
     const quantity = num(line.quantity || line.qty || 1) || 1;
-    const grossAmount = firstAmount(line, [["gross_amount_gbp"], ["total_line_amount_gbp"], ["line_total_gbp"], ["amount_gbp"], ["unit_price_gbp"], ["unit_price"]]);
+    const amountPaths = [["gross_amount_gbp"], ["total_line_amount_gbp"], ["line_total_gbp"], ["amount_gbp"], ["unit_price_gbp"], ["unit_price"]] as Array<Array<string | number>>;
+    const supplierGross = config.lane === "supplier_goods_ap" ? firstPresentAmount(line, amountPaths) : null;
+    const grossAmount = supplierGross ? supplierGross.amount : firstAmount(line, amountPaths);
     const hasNet = hasAmount(line.net_amount_gbp);
     const hasVat = hasAmount(line.vat_amount_gbp);
     const netAmount = hasNet ? num(line.net_amount_gbp) : grossAmount;
@@ -270,7 +300,11 @@ function extractApPurchaseInvoicePayload(row: BatchRow) {
     if (!description) throw new Error(`${config.label} line ${index + 1} missing description.`);
     if (!ledgerAccountId) throw new Error(`${config.label} line ${index + 1} missing ledger account id.`);
     if (!taxRateId) throw new Error(`${config.label} line ${index + 1} missing tax rate id.`);
-    if (!grossAmount) throw new Error(`${config.label} line ${index + 1} missing amount.`);
+    if (config.lane === "supplier_goods_ap") {
+      if (!supplierGross?.present) throw new Error(`${config.label} line ${index + 1} missing amount.`);
+    } else if (!grossAmount) {
+      throw new Error(`${config.label} line ${index + 1} missing amount.`);
+    }
 
     if (config.requireExplicitNetVatGross) {
       if (!hasNet) throw new Error(`${config.label} line ${index + 1} missing net amount.`);
@@ -284,6 +318,15 @@ function extractApPurchaseInvoicePayload(row: BatchRow) {
 
     sourceTotal = round2(sourceTotal + grossAmount);
     sageNetTotal = round2(sageNetTotal + netAmount);
+
+    if (
+      config.lane === "supplier_goods_ap"
+      && round2(grossAmount) === 0
+      && round2(netAmount) === 0
+      && round2(vatAmount) === 0
+    ) {
+      return null;
+    }
 
     const invoiceLine: Row = {
       description,
@@ -300,13 +343,14 @@ function extractApPurchaseInvoicePayload(row: BatchRow) {
     }
 
     return invoiceLine;
-  });
+  }).filter((line): line is Row => line !== null);
 
   const headerAmount = num(row.amount_gbp || payload.amount_gbp);
   if (headerAmount && Math.abs(sourceTotal - round2(headerAmount)) > 0.01) {
     throw new Error(`${config.label} line total ${sourceTotal.toFixed(2)} does not match batch amount ${round2(headerAmount).toFixed(2)}.`);
   }
   if (!sageNetTotal) throw new Error(`${config.label} net total is missing.`);
+  if (invoiceLines.length === 0) throw new Error(`${config.label} invoice has no non-zero resolved lines.`);
 
   return {
     purchase_invoice: {
@@ -438,33 +482,162 @@ async function updateBatchCounts(batchId: string) {
   }).eq("id", batchId);
 }
 
+async function preflightSupplierGoodsApFailedRowRetry(args: { batch: Row; row: BatchRow }) {
+  const { batch, row } = args;
+  if (text(batch.status) !== "partial_success" || text(batch.batch_status) !== "partially_posted") {
+    throw new Error("Supplier goods AP failed-row retry requires a partially posted batch.");
+  }
+  if (row.document_lane !== "supplier_goods_ap") {
+    throw new Error("Failed-row retry is restricted to Supplier goods AP.");
+  }
+  if (!["failed_terminal", "failed_retryable"].includes(text(row.posting_status))) {
+    throw new Error("Supplier goods AP row is not in a failed posting state.");
+  }
+  if (text(row.error_code) !== "payload_builder_failed") {
+    throw new Error("Supplier goods AP row retry is restricted to a local payload-builder failure.");
+  }
+  if (text(row.sage_object_id) || text(row.posted_at)) {
+    throw new Error("Supplier goods AP row already has Sage posting evidence and cannot be retried.");
+  }
+  if (row.payload_validation_status !== "dry_run_failed") {
+    throw new Error("Supplier goods AP failed-row retry requires the governed dry-run-failed state.");
+  }
+
+  const priorValidation = asObject(row.response_payload_json);
+  if (
+    asArray(priorValidation.validation_errors).length !== 0
+    || priorValidation.sage_api_call_made !== false
+    || priorValidation.sage_object_created !== false
+  ) {
+    throw new Error("Prior dry-run evidence does not prove a no-Sage-object local builder failure.");
+  }
+  if (!row.snapshot_id) {
+    throw new Error("Supplier goods AP failed row has no linked posting snapshot.");
+  }
+
+  const { data: snapshotRaw, error: snapshotError } = await supabaseAdmin
+    .from("sage_posting_snapshots")
+    .select("id, active, document_lane, approval_status, revalidation_status, sage_posting_status, sage_invoice_id, sage_posted_at, posting_attempt_count, last_posting_error")
+    .eq("id", row.snapshot_id)
+    .maybeSingle();
+  if (snapshotError) throw new Error(snapshotError.message);
+  const snapshot = (snapshotRaw ?? null) as RetrySnapshot | null;
+  if (!snapshot) throw new Error("Supplier goods AP posting snapshot not found.");
+  if (
+    snapshot.active !== true
+    || text(snapshot.document_lane) !== "supplier_goods_ap"
+    || text(snapshot.approval_status) !== "approved_frozen"
+    || text(snapshot.revalidation_status) !== "ok_to_post"
+    || text(snapshot.sage_posting_status) !== "posting_failed"
+    || text(snapshot.sage_invoice_id)
+    || text(snapshot.sage_posted_at)
+  ) {
+    throw new Error("Supplier goods AP snapshot is not the governed active, approved, unposted posting-failed snapshot.");
+  }
+
+  const { data: priorRequests, error: priorRequestsError } = await supabaseAdmin
+    .from("sage_api_request_log")
+    .select("id")
+    .eq("posting_batch_row_id", row.id)
+    .eq("request_kind", "posting")
+    .limit(1);
+  if (priorRequestsError) throw new Error(priorRequestsError.message);
+  if ((priorRequests ?? []).length > 0) {
+    throw new Error("Supplier goods AP row has prior Sage posting-request evidence and cannot use local-builder retry.");
+  }
+
+  return {
+    requestBody: extractApPurchaseInvoicePayload(row),
+    snapshot,
+  };
+}
+
+async function restoreSupplierGoodsApRetryClaim(args: { row: BatchRow; snapshot: RetrySnapshot; restoreSnapshot?: boolean }) {
+  const { row, snapshot, restoreSnapshot = true } = args;
+  const restoreErrors: string[] = [];
+
+  const { data: restoredRow, error: rowRestoreError } = await supabaseAdmin
+    .from("sage_posting_batch_rows")
+    .update({
+      posting_status: row.posting_status,
+      payload_validation_status: row.payload_validation_status,
+      attempt_count: row.attempt_count,
+      last_attempt_at: row.last_attempt_at,
+      error_code: row.error_code,
+      error_message: row.error_message,
+    })
+    .eq("id", row.id)
+    .eq("batch_id", row.batch_id)
+    .eq("posting_status", "posting")
+    .is("sage_object_id", null)
+    .is("posted_at", null)
+    .select("id")
+    .maybeSingle();
+  if (rowRestoreError) restoreErrors.push(`row restore failed: ${rowRestoreError.message}`);
+  else if (!restoredRow) restoreErrors.push("row restore matched no claimed row");
+
+  if (restoreSnapshot) {
+    const { data: restoredSnapshot, error: snapshotRestoreError } = await supabaseAdmin
+      .from("sage_posting_snapshots")
+      .update({
+        sage_posting_status: snapshot.sage_posting_status,
+        posting_attempt_count: snapshot.posting_attempt_count,
+        last_posting_error: snapshot.last_posting_error,
+      })
+      .eq("id", snapshot.id)
+      .eq("sage_posting_status", "posting_in_progress")
+      .is("sage_invoice_id", null)
+      .is("sage_posted_at", null)
+      .select("id")
+      .maybeSingle();
+    if (snapshotRestoreError) restoreErrors.push(`snapshot restore failed: ${snapshotRestoreError.message}`);
+    else if (!restoredSnapshot) restoreErrors.push("snapshot restore matched no claimed snapshot");
+  }
+
+  if (restoreErrors.length > 0) {
+    throw new Error(`Supplier goods AP retry was blocked but its local claim could not be fully restored: ${restoreErrors.join(" | ")}`);
+  }
+}
+
 export async function postApPurchaseInvoiceBatchToSage(params: {
   batchId: string;
   staffId: string;
   origin: string;
   documentLane?: ApPostingLane;
+  rowId?: string;
 }) {
   if (process.env.SAGE_LIVE_POSTING_ENABLED !== "true") {
     throw new Error("Live Sage posting is disabled. Set SAGE_LIVE_POSTING_ENABLED=true only after AP dry-run is approved.");
   }
 
+  const rowRetry = Boolean(params.rowId);
   const { data: batch, error: batchError } = await supabaseAdmin
     .from("sage_posting_batches")
-    .select("id, batch_ref, status, lane")
+    .select("id, batch_ref, status, batch_status, lane")
     .eq("id", params.batchId)
     .maybeSingle();
   if (batchError) throw new Error(batchError.message);
   if (!batch) throw new Error("Posting batch not found.");
-  if (!["draft", "validated", "failed"].includes(text(batch.status))) throw new Error(`Batch status ${batch.status} is not postable.`);
+  if (!rowRetry && !["draft", "validated", "failed"].includes(text(batch.status))) {
+    throw new Error(`Batch status ${batch.status} is not postable.`);
+  }
+  if (rowRetry && text(batch.status) !== "partial_success") {
+    throw new Error(`Batch status ${batch.status} is not eligible for failed-row retry.`);
+  }
 
-  const { data: rowsRaw, error: rowsError } = await supabaseAdmin
+  let rowsQuery = supabaseAdmin
     .from("sage_posting_batch_rows")
     .select("*")
-    .eq("batch_id", params.batchId)
-    .in("posting_status", ["included", "validated", "failed_retryable", "failed_terminal"]);
+    .eq("batch_id", params.batchId);
+  rowsQuery = rowRetry
+    ? rowsQuery.eq("id", params.rowId as string).in("posting_status", ["failed_retryable", "failed_terminal"])
+    : rowsQuery.in("posting_status", ["included", "validated", "failed_retryable", "failed_terminal"]);
+
+  const { data: rowsRaw, error: rowsError } = await rowsQuery;
   if (rowsError) throw new Error(rowsError.message);
   const rows = (rowsRaw ?? []) as BatchRow[];
-  if (rows.length === 0) throw new Error("No postable rows found in this batch.");
+  if (rows.length === 0) throw new Error(rowRetry ? "Failed Supplier goods AP row was not found in the expected retry state." : "No postable rows found in this batch.");
+  if (rowRetry && rows.length !== 1) throw new Error("Failed-row retry must resolve exactly one posting row.");
 
   const rowLanes = Array.from(new Set(rows.map((row) => text(row.document_lane)).filter(Boolean)));
   if (rowLanes.length !== 1) throw new Error("AP posting requires a single-lane batch.");
@@ -472,14 +645,27 @@ export async function postApPurchaseInvoiceBatchToSage(params: {
   const config = apLaneConfig(rowLane);
   if (params.documentLane && rowLane !== params.documentLane) throw new Error(`Expected ${params.documentLane} batch but found ${rowLane}.`);
   if (!rows.every((row) => row.document_lane === config.lane)) throw new Error(`${config.label} posting only supports a ${config.lane}-only batch.`);
-  if (rows.some((row) => row.payload_validation_status !== "dry_run_validated")) throw new Error(`Every ${config.label} row must be dry-run validated before posting.`);
-  if (rows.some((row) => text((row as Row).sage_object_id) || row.posting_status === "posted")) throw new Error(`One or more ${config.label} rows already have a Sage object id or posted status.`);
+  if (rowRetry && config.lane !== "supplier_goods_ap") throw new Error("Failed-row retry is restricted to Supplier goods AP.");
+  if (!rowRetry && rows.some((row) => row.payload_validation_status !== "dry_run_validated")) {
+    throw new Error(`Every ${config.label} row must be dry-run validated before posting.`);
+  }
+  if (!rowRetry && rows.some((row) => text((row as Row).sage_object_id) || row.posting_status === "posted")) {
+    throw new Error(`One or more ${config.label} rows already have a Sage object id or posted status.`);
+  }
+
+  const retryPreflight = rowRetry
+    ? await preflightSupplierGoodsApFailedRowRetry({ batch: batch as Row, row: rows[0] })
+    : null;
+  const retryRequestBody = retryPreflight?.requestBody ?? null;
+  const retrySnapshot = retryPreflight?.snapshot ?? null;
 
   const context = await activeSageContext(params.origin);
-  await supabaseAdmin.from("sage_posting_batches").update({
-    status: "posting",
-    posting_started_at: new Date().toISOString(),
-  }).eq("id", params.batchId);
+  if (!rowRetry) {
+    await supabaseAdmin.from("sage_posting_batches").update({
+      status: "posting",
+      posting_started_at: new Date().toISOString(),
+    }).eq("id", params.batchId);
+  }
 
   let posted = 0;
   let failed = 0;
@@ -489,23 +675,118 @@ export async function postApPurchaseInvoiceBatchToSage(params: {
     const startedAt = new Date().toISOString();
     const endpointPath = "/purchase_invoices";
 
-    await supabaseAdmin.from("sage_posting_batch_rows").update({
-      posting_status: "posting",
-      attempt_count: attemptCount,
-      last_attempt_at: startedAt,
-      error_code: null,
-      error_message: null,
-    }).eq("id", row.id);
+    if (rowRetry) {
+      if (!retrySnapshot) throw new Error("Supplier goods AP retry snapshot preflight is missing.");
 
-    await supabaseAdmin.from("sage_posting_snapshots").update({
-      sage_posting_status: "posting_in_progress",
-      posting_attempt_count: attemptCount,
-      last_posting_error: null,
-    }).eq("id", row.snapshot_id);
+      let rowClaimQuery = supabaseAdmin
+        .from("sage_posting_batch_rows")
+        .update({
+          posting_status: "posting",
+          payload_validation_status: "dry_run_validated",
+          attempt_count: attemptCount,
+          last_attempt_at: startedAt,
+          error_code: null,
+          error_message: null,
+        })
+        .eq("id", row.id)
+        .eq("batch_id", params.batchId)
+        .eq("snapshot_id", row.snapshot_id)
+        .eq("document_lane", "supplier_goods_ap")
+        .eq("error_code", "payload_builder_failed")
+        .eq("payload_validation_status", "dry_run_failed")
+        .in("posting_status", ["failed_retryable", "failed_terminal"])
+        .is("sage_object_id", null)
+        .is("posted_at", null);
+      rowClaimQuery = row.payload_hash
+        ? rowClaimQuery.eq("payload_hash", row.payload_hash)
+        : rowClaimQuery.is("payload_hash", null);
+      rowClaimQuery = row.attempt_count == null
+        ? rowClaimQuery.is("attempt_count", null)
+        : rowClaimQuery.eq("attempt_count", row.attempt_count);
+      rowClaimQuery = row.last_attempt_at
+        ? rowClaimQuery.eq("last_attempt_at", row.last_attempt_at)
+        : rowClaimQuery.is("last_attempt_at", null);
+
+      const { data: claimedRow, error: claimError } = await rowClaimQuery.select("id").maybeSingle();
+      if (claimError) throw new Error(claimError.message);
+      if (!claimedRow) throw new Error("Supplier goods AP failed row changed state before retry and was not claimed.");
+
+      let snapshotClaimQuery = supabaseAdmin
+        .from("sage_posting_snapshots")
+        .update({
+          sage_posting_status: "posting_in_progress",
+          posting_attempt_count: attemptCount,
+          last_posting_error: null,
+        })
+        .eq("id", row.snapshot_id)
+        .eq("active", true)
+        .eq("document_lane", "supplier_goods_ap")
+        .eq("approval_status", "approved_frozen")
+        .eq("revalidation_status", "ok_to_post")
+        .eq("sage_posting_status", "posting_failed")
+        .is("sage_invoice_id", null)
+        .is("sage_posted_at", null);
+      snapshotClaimQuery = retrySnapshot.posting_attempt_count == null
+        ? snapshotClaimQuery.is("posting_attempt_count", null)
+        : snapshotClaimQuery.eq("posting_attempt_count", retrySnapshot.posting_attempt_count);
+      snapshotClaimQuery = retrySnapshot.last_posting_error
+        ? snapshotClaimQuery.eq("last_posting_error", retrySnapshot.last_posting_error)
+        : snapshotClaimQuery.is("last_posting_error", null);
+
+      const { data: claimedSnapshot, error: snapshotClaimError } = await snapshotClaimQuery.select("id").maybeSingle();
+
+      if (snapshotClaimError || !claimedSnapshot) {
+        await restoreSupplierGoodsApRetryClaim({ row, snapshot: retrySnapshot, restoreSnapshot: false });
+        if (snapshotClaimError) throw new Error(snapshotClaimError.message);
+        throw new Error("Supplier goods AP snapshot changed state before retry and was not claimed.");
+      }
+
+      const { data: batchRecheck, error: batchRecheckError } = await supabaseAdmin
+        .from("sage_posting_batches")
+        .select("status, batch_status")
+        .eq("id", params.batchId)
+        .maybeSingle();
+      if (
+        batchRecheckError
+        || !batchRecheck
+        || text(batchRecheck.status) !== "partial_success"
+        || text(batchRecheck.batch_status) !== "partially_posted"
+      ) {
+        await restoreSupplierGoodsApRetryClaim({ row, snapshot: retrySnapshot });
+        if (batchRecheckError) throw new Error(batchRecheckError.message);
+        throw new Error("Supplier goods AP batch changed state before retry and was restored without a Sage call.");
+      }
+
+      const { data: postClaimPriorRequests, error: postClaimPriorRequestsError } = await supabaseAdmin
+        .from("sage_api_request_log")
+        .select("id")
+        .eq("posting_batch_row_id", row.id)
+        .eq("request_kind", "posting")
+        .limit(1);
+      if (postClaimPriorRequestsError || (postClaimPriorRequests ?? []).length > 0) {
+        await restoreSupplierGoodsApRetryClaim({ row, snapshot: retrySnapshot });
+        if (postClaimPriorRequestsError) throw new Error(postClaimPriorRequestsError.message);
+        throw new Error("Supplier goods AP row gained Sage request evidence before retry and was restored without a Sage call.");
+      }
+    } else {
+      await supabaseAdmin.from("sage_posting_batch_rows").update({
+        posting_status: "posting",
+        attempt_count: attemptCount,
+        last_attempt_at: startedAt,
+        error_code: null,
+        error_message: null,
+      }).eq("id", row.id);
+
+      await supabaseAdmin.from("sage_posting_snapshots").update({
+        sage_posting_status: "posting_in_progress",
+        posting_attempt_count: attemptCount,
+        last_posting_error: null,
+      }).eq("id", row.snapshot_id);
+    }
 
     let requestBody: Row;
     try {
-      requestBody = extractApPurchaseInvoicePayload(row);
+      requestBody = rowRetry ? retryRequestBody as Row : extractApPurchaseInvoicePayload(row);
     } catch (error) {
       failed += 1;
       const message = error instanceof Error ? error.message : `Could not build ${config.label} Sage payload.`;
@@ -522,7 +803,7 @@ export async function postApPurchaseInvoiceBatchToSage(params: {
       continue;
     }
 
-    const { data: requestLog } = await supabaseAdmin.from("sage_api_request_log").insert({
+    const { data: requestLog, error: requestLogError } = await supabaseAdmin.from("sage_api_request_log").insert({
       connection_id: context.connectionId,
       sage_business_row_id: context.sageBusinessRowId,
       posting_batch_id: params.batchId,
@@ -537,6 +818,12 @@ export async function postApPurchaseInvoiceBatchToSage(params: {
       request_payload_hash: bodyHash(requestBody),
       created_by_staff_id: params.staffId,
     }).select("id").single();
+
+    if (rowRetry && (requestLogError || !requestLog?.id)) {
+      if (!retrySnapshot) throw new Error("Supplier goods AP retry snapshot preflight is missing.");
+      await restoreSupplierGoodsApRetryClaim({ row, snapshot: retrySnapshot });
+      throw new Error(`Could not create the Supplier goods AP Sage request audit log. No Sage call was made.${requestLogError ? ` ${requestLogError.message}` : ""}`);
+    }
 
     let raw: unknown = {};
     let response: Response | null = null;

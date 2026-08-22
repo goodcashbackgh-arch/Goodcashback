@@ -2,7 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
 import { supersedeLocalSagePostingBatchAction, validateSagePostingBatchPayloadsAction } from "../../actions";
-import { postApPurchaseInvoiceBatchToSageAction } from "../../apPostingActions";
+import { postApPurchaseInvoiceBatchToSageAction, retryFailedSupplierGoodsApRowAction } from "../../apPostingActions";
 import { postCustomerSalesBatchToSageAction } from "../../postingActions";
 
 type Row = Record<string, unknown>;
@@ -398,7 +398,13 @@ export default async function PostingBatchDetailPage({
   const dryRunValidRows = rows.filter((row) => text(row.payload_validation_status) === "dry_run_validated");
   const dryRunFailedRows = rows.filter((row) => text(row.payload_validation_status) === "dry_run_failed");
   const dryRunPendingRows = includedRows.filter((row) => !["dry_run_validated", "dry_run_failed"].includes(text(row.payload_validation_status)));
-  const canValidatePayloads = !error && includedRows.length > 0;
+  const unposted = includedRows.every((row) => !text(row.sage_object_id) && text(row.posting_status) !== "posted");
+  const supplierGoodsPartialWithPostedEvidence = text(first.status) === "partial_success"
+    && text(first.batch_status) === "partially_posted"
+    && includedRows.length > 0
+    && includedRows.every((row) => text(row.document_lane) === "supplier_goods_ap")
+    && includedRows.some((row) => text(row.posting_status) === "posted" || Boolean(text(row.sage_object_id)) || Boolean(text(row.posted_at)));
+  const canValidatePayloads = !error && includedRows.length > 0 && !supplierGoodsPartialWithPostedEvidence;
   const canSupersede = !error && rows.length > 0 && rows.every((row) => text(row.posting_status) !== "posted" && !text(row.sage_object_id) && !text(row.posted_at));
   const supplierGoodsRows = includedRows.filter((row) => text(row.document_lane) === "supplier_goods_ap");
   const shipperApRows = includedRows.filter((row) => text(row.document_lane) === "shipper_ap");
@@ -412,8 +418,13 @@ export default async function PostingBatchDetailPage({
   });
   const customerSalesRows = includedRows.filter((row) => text(row.document_lane) === "customer_sales");
   const liveFlag = process.env.SAGE_LIVE_POSTING_ENABLED === "true";
-  const unposted = includedRows.every((row) => !text(row.sage_object_id) && text(row.posting_status) !== "posted");
   const dryRunOk = includedRows.length > 0 && dryRunValidRows.length === includedRows.length;
+  const retryBatchEligible = !error
+    && liveFlag
+    && text(first.status) === "partial_success"
+    && text(first.batch_status) === "partially_posted"
+    && supplierGoodsRows.length > 0
+    && supplierGoodsRows.length === includedRows.length;
   const canPostCustomerSales = !error
     && liveFlag
     && customerSalesRows.length > 0
@@ -461,6 +472,7 @@ export default async function PostingBatchDetailPage({
                     type="submit"
                     disabled={!canValidatePayloads}
                     className="rounded-2xl bg-violet-700 px-4 py-2 text-sm font-bold text-white shadow-sm disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-600"
+                    title={supplierGoodsPartialWithPostedEvidence ? "Whole-batch validation is disabled for a partially posted Supplier Goods AP batch." : "Validate Sage payloads for this batch."}
                   >
                     Validate Sage payloads — dry run only
                   </button>
@@ -569,21 +581,48 @@ export default async function PostingBatchDetailPage({
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 bg-white">
-                {rows.length === 0 ? <tr><td colSpan={11} className="px-3 py-8 text-center text-sm text-slate-500">No rows.</td></tr> : rows.map((row) => (
-                  <tr key={text(row.row_id) || `${text(row.snapshot_id)}-${text(row.source_id)}`} className="align-top hover:bg-slate-50">
-                    <td className="px-2 py-2"><Chip value={row.posting_status} /></td>
-                    <td className="px-2 py-2"><p className="truncate font-bold text-slate-950">{pretty(row.document_lane)}</p><p className="mt-0.5 truncate text-[11px] text-slate-500">{pretty(row.sage_object_type)}</p></td>
-                    <td className="px-2 py-2"><p className="truncate font-bold text-slate-950">{pretty(row.document_type)}</p><p className="mt-0.5 truncate text-[11px] text-slate-500">{pretty(row.source_table)}</p></td>
-                    <td className="px-2 py-2"><SourceFactsCell row={row} /></td>
-                    <td className="px-2 py-2"><SageTargetCell row={row} /></td>
-                    <td className="px-2 py-2 text-right font-bold text-slate-950">{gbp(row.amount_gbp)}<p className="text-[11px] font-normal text-slate-500">{text(row.currency_code) || "GBP"}</p></td>
-                    <td className="px-2 py-2"><Chip value={row.payload_validation_status} /></td>
-                    <td className="px-2 py-2"><ApControlCell row={row} /></td>
-                    <td className="px-2 py-2"><p className="truncate font-semibold text-slate-900">{text(row.counterparty_name) || "—"}</p><p className="mt-0.5 truncate text-[11px] text-slate-500">{short(sageFacts(row).contactDisplay, 48)}</p></td>
-                    <td className="px-2 py-2"><p className="truncate font-mono text-[11px] font-bold text-slate-950" title={text(row.snapshot_id)}>{short(row.snapshot_id, 26)}</p><p className="mt-0.5 truncate font-mono text-[11px] text-slate-500" title={text(row.idempotency_key)}>{short(row.idempotency_key, 28)}</p></td>
-                    <td className="px-2 py-2"><p className="line-clamp-4 text-[11px] font-semibold leading-4 text-slate-600">{text(row.exclusion_reason) || text(row.error_message) || "—"}</p></td>
-                  </tr>
-                ))}
+                {rows.length === 0 ? <tr><td colSpan={11} className="px-3 py-8 text-center text-sm text-slate-500">No rows.</td></tr> : rows.map((row) => {
+                  const canRetryRow = retryBatchEligible
+                    && text(row.document_lane) === "supplier_goods_ap"
+                    && ["failed_terminal", "failed_retryable"].includes(text(row.posting_status))
+                    && text(row.error_code) === "payload_builder_failed"
+                    && text(row.payload_validation_status) === "dry_run_failed"
+                    && !text(row.sage_object_id)
+                    && !text(row.posted_at)
+                    && Boolean(text(row.snapshot_id))
+                    && Boolean(text(row.row_id));
+
+                  return (
+                    <tr key={text(row.row_id) || `${text(row.snapshot_id)}-${text(row.source_id)}`} className="align-top hover:bg-slate-50">
+                      <td className="px-2 py-2"><Chip value={row.posting_status} /></td>
+                      <td className="px-2 py-2"><p className="truncate font-bold text-slate-950">{pretty(row.document_lane)}</p><p className="mt-0.5 truncate text-[11px] text-slate-500">{pretty(row.sage_object_type)}</p></td>
+                      <td className="px-2 py-2"><p className="truncate font-bold text-slate-950">{pretty(row.document_type)}</p><p className="mt-0.5 truncate text-[11px] text-slate-500">{pretty(row.source_table)}</p></td>
+                      <td className="px-2 py-2"><SourceFactsCell row={row} /></td>
+                      <td className="px-2 py-2"><SageTargetCell row={row} /></td>
+                      <td className="px-2 py-2 text-right font-bold text-slate-950">{gbp(row.amount_gbp)}<p className="text-[11px] font-normal text-slate-500">{text(row.currency_code) || "GBP"}</p></td>
+                      <td className="px-2 py-2"><Chip value={row.payload_validation_status} /></td>
+                      <td className="px-2 py-2"><ApControlCell row={row} /></td>
+                      <td className="px-2 py-2"><p className="truncate font-semibold text-slate-900">{text(row.counterparty_name) || "—"}</p><p className="mt-0.5 truncate text-[11px] text-slate-500">{short(sageFacts(row).contactDisplay, 48)}</p></td>
+                      <td className="px-2 py-2"><p className="truncate font-mono text-[11px] font-bold text-slate-950" title={text(row.snapshot_id)}>{short(row.snapshot_id, 26)}</p><p className="mt-0.5 truncate font-mono text-[11px] text-slate-500" title={text(row.idempotency_key)}>{short(row.idempotency_key, 28)}</p></td>
+                      <td className="px-2 py-2">
+                        <p className="line-clamp-4 text-[11px] font-semibold leading-4 text-slate-600">{text(row.exclusion_reason) || text(row.error_message) || "—"}</p>
+                        {canRetryRow ? (
+                          <form action={retryFailedSupplierGoodsApRowAction} className="mt-2">
+                            <input type="hidden" name="batch_id" value={batchId} />
+                            <input type="hidden" name="row_id" value={text(row.row_id)} />
+                            <button
+                              type="submit"
+                              className="rounded-xl bg-amber-700 px-3 py-1.5 text-[11px] font-bold text-white shadow-sm"
+                              title="Retries only this local payload-builder failure. Server-side guards re-check the row and snapshot before Sage is called."
+                            >
+                              Retry failed AP row
+                            </button>
+                          </form>
+                        ) : null}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
