@@ -37,7 +37,7 @@ export default async function SageZeroLineProofPage({ searchParams }: { searchPa
           <section className={`rounded-3xl border p-6 shadow-sm ${proven ? "border-emerald-300 bg-emerald-50" : "border-rose-300 bg-rose-50"}`}>
             <h2 className="text-lg font-semibold">{proven ? "Runtime proof passed" : "Runtime proof did not pass"}</h2>
             <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
-              {["code", "reference", "create_status", "get_status", "delete_status", "zero_line_retained", "zero_line_unit_price", "zero_line_tax_amount", "control_line_retained", "cleanup_complete", "sage_write_made", "match_count", "http_status", "create_request_id", "get_request_id", "delete_request_id"].map((key) => {
+              {["code", "reference", "create_status", "sage_validation_error", "get_status", "delete_status", "zero_line_retained", "zero_line_unit_price", "zero_line_tax_amount", "control_line_retained", "cleanup_complete", "sage_write_made", "match_count", "http_status", "create_request_id", "get_request_id", "delete_request_id"].map((key) => {
                 const v = value(params, key);
                 if (!v) return null;
                 return <div key={key} className="rounded-xl bg-white/80 p-3 ring-1 ring-black/5"><dt className="text-xs font-bold uppercase tracking-wide text-slate-500">{key.replaceAll("_", " ")}</dt><dd className="mt-1 break-all font-mono text-xs text-slate-900">{v}</dd></div>;
