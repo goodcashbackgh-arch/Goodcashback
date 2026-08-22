@@ -37,6 +37,7 @@ async function requireStaff() {
     .eq("active", true)
     .maybeSingle();
   if (error || !staff?.id) redirect("/auth/check");
+  return { supabase };
 }
 
 async function sageCall(args: {
@@ -100,8 +101,23 @@ function contactIsVendor(row: Row) {
   });
 }
 
+async function resolveCreatedInvoiceIdByReference(args: {
+  common: { apiBaseUrl: string; accessToken: string; sageBusinessId: string };
+  reference: string;
+}) {
+  const search = await sageCall({
+    ...args.common,
+    method: "GET",
+    path: `/purchase_invoices?search=${encodeURIComponent(args.reference)}&items_per_page=20&attributes=all`,
+  });
+  if (!search.response.ok) return "";
+  const items = Array.isArray((search.raw as Row)?.$items) ? (search.raw as Row).$items as Row[] : [];
+  const exact = items.filter((row) => text(row.reference) === args.reference);
+  return exact.length === 1 ? text(exact[0].id) : "";
+}
+
 export async function runSageZeroLineProofAction(formData: FormData) {
-  await requireStaff();
+  const { supabase } = await requireStaff();
 
   if (process.env.VERCEL_ENV !== "production" || process.env.VERCEL_GIT_COMMIT_REF !== "main") {
     redirectResult({ code: "production_main_only", sage_write_made: false });
@@ -147,7 +163,7 @@ export async function runSageZeroLineProofAction(formData: FormData) {
   const sageBusinessId = text(business?.sage_business_id);
   if (!sageBusinessId) redirectResult({ code: "active_sage_business_missing", sage_write_made: false });
 
-  const { data: mappingData, error: mappingError } = await (supabaseAdmin as any).rpc("internal_sage_mapping_control_v1");
+  const { data: mappingData, error: mappingError } = await (supabase as any).rpc("internal_sage_mapping_control_v1");
   if (mappingError) redirectResult({ code: "mapping_read_failed", sage_write_made: false });
   const mappings = (mappingData ?? []) as Row[];
   const ledger = mappings.find((row) => row.mapping_code === "SUPPLIER_GOODS_AP_LEDGER" && row.mapping_status === "configured");
@@ -224,12 +240,17 @@ export async function runSageZeroLineProofAction(formData: FormData) {
     createStatus = created.response.status;
     createRequestId = created.requestId;
     invoiceId = objectId(created.raw, created.response.headers.get("location"));
+
+    if (createStatus === 201 && !invoiceId) {
+      invoiceId = await resolveCreatedInvoiceIdByReference({ common, reference });
+    }
+
     if (createStatus !== 201 || !invoiceId) {
       redirectResult({
-        code: "sage_zero_line_create_rejected",
+        code: "sage_zero_line_create_rejected_or_unresolved",
         reference,
         create_status: createStatus,
-        sage_write_made: Boolean(invoiceId),
+        sage_write_made: createStatus === 201,
         create_request_id: createRequestId,
       });
     }
@@ -242,6 +263,9 @@ export async function runSageZeroLineProofAction(formData: FormData) {
       controlLine = findDescription(fetched.raw, CONTROL_DESCRIPTION);
     }
   } finally {
+    if (!invoiceId && createStatus === 201) {
+      invoiceId = await resolveCreatedInvoiceIdByReference({ common, reference });
+    }
     if (invoiceId) {
       let deleted = await sageCall({ ...common, method: "DELETE", path: `/purchase_invoices/${encodeURIComponent(invoiceId)}` });
       if ([408, 429].includes(deleted.response.status) || deleted.response.status >= 500) {
